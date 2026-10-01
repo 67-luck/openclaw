@@ -1,12 +1,18 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { isCloudWorkerPlacementState } from "../../packages/gateway-protocol/src/schema/session-placement-state.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import { resolveSessionPermissionCoreToolPolicy } from "../agents/session-permission-exec-mode.js";
 import { resolveEffectiveToolFsWorkspaceOnly } from "../agents/tool-fs-policy.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { FsSafeError } from "../infra/fs-safe.js";
 import { getAgentScopedMediaLocalRoots, getDefaultMediaLocalRoots } from "../media/local-roots.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
-import { getUserProfileListItem } from "../state/user-profiles.js";
-import { applyHttpOperatorRoleScopeCeiling, resolveHttpProfile } from "./http-auth-user-profile.js";
+import type { PreparedUserProfileIdentity } from "../state/user-profiles.types.js";
+import {
+  applyHttpOperatorRoleScopeCeiling,
+  prepareHttpProfile,
+  resolveHttpProfile,
+} from "./http-auth-user-profile.js";
 import type { AuthorizedControlUiReadRequest } from "./http-auth-utils.js";
 import { authorizeOperatorScopesForMethod } from "./method-scopes.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
@@ -31,12 +37,13 @@ export type AssistantMediaReader = Pick<
 function resolveAssistantMediaReaderAuth(
   reader: AssistantMediaReader,
   config: OpenClawConfig,
+  identity?: PreparedUserProfileIdentity,
 ): AuthorizedControlUiReadRequest | undefined {
   try {
-    const profile = reader.profileId ? getUserProfileListItem(reader.profileId) : undefined;
-    const currentProfile = profile
-      ? resolveHttpProfile(profile.id, profile.updatedAt, config)
-      : undefined;
+    if (reader.profileId && !identity) {
+      return undefined;
+    }
+    const currentProfile = identity ? resolveHttpProfile(identity, config) : undefined;
     const operatorScopes = applyHttpOperatorRoleScopeCeiling(reader.operatorScopes, currentProfile);
     if (!authorizeOperatorScopesForMethod("assistant.media.get", operatorScopes).allowed) {
       return undefined;
@@ -47,12 +54,13 @@ function resolveAssistantMediaReaderAuth(
   }
 }
 
-export function resolveAssistantMediaPolicy(params: {
+function resolveAssistantMediaPolicy(params: {
   config: OpenClawConfig;
   sessionKey?: string;
   agentId?: string;
   requestAuth?: AuthorizedControlUiReadRequest;
   reader?: AssistantMediaReader;
+  preparedProfileIdentity?: PreparedUserProfileIdentity;
 }) {
   let loaded: ReturnType<typeof loadGatewaySessionEntryReadOnly> | undefined;
   if (params.sessionKey) {
@@ -79,7 +87,10 @@ export function resolveAssistantMediaPolicy(params: {
         }
       : undefined);
   const auth =
-    params.requestAuth ?? (reader ? resolveAssistantMediaReaderAuth(reader, config) : undefined);
+    params.requestAuth ??
+    (reader
+      ? resolveAssistantMediaReaderAuth(reader, config, params.preparedProfileIdentity)
+      : undefined);
   if (!auth || !reader) {
     return undefined;
   }
@@ -140,11 +151,67 @@ export function resolveAssistantMediaPolicy(params: {
     : undefined;
   return {
     session,
+    operatorAccessAuthority: auth.operatorAccessAuthority,
     executionCwd,
     remote: remote || isCloudWorkerPlacementState(placement?.state),
     localRoots,
     workspaceOnly,
     reader,
     canAllow: auth.operatorScopes.includes("operator.admin"),
+  };
+}
+
+export async function prepareAssistantMediaPolicy(
+  params: Parameters<typeof resolveAssistantMediaPolicy>[0],
+  req: IncomingMessage,
+  res: ServerResponse,
+) {
+  const assertRequestCurrent = () => {
+    if (req.aborted || req.socket?.destroyed || res.destroyed || res.writableEnded) {
+      throw new FsSafeError("path-mismatch", "Media access changed");
+    }
+  };
+  let preparedProfileIdentity = params.requestAuth?.preparedProfileIdentity;
+  if (!params.requestAuth && params.reader?.profileId) {
+    try {
+      preparedProfileIdentity = (
+        await prepareHttpProfile(params.reader.profileId, assertRequestCurrent, params.config, res)
+      ).preparedProfileIdentity;
+    } catch {
+      return undefined;
+    }
+  }
+  const policyParams = { ...params, preparedProfileIdentity };
+  const policy = resolveAssistantMediaPolicy(policyParams);
+  if (!policy) {
+    return undefined;
+  }
+  return {
+    ...policy,
+    assertCurrent(allowance: boolean) {
+      assertRequestCurrent();
+      policy.operatorAccessAuthority?.assertCurrent();
+      const current = resolveAssistantMediaPolicy({
+        ...policyParams,
+        requestAuth: undefined,
+        reader: policy.reader,
+      });
+      if (
+        params.requestAuth?.hasCurrentClientAuthority?.() === false ||
+        !current ||
+        current.session?.sessionKey !== policy.session?.sessionKey ||
+        current.session?.agentId !== policy.session?.agentId ||
+        current.session?.sessionId !== policy.session?.sessionId ||
+        current.remote !== policy.remote ||
+        current.executionCwd !== policy.executionCwd ||
+        current.workspaceOnly !== policy.workspaceOnly ||
+        current.localRoots.length !== policy.localRoots.length ||
+        current.localRoots.some((root, index) => root !== policy.localRoots[index]) ||
+        (allowance && policy.workspaceOnly && !current.canAllow)
+      ) {
+        throw new FsSafeError("path-mismatch", "Media access changed");
+      }
+      return current;
+    },
   };
 }

@@ -197,7 +197,7 @@ export function createChatSendGoalCommitGuard(
       const creation = resolveOperatorSessionCreation(client);
       if (
         creation.actor?.id !== initialEntry.createdActor?.id ||
-        resolveCreatorSandbox(currentConfig, creation) !== initialEntry.sandbox
+        resolveCreatorSandbox(currentConfig, creation, client ?? undefined) !== initialEntry.sandbox
       ) {
         throw new Error("Session creation policy changed before Goal admission; retry.");
       }

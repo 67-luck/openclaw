@@ -29,7 +29,6 @@ import {
   ensureProfileForEmail,
   getUserProfileDisplay,
   getUserProfileListItem,
-  getUserProfileRole,
   resolveUserProfileId,
 } from "./user-profiles.js";
 
@@ -174,7 +173,7 @@ describe("user profile role schema", () => {
       });
       expect(listUserProfilesSync(options)[0]).not.toHaveProperty("role");
       expect(tableHasColumn(database, "user_profiles", "role")).toBe(false);
-      expect(getUserProfileRole(profile.id, options)).toBeNull();
+      expect(setUserProfileRole(profile.id, null, options)).not.toHaveProperty("role");
       expect(database.prepare("PRAGMA user_version").get()?.user_version).toBe(versionBefore);
       expect(database.prepare("PRAGMA table_info(user_profiles)").all()).toContainEqual(
         expect.objectContaining({
@@ -196,8 +195,7 @@ describe("user profile role schema", () => {
         .run("older-profile", 1, 1);
       closeOpenClawStateDatabaseForTest();
 
-      expect(getUserProfileRole(profile.id, options)).toBe("maintainer");
-      expect(getUserProfileRole("older-profile", options)).toBeNull();
+      expect(getUserProfileListItem("older-profile", options)).not.toHaveProperty("role");
       expect(getUserProfileListItem(profile.id, options)).toMatchObject({
         displayName: "Older Reader",
         role: "maintainer",

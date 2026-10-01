@@ -1,10 +1,11 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { expect, test, vi } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import * as profileAuthority from "../state/user-channel-identity-operations.js";
 import { connectUserModelAccount, listUserProfileAuthLinks } from "../state/user-model-accounts.js";
+import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
 import { linkEmail } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
@@ -121,6 +122,8 @@ async function createFixture(
       }).authProfileId
     : undefined;
   const client = { ...identifiedClient(owner.id), connId: "session-creator-connection" };
+  client.preparedProfileIdentity = await prepareUserProfileIdentity(owner.id);
+  onTestFinished(client.preparedProfileIdentity.release);
   client.connect.scopes = [scope];
   const clients = new Set([client]);
   const role: GatewayOperatorRoleDefinition = {

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { acquireWorktreeRunLease } from "../agents/worktrees/run-lease.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -14,6 +14,7 @@ import {
   readUserGitHubConnection,
   updateUserGitHubConnection,
 } from "../state/user-github-connections.js";
+import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
 import { linkCanonicalUserProfileEmail } from "../state/user-profile-writes.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import {
@@ -687,7 +688,12 @@ describe("personal publication authority and recovery", () => {
     requirePersonalGitHubPublicationConfirmation(placements.workspaceResultInstanceId());
     await coordinator.resumeSessionRequests();
     expect(commands).toHaveLength(count);
-    client = { ...client, connId: "cold-browser" };
+    client = {
+      ...client,
+      connId: "cold-browser",
+      preparedProfileIdentity: await prepareUserProfileIdentity(owner),
+    };
+    onTestFinished(client.preparedProfileIdentity!.release);
     runtime.client = client;
     const discovered = await rpc("sessions.github.options");
     expect(discovered[0]).toBe(true);
@@ -702,6 +708,8 @@ describe("personal publication authority and recovery", () => {
     });
     const ownProfile = client.authenticatedUserProfile!;
     client.authenticatedUserProfile = { ...ownProfile, profileId: otherOwner };
+    client.preparedProfileIdentity = await prepareUserProfileIdentity(otherOwner);
+    onTestFinished(client.preparedProfileIdentity.release);
     client.connect.scopes = ["operator.admin"];
     expect((await rpc("sessions.github.options"))[1].pendingPersonal).toBeNull();
     expect(
@@ -725,6 +733,8 @@ describe("personal publication authority and recovery", () => {
     ).toBe(false);
     expect((await rpc("sessions.github.publish", request()))[0]).toBe(false);
     client.authenticatedUserProfile = ownProfile;
+    client.preparedProfileIdentity = await prepareUserProfileIdentity(owner);
+    onTestFinished(client.preparedProfileIdentity.release);
     action = preparePersonalGitHubSessionAction({ client, context }, { sessionKey: SESSION_KEY });
     const confirm = {
       sessionKey: SESSION_KEY,

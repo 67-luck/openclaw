@@ -56,6 +56,7 @@ import { rejectDisabledGatewayUpload } from "./http-upload-policy.js";
 import {
   authorizeOpenAiCompatibleHttpModelOverride,
   authorizeOpenAiCompatibleHttpSession,
+  authorizeOpenAiCompatibleHttpSessionCreation,
   isGatewayRequestContextError,
   resolveGatewayRequestContext,
   resolveOpenAiCompatModelOverride,
@@ -83,7 +84,6 @@ import {
   resolveChatToolChoice,
   resolveToolChoiceConstraintError,
 } from "./openai-tool-choice.js";
-import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
 import { areGatewayUploadsEnabled, GATEWAY_UPLOADS_DISABLED_MESSAGE } from "./upload-policy.js";
 
 const OpenAiChatCompletionRequestSchema = z.object({
@@ -619,13 +619,7 @@ export async function handleOpenAiHttpRequest(
     }
     throw err;
   }
-  const creationAuth = authorizeGatewaySessionCreation({
-    cfg: getRuntimeConfig(),
-    ...(handled.requestAuth.operatorRoleActor
-      ? { actor: handled.requestAuth.operatorRoleActor }
-      : { profileId: handled.requestAuth.authenticatedUserProfile?.profileId }),
-    agentId,
-  });
+  const creationAuth = authorizeOpenAiCompatibleHttpSessionCreation(handled.requestAuth, agentId);
   if (creationAuth) {
     sendJson(res, 403, {
       error: { message: creationAuth.message, type: "forbidden" },

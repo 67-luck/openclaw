@@ -452,7 +452,7 @@ export async function authorizePluginGatewayHttpRequestOrReply(
 } | null> {
   const authGeneration = resolveSharedGatewaySessionGeneration(params.auth, params.trustedProxies);
   const hasCurrentClientAuthority = captureHttpRequestAuthority(params);
-  const cookieAuth = authorizeControlUiPluginCookieRequest(params.req, {
+  const cookieAuth = await authorizeControlUiPluginCookieRequest(params.req, {
     requestPath: params.requestPath,
     authGeneration,
     res: params.res,
@@ -539,9 +539,17 @@ export async function checkGatewayHttpRequestAuth(
   return {
     ok: true,
     requestAuth: {
-      hasCurrentClientAuthority: () =>
-        hasCurrentClientAuthority() &&
-        hasCurrentGatewayOperatorAccess(authenticatedProfile.operatorAccessAuthority),
+      hasCurrentClientAuthority: () => {
+        try {
+          authenticatedProfile.preparedProfileIdentity?.readCurrentProfile();
+          return (
+            hasCurrentClientAuthority() &&
+            hasCurrentGatewayOperatorAccess(authenticatedProfile.operatorAccessAuthority)
+          );
+        } catch {
+          return false;
+        }
+      },
       authMethod: authResult.method,
       ...(authResult.user ? { user: authResult.user } : {}),
       // Shared-secret bearer auth proves possession of the gateway secret, but it

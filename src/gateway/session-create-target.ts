@@ -7,7 +7,6 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { isEmbeddedAgentRunActive } from "../agents/embedded-agent.js";
 import { isSessionWorkAdmissionActive } from "../sessions/session-lifecycle-admission.js";
-import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
 import type { CreateGatewaySessionParams } from "./session-create-service.types.js";
 import { resolvePluginSessionOwnershipError } from "./session-plugin-ownership.js";
 import type { GatewaySessionStoreTarget } from "./session-utils-store.types.js";
@@ -19,6 +18,7 @@ export function readSessionCreateTarget(
   target: GatewaySessionStoreTarget,
   expectedSessionId: string | undefined,
   lifecycleIdentities: readonly string[],
+  authorizeCreation: (agentId: string) => ErrorShape | undefined,
 ): Result<ReturnType<typeof loadGatewaySessionEntryReadOnly>["entry"], ErrorShape> {
   const currentTargetEntry = loadGatewaySessionEntryReadOnly(target.canonicalKey, {
     agentId: target.agentId,
@@ -73,13 +73,7 @@ export function readSessionCreateTarget(
     }
   }
   if (!currentTargetEntry) {
-    const creationError = authorizeGatewaySessionCreation({
-      cfg: params.cfg,
-      agentId: target.agentId,
-      ...(params.operatorRoleActor
-        ? { actor: params.operatorRoleActor }
-        : { profileId: params.requestingOperatorProfileId }),
-    });
+    const creationError = authorizeCreation(target.agentId);
     if (creationError) {
       return { ok: false, error: creationError };
     }

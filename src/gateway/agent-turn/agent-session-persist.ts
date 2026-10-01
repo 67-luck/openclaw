@@ -34,7 +34,11 @@ import { recordSessionCreated } from "../../sessions/session-created.js";
 import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
 import { errorShapeFromError } from "../error-shape.js";
-import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
+import {
+  prepareSessionCreationAuthority,
+  prepareOperatorRoleSource,
+  resolveCreatorSandbox,
+} from "../operator-role-policy.js";
 import {
   assertExpectedExistingSession,
   ExpectedExistingSessionChangedError,
@@ -124,6 +128,12 @@ export async function persistAgentSessionPhase(params: {
   setMainRestartRecoveryOwnerLease: (lease: MainSessionRecoveryOwnerLease) => void;
   respond: GatewayRequestHandlerOptions["respond"];
 }): Promise<AgentSessionPersistResult | undefined> {
+  using requesterRoles = await prepareSessionCreationAuthority(params.cfg, params);
+  using creatorRoles = await prepareOperatorRoleSource(
+    params.cfg,
+    params.creation.actor ?? params.operatorRoleActor ?? params.requestingOperatorProfileId,
+  );
+  params.assertAdmissionCurrent?.();
   let patchBuild = params.initialPatchBuild;
   let sessionEntry = params.initialSessionEntry;
   let resolvedSessionId = params.initialResolvedSessionId;
@@ -186,13 +196,7 @@ export async function persistAgentSessionPhase(params: {
             assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
             const freshEntry = patchContext.existingEntry;
             if (!freshEntry) {
-              creationAuthorizationError = authorizeGatewaySessionCreation({
-                cfg: params.cfg,
-                agentId: params.sessionAgentId,
-                ...(params.operatorRoleActor
-                  ? { actor: params.operatorRoleActor }
-                  : { profileId: params.requestingOperatorProfileId }),
-              });
+              creationAuthorizationError = requesterRoles.authorize(params.sessionAgentId);
               if (creationAuthorizationError) {
                 throw new Error(creationAuthorizationError.message);
               }
@@ -348,7 +352,7 @@ export async function persistAgentSessionPhase(params: {
                 : params.creation;
             const sandbox = freshEntry
               ? undefined
-              : resolveCreatorSandbox(params.cfg, delegatedCreation);
+              : resolveCreatorSandbox(params.cfg, delegatedCreation, creatorRoles);
             const effectivePatch = freshEntry
               ? { ...lifecyclePatch, ...rotationLineage }
               : {

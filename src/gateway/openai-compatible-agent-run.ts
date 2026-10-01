@@ -110,6 +110,7 @@ export async function runOpenAiCompatibleAgentCommand(params: {
   assertSourceCurrent();
   const client = createSyntheticPluginRuntimeClient({
     authenticatedUserProfile: params.requestAuth.authenticatedUserProfile,
+    preparedProfileIdentity: params.requestAuth.preparedProfileIdentity,
     operatorRoleActor: params.requestAuth.operatorRoleActor,
     scopes: [...params.operatorScopes],
   });

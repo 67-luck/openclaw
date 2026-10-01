@@ -4,6 +4,7 @@ import type { RuntimeContextFragment } from "../../agents/internal-runtime-conte
 import type { TranscriptSenderIdentity } from "../../chat/sender-identity.js";
 import type { PluginSubagentRequesterContext } from "../../plugins/runtime/subagent-requester-context.js";
 import type { RuntimePluginToolGrant } from "../../plugins/runtime/tool-grant.js";
+import type { PreparedUserProfileIdentity } from "../../state/user-profiles.types.js";
 import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
 import type { GatewayAuthPolicy } from "../auth-policy.types.js";
 import type { AuthenticatedGitHubIdentitySync } from "../github-user-identity.types.js";
@@ -58,6 +59,7 @@ export type GatewayClient = {
   authenticatedGitHubIdentitySync?: AuthenticatedGitHubIdentitySync;
   /** Prepared at identity admission and profile publication, before session reads or events. */
   preparedSessionProfile?: PreparedSessionProfile;
+  preparedProfileIdentity?: PreparedUserProfileIdentity;
   authenticatedUserProfile?: {
     profileId: string;
     displayName: string | null;

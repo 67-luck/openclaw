@@ -213,7 +213,9 @@ export function prepareChatSendUserTurn(params: {
         params.getConfig ?? session.cfg ?? {},
         resolveOperatorSessionCreation(client),
       );
-  const sandbox = session.cfg ? resolveCreatorSandbox(session.cfg, creation) : undefined;
+  const sandbox = session.cfg
+    ? resolveCreatorSandbox(session.cfg, creation, client ?? undefined)
+    : undefined;
   // Current and historical turns must reach the single LLM timestamp boundary
   // with identical bare text. Stamping this live turn would bust the prompt cache.
   const ctx: MsgContext = {

@@ -8,11 +8,6 @@ import type { SessionCatalogProvider } from "../../plugins/session-catalog.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { catalogStartHandler } from "./session-catalog-terminal-start.js";
 
-vi.mock("../../state/user-profiles.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../state/user-profiles.js")>()),
-  getUserProfileRole: vi.fn(() => null),
-}));
-
 function provider(overrides: Partial<SessionCatalogProvider> = {}): SessionCatalogProvider {
   return {
     id: "codex",

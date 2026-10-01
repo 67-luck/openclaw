@@ -13,7 +13,7 @@ import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import {
   ensureGatewayOwnerProfile,
   ensureProfileForEmail,
-  getUserProfileRole,
+  getUserProfileListItem,
   resolveUserProfileId,
 } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -123,7 +123,7 @@ it.each(["person", "shared owner"] as const)(
         queries.mockRestore();
       }
       expect(resolveUserChannelIdentity(identity)).toBeUndefined();
-      expect(getUserProfileRole(person.id)).toBe("admin");
+      expect(getUserProfileListItem(person.id).role).toBe("admin");
       expect(resolveUserProfileId(secondary.id)).toBe(person.id);
     });
   },

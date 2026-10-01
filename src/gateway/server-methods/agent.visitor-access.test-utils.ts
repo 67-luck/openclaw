@@ -19,6 +19,7 @@ import { hasAgentRunContextExecutionOwner } from "../../infra/agent-run-registry
 import * as mutationAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import { withPluginRuntimeGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
+import { prepareUserProfileIdentity } from "../../state/user-profile-list.js";
 import {
   ensureCanonicalGatewayOwnerProfile,
   ensureCanonicalUserProfileForEmail,
@@ -410,7 +411,9 @@ describe("visitor access admitted caller", () => {
       });
       try {
         for (const profile of [unassigned, staff, owner]) {
-          expect(resolveGatewayOperatorAccessAuthority(profile.id, config)).toBeNull();
+          const identity = await prepareUserProfileIdentity(profile.id);
+          using _identity = { [Symbol.dispose]: identity.release };
+          expect(resolveGatewayOperatorAccessAuthority(identity, config)).toBeNull();
         }
         const existing = createVisitorGrantStore(state.env);
         await existing.register(active.email, active);
@@ -463,11 +466,15 @@ describe("visitor access admitted caller", () => {
           ]),
         );
         expect(reopenedGrants).toHaveLength(2);
+        const unassignedIdentity = await prepareUserProfileIdentity(unassigned.id);
+        using _unassignedIdentity = { [Symbol.dispose]: unassignedIdentity.release };
         expect(() =>
-          resolveGatewayOperatorAccessAuthority(unassigned.id, restrictedConfig),
+          resolveGatewayOperatorAccessAuthority(unassignedIdentity, restrictedConfig),
         ).toThrow(GatewayOperatorAccessDeniedError);
         for (const profile of [staff, owner]) {
-          expect(resolveGatewayOperatorAccessAuthority(profile.id, restrictedConfig)).toBeNull();
+          const identity = await prepareUserProfileIdentity(profile.id);
+          using _identity = { [Symbol.dispose]: identity.release };
+          expect(resolveGatewayOperatorAccessAuthority(identity, restrictedConfig)).toBeNull();
         }
         const reopenedOwner = getUserProfileListItem(owner.id);
         const connection = new AbortController();
@@ -565,7 +572,9 @@ describe("visitor access admitted caller", () => {
           setRuntimeConfigSnapshot(repairedConfig);
           mocks.loadConfigReturn = repairedConfig;
           for (const profile of [staff, owner]) {
-            expect(resolveGatewayOperatorAccessAuthority(profile.id, repairedConfig)).toBeNull();
+            const identity = await prepareUserProfileIdentity(profile.id);
+            using _identity = { [Symbol.dispose]: identity.release };
+            expect(resolveGatewayOperatorAccessAuthority(identity, repairedConfig)).toBeNull();
           }
           const { text: renewal } = await invoke("visitor_invite", {
             email: active.email,
@@ -583,9 +592,11 @@ describe("visitor access admitted caller", () => {
           const fresh = getUserProfileListItem(
             (await ensureCanonicalUserProfileForEmail(freshEmail)).id,
           );
-          expect(() => resolveGatewayOperatorAccessAuthority(fresh.id, repairedConfig)).toThrow(
-            GatewayOperatorAccessDeniedError,
-          );
+          const freshIdentity = await prepareUserProfileIdentity(fresh.id);
+          using _freshIdentity = { [Symbol.dispose]: freshIdentity.release };
+          expect(() =>
+            resolveGatewayOperatorAccessAuthority(freshIdentity, repairedConfig),
+          ).toThrow(GatewayOperatorAccessDeniedError);
           expect((await invoke("visitor_invite", { email: freshEmail })).text).toContain(
             "restricted guest",
           );
@@ -595,8 +606,10 @@ describe("visitor access admitted caller", () => {
             [unassigned, guestGrantId],
             [fresh, freshGrantId],
           ] as const) {
+            const identity = await prepareUserProfileIdentity(profile.id);
+            using _identity = { [Symbol.dispose]: identity.release };
             const access = expectDefined(
-              resolveGatewayOperatorAccessAuthority(profile.id, repairedConfig),
+              resolveGatewayOperatorAccessAuthority(identity, repairedConfig),
               "registered Visitor access missing",
             );
             const captured = expectDefined(
@@ -653,7 +666,9 @@ describe("visitor access admitted caller", () => {
             [retainedGuest.email, freshEmail, unmanaged].toSorted(),
           );
           expect(getUserProfileListItem(staffId)).toEqual(staff);
-          expect(resolveGatewayOperatorAccessAuthority(staffId, repairedConfig)).toBeNull();
+          const staffIdentity = await prepareUserProfileIdentity(staffId);
+          using _staffIdentity = { [Symbol.dispose]: staffIdentity.release };
+          expect(resolveGatewayOperatorAccessAuthority(staffIdentity, repairedConfig)).toBeNull();
         } finally {
           caller.release();
           connection.abort();

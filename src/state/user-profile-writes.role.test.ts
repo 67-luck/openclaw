@@ -11,7 +11,7 @@ import { onUserProfilesChanged } from "./user-profile-events.js";
 import { readUserProfileIdentity, retainUserProfileCatalog } from "./user-profile-list.js";
 import { setCanonicalUserProfileRole } from "./user-profile-writes.js";
 import { setUserProfileRole } from "./user-profile-writes.worker.js";
-import { ensureProfileForEmail, getUserProfileRole } from "./user-profiles.js";
+import { ensureProfileForEmail, getUserProfileListItem } from "./user-profiles.js";
 
 const delivery = vi.hoisted(() => ({
   afterResult: undefined as ((index: number) => Promise<void>) | undefined,
@@ -106,7 +106,7 @@ it.each(["ordered", "reversed", "recovery first", "native successor", "native AB
           });
         }
       }
-      expect(getUserProfileRole(profile.id)).toBe(expected);
+      expect(getUserProfileListItem(profile.id).role ?? null).toBe(expected);
       expect(readUserProfileIdentity(profile.id)?.role).toBe(expected);
     } finally {
       for (const gate of gates) {
@@ -176,7 +176,7 @@ it("settles a committed role and its catalog when result delivery fails during c
     expect(delivery.roleCommands).toBe(1);
     expect(observed).toEqual(["guest"]);
     expect(readUserProfileIdentity(profile.id)?.role).toBe("guest");
-    expect(getUserProfileRole(profile.id)).toBe("guest");
+    expect(getUserProfileListItem(profile.id).role).toBe("guest");
   } finally {
     await Promise.allSettled([closing]);
     stop();

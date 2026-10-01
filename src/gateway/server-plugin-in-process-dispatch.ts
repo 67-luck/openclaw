@@ -62,7 +62,10 @@ export async function prepareInProcessAgentExecution(input: PrepareInProcessAgen
     const error = authorizeGatewaySessionCreation({
       cfg: resolved.context.getRuntimeConfig(),
       agentId: params.agentId,
-      client,
+      client: client && {
+        ...client,
+        internal: { ...client.internal, operatorRunAuthority: operatorSource?.authority },
+      },
     });
     if (error) {
       unwrapGatewayMethodDispatchResponse("agent", { ok: false, error });

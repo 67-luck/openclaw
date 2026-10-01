@@ -15,9 +15,6 @@ vi.mock("../session-utils.js", () => ({
 vi.mock("../../agents/tools/gateway-caller-context.js", () => ({
   getGatewayToolCallerIdentity: () => undefined,
 }));
-vi.mock("../../state/user-github-connections.js", () => ({
-  resolvePersonalGitHubOwner: (profile: string) => profile,
-}));
 vi.mock("../operator-role-policy.js", () => ({
   resolveOperatorRolePolicy: () => null,
   resolveOperatorRolePolicyForProfile: () => null,
@@ -30,6 +27,13 @@ vi.mock("../session-sharing.js", () => ({
 function createRequest() {
   const client: GatewayClient = {
     connId: "github-cache-client",
+    preparedProfileIdentity: {
+      readCurrentProfile: () => ({ profileId: "profile-cache-test", assignedRole: null }),
+      readCurrentDisplay: vi.fn(),
+      readCurrentFacts: vi.fn(),
+      emailBindingIds: [],
+      release: vi.fn(),
+    },
     authenticatedUserProfile: {
       profileId: "profile-cache-test",
       displayName: null,

@@ -844,12 +844,13 @@ async function withCookieSessionReader(
             url: SECURE_HOOK_PATH,
             headers: { cookie },
           } as IncomingMessage;
-          const authorized = authorizeControlUiPluginCookieRequest(req, {
+          const response = makeMockHttpResponse();
+          const authorized = await authorizeControlUiPluginCookieRequest(req, {
+            res: response.res,
             requestPath: SECURE_HOOK_PATH,
             authGeneration: "http-generation",
           });
           expect(authorized).not.toBeNull();
-          const response = makeMockHttpResponse();
           expect(
             await handler(req, response.res, undefined, {
               gatewayAuthSatisfied: true,

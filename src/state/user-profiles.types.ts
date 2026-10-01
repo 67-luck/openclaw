@@ -95,16 +95,27 @@ export type UserProfileAccessFacts = Readonly<{
 }>;
 
 export type PreparedUserProfileIdentity = {
+  retain(this: void): PreparedUserProfileIdentity;
+  readCurrentDisplay(this: void): UserProfileDisplay & { updatedAt: number };
   readCurrentProfile(
     this: void,
     requiredEmailBindingIds?: readonly string[],
   ): Pick<UserProfileAccessFacts, "profileId" | "assignedRole">;
   readonly emailBindingIds: readonly string[];
+  captureCurrentEmailBindingIds(this: void): readonly string[];
   readCurrentFacts(
     this: void,
     requiredEmailBindingIds?: readonly string[],
   ): { profile: UserProfileAccessFacts; aliases: ReadonlySet<string> };
   release(this: void): void;
+};
+
+export type UserProfileIdentityCatalog = {
+  rows: Map<string, ProfileDisplayRow>;
+  bindings: UserProfileEmailBindingIndex;
+  assertCurrent: (profileId: string) => void;
+  retain: () => UserProfileIdentityCatalog;
+  release: () => void;
 };
 
 export type UserProfileEmailBindingIndex = {

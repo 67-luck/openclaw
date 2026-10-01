@@ -132,6 +132,7 @@ function resolveSessionHistoryHttpClient(
       scopes,
     },
     authenticatedUserProfile: requestAuth.authenticatedUserProfile,
+    preparedProfileIdentity: requestAuth.preparedProfileIdentity,
   };
 }
 
@@ -238,6 +239,7 @@ export async function handleSessionHistoryHttpRequest(
     const currentRequestAuth = await checkGatewayHttpRequestAuth({
       ...opts,
       req,
+      res,
       auth: opts.getResolvedAuth?.() ?? opts.auth,
       trustedProxies: cfgLocal.gateway?.trustedProxies,
       allowRealIpFallback: cfgLocal.gateway?.allowRealIpFallback,

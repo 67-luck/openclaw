@@ -37,13 +37,6 @@ const listPersonalAccountAuthChoices = vi.hoisted(() => vi.fn());
 const resolvePersonalAccountAuthMethod = vi.hoisted(() => vi.fn());
 const exchange = vi.hoisted(() => vi.fn());
 
-vi.mock("../../state/user-profiles.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../state/user-profiles.js")>();
-  return {
-    ...actual,
-    getUserProfileRole: () => null,
-  };
-});
 vi.mock("../../state/user-channel-identity-operations.js", () => ({
   prepareUserProfileSelectionAuthority,
 }));

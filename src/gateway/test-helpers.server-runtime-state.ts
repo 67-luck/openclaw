@@ -43,6 +43,7 @@ export async function createGatewayRuntimeStateForTest(
     connectionState.mentionInbox.dispose();
     await params.scheduler.stop();
   });
+  await connectionState.mentionInbox.prepareAuthority();
   const httpTransport = await createGatewayHttpTransport({
     ...params,
     clients: connectionState.clients,

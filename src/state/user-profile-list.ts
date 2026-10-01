@@ -51,6 +51,7 @@ import {
 import { UserProfileNotFoundError } from "./user-profiles-schema.js";
 import type {
   PreparedUserProfileIdentity,
+  UserProfileIdentityCatalog,
   ProfileDisplayRow,
   UserProfileEmailBinding,
   UserProfileEmailBindingIndex,
@@ -559,32 +560,36 @@ async function acquireUserProfileCatalog(options: OpenClawStateDatabaseOptions =
   const identity = retained.identity.key;
   const rows = retained.rows;
   const bindings = profileBindings.get(rows)!;
-  const lease = Symbol("prepared profile catalog");
-  retained.leases.add(lease);
-  let active = true;
-  return {
-    rows,
-    bindings,
-    assertCurrent(profileId: string) {
-      context.admission.assertCurrent();
-      if (
-        !active ||
-        !retained.valid ||
-        context.admission.identity.key !== identity ||
-        retained.identity.key !== identity ||
-        retained.rows !== rows
-      ) {
-        throw new UserProfileNotFoundError(profileId);
-      }
-      authority.assertSettled(profileId);
-    },
-    release(this: void) {
-      if (active) {
-        active = false;
-        releaseProfileCatalog(retained, lease);
-      }
-    },
+  const retain = (): UserProfileIdentityCatalog => {
+    const lease = Symbol("prepared profile catalog");
+    retained.leases.add(lease);
+    let active = true;
+    return {
+      rows,
+      bindings,
+      retain,
+      assertCurrent(profileId: string) {
+        context.admission.assertCurrent();
+        if (
+          !active ||
+          !retained.valid ||
+          context.admission.identity.key !== identity ||
+          retained.identity.key !== identity ||
+          retained.rows !== rows
+        ) {
+          throw new UserProfileNotFoundError(profileId);
+        }
+        authority.assertSettled(profileId);
+      },
+      release(this: void) {
+        if (active) {
+          active = false;
+          releaseProfileCatalog(retained, lease);
+        }
+      },
+    };
   };
+  return retain();
 }
 
 /** Retain one off-thread preparation for a synchronous batch of current canonical identities. */
@@ -606,15 +611,25 @@ export async function prepareUserProfileCatalog(options: OpenClawStateDatabaseOp
 /** Prepare once off-thread; execution reads only committed facts retained by this owner. */
 export async function prepareUserProfileIdentity(
   profileId: string,
-  options: OpenClawStateDatabaseOptions = {},
+  options: OpenClawStateDatabaseOptions & { resolveAliases?: boolean } = {},
   emailTargets?: readonly string[],
 ): Promise<PreparedUserProfileIdentity> {
   const capturedEmails = emailTargets?.slice();
-  return bindPreparedUserProfileIdentity(
-    profileId,
-    await acquireUserProfileCatalog(options),
-    capturedEmails,
-  );
+  const catalog = await acquireUserProfileCatalog(options);
+  try {
+    catalog.assertCurrent(profileId);
+    return bindPreparedUserProfileIdentity(
+      options.resolveAliases
+        ? (resolveCatalogProfile(catalog.rows, profileId)?.id ?? profileId)
+        : profileId,
+      catalog,
+      capturedEmails,
+      profileId,
+    );
+  } catch (error) {
+    catalog.release();
+    throw error;
+  }
 }
 
 /** Stage exact changed keys before commit so observers always see the whole committed catalog. */

@@ -15,13 +15,13 @@ export function prepareGatewayConnectOperatorAccess(client: GatewayWsClient): vo
   if (client.connect.role !== "operator" || client.internal?.operatorRoleActor?.kind === "system") {
     return;
   }
-  const profile = client.authenticatedUserProfile;
+  const profile = client.preparedProfileIdentity;
   const config = getRuntimeConfig();
   if (hasGatewayOperatorAccessPolicies(config) && !profile) {
     throw new GatewayOperatorAccessDeniedError();
   }
   const operatorAccessAuthority = profile
-    ? resolveGatewayOperatorAccessAuthority(profile.profileId, config)
+    ? resolveGatewayOperatorAccessAuthority(profile, config)
     : undefined;
   if (operatorAccessAuthority !== undefined) {
     client.internal = { ...client.internal, operatorAccessAuthority };

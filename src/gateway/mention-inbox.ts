@@ -488,9 +488,11 @@ export function createMentionInbox(params: {
     return unavailable();
   }
 
-  refresh();
-
   return {
+    async prepareAuthority() {
+      await policy.prepareAuthority();
+      refresh();
+    },
     async mentionable(client, input, publish) {
       let preparationFailure: Result<never, ErrorShape> | undefined;
       try {

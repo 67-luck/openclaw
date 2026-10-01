@@ -363,7 +363,7 @@ export async function handleControlUiPluginAssetRequest(
     respondNotFound(res);
     return true;
   }
-  const cookieAuth = authorizeControlUiPluginCookieRequest(req, {
+  const cookieAuth = await authorizeControlUiPluginCookieRequest(req, {
     requestPath: pathname,
     authGeneration: resolveSharedGatewaySessionGeneration(params.auth, params.trustedProxies),
     res,

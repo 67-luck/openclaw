@@ -9,7 +9,10 @@ import {
   type PreparedModelRuntimeLease,
 } from "../../agents/prepared-model-runtime.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
-import { resolveCreatorSandbox } from "../../gateway/operator-role-policy.js";
+import {
+  prepareOperatorRoleSource,
+  resolveCreatorSandbox,
+} from "../../gateway/operator-role-policy.js";
 import { isCronSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
@@ -152,8 +155,14 @@ export async function prepareCronRunContext(params: {
     payloadHookExternalContentSource ?? resolveHookExternalContentSource(baseSessionKey);
 
   const isGmailHook = hookExternalContentSource === "gmail";
+  using creatorRoles = await prepareOperatorRoleSource(runtimeCfg, input.job.createdActor);
+  (input.abortSignal ?? input.signal)?.throwIfAborted();
   const now = Date.now();
-  const sandbox = resolveCreatorSandbox(runtimeCfg, { actor: input.job.createdActor });
+  const sandbox = resolveCreatorSandbox(
+    runtimeCfg,
+    { actor: input.job.createdActor },
+    creatorRoles,
+  );
   const cronSession = await prepareCronSession({
     cfg: runtimeCfg,
     sessionKey: agentSessionKey,

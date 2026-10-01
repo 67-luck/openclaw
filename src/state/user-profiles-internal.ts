@@ -30,6 +30,7 @@ import {
 } from "./user-profiles-schema.js";
 import type {
   PreparedUserProfileIdentity,
+  UserProfileIdentityCatalog,
   ProfileDisplayRow,
   UserProfile,
   UserProfileDisplay,
@@ -454,13 +455,9 @@ export function projectCatalogUserProfileIdentity(
 /** Bind a canonical account and its original email lifetimes to the retained catalog owner. */
 export function bindPreparedUserProfileIdentity(
   profileId: string,
-  catalog: {
-    rows: Map<string, ProfileDisplayRow>;
-    bindings: UserProfileEmailBindingIndex;
-    assertCurrent: (profileId: string) => void;
-    release: () => void;
-  },
+  catalog: UserProfileIdentityCatalog,
   emailTargets?: readonly string[],
+  sourceProfileId = profileId,
 ): PreparedUserProfileIdentity {
   const { rows, bindings } = catalog;
   const initial =
@@ -472,7 +469,9 @@ export function bindPreparedUserProfileIdentity(
   );
   const assertCurrent = (requiredEmailBindingIds: readonly string[] = []) => {
     catalog.assertCurrent(profileId);
+    catalog.assertCurrent(sourceProfileId);
     if (
+      resolveCatalogProfile(rows, sourceProfileId)?.id !== profileId ||
       resolveCatalogProfile(rows, profileId)?.id !== profileId ||
       requiredEmailBindingIds.some((id) => bindings.byId.get(id) !== profileId)
     ) {
@@ -485,6 +484,30 @@ export function bindPreparedUserProfileIdentity(
   }
   return {
     readCurrentProfile,
+    retain() {
+      assertCurrent();
+      return bindPreparedUserProfileIdentity(
+        profileId,
+        catalog.retain(),
+        emailTargets,
+        sourceProfileId,
+      );
+    },
+    captureCurrentEmailBindingIds() {
+      assertCurrent();
+      return [...(bindings.emailsByProfile.get(profileId) ?? [])].map((email) => {
+        const id = bindings.byEmail.get(email)?.bindingId;
+        if (!id) {
+          throw new UserProfileNotFoundError(profileId);
+        }
+        return id;
+      });
+    },
+    readCurrentDisplay() {
+      assertCurrent();
+      const row = rows.get(profileId)!;
+      return { ...projectUserProfileDisplay(row), updatedAt: row.updated_at };
+    },
     get emailBindingIds() {
       assertCurrent();
       if (

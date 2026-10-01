@@ -56,7 +56,11 @@ async function resolveWsProfileAdmission(request: ReturnType<typeof accessReques
   if (!admission.ok) {
     throw new Error("Expected admitted WebSocket profile");
   }
-  return admission.prepared?.profile;
+  try {
+    return admission.prepared?.profile;
+  } finally {
+    admission.prepared?.identity.release();
+  }
 }
 
 afterEach(() => {

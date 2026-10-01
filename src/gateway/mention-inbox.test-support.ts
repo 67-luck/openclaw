@@ -6,6 +6,7 @@ import {
 import type { SessionEntry } from "../config/sessions.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
 import { setDisplayName } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import {
@@ -58,6 +59,7 @@ async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) 
   const bobSecond = { ...identifiedClient(bob.id, "Bob"), connId: "bob-two" };
   const carolClient = { ...identifiedClient(carol.id, "Carol"), connId: "carol" };
   const clients: GatewayClient[] = [aliceClient, bobClient, bobSecond, carolClient];
+  const identities: Awaited<ReturnType<typeof prepareUserProfileIdentity>>[] = [];
   const broadcast = vi.fn();
   const push = vi.fn<NonNullable<Parameters<typeof createMentionInbox>[0]["onMentionCreated"]>>();
   const setSession = (entry: Partial<SessionEntry>, sessionKey = SESSION_KEY) =>
@@ -73,7 +75,14 @@ async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) 
     );
   await setSession({ displayName: "Design review" });
   const inboxes = new Set<MentionInbox>();
-  const openInbox = (gatewayInstanceId = "mention-gateway") => {
+  const openInbox = async (gatewayInstanceId = "mention-gateway") => {
+    for (const client of [aliceClient, bobClient, bobSecond, carolClient]) {
+      client.preparedProfileIdentity?.release();
+      client.preparedProfileIdentity = await prepareUserProfileIdentity(
+        client.authenticatedUserProfile!.profileId,
+      );
+      identities.push(client.preparedProfileIdentity);
+    }
     const inbox = createMentionInbox({
       scheduler,
       gatewayInstanceId,
@@ -83,11 +92,12 @@ async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) 
       onMentionCreated: options.notifications === false ? undefined : push,
     });
     inboxes.add(inbox);
+    await inbox.prepareAuthority();
     return inbox;
   };
   options.beforeInbox?.();
   const committedSources = new Map<string, MentionCommittedInput["committedSource"]>();
-  const inbox = openInbox();
+  const inbox = await openInbox();
   const context = { mentionInbox: inbox, getRuntimeConfig: () => cfg } as GatewayRequestContext;
   async function call(
     method: string,
@@ -139,6 +149,9 @@ async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) 
     setSession,
     openInbox,
     dispose() {
+      for (const identity of identities) {
+        identity.release();
+      }
       for (const instance of inboxes) {
         instance.dispose();
       }

@@ -16,6 +16,7 @@ import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import { readUserProfileVersion } from "../state/user-profile-events.js";
+import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
 import { readUserProfileDirectory } from "../state/user-profile-reads.js";
 import {
   resolveCurrentUserProfileDisplay,
@@ -23,6 +24,7 @@ import {
 } from "./current-user-profile-display.js";
 import {
   authorizeGatewaySessionCreation,
+  resolveOperatorRolePolicyForAssignment,
   resolveOperatorRolePolicyForProfile,
 } from "./operator-role-policy.js";
 import { ADMIN_SCOPE, READ_SCOPE } from "./operator-scopes.js";
@@ -70,12 +72,25 @@ export function createHumanMentionPolicy(params: {
   getClients: () => Iterable<GatewayClient>;
 }) {
   let active = true;
+  let catalog: Awaited<ReturnType<typeof prepareUserProfileCatalog>> | undefined;
   let profileVersion = -1;
   const displays = new Map<string, CurrentUserProfileDisplay>();
   let directory: { profiles: { id: string; logins: string[] }[]; truncated: boolean } | undefined;
   let eligibleDirectory:
     | { key: string; users: (MentionableUser & { logins: string[] })[]; truncated: boolean }
     | undefined;
+
+  async function prepareAuthority(): Promise<void> {
+    if (catalog || !active) {
+      return;
+    }
+    const prepared = await prepareUserProfileCatalog();
+    if (active && !catalog) {
+      catalog = prepared;
+    } else {
+      prepared.release();
+    }
+  }
 
   function synchronizeProfileVersion(): void {
     const version = readUserProfileVersion();
@@ -93,6 +108,7 @@ export function createHumanMentionPolicy(params: {
   }
 
   async function prepareDirectory(): Promise<void> {
+    await prepareAuthority();
     if (!needsDirectoryPreparation()) {
       return;
     }
@@ -142,7 +158,7 @@ export function createHumanMentionPolicy(params: {
     if (!profile) {
       return err(authenticatedProfileUnavailableError());
     }
-    const policy = resolveOperatorRolePolicyForProfile(profile.profileId, cfg);
+    const policy = resolveOperatorRolePolicyForProfile(profile.profileId, cfg, client);
     if (policy && !scopesAllowRead(policy.scopes)) {
       return err(errorShape(ErrorCodes.FORBIDDEN, "Your operator role cannot read mentions."));
     }
@@ -154,6 +170,7 @@ export function createHumanMentionPolicy(params: {
       cfg,
       client: {
         connect: { ...client.connect, scopes: admin ? [ADMIN_SCOPE] : [READ_SCOPE] },
+        preparedProfileIdentity: client.preparedProfileIdentity,
         internal: { operatorRoleActor: { kind: "operator", profileId: profile.profileId } },
       },
     });
@@ -173,7 +190,11 @@ export function createHumanMentionPolicy(params: {
     if (!profile || target.entry.incognito === true || isIncognitoSessionKey(target.sessionKey)) {
       return undefined;
     }
-    const policy = resolveOperatorRolePolicyForProfile(profile.profileId, cfg);
+    const identity = catalog?.readCurrentIdentity(profile.profileId);
+    if (!identity) {
+      throw new Error("The mention profile authority has not been prepared.");
+    }
+    const policy = resolveOperatorRolePolicyForAssignment(identity.profileId, identity.role, cfg);
     const scopes = policy?.scopes ?? [READ_SCOPE];
     if (!scopesAllowRead(scopes)) {
       return undefined;
@@ -228,7 +249,7 @@ export function createHumanMentionPolicy(params: {
     }
     const creationError = authorizeGatewaySessionCreation({
       cfg,
-      profileId: requester.profile.profileId,
+      client,
       agentId: agent.agentId,
     });
     if (creationError) {
@@ -254,6 +275,7 @@ export function createHumanMentionPolicy(params: {
 
   return {
     identify,
+    prepareAuthority,
     prepareDirectory,
     needsDirectoryPreparation,
     readProfile,
@@ -263,6 +285,7 @@ export function createHumanMentionPolicy(params: {
     },
     dispose(): void {
       active = false;
+      catalog?.release();
       displays.clear();
       directory = undefined;
       eligibleDirectory = undefined;
@@ -302,6 +325,7 @@ export function createHumanMentionPolicy(params: {
       const query = input.query?.trim().toLocaleLowerCase() ?? "";
       const users = eligibleDirectory.users.filter(
         (candidate) =>
+          catalog?.readCurrentIdentity(candidate.profileId) &&
           candidate.profileId !== profile.profileId &&
           (!query ||
             candidate.displayName.toLocaleLowerCase().includes(query) ||

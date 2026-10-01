@@ -91,7 +91,11 @@ import {
 } from "../sessions/session-state-events.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { getOrCreatePromise } from "../shared/lazy-promise.js";
-import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "./operator-role-policy.js";
+import {
+  prepareSessionCreationAuthority,
+  prepareOperatorRoleSource,
+  resolveCreatorSandbox,
+} from "./operator-role-policy.js";
 import { ADMIN_SCOPE } from "./operator-scopes.js";
 import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
 import type * as SessionLifecycle from "./session-create-service.types.js";
@@ -568,21 +572,14 @@ export async function performGatewaySessionReset(params: {
   if (!resetTarget.ok) {
     return resetTarget;
   }
-  const authorizeResetCreation = () =>
-    authorizeGatewaySessionCreation({
-      cfg: resetTarget.cfg,
-      agentId: resetTarget.target.agentId,
-      ...(params.operatorRoleActor
-        ? { actor: params.operatorRoleActor }
-        : { profileId: params.requestingOperatorProfileId }),
-    });
-  const reportLifecycleCleanupError = (error: unknown) => {
-    if (params.onLifecycleCleanupError) {
-      params.onLifecycleCleanupError(error);
-      return;
-    }
-    logVerbose(`session lifecycle resource cleanup failed: ${String(error)}`);
-  };
+  using requesterRoles = await prepareSessionCreationAuthority(resetTarget.cfg, params);
+  using creatorRoles = await prepareOperatorRoleSource(resetTarget.cfg, params.creation?.actor);
+  params.assertCurrent?.();
+  params.assertAuthorizedInstance?.();
+  const authorizeResetCreation = () => requesterRoles.authorize(resetTarget.target.agentId);
+  const reportLifecycleCleanupError =
+    params.onLifecycleCleanupError ??
+    ((error: unknown) => logVerbose(`session lifecycle resource cleanup failed: ${String(error)}`));
   const initialResetEntry = loadSessionEntry(
     params.key,
     resetTarget.requestedAgentId ? { agentId: resetTarget.requestedAgentId } : undefined,
@@ -1112,7 +1109,7 @@ export async function performGatewaySessionReset(params: {
             : params.creation
               ? {
                   ...buildSessionCreationStamp(params.creation),
-                  ...(resolveCreatorSandbox(cfg, params.creation) === "required"
+                  ...(resolveCreatorSandbox(cfg, params.creation, creatorRoles) === "required"
                     ? { sandbox: "required" as const }
                     : {}),
                 }

@@ -84,7 +84,7 @@ export async function executeSessionPatchMutations(params: {
   const getCurrentConfig = params.context.getRuntimeConfig;
   const cfg = getCurrentConfig();
   const operatorCreation = resolveOperatorSessionCreation(client);
-  const sandbox = resolveCreatorSandbox(cfg, operatorCreation);
+  const sandbox = resolveCreatorSandbox(cfg, operatorCreation, client ?? undefined);
   const creation = { ...operatorCreation, ...(sandbox ? { sandbox } : {}) };
   const archiveActor = gatewayClientSessionCreator(client);
   const callerScopes = Array.isArray(client?.connect?.scopes) ? client.connect.scopes : [];

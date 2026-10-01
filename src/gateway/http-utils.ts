@@ -30,6 +30,7 @@ import {
 import { normalizeMessageChannel } from "../utils/message-channel.js";
 import { getHeader, type AuthorizedGatewayHttpRequest } from "./http-auth-utils.js";
 import { ADMIN_SCOPE } from "./method-scopes.js";
+import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
 import { loadGatewayModelCatalog } from "./server-model-catalog.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
 import { authorizeResolvedSessionMutation, isResolvedIncognitoSession } from "./session-sharing.js";
@@ -305,6 +306,20 @@ export function resolveGatewayRequestContext(params: {
   return { agentId, sessionKey, messageChannel };
 }
 
+export function authorizeOpenAiCompatibleHttpSessionCreation(
+  requestAuth: AuthorizedGatewayHttpRequest,
+  agentId: string,
+) {
+  return authorizeGatewaySessionCreation({
+    cfg: getRuntimeConfig(),
+    preparedProfileIdentity: requestAuth.preparedProfileIdentity,
+    ...(requestAuth.operatorRoleActor
+      ? { actor: requestAuth.operatorRoleActor }
+      : { profileId: requestAuth.authenticatedUserProfile?.profileId }),
+    agentId,
+  });
+}
+
 export function authorizeOpenAiCompatibleHttpSession(params: {
   agentId: string;
   sessionKey: string;
@@ -317,6 +332,7 @@ export function authorizeOpenAiCompatibleHttpSession(params: {
     cfg,
     client: createSyntheticPluginRuntimeClient({
       ...(authenticatedUserProfile ? { authenticatedUserProfile } : {}),
+      preparedProfileIdentity: params.requestAuth.preparedProfileIdentity,
       operatorRoleActor: params.requestAuth.operatorRoleActor,
       operatorAccessAuthority: params.requestAuth.operatorAccessAuthority,
       scopes: params.senderIsOwner ? [ADMIN_SCOPE] : [],

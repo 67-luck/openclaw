@@ -97,6 +97,7 @@ export async function handleToolsInvokeHttpRequest(
     const senderIsOwner = resolveOpenAiCompatibleHttpSenderIsOwner(req, requestAuth);
     const client = createSyntheticPluginRuntimeClient({
       authenticatedUserProfile: requestAuth.authenticatedUserProfile,
+      preparedProfileIdentity: requestAuth.preparedProfileIdentity,
       operatorRoleActor: requestAuth.operatorRoleActor,
       operatorAccessAuthority,
       scopes: operatorScopes,
@@ -126,6 +127,7 @@ export async function handleToolsInvokeHttpRequest(
           agentTo,
           agentThreadId,
           authenticatedUserProfile: requestAuth.authenticatedUserProfile,
+          preparedProfileIdentity: requestAuth.preparedProfileIdentity,
           operatorRoleActor: requestAuth.operatorRoleActor,
           operatorScopes,
           senderIsOwner,

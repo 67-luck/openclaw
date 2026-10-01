@@ -5,12 +5,14 @@ import { getRuntimeConfig } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sha256Base64Url } from "../infra/crypto-digest.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
+import type { PreparedUserProfileIdentity } from "../state/user-profiles.types.js";
 import { captureGatewayAuthPolicy } from "./auth-policy.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
 import { resolveControlUiPluginAuthCookieGrants } from "./control-ui-plugin-auth-cookie.js";
 import {
   applyHttpOperatorRoleScopeCeiling,
   checkHttpCookieUserProfile,
+  resolveHttpProfile,
 } from "./http-auth-user-profile.js";
 import { sendUnauthorized } from "./http-common.js";
 import { getBearerToken } from "./http-header-value.js";
@@ -25,7 +27,9 @@ import {
 import { normalizeOperatorScopeList } from "./operator-scopes.js";
 import { resolveSharedGatewaySessionGeneration } from "./server/ws-shared-generation.js";
 
-type CookieRequestAuth = NonNullable<ReturnType<typeof authorizeControlUiPluginCookieRequest>>;
+type CookieRequestAuth = NonNullable<
+  Awaited<ReturnType<typeof authorizeControlUiPluginCookieRequest>>
+>;
 
 export function resolveControlUiPluginAuthCookieGeneration(
   authGeneration: string | undefined,
@@ -36,9 +40,14 @@ export function resolveControlUiPluginAuthCookieGeneration(
     : undefined;
 }
 
-export function authorizeControlUiPluginCookieRequest(
+export async function authorizeControlUiPluginCookieRequest(
   req: IncomingMessage,
-  params: { requestPath: string; authGeneration: string | undefined; res?: ServerResponse },
+  params: {
+    requestPath: string;
+    authGeneration: string | undefined;
+    res?: ServerResponse;
+    preparedProfileIdentity?: PreparedUserProfileIdentity;
+  },
 ) {
   // WebSocket upgrades bypass this HTTP-only handoff and use
   // checkGatewayHttpRequestAuth directly in attachGatewayUpgradeHandler.
@@ -58,9 +67,32 @@ export function authorizeControlUiPluginCookieRequest(
   if (grants.length === 0) {
     return null;
   }
-  const profileAuth = checkHttpCookieUserProfile(
+  const generation = resolveControlUiPluginAuthCookieGeneration(params.authGeneration, cfg);
+  const assertCurrent = () => {
+    if (
+      req.aborted ||
+      req.socket?.destroyed ||
+      params.res?.destroyed ||
+      params.res?.writableEnded ||
+      generation !==
+        resolveControlUiPluginAuthCookieGeneration(params.authGeneration, getRuntimeConfig()) ||
+      !isDeepStrictEqual(
+        grants,
+        resolveControlUiPluginAuthCookieGrants(req, {
+          requestPath: params.requestPath,
+          generation,
+        }),
+      )
+    ) {
+      throw new GatewayHttpRequestAuthorityError("Unauthorized");
+    }
+  };
+  const profileAuth = await checkHttpCookieUserProfile(
     cfg,
     grants.map((grant) => grant.profileId),
+    assertCurrent,
+    params.res ?? req.socket,
+    params.preparedProfileIdentity,
   );
   if (!profileAuth.ok) {
     if (profileAuth.authResult.reason === "operator_access_denied" && params.res) {
@@ -68,7 +100,15 @@ export function authorizeControlUiPluginCookieRequest(
     }
     return null;
   }
-  const authenticatedProfile = profileAuth.profile;
+  let authenticatedProfile = profileAuth.profile;
+  try {
+    assertCurrent();
+    if (authenticatedProfile.preparedProfileIdentity) {
+      authenticatedProfile = resolveHttpProfile(authenticatedProfile.preparedProfileIdentity, cfg);
+    }
+  } catch {
+    return null;
+  }
   for (const grant of grants) {
     grant.scopes =
       normalizeOperatorScopeList(
@@ -115,8 +155,9 @@ export function bindControlUiPluginCookieRequestAuthority(
     requestAuth.assertCurrent();
     // Reuse the cookie/profile owner, including expiry and the current auth
     // generation. Admission does not extend a browser grant across awaited work.
-    const current = authorizeControlUiPluginCookieRequest(params.req, {
+    const current = await authorizeControlUiPluginCookieRequest(params.req, {
       requestPath: params.requestPath,
+      preparedProfileIdentity: cookieAuth.requestAuth.preparedProfileIdentity,
       authGeneration: resolveSharedGatewaySessionGeneration(
         params.getResolvedAuth?.() ?? params.auth,
         params.trustedProxies ?? getRuntimeConfig().gateway?.trustedProxies,

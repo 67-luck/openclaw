@@ -21,6 +21,7 @@ export type MentionCommittedInput = {
 
 /** Keep the Gateway context independent of its context-consuming Inbox implementation. */
 export type MentionInbox = {
+  prepareAuthority: () => Promise<void>;
   mentionable: (
     client: GatewayClient | null,
     input: UsersMentionableParams,

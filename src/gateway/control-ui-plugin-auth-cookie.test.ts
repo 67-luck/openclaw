@@ -1,4 +1,4 @@
-import type { IncomingMessage } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   createPluginRegistryFixture,
   registerVirtualTestPlugin,
@@ -51,12 +51,17 @@ function issueCookie(
   return header.split(";", 1)[0]!;
 }
 
+const responses: ServerResponse[] = [];
+
 function authorizeCookie(cookie: string) {
+  const { res } = makeMockHttpResponse();
+  responses.push(res);
   return authorizeControlUiPluginCookieRequest(
     { method: "GET", headers: { cookie } } as IncomingMessage,
     {
       requestPath: "/plugins/example/session",
       authGeneration: "generation",
+      res,
     },
   );
 }
@@ -82,7 +87,10 @@ async function withRoleConfig(run: () => Promise<void>) {
 }
 
 describe("Control UI plugin auth cookie profile binding", () => {
-  afterEach(() => resetPluginRuntimeStateForTest());
+  afterEach(() => {
+    for (const res of responses.splice(0)) res.destroy();
+    resetPluginRuntimeStateForTest();
+  });
 
   it("uses an explicit owner credential independently of a revoked ambient visitor cookie", async () => {
     await withRoleConfig(async () => {
@@ -258,11 +266,16 @@ describe("Control UI plugin auth cookie profile binding", () => {
           cfg: { gateway: { trustedProxies } },
           run: async () => {
             const profile = ensureProfileForEmail("plugin-reader@example.test");
-            expect(authorizeCookie(issueCookie(profile.id))?.requestAuth).toMatchObject({
+            const cookieAuth = await authorizeCookie(issueCookie(profile.id));
+            expect(cookieAuth?.requestAuth).toMatchObject({
               authenticatedUserProfile: { profileId: profile.id },
               controlUiPluginGrants: [{ scopes: ["operator.read"] }],
             });
-            expect(authorizeCookie(issueCookie("missing-profile"))).toBeNull();
+            responses.at(-1)!.emit("finish");
+            expect(() =>
+              cookieAuth?.requestAuth.preparedProfileIdentity?.readCurrentProfile(),
+            ).toThrow();
+            expect(await authorizeCookie(issueCookie("missing-profile"))).toBeNull();
             const auth = {
               mode: "trusted-proxy" as const,
               allowTailscale: false,
@@ -307,16 +320,16 @@ describe("Control UI plugin auth cookie profile binding", () => {
         cfg: {},
         run: async () => {
           const cookie = `${issueCookie("viewer")}; ${issueCookie(otherProfileId, { pluginId: "overlap" })}`;
-          expect(authorizeCookie(cookie)).toBeNull();
+          expect(await authorizeCookie(cookie)).toBeNull();
         },
       });
     },
   );
 
-  it("invalidates a signed viewer grant when the Gateway auth generation changes", () => {
+  it("invalidates a signed viewer grant when the Gateway auth generation changes", async () => {
     const req = { method: "GET", headers: { cookie: issueCookie("viewer") } } as IncomingMessage;
     expect(
-      authorizeControlUiPluginCookieRequest(req, {
+      await authorizeControlUiPluginCookieRequest(req, {
         requestPath: "/plugins/example/session",
         authGeneration: "replacement-generation",
       }),
@@ -331,13 +344,13 @@ describe("Control UI plugin auth cookie profile binding", () => {
         setUserProfileRole(profile.id, role);
         const cookie = issueCookie(profile.id);
         try {
-          expect(authorizeCookie(cookie)?.requestAuth).toMatchObject({
+          expect((await authorizeCookie(cookie))?.requestAuth).toMatchObject({
             authenticatedUserProfile: { profileId: profile.id },
             controlUiPluginGrants: [{ pluginId: "example", scopes: ["operator.read"] }],
           });
           setUserProfileRole(profile.id, "denied");
           invalidateOperatorRolePolicy(profile.id);
-          expect(authorizeCookie(cookie)?.requestAuth.controlUiPluginGrants).toMatchObject([
+          expect((await authorizeCookie(cookie))?.requestAuth.controlUiPluginGrants).toMatchObject([
             { pluginId: "example", scopes: [] },
           ]);
         } finally {
@@ -351,7 +364,7 @@ describe("Control UI plugin auth cookie profile binding", () => {
     "rejects a signed grant without a current durable profile (%s)",
     async (profileId) => {
       await withRoleConfig(async () => {
-        expect(authorizeCookie(issueCookie(profileId))).toBeNull();
+        expect(await authorizeCookie(issueCookie(profileId))).toBeNull();
       });
     },
   );
@@ -398,7 +411,7 @@ describe("Control UI plugin auth cookie profile binding", () => {
     await withTempConfig({
       cfg: {},
       run: async () => {
-        expect(authorizeCookie(issueCookie())?.requestAuth.controlUiPluginGrants).toEqual([
+        expect((await authorizeCookie(issueCookie()))?.requestAuth.controlUiPluginGrants).toEqual([
           {
             pluginId: "example",
             path: "/plugins/example",

@@ -246,6 +246,36 @@ describe("human mention directory", () => {
     });
   });
 
+  it("rejects a requester whose role was revoked during directory preparation", async () => {
+    await withInbox(
+      async (f) => {
+        const held = holdDirectoryRead();
+        const pending = f.call("users.mentionable", { sessionKey: SESSION_KEY });
+        try {
+          await held.ready;
+          setUserProfileRole(f.bob.id, "denied");
+          held.release();
+          expect(await pending).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+        } finally {
+          held.release();
+          await pending;
+          held.restore();
+        }
+      },
+      {
+        gateway: {
+          roles: {
+            default: "reader",
+            definitions: {
+              reader: { agents: "*", scopes: ["operator.read"], sessions: { others: "view" } },
+              denied: { agents: [], scopes: [], sessions: { others: "none" } },
+            },
+          },
+        },
+      },
+    );
+  });
+
   it("includes offline people without leaking administrative profile fields or binding raw presence", async () => {
     await withInbox(async (f) => {
       const offline = ensureProfileForEmail("offline@mentions.example.test");

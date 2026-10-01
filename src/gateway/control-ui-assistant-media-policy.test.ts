@@ -6,6 +6,7 @@ import { finished } from "node:stream/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
@@ -394,13 +395,15 @@ describe("assistant image session policy", () => {
           },
         };
         const profile = ensureProfileForEmail("media-role-reader@example.test");
+        const identity = await prepareUserProfileIdentity(profile.id);
+        using _identity = { [Symbol.dispose]: identity.release };
         const source = path.join(project, "image.png");
         await fs.writeFile(source, PNG);
         entry.visibility = visibility;
         state.auth.mockResolvedValue({
           authMethod: "trusted-proxy",
           operatorScopes: ["operator.read"],
-          ...resolveHttpProfile(profile.id, profile.updatedAt, cfg),
+          ...resolveHttpProfile(identity, cfg),
         });
         const result = await request(source);
         if (available) {
@@ -490,10 +493,12 @@ describe("assistant image session policy", () => {
           },
         };
         const profile = ensureProfileForEmail("media-reader@example.test");
+        const identity = await prepareUserProfileIdentity(profile.id);
+        using _identity = { [Symbol.dispose]: identity.release };
         state.auth.mockResolvedValue({
           authMethod: "trusted-proxy",
           operatorScopes: ["operator.read"],
-          ...resolveHttpProfile(profile.id, profile.updatedAt, cfg),
+          ...resolveHttpProfile(identity, cfg),
         });
         const source = path.join(project, "shared.png");
         await fs.writeFile(source, PNG);
@@ -527,7 +532,7 @@ describe("assistant image session policy", () => {
 
   it.each(
     (["metadata", "bytes"] as const).flatMap((operation) =>
-      (["session", "gateway"] as const).map((authority) => ({ operation, authority })),
+      (["session", "gateway", "profile"] as const).map((authority) => ({ operation, authority })),
     ),
   )(
     "revalidates $authority reader access after asynchronous $operation file preparation",
@@ -538,16 +543,19 @@ describe("assistant image session policy", () => {
             default: "viewer",
             definitions: {
               viewer: { sessions: { others: "view" }, agents: "*", scopes: ["operator.read"] },
+              denied: { sessions: { others: "none" }, agents: [], scopes: [] },
             },
           },
         };
         const profile = ensureProfileForEmail("yielding-media-reader@example.test");
+        const identity = await prepareUserProfileIdentity(profile.id);
+        using _identity = { [Symbol.dispose]: identity.release };
         let current = true;
         state.auth.mockResolvedValue({
           authMethod: "trusted-proxy",
           operatorScopes: ["operator.read"],
           hasCurrentClientAuthority: () => current,
-          ...resolveHttpProfile(profile.id, profile.updatedAt, cfg),
+          ...resolveHttpProfile(identity, cfg),
         });
         const source = path.join(project, "shared.png");
         await fs.writeFile(source, PNG);
@@ -559,6 +567,8 @@ describe("assistant image session policy", () => {
             if (authority === "session") {
               entry.visibility = "draft";
               invalidateSessionSharingSnapshot(sessionKey);
+            } else if (authority === "profile") {
+              setUserProfileRole(profile.id, "denied");
             } else {
               current = false;
             }

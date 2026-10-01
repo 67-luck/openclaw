@@ -31,7 +31,11 @@ import {
 import { normalizeSessionIdentities } from "../sessions/session-lifecycle-identity.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import { runQueuedStoreWrite, type StoreWriterQueue } from "../shared/store-writer-queue.js";
-import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "./operator-role-policy.js";
+import {
+  prepareSessionCreationAuthority,
+  prepareOperatorRoleSource,
+  resolveCreatorSandbox,
+} from "./operator-role-policy.js";
 import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
 import { buildDashboardSessionKey } from "./session-create-key.js";
 import { resolvePluginSessionOwnershipError } from "./session-plugin-ownership.js";
@@ -163,6 +167,9 @@ export async function recoverGatewaySession(params: {
     storePath: string;
   }) => Promise<SessionRecoveryContinuationOutcome>;
 }): Promise<RecoverGatewaySessionResult> {
+  using requesterRoles = await prepareSessionCreationAuthority(params.cfg, params);
+  using creatorRoles = await prepareOperatorRoleSource(params.cfg, params.actor);
+  params.commitGuard?.();
   const sourceTarget = resolveGatewaySessionStoreTarget({
     cfg: params.cfg,
     key: params.key,
@@ -243,13 +250,7 @@ export async function recoverGatewaySession(params: {
       return { ok: false as const, error: recoveryConflictError("source-changed") };
     }
     if (!currentSource.mainRestartRecovery?.tombstone?.recoveredSessionKey) {
-      const creationError = authorizeGatewaySessionCreation({
-        cfg: params.cfg,
-        agentId: sourceTarget.agentId,
-        ...(params.operatorRoleActor
-          ? { actor: params.operatorRoleActor }
-          : { profileId: params.requestingOperatorProfileId }),
-      });
+      const creationError = requesterRoles.authorize(sourceTarget.agentId);
       if (creationError) {
         return { ok: false as const, error: creationError };
       }
@@ -365,7 +366,7 @@ export async function recoverGatewaySession(params: {
                   sandbox:
                     params.actor.id === GATEWAY_OWNER_PROFILE_ID
                       ? currentSource.sandbox
-                      : resolveCreatorSandbox(params.cfg, params),
+                      : resolveCreatorSandbox(params.cfg, params, creatorRoles),
                 }
               : inheritSessionCreationPolicy(currentSource),
           });

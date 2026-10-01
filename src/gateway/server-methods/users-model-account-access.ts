@@ -13,7 +13,10 @@ import type {
   UserModelAccountSelection,
 } from "../model-account-authority.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
-import { resolveOperatorRolePolicyForProfile } from "../operator-role-policy.js";
+import {
+  resolveOperatorRolePolicyForAssignment,
+  resolveOperatorRolePolicyForProfile,
+} from "../operator-role-policy.js";
 import { SESSION_READ_SCOPE, SESSION_WRITE_SCOPE, WRITE_SCOPE } from "../operator-scopes.js";
 import { isGatewayClientProfilePending } from "./gateway-client-identity.js";
 import { isIneligiblePersonalGatewayCaller } from "./gateway-personal-caller.js";
@@ -62,11 +65,13 @@ export async function prepareUserModelAccountAction(
     !client?.authenticatedUserIsTailscaleProvider
       ? await ensureProfileIdForEmail(userReference, {}, assertConnectionCurrent)
       : undefined);
-  const actorIdentity = actorReference
-    ? await (profileReference
-        ? prepareUserProfileSelectionAuthority(actorReference)
-        : prepareUserProfileRoleAuthority(actorReference))
-    : undefined;
+  const legacyActor =
+    actorReference && !profileReference
+      ? await prepareUserProfileRoleAuthority(actorReference)
+      : undefined;
+  const actorIdentity = profileReference
+    ? await prepareUserProfileSelectionAuthority(profileReference)
+    : legacyActor;
   assertConnectionCurrent();
   if (!actorIdentity) {
     throw new ModelAccountConnectAuthorityError();
@@ -97,7 +102,9 @@ export async function prepareUserModelAccountAction(
       throw new ModelAccountConnectAuthorityError();
     }
     const scope = actor === owner ? requiredScope : "operator.admin";
-    const role = resolveOperatorRolePolicyForProfile(actor, context.getRuntimeConfig());
+    const role = legacyActor
+      ? resolveOperatorRolePolicyForAssignment(actor, legacyActor.role, context.getRuntimeConfig())
+      : resolveOperatorRolePolicyForProfile(actor, context.getRuntimeConfig(), client ?? undefined);
     const grants = [client?.connect.scopes ?? [], ...(role ? [role.scopes] : [])];
     if (
       !grants.every((allowedScopes) =>

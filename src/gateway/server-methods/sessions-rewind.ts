@@ -400,7 +400,8 @@ async function mutateSessionAtMessage(
         return;
       }
       const creation = resolveOperatorSessionCreation(client);
-      const sandbox = action === "fork" ? resolveCreatorSandbox(cfg, creation) : undefined;
+      const sandbox =
+        action === "fork" ? resolveCreatorSandbox(cfg, creation, client ?? undefined) : undefined;
       const upstreamForkGuard =
         upstreamLink && upstreamForkHarness
           ? createUpstreamForkCurrentGuard({

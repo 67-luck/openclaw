@@ -9,7 +9,7 @@ import { mergeSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { onUserProfilesChanged } from "../../state/user-profile-events.js";
 import {
-  getUserProfileRole,
+  getUserProfileListItem,
   readUserProfileAliases,
   resolveUserProfileId,
 } from "../../state/user-profiles.js";
@@ -122,7 +122,7 @@ export function identifiedClient(profileId: string): GatewayClient {
     client.preparedSessionProfile = {
       profileId: canonical,
       aliases: readUserProfileAliases(canonical),
-      role: resolved ? getUserProfileRole(canonical) : null,
+      role: resolved ? (getUserProfileListItem(canonical).role ?? null) : null,
     };
   };
   refresh();

@@ -36,6 +36,7 @@ export function createSyntheticPluginRuntimeClient(params?: {
   authenticatedUserProfile?: NonNullable<
     NonNullable<GatewayRequestOptions["client"]>["authenticatedUserProfile"]
   >;
+  preparedProfileIdentity?: NonNullable<GatewayRequestOptions["client"]>["preparedProfileIdentity"];
   allowModelOverride?: boolean;
   agentToolCaller?: TrustedAgentToolCaller;
   agentRunTracking?: GatewayAgentRunTaskOwner;
@@ -60,6 +61,7 @@ export function createSyntheticPluginRuntimeClient(params?: {
       ? params.pluginRuntimeOwnerId.trim()
       : undefined;
   return {
+    preparedProfileIdentity: params?.preparedProfileIdentity,
     ...(params?.authenticatedUserProfile
       ? { authenticatedUserProfile: params.authenticatedUserProfile }
       : {}),

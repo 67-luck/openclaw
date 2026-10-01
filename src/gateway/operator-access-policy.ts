@@ -5,9 +5,11 @@ import type {
   PluginGatewayAccessAuthority,
 } from "../plugins/gateway-access-policy.types.js";
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
-import { onUserProfilesChanged, readUserProfileVersion } from "../state/user-profile-events.js";
-import { getUserProfileListItem } from "../state/user-profiles.js";
-import type { UserProfileAccessFacts } from "../state/user-profiles.types.js";
+import { onUserProfilesChanged } from "../state/user-profile-events.js";
+import type {
+  PreparedUserProfileIdentity,
+  UserProfileAccessFacts,
+} from "../state/user-profiles.types.js";
 import type { GatewayOperatorAccessAuthority } from "./operator-access-policy.types.js";
 import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.js";
 
@@ -33,7 +35,11 @@ export class GatewayOperatorAccessUnavailableError extends Error {
 const profileAccessChecks = new WeakMap<AbortSignal, () => void>();
 const profileAccessCleanup = new FinalizationRegistry<() => void>((release) => release());
 
-function watchProfileAccess(reference: WeakRef<() => void>, token: object): () => void {
+function watchProfileAccess(
+  reference: WeakRef<() => void>,
+  token: object,
+  releaseIdentity?: () => void,
+): () => void {
   const unsubscribe = onUserProfilesChanged(() => {
     const check = reference.deref();
     if (check) {
@@ -49,6 +55,7 @@ function watchProfileAccess(reference: WeakRef<() => void>, token: object): () =
   function release() {
     unsubscribe();
     profileAccessCleanup.unregister(token);
+    releaseIdentity?.();
   }
   return release;
 }
@@ -74,39 +81,27 @@ export function hasGatewayOperatorAccessPolicies(config: OpenClawConfig): boolea
 
 /** Bind additional access to this exact authenticated person and the original policy lifetimes. */
 export function resolveGatewayOperatorAccessAuthority(
-  profileId: string,
+  identity: PreparedUserProfileIdentity,
   config: OpenClawConfig,
 ): GatewayOperatorAccessAuthority | null {
-  if (profileId === GATEWAY_OWNER_PROFILE_ID) {
-    return null;
-  }
   if (!hasGatewayOperatorAccessPolicies(config)) {
     return null;
   }
-  const profile = getUserProfileListItem(profileId);
-  const emails = [...profile.emails];
-  let profileVersion = readUserProfileVersion();
+  const { profile } = identity.readCurrentFacts();
+  const bindings = identity.captureCurrentEmailBindingIds();
+  let held = identity;
   return resolvePreparedGatewayOperatorAccessAuthority(
     {
-      profileId: profile.id,
-      emails,
-      role: profile.role ?? null,
+      profileId: profile.profileId,
+      emails: profile.emails,
+      role: profile.assignedRole,
+      retain: () => {
+        held = identity.retain();
+        return held.release;
+      },
       isCurrent: () => {
-        if (profile.id !== profileId) {
-          return false;
-        }
-        const currentVersion = readUserProfileVersion();
-        if (currentVersion !== profileVersion) {
-          const current = getUserProfileListItem(profileId);
-          const currentEmails = new Set(current.emails);
-          // A merge or alias replacement cannot transfer a captured grant to its successor.
-          // Display/avatar changes preserve admitted work.
-          if (current.id !== profileId || emails.some((email) => !currentEmails.has(email))) {
-            return false;
-          }
-          profileVersion = currentVersion;
-        }
-        return true;
+        const current = held.readCurrentProfile(bindings);
+        return current.assignedRole === profile.assignedRole;
       },
     },
     config,
@@ -120,6 +115,7 @@ export function resolvePreparedGatewayOperatorAccessAuthority(
     emails: readonly string[];
     role: string | null;
     isCurrent: () => boolean;
+    retain?: () => () => void;
   }>,
   config: OpenClawConfig,
 ): GatewayOperatorAccessAuthority | null {
@@ -161,7 +157,11 @@ export function resolvePreparedGatewayOperatorAccessAuthority(
   // Observe before plugin callbacks: an alias can move away and back during authorization.
   // The separately scoped listener and finalizer hold no strong reference to this capture.
   const token = {};
-  const releaseProfiles = watchProfileAccess(new WeakRef(assertProfileCurrent), token);
+  const releaseProfiles = watchProfileAccess(
+    new WeakRef(assertProfileCurrent),
+    token,
+    profile.retain?.(),
+  );
   profileAccessCleanup.register(assertProfileCurrent, releaseProfiles, token);
   try {
     assertProfileCurrent();
@@ -177,6 +177,7 @@ export function resolvePreparedGatewayOperatorAccessAuthority(
       }
       return authority ? [{ pluginId, authority }] : [];
     });
+    assertProfileCurrent();
     if (!requiredPolicyConfirmed) {
       throw new GatewayOperatorAccessDeniedError();
     }
@@ -194,6 +195,7 @@ export function resolvePreparedGatewayOperatorAccessAuthority(
         for (const { authority } of authorities) {
           authority.assertCurrent();
         }
+        assertProfileCurrent();
       } catch {
         releaseProfiles();
         throw invalidate();

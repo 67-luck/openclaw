@@ -4,7 +4,6 @@ import { isClientToolNameConflictError } from "../agents/agent-tool-definition-a
 import type { ClientToolDefinition } from "../agents/command/shared-types.js";
 import type { ImageContent } from "../agents/command/types.js";
 import { toOpenAiResponsesUsage } from "../agents/usage.js";
-import { getRuntimeConfig } from "../config/io.js";
 import type { GatewayHttpResponsesConfig } from "../config/types.gateway.js";
 import { emitAgentEvent, onAgentEventForRun } from "../infra/agent-events.js";
 import { logWarn } from "../logger.js";
@@ -46,6 +45,7 @@ import {
   type AuthorizedGatewayHttpRequest,
   authorizeOpenAiCompatibleHttpModelOverride,
   authorizeOpenAiCompatibleHttpSession,
+  authorizeOpenAiCompatibleHttpSessionCreation,
   getBearerToken,
   getHeader,
   isGatewayAgentRequestError,
@@ -86,7 +86,6 @@ import {
   createFunctionCallOutputItem,
   createResponseResource,
 } from "./openresponses-shape.js";
-import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
 import type { GatewayContextResolver } from "./server-methods/types.js";
 
 function resolveResponseSessionAuthSubject(params: {
@@ -207,13 +206,7 @@ export async function handleOpenResponsesHttpRequest(
     }
     throw err;
   }
-  const creationAuth = authorizeGatewaySessionCreation({
-    cfg: getRuntimeConfig(),
-    ...(handled.requestAuth.operatorRoleActor
-      ? { actor: handled.requestAuth.operatorRoleActor }
-      : { profileId: handled.requestAuth.authenticatedUserProfile?.profileId }),
-    agentId,
-  });
+  const creationAuth = authorizeOpenAiCompatibleHttpSessionCreation(handled.requestAuth, agentId);
   if (creationAuth) {
     sendJson(res, 403, {
       error: { message: creationAuth.message, type: "forbidden" },

@@ -183,7 +183,7 @@ export async function attachAuthenticatedGatewayConnect(
     ? classifyTailscaleLogin(authResult.tailscaleIdentity.login)
     : undefined;
   const authenticatedUserIsTailscaleProvider = tailscaleLogin?.kind === "provider";
-  const profileLifecycle = createGatewayConnectProfileLifecycle(context, state);
+  using profileLifecycle = createGatewayConnectProfileLifecycle(context, state);
   const resolveAuthenticatedGitHubIdentity = createAuthenticatedGitHubIdentitySync({
     authResult,
     authConfig: context.configSnapshot.gateway?.auth,
@@ -209,6 +209,7 @@ export async function attachAuthenticatedGatewayConnect(
     return;
   }
   const preparedProfile = profileAdmission.prepared;
+  profileLifecycle.retain(preparedProfile);
   const authenticatedUserProfile = preparedProfile?.profile;
   // Identity-derived scopes must be capped only after their durable profile is known.
   // Configured roles fail closed if profile storage or provider verification is unavailable.
@@ -223,7 +224,7 @@ export async function attachAuthenticatedGatewayConnect(
     role === "operator" && !sharedSecretOperatorOwner
       ? resolveOperatorRolePolicyForAssignment(
           authenticatedUserProfile?.profileId,
-          preparedProfile?.authority.role ?? null,
+          preparedProfile?.recipient.role ?? null,
           context.configSnapshot,
         )
       : undefined;
@@ -403,6 +404,7 @@ export async function attachAuthenticatedGatewayConnect(
     ...(authenticatedUserId ? { authenticatedUserId } : {}),
     ...(authenticatedUserIsTailscaleProvider ? { authenticatedUserIsTailscaleProvider: true } : {}),
     ...(authenticatedUserProfile ? { authenticatedUserProfile } : {}),
+    preparedProfileIdentity: preparedProfile?.identity,
     clientIp: reportedClientIp,
     ...(context.browserOrigin ? { browserOrigin: context.browserOrigin } : {}),
     ...(Object.keys(internal).length > 0 ? { internal } : {}),
@@ -415,7 +417,7 @@ export async function attachAuthenticatedGatewayConnect(
   if (resolveAuthenticatedGitHubIdentity) {
     nextClient.authenticatedGitHubIdentitySync = async () => {
       const result = await resolveAuthenticatedGitHubIdentity();
-      await profileLifecycle.attach(result.profileId, result.updatedAt, prepareLocalUserIngress);
+      await profileLifecycle.attach(result.profileId, prepareLocalUserIngress);
       return result;
     };
   }
@@ -678,7 +680,7 @@ export async function attachAuthenticatedGatewayConnect(
   const adoptProfileAvatar = async (profileId: string, profilePic: string) => {
     const updated = await adoptTailscaleProfileAvatar(profileId, profilePic);
     if (updated.avatarMime) {
-      await profileLifecycle.attach(updated.id, updated.updatedAt, prepareLocalUserIngress);
+      await profileLifecycle.attach(updated.id, prepareLocalUserIngress);
     }
   };
   if (nextClient.authenticatedGitHubIdentitySync) {

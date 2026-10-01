@@ -38,7 +38,6 @@ import {
   readGatewayOwnerProfileForEnsure,
 } from "./user-profiles-owner.js";
 import {
-  ensureUserProfileRoleSchema,
   ensureUserProfilesSchema,
   hasEnsuredUserProfileRoleSchema,
   UserProfileNotFoundError,
@@ -118,16 +117,6 @@ export function getUserProfileListItem(
   const { db } = database;
   const profile = requireResolvedUserProfileMetadataById(db, profileId);
   return selectUserProfileListItemById(db, profile.id);
-}
-
-/** Reads the role assigned to an existing profile's current merge head. */
-export function getUserProfileRole(
-  profileId: string,
-  options: OpenClawStateDatabaseOptions = {},
-): string | null {
-  ensureUserProfileRoleSchema(options);
-  const { db } = openOpenClawStateDatabase(options);
-  return requireResolvedUserProfileMetadataById(db, profileId).role ?? null;
 }
 
 function ensureProfileForEmailWithInitialName(

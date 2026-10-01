@@ -481,6 +481,7 @@ export async function prepareGatewayKernelState(params: {
     }),
   );
   const transportBridge = createGatewayTransportBridge();
+  await connectionState.mentionInbox.prepareAuthority();
   const presencePublisher = createPresencePublisher({
     scheduler,
     broadcast: connectionState.broadcast,

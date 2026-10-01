@@ -1,5 +1,4 @@
 import { roleScopesAllow } from "../../shared/operator-scope-compat.js";
-import { resolvePersonalGitHubOwner } from "../../state/user-github-connections.js";
 import type { PersonalGitHubAction } from "../github-personal-oauth.js";
 import { GitHubPublicationSessionChangedError } from "../github-publication-failure.js";
 import {
@@ -47,7 +46,7 @@ function currentGitHubClient(
   }
   const cfg = context.getRuntimeConfig();
   const policy = owner
-    ? resolveOperatorRolePolicyForProfile(owner, cfg)
+    ? resolveOperatorRolePolicyForProfile(owner, cfg, client)
     : resolveOperatorRolePolicy(client, cfg);
   const granted = client.connect.scopes ?? [];
   const scopes = policy
@@ -172,8 +171,8 @@ export function preparePersonalGitHubAction(
       throw new Error("My GitHub requires a current authenticated human Gateway connection.");
     }
     const profile = client.authenticatedUserProfile?.profileId;
-    const owner = profile ? resolvePersonalGitHubOwner(profile) : undefined;
-    if (!owner) {
+    const owner = client.preparedProfileIdentity?.readCurrentProfile().profileId;
+    if (!owner || owner !== profile) {
       throw new Error("My GitHub requires a verified durable user profile; sign in and try again.");
     }
     currentGitHubClient(options, scope, owner);

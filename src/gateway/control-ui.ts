@@ -18,7 +18,7 @@ import {
 import { resolveGatewayPublicOrigin } from "../config/gateway-public-origin.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveDevInstallGitBranch } from "../infra/dev-install-branch.js";
-import { openLocalFileSafely, FsSafeError } from "../infra/fs-safe.js";
+import { openLocalFileSafely } from "../infra/fs-safe.js";
 import { createHttpRequestAbortSignal } from "../infra/http-request-lifecycle.js";
 import { assertLocalMediaAllowed, LocalMediaAccessError } from "../media/local-media-access.js";
 import { resolveMediaReferenceLocalPathInfo } from "../media/media-reference.js";
@@ -50,7 +50,7 @@ import {
   type AssistantMediaAvailability,
 } from "./assistant-media-errors.js";
 import {
-  resolveAssistantMediaPolicy,
+  prepareAssistantMediaPolicy,
   type AssistantMediaSession,
   type AssistantMediaReader,
 } from "./assistant-media-policy.js";
@@ -310,7 +310,7 @@ function verifyAssistantMediaTicket(
   }
 }
 
-type AssistantMediaPolicy = NonNullable<ReturnType<typeof resolveAssistantMediaPolicy>>;
+type AssistantMediaPolicy = NonNullable<Awaited<ReturnType<typeof prepareAssistantMediaPolicy>>>;
 type AssistantMediaFile = NonNullable<AssistantMediaTicketPayload["file"]>;
 
 function sameAssistantMediaFile(actual: AssistantMediaFile, expected: AssistantMediaFile) {
@@ -476,12 +476,17 @@ export async function handleControlUiAssistantMediaRequest(
   if ((isMetaRequest || !ticketCandidate) && !requestAuth) {
     return true;
   }
-  const policyParams = { config: opts?.config ?? {}, sessionKey, agentId };
-  const policy = resolveAssistantMediaPolicy({
-    ...policyParams,
-    requestAuth: requestAuth ?? undefined,
-    reader: isMetaRequest ? undefined : ticketCandidate?.reader,
-  });
+  const policy = await prepareAssistantMediaPolicy(
+    {
+      config: opts?.config ?? {},
+      sessionKey,
+      agentId,
+      requestAuth: requestAuth ?? undefined,
+      reader: isMetaRequest ? undefined : ticketCandidate?.reader,
+    },
+    req,
+    res,
+  );
   if (!policy) {
     respondControlUiNotFound(res);
     return true;
@@ -512,27 +517,7 @@ export async function handleControlUiAssistantMediaRequest(
     : ticket?.file && sameSession && policy.canAllow
       ? ticket.file
       : undefined;
-  const assertCurrentPolicy = () => {
-    // Reapply durable profile, role, and session owners after every async preparation.
-    // A global access epoch changes on ordinary session activity, so it cannot revoke tickets.
-    const current = resolveAssistantMediaPolicy({ ...policyParams, reader: policy.reader });
-    if (
-      requestAuth?.hasCurrentClientAuthority?.() === false ||
-      !current ||
-      current.session?.sessionKey !== policy.session?.sessionKey ||
-      current.session?.agentId !== policy.session?.agentId ||
-      current.session?.sessionId !== policy.session?.sessionId ||
-      current.remote !== policy.remote ||
-      current.executionCwd !== policy.executionCwd ||
-      current.workspaceOnly !== policy.workspaceOnly ||
-      current.localRoots.length !== policy.localRoots.length ||
-      current.localRoots.some((root, index) => root !== policy.localRoots[index]) ||
-      (allowance && policy.workspaceOnly && !current.canAllow)
-    ) {
-      throw new FsSafeError("path-mismatch", "Media access changed");
-    }
-    return current;
-  };
+  const assertCurrentPolicy = () => policy.assertCurrent(Boolean(allowance));
   if (isMetaRequest) {
     const requestAbort = createHttpRequestAbortSignal(res.req, res);
     using _ = { [Symbol.dispose]: requestAbort.cleanup };

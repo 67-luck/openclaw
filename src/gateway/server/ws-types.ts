@@ -1,6 +1,7 @@
 // Gateway WebSocket client types describe authenticated client state retained by the server.
 import type { WebSocket } from "ws";
 import type { ConnectParams } from "../../../packages/gateway-protocol/src/schema/frames.js";
+import type { PreparedUserProfileIdentity } from "../../state/user-profiles.types.js";
 import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
 import type { GatewayAuthPolicy } from "../auth-policy.types.js";
 import type { AuthenticatedGitHubIdentitySync } from "../github-user-identity.types.js";
@@ -56,6 +57,7 @@ export type GatewayWsClient = PluginNodeCapabilityClient & {
   /** Lifecycle-prepared canonical recipient; never a scope or authorization grant. */
   preparedRecipientProfileId?: string;
   preparedSessionProfile?: PreparedSessionProfile;
+  preparedProfileIdentity?: PreparedUserProfileIdentity;
   authenticatedUserProfile?: {
     profileId: string;
     displayName: string | null;

@@ -5,6 +5,7 @@ import { getRuntimeConfig } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginGatewayAccessAuthority } from "../plugins/gateway-access-policy.types.js";
 import { readUserProfileAliasRevision } from "../state/user-profile-events.js";
+import type { PreparedUserProfileIdentity } from "../state/user-profiles.types.js";
 import { isGatewayAuthPolicyCurrent, captureGatewayAuthPolicy } from "./auth-policy.js";
 import type { AuthRateLimiter } from "./auth-rate-limit.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
@@ -85,10 +86,21 @@ export function captureHttpRequestAuthority(
 }
 
 export function bindHttpResponseAuthority<T>(
-  auth: T & { operatorAccessAuthority?: PluginGatewayAccessAuthority | null },
+  auth: T & {
+    operatorAccessAuthority?: PluginGatewayAccessAuthority | null;
+    preparedProfileIdentity?: PreparedUserProfileIdentity;
+  },
   res: ServerResponse,
   hasCurrentClientAuthority: () => boolean,
 ): T & GatewayHttpResponseAuthority {
+  const hasCurrentProfile = () => {
+    try {
+      auth.preparedProfileIdentity?.readCurrentProfile();
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const assertCurrent = () => {
     if (res.writableEnded || res.destroyed) {
       throw new GatewayHttpRequestAuthorityError("HTTP request authority expired");
@@ -96,7 +108,7 @@ export function bindHttpResponseAuthority<T>(
     if (!hasCurrentGatewayOperatorAccess(auth.operatorAccessAuthority)) {
       throw new GatewayOperatorAccessDeniedError();
     }
-    if (!hasCurrentClientAuthority()) {
+    if (!hasCurrentClientAuthority() || !hasCurrentProfile()) {
       sendUnauthorized(res);
       throw new GatewayHttpRequestAuthorityError("Unauthorized");
     }
@@ -107,6 +119,7 @@ export function bindHttpResponseAuthority<T>(
       !res.writableEnded &&
       !res.destroyed &&
       hasCurrentClientAuthority() &&
+      hasCurrentProfile() &&
       hasCurrentGatewayOperatorAccess(auth.operatorAccessAuthority),
     assertCurrent,
     revalidate: async () => assertCurrent(),

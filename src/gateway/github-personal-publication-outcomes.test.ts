@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
 import { readPersonalGitHubPublication } from "./github-personal-publication-store.js";
 import {
   callPersonalPublicationRpc,
@@ -114,9 +115,11 @@ describe("personal publication definitive outcomes", () => {
   );
 
   it("does not resume shared GitHub writes after the RPC request loses write permission", async () => {
+    const identity = await prepareUserProfileIdentity(fixture.owner);
+    using _identity = { [Symbol.dispose]: identity.release };
     fixture.client.internal = {
       ...fixture.client.internal,
-      operatorAccessAuthority: resolveGatewayOperatorAccessAuthority(fixture.owner, fixture.config),
+      operatorAccessAuthority: resolveGatewayOperatorAccessAuthority(identity, fixture.config),
     };
     const workspace = await createRealPublicationWorkspace();
     const transport = mocks.runCommand.getMockImplementation()!;

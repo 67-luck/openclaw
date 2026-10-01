@@ -73,7 +73,7 @@ export function prepareChatSendSessionEntry(params: {
     entry: {
       ...buildSessionCreationStamp({
         ...creation,
-        sandbox: resolveCreatorSandbox(cfg, creation),
+        sandbox: resolveCreatorSandbox(cfg, creation, client ?? undefined),
         now: createdAt,
       }),
       sessionId,
@@ -351,7 +351,7 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
     entry ??
     buildSessionCreationStamp({
       ...creation,
-      sandbox: resolveCreatorSandbox(cfg, creation),
+      sandbox: resolveCreatorSandbox(cfg, creation, client ?? undefined),
       now: session.now,
     });
   const restriction = resolveSessionNativeRuntimeRestriction({
@@ -442,7 +442,8 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
         current.canonicalKey !== sessionKey ||
         session.sessionRoutingChanged(currentConfig) ||
         currentCreation.actor?.id !== prepared.entry.createdActor?.id ||
-        resolveCreatorSandbox(currentConfig, currentCreation) !== prepared.entry.sandbox ||
+        resolveCreatorSandbox(currentConfig, currentCreation, client ?? undefined) !==
+          prepared.entry.sandbox ||
         currentModel.provider !== resolvedSessionModel.provider ||
         currentModel.model !== resolvedSessionModel.model ||
         currentRestriction?.reason !== details.reason ||

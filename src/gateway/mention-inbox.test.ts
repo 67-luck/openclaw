@@ -41,7 +41,7 @@ describe("temporary human mention Inbox", () => {
       f.inbox.dispose();
       f.push.mockClear();
       await f.clock.advanceBy(6 * 24 * 60 * 60_000);
-      const restarted = f.openInbox("restarted-gateway");
+      const restarted = await f.openInbox("restarted-gateway");
 
       expect(read(restarted, f.bobClient)).toMatchObject({
         gatewayInstanceId: "restarted-gateway",
@@ -94,7 +94,7 @@ describe("temporary human mention Inbox", () => {
         expect(storedSources()).toHaveLength(1);
         f.inbox.dispose();
         await f.clock.advanceBy(6 * 24 * 60 * 60_000);
-        const restarted = f.openInbox("restarted-gateway");
+        const restarted = await f.openInbox("restarted-gateway");
         expect(storedSources()).toHaveLength(1);
         if (scenario !== "normal") {
           db.exec(`CREATE TEMP TRIGGER reject_mention_expiry BEFORE DELETE ON config_machine_state
@@ -116,7 +116,7 @@ describe("temporary human mention Inbox", () => {
           await f.clock.advanceBy(60_000);
           expect(storedSources()).toHaveLength(scenario === "dispose after failure" ? 1 : 0);
           if (scenario === "dispose after failure") {
-            f.openInbox("next-gateway");
+            await f.openInbox("next-gateway");
             expect(storedSources()).toEqual([]);
           }
         }
@@ -173,7 +173,7 @@ describe("temporary human mention Inbox", () => {
       expect(
         state().filter((row) => String(row.state_key).startsWith("notifications.mentions.source.")),
       ).toEqual([]);
-      const restarted = f.openInbox("after-cohort-expiry");
+      const restarted = await f.openInbox("after-cohort-expiry");
       expect(read(restarted, f.bobClient).items).toEqual([]);
     });
   });
@@ -191,7 +191,7 @@ describe("temporary human mention Inbox", () => {
       const expected = retained.slice(1);
       f.inbox.dispose();
       f.push.mockClear();
-      const restarted = f.openInbox("restarted-gateway");
+      const restarted = await f.openInbox("restarted-gateway");
 
       expect(read(restarted, f.bobClient).items).toEqual(expected);
       for (const source of ["retained-0", "retained-100", "retained-50"]) {
@@ -206,7 +206,7 @@ describe("temporary human mention Inbox", () => {
     await withInbox(async (f) => {
       f.post("first");
       const first = read(f.inbox, f.bobClient).items[0]!;
-      const peer = f.openInbox("peer-gateway");
+      const peer = await f.openInbox("peer-gateway");
       expect(read(peer, f.bobClient).items).toEqual([first]);
       expect(f.inbox.dismiss(f.bobClient, [first.id]).ok).toBe(true);
       await f.clock.advanceBy(1);
@@ -225,7 +225,7 @@ describe("temporary human mention Inbox", () => {
       f.inbox.dispose();
       peer.dispose();
       f.push.mockClear();
-      const restarted = f.openInbox("restarted-gateway");
+      const restarted = await f.openInbox("restarted-gateway");
 
       f.post("first", {}, restarted);
       f.post("second", {}, restarted);
@@ -250,7 +250,7 @@ describe("temporary human mention Inbox", () => {
         const original = read(f.inbox, f.bobClient).items;
         expect(f.inbox.dismiss(f.bobClient, [original[1]!.id]).ok).toBe(true);
         f.inbox.dispose();
-        const restarted = f.openInbox("restarted-gateway");
+        const restarted = await f.openInbox("restarted-gateway");
         expect(read(restarted, f.bobClient).items).toEqual([original[0]]);
         expect(schema()).toEqual(before);
       },
@@ -291,7 +291,7 @@ describe("temporary human mention Inbox", () => {
           }
         }
         f.inbox.dispose();
-        const restarted = f.openInbox("restarted-gateway");
+        const restarted = await f.openInbox("restarted-gateway");
         expect(read(restarted, f.bobClient).items).toEqual(retained);
         if (operation === "dismissal") {
           expect(restarted.dismiss(f.bobClient, [retained[0]!.id]).ok).toBe(true);
@@ -431,7 +431,7 @@ describe("temporary human mention Inbox", () => {
         expect(retained[0]?.senderLabel).toBe("Alice Updated");
         f.inbox.dispose();
         f.push.mockClear();
-        const restarted = f.openInbox("restarted-gateway");
+        const restarted = await f.openInbox("restarted-gateway");
 
         expect(read(restarted, f.bobClient).items).toEqual(retained);
         expect(read(restarted, oldClient).items).toEqual(retained);
@@ -582,6 +582,7 @@ describe("temporary human mention Inbox", () => {
         broadcastToConnIds: f.broadcast,
       });
       try {
+        await replacement.prepareAuthority();
         expect(read(replacement, f.bobClient)).toMatchObject({
           gatewayInstanceId: "replacement-gateway",
           items: [],

@@ -27,11 +27,15 @@ export function prepareGatewayOperatorSessionRun(params: {
   };
   assertCurrent();
   const client = createSyntheticPluginRuntimeClient({
+    operatorRunAuthority: params.authority,
     operatorRoleActor: { kind: "operator", profileId: params.authority.profileId },
     scopes: [...params.authority.scopes],
   });
   const creation = resolveSandboxedSessionCreation(
-    { authenticatedUserProfile: { profileId: params.authority.profileId } },
+    {
+      authenticatedUserProfile: { profileId: params.authority.profileId },
+      internal: { operatorRunAuthority: params.authority },
+    },
     params.cfg,
   );
   return {

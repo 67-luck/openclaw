@@ -30,7 +30,6 @@ import {
   ensureProfileForTailscaleIdentity,
   getUserProfileDisplay,
   getUserProfileListItem,
-  getUserProfileRole,
 } from "./user-profiles.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
@@ -177,7 +176,7 @@ describe("user profiles", () => {
       role: "maintainer",
     });
     expect(readUserProfileVersion()).toBe(version + 1);
-    expect(getUserProfileRole(source.id, options)).toBe("maintainer");
+    expect(getUserProfileListItem(source.id, options).role).toBe("maintainer");
     expect(listUserProfilesSync(options)).toContainEqual(
       expect.objectContaining({ id: target.id, role: "maintainer" }),
     );
@@ -185,7 +184,7 @@ describe("user profiles", () => {
     expect(readUserProfileVersion()).toBe(version + 2);
     expect(cleared).toMatchObject({ id: target.id });
     expect(cleared).not.toHaveProperty("role");
-    expect(getUserProfileRole(target.id, options)).toBeNull();
+    expect(getUserProfileListItem(target.id, options)).not.toHaveProperty("role");
   });
 
   it("keeps immutable owners isolated when a numeric GitHub login is renamed and reused", () => {

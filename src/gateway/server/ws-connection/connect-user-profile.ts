@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { getRuntimeConfig } from "../../../config/io.js";
 import { resolveHostAccountName } from "../../../infra/host-account-name.js";
-import { prepareUserProfileRoleAuthority } from "../../../state/user-channel-identity-operations.js";
+import { prepareUserProfileIdentity } from "../../../state/user-profile-list.js";
 import {
   ensureCanonicalGatewayOwnerProfile,
   ensureCanonicalUserProfileForEmail,
@@ -36,6 +36,11 @@ export function createGatewayConnectProfileLifecycle(
 ) {
   const { handler } = context;
   let client: GatewayWsClient | undefined;
+  let retained: PreparedConnectProfile | undefined;
+  const release = () => {
+    retained?.identity.release();
+    retained = undefined;
+  };
   const rolesCurrent = () =>
     isDeepStrictEqual(context.configSnapshot.gateway?.roles, getRuntimeConfig().gateway?.roles);
   const clientCurrent = () =>
@@ -50,14 +55,32 @@ export function createGatewayConnectProfileLifecycle(
   };
   return {
     assertCurrent,
-    isCurrent: (prepared: PreparedConnectProfile | undefined) =>
-      (!prepared || prepared.authority.isCurrent()) && rolesCurrent(),
+    [Symbol.dispose]() {
+      if (!client) {
+        release();
+      }
+    },
+    retain(prepared: PreparedConnectProfile | undefined) {
+      release();
+      retained = prepared;
+    },
+    isCurrent: (prepared: PreparedConnectProfile | undefined) => {
+      try {
+        return (
+          (!prepared ||
+            prepared.identity.readCurrentProfile().assignedRole === prepared.recipient.role) &&
+          rolesCurrent()
+        );
+      } catch {
+        return false;
+      }
+    },
     bind: (registered: GatewayWsClient) => {
       client = registered;
+      handler.socket.once("close", release);
     },
     async attach(
       profileId: string,
-      updatedAt: number,
       prepareIngress: (
         profile: PreparedConnectProfile["profile"],
       ) => ReturnType<typeof prepareGatewayLocalUserIngress>,
@@ -67,12 +90,23 @@ export function createGatewayConnectProfileLifecycle(
       }
       const registered = client;
       assertCurrent();
-      const prepared = await resolveAuthenticatedProfile(profileId, updatedAt, assertCurrent);
+      const prepared = await resolveAuthenticatedProfile(profileId, assertCurrent);
+      using _pending = {
+        [Symbol.dispose]: () => {
+          if (retained !== prepared) prepared.identity.release();
+        },
+      };
       assertCurrent();
-      if (client !== registered || !prepared.authority.isCurrent()) {
+      if (
+        client !== registered ||
+        prepared.identity.readCurrentProfile().assignedRole !== prepared.recipient.role
+      ) {
         throw new Error("Gateway profile changed before attachment");
       }
       const { profile } = prepared;
+      release();
+      retained = prepared;
+      registered.preparedProfileIdentity = prepared.identity;
       registered.preparedRecipientProfileId = undefined;
       if (registered.authenticatedUserProfile) {
         Object.assign(registered.authenticatedUserProfile, profile);
@@ -87,27 +121,22 @@ export function createGatewayConnectProfileLifecycle(
   };
 }
 
-async function resolveAuthenticatedProfile(
-  profileId: string,
-  updatedAt: number,
-  assertCurrent?: () => void,
-) {
+async function resolveAuthenticatedProfile(profileId: string, assertCurrent?: () => void) {
   assertCurrent?.();
-  const authority = await prepareUserProfileRoleAuthority(profileId);
-  assertCurrent?.();
-  if (!authority?.isCurrent()) {
-    throw new Error("Gateway profile changed during acquisition");
+  const identity = await prepareUserProfileIdentity(profileId, { resolveAliases: true });
+  try {
+    assertCurrent?.();
+    const { profile, aliases } = identity.readCurrentFacts();
+    const { id, ...display } = identity.readCurrentDisplay();
+    return {
+      profile: { profileId: id, ...display },
+      identity,
+      recipient: { profileId: profile.profileId, role: profile.assignedRole, aliases },
+    };
+  } catch (error) {
+    identity.release();
+    throw error;
   }
-  const { id, displayName, avatarRevision, hasAvatar } = authority.display;
-  return {
-    profile: { profileId: id, displayName, avatarRevision, hasAvatar, updatedAt },
-    authority,
-    recipient: {
-      profileId: authority.profileId,
-      role: authority.role,
-      aliases: new Set(authority.aliases),
-    },
-  };
 }
 
 async function resolveGatewayConnectUserProfile(params: {
@@ -133,13 +162,7 @@ async function resolveGatewayConnectUserProfile(params: {
         : await ensureCanonicalUserProfileForEmail(params.authenticatedUserId!, options);
   params.assertCurrent?.();
   const profileId = "profileId" in profile ? profile.profileId : profile.id;
-  const resolved = await resolveAuthenticatedProfile(
-    profileId,
-    profile.updatedAt,
-    params.assertCurrent,
-  );
-  params.assertCurrent?.();
-  return resolved;
+  return resolveAuthenticatedProfile(profileId, params.assertCurrent);
 }
 
 /** Role and access policies need verified identity before admission; attribution alone may defer it. */
@@ -164,8 +187,9 @@ export async function resolveGatewayConnectProfileAdmission(params: {
   ) {
     return { ok: true };
   }
+  let prepared: PreparedConnectProfile | undefined;
   try {
-    const prepared = await resolveGatewayConnectUserProfile({
+    prepared = await resolveGatewayConnectUserProfile({
       ownerProfileExpected,
       authenticatedUserId,
       authResult: state.authResult,
@@ -173,11 +197,10 @@ export async function resolveGatewayConnectProfileAdmission(params: {
       assertCurrent: params.assertCurrent,
     });
     params.assertCurrent?.();
-    if (!prepared.authority.isCurrent()) {
-      throw new Error("Gateway profile changed during acquisition");
-    }
+    prepared.identity.readCurrentProfile();
     return { ok: true, prepared };
   } catch (error) {
+    prepared?.identity.release();
     context.handler.logWsControl.warn(
       `user profile resolution failed conn=${context.handler.connId} user=${formatForLog(authenticatedUserId)}: ${formatForLog(error)}`,
     );

@@ -150,6 +150,14 @@ beforeEach(() => {
     };
     return {
       readCurrentProfile,
+      readCurrentDisplay: () => ({
+        id: profileId,
+        displayName: null,
+        hasAvatar: false,
+        avatarRevision: "0",
+        updatedAt: 0,
+      }),
+      captureCurrentEmailBindingIds: () => [],
       emailBindingIds: [],
       readCurrentFacts: () => ({
         profile: { ...readCurrentProfile(), emails: [] },

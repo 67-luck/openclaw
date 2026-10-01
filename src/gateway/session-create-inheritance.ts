@@ -14,6 +14,7 @@ import {
 import { isModelSelectionLocked } from "../sessions/model-overrides.js";
 import { waitForSessionParticipantRecording } from "../sessions/session-participant-recording.js";
 import { readResidentUserProfileId } from "../state/user-profile-list.js";
+import { prepareOperatorRoleSource, resolveCreatorSandbox } from "./operator-role-policy.js";
 import type { CreateGatewaySessionParams } from "./session-create-service.types.js";
 import { resolvePluginSessionOwnershipError } from "./session-plugin-ownership.js";
 import { invalidSessionRequest } from "./session-request-error.js";
@@ -74,30 +75,33 @@ function resolveResidentProfileId(profileId: string): string | undefined {
 }
 
 /** Derives trusted child policy and ownership from the locked spawn parent. */
-export function resolveSessionCreateInheritance(params: {
+export async function prepareSessionCreateInheritance(params: {
+  cfg: CreateGatewaySessionParams["cfg"];
   creation: SessionCreation | undefined;
   parent: SessionEntry | undefined;
-}): {
-  creation: SessionCreation | undefined;
-  ownerAssignment?: SessionOwnerAssignment;
-} {
-  if (params.creation?.via !== "spawn") {
-    return { creation: params.creation };
-  }
-  const ownerAssignment = inheritSpawnSessionOwner(
-    params.parent,
-    params.creation.actor,
-    params.creation.requesterProfileId,
-    Date.now(),
-    resolveResidentProfileId,
-  );
-  return {
-    creation: {
-      ...params.creation,
-      ...inheritSessionCreationPolicy(params.parent, params.creation.actor),
+}) {
+  let creation = params.creation;
+  let ownerAssignment: SessionOwnerAssignment | undefined;
+  if (creation?.via === "spawn") {
+    ownerAssignment = inheritSpawnSessionOwner(
+      params.parent,
+      creation.actor,
+      creation.requesterProfileId,
+      Date.now(),
+      resolveResidentProfileId,
+    );
+    creation = {
+      ...creation,
+      ...inheritSessionCreationPolicy(params.parent, creation.actor),
       inheritedGitContributorProfileIds: inheritSessionGitContributorProfileIds(params.parent),
-    },
+    };
+  }
+  const roles = await prepareOperatorRoleSource(params.cfg, creation?.actor);
+  return {
+    creation,
     ...(ownerAssignment ? { ownerAssignment } : {}),
+    [Symbol.dispose]: roles[Symbol.dispose],
+    resolveSandbox: () => creation?.sandbox ?? resolveCreatorSandbox(params.cfg, creation, roles),
   };
 }
 

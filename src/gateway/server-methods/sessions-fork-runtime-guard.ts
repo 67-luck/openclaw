@@ -113,8 +113,11 @@ export function createUpstreamForkCurrentGuard(params: {
     }
     const currentSandbox =
       sourceEntry.sandbox === "required" ||
-      resolveCreatorSandbox(currentConfig, resolveOperatorSessionCreation(params.client)) ===
-        "required"
+      resolveCreatorSandbox(
+        currentConfig,
+        resolveOperatorSessionCreation(params.client),
+        params.client ?? undefined,
+      ) === "required"
         ? "required"
         : undefined;
     const sourceModel = resolveSessionModelRef(currentConfig, sourceEntry, source.target.agentId);

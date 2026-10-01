@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, vi } from "vitest";
+import { expect, onTestFinished, vi } from "vitest";
 import { stringify as stringifyYaml } from "yaml";
 import { resolveManagedGitHubProfileDir } from "../agents/github-tool-identity.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { updateUserGitHubConnection } from "../state/user-github-connections.js";
+import { prepareUserProfileIdentity } from "../state/user-profile-list.js";
 import { ensureCanonicalUserProfileForEmail } from "../state/user-profile-writes.js";
 import {
   createPersonalGitHubOAuthLifecycle,
@@ -162,6 +163,8 @@ export async function createPersonalPublicationFixture() {
     },
   };
   const runtime = { live: true, verifiedAccount: account, client };
+  client.preparedProfileIdentity = await prepareUserProfileIdentity(owner);
+  onTestFinished(client.preparedProfileIdentity.release);
   const config: OpenClawConfig = {};
   const context = {
     getRuntimeConfig: () => config,
