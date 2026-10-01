@@ -981,3 +981,18 @@ it.runIf(process.platform === "linux")(
     });
   },
 );
+
+it.runIf(process.platform === "linux")(
+  "isolates registered Talk replay across authenticated callers",
+  async () => {
+    const { runTalkCallerReplay } = await import("./server.talk-caller-replay.test-support.js");
+    await runTalkCallerReplay({
+      harness,
+      runEmbeddedAgent,
+      sessionId,
+      sessionKey,
+      storePath,
+      voiceSessionId: expectDefined(voiceSessionId, "shared voice identity"),
+    });
+  },
+);

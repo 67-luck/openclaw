@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256Hex } from "@openclaw/normalization-core/node-crypto";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   ErrorCodes,
@@ -18,6 +18,7 @@ import { abortChatRunById } from "../chat-abort.js";
 import { transferGatewayLocalUserIngress } from "../local-user-ingress.js";
 import { transferGatewayOperatorSourceIdentity } from "../operator-run-authority.js";
 import { handleTrustedInternalChatSend } from "../server-methods/chat-send-handler.js";
+import { gatewayClientSessionCreator } from "../server-methods/gateway-client-identity.js";
 import type { GatewayRequestHandlerOptions } from "../server-methods/shared-types.js";
 import { formatForLog } from "../ws-log.js";
 import { prepareTalkAgentConsultTranscript } from "./agent-consult-transcript.js";
@@ -57,23 +58,28 @@ export async function startTalkRealtimeAgentConsult(
   } catch (err) {
     return { ok: false, error: errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)) };
   }
-  // A provider retransmission is the same request. Let chat admission own
-  // reservation and replay; a fresh voice call or provider call ID is new work.
-  const idempotencyKey = `talk-${createHash("sha256")
-    .update(
-      JSON.stringify([
-        params.sessionTarget.agentId,
-        params.sessionTarget.canonicalKey,
-        params.voiceSessionId,
-        params.callId,
-      ]),
-    )
-    .digest("hex")}`;
   const normalizedTalk = normalizeTalkSection(request.context.getRuntimeConfig().talk);
   const authority = resolveTalkAgentConsultAuthority(
     request.client?.connect?.scopes,
     request.client,
   );
+  // Scope provider IDs to the authenticated caller, not the shared voice record or
+  // caller-supplied client name. Device/profile identity survives reconnect;
+  // different live grants must not adopt each other's accepted work.
+  // Chat still owns reservation, conflict detection and terminal replay.
+  const idempotencyKey =
+    "talk-" +
+    sha256Hex(
+      JSON.stringify([
+        gatewayClientSessionCreator(request.client)?.id ?? request.client?.authenticatedUserId,
+        authority.replyCaller?.ApprovalReviewerDeviceId,
+        [...new Set(authority.replyCaller?.GatewayClientScopes ?? [])].toSorted(),
+        params.sessionTarget.agentId,
+        params.sessionTarget.canonicalKey,
+        params.voiceSessionId,
+        params.callId,
+      ]),
+    );
   let acknowledgedRunId: string | undefined;
   const chatResponse = await new Promise<
     { ok: true; result: unknown } | { ok: false; error: ErrorShape } | undefined

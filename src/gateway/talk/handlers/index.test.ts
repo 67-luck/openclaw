@@ -3028,14 +3028,14 @@ describe("talk.client.toolCall handler", () => {
     expectRecordFields(chatInput.req, { method: "chat.send" });
     expectRecordFields(chatInput.params, { sessionKey: "agent:main:main", agentId: "main" });
     expect(chatInput.params?.message).toContain("What is in this repo?");
-    expect(chatInput.params?.idempotencyKey).toMatch(/^talk-call-1-/);
+    expect(chatInput.params?.idempotencyKey).toMatch(/^talk-[a-f0-9]{64}$/);
     expect(mockCallArg(mocks.chatSend, 0, 2)).toEqual({
       toolsAllow: ["read", "web_search", "web_fetch", "x_search", "memory_search", "memory_get"],
       transcript: { display: false, excludeFromContext: true },
       prepareAssistantTranscriptMessage: prepareTalkAgentConsultTranscript,
     });
     const response = expectRespondOk(respond, { runId: "run-voice-1" }) as Record<string, unknown>;
-    expect(response.idempotencyKey).toMatch(/^talk-call-1-/);
+    expect(response.idempotencyKey).toMatch(/^talk-[a-f0-9]{64}$/);
   });
 
   it("returns the tool-call acknowledgement while the agent run continues", async () => {
