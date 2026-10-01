@@ -1,10 +1,12 @@
 import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChatAttachment } from "../../lib/chat/chat-types.ts";
+import { resetChatViewState } from "./chat-view-state.ts";
 import { createChatProps } from "./chat-view.test-helpers.ts";
 import { renderChat } from "./chat-view.ts";
 
 afterEach(() => {
+  resetChatViewState();
   vi.unstubAllGlobals();
   document.body.replaceChildren();
 });

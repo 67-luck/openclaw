@@ -223,9 +223,20 @@ it("persists session metadata off thread with typed conflicts and durable ID ori
     metadata: { sessionIdOrigin: "generated", ignored: () => "host-only", label: "雪" },
   };
   await withoutParentTranscriptSql(async () => {
-    await store.writeSession(session);
+    const inserted = await store.writeSession(session);
     const revision = await store.readSummaryInputRevision(session);
-    await store.writeSession({ ...session, title: "Updated", metadata: { label: "é" } });
+    expect(inserted).toEqual({ inserted: true, inputRevision: revision });
+    await store.appendUtteranceForSession(session, { text: "Retained speech" });
+    const updated = await store.writeSession({
+      ...session,
+      title: "Updated",
+      metadata: { label: "é" },
+    });
+    expect(updated).toEqual({
+      inserted: false,
+      inputRevision: await store.readSummaryInputRevision(session),
+    });
+    expect(JSON.parse(updated.inputRevision).next_utterance_seq).toBe(1);
     await expect(
       store.writeSession({ ...session, title: "Stale" }, { expectedInputRevision: revision }),
     ).rejects.toBeInstanceOf(TranscriptsSummaryChangedError);
@@ -291,46 +302,56 @@ it("retains the captured session input and database through export preparation",
   expect(existsSync(resolveOpenClawStateSqlitePath(env))).toBe(false);
 });
 
-it.each(["transaction", "commit"] as const)(
-  "keeps session metadata unchanged when its owner retires at the worker %s grant",
-  async (stage) => {
+it.each(
+  (["transaction", "commit"] as const).flatMap((stage) =>
+    (["update", "discard"] as const).map((operation) => ({ stage, operation })),
+  ),
+)(
+  "preserves a session when its $operation owner retires at the worker $stage grant",
+  async ({ stage, operation }) => {
     const { store } = fixture();
     const session: TranscriptSessionDescriptor = {
       sessionId: `session-revoked-${stage}`,
       startedAt: "2026-09-21T12:00:00.000Z",
+      stoppedAt: "2026-09-21T12:00:01.000Z",
       source: { providerId: "manual-transcript" },
       title: "Original",
     };
     await store.writeSession(session);
+    const expectedInputRevision = await store.readSummaryInputRevision(session);
+    if (expectedInputRevision === undefined) {
+      throw new Error("Expected stored transcript admission");
+    }
     let current = true;
     const failure = new TranscriptsSummaryChangedError();
+    const requests: workerAdmission.SqliteWorkerAdmissionRequest["stage"][] = [];
     const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
     const observer = vi
       .spyOn(workerAdmission, "createSqliteWorkerOperationAdmission")
-      .mockImplementation((admit) =>
+      .mockImplementation((admit, attachment) =>
         createAdmission((request, grant) => {
+          requests.push(request.stage);
           if (request.stage === stage) {
             current = false;
           }
           admit(request, grant);
-        }),
+        }, attachment),
       );
+    const assertCurrent = () => {
+      if (!current) {
+        throw failure;
+      }
+    };
     try {
       await expect(
-        store.writeSession(
-          { ...session, title: "Retired update" },
-          {
-            assertCurrent: () => {
-              if (!current) {
-                throw failure;
-              }
-            },
-          },
-        ),
+        operation === "update"
+          ? store.writeSession({ ...session, title: "Retired update" }, { assertCurrent })
+          : store.deleteEmptySessionCandidate(session, { expectedInputRevision, assertCurrent }),
       ).rejects.toBe(failure);
     } finally {
       observer.mockRestore();
     }
+    expect(requests).toContain(stage);
     expect(await store.readSession(session.sessionId)).toEqual(session);
   },
 );

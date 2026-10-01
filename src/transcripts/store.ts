@@ -339,7 +339,7 @@ export class TranscriptsStore {
   async writeSession(
     inputSession: TranscriptSessionDescriptor,
     condition?: { expectedInputRevision?: string; assertCurrent?: () => void },
-  ): Promise<void> {
+  ): Promise<{ inserted: boolean; inputRevision: string }> {
     const operation = createTranscriptStoreOperation(
       this.databaseOptions,
       condition?.assertCurrent,
@@ -405,6 +405,18 @@ export class TranscriptsStore {
         ? new TranscriptSessionConflictError()
         : new TranscriptsSummaryChangedError();
     }
+    return { inserted: result.inserted, inputRevision: result.inputRevision };
+  }
+
+  async deleteEmptySessionCandidate(
+    session: TranscriptSessionDescriptor,
+    condition: { expectedInputRevision: string; assertCurrent: () => void },
+  ): Promise<void> {
+    const operation = createTranscriptStoreOperation(this.databaseOptions, condition.assertCurrent);
+    await operation.write("transcripts.deleteEmptySessionCandidate", {
+      session: { sessionId: session.sessionId, startedAt: session.startedAt },
+      expectedInputRevision: condition.expectedInputRevision,
+    });
   }
 
   async readSession(sessionSelector: string): Promise<TranscriptSessionDescriptor | undefined> {

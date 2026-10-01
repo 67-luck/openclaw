@@ -28,6 +28,7 @@ import {
 import { admitQueuedMessageForSession } from "./chat-queue.ts";
 import { retireDeliveredQueuedUserTurn } from "./chat-send-support.ts";
 import { handlePageGatewayEvent } from "./chat-state-events.ts";
+import { resetChatViewState } from "./chat-view-state.ts";
 import { renderChatView } from "./chat-view.test-helpers.ts";
 import {
   installTranscriptDomMocks,
@@ -41,6 +42,7 @@ beforeEach(() => {
   vi.stubGlobal("sessionStorage", createStorageMock());
 });
 afterEach(() => {
+  resetChatViewState();
   resetTranscriptTestDom();
 });
 
