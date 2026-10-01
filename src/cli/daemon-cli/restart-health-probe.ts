@@ -242,14 +242,20 @@ function readChannelProbeErrors(health: unknown): GatewayChannelHealthError[] {
         healthState !== "healthy" &&
         (healthState !== "not-running" || lastError || account?.restartPending === true)
       ) {
-        const lifecycle = account?.lifecycle;
+        const lifecycle =
+          account?.lifecycle === "starting" ||
+          account?.lifecycle === "ready" ||
+          account?.lifecycle === "recovering" ||
+          account?.lifecycle === "blocked" ||
+          account?.lifecycle === "stopped"
+            ? account.lifecycle
+            : undefined;
         const startupGrace =
-          (lifecycle === "starting" || lifecycle === "recovering") &&
-          !account?.terminalDisconnect &&
           evaluateChannelHealth(
             {
               lifecycle,
               running: account?.running === true,
+              terminalDisconnect: account?.terminalDisconnect === true,
               ingressUnavailable: account?.ingressUnavailable === true ? true : undefined,
               lastStartAt:
                 typeof account?.lastStartAt === "number" ? account.lastStartAt : undefined,
