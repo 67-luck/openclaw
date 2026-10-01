@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { assert, expect, it, vi, type Mock } from "vitest";
 import type { runCommandWithTimeout } from "../process/exec.js";
 import {
@@ -87,7 +88,7 @@ export function registerNpmUpdateMetadataTests({
       runCommandWithTimeoutMock.mock.calls
         .map(([argv]) => argv)
         .filter((argv) => argv[1] === "view")
-        .map((argv) => argv[2])
+        .map((argv) => expectDefined(argv[2], "npm view package spec"))
         .toSorted((left, right) => left.localeCompare(right)),
     ).toEqual([`${packageName}@beta`, `${packageName}@latest`]);
   });
@@ -157,7 +158,7 @@ export function registerNpmUpdateMetadataTests({
       const metadataCommands = runCommandWithTimeoutMock.mock.calls
         .map(([argv]) => argv)
         .filter((argv) => argv[1] === "view")
-        .map((argv) => argv[2]);
+        .map((argv) => expectDefined(argv[2], "npm view package spec"));
       expect(metadataCommands.toSorted((left, right) => left.localeCompare(right))).toEqual(
         channel === "beta" ? [`${packageName}@beta`, `${packageName}@latest`] : [packageName],
       );
