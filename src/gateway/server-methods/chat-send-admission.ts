@@ -18,6 +18,7 @@ import {
   progressCardRefreshRunProjection,
 } from "../../sessions/input-provenance.js";
 import {
+  interruptReplyRunTarget,
   isReplyRunAbortableForSignal,
   replyRunRegistry,
   type ReplyMessageInjectionTarget,
@@ -232,6 +233,12 @@ export async function admitChatSend(
     ...(progressRefresh ? { controlUiVisible: false, projectSessionActive: false } : {}),
     lifecycleGeneration,
   });
+  const runInterruptTarget =
+    admittedRunAbort.entry?.input.policy.mode === "interrupt"
+      ? replyRunRegistry.resolveCurrentInterruptTarget(
+          admittedRunAbort.entry.input.mailbox.owner.id,
+        )
+      : undefined;
   const commitChatWorkAdmission = () => {
     params.assertCurrent?.();
     const retainedRequestConflict = resolveChatSendRequestConflict(params);
@@ -387,8 +394,20 @@ export async function admitChatSend(
     }
   };
 
+  let interruptedActiveRun = false;
   try {
+    if (runInterruptTarget) {
+      params.assertCurrent?.();
+      assertSessionTargetCurrent();
+      admittedRunAbort.controller.signal.throwIfAborted();
+      const interruption = await interruptReplyRunTarget(runInterruptTarget, null);
+      interruptedActiveRun = interruption.aborted;
+      params.assertCurrent?.();
+      assertSessionTargetCurrent();
+      admittedRunAbort.controller.signal.throwIfAborted();
+    }
     gatewayWorkAdmission = await beginSessionEffect({
+      sourceInput: admittedRunAbort.entry?.input,
       target: captureSessionTarget({
         storeScope: storePath,
         sessionKey,
@@ -548,7 +567,6 @@ export async function admitChatSend(
       releaseCallerAuthority = undefined;
     }
   };
-  const interruptedActiveRun = false;
   try {
     capturedOperator = await retainGatewayOperatorRun({
       ...params,

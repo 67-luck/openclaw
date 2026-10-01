@@ -2,7 +2,12 @@ import type { GatewayContextResolver } from "../gateway/server-methods/types.js"
 import { getAgentRunLifecycleGeneration } from "../infra/agent-run-registry.js";
 import { hasGatewayContextOwner } from "../plugins/runtime/gateway-request-scope.js";
 import type { ReplyOperation } from "./session-controller.contracts.js";
-import type { Effect, Mutation, OwnerContext } from "./session-controller.lifecycle.types.js";
+import type {
+  Effect,
+  Mutation,
+  OwnerContext,
+  SessionControllerLifecycle,
+} from "./session-controller.lifecycle.types.js";
 import type {
   SessionControllerInput,
   SessionControllerMailboxClaim,
@@ -13,6 +18,38 @@ import {
   type SessionControllerEntry,
 } from "./session-controller.state.js";
 import { targetFrom, type SessionTarget } from "./session-controller.target.js";
+
+/** Resolve effect admission, including source preparation behind a settling predecessor. */
+export function resolveSessionEffectAdmission(
+  effect: Effect,
+  state: SessionControllerLifecycle,
+  current: OwnerContext | undefined,
+  input?: SessionControllerInput,
+): { allowed: boolean; finishingCapturedTurn: boolean } {
+  const { entry } = effect;
+  const operation = effect.ref.operation;
+  const finishingCapturedTurn = Boolean(
+    operation &&
+    entry.active === operation &&
+    state.mutations.some((mutation) => mutation.operations.has(operation)),
+  );
+  const borrowsMutation = state.mutations.some((mutation) => current?.mutations.has(mutation));
+  // Source preparation owns no turn, but mutations and closures still fence it.
+  const preparingSource = Boolean(
+    input &&
+    input.mailbox.owner === entry &&
+    input.phase === "preparing" &&
+    !input.retirementRequested &&
+    !input.abortSignal.aborted &&
+    !state.mutations.length &&
+    !state.closures.size,
+  );
+  return {
+    finishingCapturedTurn,
+    allowed:
+      !state.blocksTurnAdmission || borrowsMutation || finishingCapturedTurn || preparingSource,
+  };
+}
 
 /** Incarnation is selected from the captured producer, never the mutable entry target. */
 export function inputMatchesSessionId(input: SessionControllerInput, sessionId?: string): boolean {

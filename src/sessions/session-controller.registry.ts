@@ -175,14 +175,15 @@ export const replyRunRegistry: ReplyRunRegistry = {
   },
 };
 
-/** Abort and await only the captured operation; a same-key successor is never rediscovered. */
+/** Abort the captured operation; null skips settlement for source acknowledgements. */
 export async function interruptReplyRunTarget(
   target: ReplyRunInterruptTarget,
-  timeoutMs = REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
+  timeoutMs: number | null = REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
 ): Promise<{ aborted: boolean; settled: boolean }> {
   const operation = target[replyRunInterruptTargetOperation];
   const aborted = operation.abortByUser();
-  const settled = await waitForReplyOperationOwnerSettlement(operation, timeoutMs);
+  const settled =
+    timeoutMs === null ? false : await waitForReplyOperationOwnerSettlement(operation, timeoutMs);
   return { aborted, settled };
 }
 

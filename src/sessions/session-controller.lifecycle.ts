@@ -24,6 +24,7 @@ import {
   claimMatchesSessionId,
   selectedEffects,
   selectSessionControllerInterruptionOwners,
+  resolveSessionEffectAdmission,
 } from "./session-controller.lifecycle-projections.js";
 import type {
   Effect,
@@ -33,6 +34,7 @@ import type {
   SessionEffectRef,
   SessionControllerLifecycle,
 } from "./session-controller.lifecycle.types.js";
+import type { SessionControllerInput } from "./session-controller.mailbox.types.js";
 import {
   assertSessionControllerOperation,
   getSessionControllerEntry,
@@ -440,6 +442,7 @@ export async function beginSessionEffect(
     owner?: symbol;
     resolveGatewayContext?: GatewayContextResolver;
     operation?: ReplyOperation;
+    sourceInput?: SessionControllerInput;
     assertAllowed: (signal: AbortSignal) => Promise<void> | void;
     revalidateAllowed?: () => Promise<void> | void;
     onInterrupt?: SessionEffectInterrupt;
@@ -537,20 +540,15 @@ export async function beginSessionEffect(
   };
   bindGatewayContextResolver(effect, resolver);
   state.effects.add(effect);
-  const borrowsMutation = () =>
-    state.mutations.some((mutation) => current?.mutations.has(mutation));
-  const finishingCapturedTurn = () =>
-    Boolean(
-      operation &&
-      entry.active === operation &&
-      state.mutations.some((mutation) => mutation.operations.has(operation)),
-    );
+  const admission = () => resolveSessionEffectAdmission(effect, state, current, params.sourceInput);
   try {
     const closure = state.closures.values().next().value;
-    if (closure && !finishingCapturedTurn()) {
+    if (closure && !admission().finishingCapturedTurn) {
       throw closure.reason;
     }
-    while (state.blocksTurnAdmission && !borrowsMutation() && !finishingCapturedTurn()) {
+    // Preparing accepted bytes owns no turn. The mailbox still fences execution
+    // behind the predecessor's raw settlement, while mutations fence preparation.
+    while (!admission().allowed) {
       const pendingClosure = state.closures.values().next().value;
       if (pendingClosure) {
         throw pendingClosure.reason;
