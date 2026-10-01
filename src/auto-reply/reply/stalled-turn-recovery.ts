@@ -1,5 +1,4 @@
 import { formatSystemTurnPrompt } from "../../sessions/system-turn-prompt.js";
-import type { SkillLibraryAuthoringCapability } from "../../skills/library/authoring.js";
 import { SkillLibraryError } from "../../skills/library/errors.js";
 import type { FollowupRun } from "./queue/types.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
@@ -55,34 +54,25 @@ export function buildStalledTurnRecoveryRun(base: FollowupRun): FollowupRun {
       source?.kind === "deliver"
         ? { kind: "deliver", deliver: source.deliver.createSourceRetry?.() ?? source.deliver }
         : source,
-    // Library authoring is bound to the stalled run's admission and refuses a
-    // replacement run. A workspace-target grant wraps the agent's own Workshop,
-    // which the recovery keeps. A personal-only grant must not fall back to that
-    // wider Workshop, so its recovery keeps the personal namespace without authority.
+    // A recovery run never inherits skill-library authoring: the grant is bound
+    // to the stalled run's admission and refuses a replacement run. An expired
+    // personal-only grant also keeps the Workshop from falling back to the
+    // wider workspace tool, while every other tool stays available.
     run: {
       ...base.run,
       suppressNextUserMessagePersistence: true,
-      skillLibraryAuthoring:
-        base.run.skillLibraryAuthoring?.defaultTarget === "personal"
-          ? expiredPersonalAuthoring(base.run.skillLibraryAuthoring)
-          : undefined,
-    },
-  };
-}
-
-function expiredPersonalAuthoring(
-  grant: SkillLibraryAuthoringCapability,
-): SkillLibraryAuthoringCapability {
-  return {
-    target: "personal",
-    defaultTarget: "personal",
-    multipleProfiles: grant.multipleProfiles,
-    bind: () => {},
-    invoke: async () => {
-      throw new SkillLibraryError(
-        "AUTHORITY_EXPIRED",
-        "Personal skill authoring is unavailable while recovering an interrupted turn. Send a fresh message requesting the change.",
-      );
+      skillLibraryAuthoring: base.run.skillLibraryAuthoring && {
+        target: "personal",
+        defaultTarget: "personal",
+        multipleProfiles: base.run.skillLibraryAuthoring.multipleProfiles,
+        bind: () => {},
+        invoke: async () => {
+          throw new SkillLibraryError(
+            "AUTHORITY_EXPIRED",
+            "Skill authoring is unavailable while recovering an interrupted turn. Send a fresh message requesting the change.",
+          );
+        },
+      },
     },
   };
 }

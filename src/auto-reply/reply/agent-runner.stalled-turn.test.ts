@@ -432,7 +432,7 @@ describe("runReplyAgent stalled turn continuation", () => {
   });
 
   it.each(["personal", "workspace"] as const)(
-    "keeps a %s-target recovery's tools inside its Workshop namespace",
+    "never lets a %s-target recovery author skills while keeping its other tools",
     async (defaultTarget) => {
       const stalled = createStalledRun({
         skillLibraryAuthoring: {
@@ -453,12 +453,7 @@ describe("runReplyAgent stalled turn continuation", () => {
       const recovery = drainedRuns.mock.calls[0]?.[0];
       expect(recovery?.disableTools).toBeUndefined();
       const authoring = recovery?.run.skillLibraryAuthoring;
-      if (defaultTarget === "workspace") {
-        // The agent's own Workshop is the workspace-target grant's wrapped tool.
-        expect(authoring).toBeUndefined();
-        return;
-      }
-      // Personal-only stays personal (no Workshop fallback) and holds no authority.
+      // Personal-only means the Workshop cannot fall back to the workspace tool.
       expect(authoring?.defaultTarget).toBe("personal");
       expect(() => authoring?.bind({} as never)).not.toThrow();
       await expect(authoring?.invoke({ action: "list" })).rejects.toMatchObject({
