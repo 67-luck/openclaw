@@ -90,11 +90,6 @@ import {
   ModelSelectionLockedError,
 } from "../../sessions/model-overrides.js";
 import { replyRunRegistry } from "../../sessions/session-controller.js";
-import {
-  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
-  interruptSessionControllerEffects,
-  runSessionMutation,
-} from "../../sessions/session-controller.lifecycle.js";
 import { recordSessionCreated } from "../../sessions/session-created.js";
 import { recordAcceptedSessionParticipantInput } from "../../sessions/session-participant-input-recording.js";
 import { prepareChannelParticipantObservation } from "../../sessions/session-participant-input.js";
@@ -152,6 +147,7 @@ import {
   stopSessionResetSubagents,
 } from "./session-reset-cleanup.js";
 import { resolveAuthorizedSessionResetCommand } from "./session-reset-command.js";
+import { runReplySessionRolloverMutation } from "./session-rollover-mutation.js";
 import { stripThreadFromSessionRoute, stripThreadId } from "./session-route-reset.js";
 
 const log = createSubsystemLogger("session-init");
@@ -428,14 +424,21 @@ async function initSessionStateAttempt(
   let rollover = attempt;
   while (true) {
     const candidate = rollover;
-    const identities = [candidate.sessionKey, candidate.sessionId];
     let preparedOutcome: InitSessionStateAttemptOutcome | undefined;
+    let stopResetSubagents = async (applyParentStop: () => Promise<boolean>) => {
+      await applyParentStop();
+      return { stopped: 0, failed: 0 };
+    };
     // Drain foreign owners before the rollover takes the writer lane. Holding
     // that lane while waiting would deadlock owners that release after a write.
-    const outcome = await runSessionMutation({
-      scope: attemptContext.storePath,
-      identities,
+    const outcome = await runReplySessionRolloverMutation<InitSessionStateAttemptOutcome>({
+      storePath: attemptContext.storePath,
+      sessionKey: candidate.sessionKey,
+      sessionId: candidate.sessionId,
+      explicitReset: candidate.resetTriggered,
       signal: params.signal,
+      shouldPreempt: () => preparedOutcome === undefined,
+      stopChildren: async (applyParentStop) => await stopResetSubagents(applyParentStop),
       prepare: async () => {
         // A queued rollover may change identity or become obsolete. Recheck
         // before interrupting, then reacquire any refreshed identity first.
@@ -459,34 +462,27 @@ async function initSessionStateAttempt(
         if (!(await revalidate())) {
           return;
         }
-        const drained = await interruptSessionControllerEffects({
-          scope: attemptContext.storePath,
-          identities,
-          timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
-        });
-        if (!drained) {
-          throw new Error(
-            `timed out draining work before reply session rollover: ${candidate.sessionKey}`,
-          );
-        }
-        // A draining owner can rebind the parent. Reacquire and drain that identity
-        // before selecting any child work associated with the session.
-        const afterDrain = await revalidate();
-        if (afterDrain?.resetTriggered) {
-          // Child finalizers may need the same store writer. Drain them here,
-          // outside that lane, before an explicit reset can commit or run its tail.
-          await stopSessionResetSubagents({
+        stopResetSubagents = async (applyParentStop) => {
+          // A stopping owner can rebind the parent. Reacquire that identity before
+          // selecting child work associated with the session.
+          const afterPreempt = await revalidate();
+          if (!afterPreempt?.resetTriggered) {
+            await applyParentStop();
+            return { stopped: 0, failed: 0 };
+          }
+          return await stopSessionResetSubagents({
             cfg: params.cfg,
             sessionKey: candidate.sessionKey,
             agentId: attemptContext.agentId,
             assertCurrent: createSessionResetCleanupGuard({
               sessionKey: candidate.sessionKey,
               storePath: attemptContext.storePath,
-              expectedSession: afterDrain,
+              expectedSession: afterPreempt,
               assertCurrent: () => params.signal?.throwIfAborted(),
             }),
+            beforeKill: applyParentStop,
           });
-        }
+        };
       },
       run: async () => {
         if (preparedOutcome) {

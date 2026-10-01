@@ -9,6 +9,7 @@ import {
   captureGatewaySessionControllerWork,
   isSessionMutationActive,
   runSessionMutation,
+  SessionMutationPreemptTimeoutError,
   startSessionControllerInterruption,
   withSessionControllerOwner,
 } from "./session-controller.lifecycle.js";
@@ -55,7 +56,13 @@ it.each([
   const mutation = runSessionMutation({
     target: old,
     requiredSessionId: "old",
-    policy,
+    ...(policy === "preempt"
+      ? {
+          kind: "reset" as const,
+          policy,
+          preempt: { activeRun: "abort" as const, waitingInputs: "cancel" as const },
+        }
+      : { policy }),
     run: async () => {
       ran = true;
     },
@@ -176,7 +183,9 @@ it("retains a frozen controller owner through refused preemption until its actua
   let mutated = false;
   const mutation = runSessionMutation({
     target,
+    kind: "reset",
     policy: "preempt",
+    preempt: { activeRun: "abort", waitingInputs: "cancel" },
     prepare: async () => {
       prepared.resolve();
     },
@@ -220,7 +229,9 @@ it("borrows the exact in-band owner without interrupting or awaiting its own sta
     await withSessionControllerOwner(operation, () =>
       runSessionMutation({
         target,
+        kind: "reset",
         policy: "preempt",
+        preempt: { activeRun: "abort", waitingInputs: "cancel" },
         run: async () => {
           const interruption = startSessionControllerInterruption({ target });
           await interruption.released;
@@ -292,6 +303,37 @@ it("release cannot manufacture completion while captured writer cleanup is still
   expect(settled).toBe(true);
 });
 
+it("preempt interrupts a captured subordinate effect before running the mutation", async () => {
+  const target = captureSessionTarget({
+    storeScope: "preempt-effect.sqlite",
+    sessionKey: "agent:main:preempt-effect",
+    incarnation: "preempt-effect-session",
+  });
+  let releaseEffect = () => {};
+  const interrupted = vi.fn(() => releaseEffect());
+  const effect = await beginSessionEffect({
+    target,
+    assertAllowed: () => {},
+    onInterrupt: interrupted,
+  });
+  releaseEffect = effect.release;
+  let mutated = false;
+
+  await runSessionMutation({
+    target,
+    kind: "reset",
+    policy: "preempt",
+    preempt: { activeRun: "abort", waitingInputs: "cancel" },
+    run: async () => {
+      mutated = true;
+    },
+  });
+
+  expect(interrupted).toHaveBeenCalledOnce();
+  expect(effect.isActive()).toBe(false);
+  expect(mutated).toBe(true);
+});
+
 it.each(["wait", "preempt"] as const)(
   "%s mutation joins unclaimed source cleanup without blocking a foreign store",
   async (policy) => {
@@ -310,7 +352,13 @@ it.each(["wait", "preempt"] as const)(
     let ran = false;
     const mutation = runSessionMutation({
       target,
-      policy,
+      ...(policy === "preempt"
+        ? {
+            kind: "reset" as const,
+            policy,
+            preempt: { activeRun: "abort" as const, waitingInputs: "cancel" as const },
+          }
+        : { policy }),
       run: async () => {
         ran = true;
       },
@@ -319,7 +367,13 @@ it.each(["wait", "preempt"] as const)(
       // The same mutation path in another physical store proves the scheduler progressed.
       await runSessionMutation({
         target: captureSessionTarget({ ...target, storeScope: "foreign-source.sqlite" }),
-        policy,
+        ...(policy === "preempt"
+          ? {
+              kind: "reset" as const,
+              policy,
+              preempt: { activeRun: "abort" as const, waitingInputs: "cancel" as const },
+            }
+          : { policy }),
         run: async () => {},
       });
       expect(ran).toBe(false);
@@ -331,3 +385,194 @@ it.each(["wait", "preempt"] as const)(
     expect(ran).toBe(true);
   },
 );
+
+it.each([
+  ["reset", "cancel", true],
+  ["delete", "cancel", false],
+  ["compaction", "keep", false],
+] as const)(
+  "%s preemption applies its queued-input and child policy through Stop",
+  async (kind, waitingInputs, stopsChildren) => {
+    const target = captureSessionTarget({
+      storeScope: `${kind}-preempt.sqlite`,
+      sessionKey: `agent:main:${kind}-preempt`,
+      incarnation: `${kind}-session`,
+    });
+    const running = createDeferred();
+    const active = withSessionTurn(
+      {
+        sessionKey: target.sessionKey,
+        sessionId: target.incarnation,
+        target,
+      },
+      async (_operation, signal) => {
+        running.resolve();
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+      },
+    );
+    await running.promise;
+    const firstQueued = reserveSessionControllerSource(target.sessionKey, {
+      target,
+      policy: { mode: "followup" },
+    });
+    const secondQueued = reserveSessionControllerSource(target.sessionKey, {
+      target,
+      policy: { mode: "followup" },
+    });
+    const stopChildren = vi.fn(async (applyParentStop: () => Promise<boolean>) => {
+      await applyParentStop();
+      return { stopped: 2, failed: 0 };
+    });
+
+    try {
+      await runSessionMutation({
+        target,
+        kind,
+        policy: "preempt",
+        preempt: {
+          activeRun: kind === "compaction" ? "abort-if-abortable" : "abort",
+          waitingInputs,
+          stopChildren: stopsChildren ? stopChildren : undefined,
+        },
+        run: async () => {},
+      });
+
+      expect(firstQueued.abortSignal.aborted).toBe(waitingInputs === "cancel");
+      expect(secondQueued.abortSignal.aborted).toBe(waitingInputs === "cancel");
+      expect(stopChildren).toHaveBeenCalledTimes(stopsChildren ? 1 : 0);
+      await active;
+    } finally {
+      if (!firstQueued.abortSignal.aborted) {
+        retireSessionControllerInput(firstQueued);
+      }
+      if (!secondQueued.abortSignal.aborted) {
+        retireSessionControllerInput(secondQueued);
+      }
+      await active.catch(() => undefined);
+    }
+  },
+);
+
+it("compaction preserves a non-abortable run until its real settlement", async () => {
+  const target = captureSessionTarget({
+    storeScope: "non-abortable-compaction.sqlite",
+    sessionKey: "agent:main:non-abortable-compaction",
+    incarnation: "non-abortable-session",
+  });
+  const operation = createReplyOperation({
+    sessionKey: target.sessionKey,
+    sessionId: target.incarnation!,
+    target,
+    resetTriggered: false,
+  });
+  bindSessionControllerTarget(operation, target);
+  operation.freezeAbort();
+  let mutated = false;
+  const mutation = runSessionMutation({
+    target,
+    kind: "compaction",
+    policy: "preempt",
+    preempt: { activeRun: "abort-if-abortable", waitingInputs: "keep" },
+    run: async () => {
+      mutated = true;
+    },
+  });
+  try {
+    await Promise.resolve();
+    expect(operation.abortSignal.aborted).toBe(false);
+    expect(mutated).toBe(false);
+    operation.complete();
+    await mutation;
+    expect(mutated).toBe(true);
+  } finally {
+    operation.complete();
+    await mutation;
+  }
+});
+
+it("bounds preempt settlement with a typed mutation timeout", async () => {
+  vi.useFakeTimers();
+  const target = captureSessionTarget({
+    storeScope: "preempt-timeout.sqlite",
+    sessionKey: "agent:main:preempt-timeout",
+    incarnation: "preempt-timeout-session",
+  });
+  const effect = await beginSessionEffect({ target, assertAllowed: () => {} });
+  let mutated = false;
+  const mutation = runSessionMutation({
+    target,
+    kind: "delete",
+    policy: "preempt",
+    preempt: { activeRun: "abort", waitingInputs: "cancel", settleTimeoutMs: 1_000 },
+    run: async () => {
+      mutated = true;
+    },
+  });
+  let timeoutError: unknown;
+  const observedMutation = mutation.catch((error: unknown) => {
+    timeoutError = error;
+  });
+  try {
+    await vi.advanceTimersByTimeAsync(1_000);
+    await observedMutation;
+    expect(timeoutError).toBeInstanceOf(SessionMutationPreemptTimeoutError);
+    expect(timeoutError).toMatchObject({
+      name: "SessionMutationPreemptTimeoutError",
+      sessionKey: target.sessionKey,
+      mutationKind: "delete",
+    });
+    expect(mutated).toBe(false);
+  } finally {
+    effect.release();
+    await observedMutation;
+    vi.useRealTimers();
+  }
+});
+
+it("keeps a queued turn behind compaction until the mutation finishes", async () => {
+  const target = captureSessionTarget({
+    storeScope: "queued-behind-compaction.sqlite",
+    sessionKey: "agent:main:queued-behind-compaction",
+    incarnation: "queued-behind-session",
+  });
+  const running = createDeferred();
+  const active = withSessionTurn(
+    { sessionKey: target.sessionKey, sessionId: target.incarnation, target },
+    async (_operation, signal) => {
+      running.resolve();
+      await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+    },
+  );
+  await running.promise;
+  let queuedStarted = false;
+  const queued = withSessionTurn(
+    { sessionKey: target.sessionKey, sessionId: target.incarnation, target },
+    async () => {
+      queuedStarted = true;
+    },
+  );
+  const mutationStarted = createDeferred();
+  const finishMutation = createDeferred();
+  const mutation = runSessionMutation({
+    target,
+    kind: "compaction",
+    policy: "preempt",
+    preempt: { activeRun: "abort-if-abortable", waitingInputs: "keep" },
+    run: async () => {
+      mutationStarted.resolve();
+      await finishMutation.promise;
+    },
+  });
+  try {
+    await mutationStarted.promise;
+    await active;
+    expect(queuedStarted).toBe(false);
+    finishMutation.resolve();
+    await mutation;
+    await queued;
+    expect(queuedStarted).toBe(true);
+  } finally {
+    finishMutation.resolve();
+    await Promise.allSettled([active, mutation, queued]);
+  }
+});

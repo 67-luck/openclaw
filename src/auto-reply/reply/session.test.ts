@@ -5,6 +5,7 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import * as mcpFixture from "../../agents/agent-bundle-mcp-manager.test-support.js";
 import { testing as sessionMcpTesting } from "../../agents/agent-bundle-mcp-runtime.js";
 import * as bootstrapCache from "../../agents/bootstrap-cache.js";
@@ -652,7 +653,7 @@ describe("initSessionState guarded initialization", () => {
     },
   );
 
-  it("reports a committed reset as successful when reply cancellation throws", async () => {
+  it("waits for real settlement when reply cancellation throws after committing abort", async () => {
     const storePath = await makeStorePath("openclaw-session-init-reset-cancel-failure-");
     const sessionKey = "agent:main:matrix:channel:cancel-failure";
     const sessionId = "committed-reset-session";
@@ -668,7 +669,9 @@ describe("initSessionState guarded initialization", () => {
         },
       },
     });
+    const cancellationAttempted = createDeferred();
     const cancel = vi.fn(() => {
+      cancellationAttempted.resolve();
       throw new Error("backend cancellation failed");
     });
     const activeReply = createReplyOperation({
@@ -680,7 +683,7 @@ describe("initSessionState guarded initialization", () => {
     activeReply.setPhase("running");
 
     try {
-      const reset = await initSessionState({
+      const initialization = initSessionState({
         ctx: {
           Body: "/new",
           RawBody: "/new",
@@ -695,6 +698,9 @@ describe("initSessionState guarded initialization", () => {
         cfg: { session: { store: storePath, idleMinutes: 999 } } as OpenClawConfig,
         commandAuthorized: true,
       });
+      await cancellationAttempted.promise;
+      activeReply.complete();
+      const reset = await initialization;
 
       expect(reset.resetTriggered).toBe(true);
       expect(reset.sessionEntry.mainRestartRecovery).toBeUndefined();
@@ -1134,6 +1140,14 @@ describe("initSessionState thread forking", () => {
     sessionForkMocks.forkSessionFromParent.mockResolvedValueOnce(undefined);
     const promptState = getEmbeddedSessionPromptState(threadSessionKey);
     promptState.sentUserTurnIds.add("retained-turn");
+    const cancel = vi.fn();
+    const activeReply = createReplyOperation({
+      sessionKey: threadSessionKey,
+      sessionId: "tombstoned-thread-session",
+      resetTriggered: false,
+    });
+    activeReply.attachBackend({ kind: "embedded", cancel, isStreaming: () => false });
+    activeReply.setPhase("running");
     enqueueFollowupRun(
       threadSessionKey,
       createQueueTestRun({ prompt: "retained followup" }),
@@ -1143,14 +1157,6 @@ describe("initSessionState thread forking", () => {
       false,
     );
     enqueueSystemEvent("retained event", { sessionKey: threadSessionKey });
-    const cancel = vi.fn();
-    const activeReply = createReplyOperation({
-      sessionKey: threadSessionKey,
-      sessionId: "tombstoned-thread-session",
-      resetTriggered: false,
-    });
-    activeReply.attachBackend({ kind: "embedded", cancel, isStreaming: () => false });
-    activeReply.setPhase("running");
 
     try {
       await expect(
@@ -4461,59 +4467,6 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     },
   );
 
-  it("drains foreign work before appending a reply reset boundary", async () => {
-    const storePath = await makeStorePath("openclaw-rollover-admission-");
-    const sessionKey = "agent:main:telegram:dm:rollover-admission";
-    const existingSessionId = "session-before-admitted-rollover";
-    const transcriptPath = path.join(path.dirname(storePath), `${existingSessionId}.jsonl`);
-    await writeSessionStoreFast(storePath, {
-      [sessionKey]: { sessionId: existingSessionId, updatedAt: Date.now() },
-    });
-    await fs.writeFile(transcriptPath, '{"type":"message"}\n', "utf8");
-
-    let signalInterrupted = () => {};
-    const interrupted = new Promise<void>((resolve) => {
-      signalInterrupted = resolve;
-    });
-    const admission = await beginSessionEffect({
-      scope: storePath,
-      identities: [sessionKey, existingSessionId],
-      assertAllowed: () => {},
-      onInterrupt: signalInterrupted,
-    });
-    const initialization = initSessionState({
-      ctx: {
-        Body: "/new",
-        RawBody: "/new",
-        CommandBody: "/new",
-        From: "user-rollover-admission",
-        To: "bot",
-        ChatType: "direct",
-        SessionKey: sessionKey,
-        Provider: "telegram",
-        Surface: "telegram",
-      },
-      cfg: { session: { store: storePath, idleMinutes: 999 } } as OpenClawConfig,
-    });
-
-    try {
-      await interrupted;
-      // Foreign owners may need the writer lane to finalize before releasing.
-      // The rollover must not hold that lane while it drains them.
-      await runExclusiveSessionStoreWrite(storePath, async () => {});
-      expect(readSessionStoreFast(storePath)[sessionKey]?.sessionId).toBe(existingSessionId);
-      expect(await fs.stat(transcriptPath).catch(() => null)).not.toBeNull();
-
-      admission.release();
-      const result = await initialization;
-      expect(result.sessionId).toBe(existingSessionId);
-      expect(await fs.stat(transcriptPath).catch(() => null)).not.toBeNull();
-    } finally {
-      admission.release();
-      await initialization.catch(() => {});
-    }
-  });
-
   it("keeps the initiating reply admission during an in-band rollover", async () => {
     const storePath = await makeStorePath("openclaw-rollover-initiator-");
     const sessionKey = "agent:main:telegram:dm:rollover-initiator";
@@ -4954,20 +4907,25 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       const cfg = {
         session: { store: storePath, reset: { mode: "daily", atHour: 4 } },
       } as OpenClawConfig;
-      const result = await initSessionState({
-        ctx: {
-          Body: "hello after boundary",
-          RawBody: "hello after boundary",
-          CommandBody: "hello after boundary",
-          From: "user-queued-stale",
-          To: "bot",
-          ChatType: "direct",
-          SessionKey: sessionKey,
-          Provider: "telegram",
-          Surface: "telegram",
-        },
-        cfg,
-      });
+      const initialization = runWithReplyOperationLifecycleAdmission(operation, () =>
+        initSessionState({
+          ctx: {
+            Body: "hello after boundary",
+            RawBody: "hello after boundary",
+            CommandBody: "hello after boundary",
+            From: "user-queued-stale",
+            To: "bot",
+            ChatType: "direct",
+            SessionKey: sessionKey,
+            Provider: "telegram",
+            Surface: "telegram",
+          },
+          cfg,
+        }),
+      );
+      void initialization.catch(() => {});
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await initialization;
 
       expect(operation.phase).toBe("queued");
       expect(result.isNewSession).toBe(true);

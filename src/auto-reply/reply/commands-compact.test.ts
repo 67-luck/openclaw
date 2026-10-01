@@ -7,7 +7,6 @@ import {
   resolveSessionAgentIdMock,
 } from "./commands-agent-scope.test-support.js";
 import {
-  abortEmbeddedAgentRun,
   buildCompactParams,
   compactEmbeddedAgentSession,
   formatContextUsageShort,
@@ -18,7 +17,6 @@ import {
   requireResolveAgentDirCall,
   requireResolveSessionAgentIdCall,
   resetCompactCommandMocks,
-  waitForEmbeddedAgentRunEnd,
 } from "./commands-compact.test-support.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
@@ -122,8 +120,6 @@ describe("handleCompactCommand", () => {
     expect(call.agentDir).toBe("/tmp/openclaw-agent-compact");
     expect(call.authProfileId).toBe("github-copilot:work");
     expect(call.authProfileIdSource).toBe("user");
-    expect(vi.mocked(abortEmbeddedAgentRun)).not.toHaveBeenCalled();
-    expect(vi.mocked(waitForEmbeddedAgentRunEnd)).not.toHaveBeenCalled();
   });
 
   it("keeps the verified current owner in bounded manual-compaction prompt guidance", async () => {

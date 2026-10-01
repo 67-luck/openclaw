@@ -501,11 +501,13 @@ export async function killSessionSubagentRuns(params: {
   sessionKey: string;
   agentId: string;
   assertCurrent?: () => void;
+  beforeKill?: () => boolean | Promise<boolean>;
 }) {
   const controller = { controllerSessionKey: params.sessionKey, controllerAgentId: params.agentId };
   return killSelectedSubagentRuns({
     cfg: params.cfg,
     assertCurrent: params.assertCurrent,
+    beforeKill: params.beforeKill,
     runs: [
       ...listSubagentRunsForRequester(params.sessionKey, { requesterAgentId: params.agentId }),
       ...listSubagentRunsForController(params.sessionKey, params.agentId),

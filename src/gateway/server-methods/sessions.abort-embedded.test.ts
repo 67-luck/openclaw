@@ -454,6 +454,9 @@ it.each([
       timeoutMs: 30_000,
     });
     expect(registration.registered).toBe(true);
+    if (!registration.registered) {
+      throw new Error("Expected the parent abort controller to register");
+    }
     let claim!: Parameters<typeof releaseSessionControllerClaim>[0];
     let operation!: ReturnType<typeof createReplyOperation>;
     await claimSessionControllerTask(registration.entry.input, (capturedClaim) => {

@@ -15,10 +15,15 @@ import {
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
 import { replaceTranscriptEvents } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
+import { withSessionTurn } from "../sessions/session-controller.admission.js";
 import {
+  bindSessionControllerTarget,
   beginSessionEffect,
+  captureSessionTarget,
+  isSessionMutationActive,
   runSessionMutation,
 } from "../sessions/session-controller.lifecycle.js";
+import { createReplyOperation } from "../sessions/session-controller.operation.js";
 import { embeddedRunMock, rpcReq, testState, writeSessionStore } from "./test-helpers.js";
 import {
   setupGatewaySessionsTestHarness,
@@ -112,7 +117,7 @@ test("sessions.delete protects the sole explicit agent's global session before c
 });
 
 test("sessions.delete rejects main and aborts active runs", async () => {
-  const { dir } = await createSessionStoreDir();
+  const { dir, storePath } = await createSessionStoreDir();
   await writeSingleLineSession(dir, "sess-main", "hello");
   await writeSingleLineSession(dir, "sess-active", "active");
 
@@ -123,8 +128,28 @@ test("sessions.delete rejects main and aborts active runs", async () => {
     },
   });
 
-  embeddedRunMock.activeIds.add("sess-active");
-  embeddedRunMock.waitResults.set("sess-active", true);
+  const target = captureSessionTarget({
+    storeScope: storePath,
+    sessionKey: "agent:main:discord:group:dev",
+    aliases: ["discord:group:dev", "sess-active"],
+    incarnation: "sess-active",
+    agentId: "main",
+  });
+  const started = createDeferred();
+  let interrupted = false;
+  const activeRun = withSessionTurn(
+    { sessionKey: target.sessionKey, sessionId: "sess-active", target },
+    async (_operation, signal) => {
+      started.resolve();
+      await new Promise<void>((resolve) =>
+        signal.addEventListener("abort", () => {
+          interrupted = true;
+          resolve();
+        }),
+      );
+    },
+  );
+  await started.promise;
 
   const mainDelete = await directSessionReq("sessions.delete", { key: "main" });
   expect(mainDelete.ok).toBe(false);
@@ -132,8 +157,9 @@ test("sessions.delete rejects main and aborts active runs", async () => {
   await expectSessionDeleteSucceeds({
     key: "discord:group:dev",
   });
-  expect(embeddedRunMock.abortCalls).toContain("sess-active");
-  expect(embeddedRunMock.activeIds.has("sess-active")).toBe(false);
+  await activeRun;
+  expect(interrupted).toBe(true);
+  expect(embeddedRunMock.abortCalls).not.toContain("sess-active");
   expect(bundleMcpRuntimeMocks.disposeSessionMcpRuntime).toHaveBeenCalledWith("sess-active");
   expect(browserSessionTabMocks.closeTrackedBrowserTabsForSessions).toHaveBeenCalledTimes(1);
   const closeTabsCall = (
@@ -955,30 +981,56 @@ test("sessions.delete returns unavailable when active run does not stop", async 
     },
   });
 
-  embeddedRunMock.activeIds.add("sess-active");
-  embeddedRunMock.waitResults.set("sess-active", false);
-  const { ws } = await openClient();
-
-  const deleted = await rpcReq(ws, "sessions.delete", {
-    key: "discord:group:dev",
-  });
-  expect(deleted.ok).toBe(false);
-  expect(deleted.error?.code).toBe("UNAVAILABLE");
-  expect(deleted.error?.message ?? "").toMatch(/still active/i);
-  expect(embeddedRunMock.abortCalls).toContain("sess-active");
-  expect(embeddedRunMock.waitCalls).toContain("sess-active");
-  expect(bundleMcpRuntimeMocks.retireSessionMcpRuntime).not.toHaveBeenCalled();
-  expect(browserSessionTabMocks.closeTrackedBrowserTabsForSessions).not.toHaveBeenCalled();
-
-  const storedEntry = loadSessionEntry({
+  const target = captureSessionTarget({
+    storeScope: storePath,
     sessionKey: "agent:main:discord:group:dev",
-    storePath,
+    aliases: ["discord:group:dev", "sess-active"],
+    incarnation: "sess-active",
+    agentId: "main",
   });
-  expect(storedEntry?.sessionId).toBe("sess-active");
-  const filesAfterDeleteAttempt = await fs.readdir(dir);
-  expect(
-    filesAfterDeleteAttempt.filter((fileName) => fileName.startsWith("sess-active.jsonl.deleted.")),
-  ).toEqual([]);
+  const operation = createReplyOperation({
+    sessionKey: target.sessionKey,
+    sessionId: "sess-active",
+    target,
+    resetTriggered: false,
+  });
+  bindSessionControllerTarget(operation, target);
+  operation.freezeAbort();
+  const preemptAttempted = createDeferred();
+  vi.spyOn(operation, "abort").mockImplementation(() => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    preemptAttempted.resolve();
+    return false;
+  });
+  const deletion = directSessionReq("sessions.delete", { key: "discord:group:dev" });
+  void deletion.catch(() => {});
+  try {
+    await preemptAttempted.promise;
+    expect(isSessionMutationActive(storePath, target.aliases)).toBe(true);
+    await vi.advanceTimersByTimeAsync(15_000);
+    vi.useRealTimers();
 
-  ws.close();
+    const deleted = await deletion;
+    expect(deleted.ok).toBe(false);
+    expect(deleted.error).toEqual({
+      code: "UNAVAILABLE",
+      message: "Session discord:group:dev is still active; try again in a moment.",
+    });
+    expect(bundleMcpRuntimeMocks.retireSessionMcpRuntime).not.toHaveBeenCalled();
+    expect(browserSessionTabMocks.closeTrackedBrowserTabsForSessions).not.toHaveBeenCalled();
+
+    expect(loadSessionEntry({ sessionKey: target.sessionKey, storePath })?.sessionId).toBe(
+      "sess-active",
+    );
+    const filesAfterDeleteAttempt = await fs.readdir(dir);
+    expect(
+      filesAfterDeleteAttempt.filter((fileName) =>
+        fileName.startsWith("sess-active.jsonl.deleted."),
+      ),
+    ).toEqual([]);
+  } finally {
+    operation.complete();
+    await deletion.catch(() => undefined);
+    vi.useRealTimers();
+  }
 });

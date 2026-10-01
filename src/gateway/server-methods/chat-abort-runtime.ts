@@ -13,9 +13,9 @@ import {
   isSubagentRunQueued,
 } from "../../agents/subagents/registry/subagent-registry-read.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
+import type { SessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { captureSessionControllerSourceSettlement } from "../../sessions/session-controller.mailbox.js";
 import {
-  cancelCapturedSessionControllerForLifecycleMutation,
   captureSessionControllerStop,
   stopSession,
   type SessionControllerStopCapture,
@@ -23,6 +23,7 @@ import {
   type SessionStopHookContext,
   type SessionStopExternalParent,
   type SessionStopExecution,
+  type SessionStopSource,
 } from "../../sessions/session-controller.stop.js";
 import {
   waitForChatAbortAcknowledgment,
@@ -342,12 +343,7 @@ type ChatSessionAbortParams = {
   abortOrigin: ChatAbortOrigin;
   stopReason?: string;
   requester: ChatAbortRequester;
-  stopSource?:
-    | "channel-user"
-    | "client-session"
-    | "client-run"
-    | "operator-revocation"
-    | "supersede";
+  stopSource: SessionStopSource;
   hookContext?: SessionStopHookContext;
   assertCurrent?: () => void;
   preserveSideRuns?: boolean;
@@ -362,6 +358,7 @@ type ChatSessionAbortParams = {
   onAuthorizedAfterQueuedAbort?: () => boolean;
   /** Runs after authorized synchronous abort, before terminal/partial persistence can yield. */
   onCancellationStarted?: () => void;
+  controllerTargets?: readonly SessionTarget[];
   additionalStop?: {
     capture: SessionControllerStopCapture;
     cancelInput?: SessionStopRequest["cancelInput"];
@@ -489,9 +486,19 @@ function prepareChatSessionAbort(
     ]),
   );
   const additionalStop = canRunLifecycleCleanup ? params.additionalStop : undefined;
+  const controllerStop = params.controllerTargets
+    ? captureSessionControllerStop({ targets: params.controllerTargets })
+    : undefined;
   const stopCapture = captureSessionControllerStop({
-    inputs: [...targetByInput.keys(), ...(additionalStop ? additionalStop.capture.inputs : [])],
-    operations: additionalStop?.capture.operations,
+    inputs: [
+      ...targetByInput.keys(),
+      ...(controllerStop?.inputs ?? []),
+      ...(additionalStop?.capture.inputs ?? []),
+    ],
+    operations: [
+      ...(controllerStop?.operations ?? []),
+      ...(additionalStop?.capture.operations ?? []),
+    ],
   });
   const sourceSettlements = new Map(
     stopCapture.inputs.map((input) => [input, captureSessionControllerSourceSettlement(input)]),
@@ -553,6 +560,10 @@ function prepareChatSessionAbort(
     const cancelInput: NonNullable<SessionStopRequest["cancelInput"]> = (input, cancel) => {
       const target = targetByInput.get(input);
       if (!target) {
+        if (controllerStop?.inputs.includes(input)) {
+          params.assertCurrent?.();
+          return cancel();
+        }
         if (stopCapture.queuedInputs.includes(input)) {
           if (!additionalQueueAuthorized) {
             params.assertCurrent?.();
@@ -589,63 +600,12 @@ function prepareChatSessionAbort(
       }).aborted;
     };
     const afterParent = () => {
-      if (!params.stopSource) {
-        const endedAt = Date.now();
-        const stopReason = params.stopReason ?? "rpc";
-        for (const { runId, sessionKey, payload } of pendingAgent.authorizedRuns) {
-          params.assertCurrent?.();
-          if (
-            writePreRegisteredAgentAbort({
-              context: params.context,
-              runId,
-              sessionKey,
-              payload,
-              expectedPayload: payload,
-              stopReason,
-              endedAt,
-            })
-          ) {
-            recordRun(runId);
-          }
-        }
-        for (const { runId, payload } of pendingChat.authorizedRuns) {
-          params.assertCurrent?.();
-          if (
-            writePreRegisteredChatAbort({
-              context: params.context,
-              runId,
-              stopReason,
-              endedAt,
-              attemptId: normalizeOptionalString(payload.attemptId),
-              expectedPayload: payload,
-            })
-          ) {
-            recordRun(runId);
-          }
-        }
-        if (params.requester.isAdmin && canCancelWorkerSession) {
-          params.assertCurrent?.();
-          void cancelWorker();
-        }
-      }
       additionalStop?.afterParent?.();
       if (!result.unauthorized && !result.error) {
         params.assertCurrent?.();
         params.onCancellationStarted?.();
       }
     };
-    if (!params.stopSource) {
-      cancelCapturedSessionControllerForLifecycleMutation(stopCapture, {
-        assertCurrent: params.assertCurrent,
-        reason: params.stopReason,
-        afterQueued: abortAdditional,
-        onCancelled,
-        cancelInput,
-        cancelOperation: additionalStop?.cancelOperation,
-      });
-      afterParent();
-      return result;
-    }
     if (
       !params.hookContext &&
       ["channel-user", "client-session", "client-run"].includes(params.stopSource)
@@ -704,8 +664,7 @@ function prepareChatSessionAbort(
           ]
         : []),
     ];
-    stopExecution = stopSession({
-      source: params.stopSource,
+    const stopRequest = {
       capture: stopCapture,
       assertCurrent: params.assertCurrent,
       reason: params.stopReason,
@@ -737,7 +696,15 @@ function prepareChatSessionAbort(
               };
             }
           : undefined,
-    });
+    } satisfies Omit<SessionStopRequest, "source" | "mutation">;
+    stopExecution =
+      params.stopSource === "mutation"
+        ? stopSession({
+            ...stopRequest,
+            source: params.stopSource,
+            mutation: { cancelQueued: true, stopChildren: false },
+          })
+        : stopSession({ ...stopRequest, source: params.stopSource });
     return result;
   };
   const hasOtherWork =
@@ -830,23 +797,9 @@ export async function abortChatRunsForSessionKeyWithPartials(
   }
   const plan = prepareChatSessionAbort(params, captureWorkerInferenceForSession(params));
   let result = plan.result;
-  let descendants: Awaited<ReturnType<typeof abortControlledSubagents>> | undefined;
   let failure: { error: unknown } | undefined;
   try {
-    if (!params.stopSource && params.cascadeDescendants && plan.canCascade) {
-      descendants = await abortControlledSubagents({
-        cfg: params.session?.ok ? params.session.value.cfg : params.context.getRuntimeConfig(),
-        sessionKey: params.sessionKey,
-        agentId: params.agentId,
-        assertCurrent: params.assertCurrent,
-        beforeKill: () => {
-          result = plan.abort();
-          return true;
-        },
-      });
-    } else {
-      result = plan.abort();
-    }
+    result = plan.abort();
   } catch (error) {
     failure = { error };
   }
@@ -867,8 +820,7 @@ export async function abortChatRunsForSessionKeyWithPartials(
   }
   return {
     ...result,
-    aborted: result.aborted || Boolean((result.descendants ?? descendants)?.killed),
-    descendants: result.descendants ?? descendants,
+    aborted: result.aborted || Boolean(result.descendants?.killed),
     ...(warning ? { warning } : {}),
   };
 }

@@ -133,6 +133,7 @@ export type SessionStopSource =
   | "channel-user"
   | "client-session"
   | "client-run"
+  | "mutation"
   | "interrupt"
   | "restart"
   | "watchdog"
@@ -164,6 +165,12 @@ const SESSION_STOP_POLICY = {
     stopChildren: true,
     recordMessageCutoff: false,
     fireCommandHook: true,
+  },
+  mutation: {
+    cancelQueued: false,
+    stopChildren: false,
+    recordMessageCutoff: false,
+    fireCommandHook: false,
   },
   interrupt: {
     cancelQueued: false,
@@ -240,7 +247,7 @@ export type SessionStopExecution = SessionStopOutcome & {
   completed: Promise<SessionStopOutcome>;
 };
 
-export type SessionStopRequest = {
+type SessionStopRequestBase = {
   source: SessionStopSource;
   /** Captured synchronously by ingress; a resolver may select among captured candidates later. */
   capture: SessionControllerStopCapture | (() => SessionControllerStopCapture);
@@ -263,6 +270,18 @@ export type SessionStopRequest = {
   onCancelled?: (target: SessionControllerInput | ReplyOperation) => void;
   onError?: (target: SessionControllerInput | ReplyOperation, error: unknown) => "continue" | void;
 };
+
+export type SessionStopRequest = SessionStopRequestBase &
+  (
+    | {
+        source: "mutation";
+        mutation: Readonly<{ cancelQueued: boolean; stopChildren: boolean }>;
+      }
+    | {
+        source: Exclude<SessionStopSource, "mutation">;
+        mutation?: never;
+      }
+  );
 
 /** One sequencer for captured Stop. Publication adapters wrap, but never replace, its primitive. */
 function applySessionControllerStop(
@@ -451,18 +470,6 @@ function applySessionControllerStop(
   return result;
 }
 
-/** Reset/delete drains retain their separately reviewed lifecycle cancellation scope. */
-export function cancelCapturedSessionControllerForLifecycleMutation(
-  capture: SessionControllerStopCapture,
-  params: Omit<Parameters<typeof applySessionControllerStop>[1], "source" | "phase"> = {},
-): SessionControllerStopResult {
-  return applySessionControllerStop(capture, {
-    ...params,
-    source: "operator-revocation",
-    phase: "all",
-  });
-}
-
 /** Exact source teardown cancels its captured input without adopting session-wide Stop policy. */
 export function cancelCapturedSessionControllerSource(
   capture: SessionControllerStopCapture,
@@ -501,7 +508,15 @@ function resolveStopOutcome(
  * inputs, child runs, cutoff writer, and command hook participate in the request.
  */
 export function stopSession(request: SessionStopRequest): SessionStopExecution {
-  const policy = SESSION_STOP_POLICY[request.source];
+  const sourcePolicy = SESSION_STOP_POLICY[request.source];
+  const policy =
+    request.source === "mutation"
+      ? {
+          ...sourcePolicy,
+          cancelQueued: request.mutation.cancelQueued,
+          stopChildren: request.mutation.stopChildren,
+        }
+      : sourcePolicy;
   let externalActiveCancelled = 0;
   let externalQueuedCancelled = 0;
   let externalFinalizing = 0;

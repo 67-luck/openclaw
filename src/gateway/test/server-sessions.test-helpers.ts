@@ -121,7 +121,12 @@ const sessionCleanupMocks = vi.hoisted(() => ({
     );
     return { followupCleared: 0, laneCleared: 0, keys: clearedKeys };
   }),
-  stopSessionResetSubagents: vi.fn(async () => {}),
+  stopSessionResetSubagents: vi.fn(
+    async (params: { beforeKill?: () => boolean | Promise<boolean> }) => {
+      await params.beforeKill?.();
+      return { stopped: 0, failed: 0 };
+    },
+  ),
 }));
 
 const bootstrapCacheMocks = vi.hoisted(() => ({
@@ -543,7 +548,6 @@ export function sessionStoreEntry(sessionId: string, overrides: Partial<SessionE
 export function expectActiveRunCleanup(
   requesterSessionKey: string,
   expectedQueueKeys: string[],
-  sessionId: string,
   requesterAgentId: string,
 ) {
   expect(sessionCleanupMocks.stopSessionResetSubagents).toHaveBeenCalledWith(
@@ -554,8 +558,8 @@ export function expectActiveRunCleanup(
     }),
   );
   expectSessionQueueCleanup(expectedQueueKeys);
-  expect(embeddedRunMock.abortCalls).toEqual([sessionId]);
-  expect(embeddedRunMock.waitCalls).toEqual([sessionId]);
+  expect(embeddedRunMock.abortCalls).toEqual([]);
+  expect(embeddedRunMock.waitCalls).toEqual([]);
 }
 
 function expectSessionQueueCleanup(expectedQueueKeys: string[]) {

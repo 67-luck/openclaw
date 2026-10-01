@@ -28,6 +28,7 @@ import { isModelSelectionLocked } from "../../sessions/model-overrides.js";
 import {
   captureSessionTarget,
   runSessionMutation,
+  SessionMutationPreemptTimeoutError,
 } from "../../sessions/session-controller.lifecycle.js";
 import { handleSessionStateSessionDeleted } from "../../sessions/session-state-events.js";
 import { removeSessionWorktree } from "../../sessions/session-worktree-lifecycle.js";
@@ -235,6 +236,14 @@ export async function deleteGatewaySession({
           incarnation: initialDeleteEntry?.sessionId,
           agentId: target.agentId,
         }),
+        kind: "delete",
+        policy: "preempt",
+        preempt: {
+          activeRun: "abort",
+          waitingInputs: "cancel",
+        },
+        // The lifecycle drain hands its external worker and terminal closures to
+        // the mutation here; controller preemption is owned by runSessionMutation.
         prepare: async () => drain?.handoffToMutation(),
         finalize: async () => drain?.release(),
         run: async () => {
@@ -349,6 +358,15 @@ export async function deleteGatewaySession({
   try {
     deletion = await deleteCurrent();
   } catch (error) {
+    if (error instanceof SessionMutationPreemptTimeoutError) {
+      return {
+        ok: false,
+        error: errorShape(
+          ErrorCodes.UNAVAILABLE,
+          `Session ${key} is still active; try again in a moment.`,
+        ),
+      };
+    }
     if (!(error instanceof SessionDeletionError)) {
       throw error;
     }

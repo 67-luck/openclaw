@@ -606,10 +606,6 @@ test("sessions.reset emits enriched session_end and session_start hooks", async 
 
 test("sessions.reset returns unavailable when active run does not stop", async () => {
   const { dir, storePath } = await seedActiveMainSession();
-  const waitCallCountAtSnapshotClear: number[] = [];
-  bootstrapCacheMocks.clearBootstrapSnapshot.mockImplementation(() => {
-    waitCallCountAtSnapshotClear.push(embeddedRunMock.waitCalls.length);
-  });
 
   beforeResetHookState.hasBeforeResetHook = true;
   embeddedRunMock.activeIds.add("sess-main");
@@ -621,14 +617,9 @@ test("sessions.reset returns unavailable when active run does not stop", async (
   expect(reset.ok).toBe(false);
   expect(reset.error?.code).toBe("UNAVAILABLE");
   expect(reset.error?.message ?? "").toMatch(/still active/i);
-  expectActiveRunCleanup(
-    "agent:main:main",
-    ["main", "agent:main:main", "sess-main"],
-    "sess-main",
-    "main",
-  );
+  expectActiveRunCleanup("agent:main:main", ["main", "agent:main:main", "sess-main"], "main");
   expect(beforeResetHookMocks.runBeforeReset).not.toHaveBeenCalled();
-  expect(waitCallCountAtSnapshotClear).toEqual([1]);
+  expect(bootstrapCacheMocks.clearBootstrapSnapshot).not.toHaveBeenCalled();
   expect(browserSessionTabMocks.closeTrackedBrowserTabsForSessions).not.toHaveBeenCalled();
 
   expect(
@@ -864,8 +855,6 @@ test("sessions.create with emitCommandHooks=true resets parent in place when ses
       storePath,
       content: "hello before /new",
     });
-    embeddedRunMock.activeIds.add("sess-parent-dms");
-
     const result = await directSessionReq<{
       ok: boolean;
       key: string;

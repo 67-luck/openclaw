@@ -199,23 +199,17 @@ export async function handleChatAbortRequestWithLifecycle(
     }
   })();
   const abortSessionEntry = abortSession.ok ? abortSession.value.entry : undefined;
-  const sessionControllerStop: ChatAbortLifecycle["additionalStop"] =
+  const controllerTargets =
     !runId && abortSession.ok && abortSession.value.storePath
-      ? {
-          capture: captureSessionControllerStop({
-            targets: [
-              captureSessionTarget({
-                storeScope: abortSession.value.storePath,
-                sessionKey: canonicalAbortSessionKey,
-                aliases: canonicalAbortSessionKey === rawSessionKey ? undefined : [rawSessionKey],
-                agentId: abortAgentId,
-                incarnation: abortSessionEntry?.sessionId,
-              }),
-            ],
+      ? [
+          captureSessionTarget({
+            storeScope: abortSession.value.storePath,
+            sessionKey: canonicalAbortSessionKey,
+            aliases: canonicalAbortSessionKey === rawSessionKey ? undefined : [rawSessionKey],
+            agentId: abortAgentId,
+            incarnation: abortSessionEntry?.sessionId,
           }),
-          cancelInput: (_input, cancel) => cancel(),
-          cancelOperation: (_operation, cancel) => cancel(),
-        }
+        ]
       : undefined;
   const stopHookContext = lifecycle.hookContext ?? {
     sessionKey: canonicalAbortSessionKey,
@@ -239,12 +233,13 @@ export async function handleChatAbortRequestWithLifecycle(
       stopReason: "rpc",
       requester,
       stopSource: "client-session",
+      controllerTargets,
       hookContext: stopHookContext,
       assertCurrent,
       preserveSideRuns,
       onAuthorizedAfterQueuedAbort: lifecycle.onAuthorizedAfterQueuedAbort,
       cascadeDescendants: lifecycle.cascadeDescendants,
-      additionalStop: lifecycle.additionalStop ?? sessionControllerStop,
+      additionalStop: lifecycle.additionalStop,
     });
     if (res.unauthorized) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unauthorized"));

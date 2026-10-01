@@ -85,7 +85,9 @@ it("runs equal logical keys in two stores independently and mutates only the sel
   const preparation = createDeferredCore();
   const mutation = runSessionMutation({
     target: a,
+    kind: "reset",
     policy: "preempt",
+    preempt: { activeRun: "abort", waitingInputs: "cancel" },
     prepare: async ({ operations }) => {
       expect(operations).toEqual([ownerA]);
       preparation.resolve();

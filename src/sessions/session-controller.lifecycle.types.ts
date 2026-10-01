@@ -29,7 +29,7 @@ export type Effect = {
 export type Mutation = {
   entries: SessionControllerEntry[];
   targets: SessionTarget[];
-  kind?: "compaction";
+  kind?: "reset" | "delete" | "compaction";
   phase: "queued" | "active" | "released";
   operations: Set<ReplyOperation>;
   ready: Deferred;

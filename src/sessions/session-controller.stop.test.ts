@@ -73,7 +73,9 @@ describe("captured session Stop", () => {
       await running.promise;
       const queued = f.reserve("queued");
       const hookEvents: InternalHookEvent[] = [];
-      const hook = vi.fn((event: InternalHookEvent) => hookEvents.push(event));
+      const hook = vi.fn((event: InternalHookEvent) => {
+        hookEvents.push(event);
+      });
       registerInternalHook("command:stop", hook);
       const stopChildren = vi.fn(async (applyParentStop: () => Promise<boolean>) => {
         await applyParentStop();

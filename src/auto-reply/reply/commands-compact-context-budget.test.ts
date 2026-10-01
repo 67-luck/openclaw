@@ -8,23 +8,34 @@ import {
 } from "./commands-agent-scope.test-support.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
-vi.mock("./commands-compact.runtime.js", () => ({
-  abortEmbeddedAgentRun: vi.fn(),
-  compactEmbeddedAgentSession: vi.fn(),
-  enqueueSystemEvent: vi.fn(),
-  formatContextUsageShort: vi.fn(() => "Context 12.1k"),
-  formatTokenCount: vi.fn((value: number) => `${value}`),
-  incrementCompactionCount: vi.fn(),
-  resolveCurrentSessionEntry: vi.fn(
-    ({ expected }: { expected: Pick<SessionEntry, "sessionId" | "lifecycleRevision"> }) => ({
-      updatedAt: 1,
-      ...expected,
+type MockSessionMutationParams = {
+  prepare?: () => Promise<void>;
+  run: () => Promise<unknown>;
+};
+
+vi.mock("./commands-compact.runtime.js", () => {
+  class SessionMutationPreemptTimeoutError extends Error {}
+  return {
+    captureSessionTarget: vi.fn((target) => target),
+    compactEmbeddedAgentSession: vi.fn(),
+    enqueueSystemEvent: vi.fn(),
+    formatContextUsageShort: vi.fn(() => "Context 12.1k"),
+    formatTokenCount: vi.fn((value: number) => `${value}`),
+    incrementCompactionCount: vi.fn(),
+    resolveCurrentSessionEntry: vi.fn(
+      ({ expected }: { expected: Pick<SessionEntry, "sessionId" | "lifecycleRevision"> }) => ({
+        updatedAt: 1,
+        ...expected,
+      }),
+    ),
+    resolveFreshSessionTotalTokens: vi.fn(() => 12_345),
+    runSessionMutation: vi.fn(async (params: MockSessionMutationParams) => {
+      await params.prepare?.();
+      return await params.run();
     }),
-  ),
-  isEmbeddedAgentRunAbortableForCompaction: vi.fn().mockReturnValue(false),
-  resolveFreshSessionTotalTokens: vi.fn(() => 12_345),
-  waitForEmbeddedAgentRunEnd: vi.fn().mockResolvedValue(true),
-}));
+    SessionMutationPreemptTimeoutError,
+  };
+});
 
 const {
   compactEmbeddedAgentSession,

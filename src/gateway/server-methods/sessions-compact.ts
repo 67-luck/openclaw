@@ -21,9 +21,8 @@ import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
   captureSessionTarget,
-  isCompetingSessionControllerWorkActive,
-  hasSessionControllerQueuedWork,
   runSessionMutation,
+  SessionMutationPreemptTimeoutError,
 } from "../../sessions/session-controller.lifecycle.js";
 import { recordSessionCompacted } from "../../sessions/session-state-events.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
@@ -187,7 +186,6 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
       let sessionStillCurrent = true;
       let compactionNoopReason: string | undefined;
       let blockedByActiveRun = false;
-      let blockedByQueuedWork = false;
       await runSessionMutation({
         target: captureSessionTarget({
           storeScope: storePath,
@@ -197,6 +195,12 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
           agentId: target.agentId,
         }),
         kind: "compaction",
+        policy: "preempt",
+        preempt: {
+          activeRun: "abort-if-abortable",
+          waitingInputs: "keep",
+          shouldPreempt: () => sessionStillCurrent && compactionNoopReason === undefined,
+        },
         signal: abortSignal,
         prepare: async () => {
           assertRequestCurrent();
@@ -222,7 +226,6 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
             }
           }
           blockedByActiveRun =
-            isCompetingSessionControllerWorkActive(storePath, lifecycleIdentities) ||
             (asWorkerInferenceControl(context.workerEnvironmentService)?.hasInferenceForSession(
               sessionId,
             ) ??
@@ -235,9 +238,6 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
               agentId: requestedAgentId,
               defaultAgentId: compatibilityDefaultAgentId,
             }).active;
-          // Accepted work can live only in its command lane; waiting behind it
-          // while holding the lifecycle fence would deadlock or drop that turn.
-          blockedByQueuedWork = hasSessionControllerQueuedWork(storePath, lifecycleIdentities);
         },
         run: async () => {
           assertRequestCurrent();
@@ -255,17 +255,6 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
           }
           if (compactionNoopReason) {
             respondNotCompacted({ ok: false, reason: compactionNoopReason });
-            return;
-          }
-          if (blockedByQueuedWork) {
-            respond(
-              false,
-              undefined,
-              errorShape(
-                ErrorCodes.INVALID_REQUEST,
-                `Session ${key} has queued work; retry after it finishes.`,
-              ),
-            );
             return;
           }
           if (blockedByActiveRun) {
@@ -474,6 +463,17 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
         },
       });
     } catch (err) {
+      if (err instanceof SessionMutationPreemptTimeoutError) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `Session ${key} has an active run; retry after it finishes.`,
+          ),
+        );
+        return;
+      }
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(err)));
     } finally {
       capturedOperator?.release();

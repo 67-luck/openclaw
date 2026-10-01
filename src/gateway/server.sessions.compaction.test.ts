@@ -746,54 +746,19 @@ test("sessions.compact returns a no-op without interrupting an active admission"
   }
 });
 
-test("sessions.compact refuses real compaction without interrupting an active admission", async () => {
-  const { storePath, sessionId } = await createCompactionSession("sess-compact-queued-work");
-  embeddedRunMock.compactEmbeddedAgentSession.mockResolvedValueOnce({
-    ok: true,
-    compacted: true,
-    result: {
-      summary: "summary",
-      firstKeptEntryId: "entry-1",
-      tokensBefore: 120,
-      tokensAfter: 80,
-    },
-  });
-
-  let interrupted = false;
-  const admission = await beginSessionEffect({
-    scope: storePath,
-    identities: ["main", "agent:main:main", sessionId],
-    assertAllowed: () => {},
-    onInterrupt: () => {
-      interrupted = true;
-    },
-  });
-
-  const { ws } = await openClient();
-  try {
-    const compacted = await rpcReq(ws, "sessions.compact", { key: "main" });
-
-    expect(compacted.ok).toBe(false);
-    expect(compacted.error).toMatchObject({
-      code: "INVALID_REQUEST",
-      message: expect.stringContaining("has an active run"),
-    });
-    expect(interrupted).toBe(false);
-    expect(isSessionControllerWorkActive(storePath, [sessionId])).toBe(true);
-    expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
-    expectNoSessionQueueCleanup();
-  } finally {
-    admission.release();
-    ws.close();
-  }
-});
-
 test("sessions.compact preserves accepted queued follow-up work", async () => {
-  const { sessionKey } = await createCompactionSession("sess-compact-followup-queue");
+  const { sessionKey, sessionId, storePath } = await createCompactionSession(
+    "sess-compact-followup-queue",
+  );
   const queuedRun = {
     prompt: "please also update the changelog",
     enqueuedAt: Date.now(),
-    run: {},
+    run: {
+      sessionKey,
+      sessionId,
+      agentId: "main",
+      config: { session: { store: storePath } },
+    },
   } as unknown as FollowupRun;
   expect(
     enqueueFollowupRun(
@@ -810,13 +775,9 @@ test("sessions.compact preserves accepted queued follow-up work", async () => {
   try {
     const compacted = await rpcReq(ws, "sessions.compact", { key: "main" });
 
-    expect(compacted.ok).toBe(false);
-    expect(compacted.error).toMatchObject({
-      code: "INVALID_REQUEST",
-      message: "Session main has queued work; retry after it finishes.",
-    });
+    expect(compacted.ok).toBe(true);
     expect(getExistingFollowupQueue(sessionKey)?.items).toHaveLength(1);
-    expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
+    expect(embeddedRunMock.compactEmbeddedAgentSession).toHaveBeenCalledOnce();
     expectNoSessionQueueCleanup();
   } finally {
     clearFollowupQueue(sessionKey);
@@ -860,17 +821,13 @@ test.each([
 
     const compacted = await rpcReq(ws, "sessions.compact", { key: "main" });
 
-    expect(compacted.ok).toBe(false);
-    expect(compacted.error).toMatchObject({
-      code: "INVALID_REQUEST",
-      message: "Session main has queued work; retry after it finishes.",
-    });
+    expect(compacted.ok).toBe(true);
     expect(Boolean(getExistingFollowupQueue(sessionKey)?.inFlight.has(queuedRun))).toBe(
       withFollowup,
     );
     expect(getCommandLaneSnapshot(lane).queuedCount).toBe(1);
     expect(commandRan).toBe(false);
-    expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
+    expect(embeddedRunMock.compactEmbeddedAgentSession).toHaveBeenCalledOnce();
     expectNoSessionQueueCleanup();
   } finally {
     if (followupClaim) {
@@ -886,12 +843,19 @@ test.each([
 });
 
 test("sessions.compact preserves summary-elided queued follow-up work", async () => {
-  const { sessionKey } = await createCompactionSession("sess-compact-elided-followup-queue");
+  const { sessionKey, sessionId, storePath } = await createCompactionSession(
+    "sess-compact-elided-followup-queue",
+  );
   const queue = getFollowupQueue(sessionKey, { mode: "followup" });
   const elidedRun = {
     prompt: "please also update the changelog",
     enqueuedAt: Date.now(),
-    run: {},
+    run: {
+      sessionKey,
+      sessionId,
+      agentId: "main",
+      config: { session: { store: storePath } },
+    },
   } as unknown as FollowupRun;
   queue.droppedCount = 1;
   queue.summaryElisions.push({
@@ -906,13 +870,9 @@ test("sessions.compact preserves summary-elided queued follow-up work", async ()
   try {
     const compacted = await rpcReq(ws, "sessions.compact", { key: "main" });
 
-    expect(compacted.ok).toBe(false);
-    expect(compacted.error).toMatchObject({
-      code: "INVALID_REQUEST",
-      message: "Session main has queued work; retry after it finishes.",
-    });
+    expect(compacted.ok).toBe(true);
     expect(getExistingFollowupQueue(sessionKey)?.summaryElisions).toHaveLength(1);
-    expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
+    expect(embeddedRunMock.compactEmbeddedAgentSession).toHaveBeenCalledOnce();
     expectNoSessionQueueCleanup();
   } finally {
     clearFollowupQueue(sessionKey);

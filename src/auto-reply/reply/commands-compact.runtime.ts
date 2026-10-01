@@ -15,12 +15,12 @@ export function resolveCurrentSessionEntry(params: {
     : undefined;
 }
 
+export { compactEmbeddedAgentSession } from "../../agents/embedded-agent.js";
 export {
-  abortEmbeddedAgentRun,
-  compactEmbeddedAgentSession,
-  isEmbeddedAgentRunAbortableForCompaction,
-  waitForEmbeddedAgentRunEnd,
-} from "../../agents/embedded-agent.js";
+  captureSessionTarget,
+  runSessionMutation,
+  SessionMutationPreemptTimeoutError,
+} from "../../sessions/session-controller.lifecycle.js";
 export { resolveFreshSessionTotalTokens } from "../../config/sessions.js";
 export { enqueueSystemEvent } from "../../infra/system-events.js";
 export { formatContextUsageShort, formatTokenCount } from "../status.js";

@@ -167,6 +167,7 @@ policy table:
 | `channel-user` (fast path, `/stop`, bare stop word)       | Abort                              | Cancel all                       | Stop                                         | Record when the message has an identity | Fire once           |
 | `client-session` (`chat.abort`/`sessions.abort`)          | Abort                              | Cancel all                       | Stop; preserve `cascadeDescendants` behavior | Skip                                    | Fire once           |
 | `client-run` (client abort with one run ID)               | Abort only when that run is active | Cancel only that input if queued | Stop that turn's subagents                   | Skip                                    | Fire once           |
+| `mutation`                                                | Per mutation                       | Per mutation                     | Per mutation                                 | Skip                                    | No                  |
 | `interrupt`                                               | Abort                              | Keep                             | Keep                                         | Skip                                    | No                  |
 | `restart`, `watchdog`, `operator-revocation`, `supersede` | Abort                              | Keep                             | Keep                                         | Skip                                    | No                  |
 
@@ -186,16 +187,28 @@ will refuse.
 
 ## Lifecycle mutations
 
-`/new` and `/reset` preempt competing work. Manual `/compact` currently attempts
-to abort an abortable active run and waits for settlement. Delete uses the
-existing lifecycle drain and its authorization checks. These policies remain explicit in their adapters; sharing and access mutations
-can allow live execution, while background result commits wait.
+Reset, delete, and manual compaction preempt through Stop with source `mutation`:
+
+| Mutation                                             | Active run              | Waiting inputs | Controlled subagents |
+| ---------------------------------------------------- | ----------------------- | -------------- | -------------------- |
+| Reset (`/new`, `/reset`, `sessions.reset`, rollover) | Abort                   | Cancel         | Stop                 |
+| Delete (`sessions.delete`)                           | Abort                   | Cancel         | Keep during preempt  |
+| Manual compact (`/compact`, `sessions.compact`)      | Abort only if abortable | Keep           | Keep                 |
+
+Delete retains its later lifecycle cleanup, which stops controlled subagents after
+preemption. Sharing and access mutations can allow live execution, while background
+result commits wait.
 
 A mutation closes competing admission, targets exact current owners, waits for
 real settlement, and then acquires its mutation boundary. In-band commands must
 not wait for their own admitted stack. Multi-identity and cross-store ordering belongs to the lifecycle owner.
 Physical transaction, writer, and worker-placement fences remain subordinate
 effect custody, not competing turn selectors.
+
+Preemption settlement is bounded to 15 seconds by default. The bound covers Stop,
+captured effects, and retiring sources, but not the mutation body. Expiry rejects
+with `SessionMutationPreemptTimeoutError`; adapters preserve their existing RPC or
+command timeout result.
 
 An interrupted lease is not a released writer. Clearing a slot or expiring a
 wait cannot authorize reset or deletion while old write-capable work remains

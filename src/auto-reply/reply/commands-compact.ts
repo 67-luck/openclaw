@@ -269,201 +269,225 @@ export async function handleCompactCommand(
     return failure;
   }
   assertOwnerBeforeAcceptance();
-  if (runtime.isEmbeddedAgentRunAbortableForCompaction(sessionId)) {
-    runtime.abortEmbeddedAgentRun(sessionId);
-    const drained = await runtime.waitForEmbeddedAgentRunEnd(sessionId, 15_000);
-    failure = authorityFailure();
-    if (failure) {
-      return failure;
-    }
-    assertOwnerBeforeAcceptance();
-    if (!drained) {
+  try {
+    return await runtime.runSessionMutation({
+      target: runtime.captureSessionTarget({
+        storeScope: compactionStorePath,
+        sessionKey: params.sessionKey,
+        aliases: [sessionId],
+        incarnation: sessionId,
+        agentId: sessionAgentId,
+      }),
+      kind: "compaction",
+      policy: "preempt",
+      preempt: {
+        activeRun: "abort-if-abortable",
+        waitingInputs: "keep",
+        shouldPreempt: () => failure === undefined,
+      },
+      prepare: async () => {
+        failure = authorityFailure();
+        if (!failure) {
+          assertOwnerBeforeAcceptance();
+        }
+      },
+      run: async () => {
+        if (failure) {
+          return failure;
+        }
+        const thinkLevel =
+          params.resolvedThinkLevel ?? (await params.resolveDefaultThinkingLevel());
+        failure = authorityFailure();
+        if (failure) {
+          return failure;
+        }
+        assertOwnerBeforeAcceptance();
+        // Capture the current row after preemption instead of accounting against
+        // the command's older snapshot.
+        const refreshedEntry = resolveCurrentEntry();
+        if (!refreshedEntry) {
+          return compactionUnavailable(
+            "command session changed",
+            "⚙️ Compaction unavailable: command session changed.",
+          );
+        }
+        expectedSession = refreshedEntry;
+        if (params.sessionStore) {
+          params.sessionStore[params.sessionKey] = refreshedEntry;
+        }
+        const compactionCliTarget = resolveManualCompactionCliTarget({
+          provider: params.provider,
+          entry: refreshedEntry,
+          cfg: params.cfg,
+        });
+        const replyOperation = params.opts?.replyOperation;
+        replyOperation?.setPhase("preflight_compacting");
+        const assertActive = () => {
+          assertOwnerBeforeAcceptance();
+          params.opts?.abortSignal?.throwIfAborted();
+          params.commandInvocationSignal?.throwIfAborted();
+          const current = resolveCurrentEntry();
+          if (!current || current.activeWriterRunId !== expectedSession.activeWriterRunId) {
+            throw new Error("command session changed");
+          }
+        };
+        const compaction = runtime.compactEmbeddedAgentSession(
+          {
+            abortSignal: params.opts?.abortSignal,
+            contextEngineAgentId: sessionAgentId,
+            sessionId,
+            sessionKey: params.sessionKey,
+            sessionTarget: {
+              agentId: sessionAgentId,
+              sessionId,
+              sessionKey: params.sessionKey,
+              storePath: compactionStorePath,
+            },
+            allowGatewaySubagentBinding: true,
+            messageChannel: params.command.channel,
+            clientCaps: params.ctx.GatewayClientCaps,
+            conversationToolPolicy: params.ctx.ConversationToolPolicy,
+            groupId: expectedSession.groupId,
+            groupChannel: expectedSession.groupChannel,
+            groupSpace: expectedSession.space,
+            spawnedBy: expectedSession.spawnedBy,
+            senderId: params.command.senderId,
+            senderName: params.ctx.SenderName,
+            senderUsername: params.ctx.SenderUsername,
+            senderE164: params.ctx.SenderE164,
+            inputProvenance: params.ctx.InputProvenance,
+            sessionFile: params.sessionKey,
+            workspaceDir: params.workspaceDir,
+            agentDir: sessionAgentDir,
+            config: params.cfg,
+            // Group session keys carry no account identity, so without this manual
+            // /compact resolves the root history limit while prompt preparation used the
+            // account limit.
+            agentAccountId: params.ctx.AccountId,
+            conversationRoutePeerId: params.ctx.ConversationRoutePeerId,
+            chatType: normalizeChatType(params.ctx.ChatType),
+            skillsSnapshot: expectedSession.skillsSnapshot,
+            provider: params.provider,
+            model: params.model,
+            authProfileId:
+              compactionCliTarget.cliSessionBinding?.authProfileId ??
+              expectedSession.authProfileOverride,
+            authProfileIdSource: resolveCollapsedSessionAuthPinSource(expectedSession),
+            contextTokenBudget,
+            agentHarnessId: compactionCliTarget.agentHarnessId,
+            cliSessionId: compactionCliTarget.cliSessionId,
+            cliSessionBinding: compactionCliTarget.cliSessionBinding,
+            sessionEntry: expectedSession,
+            modelSelectionLocked: expectedSession.modelSelectionLocked === true,
+            thinkLevel,
+            bashElevated: {
+              enabled: false,
+              allowed: false,
+              defaultLevel: "off",
+            },
+            customInstructions,
+            trigger: "manual",
+            ownerNumbers: resolveOwnerPromptNumbers({
+              ownerNumbers: params.command.ownerList,
+              senderId: params.command.senderId,
+              senderIsOwner: params.command.senderIsOwner,
+            }),
+          },
+          {
+            assertActive,
+            sourceAuthority: { assertActive, operatorAuthority },
+            onCommitted: (accepted) => {
+              compactionAccepted = true;
+              // Update the expectation before identity observers run, not from public result metadata.
+              expectedSession = accepted.entry;
+              if (params.sessionStore) {
+                params.sessionStore[params.sessionKey] = accepted.entry;
+              }
+            },
+            onHostCompactionCommitted: () => {
+              compactionAccepted = true;
+            },
+          },
+        );
+        const result = await compaction.finally(() => replyOperation?.setPhase("running"));
+
+        const tokensAfterCompaction = result.result?.tokensAfter;
+        const didCompact = result.ok && result.compacted;
+        const compactLabel =
+          result.ok || isBenignCompactionSkipResult(result)
+            ? didCompact
+              ? result.compactionKind === "server-endpoint" &&
+                typeof tokensAfterCompaction === "number" &&
+                result.result?.tokensBefore != null
+                ? `Server-side compaction (${runtime.formatTokenCount(result.result.tokensBefore)} → ${runtime.formatTokenCount(tokensAfterCompaction)})`
+                : typeof tokensAfterCompaction !== "number"
+                  ? "Compaction finished (resulting context unknown)"
+                  : result.result?.tokensBefore != null
+                    ? `Compacted (${runtime.formatTokenCount(result.result.tokensBefore)} → ${runtime.formatTokenCount(tokensAfterCompaction)})`
+                    : "Compacted"
+              : "Compaction skipped"
+            : "Compaction failed";
+        if (didCompact) {
+          const compactionCount = await runtime.incrementCompactionCount({
+            agentId: sessionAgentId,
+            sessionEntry: expectedSession,
+            sessionStore: params.sessionStore,
+            sessionKey: params.sessionKey,
+            storePath: compactionStorePath,
+            tokensAfter: result.result?.tokensAfter,
+            compactionKind: result.compactionKind,
+            expectedSession,
+          });
+          if (compactionCount === undefined) {
+            return (
+              authorityFailure() ??
+              compactionUnavailable(
+                "session accounting failed",
+                "⚙️ Compaction unavailable: session accounting failed.",
+              )
+            );
+          }
+        }
+        failure = authorityFailure();
+        if (failure) {
+          return failure;
+        }
+        const totalTokens = didCompact
+          ? tokensAfterCompaction
+          : runtime.resolveFreshSessionTotalTokens(targetSessionEntry);
+        const contextSummary = runtime.formatContextUsageShort(
+          typeof totalTokens === "number" && totalTokens > 0 ? totalTokens : null,
+          contextTokenBudget ?? null,
+        );
+        const reason = formatCompactionReason(result.reason);
+        const line = reason
+          ? `${compactLabel}: ${reason} • ${contextSummary}`
+          : `${compactLabel} • ${contextSummary}`;
+        runtime.enqueueSystemEvent(line, {
+          sessionKey: resolveSystemEventQueueKey(params.sessionKey, sessionAgentId),
+        });
+        return {
+          shouldContinue: false,
+          sessionCompaction: {
+            compacted: didCompact,
+            reason: result.reason,
+            tokensBefore: result.result?.tokensBefore,
+            tokensAfter: tokensAfterCompaction,
+          },
+          reply: {
+            text: `⚙️ ${line}`,
+            isStatusNotice: true,
+          },
+        };
+      },
+    });
+  } catch (error) {
+    if (error instanceof runtime.SessionMutationPreemptTimeoutError) {
       return compactionUnavailable(
         "the previous run is still stopping",
         "⚙️ Compaction unavailable: the previous run is still stopping.",
       );
     }
+    throw error;
   }
-  const thinkLevel = params.resolvedThinkLevel ?? (await params.resolveDefaultThinkingLevel());
-  failure = authorityFailure();
-  if (failure) {
-    return failure;
-  }
-  assertOwnerBeforeAcceptance();
-  // Draining a run does not clear its durable writer fence. Capture the current
-  // row after the drain instead of accounting against the command's older snapshot.
-  const refreshedEntry = resolveCurrentEntry();
-  if (!refreshedEntry) {
-    return compactionUnavailable(
-      "command session changed",
-      "⚙️ Compaction unavailable: command session changed.",
-    );
-  }
-  expectedSession = refreshedEntry;
-  if (params.sessionStore) {
-    params.sessionStore[params.sessionKey] = refreshedEntry;
-  }
-  const compactionCliTarget = resolveManualCompactionCliTarget({
-    provider: params.provider,
-    entry: refreshedEntry,
-    cfg: params.cfg,
-  });
-  const replyOperation = params.opts?.replyOperation;
-  replyOperation?.setPhase("preflight_compacting");
-  const assertActive = () => {
-    assertOwnerBeforeAcceptance();
-    params.opts?.abortSignal?.throwIfAborted();
-    params.commandInvocationSignal?.throwIfAborted();
-    const current = resolveCurrentEntry();
-    if (!current || current.activeWriterRunId !== expectedSession.activeWriterRunId) {
-      throw new Error("command session changed");
-    }
-  };
-  const compaction = runtime.compactEmbeddedAgentSession(
-    {
-      abortSignal: params.opts?.abortSignal,
-      contextEngineAgentId: sessionAgentId,
-      sessionId,
-      sessionKey: params.sessionKey,
-      sessionTarget: {
-        agentId: sessionAgentId,
-        sessionId,
-        sessionKey: params.sessionKey,
-        storePath: compactionStorePath,
-      },
-      allowGatewaySubagentBinding: true,
-      messageChannel: params.command.channel,
-      clientCaps: params.ctx.GatewayClientCaps,
-      conversationToolPolicy: params.ctx.ConversationToolPolicy,
-      groupId: expectedSession.groupId,
-      groupChannel: expectedSession.groupChannel,
-      groupSpace: expectedSession.space,
-      spawnedBy: expectedSession.spawnedBy,
-      senderId: params.command.senderId,
-      senderName: params.ctx.SenderName,
-      senderUsername: params.ctx.SenderUsername,
-      senderE164: params.ctx.SenderE164,
-      inputProvenance: params.ctx.InputProvenance,
-      sessionFile: params.sessionKey,
-      workspaceDir: params.workspaceDir,
-      agentDir: sessionAgentDir,
-      config: params.cfg,
-      // Group session keys carry no account identity, so without this manual
-      // /compact resolves the root history limit while prompt preparation used the
-      // account limit.
-      agentAccountId: params.ctx.AccountId,
-      conversationRoutePeerId: params.ctx.ConversationRoutePeerId,
-      chatType: normalizeChatType(params.ctx.ChatType),
-      skillsSnapshot: expectedSession.skillsSnapshot,
-      provider: params.provider,
-      model: params.model,
-      authProfileId:
-        compactionCliTarget.cliSessionBinding?.authProfileId ?? expectedSession.authProfileOverride,
-      authProfileIdSource: resolveCollapsedSessionAuthPinSource(expectedSession),
-      contextTokenBudget,
-      agentHarnessId: compactionCliTarget.agentHarnessId,
-      cliSessionId: compactionCliTarget.cliSessionId,
-      cliSessionBinding: compactionCliTarget.cliSessionBinding,
-      sessionEntry: expectedSession,
-      modelSelectionLocked: expectedSession.modelSelectionLocked === true,
-      thinkLevel,
-      bashElevated: {
-        enabled: false,
-        allowed: false,
-        defaultLevel: "off",
-      },
-      customInstructions,
-      trigger: "manual",
-      ownerNumbers: resolveOwnerPromptNumbers({
-        ownerNumbers: params.command.ownerList,
-        senderId: params.command.senderId,
-        senderIsOwner: params.command.senderIsOwner,
-      }),
-    },
-    {
-      assertActive,
-      sourceAuthority: { assertActive, operatorAuthority },
-      onCommitted: (accepted) => {
-        compactionAccepted = true;
-        // Update the expectation before identity observers run, not from public result metadata.
-        expectedSession = accepted.entry;
-        if (params.sessionStore) {
-          params.sessionStore[params.sessionKey] = accepted.entry;
-        }
-      },
-      onHostCompactionCommitted: () => {
-        compactionAccepted = true;
-      },
-    },
-  );
-  const result = await compaction.finally(() => replyOperation?.setPhase("running"));
-
-  const tokensAfterCompaction = result.result?.tokensAfter;
-  const didCompact = result.ok && result.compacted;
-  const compactLabel =
-    result.ok || isBenignCompactionSkipResult(result)
-      ? didCompact
-        ? result.compactionKind === "server-endpoint" &&
-          typeof tokensAfterCompaction === "number" &&
-          result.result?.tokensBefore != null
-          ? `Server-side compaction (${runtime.formatTokenCount(result.result.tokensBefore)} → ${runtime.formatTokenCount(tokensAfterCompaction)})`
-          : typeof tokensAfterCompaction !== "number"
-            ? "Compaction finished (resulting context unknown)"
-            : result.result?.tokensBefore != null
-              ? `Compacted (${runtime.formatTokenCount(result.result.tokensBefore)} → ${runtime.formatTokenCount(tokensAfterCompaction)})`
-              : "Compacted"
-        : "Compaction skipped"
-      : "Compaction failed";
-  if (didCompact) {
-    const compactionCount = await runtime.incrementCompactionCount({
-      agentId: sessionAgentId,
-      sessionEntry: expectedSession,
-      sessionStore: params.sessionStore,
-      sessionKey: params.sessionKey,
-      storePath: compactionStorePath,
-      tokensAfter: result.result?.tokensAfter,
-      compactionKind: result.compactionKind,
-      expectedSession,
-    });
-    if (compactionCount === undefined) {
-      return (
-        authorityFailure() ??
-        compactionUnavailable(
-          "session accounting failed",
-          "⚙️ Compaction unavailable: session accounting failed.",
-        )
-      );
-    }
-  }
-  failure = authorityFailure();
-  if (failure) {
-    return failure;
-  }
-  const totalTokens = didCompact
-    ? tokensAfterCompaction
-    : runtime.resolveFreshSessionTotalTokens(targetSessionEntry);
-  const contextSummary = runtime.formatContextUsageShort(
-    typeof totalTokens === "number" && totalTokens > 0 ? totalTokens : null,
-    contextTokenBudget ?? null,
-  );
-  const reason = formatCompactionReason(result.reason);
-  const line = reason
-    ? `${compactLabel}: ${reason} • ${contextSummary}`
-    : `${compactLabel} • ${contextSummary}`;
-  runtime.enqueueSystemEvent(line, {
-    sessionKey: resolveSystemEventQueueKey(params.sessionKey, sessionAgentId),
-  });
-  return {
-    shouldContinue: false,
-    sessionCompaction: {
-      compacted: didCompact,
-      reason: result.reason,
-      tokensBefore: result.result?.tokensBefore,
-      tokensAfter: tokensAfterCompaction,
-    },
-    reply: {
-      text: `⚙️ ${line}`,
-      isStatusNotice: true,
-    },
-  };
 }

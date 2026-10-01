@@ -40,8 +40,11 @@ export function createSessionResetCleanupGuard(params: {
 
 /** Reset must report unfinished child cleanup before committing a fresh conversation. */
 export async function stopSessionResetSubagents(
-  params: Parameters<typeof killSessionSubagentRuns>[0] & { assertCurrent: () => void },
-): Promise<void> {
+  params: Parameters<typeof killSessionSubagentRuns>[0] & {
+    assertCurrent: () => void;
+    beforeKill?: () => boolean | Promise<boolean>;
+  },
+): Promise<{ stopped: number; failed: number }> {
   try {
     // Hooks and child finalizers can yield after reset accepted its parent. Fence
     // that incarnation before selection and at every child cancellation boundary.
@@ -51,6 +54,7 @@ export async function stopSessionResetSubagents(
     if (result.status === "error") {
       throw new Error(result.error);
     }
+    return { stopped: result.killed, failed: 0 };
   } catch (cause) {
     if (cause instanceof SessionResetCleanupError) {
       throw cause;

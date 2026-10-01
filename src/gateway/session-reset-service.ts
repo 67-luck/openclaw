@@ -27,6 +27,7 @@ import {
 import { clearAllCliSessions } from "../agents/cli-session.js";
 import { resetRegisteredAgentHarnessSessions } from "../agents/harness/registry.js";
 import { acquireAgentRuntimeCleanupRegistries } from "../agents/prepared-model-runtime.js";
+import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import {
@@ -80,10 +81,9 @@ import {
 import {
   captureSessionTarget,
   hasOnlySessionMutationKindActive,
-  interruptSessionControllerEffects,
   isSessionMutationActive,
   runSessionMutation,
-  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+  SessionMutationPreemptTimeoutError,
 } from "../sessions/session-controller.lifecycle.js";
 import { isSessionRunActive } from "../sessions/session-controller.queries.js";
 import { recordSessionCreated } from "../sessions/session-created.js";
@@ -91,8 +91,6 @@ import {
   handleSessionStateSessionDeleted,
   handleSessionStateSessionReset,
 } from "../sessions/session-state-events.js";
-import { resolveGlobalSingleton } from "../shared/global-singleton.js";
-import { getOrCreatePromise } from "../shared/lazy-promise.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "./operator-role-policy.js";
 import { ADMIN_SCOPE } from "./operator-scopes.js";
 import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
@@ -165,27 +163,6 @@ async function resetSessionAgentHarnesses(params: {
   params.assertCurrent?.();
 }
 
-type McpRunEndWatcherState = {
-  cancellations: Map<string, () => void>;
-  retirements: Set<Promise<void>>;
-  watchers: Map<string, Promise<void>>;
-};
-
-const mcpRunEndWatcherState = resolveGlobalSingleton<McpRunEndWatcherState>(
-  Symbol.for("openclaw.mcpRunEndWatchers"),
-  () => ({ cancellations: new Map(), retirements: new Set(), watchers: new Map() }),
-  async (state) => {
-    for (const cancel of state.cancellations.values()) {
-      cancel();
-    }
-    await Promise.allSettled([...state.watchers.values(), ...state.retirements]);
-    state.cancellations.clear();
-    state.retirements.clear();
-    state.watchers.clear();
-  },
-);
-const mcpRunEndWatchers = mcpRunEndWatcherState.watchers;
-
 async function ensureSessionRuntimeCleanup(params: {
   cfg: OpenClawConfig;
   key: string;
@@ -203,8 +180,7 @@ async function ensureSessionRuntimeCleanup(params: {
     assertCurrent: params.assertCurrent,
   });
   // Cleanup needs the active-run owner, not the runner and compaction orchestration.
-  const [embeddedAgent, mcpTools, { clearFinishedSessionsForScopes }] = await Promise.all([
-    import("../agents/embedded-agent-runner/runs.js"),
+  const [mcpTools, { clearFinishedSessionsForScopes }] = await Promise.all([
     import("../agents/agent-bundle-mcp-tools.js"),
     import("../agents/bash-process-registry.js"),
   ]);
@@ -224,22 +200,6 @@ async function ensureSessionRuntimeCleanup(params: {
     assertCurrent();
   };
 
-  try {
-    assertCurrent();
-    await stopSessionResetSubagents({
-      cfg: params.cfg,
-      sessionKey: params.target.canonicalKey,
-      agentId: resolveLifecycleAgentId(params.cfg, params.target.agentId),
-      assertCurrent,
-    });
-  } catch (error) {
-    if (error instanceof SessionResetCleanupError) {
-      return errorShape(ErrorCodes.UNAVAILABLE, error.message);
-    }
-    throw error;
-  }
-  // Parent admissions are already drained. Reject stale or incomplete child cleanup
-  // before discarding queues or interrupting a newly accepted reply operation.
   assertCurrent();
   const queueKeys = new Set<string>(params.target.storeKeys);
   queueKeys.add(params.target.canonicalKey);
@@ -286,81 +246,19 @@ async function ensureSessionRuntimeCleanup(params: {
       },
     });
   };
-  const ensureMcpRetirementWatcher = (): Promise<void> => {
-    return getOrCreatePromise(
-      mcpRunEndWatchers,
-      sessionId,
-      async () => {
-        let cancelWatcher = () => {};
-        const cancelled = new Promise<false>((resolve) => {
-          cancelWatcher = () => resolve(false);
-        });
-        mcpRunEndWatcherState.cancellations.set(sessionId, cancelWatcher);
-        try {
-          while (
-            await Promise.race([
-              embeddedAgent.waitForEmbeddedAgentRunEnd(sessionId, null),
-              cancelled,
-            ])
-          ) {
-            // A replacement can register after the wait promise settles but before
-            // this continuation runs. Keep the required retirement armed for it.
-            if (isSessionRunActive(sessionId)) {
-              continue;
-            }
-            const retirement = retireMcpRuntime(false);
-            mcpRunEndWatcherState.retirements.add(retirement);
-            try {
-              await retirement;
-            } finally {
-              mcpRunEndWatcherState.retirements.delete(retirement);
-            }
-            if (isSessionRunActive(sessionId)) {
-              continue;
-            }
-            cleanupProviderResources();
-            return;
-          }
-        } catch (error) {
-          logVerbose(
-            `sessions cleanup: failed to disarm deferred MCP retirement: ${String(error)}`,
-          );
-        } finally {
-          if (mcpRunEndWatcherState.cancellations.get(sessionId) === cancelWatcher) {
-            mcpRunEndWatcherState.cancellations.delete(sessionId);
-          }
-        }
-      },
-      { evictOnSettled: true },
-    );
-  };
-  // Register against the run being stopped before abort or any await allows a
-  // later embedded or reply-backed run to replace it in the active registry.
-  const mcpRetirementWatcher = ensureMcpRetirementWatcher();
-  embeddedAgent.abortEmbeddedAgentRun(sessionId);
-  // Mark cleanup before waiting so the timeout path cannot strand MCP children.
-  // Active tool/app leases keep in-flight work alive until their final release.
-  await retireMcpRuntime(true);
-  const ended = await embeddedAgent.waitForEmbeddedAgentRunEnd(sessionId, 15_000);
   assertCurrent();
-  // A stopping run can create or reuse its runtime while we wait. Retire again
-  // after a clean stop; otherwise keep the required marker armed for late work.
-  await retireMcpRuntime(!ended);
+  if (isSessionRunActive(sessionId)) {
+    return errorShape(
+      ErrorCodes.UNAVAILABLE,
+      `Session ${params.key} is still active; try again in a moment.`,
+    );
+  }
+  await retireMcpRuntime(false);
   assertCurrent();
   clearBootstrapSnapshot(params.target.canonicalKey);
-  if (ended && !isSessionRunActive(sessionId)) {
-    assertCurrent();
-    mcpRunEndWatcherState.cancellations.get(sessionId)?.();
-    await mcpRetirementWatcher;
-    assertCurrent();
-    cleanupProviderResources();
-    await closeTrackedBrowserTabs();
-    return undefined;
-  }
-  return errorShape(
-    ErrorCodes.UNAVAILABLE,
-    `Session ${params.key} is still active; try again in a moment.`,
-  );
+  cleanupProviderResources();
+  await closeTrackedBrowserTabs();
+  return undefined;
 }
 
 export async function cleanupSessionBeforeMutation(params: {
@@ -374,6 +272,27 @@ export async function cleanupSessionBeforeMutation(params: {
   onAcpResetMeta?: (params: { sessionKey: string; meta: SessionAcpMeta }) => void;
   assertCurrent?: () => void;
 }) {
+  if (params.reason === "session-delete") {
+    const assertCurrent = createSessionResetCleanupGuard({
+      storePath: params.target.storePath,
+      sessionKey: params.target.canonicalKey,
+      expectedSession: params.entry,
+      assertCurrent: params.assertCurrent,
+    });
+    try {
+      await stopSessionResetSubagents({
+        cfg: params.cfg,
+        sessionKey: params.target.canonicalKey,
+        agentId: resolveLifecycleAgentId(params.cfg, params.target.agentId),
+        assertCurrent,
+      });
+    } catch (error) {
+      if (error instanceof SessionResetCleanupError) {
+        return errorShape(ErrorCodes.UNAVAILABLE, error.message);
+      }
+      throw error;
+    }
+  }
   const cleanupError = await ensureSessionRuntimeCleanup({
     cfg: params.cfg,
     key: params.key,
@@ -709,712 +628,741 @@ export async function performGatewaySessionReset(params: {
       ),
     };
   }
-  let admittedWorkReleased = true;
   let resetPreparationError: ReturnType<typeof errorShape> | undefined;
   let preparedResetSessionId: string | undefined;
+  let preparedResetEntry: SessionEntry | undefined;
   let preparedLifecycle: SessionLifecycle.PreparedGatewaySessionLifecycle | undefined;
   let lifecyclePreparationCommitted = false;
-  return await runSessionMutation({
-    target: captureSessionTarget({
-      storeScope: resetTarget.storePath,
-      sessionKey: resetTarget.target.canonicalKey,
-      aliases: resetLifecycleIdentities,
-      agentId: resetTarget.target.agentId,
-    }),
-    // Mark the mutation first, then interrupt outside the identity lock. This
-    // lets aborted runs finish admission cleanup without deadlocking reset.
-    prepare: async () => {
-      params.assertCurrent?.();
-      params.assertAuthorizedInstance?.();
-      const { entry: currentEntry, canonicalKey: currentCanonicalKey } = loadSessionEntry(
-        params.key,
-        resetTarget.requestedAgentId ? { agentId: resetTarget.requestedAgentId } : undefined,
-      );
-      if (!expectedSessionMatches(currentEntry)) {
-        resetPreparationError = sessionChangedError();
-        return;
-      }
-      if (!currentEntry) {
-        resetPreparationError = authorizeResetCreation();
+  try {
+    return await runSessionMutation({
+      target: captureSessionTarget({
+        storeScope: resetTarget.storePath,
+        sessionKey: resetTarget.target.canonicalKey,
+        aliases: resetLifecycleIdentities,
+        agentId: resetTarget.target.agentId,
+      }),
+      kind: "reset",
+      policy: "preempt",
+      preempt: {
+        activeRun: "abort",
+        waitingInputs: "cancel",
+        reason: createAgentRunRestartAbortError(),
+        shouldPreempt: () => resetPreparationError === undefined,
+        stopChildren: async (applyParentStop) =>
+          await stopSessionResetSubagents({
+            cfg: resetTarget.cfg,
+            sessionKey: resetTarget.target.canonicalKey,
+            agentId: resolveLifecycleAgentId(resetTarget.cfg, resetTarget.target.agentId),
+            assertCurrent: createSessionResetCleanupGuard({
+              storePath: resetTarget.storePath,
+              sessionKey: resetTarget.target.canonicalKey,
+              expectedSession: preparedResetEntry,
+              assertCurrent: () => {
+                params.assertCurrent?.();
+                params.assertAuthorizedInstance?.();
+              },
+            }),
+            beforeKill: applyParentStop,
+          }),
+      },
+      // Mark the mutation first, then interrupt outside the identity lock. This
+      // lets aborted runs finish admission cleanup without deadlocking reset.
+      prepare: async () => {
+        params.assertCurrent?.();
+        params.assertAuthorizedInstance?.();
+        const { entry: currentEntry, canonicalKey: currentCanonicalKey } = loadSessionEntry(
+          params.key,
+          resetTarget.requestedAgentId ? { agentId: resetTarget.requestedAgentId } : undefined,
+        );
+        if (!expectedSessionMatches(currentEntry)) {
+          resetPreparationError = sessionChangedError();
+          return;
+        }
+        if (!currentEntry) {
+          resetPreparationError = authorizeResetCreation();
+          if (resetPreparationError) {
+            return;
+          }
+        }
+        resetPreparationError = resolveFastModeSelectionError(currentEntry);
         if (resetPreparationError) {
           return;
         }
-      }
-      resetPreparationError = resolveFastModeSelectionError(currentEntry);
-      if (resetPreparationError) {
-        return;
-      }
-      // Check the locked generation before interrupting any work; a replaced
-      // foreign row must not be reset or have its admitted run cancelled.
-      resetPreparationError = resolvePluginSessionOwnershipError({
-        action: "reset",
-        entry: currentEntry,
-        key: resetTarget.target.canonicalKey,
-        pluginOwnerId: params.authorizedPluginId,
-      });
-      if (resetPreparationError) {
-        return;
-      }
-      const currentMissingHarnessSessionError = resolveMissingAgentHarnessSessionError(
-        resetTarget.target.canonicalKey,
-        currentEntry,
-      );
-      if (currentMissingHarnessSessionError) {
-        resetPreparationError = errorShape(
-          ErrorCodes.INVALID_REQUEST,
-          currentMissingHarnessSessionError,
-        );
-        return;
-      }
-      resetPreparationError = resolveResetEntryStateError(currentEntry, currentCanonicalKey);
-      if (resetPreparationError) {
-        return;
-      }
-      preparedResetSessionId = normalizeOptionalString(currentEntry?.sessionId);
-      admittedWorkReleased = await interruptSessionControllerEffects({
-        scope: resetTarget.storePath,
-        identities: resetLifecycleIdentities,
-        timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
-      });
-      if (admittedWorkReleased && params.prepareLifecycle) {
-        const prepared = await params.prepareLifecycle({
-          agentId: resetTarget.target.agentId,
+        // Check the locked generation before interrupting any work; a replaced
+        // foreign row must not be reset or have its admitted run cancelled.
+        resetPreparationError = resolvePluginSessionOwnershipError({
+          action: "reset",
           entry: currentEntry,
           key: resetTarget.target.canonicalKey,
-          storePath: resetTarget.storePath,
+          pluginOwnerId: params.authorizedPluginId,
         });
-        if (!prepared.ok) {
-          resetPreparationError = prepared.error;
+        if (resetPreparationError) {
           return;
         }
-        preparedLifecycle = prepared.value;
-      }
-    },
-    run: async () => {
-      const { cfg, target, storePath, requestedAgentId } = resetTarget;
-      if (resetPreparationError) {
-        return { ok: false, error: resetPreparationError };
-      }
-      if (!admittedWorkReleased) {
-        return {
-          ok: false,
-          error: errorShape(
-            ErrorCodes.UNAVAILABLE,
-            `Session ${params.key} is still active; try again in a moment.`,
-          ),
-        };
-      }
-      params.assertCurrent?.();
-      params.assertAuthorizedInstance?.();
-      const { entry, legacyKey, canonicalKey } = loadSessionEntry(
-        params.key,
-        requestedAgentId ? { agentId: requestedAgentId } : undefined,
-      );
-      if (normalizeOptionalString(entry?.sessionId) !== preparedResetSessionId) {
-        return {
-          ok: false,
-          error:
-            params.expectedSessionId === undefined
-              ? errorShape(
-                  ErrorCodes.UNAVAILABLE,
-                  `Session ${params.key} changed before reset. Retry.`,
-                )
-              : sessionChangedError(),
-        };
-      }
-      // Admitted directives can finish persisting while reset drains them.
-      // Recheck their final selection before retiring placement or running cleanup.
-      const currentFastModeSelectionError = resolveFastModeSelectionError(entry);
-      if (currentFastModeSelectionError) {
-        return { ok: false, error: currentFastModeSelectionError };
-      }
-      const currentOwnershipError = resolvePluginSessionOwnershipError({
-        action: "reset",
-        entry,
-        key: canonicalKey,
-        pluginOwnerId: params.authorizedPluginId,
-      });
-      if (currentOwnershipError) {
-        return { ok: false, error: currentOwnershipError };
-      }
-      const entryStateError = resolveResetEntryStateError(entry, canonicalKey);
-      if (entryStateError) {
-        return { ok: false, error: entryStateError };
-      }
-      const incognito = entry?.incognito === true || isIncognitoSessionKey(target.canonicalKey);
-      // Drain first so a legitimate local turn can release its claim. Retire only
-      // after every non-destructive guard is rechecked; a placement race must abort
-      // before hooks, runtime cleanup, or session mutation begins.
-      const placementRetirementError = retireSessionWorkerPlacementBeforeMutation({
-        action: "reset",
-        context: workerPlacementContext,
-        key: params.key,
-        sessionId: normalizeOptionalString(entry?.sessionId),
-      });
-      if (placementRetirementError) {
-        return invalidSessionRequest(placementRetirementError.message);
-      }
-      if (entry?.worktree?.id) {
-        const record = managedWorktrees.findLiveById(entry.worktree.id);
-        if (record) {
-          const { withSettledLocalWorkspace } =
-            await import("./worker-environments/local-workspace-projection.js");
-          await withSettledLocalWorkspace(
-            { worktree: record, assertCurrent: params.assertCurrent, retireRuntime: true },
-            async () => {},
-          );
-        }
-      }
-      const hadExistingEntry = Boolean(entry);
-      const detachedWorktreeId = params.clearSpawnedCwd
-        ? normalizeOptionalString(entry?.worktree?.id)
-        : undefined;
-      const resetLifecycleRevision = entry?.lifecycleRevision;
-      const agentId = resolveLifecycleAgentId(cfg, target.agentId);
-      const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
-      const resetPluginRegistry = getActivePluginRegistry();
-      const isResetLifecycleCurrent = () => {
-        try {
-          params.assertCurrent?.();
-          return true;
-        } catch {
-          return false;
-        }
-      };
-      let deferredAcpResetState: { sessionKey: string; meta: SessionAcpMeta } | undefined;
-      const hookEvent = createInternalHookEvent(
-        "command",
-        params.reason,
-        target.canonicalKey ?? params.key,
-        {
-          agentId,
-          sessionEntry: entry,
-          previousSessionEntry: entry,
-          commandSource: params.commandSource,
-          cfg,
-          storePath,
-          workspaceDir,
-        },
-      );
-      await triggerInternalHook(hookEvent);
-      params.assertCurrent?.();
-      params.assertAuthorizedInstance?.();
-      // Destructive cleanup adopts only this existing generation. Finish its durable
-      // transition after caller closure; missing-row creation still needs live authority.
-      const assertCompletionAuthorized = hadExistingEntry
-        ? undefined
-        : () => {
-            params.assertCurrent?.();
-            params.assertAuthorizedInstance?.();
-          };
-      const runtimeCleanupError = await ensureSessionRuntimeCleanup({
-        cfg,
-        key: params.key,
-        target,
-        sessionId: entry?.sessionId,
-        sessionLifecycleRevision: resetLifecycleRevision,
-      });
-      if (runtimeCleanupError) {
-        return { ok: false, error: runtimeCleanupError };
-      }
-      const parentSessionKey = target.canonicalKey ?? canonicalKey ?? params.key;
-      const parentAcpError = await closeAcpRuntimeForSession({
-        cfg,
-        sessionKey: parentSessionKey,
-        agentId: target.agentId,
-        fallbackSessionKeys: [canonicalKey, legacyKey, params.key],
-        reason: "session-reset",
-        deferResetState: true,
-        onDeferredResetState: (state) => {
-          deferredAcpResetState = state;
-        },
-      });
-      if (parentAcpError) {
-        return { ok: false, error: parentAcpError };
-      }
-      const pluginCleanup = await runPluginHostCleanup({
-        cfg,
-        registry: resetPluginRegistry,
-        reason: "reset",
-        sessionKey: target.canonicalKey ?? params.key,
-        skipPersistentSessionState: true,
-      });
-      for (const failure of pluginCleanup.failures) {
-        logVerbose(
-          `plugin host cleanup failed for ${failure.pluginId}/${failure.hookId}: ${String(failure.error)}`,
+        const currentMissingHarnessSessionError = resolveMissingAgentHarnessSessionError(
+          resetTarget.target.canonicalKey,
+          currentEntry,
         );
-      }
-      await closeChildAcpRuntimesForParent({
-        cfg,
-        parentKey: target.canonicalKey ?? canonicalKey ?? params.key,
-        parentAgentId: target.agentId,
-        reason: "session-reset",
-      });
-      if (entry?.sessionId) {
-        await resetSessionAgentHarnesses({
-          cfg,
-          key: params.key,
-          target,
-          entry,
-          reason: "reset",
-        });
-      }
-      const beforeResetMessages = getGlobalHookRunner()?.hasHooks("before_reset")
-        ? await readGatewayBeforeResetPluginHookMessages({
-            agentId: resolveLifecycleAgentId(cfg, target.agentId ?? requestedAgentId),
-            entry,
-            sessionId: entry?.sessionId,
-            sessionKey: target.canonicalKey ?? params.key,
-            storePath,
-          })
-        : undefined;
-
-      const { prepareSubagentSessionCleanupRevocation } =
-        await import("../agents/subagents/registry/subagent-registry.js");
-      const revokeSessionCleanup = prepareSubagentSessionCleanupRevocation(target.canonicalKey);
-      const commitGuard = () => {
-        assertCompletionAuthorized?.();
-        const current = loadSessionEntryReadOnly({
-          agentId,
-          storePath,
-          sessionKey: target.canonicalKey,
-          clone: false,
-        });
-        if (
-          current?.sessionId === entry?.sessionId &&
-          current?.lifecycleRevision === resetLifecycleRevision
-        ) {
-          // Revoke durably before publishing the successor. A later reset failure may
-          // retain the old session, but must never restore its stale deletion authority.
-          revokeSessionCleanup();
+        if (currentMissingHarnessSessionError) {
+          resetPreparationError = errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            currentMissingHarnessSessionError,
+          );
+          return;
         }
-      };
-
-      if (incognito) {
-        if (!entry) {
-          return invalidSessionRequest(`unknown session: ${params.key}`);
+        resetPreparationError = resolveResetEntryStateError(currentEntry, currentCanonicalKey);
+        if (resetPreparationError) {
+          return;
         }
-        const deleted = await deleteIncognitoSessionForReset({
-          key: params.key,
-          agentId,
-          storePath,
-          target,
-          entry,
-          commitGuard,
-          beforeDelete: () =>
-            emitGatewayBeforeResetPluginHook({
-              cfg,
-              key: params.key,
-              messages: beforeResetMessages,
-              target,
-              storePath,
-              entry,
-              reason: params.reason,
-            }),
-        });
-        if (!deleted.ok) {
-          return deleted;
-        }
-        handleSessionStateSessionDeleted(target.canonicalKey, agentId);
-        notifyGatewaySessionReset(target.canonicalKey, target.agentId);
-        emitGatewaySessionEndPluginHook({
-          cfg,
-          sessionKey: target.canonicalKey,
-          sessionId: entry.sessionId,
-          storePath,
-          sessionFile: target.canonicalKey,
-          agentId: target.agentId,
-          reason: params.reason,
-          archivedTranscripts: [],
-        });
-        await emitSessionUnboundLifecycleEvent({
-          targetSessionKey: target.canonicalKey,
-          reason: "session-reset",
-        });
-        return {
-          ok: true,
-          key: target.canonicalKey,
-          agentId: target.agentId,
-          storePath,
-          incognitoDeleted: true,
-          deletedSessionId: deleted.value.deletedSessionId,
-        };
-      }
-
-      let createdNewEntry = false;
-      assertCompletionAuthorized?.();
-      const boundaryEntry = loadSessionEntry(
-        params.key,
-        requestedAgentId ? { agentId: requestedAgentId } : undefined,
-      ).entry;
-      if (boundaryEntry?.sessionId !== entry?.sessionId) {
-        params.assertCurrent?.();
-        throw new Error(`Session ${params.key} changed before reset boundary append.`);
-      }
-      let resetBoundaryAppended = false;
-      let resetSkipped = false;
-      let creationAuthorizationError: ReturnType<typeof errorShape> | undefined;
-      let fastModeSelectionError: ReturnType<typeof missingScopeErrorShape> | undefined;
-      const postCommitActions: Array<() => void | Promise<void>> = [];
-      const lifecycleRequest: Parameters<typeof resetSessionEntryLifecycle>[0] = {
-        commitGuard,
-        archivePreviousTranscript: false,
-        agentId: target.agentId,
-        resetBoundary: boundaryEntry
-          ? { context: "clear", reason: params.reason, cwd: workspaceDir }
-          : undefined,
-        storePath,
-        target: {
-          canonicalKey: target.canonicalKey,
-          storeKeys: [
-            ...new Set(
-              [...target.storeKeys, canonicalKey, legacyKey, params.key].filter(
-                (key): key is string => Boolean(key),
-              ),
-            ),
-          ],
-        },
-        buildNextEntry: ({ currentEntry, primaryKey }) => {
-          assertCompletionAuthorized?.();
-          if (!currentEntry) {
-            creationAuthorizationError = authorizeResetCreation();
-            if (creationAuthorizationError) {
-              throw new Error(creationAuthorizationError.message);
-            }
-          }
-          createdNewEntry = currentEntry === undefined;
-          fastModeSelectionError = resolveFastModeSelectionError(currentEntry);
-          if (fastModeSelectionError) {
-            throw new Error(fastModeSelectionError.message);
-          }
-          if (currentEntry?.sessionId !== boundaryEntry?.sessionId) {
-            if (currentEntry) {
-              resetSkipped = true;
-              return currentEntry;
-            }
-            params.assertCurrent?.();
-            throw new Error(`Session ${params.key} changed before reset boundary commit.`);
-          }
-          if (currentEntry && currentEntry.lifecycleRevision !== resetLifecycleRevision) {
-            // A newer owner already replaced or removed the session while cleanup
-            // targeted the old lifecycle. Preserve that newer state instead of resetting it.
-            resetSkipped = true;
-            return currentEntry;
-          }
-          resetBoundaryAppended = currentEntry !== undefined;
-          const resetPreservedSelection = resolveResetPreservedSelection({
+        preparedResetEntry = currentEntry;
+        preparedResetSessionId = normalizeOptionalString(currentEntry?.sessionId);
+        if (params.prepareLifecycle) {
+          const prepared = await params.prepareLifecycle({
+            agentId: resetTarget.target.agentId,
             entry: currentEntry,
+            key: resetTarget.target.canonicalKey,
+            storePath: resetTarget.storePath,
           });
-          const now = Date.now();
-          const nextSessionId = currentEntry?.sessionId ?? randomUUID();
-          const nextExecNode = params.execNode
-            ? params.execNode
-            : params.clearExecBinding
-              ? undefined
-              : currentEntry?.execNode;
-          const creationStamp = currentEntry
-            ? {
-                ...preserveCreationStamp({}, currentEntry),
-                projectId: currentEntry.projectId,
-              }
-            : params.creation
-              ? {
-                  ...buildSessionCreationStamp(params.creation),
-                  ...(resolveCreatorSandbox(cfg, params.creation) === "required"
-                    ? { sandbox: "required" as const }
-                    : {}),
-                }
-              : {};
-          const nextEntry: InternalSessionEntry = {
-            sessionId: nextSessionId,
-            lifecycleRevision: randomUUID(),
-            updatedAt: now,
-            sessionStartedAt: now,
-            systemSent: false,
-            abortedLastRun: false,
-            contextWindow: currentEntry?.contextWindow,
-            thinkingLevel: currentEntry?.thinkingLevel,
-            fastMode: params.fastModeSelection?.value ?? currentEntry?.fastMode,
-            toolOverrides: currentEntry?.toolOverrides,
-            verboseLevel: currentEntry?.verboseLevel,
-            traceLevel: currentEntry?.traceLevel,
-            reasoningLevel: currentEntry?.reasoningLevel,
-            elevatedLevel: currentEntry?.elevatedLevel,
-            ttsAuto: currentEntry?.ttsAuto,
-            execHost: params.execNode
-              ? "node"
-              : params.clearExecBinding
-                ? undefined
-                : currentEntry?.execHost,
-            execNode: nextExecNode,
-            execCwd: params.execNode
-              ? params.execCwd
-              : params.clearExecBinding
-                ? undefined
-                : currentEntry?.execCwd,
-            ...(params.armSessionDiffBaselineCapture && !nextExecNode
-              ? {
-                  sessionDiffBaselineCapture: createSessionDiffBaselineCaptureClaim(),
-                }
-              : {}),
-            responseUsage: currentEntry?.responseUsage,
-            pinnedAt: currentEntry?.pinnedAt,
-            // Resets should keep the user's explicit selection, but clear any
-            // temporary fallback model that was pinned during the previous run.
-            ...resetPreservedSelection,
-            groupActivation: currentEntry?.groupActivation,
-            groupActivationNeedsSystemIntro: currentEntry?.groupActivationNeedsSystemIntro,
-            chatType: currentEntry?.chatType,
-            compactionCount: 0,
-            sendPolicy: currentEntry?.sendPolicy,
-            queueMode: currentEntry?.queueMode,
-            queueDebounceMs: currentEntry?.queueDebounceMs,
-            queueCap: currentEntry?.queueCap,
-            queueDrop: currentEntry?.queueDrop,
-            spawnedBy: currentEntry?.spawnedBy,
-            completionOwnerSessionKey: currentEntry?.completionOwnerSessionKey,
-            inheritedToolPolicyVersion: currentEntry?.inheritedToolPolicyVersion,
-            inheritedToolAllow: currentEntry?.inheritedToolAllow,
-            inheritedToolDeny: currentEntry?.inheritedToolDeny,
-            spawnedWorkspaceDir: currentEntry?.spawnedWorkspaceDir,
-            spawnedCwd: params.clearSpawnedCwd
-              ? undefined
-              : (preparedLifecycle?.spawnedCwd ?? params.spawnedCwd ?? currentEntry?.spawnedCwd),
-            sessionRoot: params.clearSpawnedCwd
-              ? undefined
-              : (preparedLifecycle?.sessionRoot ?? params.sessionRoot ?? currentEntry?.sessionRoot),
-            permissionMode: params.clearSpawnedCwd
-              ? undefined
-              : (params.permissionMode ?? currentEntry?.permissionMode),
-            // Reset keeps this logical chat's authorized containment choice.
-            sandboxMode: currentEntry?.sandboxMode,
-            worktree: params.clearSpawnedCwd
-              ? undefined
-              : (preparedLifecycle?.worktree ?? currentEntry?.worktree),
-            repositoryWorkspaceId:
-              preparedLifecycle?.repositoryWorkspaceId ?? currentEntry?.repositoryWorkspaceId,
-            parentSessionKey: currentEntry?.parentSessionKey,
-            parentSessionId: currentEntry?.parentSessionId,
-            ...creationStamp,
-            forkSource: currentEntry?.forkSource,
-            forkedFromParent: sessionEntryForkedFromParent(currentEntry) ? true : undefined,
-            spawnDepth: currentEntry?.spawnDepth,
-            subagentRole: currentEntry?.subagentRole,
-            subagentControlScope: currentEntry?.subagentControlScope,
-            label: currentEntry?.label,
-            autoLabel: currentEntry?.autoLabel,
-            icon: currentEntry?.icon,
-            category: currentEntry?.category,
-            boardFace: currentEntry?.boardFace,
-            boardPresentation: currentEntry?.boardPresentation,
-            visibility: currentEntry?.visibility,
-            displayName: currentEntry?.displayName,
-            delivery: currentEntry?.delivery,
-            pendingDeliveryNotice: currentEntry?.pendingDeliveryNotice,
-            groupId: currentEntry?.groupId,
-            subject: currentEntry?.subject,
-            groupChannel: currentEntry?.groupChannel,
-            space: currentEntry?.space,
-            pluginOwnerId: currentEntry?.pluginOwnerId ?? params.authorizedPluginId,
-            cliSessionBindings: currentEntry?.cliSessionBindings,
-            cliSessionIds: currentEntry?.cliSessionIds,
-            claudeCliSessionId: currentEntry?.claudeCliSessionId,
-            usageFamilyKey: currentEntry?.usageFamilyKey,
-            usageFamilySessionIds: currentEntry?.usageFamilySessionIds,
-            // Do not carry the cached skills catalog across /new. Long-lived channel
-            // sessions (Signal DMs/groups in particular) otherwise keep advertising a
-            // stale <available_skills> block even after reset/restart, because the
-            // skills snapshot version is runtime-local and may reset to 0.
-            inputTokens: 0,
-            outputTokens: 0,
-            totalTokens: 0,
-            totalTokensFresh: true,
-            totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
-          };
-          // Drop CLI provider bindings so the next turn after reset starts a fresh
-          // CLI conversation on the provider side. Preserved only for spawned
-          // subagents (canonical `:subagent:` keys), where Tak Hoffman's fa56682b3ced
-          // regression fix intentionally protects CLI continuity for
-          // orchestration-driven resets. Non-subagent sessions that happen to set
-          // `parentSessionKey` (e.g. dashboard children) are not exempt.
-          if (resetBoundaryAppended && !isSubagentSessionKey(primaryKey)) {
-            clearAllCliSessions(nextEntry);
-          } else {
-            nextEntry.cliSessionBindings = rebindCliSessionReseedReceiptsForReset(
-              nextEntry.cliSessionBindings,
-              nextSessionId,
-            );
-          }
-          return nextEntry;
-        },
-        afterEntryMutation: (mutation) => {
-          if (resetSkipped) {
+          if (!prepared.ok) {
+            resetPreparationError = prepared.error;
             return;
           }
-          lifecyclePreparationCommitted = true;
-          let committedAcpResetState: { sessionKey: string; meta: SessionAcpMeta } | undefined;
-          // Record completion before synchronous publications can fail after the row commits.
-          postCommitActions.push(
-            async () => {
-              if (committedAcpResetState && isResetLifecycleCurrent()) {
-                await tryPrepareFreshManagerRuntimeSession({
-                  deps: { getRuntimeBackend: getAcpRuntimeBackend },
-                  cfg,
-                  meta: committedAcpResetState.meta,
-                  sessionKey: committedAcpResetState.sessionKey,
-                  agentId,
-                  logPrefix: "sessions.session-reset",
-                });
-              }
-              await emitGatewayBeforeResetPluginHook({
+          preparedLifecycle = prepared.value;
+        }
+      },
+      run: async () => {
+        const { cfg, target, storePath, requestedAgentId } = resetTarget;
+        if (resetPreparationError) {
+          return { ok: false, error: resetPreparationError };
+        }
+        params.assertCurrent?.();
+        params.assertAuthorizedInstance?.();
+        const { entry, legacyKey, canonicalKey } = loadSessionEntry(
+          params.key,
+          requestedAgentId ? { agentId: requestedAgentId } : undefined,
+        );
+        if (normalizeOptionalString(entry?.sessionId) !== preparedResetSessionId) {
+          return {
+            ok: false,
+            error:
+              params.expectedSessionId === undefined
+                ? errorShape(
+                    ErrorCodes.UNAVAILABLE,
+                    `Session ${params.key} changed before reset. Retry.`,
+                  )
+                : sessionChangedError(),
+          };
+        }
+        // Admitted directives can finish persisting while reset drains them.
+        // Recheck their final selection before retiring placement or running cleanup.
+        const currentFastModeSelectionError = resolveFastModeSelectionError(entry);
+        if (currentFastModeSelectionError) {
+          return { ok: false, error: currentFastModeSelectionError };
+        }
+        const currentOwnershipError = resolvePluginSessionOwnershipError({
+          action: "reset",
+          entry,
+          key: canonicalKey,
+          pluginOwnerId: params.authorizedPluginId,
+        });
+        if (currentOwnershipError) {
+          return { ok: false, error: currentOwnershipError };
+        }
+        const entryStateError = resolveResetEntryStateError(entry, canonicalKey);
+        if (entryStateError) {
+          return { ok: false, error: entryStateError };
+        }
+        const incognito = entry?.incognito === true || isIncognitoSessionKey(target.canonicalKey);
+        // Drain first so a legitimate local turn can release its claim. Retire only
+        // after every non-destructive guard is rechecked; a placement race must abort
+        // before hooks, runtime cleanup, or session mutation begins.
+        const placementRetirementError = retireSessionWorkerPlacementBeforeMutation({
+          action: "reset",
+          context: workerPlacementContext,
+          key: params.key,
+          sessionId: normalizeOptionalString(entry?.sessionId),
+        });
+        if (placementRetirementError) {
+          return invalidSessionRequest(placementRetirementError.message);
+        }
+        if (entry?.worktree?.id) {
+          const record = managedWorktrees.findLiveById(entry.worktree.id);
+          if (record) {
+            const { withSettledLocalWorkspace } =
+              await import("./worker-environments/local-workspace-projection.js");
+            await withSettledLocalWorkspace(
+              { worktree: record, assertCurrent: params.assertCurrent, retireRuntime: true },
+              async () => {},
+            );
+          }
+        }
+        const hadExistingEntry = Boolean(entry);
+        const detachedWorktreeId = params.clearSpawnedCwd
+          ? normalizeOptionalString(entry?.worktree?.id)
+          : undefined;
+        const resetLifecycleRevision = entry?.lifecycleRevision;
+        const agentId = resolveLifecycleAgentId(cfg, target.agentId);
+        const workspaceDir = resolveAgentWorkspaceDir(cfg, agentId);
+        const resetPluginRegistry = getActivePluginRegistry();
+        const isResetLifecycleCurrent = () => {
+          try {
+            params.assertCurrent?.();
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        let deferredAcpResetState: { sessionKey: string; meta: SessionAcpMeta } | undefined;
+        const hookEvent = createInternalHookEvent(
+          "command",
+          params.reason,
+          target.canonicalKey ?? params.key,
+          {
+            agentId,
+            sessionEntry: entry,
+            previousSessionEntry: entry,
+            commandSource: params.commandSource,
+            cfg,
+            storePath,
+            workspaceDir,
+          },
+        );
+        await triggerInternalHook(hookEvent);
+        params.assertCurrent?.();
+        params.assertAuthorizedInstance?.();
+        // Destructive cleanup adopts only this existing generation. Finish its durable
+        // transition after caller closure; missing-row creation still needs live authority.
+        const assertCompletionAuthorized = hadExistingEntry
+          ? undefined
+          : () => {
+              params.assertCurrent?.();
+              params.assertAuthorizedInstance?.();
+            };
+        const runtimeCleanupError = await ensureSessionRuntimeCleanup({
+          cfg,
+          key: params.key,
+          target,
+          sessionId: entry?.sessionId,
+          sessionLifecycleRevision: resetLifecycleRevision,
+        });
+        if (runtimeCleanupError) {
+          return { ok: false, error: runtimeCleanupError };
+        }
+        const parentSessionKey = target.canonicalKey ?? canonicalKey ?? params.key;
+        const parentAcpError = await closeAcpRuntimeForSession({
+          cfg,
+          sessionKey: parentSessionKey,
+          agentId: target.agentId,
+          fallbackSessionKeys: [canonicalKey, legacyKey, params.key],
+          reason: "session-reset",
+          deferResetState: true,
+          onDeferredResetState: (state) => {
+            deferredAcpResetState = state;
+          },
+        });
+        if (parentAcpError) {
+          return { ok: false, error: parentAcpError };
+        }
+        const pluginCleanup = await runPluginHostCleanup({
+          cfg,
+          registry: resetPluginRegistry,
+          reason: "reset",
+          sessionKey: target.canonicalKey ?? params.key,
+          skipPersistentSessionState: true,
+        });
+        for (const failure of pluginCleanup.failures) {
+          logVerbose(
+            `plugin host cleanup failed for ${failure.pluginId}/${failure.hookId}: ${String(failure.error)}`,
+          );
+        }
+        await closeChildAcpRuntimesForParent({
+          cfg,
+          parentKey: target.canonicalKey ?? canonicalKey ?? params.key,
+          parentAgentId: target.agentId,
+          reason: "session-reset",
+        });
+        if (entry?.sessionId) {
+          await resetSessionAgentHarnesses({
+            cfg,
+            key: params.key,
+            target,
+            entry,
+            reason: "reset",
+          });
+        }
+        const beforeResetMessages = getGlobalHookRunner()?.hasHooks("before_reset")
+          ? await readGatewayBeforeResetPluginHookMessages({
+              agentId: resolveLifecycleAgentId(cfg, target.agentId ?? requestedAgentId),
+              entry,
+              sessionId: entry?.sessionId,
+              sessionKey: target.canonicalKey ?? params.key,
+              storePath,
+            })
+          : undefined;
+
+        const { prepareSubagentSessionCleanupRevocation } =
+          await import("../agents/subagents/registry/subagent-registry.js");
+        const revokeSessionCleanup = prepareSubagentSessionCleanupRevocation(target.canonicalKey);
+        const commitGuard = () => {
+          assertCompletionAuthorized?.();
+          const current = loadSessionEntryReadOnly({
+            agentId,
+            storePath,
+            sessionKey: target.canonicalKey,
+            clone: false,
+          });
+          if (
+            current?.sessionId === entry?.sessionId &&
+            current?.lifecycleRevision === resetLifecycleRevision
+          ) {
+            // Revoke durably before publishing the successor. A later reset failure may
+            // retain the old session, but must never restore its stale deletion authority.
+            revokeSessionCleanup();
+          }
+        };
+
+        if (incognito) {
+          if (!entry) {
+            return invalidSessionRequest(`unknown session: ${params.key}`);
+          }
+          const deleted = await deleteIncognitoSessionForReset({
+            key: params.key,
+            agentId,
+            storePath,
+            target,
+            entry,
+            commitGuard,
+            beforeDelete: () =>
+              emitGatewayBeforeResetPluginHook({
                 cfg,
                 key: params.key,
                 messages: beforeResetMessages,
                 target,
                 storePath,
-                entry: mutation.previousEntry,
+                entry,
                 reason: params.reason,
-              });
-            },
-            () => {
-              const resetSessionKey = target.canonicalKey ?? params.key;
-              handleSessionStateSessionReset(resetSessionKey);
-              notifyGatewaySessionReset(resetSessionKey, target.agentId);
-              emitGatewaySessionEndPluginHook({
-                cfg,
-                sessionKey: resetSessionKey,
-                sessionId: mutation.previousSessionId,
-                storePath,
-                sessionFile: mutation.previousSessionFile,
-                agentId: target.agentId,
-                reason: params.reason,
-                archivedTranscripts: [],
-                nextSessionId: mutation.nextEntry.sessionId,
-              });
-              emitGatewaySessionStartPluginHook({
-                cfg,
-                sessionKey: resetSessionKey,
-                sessionId: mutation.nextEntry.sessionId,
-                resumedFrom: mutation.previousSessionId,
-                storePath,
-                sessionFile: resetSessionKey,
-                agentId: target.agentId,
-              });
-            },
-          );
-          if (hadExistingEntry) {
-            postCommitActions.push(() =>
-              emitSessionUnboundLifecycleEvent({
-                targetSessionKey: target.canonicalKey ?? params.key,
-                reason: "session-reset",
               }),
-            );
-          }
-          if (detachedWorktreeId) {
-            postCommitActions.push(async () => {
-              // Finalize the old checkout before the fence opens to same-key successors.
-              try {
-                if (!(await managedWorktrees.removeIfLossless(detachedWorktreeId))) {
-                  const retained = managedWorktrees.findLiveById(detachedWorktreeId);
-                  if (retained) {
-                    const safePath = truncateUtf16Safe(sanitizeForLog(retained.path), 256);
-                    reportLifecycleCleanupError(
-                      new Error(
-                        `worktree retained: branch=${retained.branch} path=${safePath} outcome=${retained.runEndCleanup?.outcome}`,
-                      ),
-                    );
-                  }
-                }
-              } catch (error) {
-                reportLifecycleCleanupError(error);
-              }
-            });
-          }
-          clearBootstrapSnapshotOnSessionBoundary({
-            boundaryAppended: resetBoundaryAppended,
-            sessionKey: target.canonicalKey ?? params.key,
           });
-          if (createdNewEntry) {
-            recordSessionCreated(cfg, {
-              sessionKey: target.canonicalKey ?? params.key,
-              agentId,
-              entry: mutation.nextEntry,
-            });
+          if (!deleted.ok) {
+            return deleted;
           }
-          if (deferredAcpResetState) {
-            const resetState = {
-              sessionKey: target.canonicalKey,
-              meta: buildPendingAcpMeta(deferredAcpResetState.meta, Date.now()),
-            };
-            // Bind the captured ACP shell to the committed canonical entry, including
-            // fallback/legacy metadata. Never recreate a consumed alias.
-            writeAcpSessionMetaForMigration({
-              sessionKey: buildAcpDatabaseSessionKey(target.canonicalKey, agentId),
-              sessionId: mutation.nextEntry.sessionId,
-              lifecycleRevision: mutation.nextEntry.lifecycleRevision,
-              meta: resetState.meta,
-            });
-            committedAcpResetState = resetState;
-          }
-          params.onCommitted?.({
+          handleSessionStateSessionDeleted(target.canonicalKey, agentId);
+          notifyGatewaySessionReset(target.canonicalKey, target.agentId);
+          emitGatewaySessionEndPluginHook({
+            cfg,
+            sessionKey: target.canonicalKey,
+            sessionId: entry.sessionId,
+            storePath,
+            sessionFile: target.canonicalKey,
+            agentId: target.agentId,
+            reason: params.reason,
+            archivedTranscripts: [],
+          });
+          await emitSessionUnboundLifecycleEvent({
+            targetSessionKey: target.canonicalKey,
+            reason: "session-reset",
+          });
+          return {
+            ok: true,
             key: target.canonicalKey,
-            sessionId: mutation.nextEntry.sessionId,
-          });
-        },
-      };
-      const resetLifecycle = async (assertSourceCurrent?: () => void) =>
-        await resetSessionEntryLifecycle({
-          ...lifecycleRequest,
-          commitGuard: () => {
-            commitGuard();
-            assertSourceCurrent?.();
+            agentId: target.agentId,
+            storePath,
+            incognitoDeleted: true,
+            deletedSessionId: deleted.value.deletedSessionId,
+          };
+        }
+
+        let createdNewEntry = false;
+        assertCompletionAuthorized?.();
+        const boundaryEntry = loadSessionEntry(
+          params.key,
+          requestedAgentId ? { agentId: requestedAgentId } : undefined,
+        ).entry;
+        if (boundaryEntry?.sessionId !== entry?.sessionId) {
+          params.assertCurrent?.();
+          throw new Error(`Session ${params.key} changed before reset boundary append.`);
+        }
+        let resetBoundaryAppended = false;
+        let resetSkipped = false;
+        let creationAuthorizationError: ReturnType<typeof errorShape> | undefined;
+        let fastModeSelectionError: ReturnType<typeof missingScopeErrorShape> | undefined;
+        const postCommitActions: Array<() => void | Promise<void>> = [];
+        const lifecycleRequest: Parameters<typeof resetSessionEntryLifecycle>[0] = {
+          commitGuard,
+          archivePreviousTranscript: false,
+          agentId: target.agentId,
+          resetBoundary: boundaryEntry
+            ? { context: "clear", reason: params.reason, cwd: workspaceDir }
+            : undefined,
+          storePath,
+          target: {
+            canonicalKey: target.canonicalKey,
+            storeKeys: [
+              ...new Set(
+                [...target.storeKeys, canonicalKey, legacyKey, params.key].filter(
+                  (key): key is string => Boolean(key),
+                ),
+              ),
+            ],
           },
-        });
-      const lifecyclePromise = preparedLifecycle?.withCommit
-        ? preparedLifecycle.withCommit(resetLifecycle)
-        : resetLifecycle();
-      let lifecycle: Awaited<ReturnType<typeof resetSessionEntryLifecycle>>;
-      try {
-        lifecycle = await settleGatewaySessionLifecycleCommit(lifecyclePromise, postCommitActions);
-      } catch (error) {
-        if (fastModeSelectionError) {
-          return { ok: false, error: fastModeSelectionError };
+          buildNextEntry: ({ currentEntry, primaryKey }) => {
+            assertCompletionAuthorized?.();
+            if (!currentEntry) {
+              creationAuthorizationError = authorizeResetCreation();
+              if (creationAuthorizationError) {
+                throw new Error(creationAuthorizationError.message);
+              }
+            }
+            createdNewEntry = currentEntry === undefined;
+            fastModeSelectionError = resolveFastModeSelectionError(currentEntry);
+            if (fastModeSelectionError) {
+              throw new Error(fastModeSelectionError.message);
+            }
+            if (currentEntry?.sessionId !== boundaryEntry?.sessionId) {
+              if (currentEntry) {
+                resetSkipped = true;
+                return currentEntry;
+              }
+              params.assertCurrent?.();
+              throw new Error(`Session ${params.key} changed before reset boundary commit.`);
+            }
+            if (currentEntry && currentEntry.lifecycleRevision !== resetLifecycleRevision) {
+              // A newer owner already replaced or removed the session while cleanup
+              // targeted the old lifecycle. Preserve that newer state instead of resetting it.
+              resetSkipped = true;
+              return currentEntry;
+            }
+            resetBoundaryAppended = currentEntry !== undefined;
+            const resetPreservedSelection = resolveResetPreservedSelection({
+              entry: currentEntry,
+            });
+            const now = Date.now();
+            const nextSessionId = currentEntry?.sessionId ?? randomUUID();
+            const nextExecNode = params.execNode
+              ? params.execNode
+              : params.clearExecBinding
+                ? undefined
+                : currentEntry?.execNode;
+            const creationStamp = currentEntry
+              ? {
+                  ...preserveCreationStamp({}, currentEntry),
+                  projectId: currentEntry.projectId,
+                }
+              : params.creation
+                ? {
+                    ...buildSessionCreationStamp(params.creation),
+                    ...(resolveCreatorSandbox(cfg, params.creation) === "required"
+                      ? { sandbox: "required" as const }
+                      : {}),
+                  }
+                : {};
+            const nextEntry: InternalSessionEntry = {
+              sessionId: nextSessionId,
+              lifecycleRevision: randomUUID(),
+              updatedAt: now,
+              sessionStartedAt: now,
+              systemSent: false,
+              abortedLastRun: false,
+              contextWindow: currentEntry?.contextWindow,
+              thinkingLevel: currentEntry?.thinkingLevel,
+              fastMode: params.fastModeSelection?.value ?? currentEntry?.fastMode,
+              toolOverrides: currentEntry?.toolOverrides,
+              verboseLevel: currentEntry?.verboseLevel,
+              traceLevel: currentEntry?.traceLevel,
+              reasoningLevel: currentEntry?.reasoningLevel,
+              elevatedLevel: currentEntry?.elevatedLevel,
+              ttsAuto: currentEntry?.ttsAuto,
+              execHost: params.execNode
+                ? "node"
+                : params.clearExecBinding
+                  ? undefined
+                  : currentEntry?.execHost,
+              execNode: nextExecNode,
+              execCwd: params.execNode
+                ? params.execCwd
+                : params.clearExecBinding
+                  ? undefined
+                  : currentEntry?.execCwd,
+              ...(params.armSessionDiffBaselineCapture && !nextExecNode
+                ? {
+                    sessionDiffBaselineCapture: createSessionDiffBaselineCaptureClaim(),
+                  }
+                : {}),
+              responseUsage: currentEntry?.responseUsage,
+              pinnedAt: currentEntry?.pinnedAt,
+              // Resets should keep the user's explicit selection, but clear any
+              // temporary fallback model that was pinned during the previous run.
+              ...resetPreservedSelection,
+              groupActivation: currentEntry?.groupActivation,
+              groupActivationNeedsSystemIntro: currentEntry?.groupActivationNeedsSystemIntro,
+              chatType: currentEntry?.chatType,
+              compactionCount: 0,
+              sendPolicy: currentEntry?.sendPolicy,
+              queueMode: currentEntry?.queueMode,
+              queueDebounceMs: currentEntry?.queueDebounceMs,
+              queueCap: currentEntry?.queueCap,
+              queueDrop: currentEntry?.queueDrop,
+              spawnedBy: currentEntry?.spawnedBy,
+              completionOwnerSessionKey: currentEntry?.completionOwnerSessionKey,
+              inheritedToolPolicyVersion: currentEntry?.inheritedToolPolicyVersion,
+              inheritedToolAllow: currentEntry?.inheritedToolAllow,
+              inheritedToolDeny: currentEntry?.inheritedToolDeny,
+              spawnedWorkspaceDir: currentEntry?.spawnedWorkspaceDir,
+              spawnedCwd: params.clearSpawnedCwd
+                ? undefined
+                : (preparedLifecycle?.spawnedCwd ?? params.spawnedCwd ?? currentEntry?.spawnedCwd),
+              sessionRoot: params.clearSpawnedCwd
+                ? undefined
+                : (preparedLifecycle?.sessionRoot ??
+                  params.sessionRoot ??
+                  currentEntry?.sessionRoot),
+              permissionMode: params.clearSpawnedCwd
+                ? undefined
+                : (params.permissionMode ?? currentEntry?.permissionMode),
+              // Reset keeps this logical chat's authorized containment choice.
+              sandboxMode: currentEntry?.sandboxMode,
+              worktree: params.clearSpawnedCwd
+                ? undefined
+                : (preparedLifecycle?.worktree ?? currentEntry?.worktree),
+              repositoryWorkspaceId:
+                preparedLifecycle?.repositoryWorkspaceId ?? currentEntry?.repositoryWorkspaceId,
+              parentSessionKey: currentEntry?.parentSessionKey,
+              parentSessionId: currentEntry?.parentSessionId,
+              ...creationStamp,
+              forkSource: currentEntry?.forkSource,
+              forkedFromParent: sessionEntryForkedFromParent(currentEntry) ? true : undefined,
+              spawnDepth: currentEntry?.spawnDepth,
+              subagentRole: currentEntry?.subagentRole,
+              subagentControlScope: currentEntry?.subagentControlScope,
+              label: currentEntry?.label,
+              autoLabel: currentEntry?.autoLabel,
+              icon: currentEntry?.icon,
+              category: currentEntry?.category,
+              boardFace: currentEntry?.boardFace,
+              boardPresentation: currentEntry?.boardPresentation,
+              visibility: currentEntry?.visibility,
+              displayName: currentEntry?.displayName,
+              delivery: currentEntry?.delivery,
+              pendingDeliveryNotice: currentEntry?.pendingDeliveryNotice,
+              groupId: currentEntry?.groupId,
+              subject: currentEntry?.subject,
+              groupChannel: currentEntry?.groupChannel,
+              space: currentEntry?.space,
+              pluginOwnerId: currentEntry?.pluginOwnerId ?? params.authorizedPluginId,
+              cliSessionBindings: currentEntry?.cliSessionBindings,
+              cliSessionIds: currentEntry?.cliSessionIds,
+              claudeCliSessionId: currentEntry?.claudeCliSessionId,
+              usageFamilyKey: currentEntry?.usageFamilyKey,
+              usageFamilySessionIds: currentEntry?.usageFamilySessionIds,
+              // Do not carry the cached skills catalog across /new. Long-lived channel
+              // sessions (Signal DMs/groups in particular) otherwise keep advertising a
+              // stale <available_skills> block even after reset/restart, because the
+              // skills snapshot version is runtime-local and may reset to 0.
+              inputTokens: 0,
+              outputTokens: 0,
+              totalTokens: 0,
+              totalTokensFresh: true,
+              totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+            };
+            // Drop CLI provider bindings so the next turn after reset starts a fresh
+            // CLI conversation on the provider side. Preserved only for spawned
+            // subagents (canonical `:subagent:` keys), where Tak Hoffman's fa56682b3ced
+            // regression fix intentionally protects CLI continuity for
+            // orchestration-driven resets. Non-subagent sessions that happen to set
+            // `parentSessionKey` (e.g. dashboard children) are not exempt.
+            if (resetBoundaryAppended && !isSubagentSessionKey(primaryKey)) {
+              clearAllCliSessions(nextEntry);
+            } else {
+              nextEntry.cliSessionBindings = rebindCliSessionReseedReceiptsForReset(
+                nextEntry.cliSessionBindings,
+                nextSessionId,
+              );
+            }
+            return nextEntry;
+          },
+          afterEntryMutation: (mutation) => {
+            if (resetSkipped) {
+              return;
+            }
+            lifecyclePreparationCommitted = true;
+            let committedAcpResetState: { sessionKey: string; meta: SessionAcpMeta } | undefined;
+            // Record completion before synchronous publications can fail after the row commits.
+            postCommitActions.push(
+              async () => {
+                if (committedAcpResetState && isResetLifecycleCurrent()) {
+                  await tryPrepareFreshManagerRuntimeSession({
+                    deps: { getRuntimeBackend: getAcpRuntimeBackend },
+                    cfg,
+                    meta: committedAcpResetState.meta,
+                    sessionKey: committedAcpResetState.sessionKey,
+                    agentId,
+                    logPrefix: "sessions.session-reset",
+                  });
+                }
+                await emitGatewayBeforeResetPluginHook({
+                  cfg,
+                  key: params.key,
+                  messages: beforeResetMessages,
+                  target,
+                  storePath,
+                  entry: mutation.previousEntry,
+                  reason: params.reason,
+                });
+              },
+              () => {
+                const resetSessionKey = target.canonicalKey ?? params.key;
+                handleSessionStateSessionReset(resetSessionKey);
+                notifyGatewaySessionReset(resetSessionKey, target.agentId);
+                emitGatewaySessionEndPluginHook({
+                  cfg,
+                  sessionKey: resetSessionKey,
+                  sessionId: mutation.previousSessionId,
+                  storePath,
+                  sessionFile: mutation.previousSessionFile,
+                  agentId: target.agentId,
+                  reason: params.reason,
+                  archivedTranscripts: [],
+                  nextSessionId: mutation.nextEntry.sessionId,
+                });
+                emitGatewaySessionStartPluginHook({
+                  cfg,
+                  sessionKey: resetSessionKey,
+                  sessionId: mutation.nextEntry.sessionId,
+                  resumedFrom: mutation.previousSessionId,
+                  storePath,
+                  sessionFile: resetSessionKey,
+                  agentId: target.agentId,
+                });
+              },
+            );
+            if (hadExistingEntry) {
+              postCommitActions.push(() =>
+                emitSessionUnboundLifecycleEvent({
+                  targetSessionKey: target.canonicalKey ?? params.key,
+                  reason: "session-reset",
+                }),
+              );
+            }
+            if (detachedWorktreeId) {
+              postCommitActions.push(async () => {
+                // Finalize the old checkout before the fence opens to same-key successors.
+                try {
+                  if (!(await managedWorktrees.removeIfLossless(detachedWorktreeId))) {
+                    const retained = managedWorktrees.findLiveById(detachedWorktreeId);
+                    if (retained) {
+                      const safePath = truncateUtf16Safe(sanitizeForLog(retained.path), 256);
+                      reportLifecycleCleanupError(
+                        new Error(
+                          `worktree retained: branch=${retained.branch} path=${safePath} outcome=${retained.runEndCleanup?.outcome}`,
+                        ),
+                      );
+                    }
+                  }
+                } catch (error) {
+                  reportLifecycleCleanupError(error);
+                }
+              });
+            }
+            clearBootstrapSnapshotOnSessionBoundary({
+              boundaryAppended: resetBoundaryAppended,
+              sessionKey: target.canonicalKey ?? params.key,
+            });
+            if (createdNewEntry) {
+              recordSessionCreated(cfg, {
+                sessionKey: target.canonicalKey ?? params.key,
+                agentId,
+                entry: mutation.nextEntry,
+              });
+            }
+            if (deferredAcpResetState) {
+              const resetState = {
+                sessionKey: target.canonicalKey,
+                meta: buildPendingAcpMeta(deferredAcpResetState.meta, Date.now()),
+              };
+              // Bind the captured ACP shell to the committed canonical entry, including
+              // fallback/legacy metadata. Never recreate a consumed alias.
+              writeAcpSessionMetaForMigration({
+                sessionKey: buildAcpDatabaseSessionKey(target.canonicalKey, agentId),
+                sessionId: mutation.nextEntry.sessionId,
+                lifecycleRevision: mutation.nextEntry.lifecycleRevision,
+                meta: resetState.meta,
+              });
+              committedAcpResetState = resetState;
+            }
+            params.onCommitted?.({
+              key: target.canonicalKey,
+              sessionId: mutation.nextEntry.sessionId,
+            });
+          },
+        };
+        const resetLifecycle = async (assertSourceCurrent?: () => void) =>
+          await resetSessionEntryLifecycle({
+            ...lifecycleRequest,
+            commitGuard: () => {
+              commitGuard();
+              assertSourceCurrent?.();
+            },
+          });
+        const lifecyclePromise = preparedLifecycle?.withCommit
+          ? preparedLifecycle.withCommit(resetLifecycle)
+          : resetLifecycle();
+        let lifecycle: Awaited<ReturnType<typeof resetSessionEntryLifecycle>>;
+        try {
+          lifecycle = await settleGatewaySessionLifecycleCommit(
+            lifecyclePromise,
+            postCommitActions,
+          );
+        } catch (error) {
+          if (fastModeSelectionError) {
+            return { ok: false, error: fastModeSelectionError };
+          }
+          if (creationAuthorizationError) {
+            return { ok: false, error: creationAuthorizationError };
+          }
+          throw error;
         }
-        if (creationAuthorizationError) {
-          return { ok: false, error: creationAuthorizationError };
+        const next = lifecycle.nextEntry;
+        const selectedModel = resolveSessionModelRef(cfg, next, target.agentId);
+        const resolved = {
+          modelProvider: selectedModel.provider,
+          model: selectedModel.model,
+        };
+        // Runtime model identity is a response projection, not reset persistence. Keep the
+        // established RPC entry shape while the stored row retains selection intent only.
+        const responseEntry: SessionEntry = {
+          ...projectPublicSessionEntry(next),
+          modelProvider: resolved.modelProvider,
+          model: resolved.model,
+        };
+        return {
+          ok: true,
+          key: target.canonicalKey,
+          entry: responseEntry,
+          resolved,
+          agentId: target.agentId,
+          storePath,
+        };
+      },
+      finalize: async () => {
+        if (!lifecyclePreparationCommitted) {
+          await rollbackGatewaySessionPreparation({
+            prepared: preparedLifecycle,
+            onError: reportLifecycleCleanupError,
+          });
         }
-        throw error;
-      }
-      const next = lifecycle.nextEntry;
-      const selectedModel = resolveSessionModelRef(cfg, next, target.agentId);
-      const resolved = {
-        modelProvider: selectedModel.provider,
-        model: selectedModel.model,
-      };
-      // Runtime model identity is a response projection, not reset persistence. Keep the
-      // established RPC entry shape while the stored row retains selection intent only.
-      const responseEntry: SessionEntry = {
-        ...projectPublicSessionEntry(next),
-        modelProvider: resolved.modelProvider,
-        model: resolved.model,
-      };
+      },
+    });
+  } catch (error) {
+    if (error instanceof SessionMutationPreemptTimeoutError) {
       return {
-        ok: true,
-        key: target.canonicalKey,
-        entry: responseEntry,
-        resolved,
-        agentId: target.agentId,
-        storePath,
+        ok: false,
+        error: errorShape(
+          ErrorCodes.UNAVAILABLE,
+          `Session ${params.key} is still active; try again in a moment.`,
+        ),
       };
-    },
-    finalize: async () => {
-      if (!lifecyclePreparationCommitted) {
-        await rollbackGatewaySessionPreparation({
-          prepared: preparedLifecycle,
-          onError: reportLifecycleCleanupError,
-        });
-      }
-    },
-  });
+    }
+    throw error;
+  }
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
