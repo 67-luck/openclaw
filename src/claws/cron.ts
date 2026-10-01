@@ -387,7 +387,9 @@ export async function installClawCronJobs(
       if (!result) {
         assertForwardCurrent();
         result = clawCronSchedulerJobFromResult(
-          await options.gateway.add(clawCronGatewayInput(plan.agent.finalId, pending)),
+          await options.gateway.add(clawCronGatewayInput(plan.agent.finalId, pending), {
+            commitGuard: assertForwardCurrent,
+          }),
         );
       }
       options.assertCurrent?.();
