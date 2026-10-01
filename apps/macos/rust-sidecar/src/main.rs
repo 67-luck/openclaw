@@ -584,7 +584,7 @@ struct NativeHandlers {
 }
 
 struct NativeInvocation {
-    reply: oneshot::Sender<Result<Value, HandlerError>>,
+    reply: oneshot::Sender<Result<Option<Value>, HandlerError>>,
     io: Option<InvocationIo>,
     node_id: String,
 }
@@ -636,7 +636,10 @@ impl NativeHandlers {
         }
     }
 
-    async fn invoke(self: &Arc<Self>, context: InvocationContext) -> Result<Value, HandlerError> {
+    async fn invoke(
+        self: &Arc<Self>,
+        context: InvocationContext,
+    ) -> Result<Option<Value>, HandlerError> {
         let invocation = context.invocation;
         let _lease = NativeCallLease {
             owner: Arc::clone(self),
@@ -700,12 +703,11 @@ impl NativeHandlers {
         }
         let outcome = if params["ok"] == true {
             if let Some(raw) = params["payloadJSON"].as_str() {
-                Ok(serde_json::from_str(raw)?)
+                Ok(Some(serde_json::from_str(raw)?))
             } else {
                 Ok(params
                     .as_object_mut()
-                    .and_then(|fields| fields.remove("payload"))
-                    .unwrap_or(Value::Null))
+                    .and_then(|fields| fields.remove("payload")))
             }
         } else {
             Err(HandlerError::new(
@@ -956,7 +958,7 @@ mod tests {
             },
         );
         native.complete(frame.params).await.unwrap();
-        let result = receiver.await.unwrap().unwrap();
+        let result = receiver.await.unwrap().unwrap().unwrap();
         assert_eq!(result["media"].as_str().unwrap(), media);
         assert_eq!(result["media"].as_str().unwrap().as_ptr(), allocation);
         assert!(native.results.lock().unwrap().is_empty());

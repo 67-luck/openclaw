@@ -543,10 +543,10 @@ fn build_runtime(
         .command(config.status_command.clone(), move |_context| {
             let status_state = Arc::clone(&status_state);
             async move {
-                Ok(json!({
+                Ok(Some(json!({
                     "ready": status_state.ready.load(Ordering::Acquire),
                     "version": env!("CARGO_PKG_VERSION"),
-                }))
+                })))
             }
         })
         .build()

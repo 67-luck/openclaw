@@ -113,7 +113,7 @@ async fn run(capacity: usize) -> Value {
             let effects = handler_effects.clone();
             async move {
                 effects.fetch_add(1, Ordering::SeqCst);
-                Ok(json!({"completed":true}))
+                Ok(Some(json!({"completed":true})))
             }
         })
         .build()
@@ -230,11 +230,11 @@ async fn stalled_progress_does_not_block_results_or_cancelled_invocations() {
                     .emit_chunk("native output")
                     .await
                     .map_err(|error| HandlerError::new("OUTPUT_FAILED", error.to_string()))?;
-                Ok(json!({"completed":true}))
+                Ok(Some(json!({"completed":true})))
             }
         })
         .command("example.effect", |_| async {
-            Ok(json!({"completed":true}))
+            Ok(Some(json!({"completed":true})))
         })
         .build()
         .unwrap();

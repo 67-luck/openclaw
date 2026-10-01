@@ -1,6 +1,7 @@
 const { WebSocketServer } = require(
   require.resolve("ws", { paths: [process.env.OPENCLAW_BENCH_REPO || process.cwd()] }),
 );
+const assert = require("node:assert/strict");
 const { spawn, execFileSync } = require("node:child_process");
 const { once } = require("node:events");
 const fs = require("node:fs");
@@ -286,6 +287,60 @@ function deadline(p, deadlineLabel) {
       scenario: "missing, literal null, original whitespace/key-order paramsJSON preserved",
       passed: true,
     });
+    // Observe the actual node.invoke.result frame: a parsed null cannot prove absence.
+    const resultCases = [
+      { name: "absent", command: "benchmark.echo", expected: { ok: true } },
+      {
+        name: "null",
+        command: "benchmark.echo",
+        paramsJSON: "null",
+        expected: { ok: true, payloadJSON: "null" },
+      },
+      {
+        name: "object",
+        command: "benchmark.echo",
+        paramsJSON: '{"value":"present"}',
+        expected: { ok: true, payloadJSON: '{"value":"present"}' },
+      },
+      {
+        name: "error",
+        command: "benchmark.large",
+        paramsJSON: '{"bytes":-1}',
+        expected: { ok: false, error: { code: "INVALID_REQUEST", message: "invalid probe size" } },
+      },
+    ];
+    const resultFailures = [];
+    for (const item of resultCases) {
+      const id = `result-contract-${item.name}`;
+      const request = {
+        id,
+        nodeId: "functional-node",
+        command: item.command,
+        timeoutMs: 30000,
+        idempotencyKey: id,
+        ...(item.paramsJSON === undefined ? {} : { paramsJSON: item.paramsJSON }),
+      };
+      ws.send(JSON.stringify({ type: "event", event: "node.invoke.request", payload: request }));
+      const result = await until(() => results.get(id), `native ${item.name} result contract`);
+      const expected = { id, nodeId: "functional-node", ...item.expected };
+      let passed = true;
+      try {
+        assert.deepStrictEqual(result, expected);
+      } catch {
+        passed = false;
+        resultFailures.push(item.name);
+      }
+      record.checks.push({
+        scenario: `native ${item.name} result preserves wire payload presence`,
+        passed,
+        expected,
+        result,
+      });
+      results.delete(id);
+    }
+    if (resultFailures.length) {
+      throw new Error("native result presence mismatch: " + resultFailures.join(", "));
+    }
     invoke("system-one", "system.echo", { source: "Swift native handler" });
     const system = await until(() => results.get("system-one"), "system admission");
     if (!system.ok || payload(system).source !== "Swift native handler") {

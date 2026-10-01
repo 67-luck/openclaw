@@ -563,13 +563,17 @@ impl NodeInvocation {
 /// A structured final result for a node invocation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InvocationResult {
-    Success(Value),
-    Failure { code: String, message: String },
+    /// `None` omits the payload; `Some(Value::Null)` returns explicit JSON null.
+    Success(Option<Value>),
+    Failure {
+        code: String,
+        message: String,
+    },
 }
 
 impl InvocationResult {
     #[must_use]
-    pub fn success(payload: Value) -> Self {
+    pub fn success(payload: Option<Value>) -> Self {
         Self::Success(payload)
     }
 
@@ -1054,7 +1058,7 @@ fn invocation_result_params(
     result: InvocationResult,
 ) -> Result<InvocationResultParams, ClientError> {
     let (ok, payload, error) = match result {
-        InvocationResult::Success(payload) => (true, Some(SerializedPayload(payload)), None),
+        InvocationResult::Success(payload) => (true, payload.map(SerializedPayload), None),
         InvocationResult::Failure { code, message } => {
             let code = require_non_empty_result_field("error code", code)?;
             let message = require_non_empty_result_field("error message", message)?;
@@ -1279,32 +1283,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn typed_results_preserve_normalized_payload_json() {
+    fn typed_results_preserve_payload_presence_and_normalized_json() {
         let invocation = NodeInvocation::new("media", "node", "camera.snap", Value::Null);
         for (input, expected) in [
-            (r#"{"duplicate":1,"duplicate":2}"#, r#"{"duplicate":2}"#),
+            (None, None),
+            (Some("null"), Some("null")),
             (
-                r#"{"escaped":"\"\\\n\t\u0000é🦀"}"#,
-                r#"{"escaped":"\"\\\n\t\u0000é🦀"}"#,
+                Some(r#"{"duplicate":1,"duplicate":2}"#),
+                Some(r#"{"duplicate":2}"#),
             ),
-            ("1.20", "1.2"),
-            ("18446744073709551615", "18446744073709551615"),
-            ("[null,true,{}]", "[null,true,{}]"),
+            (
+                Some(r#"{"escaped":"\"\\\n\t\u0000é🦀"}"#),
+                Some(r#"{"escaped":"\"\\\n\t\u0000é🦀"}"#),
+            ),
+            (Some("1.20"), Some("1.2")),
+            (Some("18446744073709551615"), Some("18446744073709551615")),
+            (Some("[null,true,{}]"), Some("[null,true,{}]")),
         ] {
             let params = invocation_result_params(
                 &invocation.id,
                 &invocation.node_id,
-                InvocationResult::success(serde_json::from_str(input).unwrap()),
+                InvocationResult::success(input.map(|raw| serde_json::from_str(raw).unwrap())),
             )
             .unwrap();
             let encoded = serde_json::to_vec(&params).unwrap();
             let wire: Value = serde_json::from_slice(&encoded).unwrap();
-            assert_eq!(
-                wire,
-                json!({
-                    "id": "media", "nodeId": "node", "ok": true, "payloadJSON": expected,
-                })
-            );
+            let mut expected_wire = json!({"id": "media", "nodeId": "node", "ok": true});
+            if let Some(payload_json) = expected {
+                expected_wire["payloadJSON"] = json!(payload_json);
+            }
+            assert_eq!(wire, expected_wire);
         }
     }
 
@@ -1367,7 +1375,7 @@ mod tests {
         let success = invocation_result_params(
             &invocation.id,
             &invocation.node_id,
-            InvocationResult::success(fixture["results"]["success"]["payload"].clone()),
+            InvocationResult::success(Some(fixture["results"]["success"]["payload"].clone())),
         )
         .expect("canonical success result");
         let mut success = serde_json::to_value(success).unwrap();

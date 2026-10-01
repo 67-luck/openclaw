@@ -33,7 +33,7 @@ const DEFAULT_MAX_HANDLER_TIMEOUT: Duration = Duration::from_mins(5);
 const DEFAULT_RESULT_GRACE: Duration = Duration::from_millis(100);
 const DUPLEX_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
-type HandlerFuture = Pin<Box<dyn Future<Output = Result<Value, HandlerError>> + Send>>;
+type HandlerFuture = Pin<Box<dyn Future<Output = Result<Option<Value>, HandlerError>> + Send>>;
 type Handler = Arc<dyn Fn(InvocationContext) -> HandlerFuture + Send + Sync>;
 type AdmissionFuture = Pin<Box<dyn Future<Output = Result<(), HandlerError>> + Send>>;
 type AdmissionPolicy = Arc<dyn Fn(InvocationAdmissionContext) -> AdmissionFuture + Send + Sync>;
@@ -218,7 +218,7 @@ impl CommandRuntimeBuilder {
         A: Fn(InvocationAdmissionContext) -> AF + Send + Sync + 'static,
         AF: Future<Output = Result<(), HandlerError>> + Send + 'static,
         F: Fn(InvocationContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
+        Fut: Future<Output = Result<Option<Value>, HandlerError>> + Send + 'static,
     {
         self.register_admitted(command, CommandSurface::System, admission, handler)
     }
@@ -237,7 +237,7 @@ impl CommandRuntimeBuilder {
         A: Fn(InvocationAdmissionContext) -> AF + Send + Sync + 'static,
         AF: Future<Output = Result<(), HandlerError>> + Send + 'static,
         F: Fn(InvocationContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
+        Fut: Future<Output = Result<Option<Value>, HandlerError>> + Send + 'static,
     {
         self.register_admitted(command, CommandSurface::Private, admission, handler)
     }
@@ -253,7 +253,7 @@ impl CommandRuntimeBuilder {
         A: Fn(InvocationAdmissionContext) -> AF + Send + Sync + 'static,
         AF: Future<Output = Result<(), HandlerError>> + Send + 'static,
         F: Fn(InvocationContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
+        Fut: Future<Output = Result<Option<Value>, HandlerError>> + Send + 'static,
     {
         self.registrations.push(Registration {
             command: command.into(),
@@ -286,11 +286,12 @@ impl CommandRuntimeBuilder {
     }
 
     /// Register one exact command name and asynchronous handler.
+    /// Return `Ok(None)` for no payload, or `Ok(Some(Value::Null))` for JSON null.
     #[must_use]
     pub fn command<F, Fut>(self, command: impl Into<String>, handler: F) -> Self
     where
         F: Fn(InvocationContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
+        Fut: Future<Output = Result<Option<Value>, HandlerError>> + Send + 'static,
     {
         self.register(command, handler, false)
     }
@@ -300,7 +301,7 @@ impl CommandRuntimeBuilder {
     pub fn duplex_command<F, Fut>(self, command: impl Into<String>, handler: F) -> Self
     where
         F: Fn(InvocationContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
+        Fut: Future<Output = Result<Option<Value>, HandlerError>> + Send + 'static,
     {
         self.register(command, handler, true)
     }
@@ -308,7 +309,7 @@ impl CommandRuntimeBuilder {
     fn register<F, Fut>(mut self, command: impl Into<String>, handler: F, duplex: bool) -> Self
     where
         F: Fn(InvocationContext) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Value, HandlerError>> + Send + 'static,
+        Fut: Future<Output = Result<Option<Value>, HandlerError>> + Send + 'static,
     {
         self.registrations.push(Registration {
             command: command.into(),
@@ -880,7 +881,9 @@ impl CommandRuntime {
                     self.inner.max_output_bytes,
                 ),
                 Ok(Ok(Ok(result))) => {
-                    if serialized_json_within_limit(&result, self.inner.max_output_bytes) {
+                    if result.as_ref().is_none_or(|payload| {
+                        serialized_json_within_limit(payload, self.inner.max_output_bytes)
+                    }) {
                         InvocationResult::success(result)
                     } else {
                         failure(
@@ -1656,7 +1659,7 @@ mod tests {
                 let handler_runs = Arc::clone(&handler_runs);
                 async move {
                     handler_runs.fetch_add(1, Ordering::SeqCst);
-                    Ok(json!({"handled": true}))
+                    Ok(Some(json!({"handled": true})))
                 }
             });
         }
@@ -1750,7 +1753,7 @@ mod tests {
         let runtime = CommandRuntime::builder()
             .command("example.ok", |context| async move {
                 assert!(context.io.is_none());
-                Ok(json!({"echo": context.invocation.params}))
+                Ok(Some(json!({"echo": context.invocation.params})))
             })
             .command("example.fail", |_context| async {
                 Err(HandlerError::new("NOT_READY", "dependency unavailable"))
@@ -1762,7 +1765,7 @@ mod tests {
             runtime
                 .evaluate(invocation("1", "example.ok", json!({"value": 1})))
                 .await,
-            InvocationResult::success(json!({"echo":{"value":1}}))
+            InvocationResult::success(Some(json!({"echo":{"value":1}})))
         );
         assert_eq!(
             runtime
@@ -1786,9 +1789,11 @@ mod tests {
             .max_input_bytes(8)
             .max_output_bytes(8)
             .command("example.echo", |context| async move {
-                Ok(context.invocation.params)
+                Ok(Some(context.invocation.params))
             })
-            .command("example.large", |_context| async { Ok(json!("1234567")) })
+            .command("example.large", |_context| async {
+                Ok(Some(json!("1234567")))
+            })
             .build()
             .unwrap();
 
@@ -1804,6 +1809,27 @@ mod tests {
             failure_code(
                 &runtime
                     .evaluate(invocation("2", "example.large", Value::Null))
+                    .await
+            ),
+            Some("OUTPUT_TOO_LARGE")
+        );
+
+        let empty_runtime = CommandRuntime::builder()
+            .max_output_bytes(3)
+            .command("example.empty", |_| async { Ok(None) })
+            .command("example.null", |_| async { Ok(Some(Value::Null)) })
+            .build()
+            .unwrap();
+        assert_eq!(
+            empty_runtime
+                .evaluate(invocation("empty", "example.empty", Value::Null))
+                .await,
+            InvocationResult::success(None)
+        );
+        assert_eq!(
+            failure_code(
+                &empty_runtime
+                    .evaluate(invocation("null", "example.null", Value::Null))
                     .await
             ),
             Some("OUTPUT_TOO_LARGE")
@@ -1832,7 +1858,7 @@ mod tests {
             .default_timeout(Duration::from_millis(1))
             .command("example.wait", |_context| async {
                 tokio::time::sleep(Duration::from_millis(10)).await;
-                Ok(json!({"finished": true}))
+                Ok(Some(json!({"finished": true})))
             })
             .build()
             .unwrap();
@@ -1841,7 +1867,7 @@ mod tests {
 
         assert_eq!(
             runtime.evaluate(invocation).await,
-            InvocationResult::success(json!({"finished": true}))
+            InvocationResult::success(Some(json!({"finished": true})))
         );
     }
 
@@ -1892,7 +1918,7 @@ mod tests {
                 async move {
                     entered.notify_one();
                     release.notified().await;
-                    Ok(Value::Null)
+                    Ok(Some(Value::Null))
                 }
             })
             .build()
@@ -1929,7 +1955,7 @@ mod tests {
                 async move {
                     entered.notify_one();
                     release.notified().await;
-                    Ok(Value::Null)
+                    Ok(Some(Value::Null))
                 }
             })
             .build()
@@ -2001,7 +2027,7 @@ mod tests {
                     entered.notify_one();
                     context.cancellation.cancelled().await;
                     cancelled.notify_one();
-                    Ok(Value::Null)
+                    Ok(Some(Value::Null))
                 }
             })
             .build()
@@ -2038,7 +2064,7 @@ mod tests {
             .command("example.status", move |_context| {
                 let handler_state = Arc::clone(&handler_state);
                 handler_state.store(true, Ordering::SeqCst);
-                async { Ok(Value::Null) }
+                async { Ok(Some(Value::Null)) }
             })
             .build()
             .unwrap();
@@ -2071,7 +2097,7 @@ mod tests {
             .command("example.panic", |_context| async {
                 panic!("handler bug");
                 #[allow(unreachable_code)]
-                Ok(Value::Null)
+                Ok(Some(Value::Null))
             })
             .build()
             .unwrap();
@@ -2089,7 +2115,7 @@ mod tests {
                 panic!("handler construction bug");
                 #[allow(unreachable_code)]
                 async {
-                    Ok(Value::Null)
+                    Ok(Some(Value::Null))
                 }
             })
             .build()
@@ -2116,7 +2142,7 @@ mod tests {
                 let handler_state = Arc::clone(&handler_state);
                 async move {
                     handler_state.store(true, Ordering::SeqCst);
-                    Ok(Value::Null)
+                    Ok(Some(Value::Null))
                 }
             })
             .build()
@@ -2160,7 +2186,7 @@ mod tests {
                 let handler_state = Arc::clone(&handler_state);
                 async move {
                     handler_state.store(true, Ordering::SeqCst);
-                    Ok(Value::Null)
+                    Ok(Some(Value::Null))
                 }
             };
             let builder = CommandRuntime::builder();
@@ -2217,7 +2243,7 @@ mod tests {
                 },
                 move |_| {
                     handler_entered.store(true, Ordering::SeqCst);
-                    async { Ok(Value::Null) }
+                    async { Ok(Some(Value::Null)) }
                 },
             )
             .build()
@@ -2238,13 +2264,13 @@ mod tests {
         ));
 
         let empty = CommandRuntime::builder()
-            .command("", |_context| async { Ok(Value::Null) })
+            .command("", |_context| async { Ok(Some(Value::Null)) })
             .build();
         assert!(matches!(empty, Err(RuntimeBuildError::EmptyCommand)));
 
         for command in ["system", "system.run"] {
             let reserved = CommandRuntime::builder()
-                .command(command, |_context| async { Ok(Value::Null) })
+                .command(command, |_context| async { Ok(Some(Value::Null)) })
                 .build();
             assert!(matches!(
                 reserved,
@@ -2253,8 +2279,8 @@ mod tests {
         }
 
         let duplicate = CommandRuntime::builder()
-            .command("example.status", |_context| async { Ok(Value::Null) })
-            .command("example.status", |_context| async { Ok(Value::Null) })
+            .command("example.status", |_context| async { Ok(Some(Value::Null)) })
+            .command("example.status", |_context| async { Ok(Some(Value::Null)) })
             .build();
         assert!(matches!(
             duplicate,
@@ -2265,12 +2291,12 @@ mod tests {
     #[test]
     fn declares_registered_commands_in_deterministic_order() {
         let runtime = CommandRuntime::builder()
-            .command("example.z", |_context| async { Ok(Value::Null) })
-            .command("example.a", |_context| async { Ok(Value::Null) })
+            .command("example.z", |_context| async { Ok(Some(Value::Null)) })
+            .command("example.a", |_context| async { Ok(Some(Value::Null)) })
             .private_duplex_command(
                 "host.control",
                 |_| async { Ok(()) },
-                |_| async { Ok(Value::Null) },
+                |_| async { Ok(Some(Value::Null)) },
             )
             .build()
             .unwrap();

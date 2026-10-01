@@ -55,7 +55,11 @@ async fn public_runtime_completes_allowed_work_and_suppresses_wire_cancelled_eff
                 }
                 assert_eq!(context.invocation.params, json!({"verbose": true}));
                 effects.fetch_add(1, Ordering::SeqCst);
-                Ok(json!({"ready": true}))
+                match context.invocation.id.as_str() {
+                    "empty" => Ok(None),
+                    "null" => Ok(Some(Value::Null)),
+                    _ => Ok(Some(json!({"ready": true}))),
+                }
             }
         })
         .build()
@@ -86,7 +90,7 @@ async fn public_runtime_completes_allowed_work_and_suppresses_wire_cancelled_eff
     assert_eq!(session.issued_device_token(), Some("issued-device-token"));
     assert!(runtime.run(session).await.is_err());
     server.await.unwrap();
-    assert_eq!(native_effects.load(Ordering::SeqCst), 1);
+    assert_eq!(native_effects.load(Ordering::SeqCst), 3);
 }
 
 async fn serve_public_runtime_authority(listener: TcpListener, handler_entered: Arc<Notify>) {
@@ -129,6 +133,30 @@ async fn serve_public_runtime_authority(listener: TcpListener, handler_entered: 
         json!({"type":"res","id":allowed["id"],"ok":true,"payload":{"accepted":true}}),
     )
     .await;
+    for (id, expected) in [
+        ("empty", json!({"id":"empty","nodeId":"node-1","ok":true})),
+        (
+            "null",
+            json!({"id":"null","nodeId":"node-1","ok":true,"payloadJSON":"null"}),
+        ),
+    ] {
+        send_json(
+            &mut socket,
+            json!({"type":"event","event":"node.invoke.request","payload":{
+                "id":id,"nodeId":"node-1","command":"example.status",
+                "paramsJSON":"{\"verbose\":true}"
+            }}),
+        )
+        .await;
+        let result = receive_json(&mut socket).await;
+        assert_eq!(result["method"], "node.invoke.result");
+        assert_eq!(result["params"], expected);
+        send_json(
+            &mut socket,
+            json!({"type":"res","id":result["id"],"ok":true,"payload":{"accepted":true}}),
+        )
+        .await;
+    }
     send_json(
         &mut socket,
         json!({"type":"event","event":"node.invoke.request","payload":{
@@ -236,7 +264,7 @@ async fn runtime_rejects_buffered_invocation_after_session_retirement_is_request
         .command("example.status", move |_context| {
             let handler_state = Arc::clone(&handler_state);
             handler_state.store(true, Ordering::SeqCst);
-            async { Ok(Value::Null) }
+            async { Ok(Some(Value::Null)) }
         })
         .build()
         .unwrap();
@@ -306,7 +334,7 @@ async fn wire_cancellation_during_admission_prevents_handler_construction() {
         })
         .command("example.status", move |_context| {
             handler_state.store(true, Ordering::SeqCst);
-            async { Ok(Value::Null) }
+            async { Ok(Some(Value::Null)) }
         })
         .build()
         .unwrap();
@@ -680,7 +708,7 @@ async fn duplex_runtime_routes_ordered_input_and_progress() {
             let second = io.recv().await.expect("second input");
             let output = format!("{}é", "a".repeat(16 * 1024 - 1));
             io.emit_chunk(&output).await.unwrap();
-            Ok(json!({"input":[first, second]}))
+            Ok(Some(json!({"input":[first, second]})))
         })
         .build()
         .unwrap();
@@ -804,7 +832,7 @@ async fn direct_dispatch_rejects_duplex_without_running_an_event_loop() {
     });
 
     let runtime = CommandRuntime::builder()
-        .duplex_command("example.duplex", |_context| async { Ok(Value::Null) })
+        .duplex_command("example.duplex", |_context| async { Ok(Some(Value::Null)) })
         .build()
         .unwrap();
     let connect_runtime = runtime.clone();
@@ -907,7 +935,7 @@ async fn runtime_enforces_public_manifests_and_private_admission() {
                     Ok(())
                 }
             },
-            |context| async move { Ok(json!({"command":context.invocation.command})) },
+            |context| async move { Ok(Some(json!({"command":context.invocation.command}))) },
         )
         .command("example.first", move |context| {
             let entered = Arc::clone(&handler_entered);
@@ -923,7 +951,7 @@ async fn runtime_enforces_public_manifests_and_private_admission() {
             }
         })
         .command("example.second", |context| async move {
-            Ok(json!({"command":context.invocation.command}))
+            Ok(Some(json!({"command":context.invocation.command})))
         })
         .build()
         .unwrap();
