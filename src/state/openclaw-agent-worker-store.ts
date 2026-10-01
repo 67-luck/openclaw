@@ -9,7 +9,10 @@ import {
   createSqliteLifecycleAggregateError,
   throwSqliteLifecycleErrors,
 } from "../infra/sqlite-lifecycle-errors.js";
-import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
+import {
+  assertExistingDatabaseIdentity,
+  normalizeDatabasePath,
+} from "../infra/sqlite-worker-identity.js";
 import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import {
   reserveSqliteWorkerInputPreparation,
@@ -130,7 +133,7 @@ export async function openOpenClawAgentSqliteWorkerStore<Operations extends Sqli
       !current ||
       current.db !== expectedDatabase ||
       !expectedDatabase.isOpen ||
-      expectedDatabase.location() !== prepared?.filename
+      normalizeDatabasePath(expectedDatabase.location() ?? "") !== prepared?.filename
     ) {
       throw new Error("Borrowed agent database closed or changed before Worker admission");
     }
