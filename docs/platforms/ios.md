@@ -143,14 +143,18 @@ shared across connected clients; an open conversation stays open.
 ## Cloudflare Access sign-in
 
 When a Gateway URL or setup code reaches a Cloudflare Access sign-in challenge,
-tap **Connect** to open the system browser inside OpenClaw. Complete the Access
-sign-in and approval. The browser closes after the app verifies the returned
-session, then normal Gateway pairing continues. Existing Gateway credentials,
+tap **Connect** to sign in to the Gateway website in the system browser inside
+OpenClaw. Complete the Access sign-in, then tap **Done**. Choose **Continue** to
+authorize the app connection and finish any Access approval. The app starts its
+encrypted session transfer only after you choose Continue. The browser closes
+after the app verifies the returned session, then normal Gateway pairing
+continues. Existing Gateway credentials,
 service headers, and WARP connections continue to work without an extra prompt
 when the connection check already succeeds.
 
 This browser has its own app session. Signing in with Safari does not guarantee
-that you are already signed in here. Tap **Cancel** to stop; use **Sign in** in the
+that you are already signed in here. Website sign-in alone does not authorize
+the native connection. Tap **Cancel** to stop; use **Sign in** in the
 native Gateway settings to try again. Returning from the background never starts
 a browser automatically.
 

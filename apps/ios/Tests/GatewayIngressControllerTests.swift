@@ -13,11 +13,19 @@ import Testing
 
 @MainActor
 final class IngressTestBrowser: CloudflareAccessBrowserPresenting {
+    var prepared: [UUID] = []
+    var preparationGate: IngressTestGate?
     var presented: [UUID] = []
     var dismissed: [UUID] = []
     var cancel: (() -> Void)?
     var dismissalGate: AsyncStream<Void>?
     var onDismiss: (() -> Void)?
+
+    func prepare(_: CloudflareAccessOrigin, intentID: UUID, onCancel: @escaping () -> Void) async throws {
+        self.prepared.append(intentID)
+        self.cancel = onCancel
+        await self.preparationGate?.wait()
+    }
 
     func open(_: URL, intentID: UUID, onCancel: @escaping () -> Void) async throws {
         self.presented.append(intentID)

@@ -26,6 +26,41 @@ func makeOrdinaryIngress() -> GatewayIngressController {
         retireTransports: { _ in })
 }
 
+@Suite(.serialized)
+struct LegacyManualGatewayMigrationTests {
+    @Test @MainActor func `auto connect migrates the active Gateway registry entry`() async {
+        let registryIsolation = await GatewayRegistryTestIsolation()
+        defer { registryIsolation.restore() }
+        let host = "legacy-manual-\(UUID().uuidString).example.com"
+        let stableID = "manual|\(host.lowercased())|443"
+
+        withUserDefaults([
+            "gateway.autoconnect": true,
+            "gateway.manual.enabled": true,
+            "gateway.manual.host": host,
+            "gateway.manual.port": 443,
+            "gateway.manual.tls": true,
+            "node.instanceId": "ios-test",
+        ]) {
+            let appModel = NodeAppModel()
+            defer { appModel.disconnectGateway() }
+            let controller = GatewayConnectionController(
+                appModel: appModel,
+                startDiscovery: false,
+                ingress: makeOrdinaryIngress())
+
+            controller._test_triggerAutoConnect()
+            let active = GatewaySettingsStore.activeGatewayEntry()
+
+            #expect(active?.stableID == stableID)
+            #expect(active?.kind == .manual)
+            #expect(active?.host == host)
+            #expect(active?.port == 443)
+            #expect(active?.useTLS == true)
+        }
+    }
+}
+
 private func percentEncodedPath(of url: URL?) -> String? {
     url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.percentEncodedPath }
 }

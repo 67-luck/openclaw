@@ -907,3 +907,52 @@ extension GatewayIngressControllerTests {
         try await ingress.forget(origin: fixture.application.origin)
     }
 }
+
+extension GatewayIngressControllerTests {
+    @Test @MainActor
+    func `canceling website preparation leaves friendly ingress guidance without a network failure`() async throws {
+        let isolation = await GatewayRegistryTestIsolation()
+        defer { isolation.restore() }
+        let state = try TemporaryOpenClawState(instanceID: "access-cancel-preparation-\(UUID().uuidString)")
+        defer { state.restore() }
+        let fixture = try IngressTestHarness()
+        let previousPin = GatewayTLSStore.loadFingerprint(stableID: fixture.stableID)
+        defer {
+            _ = GatewayTLSStore.clearFingerprint(stableID: fixture.stableID)
+            if let previousPin {
+                GatewayTLSStore.saveFingerprint(previousPin, stableID: fixture.stableID)
+            }
+        }
+        let gate = IngressTestGate()
+        fixture.browser.preparationGate = gate
+        let ingress = fixture.controller()
+        let model = NodeAppModel()
+        defer { model.disconnectGateway() }
+        let controller = GatewayConnectionController(
+            appModel: model,
+            startDiscovery: false,
+            tcpReachabilityProbe: { _, _, _, _ in true },
+            tlsFingerprintProbe: { _ in .fingerprint(String(repeating: "ab", count: 32)) },
+            ingress: ingress)
+        defer {
+            gate.release()
+            fixture.release.continuation.finish()
+            ingress.cancelSignIn()
+        }
+        #expect(await controller.connectManual(host: "gateway.example.test", port: 8443, useTLS: true) == .accepted)
+        if let prompt = controller.pendingTrustPrompt {
+            await controller.acceptPendingTrustPrompt(prompt)
+        }
+        await gate.waitUntilStarted()
+        #expect(model.activeGatewayConnectConfig == nil)
+        fixture.browser.cancel?()
+        gate.release()
+        try await waitForIngress { !controller._test_pendingAutoConnectState().pending }
+        #expect(model.activeGatewayConnectConfig == nil)
+        #expect(model.lastGatewayProblem == nil)
+        #expect(model.gatewayStatusText == "Offline")
+        #expect(ingress.attention?.message == "Sign-in was canceled. Choose Sign in to try again.")
+        #expect(fixture.browser.presented.isEmpty)
+        #expect(fixture.persisted == nil)
+    }
+}

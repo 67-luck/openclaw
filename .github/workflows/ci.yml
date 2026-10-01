@@ -5420,14 +5420,17 @@ jobs:
           mkdir -p "apps/ios/build/LifecycleTestResults"
           test_args=(
             -only-testing:OpenClawTests/CloudflareAccessClientTests
+            -only-testing:OpenClawTests/CloudflareAccessBrowserPresenterTests
             -only-testing:OpenClawTests/CloudflareAccessTransferTests
             -only-testing:OpenClawTests/CloudflareAccessSessionStoreTests
             -only-testing:OpenClawTests/ChatTypingFocusTests
             -only-testing:OpenClawTests/ChatSendHydrationTests
             -only-testing:OpenClawTests/GatewayIngressControllerTests
+            -only-testing:OpenClawTests/GatewayIngressLoginPreparationTests
             -only-testing:OpenClawTests/GatewayConnectionControllerTests
             -only-testing:OpenClawTests/GatewayConnectionSecurityTests
             -only-testing:OpenClawTests/GatewaySettingsStoreTests
+            -only-testing:OpenClawTests/LegacyManualGatewayMigrationTests
             -only-testing:OpenClawTests/GatewayOperatorFleetTests
             -only-testing:OpenClawTests/IOSMediaArtifactLoaderTests
             -only-testing:OpenClawTests/OpenClawTypographyTests

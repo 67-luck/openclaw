@@ -435,6 +435,7 @@ describe.skipIf(process.platform === "win32")("iOS voice cleanup workflow", () =
 describe.skipIf(process.platform === "win32")("iOS Access simulator workflow", () => {
   const authClasses = [
     "CloudflareAccessClientTests",
+    "CloudflareAccessBrowserPresenterTests",
     "CloudflareAccessTransferTests",
     "CloudflareAccessSessionStoreTests",
   ];
@@ -468,9 +469,11 @@ describe.skipIf(process.platform === "win32")("iOS Access simulator workflow", (
       "-only-testing:OpenClawTests/ChatTypingFocusTests",
       "-only-testing:OpenClawTests/ChatSendHydrationTests",
       "-only-testing:OpenClawTests/GatewayIngressControllerTests",
+      "-only-testing:OpenClawTests/GatewayIngressLoginPreparationTests",
       "-only-testing:OpenClawTests/GatewayConnectionControllerTests",
       "-only-testing:OpenClawTests/GatewayConnectionSecurityTests",
       "-only-testing:OpenClawTests/GatewaySettingsStoreTests",
+      "-only-testing:OpenClawTests/LegacyManualGatewayMigrationTests",
       "-only-testing:OpenClawTests/GatewayOperatorFleetTests",
       "-only-testing:OpenClawTests/IOSMediaArtifactLoaderTests",
       "-only-testing:OpenClawTests/OpenClawTypographyTests",
