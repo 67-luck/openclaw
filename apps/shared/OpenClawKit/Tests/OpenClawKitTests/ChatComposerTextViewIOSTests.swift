@@ -82,7 +82,8 @@ struct ChatComposerTextViewIOSTests {
         var history = ChatInputHistory()
         history.record("older")
         history.record("ka newer")
-        textView.text = try #require(history.previous(draft: draft))
+        let recalled = history.previous(draft: draft)
+        textView.text = try #require(recalled)
         try #require(history.cursor == 0)
 
         var upCalls = 0
