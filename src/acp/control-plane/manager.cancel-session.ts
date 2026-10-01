@@ -50,7 +50,7 @@ export type AcpSessionCancellationCapture = {
     agentId?: string;
     assertActive?: () => void;
     reason?: string;
-  }) => Promise<void>;
+  }) => Promise<boolean>;
   release: () => void;
 };
 
@@ -112,7 +112,7 @@ export function captureManagerCancellation(params: {
           },
         });
         if (resolution.kind === "none") {
-          return;
+          return false;
         }
       }
       await params.cancel({
@@ -124,6 +124,7 @@ export function captureManagerCancellation(params: {
           assertIdleCurrent,
         },
       });
+      return true;
     },
     release: () => {
       released = true;

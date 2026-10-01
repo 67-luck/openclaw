@@ -36,7 +36,7 @@ import {
   type ReplyRunAdmissionSource,
   type ReplyRunWaiter,
 } from "./session-controller.state.js";
-import { captureSessionControllerStop, stopSessionController } from "./session-controller.stop.js";
+import { captureSessionControllerStop, stopSession } from "./session-controller.stop.js";
 
 type ReplyRunAdmissionSettlement = {
   settled: boolean;
@@ -181,7 +181,11 @@ export async function interruptReplyRunTarget(
   timeoutMs: number | null = REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
 ): Promise<{ aborted: boolean; settled: boolean }> {
   const operation = target[replyRunInterruptTargetOperation];
-  const aborted = operation.abortByUser();
+  const stopped = stopSession({
+    source: "interrupt",
+    capture: captureSessionControllerStop({ operations: [operation] }),
+  });
+  const aborted = stopped.aborted;
   const settled =
     timeoutMs === null ? false : await waitForReplyOperationOwnerSettlement(operation, timeoutMs);
   return { aborted, settled };
@@ -202,7 +206,12 @@ export function supersedeReplyRunByRunId(runId: string, beforeCancel: () => void
     if (normalizeOptionalString(backend?.runId) !== expectedRunId) {
       continue;
     }
-    return operation.supersede(beforeCancel);
+    return stopSession({
+      source: "supersede",
+      capture: captureSessionControllerStop({ operations: [operation] }),
+      // Supersession owns heartbeat finalization semantics beyond ordinary abortability.
+      cancelOperation: (selected) => selected.supersede(beforeCancel),
+    }).aborted;
   }
   return false;
 }
@@ -363,7 +372,8 @@ export function abortActiveReplyRuns(opts: {
     ),
   });
   return (
-    stopSessionController(capture, {
+    stopSession({
+      capture,
       source: "restart",
       onError: (target, error) => {
         if ("sessionId" in target) {

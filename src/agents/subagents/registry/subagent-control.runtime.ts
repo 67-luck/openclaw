@@ -1,8 +1,8 @@
 /** Runtime adapters consume the physical controller owner, never a global session-ID vote. */
 import { selectedOperations } from "../../../sessions/session-controller.lifecycle-projections.js";
 import {
+  cancelCapturedSessionControllerSource,
   captureSessionControllerStop,
-  stopSessionController,
 } from "../../../sessions/session-controller.stop.js";
 import type { SessionTarget } from "../../../sessions/session-controller.target.js";
 export { clearSessionQueues } from "../../../auto-reply/reply/queue.js";
@@ -19,5 +19,5 @@ export function abortEmbeddedAgentRun(sessionId: string, target: SessionTarget):
       operation.hasOwnedSessionId(sessionId),
     ),
   });
-  return stopSessionController(capture, { source: "gateway" }).activeCancelled > 0;
+  return cancelCapturedSessionControllerSource(capture).activeCancelled > 0;
 }

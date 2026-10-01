@@ -14,7 +14,6 @@ import { handleStopCommand } from "./commands-session-abort.js";
 import "./commands-session-abort.test-support.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
-const createInternalHookEventMock = vi.hoisted(() => vi.fn(() => ({})));
 const persistAbortTargetEntryMock = vi.hoisted(() => vi.fn(async () => true));
 const resolveCommandSessionEntryForKeyMock = vi.hoisted(() =>
   vi.fn(() => ({ entry: undefined, key: undefined })),
@@ -25,9 +24,7 @@ const stopSubagentsForRequesterMock = vi.hoisted(() =>
     return { stopped: 0, failed: 0 };
   }),
 );
-const abortSessionRunTargetWithOutcomeMock = vi.hoisted(() =>
-  vi.fn(() => ({ active: false, aborted: false })),
-);
+const abortSessionRunTargetWithOutcomeMock = vi.hoisted(() => vi.fn());
 const formatAbortReplyTextMock = vi.hoisted(() => vi.fn(() => "⚙️ Agent was aborted."));
 
 vi.mock("../../globals.js", () => ({
@@ -35,7 +32,7 @@ vi.mock("../../globals.js", () => ({
 }));
 
 vi.mock("../../hooks/internal-hooks.js", () => ({
-  createInternalHookEvent: createInternalHookEventMock,
+  createInternalHookEvent: vi.fn(() => ({})),
   triggerInternalHook: vi.fn(async () => undefined),
 }));
 
@@ -141,7 +138,23 @@ describe("handleStopCommand target fallback", () => {
   beforeEach(() => {
     previousPluginRegistry = getActivePluginRegistry();
     vi.clearAllMocks();
-    abortSessionRunTargetWithOutcomeMock.mockReturnValue({ active: false, aborted: false });
+    abortSessionRunTargetWithOutcomeMock.mockImplementation((params) => {
+      const completed = (async () => {
+        const children = await params.stopChildren?.(async () => true);
+        await params.recordAbortTarget?.({ recordCutoff: false });
+        return {
+          aborted: false,
+          alreadyFinalizing: false,
+          queuedCancelled: 0,
+          activeCancelled: 0,
+          childrenStopped: children?.stopped ?? 0,
+          childFailures: children?.failed ?? 0,
+          failures: [],
+          settled: Promise.resolve(),
+        };
+      })();
+      return { completed };
+    });
     persistAbortTargetEntryMock.mockResolvedValue(true);
   });
 
@@ -168,9 +181,14 @@ describe("handleStopCommand target fallback", () => {
           key: "agent:target:telegram:direct:123",
           sessionId: undefined,
           storePath: "/tmp/sessions.json",
-          includeQueued: true,
         }),
-        source: "channel-stop",
+        hookContext: {
+          sessionKey: "agent:target:telegram:direct:123",
+          sessionEntry: undefined,
+          sessionId: undefined,
+          commandSource: "telegram",
+          senderId: "owner",
+        },
       }),
     );
     const [persistAbortTargetParams] = expectDefined(
@@ -202,22 +220,25 @@ describe("handleStopCommand target fallback", () => {
     );
     expect(stopSubagentsParams?.cfg).toBe(params.cfg);
     expect(stopSubagentsParams?.requesterSessionKey).toBe("agent:target:telegram:direct:123");
-    expect(createInternalHookEventMock).toHaveBeenCalledWith(
-      "command",
-      "stop",
-      "agent:target:telegram:direct:123",
-      {
-        sessionEntry: undefined,
-        sessionId: undefined,
-        commandSource: "telegram",
-        senderId: "owner",
-      },
-    );
   });
 
   it("reports a finalizing target without persisting abort state", async () => {
     const params = buildStopParams();
-    abortSessionRunTargetWithOutcomeMock.mockReturnValue({ active: true, aborted: false });
+    abortSessionRunTargetWithOutcomeMock.mockImplementation((params) => ({
+      completed: (async () => {
+        const children = await params.stopChildren?.(async () => true);
+        return {
+          aborted: false,
+          alreadyFinalizing: true,
+          queuedCancelled: 0,
+          activeCancelled: 0,
+          childrenStopped: children?.stopped ?? 0,
+          childFailures: children?.failed ?? 0,
+          failures: [],
+          settled: Promise.resolve(),
+        };
+      })(),
+    }));
     formatAbortReplyTextMock.mockReturnValue(
       "Agent reply is already finalizing and can no longer be aborted.",
     );
@@ -230,7 +251,11 @@ describe("handleStopCommand target fallback", () => {
     });
     expect(formatAbortReplyTextMock).toHaveBeenCalledWith(0, "finalizing", 0);
     expect(persistAbortTargetEntryMock).not.toHaveBeenCalled();
-    expect(createInternalHookEventMock).toHaveBeenCalledOnce();
+    expect(abortSessionRunTargetWithOutcomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        hookContext: expect.objectContaining({ commandSource: "telegram", senderId: "owner" }),
+      }),
+    );
     expect(stopSubagentsForRequesterMock).toHaveBeenCalledOnce();
   });
 
@@ -291,7 +316,6 @@ describe("handleStopCommand target fallback", () => {
     });
     expect(abortSessionRunTargetWithOutcomeMock).not.toHaveBeenCalled();
     expect(persistAbortTargetEntryMock).not.toHaveBeenCalled();
-    expect(createInternalHookEventMock).not.toHaveBeenCalled();
     expect(stopSubagentsForRequesterMock).not.toHaveBeenCalled();
   });
 });

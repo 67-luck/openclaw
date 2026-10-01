@@ -1,4 +1,9 @@
-import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
+import {
+  createAgentRunRestartAbortError,
+  createAgentRunSupersededAbortError,
+} from "../agents/run-termination.js";
+import type { SessionEntry } from "../config/sessions/types.js";
+import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
 import type { ReplyOperation } from "./session-controller.contracts.js";
 import type { SessionTarget } from "./session-controller.lifecycle.js";
 import {
@@ -8,6 +13,7 @@ import {
 } from "./session-controller.mailbox.js";
 import {
   findSessionControllerEntries,
+  isReplyOperationAbortable,
   isCurrentSessionControllerOperation,
   sessionControllers,
 } from "./session-controller.state.js";
@@ -120,20 +126,149 @@ export type SessionControllerStopResult = {
   abortedOperations: ReplyOperation[];
   settled: Promise<void>;
   failures: Array<{ target: SessionControllerInput | ReplyOperation; error: unknown }>;
+  finalizing: number;
+};
+
+export type SessionStopSource =
+  | "channel-user"
+  | "client-session"
+  | "client-run"
+  | "interrupt"
+  | "restart"
+  | "watchdog"
+  | "operator-revocation"
+  | "supersede";
+
+type SessionStopPolicy = Readonly<{
+  cancelQueued: boolean;
+  stopChildren: boolean;
+  recordMessageCutoff: boolean;
+  fireCommandHook: boolean;
+}>;
+
+const SESSION_STOP_POLICY = {
+  "channel-user": {
+    cancelQueued: true,
+    stopChildren: true,
+    recordMessageCutoff: true,
+    fireCommandHook: true,
+  },
+  "client-session": {
+    cancelQueued: true,
+    stopChildren: true,
+    recordMessageCutoff: false,
+    fireCommandHook: true,
+  },
+  "client-run": {
+    cancelQueued: true,
+    stopChildren: true,
+    recordMessageCutoff: false,
+    fireCommandHook: true,
+  },
+  interrupt: {
+    cancelQueued: false,
+    stopChildren: false,
+    recordMessageCutoff: false,
+    fireCommandHook: false,
+  },
+  restart: {
+    cancelQueued: false,
+    stopChildren: false,
+    recordMessageCutoff: false,
+    fireCommandHook: false,
+  },
+  watchdog: {
+    cancelQueued: false,
+    stopChildren: false,
+    recordMessageCutoff: false,
+    fireCommandHook: false,
+  },
+  "operator-revocation": {
+    cancelQueued: false,
+    stopChildren: false,
+    recordMessageCutoff: false,
+    fireCommandHook: false,
+  },
+  supersede: {
+    cancelQueued: false,
+    stopChildren: false,
+    recordMessageCutoff: false,
+    fireCommandHook: false,
+  },
+} as const satisfies Record<SessionStopSource, SessionStopPolicy>;
+
+export type SessionStopHookContext = Readonly<{
+  sessionKey: string;
+  sessionEntry?: SessionEntry;
+  sessionId?: string;
+  commandSource?: string;
+  senderId?: string;
+}>;
+
+export type SessionStopChildrenResult = Readonly<{ stopped: number; failed: number }>;
+export type SessionStopTargetStatus = "aborted" | "finalizing" | "unchanged";
+
+export type SessionStopExternalParent =
+  | Readonly<{
+      /** Captured queued parent; cancellation remains synchronous with queue withdrawal. */
+      phase: "queued";
+      stop: () => SessionStopTargetStatus | Promise<SessionStopTargetStatus>;
+      settled?: Promise<unknown>;
+    }>
+  | Readonly<{
+      /** Captured active parent; adapters may join an asynchronous remote cancellation. */
+      phase: "active";
+      /** Start before native active callbacks when another owner must not be starved by them. */
+      start?: "after-queued";
+      stop: () => SessionStopTargetStatus | Promise<SessionStopTargetStatus>;
+      settled?: Promise<unknown>;
+    }>;
+
+export type SessionStopOutcome = Readonly<{
+  aborted: boolean;
+  alreadyFinalizing: boolean;
+  queuedCancelled: number;
+  activeCancelled: number;
+  childrenStopped: number;
+  childFailures: number;
+  settled: Promise<void>;
+  failures: SessionControllerStopResult["failures"];
+}>;
+
+export type SessionStopExecution = SessionStopOutcome & {
+  /** Joins cutoff persistence, the command hook, and captured child cancellation. */
+  completed: Promise<SessionStopOutcome>;
+};
+
+export type SessionStopRequest = {
+  source: SessionStopSource;
+  /** Captured synchronously by ingress; a resolver may select among captured candidates later. */
+  capture: SessionControllerStopCapture | (() => SessionControllerStopCapture);
+  assertCurrent?: () => void;
+  reason?: unknown;
+  messageIdentity?: unknown;
+  recordAbortTarget?: (options: { recordCutoff: boolean }) => Promise<void>;
+  hookContext?: SessionStopHookContext;
+  stopChildren?: (applyParentStop: () => Promise<boolean>) => Promise<SessionStopChildrenResult>;
+  externalParents?: readonly SessionStopExternalParent[];
+  /** Authorize and reserve presentation or partial custody before invoking cancel exactly once. */
+  cancelInput?: (input: SessionControllerInput, cancel: () => boolean) => boolean;
+  cancelOperation?: (operation: ReplyOperation, cancel: () => boolean) => boolean;
+  /** Authorized effects owned by another runtime, sequenced after queued withdrawal. */
+  afterQueued?: () => void;
+  /** Publication effects that require the captured parent cancellation result. */
+  afterParent?: (result: SessionControllerStopResult) => void;
+  /** Exact external parents may decline the child cancellation they provisionally captured. */
+  continueChildStop?: () => boolean;
+  onCancelled?: (target: SessionControllerInput | ReplyOperation) => void;
+  onError?: (target: SessionControllerInput | ReplyOperation, error: unknown) => "continue" | void;
 };
 
 /** One sequencer for captured Stop. Publication adapters wrap, but never replace, its primitive. */
-export function stopSessionController(
+function applySessionControllerStop(
   capture: SessionControllerStopCapture,
   params: {
-    source:
-      | "gateway"
-      | "channel-stop"
-      | "channel-abort"
-      | "fast-abort"
-      | "restart"
-      | "operator-revocation"
-      | "watchdog";
+    source: SessionStopSource;
     assertCurrent?: () => void;
     reason?: unknown;
     phase?: "all" | "queued" | "active";
@@ -156,21 +291,23 @@ export function stopSessionController(
     abortedOperations: [],
     settled: capture.settled,
     failures: [],
+    finalizing: 0,
   };
   const assertCurrent = params.assertCurrent ?? (() => {});
   const reason =
     params.reason ??
     (params.source === "restart"
       ? createAgentRunRestartAbortError()
-      : params.source === "channel-stop" ||
-          params.source === "channel-abort" ||
-          params.source === "fast-abort"
-        ? "stop"
-        : undefined);
+      : params.source === "supersede"
+        ? createAgentRunSupersededAbortError()
+        : params.source === "channel-user"
+          ? "stop"
+          : undefined);
   const once = (
     effect: () => boolean,
     committedAfterFailure: () => boolean,
     record: () => void,
+    assertEffectCurrent: () => void = assertCurrent,
   ) => {
     let called = false;
     let accepted = false;
@@ -178,7 +315,7 @@ export function stopSessionController(
       if (called) {
         return accepted;
       }
-      assertCurrent();
+      assertEffectCurrent();
       called = true;
       try {
         accepted = effect();
@@ -198,6 +335,8 @@ export function stopSessionController(
     };
   };
   const cancelSource = (input: SessionControllerInput, queued: boolean) => {
+    // Adapters may reserve presentation or custody before cancellation, but the
+    // exact shared primitive always revalidates live authority at the side effect.
     assertCurrent();
     const operation = input.claim?.operation;
     const hadResult = Boolean(operation?.result);
@@ -220,11 +359,22 @@ export function stopSessionController(
         }
         params.onCancelled?.(input);
       },
+      assertCurrent,
     );
     if (params.cancelInput) {
       params.cancelInput(input, cancel);
     } else {
       cancel();
+    }
+    if (
+      !queued &&
+      !input.abortSignal.aborted &&
+      operation &&
+      isCurrentSessionControllerOperation(operation) &&
+      !operation.result &&
+      (operation.abortFrozen || !isReplyOperationAbortable(operation))
+    ) {
+      result.finalizing++;
     }
   };
   const effect = (target: SessionControllerInput | ReplyOperation, run: () => void) => {
@@ -256,6 +406,16 @@ export function stopSessionController(
     effect(operation, () => {
       assertCurrent();
       const hadResult = Boolean(operation.result);
+      let recorded = false;
+      const record = () => {
+        if (recorded) {
+          return;
+        }
+        recorded = true;
+        result.abortedOperations.push(operation);
+        result.activeCancelled++;
+        params.onCancelled?.(operation);
+      };
       const cancel = once(
         () => {
           if (!isCurrentSessionControllerOperation(operation)) {
@@ -269,18 +429,242 @@ export function stopSessionController(
             (params.source === "watchdog" &&
               operation.result?.kind === "failed" &&
               operation.result.code === "run_stalled")),
-        () => {
-          result.abortedOperations.push(operation);
-          result.activeCancelled++;
-          params.onCancelled?.(operation);
-        },
+        record,
       );
       if (params.cancelOperation) {
-        params.cancelOperation(operation, cancel);
+        if (params.cancelOperation(operation, cancel)) {
+          record();
+        }
       } else {
         cancel();
+      }
+      if (
+        !operation.abortSignal.aborted &&
+        isCurrentSessionControllerOperation(operation) &&
+        !operation.result &&
+        (operation.abortFrozen || !isReplyOperationAbortable(operation))
+      ) {
+        result.finalizing++;
       }
     });
   }
   return result;
+}
+
+/** Reset/delete drains retain their separately reviewed lifecycle cancellation scope. */
+export function cancelCapturedSessionControllerForLifecycleMutation(
+  capture: SessionControllerStopCapture,
+  params: Omit<Parameters<typeof applySessionControllerStop>[1], "source" | "phase"> = {},
+): SessionControllerStopResult {
+  return applySessionControllerStop(capture, {
+    ...params,
+    source: "operator-revocation",
+    phase: "all",
+  });
+}
+
+/** Exact source teardown cancels its captured input without adopting session-wide Stop policy. */
+export function cancelCapturedSessionControllerSource(
+  capture: SessionControllerStopCapture,
+  params: Omit<Parameters<typeof applySessionControllerStop>[1], "source" | "phase"> = {},
+): SessionControllerStopResult {
+  return applySessionControllerStop(capture, {
+    ...params,
+    source: "operator-revocation",
+    phase: "all",
+  });
+}
+
+function resolveStopOutcome(
+  result: SessionControllerStopResult,
+  externalActiveCancelled: number,
+  externalQueuedCancelled: number,
+  externalFinalizing: number,
+  children: SessionStopChildrenResult,
+): SessionStopOutcome {
+  return Object.freeze({
+    aborted: result.activeCancelled + externalActiveCancelled > 0,
+    alreadyFinalizing: result.finalizing + externalFinalizing > 0,
+    queuedCancelled: result.queuedCancelled + externalQueuedCancelled,
+    activeCancelled: result.activeCancelled + externalActiveCancelled,
+    childrenStopped: children.stopped,
+    childFailures: children.failed,
+    settled: result.settled,
+    failures: result.failures,
+  });
+}
+
+/**
+ * Applies the source policy to one captured stop request.
+ *
+ * The caller resolves and authorizes the target. This owner decides which captured
+ * inputs, child runs, cutoff writer, and command hook participate in the request.
+ */
+export function stopSession(request: SessionStopRequest): SessionStopExecution {
+  const policy = SESSION_STOP_POLICY[request.source];
+  let externalActiveCancelled = 0;
+  let externalQueuedCancelled = 0;
+  let externalFinalizing = 0;
+  let parentResult: SessionControllerStopResult | undefined;
+  let runPostParent: (() => Promise<void>) | undefined;
+  let resolveParentResult!: (result: SessionControllerStopResult) => void;
+  let rejectParentResult!: (error: unknown) => void;
+  const parentResultReady = new Promise<SessionControllerStopResult>((resolve, reject) => {
+    resolveParentResult = resolve;
+    rejectParentResult = reject;
+  });
+  void parentResultReady.catch(() => {});
+  const applyParentStop = async (): Promise<boolean> => {
+    if (parentResult) {
+      return true;
+    }
+    const capture = typeof request.capture === "function" ? request.capture() : request.capture;
+    request.assertCurrent?.();
+    const pendingExternalStops: Promise<void>[] = [];
+    const startedExternalStops = new Set<SessionStopExternalParent>();
+    const recordExternalStatus = (
+      parent: SessionStopExternalParent,
+      status: SessionStopTargetStatus,
+    ) => {
+      if (status === "aborted") {
+        if (parent.phase === "active") {
+          externalActiveCancelled++;
+        } else {
+          externalQueuedCancelled++;
+        }
+      } else if (status === "finalizing") {
+        externalFinalizing++;
+      }
+    };
+    parentResult = applySessionControllerStop(capture, {
+      source: request.source,
+      assertCurrent: request.assertCurrent,
+      reason: request.reason,
+      phase: policy.cancelQueued ? "all" : "active",
+      cancelInput: request.cancelInput,
+      cancelOperation: request.cancelOperation,
+      afterQueued: () => {
+        for (const parent of request.externalParents ?? []) {
+          if (parent.phase === "queued" || ("start" in parent && parent.start === "after-queued")) {
+            startedExternalStops.add(parent);
+            pendingExternalStops.push(
+              Promise.resolve(parent.stop()).then((status) => recordExternalStatus(parent, status)),
+            );
+          }
+        }
+        request.afterQueued?.();
+      },
+      onCancelled: request.onCancelled,
+      onError: request.onError,
+    });
+    for (const parent of request.externalParents ?? []) {
+      if (parent.phase === "queued" || startedExternalStops.has(parent)) {
+        continue;
+      }
+      request.assertCurrent?.();
+      pendingExternalStops.push(
+        Promise.resolve(parent.stop()).then((status) => recordExternalStatus(parent, status)),
+      );
+    }
+    const externalSettlements = (request.externalParents ?? []).flatMap((parent) =>
+      parent.settled ? [parent.settled] : [],
+    );
+    if (externalSettlements.length > 0) {
+      parentResult.settled = Promise.all([parentResult.settled, ...externalSettlements]).then(
+        () => undefined,
+      );
+    }
+    resolveParentResult(parentResult);
+    request.afterParent?.(parentResult);
+    runPostParent = async () => {
+      await Promise.all(pendingExternalStops);
+      const currentParentResult = parentResult;
+      if (!currentParentResult) {
+        throw new Error("Parent Stop result is unavailable");
+      }
+      const alreadyFinalizing = currentParentResult.finalizing + externalFinalizing > 0;
+      const activeCancelled = currentParentResult.activeCancelled + externalActiveCancelled;
+      if ((!alreadyFinalizing || activeCancelled > 0) && request.recordAbortTarget) {
+        await request.recordAbortTarget({
+          recordCutoff: policy.recordMessageCutoff && request.messageIdentity !== undefined,
+        });
+      }
+      if (policy.fireCommandHook) {
+        const hookContext = request.hookContext;
+        if (!hookContext) {
+          throw new Error(`Stop source ${request.source} requires command hook context`);
+        }
+        request.assertCurrent?.();
+        await triggerInternalHook(
+          createInternalHookEvent("command", "stop", hookContext.sessionKey, {
+            sessionEntry: hookContext.sessionEntry,
+            sessionId: hookContext.sessionId,
+            commandSource: hookContext.commandSource,
+            senderId: hookContext.senderId,
+          }),
+        );
+      }
+    };
+    return request.continueChildStop?.() ?? true;
+  };
+
+  let children: Promise<SessionStopChildrenResult>;
+  try {
+    children = policy.stopChildren
+      ? (request.stopChildren?.(applyParentStop) ??
+        applyParentStop().then(() => ({ stopped: 0, failed: 0 })))
+      : applyParentStop().then(() => ({ stopped: 0, failed: 0 }));
+  } catch (error) {
+    rejectParentResult(error);
+    throw error;
+  }
+  const pendingSettlement = parentResultReady.then((result) => result.settled);
+  void pendingSettlement.catch(() => {});
+  const initial = parentResult
+    ? resolveStopOutcome(
+        parentResult,
+        externalActiveCancelled,
+        externalQueuedCancelled,
+        externalFinalizing,
+        { stopped: 0, failed: 0 },
+      )
+    : resolveStopOutcome(
+        {
+          queuedCancelled: 0,
+          activeCancelled: 0,
+          abortedInputs: [],
+          abortedOperations: [],
+          settled: pendingSettlement,
+          failures: [],
+          finalizing: 0,
+        },
+        0,
+        0,
+        0,
+        { stopped: 0, failed: 0 },
+      );
+  const completed = children.then(
+    async (childResult) => {
+      const postParent = runPostParent;
+      const currentParentResult = parentResult;
+      if (!postParent || !currentParentResult) {
+        throw new Error("Parent Stop result is unavailable");
+      }
+      await postParent();
+      return resolveStopOutcome(
+        currentParentResult,
+        externalActiveCancelled,
+        externalQueuedCancelled,
+        externalFinalizing,
+        childResult,
+      );
+    },
+    async (error) => {
+      await runPostParent?.();
+      throw error;
+    },
+  );
+  void completed.catch(rejectParentResult);
+  void completed.catch(() => {});
+  return Object.freeze({ ...initial, completed });
 }

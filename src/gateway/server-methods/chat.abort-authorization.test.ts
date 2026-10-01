@@ -17,7 +17,10 @@ import {
 
 vi.mock("../session-utils.js", async () => ({
   ...(await vi.importActual<typeof import("../session-utils.js")>("../session-utils.js")),
-  loadSessionEntry: () => ({ entry: { sessionId: "main-session" } }),
+  loadSessionEntry: () => ({
+    entry: { sessionId: "main-session" },
+    storePath: "/synthetic/chat-abort/session-controller.sqlite",
+  }),
 }));
 
 function abortAsOwner(params: Omit<Parameters<typeof invokeAbort>[0], "connId" | "deviceId">) {
@@ -279,6 +282,18 @@ describe("chat.abort authorization", () => {
 });
 
 describe("chat.abort queued-turn contract", () => {
+  it("cancels a waiting channel input outside the RPC registry", async () => {
+    const waiting = createActiveRun("main", {
+      queued: true,
+      sessionId: "main-session",
+      storeScope: "/synthetic/chat-abort/session-controller.sqlite",
+    });
+    const respond = await abortAsAdmin({ context: createChatAbortContext() });
+
+    expectAbortPayload(requireLastRespondCall(respond)[1], { aborted: true, runIds: [] });
+    expect(waiting.input.abortSignal.aborted).toBe(true);
+  });
+
   it("cancels queued turns before session cleanup and the active run", async () => {
     const order: string[] = [];
     const queuedController = new AbortController();

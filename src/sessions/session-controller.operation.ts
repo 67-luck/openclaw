@@ -54,7 +54,7 @@ import {
   updateFollowupAdmissionSessionId,
   updateSuccessorAdmissionSessionId,
 } from "./session-controller.state.js";
-import { captureSessionControllerStop, stopSessionController } from "./session-controller.stop.js";
+import { captureSessionControllerStop, stopSession } from "./session-controller.stop.js";
 import { createReplyOperationToolAuthority } from "./session-controller.tool-authority.js";
 import {
   createSessionControllerWatchdog,
@@ -244,7 +244,8 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
         detachUpstreamAbort();
         backend?.cancel("superseded");
       } else {
-        stopSessionController(captureSessionControllerStop({ operations: [operation] }), {
+        stopSession({
+          capture: captureSessionControllerStop({ operations: [operation] }),
           source: "watchdog",
           assertCurrent: () => {
             if (!effect.isCurrent()) {

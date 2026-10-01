@@ -249,7 +249,7 @@ it.each(["session", "queue", "new-source", "source"] as const)(
   },
 );
 
-it("settles detached pending sources after revocation and preserves later active Stop effects", async () => {
+it("stops detached pending source cancellation after authority revocation", async () => {
   const fixture = await setup();
   const first = followup("first");
   const second = followup("second");
@@ -261,11 +261,10 @@ it("settles detached pending sources after revocation and preserves later active
   expect(fixture.queued.input.abortSignal.aborted).toBe(true);
   expect(fixture.active.input.abortSignal.aborted).toBe(false);
   expect(first.settled).toHaveBeenCalledOnce();
-  expect(second.settled).toHaveBeenCalledOnce();
+  expect(second.settled).not.toHaveBeenCalled();
   await expect(first.run.controllerInput!.settlement.promise).rejects.toThrow(
     "cleanup callback failed",
   );
-  await second.run.controllerInput!.settlement.promise;
-  expect(readQueue()).toBeUndefined();
+  expect(readQueue()?.items).toEqual([second.run]);
   expect(fixture.respond).not.toHaveBeenCalled();
 });

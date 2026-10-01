@@ -16,8 +16,8 @@ import {
   captureSessionTarget,
 } from "../../../sessions/session-controller.lifecycle.js";
 import {
+  cancelCapturedSessionControllerSource,
   captureSessionControllerStop,
-  stopSessionController,
 } from "../../../sessions/session-controller.stop.js";
 import {
   SUBAGENT_ENDED_REASON_COMPLETE,
@@ -196,7 +196,7 @@ export async function reconcileDurableSubagentKillIntent(params: {
         const active = killIntent.sessionId
           ? runtime.isEmbeddedAgentRunActive(killIntent.sessionId, target)
           : false;
-        const stopped = stopSessionController(capture, { source: "gateway", assertCurrent });
+        const stopped = cancelCapturedSessionControllerSource(capture, { assertCurrent });
         assertCurrent();
         const aborted =
           stopped.activeCancelled > 0 ||

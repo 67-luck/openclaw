@@ -12,7 +12,6 @@ import {
   type ActiveEmbeddedRunOwner,
 } from "../../agents/embedded-agent-runner/runs.js";
 import { captureYieldedMainSessionContinuation } from "../../agents/main-session-recovery/main-session-restart-recovery-target.js";
-import { completeFollowupRunLifecycle } from "../../auto-reply/reply/queue/lifecycle.js";
 import {
   isConfiguredSessionStoreAgentId,
   resolveExistingAgentSessionStoreTargetsSync,
@@ -23,7 +22,6 @@ import {
 } from "../../infra/agent-events.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
-import { clearSessionControllerMailbox } from "../../sessions/session-controller.mailbox.js";
 import {
   getRpcSourceSignal,
   type RpcSourceRef,
@@ -31,7 +29,7 @@ import {
 import { findSessionControllerEntries } from "../../sessions/session-controller.state.js";
 import {
   captureSessionControllerStop,
-  stopSessionController,
+  stopSession,
 } from "../../sessions/session-controller.stop.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { waitForChatAbortTerminalPersistence } from "../chat-abort-lifecycle-internal.js";
@@ -88,7 +86,6 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const requestedRunId = typeof p.runId === "string" ? p.runId : undefined;
     const requestedKey = normalizeOptionalString(p.key);
     const requestedParamAgentId = normalizeOptionalString(p.agentId);
-    const clearQueued = p.clearQueued === true;
     const workerRunTarget = requestedRunId
       ? resolveWorkerInferenceTarget(context.workerEnvironmentService, requestedRunId)
       : undefined;
@@ -329,21 +326,50 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     // Controller-backed runs must keep the requester checks and lifecycle cleanup below.
     if (embeddedRun && !activeRun) {
       let aborted = false;
-      const descendants = await abortControlledSubagents({
-        cfg,
-        sessionKey: embeddedRun.sessionKey ?? canonicalKey,
-        agentId: targetAgentId,
-        requesterTurnRunId: embeddedRun.runId,
+      let parentStatus: ReturnType<ActiveEmbeddedRunOwner["stop"]> = "unchanged";
+      let descendants: Awaited<ReturnType<typeof abortControlledSubagents>> | undefined;
+      const stopped = stopSession({
+        source: "client-run",
+        capture: captureSessionControllerStop({}),
         assertCurrent: assertAbortCurrent,
-        // A captured handle may decline Stop. Hold its children before signaling,
-        // but authorize their cancellation only when this exact parent accepts.
-        beforeKill: () => {
-          assertAbortCurrent();
-          // The captured native owner carries its admitted operation even when
-          // no persisted session row exists. Never rediscover it through a store.
-          return (aborted = embeddedRun.abort());
+        reason: "rpc",
+        hookContext: {
+          sessionKey: canonicalKey,
+          sessionEntry,
+          sessionId: sessionEntry?.sessionId,
+          commandSource: "gateway:sessions.abort",
+          senderId: requester.deviceId ?? requester.connId,
         },
+        externalParents: [
+          {
+            phase: "active",
+            stop: () => {
+              assertAbortCurrent();
+              parentStatus = embeddedRun.stop();
+              aborted = parentStatus === "aborted";
+              return parentStatus;
+            },
+            settled: embeddedRun.waitForSettlement(),
+          },
+        ],
+        stopChildren: async (applyParentStop) => {
+          descendants = await abortControlledSubagents({
+            cfg,
+            sessionKey: embeddedRun.sessionKey ?? canonicalKey,
+            agentId: targetAgentId,
+            requesterTurnRunId: embeddedRun.runId,
+            assertCurrent: assertAbortCurrent,
+            beforeKill: applyParentStop,
+          });
+          return {
+            stopped: descendants?.killed ?? 0,
+            failed: descendants?.status === "error" ? descendants.failed : 0,
+          };
+        },
+        continueChildStop: () => parentStatus !== "unchanged",
       });
+      const outcome = await stopped.completed;
+      aborted = outcome.aborted;
       if (aborted) {
         await Promise.all([persistSessionAbort(embeddedRun), embeddedRun.waitForSettlement()]);
       }
@@ -382,8 +408,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     });
     const channelSettlements: Promise<void>[] = [];
     const channelStop = captureSessionControllerStop({
-      inputs:
-        !requestedRunId && clearQueued && canonicalKey !== "global" ? channelSources.keys() : [],
+      inputs: !requestedRunId && canonicalKey !== "global" ? channelSources.keys() : [],
       operations:
         !requestedRunId && canonicalKey !== "global"
           ? controllerOwners
@@ -481,88 +506,57 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         throw abortedPartialPersistenceError(error, abortWarning);
       }
     };
-    const onAuthorizedAfterQueuedAbort =
-      !requestedRunId && (clearQueued || persistedSessionId)
-        ? () => {
-            assertAbortCurrent();
-            let queuedCleared = 0;
-            for (const owner of controllerOwners) {
-              const mailbox = owner.mailbox;
-              if (!mailbox) {
-                continue;
-              }
-              const selected = channelStop.queuedInputs.filter((input) => {
-                const captured = channelSources.get(input);
-                return (
-                  captured &&
-                  input.mailbox === mailbox &&
-                  input.mailbox === captured.mailbox &&
-                  input.source === captured.source &&
-                  input.target === captured.target &&
-                  input.source?.run.sessionId === captured.sessionId &&
-                  !input.retirementRequested
-                );
-              });
-              if (!selected.length) {
-                continue;
-              }
-              assertAbortCurrent();
-              // One captured mailbox withdrawal commits before cleanup callbacks.
-              // Callback revocation cannot undo cleanup, but still fences active Stop.
-              queuedCleared += clearSessionControllerMailbox(
-                mailbox,
-                completeFollowupRunLifecycle,
-                selected,
-              );
-              channelSettlements.push(...selected.map((input) => input.settlement.promise));
+    let queuedCleared = false;
+    let embeddedAborted = false;
+    const additionalStop = !requestedRunId
+      ? {
+          capture: channelStop,
+          cancelInput: (input: (typeof channelStop.inputs)[number], cancel: () => boolean) => {
+            const captured = channelSources.get(input);
+            if (
+              !captured ||
+              input.mailbox !== captured.mailbox ||
+              input.source !== captured.source ||
+              input.target !== captured.target ||
+              input.retirementRequested ||
+              (input.source && input.source.run.sessionId !== captured.sessionId)
+            ) {
+              return false;
             }
-            channelStopCommitted ||= queuedCleared > 0;
-            const stopped = stopSessionController(channelStop, {
-              phase: "active",
-              source: "gateway",
-              assertCurrent: assertAbortCurrent,
-              reason: "rpc",
-              cancelInput: (input, cancel) => {
-                const captured = channelSources.get(input);
-                if (
-                  !captured ||
-                  input.mailbox !== captured.mailbox ||
-                  input.source !== captured.source ||
-                  input.target !== captured.target ||
-                  input.retirementRequested ||
-                  (input.source && input.source.run.sessionId !== captured.sessionId)
-                ) {
-                  return false;
-                }
-                const cancelled = cancel();
-                if (cancelled) {
-                  channelSettlements.push(input.settlement.promise);
-                }
-                return cancelled;
-              },
-              cancelOperation: (operation, cancel) => {
-                const cancelled = cancel();
-                if (cancelled) {
-                  channelSettlements.push(operation.ownerSettlement);
-                }
-                return cancelled;
-              },
-            });
-            const queueCleared = queuedCleared > 0;
-            const embeddedAborted = stopped.activeCancelled > 0;
-            channelStopCommitted ||= queueCleared || embeddedAborted;
+            return cancel();
+          },
+          cancelOperation: (
+            _operation: (typeof channelStop.operations)[number],
+            cancel: () => boolean,
+          ) => cancel(),
+          onCancelled: (
+            target: (typeof channelStop.inputs)[number] | (typeof channelStop.operations)[number],
+          ) => {
+            channelStopCommitted = true;
+            if ("mailbox" in target) {
+              channelSettlements.push(target.settlement.promise);
+              if (channelStop.queuedInputs.includes(target)) {
+                queuedCleared = true;
+              } else {
+                embeddedAborted = true;
+              }
+            } else {
+              channelSettlements.push(target.ownerSettlement);
+              embeddedAborted = true;
+            }
+          },
+          afterParent: () => {
             const wasActive =
               channelStop.activeInputs.length > 0 || channelStop.operations.length > 0;
             if (embeddedAborted && sessionEmbeddedRun) {
               embeddedAbortPersistence = persistSessionAbort(sessionEmbeddedRun);
-              // Descendant cleanup can yield before the acknowledgement joins this write.
               void embeddedAbortPersistence.catch(() => {});
             }
-            if (clearQueued && embeddedController) {
+            if ((queuedCleared || embeddedAborted) && embeddedController) {
               pendingMcpController = embeddedController;
             }
             if (
-              (clearQueued || canonicalKey === "global") &&
+              (queuedCleared || embeddedAborted || canonicalKey === "global") &&
               persistedSessionId &&
               (canonicalKey === "global" || !wasActive || embeddedAborted)
             ) {
@@ -572,9 +566,16 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
                 reason: "session-stop",
               });
             }
-            return embeddedAborted || queueCleared;
-          }
-        : undefined;
+          },
+        }
+      : undefined;
+    const stopHookContext = {
+      sessionKey: canonicalKey,
+      sessionEntry,
+      sessionId: persistedSessionId,
+      commandSource: "gateway:sessions.abort",
+      senderId: requester.deviceId ?? requester.connId,
+    };
     const queuedAbort = abortQueuedCollectorSession({
       context,
       sessionKey: canonicalKey,
@@ -588,8 +589,10 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       abortOrigin: "rpc",
       stopReason: "rpc",
       requester,
+      stopSource: requestedRunId ? "client-run" : "client-session",
+      hookContext: stopHookContext,
       assertCurrent: assertAbortCurrent,
-      onAuthorizedAfterQueuedAbort,
+      additionalStop,
     });
     if (queuedAbort) {
       const result = await queuedAbort;
@@ -684,8 +687,9 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         undefined,
       ),
       {
-        ...(onAuthorizedAfterQueuedAbort ? { onAuthorizedAfterQueuedAbort } : {}),
         ...(!requestedRunId ? { cascadeDescendants: true as const } : {}),
+        hookContext: stopHookContext,
+        additionalStop,
         onDescendantsCancelled: () => {
           descendantsCancelled = true;
         },

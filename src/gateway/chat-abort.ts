@@ -31,10 +31,7 @@ import {
   requestRpcSourceCancellation,
   type RpcSourceAdapter,
 } from "../sessions/session-controller.rpc-sources.js";
-import {
-  captureSessionControllerStop,
-  stopSessionController,
-} from "../sessions/session-controller.stop.js";
+import { captureSessionControllerStop, stopSession } from "../sessions/session-controller.stop.js";
 import {
   resolveChatAbortDiagnosticReason,
   type ChatAbortDiagnosticReason,
@@ -705,7 +702,8 @@ export function abortChatRunsForProvider(
     ]),
   );
   const capture = captureSessionControllerStop({ inputs: byInput.keys() });
-  stopSessionController(capture, {
+  stopSession({
+    capture,
     source: "operator-revocation",
     reason: params.stopReason,
     cancelInput: (input, cancel) => {

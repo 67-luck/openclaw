@@ -241,7 +241,24 @@ describe("chat.abort original authority and registration", () => {
         ).rejects.toThrow("requester authority changed");
         expect(first.input.abortSignal.aborted).toBe(firstEffect !== "lifecycle");
         expect(second.input.abortSignal.aborted).toBe(false);
-        expect([...context.dedupe]).toEqual(pending);
+        if (firstEffect === "queued") {
+          expect([...context.dedupe]).toEqual(pending);
+        } else {
+          expect([...context.dedupe]).toEqual([
+            [
+              "agent:pending",
+              expect.objectContaining({
+                payload: expect.objectContaining({ runId: "pending", status: "timeout" }),
+              }),
+            ],
+            [
+              "chat:pending",
+              expect.objectContaining({
+                payload: expect.objectContaining({ runId: "pending", status: "timeout" }),
+              }),
+            ],
+          ]);
+        }
         expect(cancelInferenceForSession).not.toHaveBeenCalled();
         expect(lifecycle).toHaveBeenCalledTimes(firstEffect === "queued" ? 0 : 1);
         if (firstEffect === "active") {
@@ -322,7 +339,10 @@ describe("chat.abort original authority and registration", () => {
       deviceId: "device",
       scopes: ["operator.admin"],
     });
-    expectAbortPayload(requireLastRespondCall(response)[1], { aborted: true, runIds: ["first"] });
+    expectAbortPayload(requireLastRespondCall(response)[1], {
+      aborted: true,
+      runIds: ["pending", "first"],
+    });
     expect(stale.input.abortSignal.aborted).toBe(false);
     expect(replacement.input.abortSignal.aborted).toBe(false);
     expect([...context.dedupe]).toEqual(pending);

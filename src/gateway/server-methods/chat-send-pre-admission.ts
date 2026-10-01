@@ -450,6 +450,7 @@ export async function runChatSendPreAdmission(
       selectedAgentId: selectedAgent.agentId,
       sessionKey,
     });
+    const stopRequester = resolveChatAbortRequester(client);
     const stopStorePath = session.readSource?.path ?? storePath;
     const guard: { failure?: { error: unknown } } = {};
     const assertCurrent = () => {
@@ -504,7 +505,15 @@ export async function runChatSendPreAdmission(
         defaultAgentId: stopOwnerScope.defaultAgentId,
         abortOrigin: "stop-command",
         stopReason: "stop",
-        requester: resolveChatAbortRequester(client),
+        requester: stopRequester,
+        stopSource: "channel-user",
+        hookContext: {
+          sessionKey,
+          sessionEntry: entry,
+          sessionId: entry?.sessionId,
+          commandSource: "gateway:chat.send",
+          senderId: stopRequester.deviceId ?? stopRequester.connId,
+        },
         assertCurrent,
         cascadeDescendants: true,
       });

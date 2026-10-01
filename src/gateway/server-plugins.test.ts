@@ -601,7 +601,7 @@ describe("loadGatewayPlugins", () => {
 
   test("captures retired plugin reply owners through their canonical Gateway binding", async () => {
     const { admitReplyTurn } = await import("../auto-reply/reply/reply-turn-admission.js");
-    const { captureSessionControllerStop, stopSessionController } =
+    const { captureSessionControllerStop, stopSession } =
       await import("../sessions/session-controller.stop.js");
     const { captureGatewaySessionControllerWork } =
       await import("../sessions/session-controller.lifecycle.js");
@@ -702,7 +702,7 @@ describe("loadGatewayPlugins", () => {
           gatewayRequestScopeModule.hasGatewayContextOwner(operation, closingResolver),
         ),
       });
-      const aborted = stopSessionController(capture, { source: "restart" }).activeCancelled;
+      const aborted = stopSession({ capture, source: "restart" }).activeCancelled;
       expect({
         closing: admissions.isActive({
           scope: storePath,

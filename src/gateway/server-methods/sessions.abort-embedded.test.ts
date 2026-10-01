@@ -3,12 +3,7 @@
 // oxfmt-ignore
 import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
 import { expect, it, vi } from "vitest";
-import {
-  clearEmbeddedAgentRunAbortabilityForRunId,
-  isEmbeddedAgentRunAbortableForRunId,
-  resolveActiveEmbeddedRunOwnerByRunId,
-  retainEmbeddedAgentRunAbortabilityForRunId,
-} from "../../agents/embedded-agent-runner/runs.js";
+import { resolveActiveEmbeddedRunOwnerByRunId } from "../../agents/embedded-agent-runner/runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
@@ -26,6 +21,12 @@ import {
 import { getRuntimeConfig, setRuntimeConfigSnapshot } from "../../config/config.js";
 import * as sessions from "../../config/sessions/session-accessor.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import {
+  claimSessionControllerTask,
+  releaseSessionControllerClaim,
+} from "../../sessions/session-controller.mailbox.js";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
@@ -62,8 +63,9 @@ it.each(["matched", "old-incarnation", "foreign-key", "missing-row"] as const)(
     }
     const selectedId = target === "old-incarnation" ? "previous-parent" : parentId;
     const selectedKey = target === "foreign-key" ? "agent:main:foreign" : parentKey;
-    const abort = vi.fn();
-    const handle = createEmbeddedRunHandle({ runId: "selected-embedded", abort });
+    let handle!: ReturnType<typeof createEmbeddedRunHandle>;
+    const abort = vi.fn(() => clearActiveEmbeddedRun(selectedId, handle, selectedKey));
+    handle = createEmbeddedRunHandle({ runId: "selected-embedded", abort });
     setActiveEmbeddedRun(selectedId, handle, selectedKey);
     const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
     const respond = vi.fn();
@@ -102,7 +104,7 @@ it.each(["matched", "old-incarnation", "foreign-key", "missing-row"] as const)(
 );
 
 it.each([false, true])(
-  "session-wide Stop retains its captured embedded owner (broad=%s)",
+  "session-wide Stop does not retarget a successor created during cancellation (broad=%s)",
   async (broad) => {
     const client = roleClient("write", "late-embedded-stop-owner");
     client.connId = "late-embedded-stop";
@@ -133,9 +135,16 @@ it.each([false, true])(
     context.rpcSources.set("original-queued", queued);
     const abort = vi.fn();
     const successor = createEmbeddedRunHandle({ runId: "late-successor", abort });
+    let successorRegistration = Promise.resolve();
+    let successorRegistered = false;
     queued.input.abortSignal.addEventListener(
       "abort",
-      () => setActiveEmbeddedRun(parentId, successor, parentKey),
+      () => {
+        successorRegistration = Promise.resolve().then(() => {
+          setActiveEmbeddedRun(parentId, successor, parentKey);
+          successorRegistered = true;
+        });
+      },
       { once: true },
     );
     const respond = vi.fn();
@@ -153,8 +162,9 @@ it.each([false, true])(
         isWebchatConnect: () => false,
         extraHandlers: { "sessions.abort": sessionAbortHandlers["sessions.abort"]! },
       });
+      await successorRegistration;
       expect(queued.input.abortSignal.aborted).toBe(true);
-      expect(abort).toHaveBeenCalledTimes(broad ? 1 : 0);
+      expect(abort).not.toHaveBeenCalled();
       expect(respond).toHaveBeenCalledOnce();
       expect(respond.mock.calls[0]?.[1]).toEqual({
         ok: true,
@@ -162,7 +172,9 @@ it.each([false, true])(
         status: "aborted",
       });
     } finally {
-      clearActiveEmbeddedRun(parentId, successor, parentKey);
+      if (successorRegistered) {
+        clearActiveEmbeddedRun(parentId, successor, parentKey);
+      }
     }
   },
 );
@@ -253,6 +265,7 @@ it("exact embedded Stop cancels running and queued collectors without dispatchin
       stream: "lifecycle",
       data: { phase: "end", ...resolveAgentRunAbortLifecycleFields(AbortSignal.abort()) },
     });
+    clearActiveEmbeddedRun(parentId, parent, parentKey);
   });
   const childAbort = vi.fn(() => {
     // The real lifecycle listener/cleanup releases the active collector slot.
@@ -263,6 +276,7 @@ it("exact embedded Stop cancels running and queued collectors without dispatchin
       stream: "lifecycle",
       data: { phase: "end", ...resolveAgentRunAbortLifecycleFields(AbortSignal.abort()) },
     });
+    clearActiveEmbeddedRun("running", child, childKey("running"));
   });
   const parent = createEmbeddedRunHandle({ runId: "parent", abort: parentAbort });
   const child = createEmbeddedRunHandle({ runId: "running", abort: childAbort });
@@ -299,7 +313,7 @@ it("exact embedded Stop cancels running and queued collectors without dispatchin
 });
 
 it.each(["missing", "replaced", "finalizing", "throwing", "unreadable child"])(
-  "%s embedded Stop leaves descendants eligible",
+  "%s embedded Stop applies parent acceptance to descendants",
   async (state) => {
     await writeSubagentSessionEntry({
       stateDir: fixture.stateDir,
@@ -318,6 +332,9 @@ it.each(["missing", "replaced", "finalizing", "throwing", "unreadable child"])(
       onStartFailure: () => true,
     });
     const abort = vi.fn(() => {
+      if (state === "throwing") {
+        clearActiveEmbeddedRun(parentId, parent, parentKey);
+      }
       throw new Error("parent refused Stop");
     });
     const parent = createEmbeddedRunHandle({
@@ -348,20 +365,42 @@ it.each(["missing", "replaced", "finalizing", "throwing", "unreadable child"])(
       const respond = await stopParent();
       if (state === "unreadable child") {
         expect(failedRead).toHaveBeenCalled();
+        expect(respond).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({
+            code: "UNAVAILABLE",
+            message: expect.stringContaining("descendant cancellation was incomplete"),
+          }),
+        );
+      } else {
+        expect(respond.mock.calls[0]?.slice(0, 2)).toEqual([
+          true,
+          {
+            ok: true,
+            abortedRunId: state === "throwing" ? "parent" : null,
+            status: state === "throwing" ? "aborted" : "no-active-run",
+          },
+        ]);
       }
-      expect(respond.mock.calls[0]?.slice(0, 2)).toEqual([
-        true,
-        { ok: true, abortedRunId: null, status: "no-active-run" },
-      ]);
       expect(abort).toHaveBeenCalledTimes(state === "throwing" ? 1 : 0);
       expect(replacementAbort).not.toHaveBeenCalled();
-      expect(getSubagentRunByChildSessionKey(childKey("queued"))).toMatchObject({
-        execution: { status: "queued" },
-      });
-      expect(getSubagentRunByChildSessionKey(childKey("queued"))?.killIntent).toBeUndefined();
-      expect(dispatch).not.toHaveBeenCalled();
-      expect(releaseSwarmRun("capacity")).toBe(true);
-      await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+      if (state === "finalizing" || state === "throwing") {
+        expect(getSubagentRunByChildSessionKey(childKey("queued"))).toMatchObject({
+          endedReason: "subagent-killed",
+        });
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(releaseSwarmRun("capacity")).toBe(true);
+        expect(dispatch).not.toHaveBeenCalled();
+      } else {
+        expect(getSubagentRunByChildSessionKey(childKey("queued"))).toMatchObject({
+          execution: { status: "queued" },
+        });
+        expect(getSubagentRunByChildSessionKey(childKey("queued"))?.killIntent).toBeUndefined();
+        expect(dispatch).not.toHaveBeenCalled();
+        expect(releaseSwarmRun("capacity")).toBe(true);
+        await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+      }
     } finally {
       reader.mockRestore();
       clearActiveEmbeddedRun(parentId, state === "replaced" ? replacement : parent, parentKey);
@@ -377,7 +416,7 @@ it.each([
 ] as const)(
   "$method controller-backed Stop respects parent acceptance (finalizing=$finalizing)",
   async ({ method, finalizing }) => {
-    await writeSubagentSessionEntry({
+    const parentStorePath = await writeSubagentSessionEntry({
       stateDir: fixture.stateDir,
       agentId: "main",
       sessionKey: parentKey,
@@ -398,11 +437,14 @@ it.each([
       getRuntimeConfig,
       getSessionEventSubscriberConnIds: () => new Set(),
     });
-    // Match native admission's retained abortability binding, including its
-    // controller-removal cleanup; an absent native handle alone permits abort.
-    expect(isEmbeddedAgentRunAbortableForRunId("parent")).toBe(true);
     const registration = registerChatAbortController({
       rpcSources: context.rpcSources,
+      target: captureSessionTarget({
+        storeScope: parentStorePath,
+        sessionKey: parentKey,
+        incarnation: parentId,
+        agentId: "main",
+      }),
       runId: "parent",
       sessionId: parentId,
       sessionKey: parentKey,
@@ -410,14 +452,26 @@ it.each([
       ownerConnId: "operator",
       kind: "agent",
       timeoutMs: 30_000,
-      isAbortable: () => isEmbeddedAgentRunAbortableForRunId("parent"),
-      onRemoved: () => clearEmbeddedAgentRunAbortabilityForRunId("parent"),
     });
     expect(registration.registered).toBe(true);
-    retainEmbeddedAgentRunAbortabilityForRunId("parent");
-    const parentAbort = vi.fn();
-    const parentState = { runId: "parent", abort: parentAbort, isAbortable: true };
-    const parent = createEmbeddedRunHandle(parentState);
+    let claim!: Parameters<typeof releaseSessionControllerClaim>[0];
+    let operation!: ReturnType<typeof createReplyOperation>;
+    await claimSessionControllerTask(registration.entry.input, (capturedClaim) => {
+      claim = capturedClaim;
+      operation = createReplyOperation({
+        sessionKey: parentKey,
+        sessionId: parentId,
+        agentId: "main",
+        resetTriggered: false,
+        mailboxClaim: capturedClaim,
+      });
+    });
+    const parentAbort = vi.fn(() => {
+      clearActiveEmbeddedRun(parentId, parent, parentKey);
+      operation.complete();
+      releaseSessionControllerClaim(claim);
+    });
+    const parent = createEmbeddedRunHandle({ runId: "parent", abort: parentAbort });
     const childAbort = vi.fn(() => {
       emitAgentEvent({
         runId: "running",
@@ -426,21 +480,16 @@ it.each([
         stream: "lifecycle",
         data: { phase: "end", ...resolveAgentRunAbortLifecycleFields(AbortSignal.abort()) },
       });
+      clearActiveEmbeddedRun("running", child, childKey("running"));
     });
     const child = createEmbeddedRunHandle({ runId: "running", abort: childAbort });
-    registration.controller.signal.addEventListener("abort", parentAbort);
-    setActiveEmbeddedRun(parentId, parent, parentKey);
+    setActiveEmbeddedRun(parentId, parent, parentKey, undefined, "main", operation);
     setActiveEmbeddedRun("running", child, childKey("running"));
-    expect(registration.markExecutionStarted()).toBe(true);
     try {
       if (finalizing) {
-        parentState.isAbortable = false;
-        clearActiveEmbeddedRun(parentId, parent, parentKey);
-        expect(resolveActiveEmbeddedRunOwnerByRunId("parent")).toBeUndefined();
-      } else {
-        expect(resolveActiveEmbeddedRunOwnerByRunId("parent")).toBeDefined();
+        operation.freezeAbort();
       }
-      expect(isEmbeddedAgentRunAbortableForRunId("parent")).toBe(!finalizing);
+      expect(resolveActiveEmbeddedRunOwnerByRunId("parent")).toBeDefined();
       expect(context.rpcSources.get("parent")).toBe(registration.entry);
       const respond = vi.fn();
       const handler =
@@ -472,32 +521,19 @@ it.each([
       expect(registration.controller.signal.aborted).toBe(!finalizing);
       expect(parentAbort).toHaveBeenCalledTimes(finalizing ? 0 : 1);
       await fixture.settle();
-      expect.soft(childAbort).toHaveBeenCalledTimes(finalizing ? 0 : 1);
+      expect.soft(childAbort).toHaveBeenCalledOnce();
       expect(dispatch).not.toHaveBeenCalled();
       for (const id of ["running", "queued"]) {
         const run = getSubagentRunByChildSessionKey(childKey(id));
-        if (finalizing) {
-          expect.soft(run?.endedReason, id).toBeUndefined();
-          expect.soft(run?.killIntent, id).toBeUndefined();
-        } else {
-          expect(run, id).toMatchObject({ endedReason: "subagent-killed" });
-        }
+        expect(run, id).toMatchObject({ endedReason: "subagent-killed" });
       }
-      if (finalizing) {
-        expect.soft(getSubagentRunByChildSessionKey(childKey("queued"))).toMatchObject({
-          execution: { status: "queued" },
-        });
-        releaseSwarmRun("running");
-        await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
-      } else {
-        expect(isSwarmRunActive("running")).toBe(false);
-      }
+      expect(isSwarmRunActive("running")).toBe(false);
     } finally {
-      registration.controller.signal.removeEventListener("abort", parentAbort);
       clearActiveEmbeddedRun(parentId, parent, parentKey);
       clearActiveEmbeddedRun("running", child, childKey("running"));
+      operation.complete();
+      releaseSessionControllerClaim(claim);
       registration.cleanup();
-      expect(isEmbeddedAgentRunAbortableForRunId("parent")).toBe(true);
     }
   },
 );

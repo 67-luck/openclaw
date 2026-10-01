@@ -11,7 +11,10 @@ import {
   hasReplyOperationExecutionStarted,
   isCurrentSessionControllerOperation,
 } from "./session-controller.state.js";
-import { captureSessionControllerStop, stopSessionController } from "./session-controller.stop.js";
+import {
+  cancelCapturedSessionControllerSource,
+  captureSessionControllerStop,
+} from "./session-controller.stop.js";
 
 type ChatTerminalProducer = {
   sessionId: string;
@@ -126,8 +129,7 @@ export function requestRpcSourceCancellation(
   assertCurrent: () => void = () => {},
 ): boolean {
   const capture = captureSessionControllerStop({ inputs: [ref.input] });
-  return stopSessionController(capture, {
-    source: "gateway",
+  return cancelCapturedSessionControllerSource(capture, {
     reason,
     assertCurrent,
   }).abortedInputs.includes(ref.input);

@@ -1028,6 +1028,8 @@ export type ActiveEmbeddedRunOwner = {
   sessionKey?: string;
   startedAtMs?: number;
   abort: () => boolean;
+  /** Stops this captured owner and distinguishes a frozen writer from a stale target. */
+  stop: () => "aborted" | "finalizing" | "unchanged";
   /** Joins this captured native attempt and its producer, never a same-ID successor. */
   waitForSettlement: () => Promise<void>;
 };
@@ -1040,6 +1042,38 @@ function projectActiveEmbeddedRunOwner(
   if (!runId || !isEmbeddedRunHandleInProgress(handle)) {
     return undefined;
   }
+  const stop = (): "aborted" | "finalizing" | "unchanged" => {
+    if (
+      getActiveNativeAttempt(registration.sessionId) !== handle ||
+      ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) !== registration ||
+      ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(runId) !== handle
+    ) {
+      return "unchanged";
+    }
+    if (registration.operation?.abortFrozen || !isEmbeddedRunHandleAbortable(runId, handle)) {
+      return "finalizing";
+    }
+    try {
+      const aborted = registration.operation
+        ? registration.operation.abortByUser()
+        : (() => {
+            if (handle.cancel) {
+              handle.cancel("user_abort");
+            } else {
+              handle.abort();
+            }
+            return true;
+          })();
+      if (!aborted) {
+        return "unchanged";
+      }
+      revokeCompletionClaim(registration.sessionId, runId);
+      return "aborted";
+    } catch {
+      // A throwing backend cannot undo cancellation already committed by its owner.
+      return registration.operation?.result?.kind === "aborted" ? "aborted" : "unchanged";
+    }
+  };
   return {
     runId,
     sessionId: registration.sessionId,
@@ -1050,31 +1084,8 @@ function projectActiveEmbeddedRunOwner(
     },
     // A recovered run ID is correlation only. Recheck the captured owner before
     // Stop so a stale UI action cannot abort replacement work in the session.
-    abort: () => {
-      if (
-        getActiveNativeAttempt(registration.sessionId) !== handle ||
-        ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) !== registration ||
-        ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(runId) !== handle ||
-        !isEmbeddedRunHandleAbortable(runId, handle)
-      ) {
-        return false;
-      }
-      try {
-        if (registration.operation) {
-          return registration.operation.abortByUser();
-        }
-        if (handle.cancel) {
-          handle.cancel("user_abort");
-        } else {
-          handle.abort();
-        }
-        revokeCompletionClaim(registration.sessionId, runId);
-        return true;
-      } catch {
-        // A throwing backend cannot undo cancellation already committed by its owner.
-        return registration.operation?.result?.kind === "aborted";
-      }
-    },
+    stop,
+    abort: () => stop() === "aborted",
   };
 }
 

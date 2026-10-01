@@ -1,4 +1,3 @@
-import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../infra/agent-events.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { hasGatewayContextOwner } from "../plugins/runtime/gateway-request-scope.js";
@@ -6,10 +5,7 @@ import { sessionControllerMailboxes } from "../sessions/session-controller.mailb
 import type { RpcSourceIndex, RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import { isRpcSourceQueued } from "../sessions/session-controller.rpc-sources.js";
 import { activeSessionOperations } from "../sessions/session-controller.state.js";
-import {
-  captureSessionControllerStop,
-  stopSessionController,
-} from "../sessions/session-controller.stop.js";
+import { captureSessionControllerStop, stopSession } from "../sessions/session-controller.stop.js";
 import {
   abortChatRunById,
   captureChatRunAbortPresentation,
@@ -352,11 +348,10 @@ export async function prepareGatewayRunShutdown(
       hasGatewayContextOwner(operation, params.resolveGatewayContext),
     ),
   });
-  const cancelCaptured = (phase: "all" | "queued") =>
-    stopSessionController(capture, {
-      source: params.restart ? "restart" : "gateway",
-      phase,
-      reason: params.restart ? createAgentRunRestartAbortError() : undefined,
+  const cancelCaptured = () =>
+    stopSession({
+      capture,
+      source: params.restart ? "restart" : "operator-revocation",
       onError: (_target, error) => {
         shutdownLog.warn(`failed to cancel captured source during shutdown: ${String(error)}`);
         recordGatewayShutdownWarning(params.warnings, "restart-reply-abort");
@@ -394,12 +389,8 @@ export async function prepareGatewayRunShutdown(
   // Ordinary CLI stop already spent its grace period. Cancel only this Gateway's
   // remaining owners before joining them, without scheduling restart recovery.
   if (!params.restart) {
-    cancelCaptured("all");
+    cancelCaptured();
     return;
-  }
-  const abortedQueuedTurns = cancelCaptured("queued").queuedCancelled;
-  if (drainResult?.drained === false && abortedQueuedTurns > 0) {
-    shutdownLog.warn(`aborted ${abortedQueuedTurns} queued turn(s) during restart shutdown`);
   }
   await markActiveRunsForRestartRecovery({
     ...params,
@@ -407,7 +398,7 @@ export async function prepareGatewayRunShutdown(
     capturedRecoveryCandidates,
     reason: "gateway restart shutdown",
   });
-  const abortedRuns = cancelCaptured("all").activeCancelled;
+  const abortedRuns = cancelCaptured().activeCancelled;
   if (drainResult?.drained) {
     shutdownLog.info(`restart reply drain completed after ${drainResult.elapsedMs}ms`);
   } else if (drainResult && abortedRuns > 0) {

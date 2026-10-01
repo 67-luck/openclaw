@@ -25,8 +25,8 @@ import {
   waitForSessionControllerSettlement,
 } from "../../../sessions/session-controller.lifecycle.js";
 import {
+  cancelCapturedSessionControllerSource,
   captureSessionControllerStop,
-  stopSessionController,
 } from "../../../sessions/session-controller.stop.js";
 import { createLazyImportLoader } from "../../../shared/lazy-promise.js";
 import { createAgentRunDirectAbortError } from "../../run-termination.js";
@@ -399,8 +399,7 @@ export async function killSubagentRun(params: {
       }
       // An unbound selected claim is already a source owner. Cancel its captured
       // inputs before joining admission cleanup; a claim signal alone cannot retire them.
-      const preparationStop = stopSessionController(capturedPreparation, {
-        source: "gateway",
+      const preparationStop = cancelCapturedSessionControllerSource(capturedPreparation, {
         assertCurrent: assertCancellationCurrent,
       });
       stopAccepted ||= preparationStop.activeCancelled > 0 && killOwnerCurrent();
@@ -601,8 +600,7 @@ export async function killSubagentRun(params: {
           return stopAccepted ? await settleTargetCancellation() : declinedBeforeAbort;
         }
         const stopped = capturedStop
-          ? stopSessionController(capturedStop, {
-              source: "gateway",
+          ? cancelCapturedSessionControllerSource(capturedStop, {
               assertCurrent: assertCancellationCurrent,
             })
           : undefined;

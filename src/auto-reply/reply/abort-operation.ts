@@ -15,7 +15,6 @@ import {
   loadSessionEntry,
   markSessionAbortTarget,
   resolveSessionAbortTarget,
-  type SessionAbortTargetContext,
   type SessionAbortTargetIdentity,
   type SessionAbortTargetResult,
 } from "../../config/sessions/session-accessor.js";
@@ -29,16 +28,14 @@ import type { SessionControllerInput } from "../../sessions/session-controller.m
 import {
   captureSessionControllerStop,
   captureSessionControllerStopCandidates,
-  stopSessionController,
+  stopSession,
   type SessionControllerStopCapture,
+  type SessionStopHookContext,
+  type SessionStopRequest,
 } from "../../sessions/session-controller.stop.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
 import type { FinalizedRuntimeMsgContext } from "../templating.js";
-import {
-  type AbortCutoff,
-  resolveAbortCutoffFromContext,
-  shouldPersistAbortCutoff,
-} from "./abort-cutoff.js";
+import { resolveAbortCutoffFromContext, shouldPersistAbortCutoff } from "./abort-cutoff.js";
 import { setAbortMemory } from "./abort-primitives.js";
 import type { FastAbortRequestParams, FastAbortResult, PreparedFastAbortRequest } from "./abort.js";
 import { resolveEffectiveResetTargetSessionKey } from "./acp-reset-target.js";
@@ -123,19 +120,19 @@ function combineChannelStopCaptures(captures: readonly ChannelStopCapture[]): Ch
 
 /** Scope adapter only: cancellation and acceptance belong to the captured Stop kernel. */
 export function abortSessionRunTargetWithOutcome(params: {
-  capture: ChannelStopCapture;
-  source: "channel-stop" | "channel-abort" | "fast-abort";
+  capture: ChannelStopCapture | (() => ChannelStopCapture);
   assertCurrent?: () => void;
   afterQueued?: () => void;
+  hookContext: SessionStopHookContext;
+  messageIdentity?: unknown;
+  recordAbortTarget?: SessionStopRequest["recordAbortTarget"];
+  stopChildren?: SessionStopRequest["stopChildren"];
+  externalParents?: SessionStopRequest["externalParents"];
   retirements: Promise<void>[];
-}): {
-  active: boolean;
-  aborted: boolean;
-  settled: Promise<void>;
-} {
-  const { capture } = params;
-  const active =
-    capture.controller.activeInputs.length > 0 || capture.controller.operations.length > 0;
+}) {
+  let selectedCapture: ChannelStopCapture | undefined;
+  const resolveCapture = () =>
+    (selectedCapture ??= typeof params.capture === "function" ? params.capture() : params.capture);
   const retiring = new Set<string>();
   const retirements = params.retirements;
   const retire = (sessionIds: readonly string[]) => {
@@ -157,14 +154,22 @@ export function abortSessionRunTargetWithOutcome(params: {
     }
   };
   let joined = false;
-  const result = stopSessionController(capture.controller, {
-    source: params.source,
+  return stopSession({
+    source: "channel-user",
+    capture: () => resolveCapture().controller,
     assertCurrent: params.assertCurrent,
+    hookContext: params.hookContext,
+    messageIdentity: params.messageIdentity,
+    recordAbortTarget: params.recordAbortTarget,
+    stopChildren: params.stopChildren,
+    externalParents: params.externalParents,
     afterQueued: () => {
+      const capture = resolveCapture();
       params.afterQueued?.();
       retire(capture.idleSessionIds);
     },
     onCancelled: (target) => {
+      const capture = resolveCapture();
       // Successful active cancellation retains the captured producers until their
       // actual return. A finishing refusal must not make queued-only Stop wait for it.
       if (capture.mcpSessionIds.has(target) && !joined) {
@@ -176,11 +181,6 @@ export function abortSessionRunTargetWithOutcome(params: {
       retire(capture.mcpSessionIds.get(target) ?? []);
     },
   });
-  return {
-    active,
-    aborted: result.activeCancelled > 0,
-    settled: result.settled,
-  };
 }
 
 function resolveStoredSessionId(params: {
@@ -312,13 +312,6 @@ export async function executeFastAbortRequest(
 
   if (targetKey) {
     const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId });
-    const abortCutoffForTarget = (target: SessionAbortTargetContext): AbortCutoff | undefined =>
-      shouldPersistAbortCutoff({
-        commandSessionKey,
-        targetSessionKey: target.sessionKey,
-      })
-        ? resolveAbortCutoffFromContext(ctx)
-        : undefined;
     let resolvedAbortTarget: SessionAbortTargetIdentity | null = null;
     try {
       resolvedAbortTarget = resolveSessionAbortTarget({
@@ -364,106 +357,39 @@ export async function executeFastAbortRequest(
       channel: captureChannelStopResources(candidate.capture),
     }));
     const acpCapture = getAcpSessionResetControls(getAcpSessionManager()).captureCancellation();
-    let aborted = false;
-    let activeAbortRejected = false;
     const acpCancellations: Promise<void>[] = [];
-    let result: FastAbortResult;
-    let retirementFailure: PromiseRejectedResult | undefined;
-    try {
-      // The tree owner synchronously captures generations and reservation holds
-      // before beforeKill performs its first asynchronous binding read.
-      const { stopped, failed } = await stopSubagentsForRequester({
-        cfg,
-        requesterSessionKey,
-        requesterAgentId: agentId,
-        assertCurrent,
-        beforeKill: async () => {
-          const conversationBoundAcpTargetKey = commandSessionKey
-            ? await resolveBoundAcpAbortTargetSessionKey({
-                ctx,
-                cfg,
-                activeSessionKey: commandSessionKey,
-              })
-            : undefined;
-          assertCurrent();
-          const boundAcpTargetKey = !isAcpSessionKey(resolvedTargetKey)
-            ? conversationBoundAcpTargetKey
-            : undefined;
-          const captures = [mainCapture];
-          const abortTargetKeys = [resolvedTargetKey];
-          if (boundAcpTargetKey && boundAcpTargetKey !== resolvedTargetKey) {
-            const boundAgentId = resolveSessionAgentId({
-              config: cfg,
-              sessionKey: boundAcpTargetKey,
-            });
-            const boundStore = resolveSessionStorePathCore(cfg.session?.store, {
-              agentId: boundAgentId,
-            });
-            captures.push(
-              ...boundCandidates
-                .filter(
-                  (candidate) =>
-                    (!candidate.storeScope || candidate.storeScope === boundStore) &&
-                    candidate.aliases.has(boundAcpTargetKey),
-                )
-                .map((candidate) => candidate.channel),
-            );
-            abortTargetKeys.push(boundAcpTargetKey);
-          }
-          if (
-            sourceCapture &&
-            conversationBoundAcpTargetKey &&
-            abortTargetKeys.includes(conversationBoundAcpTargetKey)
-          ) {
-            captures.push(sourceCapture);
-          }
-          const capture = combineChannelStopCaptures(captures);
-          const outcome = abortSessionRunTargetWithOutcome({
-            capture,
-            source: "fast-abort",
-            assertCurrent,
-            retirements: acpCancellations,
-            afterQueued: () => {
-              // Start the independent ACP owner before native callbacks can throw.
-              // Its owner view predates binding I/O; cancellation still revalidates
-              // the live requester and exact actor before effects and publication.
-              for (const acpTargetKey of abortTargetKeys) {
-                assertCurrent();
-                acpCancellations.push(
-                  acpCapture
-                    .cancel({
-                      cfg,
-                      sessionKey: acpTargetKey,
-                      agentId: acpTargetKey === resolvedTargetKey ? agentId : undefined,
-                      assertActive: assertCurrent,
-                      reason: "fast-abort",
-                    })
-                    .catch((error: unknown) => {
-                      logVerbose(
-                        `abort: ACP cancel failed for ${acpTargetKey}: ${formatErrorMessage(error)}`,
-                      );
-                    }),
-                );
-              }
-            },
-          });
-          activeAbortRejected = outcome.active && !outcome.aborted;
-          aborted = outcome.aborted;
-          return true;
-        },
-      });
-      const rejectionReason = activeAbortRejected && !aborted ? "finalizing" : undefined;
-      if (!rejectionReason) {
+    let selectedCapture: ChannelStopCapture | undefined;
+    let abortTargetKeys: string[] = [];
+    const abortCutoff = shouldPersistAbortCutoff({
+      commandSessionKey,
+      targetSessionKey: resolvedTargetKey,
+    })
+      ? resolveAbortCutoffFromContext(ctx)
+      : undefined;
+    const stop = abortSessionRunTargetWithOutcome({
+      capture: () => {
+        if (!selectedCapture) {
+          throw new Error("Fast Stop target was not selected before cancellation");
+        }
+        return selectedCapture;
+      },
+      assertCurrent,
+      retirements: acpCancellations,
+      hookContext: {
+        sessionKey: resolvedTargetKey,
+        sessionEntry: resolvedAbortTarget?.entry,
+        sessionId: mainCapture.sessionId,
+        commandSource: ctx.Surface ?? ctx.Provider ?? ctx.OriginatingChannel,
+        senderId: ctx.SenderId,
+      },
+      messageIdentity: abortCutoff,
+      recordAbortTarget: async ({ recordCutoff }) => {
         let persistedAbortTarget: SessionAbortTargetResult | null = null;
         try {
           persistedAbortTarget = await markSessionAbortTarget({
             isCurrent: params.isCommandTargetCurrent,
-            scope: {
-              agentId,
-              sessionKey: targetKey,
-              storePath,
-            },
-            resolveAbortCutoff: abortCutoffForTarget,
+            scope: { agentId, sessionKey: targetKey, storePath },
+            resolveAbortCutoff: recordCutoff ? () => abortCutoff : undefined,
           });
         } catch (error) {
           logVerbose(
@@ -488,13 +414,100 @@ export async function executeFastAbortRequest(
         ) {
           setAbortMemory(abortMemoryKey, true);
         }
-      }
+      },
+      externalParents: [
+        {
+          phase: "active",
+          start: "after-queued",
+          stop: () => {
+            const cancellation = (async () => {
+              let aborted = false;
+              for (const acpTargetKey of abortTargetKeys) {
+                assertCurrent();
+                try {
+                  aborted =
+                    (await acpCapture.cancel({
+                      cfg,
+                      sessionKey: acpTargetKey,
+                      agentId: acpTargetKey === resolvedTargetKey ? agentId : undefined,
+                      assertActive: assertCurrent,
+                      reason: "fast-abort",
+                    })) || aborted;
+                } catch (error) {
+                  logVerbose(
+                    `abort: ACP cancel failed for ${acpTargetKey}: ${formatErrorMessage(error)}`,
+                  );
+                }
+              }
+              return aborted ? ("aborted" as const) : ("unchanged" as const);
+            })();
+            acpCancellations.push(cancellation.then(() => undefined));
+            return cancellation;
+          },
+        },
+      ],
+      stopChildren: (applyParentStop) =>
+        stopSubagentsForRequester({
+          cfg,
+          requesterSessionKey,
+          requesterAgentId: agentId,
+          assertCurrent,
+          beforeKill: async () => {
+            const conversationBoundAcpTargetKey = commandSessionKey
+              ? await resolveBoundAcpAbortTargetSessionKey({
+                  ctx,
+                  cfg,
+                  activeSessionKey: commandSessionKey,
+                })
+              : undefined;
+            assertCurrent();
+            const boundAcpTargetKey = !isAcpSessionKey(resolvedTargetKey)
+              ? conversationBoundAcpTargetKey
+              : undefined;
+            const captures = [mainCapture];
+            abortTargetKeys = [resolvedTargetKey];
+            if (boundAcpTargetKey && boundAcpTargetKey !== resolvedTargetKey) {
+              const boundAgentId = resolveSessionAgentId({
+                config: cfg,
+                sessionKey: boundAcpTargetKey,
+              });
+              const boundStore = resolveSessionStorePathCore(cfg.session?.store, {
+                agentId: boundAgentId,
+              });
+              captures.push(
+                ...boundCandidates
+                  .filter(
+                    (candidate) =>
+                      (!candidate.storeScope || candidate.storeScope === boundStore) &&
+                      candidate.aliases.has(boundAcpTargetKey),
+                  )
+                  .map((candidate) => candidate.channel),
+              );
+              abortTargetKeys.push(boundAcpTargetKey);
+            }
+            if (
+              sourceCapture &&
+              conversationBoundAcpTargetKey &&
+              abortTargetKeys.includes(conversationBoundAcpTargetKey)
+            ) {
+              captures.push(sourceCapture);
+            }
+            selectedCapture = combineChannelStopCaptures(captures);
+            return await applyParentStop();
+          },
+        }),
+    });
+    let result: FastAbortResult;
+    let retirementFailure: PromiseRejectedResult | undefined;
+    try {
+      const outcome = await stop.completed;
+      const rejectionReason = outcome.alreadyFinalizing ? "finalizing" : undefined;
       result = {
         handled: true,
-        aborted,
+        aborted: outcome.aborted,
         ...(rejectionReason ? { rejectionReason } : {}),
-        stoppedSubagents: stopped,
-        failedSubagents: failed,
+        stoppedSubagents: outcome.childrenStopped,
+        failedSubagents: outcome.childFailures,
       };
     } finally {
       // Join even when native signaling or metadata exits exceptionally.
@@ -510,19 +523,38 @@ export async function executeFastAbortRequest(
     return result;
   }
 
-  if (abortKey) {
-    assertCurrent();
-    setAbortMemory(abortKey, true);
-  }
-  const { stopped, failed } = await stopSubagentsForRequester({
-    cfg,
-    requesterSessionKey,
-    assertCurrent,
+  const emptyCapture = captureChannelSessionStop({
+    storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId }),
   });
+  const stop = abortSessionRunTargetWithOutcome({
+    capture: emptyCapture,
+    retirements: [],
+    assertCurrent,
+    hookContext: {
+      sessionKey: requesterSessionKey ?? "",
+      commandSource: ctx.Surface ?? ctx.Provider ?? ctx.OriginatingChannel,
+      senderId: ctx.SenderId,
+    },
+    messageIdentity: resolveAbortCutoffFromContext(ctx),
+    recordAbortTarget: async () => {
+      if (abortKey) {
+        assertCurrent();
+        setAbortMemory(abortKey, true);
+      }
+    },
+    stopChildren: (applyParentStop) =>
+      stopSubagentsForRequester({
+        cfg,
+        requesterSessionKey,
+        assertCurrent,
+        beforeKill: applyParentStop,
+      }),
+  });
+  const outcome = await stop.completed;
   return {
     handled: true,
-    aborted: false,
-    stoppedSubagents: stopped,
-    failedSubagents: failed,
+    aborted: outcome.aborted,
+    stoppedSubagents: outcome.childrenStopped,
+    failedSubagents: outcome.childFailures,
   };
 }

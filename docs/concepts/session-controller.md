@@ -158,29 +158,29 @@ active turn's or newest sender's permissions.
 
 ## Stop semantics
 
-One stop owner must receive an explicit target and scope. These are separate
-decisions: cancelling the active turn, withdrawing waiting inputs, stopping
-children, firing a hook, and presenting the result.
+One stop operation receives an authorized, synchronously captured target. The
+entry point resolves authority and renders the result; the operation owns this
+policy table:
 
-Preserve these existing distinctions until an intentional behavior change is
-reviewed:
+| Source                                                    | Active run                         | Waiting inputs of the session    | Controlled subagents                         | Abort cutoff                            | `command:stop` hook |
+| --------------------------------------------------------- | ---------------------------------- | -------------------------------- | -------------------------------------------- | --------------------------------------- | ------------------- |
+| `channel-user` (fast path, `/stop`, bare stop word)       | Abort                              | Cancel all                       | Stop                                         | Record when the message has an identity | Fire once           |
+| `client-session` (`chat.abort`/`sessions.abort`)          | Abort                              | Cancel all                       | Stop; preserve `cascadeDescendants` behavior | Skip                                    | Fire once           |
+| `client-run` (client abort with one run ID)               | Abort only when that run is active | Cancel only that input if queued | Stop that turn's subagents                   | Skip                                    | Fire once           |
+| `interrupt`                                               | Abort                              | Keep                             | Keep                                         | Skip                                    | No                  |
+| `restart`, `watchdog`, `operator-revocation`, `supersede` | Abort                              | Keep                             | Keep                                         | Skip                                    | No                  |
 
-| Source                                     | Existing scope that must remain explicit                                                                                                                                               |
-| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/stop` command                            | Clears waiting work, attempts active cancellation, stops captured children, and fires `command:stop`. A finalizing parent can refuse cancellation without undoing those other effects. |
-| Inbound fast stop                          | Has its own queue and child effects; it does not currently imply the command hook.                                                                                                     |
-| Bare stop word in the command handler      | Does not implicitly acquire the full command's queue and child scope.                                                                                                                  |
-| Gateway abort with a run ID                | Targets that exact authorized queued or active request.                                                                                                                                |
-| Gateway abort without a run ID             | Cancels authorized queued requests before authorized active runs; another requester's work is not blanket-cleared.                                                                     |
-| Interrupt, supersession, restart, watchdog | Internal causes with their own attribution and settlement rules, not synonyms for user Stop.                                                                                           |
+A run whose abort is frozen is already finalizing and refuses active
+cancellation. User sources still perform independent queue cleanup, controlled
+subagent stopping, and one `command:stop` hook. The operation captures child
+generations before asynchronous work, applies the parent capture before the
+hook, and exposes settlement for every captured owner.
 
 Authorization policy belongs at ingress, but its live host-owned assertion travels
 with delayed effects. A source label, run ID, or `clearWaiting` flag is not
 authorization. Revalidate after waits and immediately before cancellation.
 
-A stop accepted for operation A must never cancel its successor B. Frozen
-finalization rejects ordinary active-run cancellation; it does not mean that
-every stop-related effect is forbidden. Watchdog expiry needs a distinct
+A stop accepted for operation A must never cancel its successor B. Watchdog expiry needs a distinct
 finalization/cleanup transition rather than repeatedly calling a user stop that
 will refuse.
 
