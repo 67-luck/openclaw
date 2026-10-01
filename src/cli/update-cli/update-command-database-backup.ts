@@ -14,6 +14,7 @@ import { restoreUpdateDatabaseBackup } from "../../infra/update-database-restore
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { UpdateStepResult } from "../../infra/update-step-result.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
+import { prepareOpenClawStateDatabaseSnapshot } from "../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import type { MutableUpdateExecutionParams } from "./update-command-execution.types.js";
 import {
@@ -66,6 +67,12 @@ export async function captureUpdateDatabases(params: {
         params.assertCurrent();
         backupRoot = path.join(artifactRoot, path.basename(backupRoot));
       }
+      const releaseSnapshot = maintenance
+        ? await prepareOpenClawStateDatabaseSnapshot(
+            resolveOpenClawStateSqlitePath(env),
+            maintenance.assertCurrent,
+          )
+        : undefined;
       const captured = await createUpdateDatabaseBackup({
         backupRoot,
         stateDir: resolveStateDir(env),
@@ -74,6 +81,7 @@ export async function captureUpdateDatabases(params: {
         timeoutMs: execution.updateStepTimeoutMs,
         nodeRunner: execution.packageUpdateNodeRunner,
       });
+      releaseSnapshot?.();
       params.assertCurrent();
       maintenance?.assertCurrent();
       return captured;

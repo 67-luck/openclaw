@@ -51,6 +51,7 @@ import {
   type StateDatabaseBorrowers,
 } from "./openclaw-state-db-borrow.js";
 import { createStateDatabaseIdleRetirement } from "./openclaw-state-db-cache.idle.js";
+import { createStateDatabaseSnapshotPreparation } from "./openclaw-state-db-cache.snapshot.js";
 import type {
   CachedOpenClawStateDatabase,
   StateDatabaseLifecycle,
@@ -657,6 +658,12 @@ export const openClawStateDatabaseCache = {
   recordOpenClawStateDatabaseLifecycleOpenError,
   touchStateDatabase,
 };
+
+export const prepareOpenClawStateDatabaseSnapshot = createStateDatabaseSnapshotPreparation({
+  holdExclusion: (pathname) => asyncResources.holdExclusion(path.resolve(pathname)),
+  closeByPath: closeOpenClawStateDatabaseByPathAsync,
+  prepareRemoval: prepareOpenClawStateDatabaseRemoval,
+});
 
 /** Offline removal drains local work and refuses an active native SQLite owner. */
 export async function prepareOpenClawStateDatabaseRemoval(
