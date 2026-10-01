@@ -1,12 +1,18 @@
 import { html, nothing } from "lit";
-import { Directive, directive } from "lit/directive.js";
+import { AsyncDirective } from "lit/async-directive.js";
+import { directive } from "lit/directive.js";
 import { keyed } from "lit/directives/keyed.js";
 import { repeat } from "lit/directives/repeat.js";
+import type { UserProfile } from "../../../packages/gateway-protocol/src/schema/users.js";
+import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import type { GatewaySessionRow } from "../api/types.ts";
+import { pathForRoute } from "../app-route-paths.ts";
+import type { ApplicationGateway } from "../app/gateway.ts";
 import { i18n, t } from "../i18n/index.ts";
 import { gatewayClientKind } from "../lib/gateway-client-kind.ts";
 import { renderHoverMarquee } from "../lib/hover-marquee.ts";
 import { shouldHandleNavigationClick } from "../lib/navigation-click.ts";
+import { canReadPersonProfile, readPersonProfile } from "../lib/person-profile.ts";
 import { describePlatform } from "../lib/platform-label.ts";
 import {
   presenceMatchesProfile,
@@ -34,6 +40,10 @@ import "./viewer-facepile.ts";
 type ScopedSession = { row: GatewaySessionRow; agentId: string };
 type PersonCardInput = {
   user: PresenceViewer;
+  gateway?: ApplicationGateway;
+  profile?: UserProfile;
+  profileChanged?: () => void;
+  openPermissions?: (profileId: string) => void;
   sessionData: PersonActivityData | undefined;
   watchAgentId: string;
   mainKey: string;
@@ -211,11 +221,83 @@ function renderSessions(
 }
 
 // Lit discards this state with the card root; callers need no selection cache or reset path.
-class PersonActivityCard extends Directive {
+class PersonActivityCard extends AsyncDirective {
   recentSessionKeys?: string[];
+  profile: UserProfile | null | undefined;
+  private input?: PersonCardInput;
+  private readOwner?: {
+    gateway: ApplicationGateway;
+    client: ApplicationGateway["snapshot"]["client"];
+    hello: ApplicationGateway["snapshot"]["hello"];
+    revision: number;
+    profileId: string;
+  };
+  private generation = 0;
 
   render(input: PersonCardInput) {
+    this.input = input;
+    const gateway = input.gateway;
+    const profileId = input.user.identity?.type === "profile" ? input.user.identity.id : undefined;
+    const allowed = Boolean(gateway && profileId && canReadPersonProfile(gateway, profileId));
+    const owner = this.readOwner;
+    if (!gateway || !profileId || !allowed) {
+      this.generation += 1;
+      this.readOwner = undefined;
+      this.profile = null;
+    } else if (input.profile) {
+      this.profile = input.profile;
+    } else if (
+      !owner ||
+      owner.gateway !== gateway ||
+      owner.client !== gateway.snapshot.client ||
+      owner.hello !== gateway.snapshot.hello ||
+      owner.revision !== gateway.connectionRevision ||
+      owner.profileId !== profileId
+    ) {
+      const generation = ++this.generation;
+      this.readOwner = {
+        gateway,
+        client: gateway.snapshot.client,
+        hello: gateway.snapshot.hello,
+        revision: gateway.connectionRevision,
+        profileId,
+      };
+      this.profile = undefined;
+      void readPersonProfile(gateway, profileId)
+        .catch(() => null)
+        .then((profile) => {
+          const current = this.readOwner;
+          if (
+            !this.isConnected ||
+            generation !== this.generation ||
+            !current ||
+            current.client !== gateway.snapshot.client ||
+            current.hello !== gateway.snapshot.hello ||
+            current.revision !== gateway.connectionRevision ||
+            !canReadPersonProfile(gateway, profileId)
+          ) {
+            return;
+          }
+          this.profile = profile;
+          if (this.input) {
+            this.setValue(renderCard(this.input, this));
+            this.input.profileChanged?.();
+          }
+        });
+    }
     return renderCard(input, this);
+  }
+
+  protected override disconnected() {
+    this.generation += 1;
+    this.readOwner = undefined;
+    this.profile = null;
+  }
+
+  protected override reconnected() {
+    if (this.input) {
+      this.setValue(this.render(this.input));
+    }
   }
 }
 
@@ -279,6 +361,19 @@ function renderCard(input: PersonCardInput, selection: PersonActivityCard) {
       ></openclaw-viewer-avatar>
       <div>
         <h2>${label.name}</h2>
+        <span class="person-activity-card__role person-activity-card__muted"
+          >${
+            selection.profile === undefined
+              ? t("common.loading")
+              : !selection.profile
+                ? t("presence.card.roleUnavailable")
+                : selection.profile.id === GATEWAY_OWNER_PROFILE_ID
+                  ? t("presence.card.gatewayOwner")
+                  : selection.profile.role
+                    ? t("presence.card.assignedRole", { role: selection.profile.role })
+                    : t("presence.card.noAssignedRole")
+          }</span
+        >
         ${
           observed
             ? html` <span
@@ -331,13 +426,42 @@ function renderCard(input: PersonCardInput, selection: PersonActivityCard) {
     }
     ${renderSessions(viewing, input, false)}${renderSessions(selection.recentSessionKeys ? recent : [], input, true)}
     ${
-      activityLink
+      activityLink || selection.profile
         ? html`<footer>
-            <a href=${activityLink.href} @click=${activityLink.open}
-              >${t("presence.card.viewActivity")}<span aria-hidden="true"
-                >${icons.chevronRight}</span
-              ></a
-            >
+            ${
+              activityLink
+                ? html`<a href=${activityLink.href} @click=${activityLink.open}
+                    >${t("presence.card.viewActivity")}<span aria-hidden="true"
+                      >${icons.chevronRight}</span
+                    ></a
+                  >`
+                : nothing
+            }
+            ${
+              selection.profile &&
+              input.openPermissions &&
+              input.gateway &&
+              canReadPersonProfile(input.gateway, selection.profile.id)
+                ? html`<a
+                    href=${`${pathForRoute("people", input.routing.basePath)}?person=${encodeURIComponent(selection.profile.id)}`}
+                    @click=${(event: MouseEvent) => {
+                      if (
+                        !shouldHandleNavigationClick(event) ||
+                        !selection.profile ||
+                        !input.gateway ||
+                        !canReadPersonProfile(input.gateway, selection.profile.id)
+                      ) {
+                        return;
+                      }
+                      event.preventDefault();
+                      input.openPermissions?.(selection.profile.id);
+                    }}
+                    >${t("presence.card.viewPermissions")}<span aria-hidden="true"
+                      >${icons.chevronRight}</span
+                    ></a
+                  >`
+                : nothing
+            }
           </footer>`
         : nothing
     }

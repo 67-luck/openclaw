@@ -5,6 +5,73 @@ const identity = en.profilePage.identity;
 
 const enProfile = {
   profilePage: {
+    people: {
+      directory: "People",
+      person: "Person",
+      assignedRole: "Assigned role",
+      unassigned: "No assigned role",
+      owner: "Gateway owner",
+      assignmentHint: "Saved profile assignment, not a grant of permissions.",
+      policy: "Role policy · maximum permissions",
+      ceilingHint:
+        "Configured ceilings, not this person's live connection permissions. Authentication, access policy, and individual sessions can restrict access further.",
+      policySource: "Configured role",
+      assignedPolicy: "Policy for the saved assignment.",
+      defaultPolicy: "No role is assigned; the configured default applies.",
+      retiredPolicy: "The saved role is no longer defined; the configured default applies.",
+      ownerPolicy:
+        "The shared Gateway owner is outside the named-role boundary. This is not proof of permissions on another connection.",
+      rolesOff:
+        "Named operator roles are not configured. Saved assignments do not limit access while this boundary is off.",
+      noPolicy:
+        "No usable configured role policy was reported. The role boundary denies access when no assignment or default can be resolved.",
+      policyUnavailable: "The applied role policy could not be confirmed with your current access.",
+      policyLoading: "Loading applied role policy…",
+      agents: "Agents for creation and runs",
+      allAgents: "All agents",
+      noneAgents: "No agents",
+      otherSessions: "Other people's sessions",
+      others: {
+        none: "No general access",
+        view: "View",
+        suggest: "View and suggest",
+        write: "Participate",
+      },
+      sessionHint:
+        "Session membership, draft and incognito rules, and other authorization checks still apply.",
+      sandbox: "New-session sandbox policy",
+      sandboxRequired: "Required",
+      sandboxInherit: "Inherit agent policy",
+      sandboxHint:
+        "A creation requirement, not proof that any particular existing session is sandboxed.",
+      scopes: "Operator scope ceiling",
+      scopeHint: "A role only limits existing grants; it cannot add permissions.",
+      noScopes: "No operator scopes",
+      models: "Model policy",
+      modelsRestricted: "Additional role restriction",
+      modelsInherited: "No additional role model restriction",
+      modelHint: "Agent model rules and runtime requirements still apply.",
+      modelSource: "Model source agent",
+      defaultSource: "Configured default or system agent",
+      modelAllow: "Allowed model patterns",
+      modelDeny: "Excluded model patterns",
+      sourceModels: "Source agent's primary and fallbacks",
+      noModels: "No models",
+      accessPolicy: "Required access-policy plugin",
+      eligibilityHint:
+        "A configured dependency, not proof of a person's current eligibility or invitation expiry.",
+      thisConnection: "This connection's permissions",
+      noReportedCap: "No named-role session cap reported",
+      directoryDenied:
+        "Your connection cannot read the people directory. You can still view your own connection permissions.",
+      personUnavailable: "This profile is unavailable or cannot be read with your current access.",
+      choosePerson: "Choose a person to view their assigned role and configured policy.",
+      empty: "No profiles were returned.",
+      unavailable: "The people directory could not be loaded. Refresh to try again.",
+      offline: "Connect to the gateway to view current access information.",
+      unknown: "Not reported",
+      none: "None",
+    },
     access: {
       title: "Your access",
       admin: "You have permission to manage this server.",
@@ -72,6 +139,7 @@ export const registerProfileEnglish = Object.assign(
   () => {
     // Shared menu/search labels stay eager; editor copy loads with its consumers.
     en.profilePage.access = enProfile.profilePage.access;
+    en.profilePage.people = enProfile.profilePage.people;
     Object.assign(en.profilePage.identity, enProfile.profilePage.identity);
   },
   { catalog: enProfile },

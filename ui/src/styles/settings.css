@@ -13,6 +13,19 @@
  * ui/src/components/settings-ui.ts rather than hand-rolled markup.
  */
 
+.settings-directory-detail {
+  display: grid;
+  grid-template-columns: minmax(200px, 1fr) minmax(0, 2fr);
+  align-items: start;
+  gap: var(--space-6);
+}
+
+@media (max-width: 900px) {
+  .settings-directory-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .settings-summary {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
