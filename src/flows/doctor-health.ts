@@ -132,7 +132,7 @@ export async function runDoctorHealthFlow<TOptions extends DoctorOptions = Docto
       externallyManagedRepair.fail(error);
     }
   }
-  return externallyManagedRepair?.finish() as DoctorHealthFlowResult<TOptions>;
+  return externallyManagedRepair?.finish() as DoctorHealthFlowResult<TOptions>; // SAFETY: true mode always creates the repair sink; every other mode returns void.
 }
 
 async function runDoctorHealthFlowWithResult(
