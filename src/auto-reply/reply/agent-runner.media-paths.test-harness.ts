@@ -8,11 +8,11 @@ import {
 } from "../../agents/test-helpers/model-fallback-runner.test-support.js";
 import { clearRuntimeConfigSnapshot } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { QueueSettings } from "./queue.js";
 import {
   createReplyOperation as createRegisteredReplyOperation,
   type ReplyOperation,
-} from "./reply-run-registry.js";
+} from "../../sessions/session-controller.js";
+import type { QueueSettings } from "./queue.js";
 import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
 import {
   createMockFollowupRun,
@@ -48,7 +48,7 @@ const parkedSteerAdmitMock = vi.fn(async () => "steer" as const);
 const parkedSteerAcceptedMock = vi.fn();
 const parkedSteerFallbackMock = vi.fn();
 const parkedSteerConsumeMock = vi.fn();
-const parkSteerCandidateMock = vi.fn(() => ({
+const reserveSteerCandidateMock = vi.fn(() => ({
   admit: parkedSteerAdmitMock,
   accepted: parkedSteerAcceptedMock,
   fallback: parkedSteerFallbackMock,
@@ -183,7 +183,7 @@ vi.mock("./agent-runner-memory.js", () => ({
 vi.mock("./queue.js", () => ({
   admitFollowupRunLifecycle: vi.fn(async () => {}),
   enqueueFollowupRun: enqueueFollowupRunMock,
-  parkSteerCandidate: parkSteerCandidateMock,
+  reserveSteerCandidate: reserveSteerCandidateMock,
   refreshQueuedFollowupSession: refreshQueuedFollowupSessionMock,
   resolveFollowupAbortSignal: vi.fn(() => undefined),
   scheduleFollowupDrain: scheduleFollowupDrainMock,
@@ -342,8 +342,8 @@ export function resetAgentRunnerMediaTestState() {
   parkedSteerAcceptedMock.mockReset();
   parkedSteerFallbackMock.mockReset();
   parkedSteerConsumeMock.mockReset();
-  parkSteerCandidateMock.mockReset();
-  parkSteerCandidateMock.mockReturnValue({
+  reserveSteerCandidateMock.mockReset();
+  reserveSteerCandidateMock.mockReturnValue({
     admit: parkedSteerAdmitMock,
     accepted: parkedSteerAcceptedMock,
     fallback: parkedSteerFallbackMock,
@@ -385,7 +385,7 @@ export {
   createReplyMediaContextRuntimeMock,
   enqueueFollowupRunMock,
   makeRunReplyAgentParams,
-  parkSteerCandidateMock,
+  reserveSteerCandidateMock,
   parkedSteerConsumeMock,
   parkedSteerFallbackMock,
   queueEmbeddedAgentMessageWithOutcomeAsyncMock,

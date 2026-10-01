@@ -2,9 +2,17 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { isIngressAdoptionLostError } from "../../channels/message/ingress-drain.js";
 import { resolveRestartRecoverySteeringBlockReason } from "../../config/sessions/restart-recovery-receipt.js";
-import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
+import { readSessionEntryInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import type { ReplyMessageInjectionOutcome } from "../../sessions/session-controller.contracts.js";
+import {
+  beginReplyMessageInjectionTarget,
+  captureReplyMessageInjectionTarget,
+  finalizeReplyMessageInjectionAttempt,
+  type ReplyOperation,
+  replyRunRegistry,
+} from "../../sessions/session-controller.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import {
@@ -13,18 +21,12 @@ import {
 } from "./agent-runner-core.js";
 import {
   admitFollowupRunLifecycle,
-  parkSteerCandidate,
+  reserveSteerCandidate,
   resolveFollowupAbortSignal,
   scheduleFollowupDrain,
   type FollowupRun,
 } from "./queue.js";
 import type { ReplyOperationRunState } from "./reply-operation-run-state.js";
-import {
-  beginReplyMessageInjectionTarget,
-  finalizeReplyMessageInjectionAttempt,
-  type ReplyOperation,
-  replyRunRegistry,
-} from "./reply-run-registry.js";
 import { refreshReplyOperationTyping } from "./reply-run-typing.js";
 import { buildChannelSourceTurnId } from "./source-turn-id.js";
 import type { TypingSignaler } from "./typing-mode.js";
@@ -69,7 +71,7 @@ function resolveAcceptedSteerRunId(params: ActiveReplySteerParams): string {
           followupRun.run.sessionKey,
         messageId: followupRun.messageId ?? sessionCtx.MessageSidFull ?? sessionCtx.MessageSid,
       }) ??
-      normalizeOptionalString(params.opts?.runId),
+      params.opts?.runId,
     "steered turn id",
   );
 }
@@ -97,18 +99,17 @@ export async function runActiveReplySteer(
   const steerSessionId = activeReplyOperation?.sessionId ?? followupRun.run.sessionId;
   // Capture exact injection authority before parking or awaiting admission.
   // A same-key successor must never inherit this turn's steer or abort.
-  const injectionTarget =
-    activeReplyOperation && replyRunRegistry.get(activeReplyOperation.key) === activeReplyOperation
-      ? replyRunRegistry.resolveCurrentMessageInjectionTarget(activeReplyOperation.key)
-      : undefined;
-  const parked = parkSteerCandidate(queueKey, followupRun, resolvedQueue, runFollowup);
+  const injectionTarget = captureReplyMessageInjectionTarget(activeReplyOperation);
+  const parked = reserveSteerCandidate(queueKey, followupRun, resolvedQueue, runFollowup);
   if (!parked) {
     releaseAdmissionTicket();
     typing.cleanup();
     return "handled";
   }
   const scheduleParkedFallback = () => {
-    const owner = replyRunRegistry.get(queueKey);
+    const owner = followupRun.controllerInput
+      ? followupRun.controllerInput.mailbox.owner.active
+      : replyRunRegistry.get(queueKey);
     if (owner) {
       scheduleFollowupDrainAfterReplyOperationClear({
         operation: owner,
@@ -121,8 +122,10 @@ export async function runActiveReplySteer(
   };
   scheduleParkedFallback();
   releaseAdmissionTicket();
+  let custodyFinished = false;
   const fallback = async (reason?: string): Promise<"handled"> => {
     parked.fallback();
+    custodyFinished = true;
     if (
       replyOperationRunState &&
       !(
@@ -139,10 +142,15 @@ export async function runActiveReplySteer(
     typing.cleanup();
     return "handled";
   };
+  // Outcome is the native write receipt. Acceptance callbacks and source
+  // cancellation cannot release its custody or authorize replay.
+  let nativeOutcome: Promise<ReplyMessageInjectionOutcome> | undefined;
+  let replayForbidden = false;
   try {
     const admission = await parked.admit();
     if (admission === "cancelled") {
       parked.consume();
+      custodyFinished = true;
       typing.cleanup();
       return "handled";
     }
@@ -158,11 +166,14 @@ export async function runActiveReplySteer(
     if (sessionKey && params.storePath) {
       try {
         entry =
-          loadSessionEntry({
-            sessionKey,
-            storePath: params.storePath,
-            readConsistency: "latest",
-          }) ?? entry;
+          (await readSessionEntryInWorker(
+            {
+              agentId: followupRun.run.agentId,
+              sessionKey,
+              storePath: params.storePath,
+            },
+            () => followupRun.operatorAuthority?.assertCurrent(),
+          )) ?? entry;
       } catch (error) {
         return await fallback(`session entry unavailable: ${formatErrorMessage(error)}`);
       }
@@ -229,11 +240,13 @@ export async function runActiveReplySteer(
         ? { userTurnTranscriptRecorder: followupRun.userTurnTranscriptRecorder }
         : {}),
     });
+    nativeOutcome = injectionAttempt.outcome;
     const finalization = await finalizeReplyMessageInjectionAttempt({
       attempt: injectionAttempt,
       target: injectionTarget,
       inboundAudio: followupRun.currentInboundAudio === true,
       onOutcome: (outcome) => {
+        replayForbidden = true;
         if (replyOperationRunState) {
           replyOperationRunState.admission =
             outcome === "indeterminate"
@@ -245,11 +258,22 @@ export async function runActiveReplySteer(
       shouldAbortOnAdoptionError: isIngressAdoptionLostError,
     });
     if (finalization.status === "rejected") {
-      return await fallback(finalization.outcome.reason);
+      if (followupRun.controllerInput?.injection?.accepted !== true) {
+        return await fallback(finalization.outcome.reason);
+      }
+      // A late negative result cannot undo an earlier native acceptance.
+      parked.consume("consumed");
+      custodyFinished = true;
+      if (replyOperationRunState) {
+        replyOperationRunState.admission = { status: "accepted", mode: "steer" };
+      }
+      typing.cleanup();
+      return "handled";
     }
     // Accepted or indeterminate input cannot be abandoned for replay, even
     // when the source's later adoption callback rejects.
     parked.consume("consumed");
+    custodyFinished = true;
     if (finalization.status === "indeterminate") {
       typing.cleanup();
       return markReplyPayloadForSourceSuppressionDelivery({
@@ -285,16 +309,21 @@ export async function runActiveReplySteer(
     await touchActiveSessionEntry();
     typing.cleanup();
     return "handled";
-  } catch (error) {
-    if (resolveFollowupAbortSignal(followupRun)?.aborted) {
-      parked.consume();
-    } else {
-      parked.fallback();
-    }
-    throw error;
   } finally {
-    if (followupRun.steerPending) {
-      if (resolveFollowupAbortSignal(followupRun)?.aborted) {
+    if (!custodyFinished) {
+      // Even a fallible finalizer may not transfer a pending native write to a
+      // successor. A rejected outcome Promise carries no safe-replay receipt.
+      if (nativeOutcome) {
+        try {
+          const outcome = await nativeOutcome;
+          replayForbidden ||= outcome.status === "accepted" || outcome.status === "indeterminate";
+        } catch {
+          replayForbidden = true;
+        }
+      }
+      if (replayForbidden || followupRun.controllerInput?.injection?.accepted === true) {
+        parked.consume("consumed");
+      } else if (resolveFollowupAbortSignal(followupRun)?.aborted) {
         parked.consume();
       } else {
         parked.fallback();

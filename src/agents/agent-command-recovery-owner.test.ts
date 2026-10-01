@@ -9,7 +9,7 @@ import {
   getAgentEventLifecycleGeneration,
   rotateAgentEventLifecycleGeneration,
 } from "../infra/agent-events.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import { runWithAgentCommandRecoveryOwner } from "./agent-command-recovery-owner.js";
 import type { AgentCommandOpts } from "./command/types.js";
 import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "./main-session-recovery/main-session-recovery-admission.js";
@@ -349,7 +349,7 @@ describe("agent command restart recovery ownership", () => {
         }),
       ).resolves.toEqual({ kind: "invalidated", reason: "state_changed" });
       const startOwner = () =>
-        beginSessionWorkAdmission({
+        beginSessionEffect({
           scope: target.storePath,
           identities: [sessionKey, target.sessionId],
           owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
@@ -442,7 +442,7 @@ describe("agent command restart recovery ownership", () => {
     const owner =
       outcome === "ownerless" || outcome === "cancelled during claim"
         ? undefined
-        : await beginSessionWorkAdmission({
+        : await beginSessionEffect({
             scope: target.storePath,
             identities: [sessionKey, target.sessionId],
             owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,

@@ -18,7 +18,9 @@ import type {
   DispatchFromConfigResult,
 } from "./dispatch-from-config.types.js";
 import { DispatchSessionRefreshRequiredError } from "./dispatch-session-refresh-error.js";
+import { prepareInternalGetReplyOptions } from "./get-reply.types.js";
 import { REPLY_ADMISSION_TICKET, reserveReplyAdmissionTicket } from "./reply-admission-ticket.js";
+import { prepareReplySourceInput, retireUnadoptedReplySource } from "./reply-source-binding.js";
 import { sendReplyRestartRecoveryNotice } from "./reply-turn-recovery-notice.js";
 
 export type { DispatchFromConfigResult } from "./dispatch-from-config.types.js";
@@ -39,13 +41,19 @@ export async function dispatchLowLevelChannelReplyFromConfig(
 }
 
 async function dispatchReplyFromConfigWithQueuePolicy(
-  params: DispatchFromConfigParams,
+  inputParams: DispatchFromConfigParams,
   allowActiveQueueResolution: boolean,
 ): Promise<DispatchFromConfigResult> {
+  const source = prepareReplySourceInput(
+    inputParams.ctx,
+    inputParams.cfg,
+    prepareInternalGetReplyOptions(inputParams.replyOptions, inputParams.ctx),
+  );
   const ticket = reserveReplyAdmissionTicket([
-    params.ctx.SessionKey,
-    params.ctx.CommandTargetSessionKey,
+    inputParams.ctx.SessionKey,
+    inputParams.ctx.CommandTargetSessionKey,
   ]);
+  const params = { ...inputParams, replyOptions: source.options };
   const ticketedParams = ticket
     ? {
         ...params,
@@ -68,6 +76,8 @@ async function dispatchReplyFromConfigWithQueuePolicy(
         if (
           error instanceof DispatchSessionRefreshRequiredError &&
           !refreshedSessionSnapshot &&
+          source.input?.retirementRequested !== true &&
+          source.input?.claim?.releaseRequested !== true &&
           params.replyOptions?.abortSignal?.aborted !== true
         ) {
           // Rebuild once from the latest store entry. If another lifecycle mutation wins the
@@ -80,6 +90,7 @@ async function dispatchReplyFromConfigWithQueuePolicy(
       }
     }
   } finally {
+    retireUnadoptedReplySource(source.input);
     ticket?.release();
   }
 }

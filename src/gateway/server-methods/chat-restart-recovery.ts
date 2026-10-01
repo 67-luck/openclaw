@@ -1,9 +1,7 @@
 import { createHmac } from "node:crypto";
 import type { HumanMention } from "../../../packages/gateway-protocol/src/index.js";
 import { OPENCLAW_AGENT_RUNTIME_ID } from "../../agents/agent-runtime-id.js";
-import { listActiveEmbeddedRunSessionIds } from "../../agents/embedded-agent-runner/active-run-projections.js";
 import { shouldComputeCommandAuthorized } from "../../auto-reply/command-detection.js";
-import { replyRunRegistry } from "../../auto-reply/reply/reply-run-registry.js";
 import {
   resolveChannelResetConfig,
   resolveSessionResetType,
@@ -27,6 +25,8 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { findRestartRecoveryUnsafeChatAdmissionHook } from "../../plugins/restart-recovery-hook-safety.js";
 import { isCronSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
 import { isAgentHarnessSessionKey } from "../../sessions/agent-harness-session-key.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import { findSessionControllerEntry } from "../../sessions/session-controller.state.js";
 import { isAcpSessionKey, resolveSessionDispatchKind } from "../../sessions/session-key-utils.js";
 import { recordGatewaySessionRunFailure } from "../../sessions/session-run-error.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
@@ -263,8 +263,9 @@ function isRestartSafeChatSession(params: {
 
 function hasRestartUnsafeChatWork(params: {
   activeRunScopeKey: string;
-  context: Pick<GatewayRequestContext, "chatAbortControllers"> &
-    Partial<Pick<GatewayRequestContext, "chatQueuedTurns">>;
+  clientRunId: string;
+  storePath: string;
+  context: Pick<GatewayRequestContext, "rpcSources">;
   sessionId: string;
   sessionKey: string;
   agentId: string;
@@ -274,18 +275,31 @@ function hasRestartUnsafeChatWork(params: {
     findRestartRecoveryUnsafeChatAdmissionHook(
       resolveSessionDispatchKind(params.sessionKey, params.entry),
     ) !== undefined ||
-    listActiveEmbeddedRunSessionIds().includes(params.sessionId) ||
-    replyRunRegistry.isActive(params.activeRunScopeKey)
+    Boolean(
+      findSessionControllerEntry(
+        params.sessionKey,
+        captureSessionTarget({
+          storeScope: params.storePath,
+          sessionKey: params.sessionKey,
+          incarnation: params.sessionId,
+          agentId: params.agentId,
+        }),
+      )?.active,
+    )
   ) {
     return true;
   }
-  for (const runs of [params.context.chatAbortControllers, params.context.chatQueuedTurns]) {
-    for (const active of runs?.values() ?? []) {
+  for (const runs of [params.context.rpcSources]) {
+    for (const [runId, active] of runs ?? []) {
+      if (runId === params.clientRunId) {
+        continue;
+      }
       if (
-        (active.sessionKey === params.sessionKey || active.sessionId === params.sessionId) &&
+        (active.adapter.sessionKey === params.sessionKey ||
+          active.adapter.sessionId === params.sessionId) &&
         resolveChatRunOwnerAgentId({
-          agentId: active.agentId,
-          sessionKey: active.sessionKey,
+          agentId: active.adapter.agentId,
+          sessionKey: active.adapter.sessionKey,
           defaultAgentId: params.agentId,
         }) === params.agentId
       ) {
@@ -301,10 +315,7 @@ export function resolveRestartSafeChatAdmission(params: {
   agentId: string;
   cfg: OpenClawConfig;
   clientRunId: string;
-  context: Pick<
-    GatewayRequestContext,
-    "chatAbortControllers" | "chatQueuedTurns" | "workerSessionPlacementService"
-  >;
+  context: Pick<GatewayRequestContext, "rpcSources" | "workerSessionPlacementService">;
   entry?: SessionEntry;
   initialSessionEntry?: SessionEntry;
   now: number;

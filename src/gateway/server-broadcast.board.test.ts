@@ -28,6 +28,7 @@ import {
 import { createGatewayConnectionState } from "./server-connection-state.js";
 import { createBoardHandlers } from "./server-methods/board.js";
 import { createProgressCardHandlers } from "./server-methods/progress-card.js";
+import { createActiveRpcSourceForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
 import { flushPendingSessionsChangedEvents } from "./server-methods/session-change-event.js";
 import type { GatewayRequestContext, RespondFn } from "./server-methods/types.js";
 import { createLifecycleEventBroadcastHandler } from "./server-session-events.js";
@@ -153,7 +154,7 @@ describe("board and progress event session ownership", () => {
           broadcastToConnIds,
           getRuntimeConfig: () => cfg,
           getSessionEventSubscriberConnIds: () => new Set(peers.map(({ client }) => client.connId)),
-          chatAbortControllers: new Map(),
+          rpcSources: new Map(),
           resolveGatewayContext: (): GatewayRequestContext => context,
         } as unknown as GatewayRequestContext;
         bindSessionRowProjection(context, connection.getSessionRowProjection);
@@ -832,19 +833,15 @@ it("delivers committed collector updates to a parent-only cross-agent viewer", a
       sessionEventSubscribers: {
         getAll: () => new Set(peers.map(({ client }) => client.connId)),
       },
-      chatAbortControllers: new Map([
+      rpcSources: new Map([
         [
           "parent-run",
-          {
-            controller: new AbortController(),
+          await createActiveRpcSourceForTest({
             sessionId: "parent-viewer",
             sessionKey: parent.sessionKey,
             agentId: parent.agentId,
-            startedAtMs: 1,
-            expiresAtMs: Date.now() + 60_000,
             projectSessionActive: true,
-            executionStarted: true,
-          },
+          }),
         ],
       ]),
     });

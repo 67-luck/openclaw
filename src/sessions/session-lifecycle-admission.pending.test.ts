@@ -2,16 +2,17 @@ import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createAgentRunDirectAbortError } from "../agents/run-termination.js";
 import {
-  beginSessionWorkAdmission,
-  collectActiveSessionWorkAdmissions,
-  getActiveSessionWorkAdmissionCount,
-  getSessionWorkAdmissionRelease,
-  interruptSessionWorkAdmissions,
-  isCompetingSessionWorkAdmissionActive,
-  isSessionWorkAdmissionActive,
-  captureGatewaySessionWorkAdmissions,
-  runExclusiveSessionLifecycleMutation,
-} from "./session-lifecycle-admission.js";
+  beginSessionEffect,
+  collectSessionControllerTargets,
+  getSessionControllerWorkCount,
+  captureSessionControllerSettlement,
+  interruptSessionControllerEffects,
+  isCompetingSessionControllerWorkActive,
+  isSessionControllerWorkActive,
+  captureGatewaySessionControllerWork,
+  runSessionMutation,
+  startSessionControllerInterruption,
+} from "./session-controller.lifecycle.js";
 
 it("rejects arrivals during awaited cleanup and its final microtask, then reopens only after release", async () => {
   const scope = "hostile-await.sqlite";
@@ -21,14 +22,14 @@ it("rejects arrivals during awaited cleanup and its final microtask, then reopen
   const reason = createAgentRunDirectAbortError();
   let lateResult: unknown;
   const late = () =>
-    beginSessionWorkAdmission({ scope, identities, assertAllowed: () => {} }).then(
+    beginSessionEffect({ scope, identities, assertAllowed: () => {} }).then(
       (lease) => {
         lease.release();
         return "incorrectly admitted";
       },
       (error: unknown) => error,
     );
-  const stop = runExclusiveSessionLifecycleMutation({
+  const stop = runSessionMutation({
     scope,
     identities,
     prepare: async (owner) => {
@@ -46,7 +47,7 @@ it("rejects arrivals during awaited cleanup and its final microtask, then reopen
   try {
     const whileAwaiting = await late();
     expect(whileAwaiting).toBe(reason);
-    const other = await beginSessionWorkAdmission({
+    const other = await beginSessionEffect({
       scope,
       identities: ["other-session"],
       assertAllowed: () => {},
@@ -55,7 +56,7 @@ it("rejects arrivals during awaited cleanup and its final microtask, then reopen
     release.resolve();
     await stop;
     expect(lateResult).toBe(reason);
-    const fresh = await beginSessionWorkAdmission({ scope, identities, assertAllowed: () => {} });
+    const fresh = await beginSessionEffect({ scope, identities, assertAllowed: () => {} });
     fresh.release();
   } finally {
     release.resolve();
@@ -71,7 +72,7 @@ it("interrupts a preexisting non-chat pending attempt without classifying it as 
   const release = createDeferred();
   const interrupted = vi.fn();
   let validated = false;
-  const blocker = runExclusiveSessionLifecycleMutation({
+  const blocker = runSessionMutation({
     scope,
     identities,
     prepare: async () => {
@@ -81,7 +82,7 @@ it("interrupts a preexisting non-chat pending attempt without classifying it as 
     run: async () => {},
   });
   await entered.promise;
-  const pending = beginSessionWorkAdmission({
+  const pending = beginSessionEffect({
     scope,
     identities,
     onInterrupt: interrupted,
@@ -97,21 +98,21 @@ it("interrupts a preexisting non-chat pending attempt without classifying it as 
     (error: unknown) => error,
   );
   try {
-    expect(isSessionWorkAdmissionActive(scope, identities)).toBe(false);
+    expect(isSessionControllerWorkActive(scope, identities)).toBe(false);
     expect(
-      captureGatewaySessionWorkAdmissions(resolveGatewayContext).isActive({
+      captureGatewaySessionControllerWork(resolveGatewayContext).isActive({
         scope,
         sessionKey: identities[0],
         sessionId: identities[1],
       }),
     ).toBe(false);
-    expect(isCompetingSessionWorkAdmissionActive(scope, identities)).toBe(false);
-    expect(getSessionWorkAdmissionRelease({ scope, identities })).toBeUndefined();
-    expect(collectActiveSessionWorkAdmissions().get(scope)).toBeUndefined();
-    expect(getActiveSessionWorkAdmissionCount()).toBe(0);
+    expect(isCompetingSessionControllerWorkActive(scope, identities)).toBe(false);
+    expect(captureSessionControllerSettlement({ scope, identities })).toBeUndefined();
+    expect(collectSessionControllerTargets().get(scope)).toBeUndefined();
+    expect(getSessionControllerWorkCount()).toBe(0);
     const reason = createAgentRunDirectAbortError();
     expect(
-      await interruptSessionWorkAdmissions({ scope, identities, reason, timeoutMs: 1000 }),
+      await interruptSessionControllerEffects({ scope, identities, reason, timeoutMs: 1000 }),
     ).toBe(true);
     expect(await pending).toBe(reason);
     expect(interrupted).toHaveBeenCalledOnce();
@@ -130,19 +131,19 @@ it("ordinary compaction still queues work and acquired-release queries do not de
   const entered = createDeferred();
   const release = createDeferred();
   let validated = false;
-  const compaction = runExclusiveSessionLifecycleMutation({
+  const compaction = runSessionMutation({
     scope,
     identities,
     kind: "compaction",
     prepare: async () => {
       entered.resolve();
       await release.promise;
-      await getSessionWorkAdmissionRelease({ scope, identities });
+      await captureSessionControllerSettlement({ scope, identities });
     },
     run: async () => {},
   });
   await entered.promise;
-  const pending = beginSessionWorkAdmission({
+  const pending = beginSessionEffect({
     scope,
     identities,
     assertAllowed: () => {
@@ -169,7 +170,7 @@ it("single-use identity iterators still wait for the exact lifecycle fence", asy
   const entered = createDeferred();
   const release = createDeferred();
   let validated = false;
-  const mutation = runExclusiveSessionLifecycleMutation({
+  const mutation = runSessionMutation({
     scope,
     identities,
     prepare: async () => {
@@ -179,7 +180,7 @@ it("single-use identity iterators still wait for the exact lifecycle fence", asy
     run: async () => {},
   });
   await entered.promise;
-  const admission = beginSessionWorkAdmission({
+  const admission = beginSessionEffect({
     scope,
     identities: (function* () {
       yield identities[0];
@@ -189,7 +190,7 @@ it("single-use identity iterators still wait for the exact lifecycle fence", asy
     },
   });
   try {
-    const unrelated = await beginSessionWorkAdmission({
+    const unrelated = await beginSessionEffect({
       scope,
       identities: ["unrelated-generator"],
       assertAllowed: () => {},
@@ -215,7 +216,7 @@ it("an initial validator finishing after pending cancellation cannot enter the w
   const release = createDeferred();
   const writer = vi.fn();
   const reason = createAgentRunDirectAbortError();
-  const pending = beginSessionWorkAdmission({
+  const pending = beginSessionEffect({
     scope,
     identities,
     assertAllowed: async () => {
@@ -232,13 +233,17 @@ it("an initial validator finishing after pending cancellation cannot enter the w
   );
   await entered.promise;
   try {
-    expect(
-      await interruptSessionWorkAdmissions({ scope, identities, reason, timeoutMs: 1000 }),
-    ).toBe(true);
-    expect(await pending).toBe(reason);
+    const interruption = startSessionControllerInterruption({ scope, identities, reason });
+    let drained = false;
+    void interruption.released.then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
     release.resolve();
-    // A later mutation must wait for the validator's existing identity lock to finish.
-    await runExclusiveSessionLifecycleMutation({ scope, identities, run: async () => {} });
+    expect(await pending).toBe(reason);
+    await interruption.released;
+    await runSessionMutation({ scope, identities, run: async () => {} });
     expect(writer).not.toHaveBeenCalled();
   } finally {
     release.resolve();

@@ -1,10 +1,9 @@
 import fs from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import {
-  clearActiveEmbeddedRun,
-  isEmbeddedAgentRunActive,
-  setActiveEmbeddedRun,
-} from "../agents/embedded-agent-runner/runs.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+} from "../agents/embedded-agent-runner/runs.test-support.js";
 import {
   appendTranscriptMessage,
   loadSessionEntry,
@@ -12,9 +11,10 @@ import {
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
 import {
-  beginSessionWorkAdmission,
-  runExclusiveSessionLifecycleMutation,
-} from "../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  runSessionMutation,
+} from "../sessions/session-controller.lifecycle.js";
+import { isSessionRunActive as isEmbeddedAgentRunActive } from "../sessions/session-controller.queries.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
@@ -64,7 +64,7 @@ describe("Gateway creation preparation", () => {
         const admission =
           identity === "embedded"
             ? undefined
-            : await beginSessionWorkAdmission({
+            : await beginSessionEffect({
                 scope: scope.storePath,
                 identities: [
                   identity === "sessionId"
@@ -140,7 +140,7 @@ describe("Gateway creation preparation", () => {
       const scope = { agentId: target.agentId, sessionKey: key, storePath: target.storePath };
       const entered = createDeferredCore();
       const rotate = createDeferredCore();
-      const mutation = runExclusiveSessionLifecycleMutation({
+      const mutation = runSessionMutation({
         scope: target.storePath,
         identities: [key, first.entry.sessionId],
         run: async () => {
@@ -185,7 +185,7 @@ describe("Gateway creation preparation", () => {
         const first = await createGatewaySession(common);
         expect(first.ok).toBe(true);
         const target = resolveGatewaySessionStoreTarget({ cfg: {}, key });
-        const admission = await beginSessionWorkAdmission({
+        const admission = await beginSessionEffect({
           scope: target.storePath,
           identities: [key],
           assertAllowed: () => {},
@@ -255,7 +255,7 @@ describe("Gateway creation preparation", () => {
           }),
         ]);
         const observedRoots: Array<string | undefined> = [];
-        const queued = beginSessionWorkAdmission({
+        const queued = beginSessionEffect({
           scope: target.storePath,
           identities: [first.entry.sessionId],
           assertAllowed: () => {
@@ -263,7 +263,7 @@ describe("Gateway creation preparation", () => {
           },
         });
         try {
-          const unrelated = await beginSessionWorkAdmission({
+          const unrelated = await beginSessionEffect({
             scope: target.storePath,
             identities: ["agent:main:sibling"],
             assertAllowed: () => {},

@@ -16,6 +16,7 @@ import {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitAgentAuditEvent, emitAgentEvent } from "../infra/agent-events.js";
 import type { SubsystemLogger } from "../logging/subsystem.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { registerChatAbortController, type ChatAbortControllerEntry } from "./chat-abort.js";
 import {
@@ -57,7 +58,7 @@ export function createSubscriptionTestFixture() {
         toolEventRecipients: chatRunState.toolEventRecipients,
         sessionEventSubscribers: createSessionEventSubscriberRegistry(),
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-        chatAbortControllers: new Map(),
+        rpcSources: new Map(),
         restartRecoveryCandidates: new Map(),
         refreshConnectedUserProfiles: vi.fn(),
       };
@@ -67,14 +68,19 @@ export function createSubscriptionTestFixture() {
 
 export function registerSubscriptionChatRun(
   params: Parameters<typeof startGatewayEventSubscriptions>[0],
-  input: Omit<
-    Parameters<typeof registerChatAbortController>[0],
-    "chatAbortControllers" | "timeoutMs"
-  >,
+  input: Omit<Parameters<typeof registerChatAbortController>[0], "rpcSources" | "timeoutMs">,
 ) {
   const registration = registerChatAbortController({
     ...input,
-    chatAbortControllers: params.chatAbortControllers,
+    target:
+      input.target ??
+      captureSessionTarget({
+        storeScope: "/synthetic/subscription/sessions",
+        sessionKey: input.sessionKey ?? "agent:main:subscription",
+        agentId: input.agentId,
+        incarnation: input.sessionId,
+      }),
+    rpcSources: params.rpcSources,
     timeoutMs: 60_000,
   });
   if (!registration.entry) {
@@ -85,12 +91,12 @@ export function registerSubscriptionChatRun(
 
 export function readLifecycleState(entry: ChatAbortControllerEntry) {
   return {
-    projectSessionActive: entry.projectSessionActive,
-    projectSessionTerminalPending: entry.projectSessionTerminalPending,
-    projectSessionTerminalObservedAt: entry.projectSessionTerminalObservedAt,
-    projectSessionTerminalPersistence: entry.projectSessionTerminalPersistence,
-    projectSessionTerminalPersisted: entry.projectSessionTerminalPersisted,
-    registrationCleanupRequested: entry.registrationCleanupRequested,
+    projectSessionActive: entry.adapter.projectSessionActive,
+    projectSessionTerminalPending: entry.adapter.projectSessionTerminalPending,
+    projectSessionTerminalObservedAt: entry.adapter.projectSessionTerminalObservedAt,
+    projectSessionTerminalPersistence: entry.adapter.projectSessionTerminalPersistence,
+    projectSessionTerminalPersisted: entry.adapter.projectSessionTerminalPersisted,
+    registrationCleanupRequested: entry.adapter.registrationCleanupRequested,
   };
 }
 

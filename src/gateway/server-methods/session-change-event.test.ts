@@ -20,7 +20,6 @@ import { createPluginServiceGatewayEvents } from "../../plugins/gateway-events.j
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import { createGatewayBroadcaster } from "../server-broadcast.js";
 import { createGatewayConnectionState } from "../server-connection-state.js";
@@ -37,6 +36,7 @@ import { createSessionRowProjectionFixture } from "../session-row-projection.tes
 import { loadCachedSessionSharingSnapshot } from "../session-sharing-snapshot-cache.js";
 import { projectWorkerSessionPlacement } from "../worker-environments/placement-projector.js";
 import type { WorkerSessionPlacementRecord } from "../worker-environments/placement-store.js";
+import { createActiveRpcSourceForTest } from "./rpc-source-fixtures.test-support.js";
 import type { GatewayRequestContext } from "./types.js";
 
 const mocks = vi.hoisted(() => ({
@@ -76,7 +76,7 @@ function holdExactPreparation(projection: SessionRowProjection, ...ready: Promis
 function createContext(
   receivers = new Set(["conn-1"]),
   config: OpenClawConfig = {},
-  chatAbortControllers: GatewayRequestContext["chatAbortControllers"] = new Map(),
+  rpcSources: GatewayRequestContext["rpcSources"] = new Map(),
 ) {
   const projection = {
     get state() {
@@ -92,7 +92,7 @@ function createContext(
   };
   return {
     broadcastToConnIds: vi.fn(),
-    chatAbortControllers,
+    rpcSources,
     getRuntimeConfig: () => config,
     ...bindSessionRowProjection({}, () => projection as unknown as SessionRowProjection),
     getSessionEventSubscriberConnIds: () => receivers,
@@ -873,13 +873,7 @@ describe("sessions.changed coalescing", () => {
       new Map([
         [
           "compat-owner-run",
-          {
-            controller: new AbortController(),
-            expiresAtMs: 60_000,
-            sessionId,
-            sessionKey: "legacy-unscoped",
-            startedAtMs: 0,
-          } satisfies ChatAbortControllerEntry,
+          await createActiveRpcSourceForTest({ sessionId, sessionKey: "legacy-unscoped" }),
         ],
       ]),
     );
@@ -912,14 +906,11 @@ describe("sessions.changed coalescing", () => {
       new Map([
         [
           "ops-global-run",
-          {
+          await createActiveRpcSourceForTest({
             agentId: "ops",
-            controller: new AbortController(),
-            expiresAtMs: 60_000,
             sessionId: "global-id",
             sessionKey: "global",
-            startedAtMs: 0,
-          } satisfies ChatAbortControllerEntry,
+          }),
         ],
       ]),
     );
@@ -985,20 +976,17 @@ describe("sessions.changed coalescing", () => {
   it("tombstones exact run ids when lifecycle projection takes ownership", async () => {
     const sessionKey = "agent:main:projected";
     const sessionId = `${sessionKey}-id`;
-    const chatAbortControllers = new Map([
+    const rpcSources = new Map([
       [
         "direct-run",
-        {
+        await createActiveRpcSourceForTest({
           agentId: "main",
-          controller: new AbortController(),
-          expiresAtMs: 60_000,
           sessionId,
           sessionKey,
-          startedAtMs: 0,
-        } satisfies ChatAbortControllerEntry,
+        }),
       ],
     ]);
-    const context = createContext(new Set(["conn-1"]), {}, chatAbortControllers);
+    const context = createContext(new Set(["conn-1"]), {}, rpcSources);
 
     await emitAndSettleLeading(context, { reason: "update", sessionKey });
     expect(vi.mocked(context.broadcastToConnIds).mock.calls[0]?.[1]).toMatchObject({
@@ -1006,7 +994,10 @@ describe("sessions.changed coalescing", () => {
       activeRunIds: ["direct-run"],
     });
 
-    chatAbortControllers.clear();
+    for (const source of rpcSources.values()) {
+      source.input.claim?.operation?.complete();
+    }
+    rpcSources.clear();
     registerAgentRunContext("hidden-worker-run", {
       isControlUiVisible: false,
       projectSessionActive: true,

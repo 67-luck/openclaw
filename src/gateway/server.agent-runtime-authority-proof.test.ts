@@ -13,7 +13,7 @@ import {
 import { registerInternalHook, unregisterInternalHook } from "../hooks/internal-hooks.js";
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { validateAgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
-import { startSessionWorkAdmissionInterruption } from "../sessions/session-lifecycle-admission.js";
+import { startSessionControllerInterruption } from "../sessions/session-controller.lifecycle.js";
 import { createAgentAdmissionController } from "./agent-turn/agent-admission-controller.js";
 import { createAgentDedupeLifecycle } from "./agent-turn/agent-dedupe-lifecycle.js";
 import { createAgentRunAdmissionRevalidator } from "./agent-turn/agent-run-admission-revalidation.js";
@@ -730,7 +730,7 @@ describe("agent RPC real delegated-authority effects", () => {
       });
       let registration: ReturnType<typeof registerChatAbortController> | undefined;
       let newer: ReturnType<typeof createAgentDedupeLifecycle> | undefined;
-      let interrupted: ReturnType<typeof startSessionWorkAdmissionInterruption> | undefined;
+      let interrupted: ReturnType<typeof startSessionControllerInterruption> | undefined;
       try {
         await admission.acquire(f.scope.storePath);
         if (replaceAlias) {
@@ -749,13 +749,13 @@ describe("agent RPC real delegated-authority effects", () => {
         }
         const retained = f.context.dedupe.get(alias);
         if (phase === "pre-registration") {
-          interrupted = startSessionWorkAdmissionInterruption({
+          interrupted = startSessionControllerInterruption({
             scope: f.scope.storePath,
             identities: [f.sessionKey, f.sessionId],
           });
         } else {
           registration = registerChatAbortController({
-            chatAbortControllers: f.context.chatAbortControllers,
+            rpcSources: f.context.rpcSources,
             runId: f.runId,
             sessionKey: f.sessionKey,
             sessionId: f.sessionId,

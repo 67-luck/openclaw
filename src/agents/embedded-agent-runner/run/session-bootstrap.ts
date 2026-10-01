@@ -27,8 +27,8 @@ import { emitAgentEventIfCurrent } from "../../../infra/agent-events.js";
 import { getAgentRunContext } from "../../../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
+import { beginSessionEffect } from "../../../sessions/session-controller.lifecycle.js";
 import { resolvePreferredSessionKeyForSessionIdMatches } from "../../../sessions/session-id-resolution.js";
-import { beginSessionWorkAdmission } from "../../../sessions/session-lifecycle-admission.js";
 import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
 import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
@@ -289,7 +289,7 @@ export async function prepareInitialSessionWriter(params: {
   // Existing-row callers can be inside their creation lifecycle; reject before
   // attempting to acquire an admission that their enclosing mutation excludes.
   await assertAbsent();
-  const admission = await beginSessionWorkAdmission({
+  const admission = await beginSessionEffect({
     scope: presence.storePath,
     identities: [ownerTarget.sessionKey, presence.sessionKey, ownerTarget.sessionId],
     signal,

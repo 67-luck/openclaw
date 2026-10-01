@@ -141,10 +141,7 @@ type ChatSendRetryParams = {
     | "sessionKey"
     | "storePath"
   >;
-  context: Pick<
-    GatewayRequestHandlerOptions["context"],
-    "dedupe" | "chatRunState" | "chatAbortControllers" | "chatQueuedTurns"
-  >;
+  context: Pick<GatewayRequestHandlerOptions["context"], "dedupe" | "chatRunState" | "rpcSources">;
   respond: GatewayRequestHandlerOptions["respond"];
 };
 
@@ -213,8 +210,7 @@ export function resolveChatSendRequestConflict({
     sameDurableSource ||
     hasRestartRecoveryTerminalRun(session.entry, session.clientRunId) ||
     context.chatRunState.hasAbortMarker(session.clientRunId) ||
-    context.chatAbortControllers.has(session.clientRunId) ||
-    context.chatQueuedTurns?.has(session.clientRunId);
+    context.rpcSources.has(session.clientRunId);
   if (!knownRetry) {
     return undefined;
   }
@@ -288,11 +284,7 @@ export function respondChatSendRetry(params: ChatSendRetryParams): boolean {
     entry: context.dedupe.get(pendingChatSendKey),
     keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
   });
-  if (
-    pending ||
-    context.chatAbortControllers.has(clientRunId) ||
-    context.chatQueuedTurns?.has(clientRunId)
-  ) {
+  if (pending || context.rpcSources.has(clientRunId)) {
     respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
       cached: true,
       runId: clientRunId,
@@ -334,7 +326,7 @@ export function inspectGoalChatSendRetry({
     });
     if (
       pending?.payload.goalFingerprint === request.goalOperation.requestFingerprint ||
-      (!pending && !durableClaimAccepted && context.chatAbortControllers.has(clientRunId))
+      (!pending && !durableClaimAccepted && context.rpcSources.has(clientRunId))
     ) {
       respond(
         false,
@@ -350,8 +342,7 @@ export function inspectGoalChatSendRetry({
       durableClaimAccepted ||
       context.dedupe.has(`chat:${clientRunId}`) ||
       context.chatRunState.hasAbortMarker(clientRunId) ||
-      context.chatAbortControllers.has(clientRunId) ||
-      context.chatQueuedTurns?.has(clientRunId)
+      context.rpcSources.has(clientRunId)
     ) {
       throw new SessionGoalOperationError(
         "operation-conflict",

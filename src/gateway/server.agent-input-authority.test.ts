@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
@@ -356,8 +357,12 @@ describe("accepted input Gateway instance retirement", () => {
       expect(prepared.userTurn.recorder?.getPendingInputMessage?.()).toEqual(
         pending.items[0]?.message,
       );
-      expect(prepared.activeGatewayWorkAdmission.isActive()).toBe(true);
-      expect(context.chatAbortControllers.get(runId)).toBe(prepared.activeRunAbort.entry);
+      const gatewayWork = prepared.activeGatewayWorkAdmission;
+      if (!gatewayWork) {
+        throw new Error("Expected prepared Gateway work custody");
+      }
+      expect(gatewayWork.isActive()).toBe(true);
+      expect(context.rpcSources.get(runId)).toBe(prepared.activeRunAbort.entry);
       expect(prepared.activeRunAbort.controller.signal.aborted).toBe(false);
       expect(() => guard()).not.toThrow();
       const runtimeRelease = vi.spyOn(prepared.preparedModelRuntimeLease, Symbol.asyncDispose);
@@ -372,6 +377,9 @@ describe("accepted input Gateway instance retirement", () => {
       expect(prepared.activeRunAbort.controller.signal.aborted).toBe(false);
       release();
       await execution;
+      // The service owns source release after the intercepted execution returns.
+      await expectDefined(prepared.activeRunAbort.entry, "accepted source").input.settlement
+        .promise;
 
       expect(accepted).toEqual(originalAck);
       expect(context.dedupe.get(`agent:${runId}`)).toMatchObject({
@@ -394,10 +402,9 @@ describe("accepted input Gateway instance retirement", () => {
       expect(prepared.userTurn.recorder?.getAdmissionReceipt()).toBeUndefined();
       expect(agentCommandMock).not.toHaveBeenCalled();
       expect(prepared.activeRunAbort.controller.signal.aborted).toBe(false);
-      expect(context.chatAbortControllers.size).toBe(0);
-      expect(context.chatQueuedTurns.size).toBe(0);
-      expect(prepared.activeGatewayWorkAdmission.isActive()).toBe(false);
-      await prepared.activeGatewayWorkAdmission.released;
+      expect(context.rpcSources.size).toBe(0);
+      expect(gatewayWork.isActive()).toBe(false);
+      await gatewayWork.released;
       expect(runtimeRelease).toHaveBeenCalledOnce();
       expect(() => guard()).not.toThrow();
     } finally {

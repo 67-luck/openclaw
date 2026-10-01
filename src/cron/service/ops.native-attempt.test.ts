@@ -28,13 +28,14 @@ import {
 import { cronHandlers } from "../../gateway/server-methods/cron.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import {
-  clearCommandLane,
   enqueueCommandInLane,
   getTotalQueueSize,
   setCommandLaneConcurrency,
 } from "../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import { CommandLane } from "../../process/lanes.js";
+import { withSessionControllerOwner } from "../../sessions/session-controller.context.js";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
@@ -58,7 +59,7 @@ describe("native attempt queued automation admission", () => {
     "abort before completion",
     "permission change",
     "revoke",
-    "clear queue",
+    "stop service",
   ] as const)(
     "retains its real tool generation until activation, not payload completion: %s",
     async (outcome) => {
@@ -169,57 +170,66 @@ describe("native attempt queued automation admission", () => {
           await releaseBlocker.promise;
         });
         await blockerStarted.promise;
+        const operation = createReplyOperation({
+          sessionKey: "agent:main:native-cron-admission",
+          sessionId: "embedded-session",
+          agentId: "main",
+          resetTriggered: false,
+        });
         try {
-          const result = await requesterWork.run(() =>
-            createContextEngineAttemptRunner({
-              contextEngine: createContextEngineBootstrapAndAssemble(),
-              sessionKey: "agent:main:native-cron-admission",
-              tempPaths,
-              attemptOverrides: {
-                config: cfg,
-                disableTools: false,
-                abortSignal: controller.signal,
-              },
-              createSession: () =>
-                Object.assign(
-                  createDefaultEmbeddedSession({
-                    prompt: async () => {
-                      const submittedTool = tool;
-                      const ack = await submittedTool.execute("queued-automation", {
-                        action: "run",
-                        jobId: job.id,
-                        runMode: "force",
-                      });
-                      expect(ack.details).toMatchObject({ ok: true, enqueued: true });
-                      if (outcome === "permission change") {
-                        const change = prepareEmbeddedRunPermissionChange("embedded-session");
-                        expect(change.kind).toBe("active");
-                        if (change.kind !== "active") {
-                          throw new Error("Native permission owner missing");
+          const result = await withSessionControllerOwner(operation, () =>
+            requesterWork.run(() =>
+              createContextEngineAttemptRunner({
+                contextEngine: createContextEngineBootstrapAndAssemble(),
+                sessionKey: "agent:main:native-cron-admission",
+                tempPaths,
+                attemptOverrides: {
+                  config: cfg,
+                  replyOperation: operation,
+                  disableTools: false,
+                  abortSignal: controller.signal,
+                },
+                createSession: () =>
+                  Object.assign(
+                    createDefaultEmbeddedSession({
+                      prompt: async () => {
+                        const submittedTool = tool;
+                        const ack = await submittedTool.execute("queued-automation", {
+                          action: "run",
+                          jobId: job.id,
+                          runMode: "force",
+                        });
+                        expect(ack.details).toMatchObject({ ok: true, enqueued: true });
+                        if (outcome === "permission change") {
+                          const change = prepareEmbeddedRunPermissionChange("embedded-session");
+                          expect(change.kind).toBe("active");
+                          if (change.kind !== "active") {
+                            throw new Error("Native permission owner missing");
+                          }
+                          expect(
+                            await change.apply("read-only", () => {
+                              expect(toolSignal?.aborted).toBe(true);
+                            }),
+                          ).toBe(true);
+                          await expect(
+                            submittedTool.execute("revoked-automation", {
+                              action: "run",
+                              jobId: job.id,
+                              runMode: "force",
+                            }),
+                          ).rejects.toThrow("Aborted");
                         }
-                        expect(
-                          await change.apply("read-only", () => {
-                            expect(toolSignal?.aborted).toBe(true);
-                          }),
-                        ).toBe(true);
-                        await expect(
-                          submittedTool.execute("revoked-automation", {
-                            action: "run",
-                            jobId: job.id,
-                            runMode: "force",
-                          }),
-                        ).rejects.toThrow("Aborted");
-                      }
-                      if (outcome === "abort before completion") {
-                        controller.abort(new Error("user cancelled before the final reply"));
-                        expect(toolSignal?.aborted).toBe(true);
-                      }
-                      // No artificial provider hold: return the final native reply now.
-                    },
-                  }),
-                  { replaceCustomTools: vi.fn() },
-                ),
-            }),
+                        if (outcome === "abort before completion") {
+                          controller.abort(new Error("user cancelled before the final reply"));
+                          expect(toolSignal?.aborted).toBe(true);
+                        }
+                        // No artificial provider hold: return the final native reply now.
+                      },
+                    }),
+                    { replaceCustomTools: vi.fn() },
+                  ),
+              }),
+            ),
           );
           expect(result.terminal.kind).toBe(
             outcome === "abort before completion" ? "aborted" : "ok",
@@ -248,8 +258,8 @@ describe("native attempt queued automation admission", () => {
           if (outcome === "revoke") {
             current = false;
           }
-          if (outcome === "clear queue") {
-            clearCommandLane(CommandLane.Cron);
+          if (outcome === "stop service") {
+            cron.stop();
           }
           releaseBlocker.resolve();
           await blocker;
@@ -273,7 +283,12 @@ describe("native attempt queued automation admission", () => {
             expect(replacement.signal?.aborted).toBe(true);
             expect(replacement.cleanup).toHaveBeenCalledExactlyOnceWith("completion");
           }
-          expect(terminal.status).toBe(outcome === "execute" ? "ok" : "error");
+          expect(terminal.status).toBe(
+            outcome === "execute" ? "ok" : outcome === "stop service" ? "skipped" : "error",
+          );
+          if (outcome === "stop service") {
+            expect(terminal.error).toBe("queued manual run skipped before execution: stopped");
+          }
           const closedBeforeCompletion =
             outcome === "abort before completion" || outcome === "permission change";
           expect(abortedAtCompletion).toBe(closedBeforeCompletion);
@@ -289,6 +304,7 @@ describe("native attempt queued automation admission", () => {
           }
           expect((await loadCronStore(storePath)).jobs[0]?.state.queuedAtMs).toBeUndefined();
         } finally {
+          cron.stop();
           releaseBlocker.resolve();
           releasePayload.resolve();
           await blocker;
@@ -296,9 +312,10 @@ describe("native attempt queued automation admission", () => {
           await enqueueCommandInLane(CommandLane.Cron, async () => undefined);
           await gatewayWork.runWhenIdle(() => undefined);
           await requesterWork.runWhenIdle(() => undefined);
-          cron.stop();
           await gatewayWork.drain();
           await requesterWork.drain();
+          operation.complete();
+          await operation.ownerSettlement;
           expect(getTotalQueueSize()).toBe(0);
           resetCommandQueueStateForTest();
         }

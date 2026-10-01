@@ -22,9 +22,9 @@ import { withTimeout } from "../infra/fs-safe.js";
 import { withPluginRuntimeGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
 import { registerProjectRegistry, removeProjectRegistry } from "../projects/project-registry.js";
 import {
-  getSessionWorkAdmissionRelease,
-  SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-} from "../sessions/session-lifecycle-admission.js";
+  captureSessionControllerSettlement,
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+} from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -709,7 +709,7 @@ test("publishes a failed worktree spawn only after its durable session failure",
   let publishedEntry: SessionEntry | undefined;
   let registryProjection: Promise<void> | undefined;
   const context = {
-    chatAbortControllers: new Map<string, ChatAbortControllerEntry>(),
+    rpcSources: new Map<string, ChatAbortControllerEntry>(),
     dedupe: new Map(),
     broadcast: vi.fn((event: string, payload: unknown) => {
       if (
@@ -783,15 +783,16 @@ test("publishes a failed worktree spawn only after its durable session failure",
   expect(created.ok, JSON.stringify(created.error)).toBe(true);
   expect(created.payload?.runStarted).toBe(true);
   const { runId, sessionId } = created.payload!;
-  const admittedRun = context.chatAbortControllers.get(runId)!;
-  registryStartedAt = Math.max(Date.now(), admittedRun.startedAtMs + 1);
-  const released = getSessionWorkAdmissionRelease({ scope: storePath, identities: [key] });
+  const admittedRun = context.rpcSources.get(runId)!;
+  expect(admittedRun.input.claim).toBeUndefined();
+  registryStartedAt = Date.now() + 1;
+  const released = captureSessionControllerSettlement({ scope: storePath, identities: [key] });
   expect(released).toBeDefined();
   expect(loadSessionEntry(target)?.pendingWorktree?.workspace).toBe(repository);
   await preparationStarted.promise;
   expect(createWorktree).toHaveBeenCalledOnce();
   preparation.reject(failure);
-  await withTimeout(released!, SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS, "failed workspace proof");
+  await withTimeout(released!, SESSION_CONTROLLER_DRAIN_TIMEOUT_MS, "failed workspace proof");
   await registryProjection;
 
   expect.soft(publishedEntry).toMatchObject({
@@ -864,7 +865,7 @@ test.each(["archive", "replace", "rebind", "stale-child", "unregister"] as const
     initialSend.mockRestore();
     const context = {
       broadcast: vi.fn(),
-      chatAbortControllers: new Map<string, ChatAbortControllerEntry>(),
+      rpcSources: new Map<string, ChatAbortControllerEntry>(),
       dedupe: new Map(),
     };
     const operator = {
@@ -944,19 +945,19 @@ test.each(["archive", "replace", "rebind", "stale-child", "unregister"] as const
         operator,
       );
       expect(retried.ok, JSON.stringify(retried.error)).toBe(true);
-      const targets = [...context.chatAbortControllers].map(([runId, entry]) => ({ runId, entry }));
-      const released = getSessionWorkAdmissionRelease({ scope: storePath, identities: [key] });
+      const targets = [...context.rpcSources].map(([runId, entry]) => ({ runId, entry }));
+      const released = captureSessionControllerSettlement({ scope: storePath, identities: [key] });
       expect(
         await waitForChatAbortControllerRemoval({
-          entries: context.chatAbortControllers,
+          entries: context.rpcSources,
           targets,
-          timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+          timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
         }),
       ).toBe(true);
       if (released) {
         await withTimeout(
           released,
-          SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+          SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
           "deferred workspace proof",
         );
       }

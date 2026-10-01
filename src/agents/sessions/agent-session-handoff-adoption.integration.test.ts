@@ -11,8 +11,6 @@ import {
 } from "../../auto-reply/reply/queue.js";
 import { resetRecentQueuedMessageIdDedupe } from "../../auto-reply/reply/queue/enqueue.test-support.js";
 import type { ReplyOperationRunState } from "../../auto-reply/reply/reply-operation-run-state.js";
-import type { ReplyBackendHandle } from "../../auto-reply/reply/reply-run-registry.contracts.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import { testing as replyRunTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
 import {
   createMockFollowupRun,
@@ -20,14 +18,16 @@ import {
 } from "../../auto-reply/reply/test-helpers.js";
 import { createTypingSignaler } from "../../auto-reply/reply/typing-mode.js";
 import type { TemplateContext } from "../../auto-reply/templating.js";
+import type { ReplyBackendHandle } from "../../sessions/session-controller.contracts.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import type { EmbeddedAgentQueueHandle } from "../embedded-agent-runner/run-state.js";
 import { steerActiveSessionWithOptionalDeliveryWait } from "../embedded-agent-runner/run/attempt-queue-message.js";
+import { queueEmbeddedAgentMessageWithOutcomeAsync } from "../embedded-agent-runner/runs.js";
 import {
-  clearActiveEmbeddedRun,
-  queueEmbeddedAgentMessageWithOutcomeAsync,
-  setActiveEmbeddedRun,
-} from "../embedded-agent-runner/runs.js";
-import { testing as embeddedRunsTesting } from "../embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  testing as embeddedRunsTesting,
+} from "../embedded-agent-runner/runs.test-support.js";
 import {
   createAssistant,
   createAssistantResultStream,

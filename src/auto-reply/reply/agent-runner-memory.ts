@@ -64,6 +64,7 @@ import { resolveMemoryFlushPlan, type MemoryFlushPlan } from "../../plugins/memo
 import { CommandLane } from "../../process/lanes.js";
 import { isIncognitoSessionKey, isUnscopedSessionKeySentinel } from "../../routing/session-key.js";
 import { resolveSessionPinnedHarnessId } from "../../sessions/agent-harness-session-key.js";
+import type { ReplyOperation } from "../../sessions/session-controller.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { formatTokenCount } from "../../utils/token-format.js";
@@ -95,7 +96,6 @@ import { appendPostCompactionRefreshPrompt } from "./post-compaction-context.js"
 import { refreshQueuedFollowupSession, type FollowupRun } from "./queue.js";
 import { startFollowupRunPreAdoptionHeartbeat } from "./queue/lifecycle.js";
 import { resolveFollowupAbortSignal } from "./queue/types.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
 import { incrementCompactionCount } from "./session-updates.js";
 
 const MAX_FLUSH_FAILURES = 3;
@@ -917,7 +917,7 @@ export async function runSessionCompactionIfNeeded(params: {
     }
   };
   const stopHeartbeat = startFollowupRunPreAdoptionHeartbeat(
-    params.followupRun.turnAdoptionLifecycle,
+    params.followupRun,
     params.abortSignal,
   );
   try {

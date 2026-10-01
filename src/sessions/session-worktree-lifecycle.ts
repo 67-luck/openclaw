@@ -16,7 +16,7 @@ import { createWorkerSessionPlacementStore } from "../gateway/worker-environment
 import { prepareSessionWorkerPlacementMutationCheck } from "../gateway/worker-environments/session-placement-lifecycle.js";
 import { getChildLogger } from "../logging/logger.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
-import { runExclusiveSessionLifecycleMutation } from "./session-lifecycle-admission.js";
+import { runSessionMutation } from "./session-controller.lifecycle.js";
 
 export class SessionWorktreeLifecycleError extends Error {
   constructor(
@@ -201,7 +201,7 @@ export async function cleanUpAutomaticallyArchivedWorktrees(
 ): Promise<void> {
   for (const target of targets) {
     try {
-      await runExclusiveSessionLifecycleMutation({
+      await runSessionMutation({
         scope: target.storePath,
         identities: [target.sessionKey, target.entry.sessionId],
         run: async () => {

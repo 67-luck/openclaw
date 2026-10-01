@@ -15,6 +15,7 @@ import { readAgentRunTerminalOutcome } from "../../channels/turn/agent-run-termi
 import { onAgentEventForRun } from "../../infra/agent-events.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
+import { isRpcSourceActive } from "../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { isOperatorUiClient } from "../../utils/message-channel.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
@@ -137,7 +138,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
   let replyDispatchRun: ReplyDispatchRun | undefined;
   const isRunCurrent = () =>
     !activeRunAbort.controller.signal.aborted &&
-    context.chatAbortControllers.get(clientRunId) === activeRunAbort.entry;
+    context.rpcSources.get(clientRunId) === activeRunAbort.entry;
   const replyDispatch = createChatSendReplyDispatch({
     requesterContext: ctx,
     accountId,
@@ -146,7 +147,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     isRunCurrent: () =>
       isRunCurrent() ||
       (!activeRunAbort.controller.signal.aborted &&
-        context.chatQueuedTurns.get(clientRunId)?.controller === activeRunAbort.controller),
+        context.rpcSources.get(clientRunId) === admission.sourceRef),
     abortSignal: activeRunAbort.controller.signal,
     onCommandBlock: isInternalTextSlashCommandTurn
       ? (text) =>
@@ -167,7 +168,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
   const queuedFollowup = createChatSendTurnAdoptionLifecycle({
     requesterContext: ctx,
     accountId,
-    chatQueuedTurns: context.chatQueuedTurns,
+    sourceRef: admission.sourceRef,
     context,
     runId: clientRunId,
     controller: activeRunAbort.controller,
@@ -285,7 +286,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
             const replyContextFields = await replyContextFieldsPromise;
             assertWorkspaceRunOwnership?.();
             applyChatSendReplyContextFields(ctx, replyContextFields);
-            messageInjectionAttempt = beginCapturedMessageInjection();
+            messageInjectionAttempt = await beginCapturedMessageInjection();
           }
           if (messageInjectionAttempt) {
             const injected = await finalizeAcceptedChatSendMessageInjection({
@@ -435,17 +436,18 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                       sessionKey,
                     );
                     const selectedSessionAgentId = selectedAgent.agentId;
-                    for (const [activeRunId, active] of context.chatAbortControllers) {
+                    for (const [activeRunId, active] of context.rpcSources) {
                       const sameSelectedAgent =
                         selectedSessionAgentId !== undefined &&
                         chatRunBelongsToSelectedAgent({
-                          agentId: active.agentId,
-                          sessionKey: active.sessionKey,
+                          agentId: active.adapter.agentId,
+                          sessionKey: active.adapter.sessionKey,
                           defaultAgentId: compatibilityOwnerAgentId,
                           selectedAgentId: selectedSessionAgentId,
                         });
-                      const sameSession = active.sessionKey === sessionKey && sameSelectedAgent;
-                      if (activeRunId !== runId && sameSession) {
+                      const sameSession =
+                        active.adapter.sessionKey === sessionKey && sameSelectedAgent;
+                      if (activeRunId !== runId && sameSession && isRpcSourceActive(active)) {
                         context.registerToolEventRecipient(activeRunId, connId);
                       }
                     }
@@ -453,7 +455,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                   return options?.completionSource;
                 },
                 onModelSelected: (modelSelection) => {
-                  updateChatRunProvider(context.chatAbortControllers, {
+                  updateChatRunProvider(context.rpcSources, {
                     runId: clientRunId,
                     providerId: modelSelection.provider,
                     authProviderId: resolveProviderIdForAuth(modelSelection.provider, {
@@ -585,7 +587,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 replyDispatchResult?.assistantTranscript?.agentId === agentId &&
                 replyDispatchResult.assistantTranscript.sessionKey === sessionKey &&
                 replyDispatchResult.assistantTranscript.sessionId ===
-                  activeRunAbort.entry?.sessionId,
+                  activeRunAbort.entry?.adapter.sessionId,
               state: runtimeCancelled ? "aborted" : "final",
               stopReason: runtimeOutcome?.stopReason,
             });

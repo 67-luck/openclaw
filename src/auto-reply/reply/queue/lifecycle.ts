@@ -1,182 +1,120 @@
-import type { TurnAdoptionLifecycle } from "../../get-reply-options.types.js";
+import { completeSessionControllerSourceLifecycle } from "../../../sessions/session-controller.mailbox-source.js";
+import { submitSessionControllerInput } from "../../../sessions/session-controller.mailbox.js";
 import type { FollowupRun } from "./types.js";
 
-const enqueuedTurnAdoptionLifecycles = new WeakSet<TurnAdoptionLifecycle>();
-const admittedTurnAdoptionLifecycles = new WeakSet<TurnAdoptionLifecycle>();
-const admittingTurnAdoptionLifecycles = new WeakMap<TurnAdoptionLifecycle, Promise<void>>();
-const retiredTurnAdoptionCancellationLifecycles = new WeakSet<TurnAdoptionLifecycle>();
-const completedTurnAdoptionLifecycles = new WeakSet<TurnAdoptionLifecycle>();
-const completedTurnAdoptionLifecycleCallbacks = new WeakSet<TurnAdoptionLifecycle>();
-const deferredHeartbeatStops = new WeakMap<TurnAdoptionLifecycle, () => void>();
-
-type FollowupLifecycleRun = Pick<
-  FollowupRun,
-  "steerPending" | "turnAdoptionLifecycle" | "operatorAuthority"
->;
-
+function custody(run: FollowupRun) {
+  if (run.controllerClaim) {
+    return run.controllerClaim.custody;
+  }
+  return (
+    run.controllerInput ??
+    submitSessionControllerInput(run.run.sessionKey ?? run.run.sessionId, run, { mode: "followup" })
+  ).custody;
+}
 export function startFollowupRunPreAdoptionHeartbeat(
-  lifecycle: TurnAdoptionLifecycle | undefined,
+  run: FollowupRun,
   abortSignal?: AbortSignal,
 ): (() => void) | undefined {
-  if (!lifecycle) {
-    return undefined;
-  }
-  const intervalMs = lifecycle.deferredHeartbeatIntervalMs;
-  const heartbeat = lifecycle.onDeferredHeartbeat;
+  const lifecycle = run.turnAdoptionLifecycle;
+  const state = custody(run);
+  const intervalMs = lifecycle?.deferredHeartbeatIntervalMs;
+  const heartbeat = lifecycle?.onDeferredHeartbeat;
   if (
+    !lifecycle ||
     !heartbeat ||
-    intervalMs === undefined ||
+    !intervalMs ||
     !Number.isFinite(intervalMs) ||
     intervalMs <= 0 ||
     lifecycle.abortSignal?.aborted ||
     abortSignal?.aborted ||
-    admittedTurnAdoptionLifecycles.has(lifecycle) ||
-    completedTurnAdoptionLifecycles.has(lifecycle)
+    state.adopted ||
+    state.completed
   ) {
     return undefined;
   }
-  deferredHeartbeatStops.get(lifecycle)?.();
-  const pulse = () => {
-    try {
-      heartbeat();
-    } catch {
-      // Leave recovery to the ingress watchdog when its liveness callback fails.
-      deferredHeartbeatStops.get(lifecycle)?.();
-    }
-  };
-  const timer = setInterval(pulse, intervalMs).unref();
+  state.stopHeartbeat?.();
   const stop = () => {
     clearInterval(timer);
     lifecycle.abortSignal?.removeEventListener("abort", stop);
     abortSignal?.removeEventListener("abort", stop);
-    if (deferredHeartbeatStops.get(lifecycle) === stop) {
-      deferredHeartbeatStops.delete(lifecycle);
+    if (state.stopHeartbeat === stop) {
+      state.stopHeartbeat = undefined;
     }
   };
-  deferredHeartbeatStops.set(lifecycle, stop);
+  const pulse = () => {
+    try {
+      heartbeat();
+    } catch {
+      stop();
+    }
+  };
+  const timer = setInterval(pulse, intervalMs).unref();
+  state.stopHeartbeat = stop;
   lifecycle.abortSignal?.addEventListener("abort", stop, { once: true });
   abortSignal?.addEventListener("abort", stop, { once: true });
   pulse();
   return stop;
 }
-
-export function markFollowupRunEnqueued(run: FollowupLifecycleRun): boolean {
+export function markFollowupRunEnqueued(run: FollowupRun): boolean {
+  const state = custody(run);
   const authority = run.operatorAuthority;
   authority?.signal?.throwIfAborted();
   authority?.assertCurrent();
-  // Delivery recovery has a fresh queue lifetime after its parent turn settles.
-  const lifecycle =
-    run.turnAdoptionLifecycle ??
-    (authority
-      ? (run.turnAdoptionLifecycle = { admission: "cancel-only", onAdopted: () => {} })
-      : undefined);
-  if (lifecycle && !enqueuedTurnAdoptionLifecycles.has(lifecycle)) {
-    if (lifecycle.onDeferred?.() === false) {
+  if (!state.enqueued) {
+    if (run.turnAdoptionLifecycle?.onDeferred?.() === false) {
       return false;
     }
-    let releaseAuthority: (() => void) | undefined;
     try {
-      releaseAuthority = authority?.retain?.();
+      state.releaseAuthority = authority?.retain?.();
     } catch (error) {
       completeFollowupRunLifecycle(run);
       throw error;
     }
-    if (releaseAuthority) {
-      const release = releaseAuthority;
-      const onSettled = lifecycle.onSettled;
-      lifecycle.onSettled = () => {
-        try {
-          onSettled?.();
-        } finally {
-          release();
-        }
-      };
-    }
-    enqueuedTurnAdoptionLifecycles.add(lifecycle);
-    startFollowupRunPreAdoptionHeartbeat(lifecycle);
+    state.enqueued = true;
+    startFollowupRunPreAdoptionHeartbeat(run);
   }
   return true;
 }
-
-export function retireFollowupRunCancellation(run: FollowupLifecycleRun): void {
-  const lifecycle = run.turnAdoptionLifecycle;
-  if (!lifecycle || retiredTurnAdoptionCancellationLifecycles.has(lifecycle)) {
+export function retireFollowupRunCancellation(run: FollowupRun): void {
+  const state = custody(run);
+  if (state.cancellationRetired) {
     return;
   }
-  retiredTurnAdoptionCancellationLifecycles.add(lifecycle);
-  lifecycle.onCancellationRetired?.();
+  state.cancellationRetired = true;
+  run.turnAdoptionLifecycle?.onCancellationRetired?.();
 }
-
-export async function admitFollowupRunLifecycle(run: FollowupLifecycleRun): Promise<void> {
+export async function admitFollowupRunLifecycle(run: FollowupRun): Promise<void> {
+  const state = custody(run);
   run.operatorAuthority?.assertCurrent();
-  const lifecycle = run.turnAdoptionLifecycle;
-  if (!lifecycle || admittedTurnAdoptionLifecycles.has(lifecycle)) {
+  if (state.adopted) {
     return;
   }
-  const existing = admittingTurnAdoptionLifecycles.get(lifecycle);
-  if (existing) {
-    await existing;
-    return;
+  if (state.adopting) {
+    return await state.adopting;
   }
-  if (completedTurnAdoptionLifecycles.has(lifecycle)) {
-    throw new Error("followup run lifecycle completed before admission");
+  if (state.completed) {
+    throw new Error("Input completed before source adoption");
   }
-
   const admission = Promise.resolve().then(async () => {
-    if (!admittedTurnAdoptionLifecycles.has(lifecycle)) {
-      await lifecycle.onAdopted();
-      run.operatorAuthority?.assertCurrent();
-      admittedTurnAdoptionLifecycles.add(lifecycle);
-      deferredHeartbeatStops.get(lifecycle)?.();
-    }
+    await run.turnAdoptionLifecycle?.onAdopted();
+    // A successful custody callback commits before the post-await authority check.
+    state.adopted = true;
+    state.failure = undefined;
+    state.stopHeartbeat?.();
+    run.operatorAuthority?.assertCurrent();
   });
-
-  admittingTurnAdoptionLifecycles.set(lifecycle, admission);
+  state.adopting = admission;
   try {
     await admission;
+  } catch (error) {
+    state.failure = error;
+    throw error;
   } finally {
-    admittingTurnAdoptionLifecycles.delete(lifecycle);
+    state.adopting = undefined;
   }
 }
 
-export function completeFollowupRunLifecycle(
-  run: FollowupLifecycleRun,
-  disposition?: "consumed",
-): void {
-  try {
-    run.steerPending?.settle(false);
-  } finally {
-    // A failed steer notification must not strand already-detached lifecycle custody.
-    const lifecycle = run.turnAdoptionLifecycle;
-
-    const finish = () => {
-      if (!lifecycle || completedTurnAdoptionLifecycleCallbacks.has(lifecycle)) {
-        return;
-      }
-      completedTurnAdoptionLifecycleCallbacks.add(lifecycle);
-      // Async onAbandoned work must contain its own rejections; core guarantees a
-      // non-rejecting promise. onSettled must still run after a synchronous throw.
-      try {
-        if (disposition !== "consumed" && !admittedTurnAdoptionLifecycles.has(lifecycle)) {
-          lifecycle.onAbandoned?.();
-        }
-      } finally {
-        lifecycle.onSettled?.();
-      }
-    };
-
-    if (lifecycle && !completedTurnAdoptionLifecycles.has(lifecycle)) {
-      deferredHeartbeatStops.get(lifecycle)?.();
-      completedTurnAdoptionLifecycles.add(lifecycle);
-    }
-
-    const admission = lifecycle ? admittingTurnAdoptionLifecycles.get(lifecycle) : undefined;
-    if (!admission) {
-      finish();
-    } else {
-      // Completion closes future admission immediately, but the callback waits for
-      // the in-flight admission attempt so adoption and abandonment cannot race.
-      void admission.then(finish, finish).catch(() => {});
-    }
-  }
+/** Adapter registers source identity before the canonical custody owner settles it. */
+export function completeFollowupRunLifecycle(run: FollowupRun, disposition?: "consumed"): void {
+  completeSessionControllerSourceLifecycle(run, custody(run), disposition);
 }

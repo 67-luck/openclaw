@@ -5,6 +5,9 @@ import {
   createDiagnosticEmbeddedRunOwner,
   type DiagnosticEmbeddedRunOwner,
 } from "../../../logging/diagnostic-run-activity.js";
+import type { ReplyOperation } from "../../../sessions/session-controller.contracts.js";
+import { getCurrentSessionControllerOwner } from "../../../sessions/session-controller.lifecycle.js";
+import { assertSessionControllerOperation } from "../../../sessions/session-controller.state.js";
 import {
   createAgentRunDirectAbortError,
   createAgentRunRestartAbortError,
@@ -135,6 +138,7 @@ export type DeferredEmbeddedRunLifecycleManager = {
 };
 
 export function createDeferredEmbeddedRunLifecycleManager(params: {
+  replyOperation?: ReplyOperation;
   runId: string;
   agentId?: string;
   sessionId: string;
@@ -142,6 +146,12 @@ export function createDeferredEmbeddedRunLifecycleManager(params: {
   sessionFile?: string;
   abortSignal?: AbortSignal;
 }): DeferredEmbeddedRunLifecycleManager {
+  const ambient = getCurrentSessionControllerOwner();
+  const operation =
+    params.replyOperation ??
+    (ambient && ambient.key === params.sessionKey && ambient.hasOwnedSessionId(params.sessionId)
+      ? ambient
+      : undefined);
   const controller = new AbortController();
   const signal = params.abortSignal
     ? AbortSignal.any([params.abortSignal, controller.signal])
@@ -179,7 +189,17 @@ export function createDeferredEmbeddedRunLifecycleManager(params: {
         retrySignal ? AbortSignal.any([signal, retrySignal]) : signal,
       ),
     handoffToCli: () => {
-      const diagnosticOwner = createDiagnosticEmbeddedRunOwner(params);
+      const diagnosticOwner = createDiagnosticEmbeddedRunOwner({
+        ...params,
+        watchdogAttempt: operation
+          ? operation.watchdog.attachAttempt({
+              assertCurrent: () => {
+                signal.throwIfAborted();
+                assertSessionControllerOperation(operation);
+              },
+            })
+          : undefined,
+      });
       // Each handoff gets a fresh owner; retained callbacks from a prior CLI
       // attempt must not publish progress after replacement or lifecycle rotation.
       cliOwner = {
@@ -204,6 +224,7 @@ export function createDeferredEmbeddedRunLifecycleManager(params: {
         params.sessionKey,
         params.sessionFile,
         params.agentId,
+        operation,
       );
       const previous = current;
       current = undefined;

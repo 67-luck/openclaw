@@ -15,7 +15,7 @@ import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-
 import type { ProviderFailoverErrorContext } from "../plugins/types.js";
 import { createTestAdmittedRunContext } from "./admitted-run-context.test-support.js";
 import { prepareEmbeddedAttemptStream } from "./embedded-agent-runner/run/attempt-stream-prepare.js";
-import { clearActiveEmbeddedRun } from "./embedded-agent-runner/runs.js";
+import { clearTestEmbeddedRun as clearActiveEmbeddedRun } from "./embedded-agent-runner/runs.test-support.js";
 import {
   createSubscribedSessionHarness,
   emitAssistantLifecycleErrorAndEnd,

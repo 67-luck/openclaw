@@ -8,10 +8,10 @@ import { getRuntimeConfig } from "../../../config/config.js";
 import { loadExactSessionEntryReadOnly } from "../../../config/sessions/session-accessor.js";
 import { reactivateCompletedSubagentSession } from "../../../gateway/session-subagent-reactivation.js";
 import {
-  beginSessionWorkAdmission,
-  getActiveSessionLifecycleMutationCount,
-  getActiveSessionWorkAdmissionCount,
-} from "../../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  getSessionMutationCount,
+  getSessionControllerWorkCount,
+} from "../../../sessions/session-controller.lifecycle.js";
 import type { AgentWaitResult } from "../../run-wait.js";
 import * as killRuntime from "./subagent-control-kill-runtime.js";
 import { killSubagentRunAdmin } from "./subagent-control.js";
@@ -168,7 +168,7 @@ it.each([
       });
     }
     const entered = createDeferred();
-    const childAdmission = await beginSessionWorkAdmission({
+    const childAdmission = await beginSessionEffect({
       scope: storePath,
       identities: [childKey, "publication-child-session"],
       assertAllowed: () => {},
@@ -177,7 +177,7 @@ it.each([
     const markerCleared = createDeferred();
     const releaseMarker = createDeferred();
     let markerWaits = 0;
-    let followup: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+    let followup: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
     const handoffComplete = createDeferred();
     const resolveTargetState = killRuntime.resolveSubagentKillTargetState;
     let observedTarget = false;
@@ -291,7 +291,7 @@ it.each([
       }
       if (replace) {
         // The root lifecycle lock and any marker write have finished before follow-up admission.
-        followup = await beginSessionWorkAdmission({
+        followup = await beginSessionEffect({
           scope: storePath,
           identities: [rootKey, "publication-root-session"],
           assertAllowed: () => {},
@@ -362,8 +362,8 @@ it.each([
       childAdmission.release();
       followup?.release();
       await pending;
-      expect(getActiveSessionWorkAdmissionCount()).toBe(0);
-      expect(getActiveSessionLifecycleMutationCount()).toBe(0);
+      expect(getSessionControllerWorkCount()).toBe(0);
+      expect(getSessionMutationCount()).toBe(0);
     }
   },
 );

@@ -1,31 +1,34 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import { testing as replyRunTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
 import { prepareReplyToolAuthority } from "../../auto-reply/reply/reply-tool-authority.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { setDiagnosticsEnabledForProcess } from "../../infra/diagnostic-events.js";
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
-import { markDiagnosticToolStartedForTest } from "../../logging/diagnostic-run-activity.test-support.js";
 import { resetDiagnosticSessionStateForTest } from "../../logging/diagnostic-session-state.js";
 import { diagnosticLogger } from "../../logging/diagnostic.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
+import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { createTestUserTurnTranscriptTarget } from "../../sessions/user-turn-transcript.test-support.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { QuestionAnswerUnconfirmedError } from "../harness/gateway-question-dispatch.js";
 import {
   claimPendingEmbeddedAgentQuestionAnswer,
-  clearActiveEmbeddedRun,
   formatEmbeddedAgentQueueFailureSummary,
   preemptAndDrainEmbeddedHeartbeatRun,
   queueEmbeddedAgentMessageWithOutcome,
   queueEmbeddedAgentMessageWithOutcomeAsync,
   queueGuardedEmbeddedAgentMessageWithOutcomeAsync,
-  setActiveEmbeddedRun,
   type EmbeddedAgentQueueHandle,
   type EmbeddedAgentQueueMessageOptions,
 } from "./runs.js";
-import { createEmbeddedRunHandle, testing } from "./runs.test-support.js";
+import {
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+  testing,
+} from "./runs.test-support.js";
 
 describe("embedded-agent active-run steering", () => {
   afterEach(() => {
@@ -469,12 +472,16 @@ describe("embedded-agent active-run steering", () => {
     vi.useFakeTimers();
     try {
       const queueMessage = vi.fn(async () => {});
-      setActiveEmbeddedRun("session-quiet-tool-steer", createEmbeddedRunHandle({ queueMessage }));
-      markDiagnosticToolStartedForTest({
-        sessionId: "session-quiet-tool-steer",
-        toolName: "exec",
-        toolCallId: "tool-quiet-steer",
-      });
+      const operation = setActiveEmbeddedRun(
+        "session-quiet-tool-steer",
+        createEmbeddedRunHandle({ queueMessage }),
+      );
+      operation.watchdog
+        .attachAttempt({ assertCurrent: () => assertSessionControllerOperation(operation) })
+        .beginTool({
+          toolName: "exec",
+          toolCallId: "tool-quiet-steer",
+        });
 
       vi.advanceTimersByTime(12 * 60_000);
       expect(

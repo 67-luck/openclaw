@@ -23,11 +23,6 @@ import { onTrustedMessageAuditEvent } from "../../audit/message-audit-events.js"
 import type { ReplyDispatchRun } from "../../auto-reply/get-reply-options.types.js";
 import { setReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
 import { getTotalPendingReplies } from "../../auto-reply/reply/dispatcher-registry.js";
-import {
-  replyRunRegistry,
-  type ReplyBackendQueueMessageOptions,
-  type ReplyOperation,
-} from "../../auto-reply/reply/reply-run-registry.js";
 import { testing as replyRunRegistryTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { recordAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
@@ -50,9 +45,14 @@ import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import { RUN_STALE_TAKEOVER_MS } from "../../logging/diagnostic-run-activity.js";
 import {
-  getActiveSessionWorkAdmissionCount,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  replyRunRegistry,
+  type ReplyBackendQueueMessageOptions,
+  type ReplyOperation,
+} from "../../sessions/session-controller.js";
+import {
+  getSessionControllerWorkCount,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import { projectAssistantDisplayContent } from "../../shared/assistant-display-content.js";
 import { extractFirstTextBlock } from "../../shared/chat-message-content.js";
 import { withEnvAsync } from "../../test-utils/env.js";
@@ -85,6 +85,7 @@ import {
   readChatDirectiveConfig,
   seedChatDirectiveFileTranscript,
 } from "./chat.directive-tags.test-support.js";
+import { createActiveRpcSourceForTest } from "./rpc-source-fixtures.test-support.js";
 import { initializeSessionReadContext } from "./sessions-read-cache.test-support.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
 
@@ -794,8 +795,7 @@ function createChatContext() {
     broadcast: vi.fn<GatewayRequestContext["broadcast"]>(),
     nodeSendToSession: vi.fn<GatewayRequestContext["nodeSendToSession"]>(),
     agentRunSeq: new Map<string, number>(),
-    chatAbortControllers: new Map(),
-    chatQueuedTurns: new Map(),
+    rpcSources: new Map(),
     chatRunState: createChatRunState(),
     addChatRun: vi.fn(),
     removeChatRun: vi.fn(),
@@ -1187,7 +1187,7 @@ beforeAll(() => {
 
 afterEach(async () => {
   // ACKs and terminal errors can precede detached transcript cleanup.
-  await waitForAssertion(() => expect(getActiveSessionWorkAdmissionCount()).toBe(0));
+  await waitForAssertion(() => expect(getSessionControllerWorkCount()).toBe(0));
   replyRunRegistryTesting.resetReplyRunRegistry();
   mockState.reset();
   bindingMocks.resolveByConversation.mockReset();
@@ -2533,21 +2533,21 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     mockState.triggerAgentRunStart = true;
     mockState.agentRunId = "run-current-global";
     const { context, send } = createChatRequestFixture();
-    context.chatAbortControllers.set("run-default-global", {
-      controller: new AbortController(),
-      sessionId: "sess-default-global",
-      sessionKey: "global",
-      startedAtMs: Date.now(),
-      expiresAtMs: Date.now() + 10_000,
-    });
-    context.chatAbortControllers.set("run-work-global", {
-      controller: new AbortController(),
-      sessionId: "sess-work-global",
-      sessionKey: "global",
-      agentId: "work",
-      startedAtMs: Date.now(),
-      expiresAtMs: Date.now() + 10_000,
-    });
+    context.rpcSources.set(
+      "run-default-global",
+      await createActiveRpcSourceForTest({
+        sessionId: "sess-default-global",
+        sessionKey: "global",
+      }),
+    );
+    context.rpcSources.set(
+      "run-work-global",
+      await createActiveRpcSourceForTest({
+        sessionId: "sess-work-global",
+        sessionKey: "global",
+        agentId: "work",
+      }),
+    );
 
     await send({
       sessionKey: "global",
@@ -2572,21 +2572,21 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     mockState.triggerAgentRunStart = true;
     mockState.agentRunId = "run-current-work-global";
     const { context, send } = createChatRequestFixture();
-    context.chatAbortControllers.set("run-default-global", {
-      controller: new AbortController(),
-      sessionId: "sess-default-global",
-      sessionKey: "global",
-      startedAtMs: Date.now(),
-      expiresAtMs: Date.now() + 10_000,
-    });
-    context.chatAbortControllers.set("run-work-global", {
-      controller: new AbortController(),
-      sessionId: "sess-work-global",
-      sessionKey: "global",
-      agentId: "work",
-      startedAtMs: Date.now(),
-      expiresAtMs: Date.now() + 10_000,
-    });
+    context.rpcSources.set(
+      "run-default-global",
+      await createActiveRpcSourceForTest({
+        sessionId: "sess-default-global",
+        sessionKey: "global",
+      }),
+    );
+    context.rpcSources.set(
+      "run-work-global",
+      await createActiveRpcSourceForTest({
+        sessionId: "sess-work-global",
+        sessionKey: "global",
+        agentId: "work",
+      }),
+    );
 
     await send({
       sessionKey: "agent:work:main",
@@ -4209,7 +4209,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     const storePath = mockState.storePath;
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: ["main", mockState.sessionId],
       run: async () => {

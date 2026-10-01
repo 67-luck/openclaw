@@ -37,15 +37,10 @@ import {
   isGatewayWorkAdmissionClosed,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
+import type { RpcSourceIndex } from "../sessions/session-controller.rpc-sources.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { registerSkillUsageTracking } from "../skills/workshop/curator.js";
-import {
-  abortChatRunById,
-  type ChatAbortControllerEntry,
-  removeChatAbortControllerEntry,
-  type RestartRecoveryCandidate,
-} from "./chat-abort.js";
-import type { QueuedChatTurnMap } from "./chat-queued-turns.js";
+import { removeChatAbortControllerEntry, type RestartRecoveryCandidate } from "./chat-abort.js";
 import { pruneStaleControlPlaneBuckets } from "./control-plane-rate-limit.js";
 import type { HealthSummary } from "./health/types.js";
 import {
@@ -106,8 +101,7 @@ export function startGatewayMaintenanceTimers(params: {
   refreshPresence: () => void;
   resetEventLoopHealth: () => void;
   dedupe: Map<string, DedupeEntry>;
-  chatAbortControllers: Map<string, ChatAbortControllerEntry>;
-  chatQueuedTurns: QueuedChatTurnMap;
+  rpcSources: RpcSourceIndex;
   restartRecoveryCandidates: Map<string, RestartRecoveryCandidate>;
   chatRunState: ChatRunState;
   removeChatRun: (
@@ -360,14 +354,14 @@ export function startGatewayMaintenanceTimers(params: {
       }
       const keyRunId = key.slice(key.indexOf(":") + 1);
       if (keyRunId) {
-        if (params.chatAbortControllers.has(keyRunId) || params.chatQueuedTurns.has(keyRunId)) {
+        if (params.rpcSources.has(keyRunId)) {
           return keyRunId;
         }
       }
       const payload = entry.payload;
       return payload && typeof payload === "object" && !Array.isArray(payload)
         ? typeof (payload as { runId?: unknown }).runId === "string"
-          ? (payload as { runId: string }).runId.trim() || undefined
+          ? (payload as { runId: string }).runId || undefined
           : undefined
         : undefined;
     };
@@ -394,11 +388,11 @@ export function startGatewayMaintenanceTimers(params: {
         return false;
       }
       const runId = resolveDedupeRunId(key, dedupeEntry);
-      const entry = runId ? params.chatAbortControllers.get(runId) : undefined;
+      const entry = runId ? params.rpcSources.get(runId) : undefined;
       if (entry) {
-        return isAgentKey ? entry.kind === "agent" : entry.kind !== "agent";
+        return isAgentKey ? entry.adapter.kind === "agent" : entry.adapter.kind !== "agent";
       }
-      return Boolean(isChatKey && runId && params.chatQueuedTurns.has(runId));
+      return false;
     };
     for (const [k, v] of params.dedupe) {
       if (isActiveRunDedupeKey(k, v) || isPendingAcceptedRunDedupeKey(k, v)) {
@@ -425,51 +419,33 @@ export function startGatewayMaintenanceTimers(params: {
 
     pruneMapToMaxSize(params.agentRunSeq, AGENT_RUN_SEQ_MAX);
 
-    for (const [runId, entry] of params.chatAbortControllers) {
-      // A stamped terminal observation whose async projection clear never ran
-      // (dropped claim, swallowed handler error) would otherwise pin the entry
-      // forever: phantom active run in sessions.list, pinned dedupe key,
-      // skipped media GC. Past the grace window the entry re-enters the
-      // ordinary expiry branches below, which are terminal-safe.
+    for (const [runId, entry] of params.rpcSources) {
+      const adapter = entry.adapter;
+      // Maintenance retires projections only after their source has settled;
+      // an elapsed grace never completes private input or releases raw work.
       const terminalClearOverdue =
-        typeof entry.projectSessionTerminalObservedAt === "number" &&
-        now - entry.projectSessionTerminalObservedAt > AGENT_RUN_TERMINAL_RETRY_GRACE_MS;
-      if (entry.projectSessionTerminalPending === true && !terminalClearOverdue) {
+        typeof adapter.projectSessionTerminalObservedAt === "number" &&
+        now - adapter.projectSessionTerminalObservedAt > AGENT_RUN_TERMINAL_RETRY_GRACE_MS;
+      if (!terminalClearOverdue || params.rpcSources.get(runId) !== entry) {
         continue;
       }
-      if (isFutureDateTimestampMs(entry.expiresAtMs, { nowMs: now })) {
-        continue;
-      }
-      if (entry.projectSessionTerminalPersistence) {
-        const lifecycleGeneration = entry.lifecycleGeneration?.trim();
-        const sessionKey = entry.sessionKey.trim();
-        const sessionId = entry.sessionId.trim();
-        if (entry.controlUiVisible !== false && lifecycleGeneration && sessionKey && sessionId) {
+      if (adapter.projectSessionTerminalPersistence) {
+        const { lifecycleGeneration, sessionKey, sessionId } = adapter;
+        if (adapter.controlUiVisible !== false && lifecycleGeneration && sessionKey && sessionId) {
           params.restartRecoveryCandidates.set(runId, {
             runId,
             lifecycleGeneration,
             sessionKey,
             sessionId,
-            observedAt: entry.projectSessionTerminalObservedAt,
+            observedAt: adapter.projectSessionTerminalObservedAt,
           });
         }
-        removeChatAbortControllerEntry(params.chatAbortControllers, runId, entry);
-        continue;
       }
-      if (entry.projectSessionActive === false) {
-        removeChatAbortControllerEntry(params.chatAbortControllers, runId, entry);
-        continue;
-      }
-      const aborted = abortChatRunById(params, {
-        runId,
-        sessionKey: entry.sessionKey,
-        stopReason: "timeout",
-      });
-      // A non-abortable expired entry (signal already aborted, frozen reply
-      // op) whose owner cleanup was lost would otherwise survive every sweep:
-      // phantom active run, dead Stop button, pinned dedupe, skipped media GC.
-      if (!aborted.aborted) {
-        removeChatAbortControllerEntry(params.chatAbortControllers, runId, entry);
+      if (
+        adapter.projectSessionActive === false ||
+        adapter.projectSessionTerminalPending === true
+      ) {
+        removeChatAbortControllerEntry(params.rpcSources, runId, entry);
       }
     }
 
@@ -481,8 +457,7 @@ export function startGatewayMaintenanceTimers(params: {
     // Idle execution and queued delivery retain their projection until their owners settle.
     for (const [runId, record] of params.chatRunState.runs) {
       if (
-        params.chatAbortControllers.has(runId) ||
-        params.chatQueuedTurns.has(runId) ||
+        params.rpcSources.has(runId) ||
         hasAgentRunContextExecutionOwner(runId) ||
         isActiveEmbeddedRunId(runId)
       ) {
@@ -511,7 +486,7 @@ export function startGatewayMaintenanceTimers(params: {
         hasActiveSessionRun: (sessionKey, agentId) => {
           const cfg = params.getRuntimeConfig();
           return hasRegisteredChatRunForSessionKey({
-            context: { chatAbortControllers: params.chatAbortControllers },
+            context: { rpcSources: params.rpcSources },
             sessionKey,
             agentId,
             defaultAgentId: tryResolveSessionCompatibilityOwnerAgentId(cfg, sessionKey),

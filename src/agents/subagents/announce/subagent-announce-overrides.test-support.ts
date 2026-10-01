@@ -2,6 +2,7 @@ import { vi, type MockInstance } from "vitest";
 import * as configRuntime from "../../../config/config.js";
 import * as sessionAccessor from "../../../config/sessions/session-accessor.js";
 import * as sessionHistory from "../../../config/sessions/session-history.js";
+import * as sessionQueries from "../../../sessions/session-controller.queries.js";
 import * as embeddedRuns from "../../embedded-agent-runner/runs.js";
 import * as deliveryRuntime from "./subagent-announce-delivery.runtime.js";
 import * as announceRuntime from "./subagent-announce.runtime.js";
@@ -30,7 +31,7 @@ type OutputTestDeps = Pick<
 
 export type SubagentAnnounceDeliveryTestDeps = AnnounceTestDeps & {
   getRequesterSessionActivity: typeof deliveryRuntime.getSubagentRequesterSessionActivity;
-  isEmbeddedAgentRunActive: typeof embeddedRuns.isEmbeddedAgentRunActive;
+  isEmbeddedAgentRunActive: typeof sessionQueries.isSessionRunActive;
   resolveRequesterSessionAbandonment: typeof deliveryRuntime.resolveSubagentRequesterSessionAbandonment;
   loadSessionEntry: typeof sessionAccessor.loadSessionEntryReadOnly;
   loadRequesterSessionEntry: typeof deliveryRuntime.loadRequesterSessionEntry;
@@ -199,8 +200,8 @@ function replaceOverrides(scope: Scope, overrides?: Overrides) {
   }
   if (current.isEmbeddedAgentRunActive) {
     install(
-      embeddedRuns.isEmbeddedAgentRunActive,
-      () => vi.spyOn(embeddedRuns, "isEmbeddedAgentRunActive"),
+      sessionQueries.isSessionRunActive,
+      () => vi.spyOn(sessionQueries, "isSessionRunActive"),
       current.isEmbeddedAgentRunActive,
     );
   }

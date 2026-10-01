@@ -7,6 +7,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { areHeartbeatsEnabled, setHeartbeatsEnabled } from "../infra/heartbeat-wake.js";
+import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import * as subscriptions from "./server-runtime-subscriptions.js";
@@ -148,7 +149,7 @@ it("binds a first native chat.send before streaming and persists its stopped par
       }),
     ).toMatchObject({ runId, status: "started" });
     const response = await providerResponse.promise;
-    original = runtime.chatAbortControllers.get(runId);
+    original = runtime.rpcSources.get(runId);
     expect(original).toBeDefined();
     const committed = loadExactSessionEntryReadOnly({ sessionKey });
     expect(committed?.entry.sessionId).toBeDefined();
@@ -156,7 +157,7 @@ it("binds a first native chat.send before streaming and persists its stopped par
       throw new Error("Native initialization did not retain its registration and session");
     }
     expect(committed.entry.sessionId).not.toBe(runId);
-    expect.soft(original.sessionId).toBe(committed.entry.sessionId);
+    expect.soft(original.adapter.sessionId).toBe(committed.entry.sessionId);
     response.writeHead(200, { "content-type": "text/event-stream" });
     for (const event of [
       {
@@ -182,7 +183,7 @@ it("binds a first native chat.send before streaming and persists its stopped par
     }
     await firstDelta.promise;
     expect(runtime.chatRunState.resolveBuffer(runId).text).toBe(partial);
-    expect.soft(original.sessionId).toBe(committed.entry.sessionId);
+    expect.soft(original.adapter.sessionId).toBe(committed.entry.sessionId);
     expect(lifecycle).toContainEqual(
       expect.objectContaining({ phase: "start", sessionId: committed.entry.sessionId }),
     );
@@ -215,8 +216,8 @@ it("binds a first native chat.send before streaming and persists its stopped par
       await expect(
         gateway.client.request("chat.send", { sessionKey, message: "/stop", ...guard }),
       ).rejects.toMatchObject({ details: { reason: "active-leaf-changed" } });
-      expect(original.controller.signal.aborted).toBe(false);
-      expect(runtime.chatAbortControllers.get(runId)).toBe(original);
+      expect(original.input.abortSignal.aborted).toBe(false);
+      expect(runtime.rpcSources.get(runId)).toBe(original);
       expect(runtime.chatRunState.resolveBuffer(runId).text).toBe(partial);
       expect(response.destroyed).toBe(false);
       expect(requestBodies).toHaveLength(1);
@@ -235,10 +236,10 @@ it("binds a first native chat.send before streaming and persists its stopped par
         (error: unknown) => ({ error }),
       );
     expect.soft(stop).toMatchObject({ result: { ok: true, aborted: true, runIds: [runId] } });
-    expect(original.controller.signal.aborted).toBe(true);
+    expect(original.input.abortSignal.aborted).toBe(true);
     await terminal.promise;
     await providerClosed.promise;
-    await vi.waitFor(() => expect(runtime.chatAbortControllers.has(runId)).toBe(false));
+    await vi.waitFor(() => expect(runtime.rpcSources.has(runId)).toBe(false));
     expect
       .soft(loadExactSessionEntryReadOnly({ sessionKey })?.entry, JSON.stringify(lifecycle))
       .toMatchObject({
@@ -269,7 +270,9 @@ it("binds a first native chat.send before streaming and persists its stopped par
     );
     expect(requestBodies).toHaveLength(1);
   } finally {
-    original?.controller.abort();
+    if (original) {
+      requestRpcSourceCancellation(original);
+    }
     providerServer.closeAllConnections();
     await new Promise<void>((resolve) => {
       providerServer.close(() => resolve());

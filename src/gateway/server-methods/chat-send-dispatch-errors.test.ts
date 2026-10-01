@@ -17,7 +17,7 @@ import { SessionTranscriptProjectionUnavailableError } from "../../config/sessio
 import { onAgentRuntimeEvent } from "../../infra/agent-events.js";
 import * as sessionRunError from "../../sessions/session-run-error.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { abortChatRunById, registerChatAbortController } from "../chat-abort.js";
+import { abortChatRunById } from "../chat-abort.js";
 import { projectChatDisplayMessages } from "../chat-display-projection.js";
 import { createChatRunState } from "../server-chat-state.js";
 import * as sessionLifecycleState from "../session-lifecycle-state.js";
@@ -27,6 +27,10 @@ import {
   createChatSendDispatchErrorLifecycle,
   handleChatSendSetupError,
 } from "./chat-send-dispatch-errors.js";
+import {
+  createActiveRpcSourceForTest,
+  registerRpcSourceForTest,
+} from "./rpc-source-fixtures.test-support.js";
 
 const policyMessage =
   "OpenCode cannot run with this chat's tool restrictions. Choose a different model provider or update the tool settings.";
@@ -153,6 +157,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         const chatRunState = createChatRunState();
         const broadcast = vi.fn();
         const agentRunSeq = new Map<string, number>();
+        const rpcSources = new Map();
         broadcastChatDelta({
           context: { chatRunState, broadcast, agentRunSeq, nodeSendToSession: vi.fn() },
           runId,
@@ -169,12 +174,12 @@ describe("createChatSendDispatchErrorLifecycle", () => {
               agentId: target.agentId,
               lifecycleGeneration: "test-generation",
             },
-            activeRunAbort: {
-              cleanup: vi.fn(),
-              controller: new AbortController(),
-              entry: undefined,
-              registered: true,
-            } as never,
+            activeRunAbort: registerRpcSourceForTest({
+              rpcSources,
+              runId,
+              ...target,
+              storeScope: target.storePath,
+            }),
             cleanupAdmittedRun: vi.fn(),
             lifecycleGeneration: "test-generation",
             restartSafeAdmission: restartSafe
@@ -185,7 +190,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
             agentRunSeq,
             broadcast,
             broadcastToConnIds: vi.fn(),
-            chatAbortControllers: new Map(),
+            rpcSources,
             chatRunState,
             dedupe: new Map(),
             getRuntimeConfig: () => ({}),
@@ -393,6 +398,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
       const removeChatRun = vi.fn();
       const warn = vi.fn();
       const dedupe = new Map();
+      const rpcSources = new Map();
       const lifecycle = createChatSendDispatchErrorLifecycle({
         admission: {
           sessionBinding: {
@@ -401,17 +407,19 @@ describe("createChatSendDispatchErrorLifecycle", () => {
             agentId: "main",
             lifecycleGeneration: "test-generation",
           },
-          activeRunAbort: {
-            cleanup: vi.fn(),
-            controller: new AbortController(),
-            entry: undefined,
-            registered: true,
-          } as never,
+          activeRunAbort: registerRpcSourceForTest({
+            rpcSources,
+            runId: "run-1",
+            sessionId: "run-1",
+            sessionKey: "agent:main:main",
+            agentId: "main",
+          }),
           cleanupAdmittedRun,
           lifecycleGeneration: "test-generation",
           restartSafeAdmission: undefined,
         },
         context: {
+          rpcSources,
           agentRunSeq: new Map(),
           broadcast,
           chatRunState: createChatRunState(),
@@ -463,14 +471,13 @@ describe("createChatSendDispatchErrorLifecycle", () => {
     async (settlement) => {
       const runId = `explicit-abort-before-dispatch-${settlement}`;
       const sessionKey = "agent:main:main";
-      const chatAbortControllers = new Map();
+      const rpcSources = new Map();
       const chatRunState = createChatRunState();
-      const registration = registerChatAbortController({
-        chatAbortControllers,
+      const registration = registerRpcSourceForTest({
+        rpcSources,
         runId,
         sessionId: "sess-main",
         sessionKey,
-        timeoutMs: 60_000,
       });
       if (!registration.registered) {
         throw new Error("expected the chat abort controller to be registered");
@@ -485,10 +492,10 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         if (event.runId !== runId || event.stream !== "lifecycle" || event.data.phase !== "end") {
           return;
         }
-        const current = chatAbortControllers.get(runId);
+        const current = rpcSources.get(runId);
         if (current) {
-          current.projectSessionTerminalPending = true;
-          current.projectSessionTerminalObservedAt = event.ts;
+          current.adapter.projectSessionTerminalPending = true;
+          current.adapter.projectSessionTerminalObservedAt = event.ts;
         }
       });
 
@@ -496,7 +503,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         expect(
           abortChatRunById(
             {
-              chatAbortControllers,
+              rpcSources,
               chatRunState,
               removeChatRun,
               agentRunSeq: new Map(),
@@ -521,6 +528,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
             restartSafeAdmission: {} as never,
           },
           context: {
+            rpcSources,
             agentRunSeq: new Map(),
             broadcast,
             chatRunState,
@@ -560,8 +568,8 @@ describe("createChatSendDispatchErrorLifecycle", () => {
           expect.objectContaining({ runId, state: "error" }),
           expect.anything(),
         );
-        expect(chatAbortControllers.get(runId)).toBe(entry);
-        expect(entry).toMatchObject({
+        expect(rpcSources.get(runId)).toBe(entry);
+        expect(entry.adapter).toMatchObject({
           projectSessionTerminalPending: true,
           registrationCleanupRequested: true,
         });
@@ -574,8 +582,14 @@ describe("createChatSendDispatchErrorLifecycle", () => {
   );
 
   it("keeps a signal-only dispatch rejection as an error without an explicit abort", async () => {
-    const controller = new AbortController();
-    controller.abort(new Error("restart interrupted dispatch"));
+    const rpcSources = new Map();
+    const registration = registerRpcSourceForTest({
+      rpcSources,
+      runId: "signal-only-dispatch-rejection",
+      sessionId: "sess-main",
+      sessionKey: "agent:main:main",
+    });
+    registration.controller.abort(new Error("restart interrupted dispatch"));
     const chatRunState = createChatRunState();
     const dedupe = new Map();
     const broadcast = vi.fn();
@@ -587,17 +601,13 @@ describe("createChatSendDispatchErrorLifecycle", () => {
           agentId: "main",
           lifecycleGeneration: "test-generation",
         },
-        activeRunAbort: {
-          cleanup: vi.fn(),
-          controller,
-          entry: undefined,
-          registered: true,
-        } as never,
+        activeRunAbort: registration,
         cleanupAdmittedRun: vi.fn(),
         lifecycleGeneration: "test-generation",
         restartSafeAdmission: undefined,
       },
       context: {
+        rpcSources,
         agentRunSeq: new Map(),
         broadcast,
         chatRunState,
@@ -640,18 +650,17 @@ describe("createChatSendDispatchErrorLifecycle", () => {
   it("does not overwrite a terminal already owned by the agent lifecycle", async () => {
     const runId = "agent-owned-terminal-before-dispatch-rejection";
     const sessionKey = "agent:main:main";
-    const chatAbortControllers = new Map();
-    const registration = registerChatAbortController({
-      chatAbortControllers,
+    const rpcSources = new Map();
+    const registration = registerRpcSourceForTest({
+      rpcSources,
       runId,
       sessionId: "sess-main",
       sessionKey,
-      timeoutMs: 60_000,
     });
     if (!registration.entry) {
       throw new Error("expected the chat abort controller to be registered");
     }
-    registration.entry.projectSessionTerminalPersisted = true;
+    registration.entry.adapter.projectSessionTerminalPersisted = true;
     const terminalEntry = {
       ts: Date.now(),
       ok: true,
@@ -675,6 +684,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         restartSafeAdmission: undefined,
       },
       context: {
+        rpcSources,
         agentRunSeq: new Map(),
         broadcast,
         chatRunState,
@@ -734,14 +744,10 @@ describe("createChatSendDispatchErrorLifecycle", () => {
     const broadcast = vi.fn();
     const dedupe = new Map();
     const clientRunId = "failed-ops-global-send";
-    const chatAbortControllers = new Map([
+    const rpcSources = new Map([
       [
         "compat-owner-run",
-        {
-          controller: new AbortController(),
-          sessionId: "sess-main",
-          sessionKey: "global",
-        },
+        await createActiveRpcSourceForTest({ sessionId: "sess-main", sessionKey: "global" }),
       ],
     ]);
 
@@ -755,20 +761,24 @@ describe("createChatSendDispatchErrorLifecycle", () => {
             lifecycleGeneration: "test-generation",
           },
           activeRunAbort: {
+            ...registerRpcSourceForTest({
+              rpcSources,
+              runId: clientRunId,
+              sessionId: "sess-ops",
+              sessionKey: "agent:ops:main",
+              agentId: "ops",
+            }),
             cleanup: activeRunCleanup,
-            controller: new AbortController(),
-            entry: undefined,
-            registered: true,
-          } as never,
+          },
           cleanupAdmittedRun,
           lifecycleGeneration: "test-generation",
           restartSafeAdmission: undefined,
         },
         context: {
+          rpcSources,
           agentRunSeq: new Map(),
           broadcast,
           broadcastToConnIds: vi.fn(),
-          chatAbortControllers,
           chatRunState: createChatRunState(),
           dedupe,
           getRuntimeConfig: () => cfg,

@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { AdmittedFollowupTurn } from "./followup-turn-admission.js";
+import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
 import { createMockReplyOperation } from "./test-helpers.js";
 
 const followupTurnTestState = vi.hoisted(() => ({

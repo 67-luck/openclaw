@@ -1,10 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OperationalRunInstanceRef } from "../../agents/admitted-run-context.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../../agents/embedded-agent-runner/runs.js";
-import {
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
   createEmbeddedRunHandle,
   testing as embeddedRunsTesting,
 } from "../../agents/embedded-agent-runner/runs.test-support.js";
@@ -15,6 +13,7 @@ import {
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
+import { getCurrentSessionControllerOwner } from "../../sessions/session-controller.lifecycle.js";
 
 type ConsultParams = Parameters<
   typeof import("../../talk/agent-consult-runtime.js").consultRealtimeVoiceAgent
@@ -72,7 +71,7 @@ const coreParams = {
 function createRunner(isRunCurrent: (runId: string) => boolean = () => true) {
   return createTalkClientAgentConsultRunner({
     config,
-    context: { chatAbortControllers: new Map(), logGateway: { warn: vi.fn() } } as never,
+    context: { rpcSources: new Map(), logGateway: { warn: vi.fn() } } as never,
     sessionTarget: {
       agentId: "researcher",
       sessionKey: "main",
@@ -133,7 +132,20 @@ describe("Talk requester-final consult ownership", () => {
             assertActive: () => {},
           }),
         },
-        () => setActiveEmbeddedRun("session-talk", handle, "agent:researcher:talk"),
+        () => {
+          const operation = getCurrentSessionControllerOwner();
+          if (!operation) {
+            throw new Error("Talk consult has no controller-owned turn");
+          }
+          setActiveEmbeddedRun(
+            "session-talk",
+            handle,
+            "agent:researcher:talk",
+            undefined,
+            "researcher",
+            operation,
+          );
+        },
       );
       try {
         return await core.promise;

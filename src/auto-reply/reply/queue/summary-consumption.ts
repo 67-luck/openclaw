@@ -1,10 +1,10 @@
 // Consumes exact overflow sources without disturbing sibling summary accounting.
 import { expectDefined } from "@openclaw/normalization-core";
+import type { SessionControllerMailbox } from "../../../sessions/session-controller.mailbox.js";
 import { completeFollowupRunLifecycle } from "./lifecycle.js";
-import type { FOLLOWUP_QUEUES } from "./state.js";
 import type { FollowupRun } from "./types.js";
 
-type FollowupQueueState = NonNullable<ReturnType<typeof FOLLOWUP_QUEUES.get>>;
+type FollowupQueueState = SessionControllerMailbox;
 
 export function consumeQueueSummaryDelivery(
   queue: Pick<
@@ -34,6 +34,11 @@ export function consumeQueueSummaryDelivery(
         if (elidedSourceIndex >= 0) {
           entry.sources.splice(elidedSourceIndex, 1);
           entry.summaryLines.splice(elidedSourceIndex, 1);
+        }
+        for (const [original, compact] of entry.sourceRefs) {
+          if (compact === source || original === source) {
+            entry.sourceRefs.delete(original);
+          }
         }
         entry.count = entry.sources.length;
         consumedCount += 1;

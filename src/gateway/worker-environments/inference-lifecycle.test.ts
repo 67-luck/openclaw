@@ -254,7 +254,7 @@ describe("worker inference manager", () => {
             agentId: "main",
             owner: { connId: "worker-owner" },
           });
-          parent.controller.signal.addEventListener(
+          parent.input.abortSignal.addEventListener(
             "abort",
             () => {
               if (change === "revocation") {
@@ -276,7 +276,7 @@ describe("worker inference manager", () => {
             { once: true },
           );
           const context = createChatAbortContext({
-            chatAbortControllers: new Map([[REQUEST.runId, parent]]),
+            rpcSources: new Map([[REQUEST.runId, parent]]),
             workerEnvironmentService: workerService,
           });
           try {
@@ -301,7 +301,7 @@ describe("worker inference manager", () => {
               });
             }
             await successorStart;
-            expect(parent.controller.signal.aborted).toBe(true);
+            expect(parent.input.abortSignal.aborted).toBe(true);
             expect(signals[0]?.aborted).toBe(change !== "revocation");
             expect(instance.hasSession(REQUEST.sessionId, REQUEST.runId)).toBe(change !== "none");
             expect(terminalFrames(original.frames)).toHaveLength(change === "revocation" ? 0 : 1);

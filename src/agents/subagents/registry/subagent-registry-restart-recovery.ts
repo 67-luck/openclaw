@@ -6,7 +6,7 @@ import {
   bindGatewayContextResolver,
   getGatewayContextResolver,
 } from "../../../plugins/runtime/gateway-request-scope.js";
-import { isSessionWorkAdmissionActive } from "../../../sessions/session-lifecycle-admission.js";
+import { isSessionControllerWorkActive } from "../../../sessions/session-controller.lifecycle.js";
 import {
   getSubagentRunsForRequesterSession,
   getSubagentRunsForChildSession,
@@ -167,7 +167,7 @@ export async function recoverInterruptedSubagentRow(
           (!replayTerminal ||
             (current !== undefined && ownsSubagentSessionExecution(entry, current))) &&
           listAgentRunsForSession(target).length === 0 &&
-          !isSessionWorkAdmissionActive(session.storePath, [childSessionKey, sessionId])
+          !isSessionControllerWorkActive(session.storePath, [childSessionKey, sessionId])
         );
       } catch {
         return false;

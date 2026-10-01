@@ -1,9 +1,8 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadCodexAbortTranscriptTestFixture } from "../../extensions/codex/test-api.js";
 import { createOperationalRunInstanceRef } from "../../src/agents/admitted-run-context.js";
-import { createReplyOperation } from "../../src/auto-reply/reply/reply-run-registry.js";
-import { resolveActiveReplyRunOwnerForSignal } from "../../src/auto-reply/reply/reply-run-registry.state.js";
 import {
   loadSessionEntry,
   loadTranscriptEvents,
@@ -20,6 +19,17 @@ import {
   invokeChatAbortHandler,
 } from "../../src/gateway/server-methods/chat.abort.test-helpers.js";
 import { claimAgentRunDelegatedAuthority } from "../../src/infra/agent-run-registry.js";
+import { withSessionTurn } from "../../src/sessions/session-controller.admission.js";
+import { createReplyOperation } from "../../src/sessions/session-controller.js";
+import { captureSessionTarget } from "../../src/sessions/session-controller.lifecycle.js";
+import {
+  tryClaimSessionControllerTask,
+  releaseSessionControllerClaim,
+} from "../../src/sessions/session-controller.mailbox.js";
+import {
+  resolveActiveReplyRunOwnerForSignal,
+  markReplyOperationExecutionStarted,
+} from "../../src/sessions/session-controller.state.js";
 import { AsyncWorkScope } from "../../src/shared/async-work-scope.js";
 import { createDeferredCore } from "../../src/shared/deferred.js";
 import { withOpenClawTestState } from "../../src/test-utils/openclaw-test-state.js";
@@ -74,33 +84,37 @@ afterEach(() => {
 });
 
 describe("chat.abort native transcript settlement", () => {
-  it.each([
-    ...(["chat", "agent"] as const).flatMap((owner) =>
-      [true, false].map((hasNativeText) => ({
-        owner,
-        hasNativeText,
-        nativeFirst: false,
+  it.each(
+    [
+      ...(["chat", "agent"] as const).flatMap((owner) =>
+        [true, false].map((hasNativeText) => ({
+          owner,
+          hasNativeText,
+          nativeFirst: false,
+          superseded: false,
+          warningDeliveryFails: false,
+        })),
+      ),
+      {
+        owner: "agent" as const,
+        hasNativeText: true,
+        nativeFirst: true,
         superseded: false,
         warningDeliveryFails: false,
+      },
+      ...[false, true].map((warningDeliveryFails) => ({
+        owner: "agent" as const,
+        hasNativeText: false,
+        nativeFirst: false,
+        superseded: true,
+        warningDeliveryFails,
       })),
+    ].flatMap((test) =>
+      (["run", "session"] as const).map((stopScope) => Object.assign({ stopScope }, test)),
     ),
-    {
-      owner: "agent" as const,
-      hasNativeText: true,
-      nativeFirst: true,
-      superseded: false,
-      warningDeliveryFails: false,
-    },
-    ...[false, true].map((warningDeliveryFails) => ({
-      owner: "agent" as const,
-      hasNativeText: false,
-      nativeFirst: false,
-      superseded: true,
-      warningDeliveryFails,
-    })),
-  ])(
-    "settles Stop history ($owner, native text=$hasNativeText, native first=$nativeFirst, superseded=$superseded, warning delivery fails=$warningDeliveryFails)",
-    async ({ owner, hasNativeText, nativeFirst, superseded, warningDeliveryFails }) => {
+  )(
+    "settles Stop history ($owner, scope=$stopScope, native text=$hasNativeText, native first=$nativeFirst, superseded=$superseded, warning delivery fails=$warningDeliveryFails)",
+    async ({ owner, stopScope, hasNativeText, nativeFirst, superseded, warningDeliveryFails }) => {
       await withOpenClawTestState({ label: "chat-abort-codex" }, async () => {
         const target = await fixture.createTarget();
         session.target = target;
@@ -129,20 +143,37 @@ describe("chat.abort native transcript settlement", () => {
           });
         }
         const operationalRunInstance = createOperationalRunInstanceRef(runId);
+        const controllerTarget = captureSessionTarget({
+          ...target,
+          storeScope: target.storePath,
+          incarnation: target.sessionId,
+        });
         const registration = registerChatAbortController({
-          chatAbortControllers: context.chatAbortControllers,
+          rpcSources: context.rpcSources,
+          target: controllerTarget,
           runId,
           ...target,
           timeoutMs: 30_000,
           kind: owner === "agent" ? "agent" : "chat-send",
           operationalRunInstance,
-          resolveTerminalProducer: (active) =>
-            resolveActiveReplyRunOwnerForSignal(active.controller.signal),
+          resolveTerminalProducer: (active) => {
+            const operation = active.input.claim?.operation;
+            return operation
+              ? resolveActiveReplyRunOwnerForSignal(operation.abortSignal)
+              : undefined;
+          },
         });
+        const input = expectDefined(registration.entry, "registered source").input;
+        const chatClaim =
+          owner === "chat"
+            ? expectDefined(tryClaimSessionControllerTask(input), "chat claim")
+            : undefined;
         const operation =
           owner === "chat"
             ? createReplyOperation({
                 ...target,
+                target: controllerTarget,
+                mailboxClaim: chatClaim,
                 resetTriggered: false,
                 upstreamAbortSignal: registration.controller.signal,
               })
@@ -151,11 +182,13 @@ describe("chat.abort native transcript settlement", () => {
         const nativeRelease = createDeferredCore();
         const nativeCompletion = nativeRelease.promise.then(() => native.finish(true));
         const readyForDelivery = createDeferredCore();
+        const executionStarted = createDeferredCore();
         session.command.mockImplementationOnce(async (options) => {
           registration.bindAgentRunDelegatedAuthority(
             claimAgentRunDelegatedAuthority(operationalRunInstance),
           );
-          registration.markExecutionStarted();
+          expect(registration.markExecutionStarted()).toBe(true);
+          executionStarted.resolve();
           await nativeCompletion;
           if (superseded) {
             const entry = loadSessionEntry(target);
@@ -170,22 +203,42 @@ describe("chat.abort native transcript settlement", () => {
           return { payloads: [], meta: { durationMs: 0, aborted: true } };
         });
         const completion = operation
-          ? operation.ownerSettlement
-          : dispatchAgentRunFromGateway({
-              admittedRunEntry: registration.entry,
-              ingressOpts: {
-                message: "Synthetic native abort",
+          ? operation.ownerSettlement.then(async () => {
+              if (chatClaim) {
+                releaseSessionControllerClaim(chatClaim);
+                await chatClaim.settlement.promise;
+              }
+            })
+          : withSessionTurn(
+              {
                 ...target,
-                allowModelOverride: false,
+                target: controllerTarget,
+                controllerInput: input,
                 abortSignal: registration.controller.signal,
               },
-              runId,
-              dedupeKeys: [],
-              abortController: registration.controller,
-              cleanupAbortController: registration.cleanup,
-              io: { emitAcceptance: vi.fn(), emitFinal: vi.fn() },
-              context: dispatchContext,
-            });
+              async (admitted) => {
+                if (!admitted) {
+                  throw new Error("expected admitted agent turn");
+                }
+                markReplyOperationExecutionStarted(admitted);
+                admitted.setPhase("running");
+                return await dispatchAgentRunFromGateway({
+                  admittedRunEntry: registration.entry,
+                  ingressOpts: {
+                    message: "Synthetic native abort",
+                    ...target,
+                    allowModelOverride: false,
+                    abortSignal: registration.controller.signal,
+                  },
+                  runId,
+                  dedupeKeys: [],
+                  abortController: registration.controller,
+                  cleanupAbortController: registration.cleanup,
+                  io: { emitAcceptance: vi.fn(), emitFinal: vi.fn() },
+                  context: dispatchContext,
+                });
+              },
+            );
         let deliverySettled = false;
         void completion?.then(() => {
           deliverySettled = true;
@@ -193,7 +246,14 @@ describe("chat.abort native transcript settlement", () => {
         const cancel = vi.fn();
         operation?.attachBackend({ kind: "embedded", cancel, isStreaming: () => true });
         operation?.setPhase("running");
+        if (operation) {
+          markReplyOperationExecutionStarted(operation);
+        }
         try {
+          if (!operation) {
+            await Promise.race([executionStarted.promise, completion]);
+            expect(session.command).toHaveBeenCalledOnce();
+          }
           if (nativeFirst) {
             nativeRelease.resolve();
             await readyForDelivery.promise;
@@ -202,13 +262,14 @@ describe("chat.abort native transcript settlement", () => {
           const respond = await invokeChatAbortHandler({
             handler: handleChatAbortRequest,
             context,
-            request: { sessionKey: target.sessionKey, runId },
+            request: { sessionKey: target.sessionKey, ...(stopScope === "run" ? { runId } : {}) },
           });
           expect(respond).toHaveBeenCalledWith(
             true,
             expect.objectContaining({ aborted: true, runIds: [runId] }),
           );
           expect(registration.controller.signal.aborted).toBe(true);
+          expect(input.claim?.released).toBe(false);
           if (operation) {
             expect(cancel).toHaveBeenCalledWith("user_abort");
           }

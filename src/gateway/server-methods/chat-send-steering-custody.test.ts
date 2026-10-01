@@ -26,8 +26,7 @@ import { buildInboundUserContextPrefix } from "../../auto-reply/reply/inbound-me
 import { callPersonalToolUiCommand } from "../../auto-reply/reply/personal-tool-turn.test-support.js";
 import { buildReplyPromptEnvelopeBase } from "../../auto-reply/reply/prompt-prelude.js";
 import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
-import type { ReplyBackendMessageInjectionV2 } from "../../auto-reply/reply/reply-run-registry.contracts.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.operation.js";
+import { readReplySourceInput } from "../../auto-reply/reply/reply-source-binding.js";
 import { prepareReplyToolAuthority } from "../../auto-reply/reply/reply-tool-authority.js";
 import {
   listSessionPendingInputs,
@@ -37,6 +36,13 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import type { GatewayOperatorRoleDefinition } from "../../config/types.gateway.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import type { ReplyBackendMessageInjectionV2 } from "../../sessions/session-controller.contracts.js";
+import {
+  claimSessionControllerTask,
+  releaseSessionControllerClaim,
+  type SessionControllerMailboxClaim,
+} from "../../sessions/session-controller.mailbox.js";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../../state/user-profiles.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
@@ -178,6 +184,7 @@ describe("steering input custody", () => {
       }
       let captured: Awaited<ReturnType<typeof captureGatewayOperatorRunAuthority>>;
       let operation = fixture.activeRun;
+      let ownerClaim: SessionControllerMailboxClaim | undefined;
       let ownerContext: CurrentInboundPromptContext | undefined;
       let cleanupOwnerContext = () => {};
       let backingRun: Promise<void> | undefined;
@@ -218,7 +225,18 @@ describe("steering input custody", () => {
             startupAction: "new",
           }).currentInboundContext;
           dispatchInboundMessageMock.mockClear();
-          operation = createReplyOperation({ ...fixture.scope, resetTriggered: false });
+          const ownerInput = readReplySourceInput(ownerDispatchParams.replyOptions);
+          if (!ownerInput) {
+            throw new Error("Expected original RPC source");
+          }
+          ownerClaim = await claimSessionControllerTask(ownerInput, (claim) => {
+            operation = createReplyOperation({
+              ...fixture.scope,
+              resetTriggered: false,
+              mailboxClaim: claim,
+              target: ownerInput.mailbox.owner.target,
+            });
+          });
         }
         captured = await captureGatewayOperatorRunAuthority({
           client: originalClient,
@@ -430,6 +448,10 @@ describe("steering input custody", () => {
         }
         releaseProvider();
         await backingRun;
+        if (ownerClaim) {
+          operation.complete();
+          releaseSessionControllerClaim(ownerClaim);
+        }
         await fixture.finishDispatch();
         const input = loadTranscriptEventsSync(fixture.scope).find(
           (event) =>
@@ -470,6 +492,9 @@ describe("steering input custody", () => {
         } finally {
           cleanupOwnerContext();
           operation?.complete();
+          if (ownerClaim) {
+            releaseSessionControllerClaim(ownerClaim);
+          }
           try {
             await fixture.cleanup();
           } finally {
@@ -797,8 +822,7 @@ describe("steering input custody", () => {
             sourceTerminal: fixture.context.dedupe.get(`chat:${fixture.params.idempotencyKey}`),
             sourceErrors,
             pendingInputs: listSessionPendingInputs(fixture.scope),
-            abortOwners: fixture.context.chatAbortControllers.size,
-            queuedTurns: fixture.context.chatQueuedTurns.size,
+            sourceOwners: fixture.context.rpcSources.size,
           }).toMatchObject({
             ack: originalAck,
             freshDispatchCalls: 0,
@@ -831,8 +855,7 @@ describe("steering input custody", () => {
               total: 1,
               items: [{ ...pending.items[0], state: "interrupted" }],
             },
-            abortOwners: 0,
-            queuedTurns: 0,
+            sourceOwners: 0,
           });
           expect(transcript).toContainEqual(
             expect.objectContaining({
@@ -933,8 +956,7 @@ describe("steering input custody", () => {
             cached,
           );
           expect(loadTranscriptEventsSync(fixture.scope)).toEqual(transcript);
-          expect(fixture.context.chatAbortControllers.size).toBe(0);
-          expect(fixture.context.chatQueuedTurns.size).toBe(0);
+          expect(fixture.context.rpcSources.size).toBe(0);
           expect(listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
         }
       } catch (error) {

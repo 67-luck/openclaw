@@ -22,7 +22,7 @@ vi.mock("../../logging/subsystem.js", async () => {
 });
 import { resetAgentRunRegistryForTest } from "../../infra/agent-run-registry.js";
 import * as tmpDirOwner from "../../infra/tmp-openclaw-dir.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { closeCachedOpenClawAgentDatabase } from "../../state/openclaw-agent-db-lifecycle.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -511,7 +511,7 @@ describe("SQLite historical session disk budget", () => {
       buildNextEntry: () => ({ sessionId: "live-history", updatedAt: 4 }),
     });
     addRouteReference("route-only", "route-history");
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: storePath,
       identities: ["admitted-history"],
       assertAllowed: () => {},

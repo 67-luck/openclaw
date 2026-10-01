@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
+import { getRuntimeConfig } from "../../../config/config.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions.js";
 import {
   deleteSessionEntryLifecycle,
@@ -16,9 +17,19 @@ import {
   markGatewayRestartDraining,
   resetGatewayWorkAdmission,
 } from "../../../process/gateway-work-admission.js";
+import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
+import {
+  reserveSessionControllerSource,
+  retireSessionControllerInput,
+} from "../../../sessions/session-controller.mailbox.js";
 import { sessionChanges } from "../../../sessions/session-row-changes.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
+import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
+import {
+  setActiveEmbeddedRun,
+  clearActiveEmbeddedRun,
+} from "./subagent-control-native.test-support.js";
 import { reconcileDurableSubagentKillIntent } from "./subagent-registry-sweep-kill.js";
 import { retireSupersededSubagentRun } from "./subagent-registry-sweeper-retire.js";
 import {
@@ -33,9 +44,10 @@ import { loadSubagentSessionEntry } from "./subagent-session-reconciliation.js";
 const recoverRow = vi.hoisted(() => vi.fn());
 const getAgentRunContext = vi.hoisted(() => vi.fn<(_runId: string) => unknown>(() => undefined));
 const removeInternalSessionEffectsSession = vi.hoisted(() => vi.fn(async () => {}));
+type ControlRuntime = typeof import("./subagent-control.runtime.js");
 const killRuntime = vi.hoisted(() => ({
-  abortEmbeddedAgentRun: vi.fn(() => false),
-  isEmbeddedAgentRunActive: vi.fn(() => false),
+  abortEmbeddedAgentRun: vi.fn<ControlRuntime["abortEmbeddedAgentRun"]>(() => false),
+  isEmbeddedAgentRunActive: vi.fn<ControlRuntime["isEmbeddedAgentRunActive"]>(() => false),
   clearSessionQueues: vi.fn(() => ({ followupCleared: 0, laneCleared: 0, keys: [] })),
 }));
 const killSessionEntry = vi.hoisted(() => ({
@@ -459,21 +471,45 @@ describe("subagent registry recovery scheduling", () => {
       sessionLifecycleRevision: "session-revision",
     };
     getAgentRunContext.mockReturnValue({});
-    killRuntime.isEmbeddedAgentRunActive.mockReturnValue(true);
+    const actualRuntime = await vi.importActual<ControlRuntime>("./subagent-control.runtime.js");
+    killRuntime.isEmbeddedAgentRunActive.mockImplementation(actualRuntime.isEmbeddedAgentRunActive);
+
+    const target = captureSessionTarget({
+      storeScope: resolveSessionStorePathCore(getRuntimeConfig().session?.store, {
+        agentId: "main",
+      }),
+      sessionKey: entry.childSessionKey,
+      incarnation: "session-id",
+    });
+    const abort = vi.fn();
+    const native = createEmbeddedRunHandle({ runId: entry.runId, isAbortable: false, abort });
+    setActiveEmbeddedRun("session-id", native, target.sessionKey, target.storeScope);
+    const source = reserveSessionControllerSource(target.sessionKey, {
+      target,
+      policy: { mode: "followup" },
+    });
+    const foreign = reserveSessionControllerSource(target.sessionKey, {
+      target: captureSessionTarget({ ...target, incarnation: "prior-incarnation" }),
+      policy: { mode: "followup" },
+    });
+    onTestFinished(async () => {
+      retireSessionControllerInput(source);
+      retireSessionControllerInput(foreign);
+      await Promise.all([source.settlement.promise, foreign.settlement.promise]);
+    });
 
     await sweeper.sweepOnce();
 
-    expect(killRuntime.abortEmbeddedAgentRun).toHaveBeenCalledWith("session-id");
-    expect(killRuntime.clearSessionQueues).toHaveBeenCalledWith([
-      entry.childSessionKey,
-      "session-id",
-    ]);
+    expect(abort).not.toHaveBeenCalled();
+    expect(source.abortSignal.aborted).toBe(true);
+    expect(foreign.abortSignal.aborted).toBe(false);
     expect(completeSubagentRunWithRecovery).not.toHaveBeenCalled();
 
     getAgentRunContext.mockReturnValue(undefined);
-    killRuntime.isEmbeddedAgentRunActive.mockReturnValue(false);
+    await clearActiveEmbeddedRun("session-id", native, target.sessionKey);
     await sweeper.sweepOnce();
 
+    expect(foreign.abortSignal.aborted).toBe(false);
     expect(completeSubagentRunWithRecovery).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: entry.runId,

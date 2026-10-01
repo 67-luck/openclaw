@@ -3,12 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { emitAgentEvent, resetAgentEventsForTest } from "../../infra/agent-events.js";
 import type { SubsystemLogger } from "../../logging/subsystem.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
-import { registerChatAbortController } from "../chat-abort.js";
 import {
   createChatRunState,
   createSessionEventSubscriberRegistry,
   createSessionMessageSubscriberRegistry,
 } from "../server-chat-state.js";
+import { registerRpcSourceForTest } from "./rpc-source-fixtures.test-support.js";
 
 const agentEventHandlerMocks = vi.hoisted(() => ({
   create: vi.fn(),
@@ -62,7 +62,7 @@ function createParams(): SubscriptionParams {
     toolEventRecipients: chatRunState.toolEventRecipients,
     sessionEventSubscribers: createSessionEventSubscriberRegistry(),
     sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-    chatAbortControllers: new Map(),
+    rpcSources: new Map(),
     restartRecoveryCandidates: new Map(),
     refreshConnectedUserProfiles: vi.fn(),
   };
@@ -86,13 +86,12 @@ describe("bound ACP terminal lifecycle", () => {
       const sourceKey = "agent:main:dashboard:source";
       const targetKey = "agent:claude:acp:target";
       const params = createParams();
-      const registration = registerChatAbortController({
-        chatAbortControllers: params.chatAbortControllers,
+      const registration = registerRpcSourceForTest({
+        rpcSources: params.rpcSources,
         runId,
         agentId: "main",
         sessionId: "source-session",
         sessionKey: sourceKey,
-        timeoutMs: 60_000,
       });
       if (linked) {
         params.chatRunState.registry.add(runId, {

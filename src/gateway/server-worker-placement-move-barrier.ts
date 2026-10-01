@@ -2,11 +2,11 @@ import { clearSessionQueues } from "../auto-reply/reply/queue/cleanup.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
 import {
-  interruptSessionWorkAdmissions,
-  runExclusiveSessionLifecycleMutation,
-  SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-  startSessionWorkAdmissionInterruption,
-} from "../sessions/session-lifecycle-admission.js";
+  interruptSessionControllerEffects,
+  runSessionMutation,
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+  startSessionControllerInterruption,
+} from "../sessions/session-controller.lifecycle.js";
 import type { WorkerPlacementSessionRuntime } from "./server-worker-placement-reclaim.js";
 import { resolveWorkerPlacementSessionTarget } from "./server-worker-placement-session-target.js";
 import type { WorkerPlacementMoveBarrier } from "./worker-environments/placement-move-service.js";
@@ -42,7 +42,7 @@ export function createGatewayWorkerPlacementMoveBarrier(params: {
     });
     const lifecycleIdentities = [sessionKey, target.canonicalKey, ...target.storeKeys, sessionId];
     let begun: Awaited<ReturnType<typeof begin>> | undefined;
-    await runExclusiveSessionLifecycleMutation({
+    await runSessionMutation({
       scope: target.storePath,
       identities: lifecycleIdentities,
       signal,
@@ -70,22 +70,22 @@ export function createGatewayWorkerPlacementMoveBarrier(params: {
         if (sourceDisposition === "abandon") {
           // Explicit abandonment revokes the old owner locally; its unreachable
           // transport acknowledgement cannot delay the exact force-abandon owner.
-          startSessionWorkAdmissionInterruption({
+          startSessionControllerInterruption({
             scope: target.storePath,
             identities: lifecycleIdentities,
           });
           return;
         }
-        const released = await interruptSessionWorkAdmissions({
+        const released = await interruptSessionControllerEffects({
           scope: target.storePath,
           identities: lifecycleIdentities,
-          timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+          timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
         });
         if (!released) {
           throw new Error(`Session ${sessionKey} is still active; placement move interrupted`);
         }
         await params.placements.waitForTurnClaimRelease(sessionId, {
-          timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+          timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
         });
         await runExclusiveSessionStoreWrite(target.storePath, async () => {}, {
           reentrant: true,

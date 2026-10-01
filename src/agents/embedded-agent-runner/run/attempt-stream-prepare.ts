@@ -32,7 +32,7 @@ import { isRunnerAbortError } from "../abort.js";
 import { log } from "../logger.js";
 import {
   ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
-  ACTIVE_EMBEDDED_RUNS,
+  getActiveNativeAttempt,
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
   setActiveEmbeddedRunLifecycleGeneration,
 } from "../run-state.js";
@@ -419,7 +419,7 @@ function prepareStream(
     sessionManager: activeSession.sessionManager,
     subscription,
     isCurrent: () =>
-      ACTIVE_EMBEDDED_RUNS.get(attempt.sessionId) === queueHandle && !input.getRunState().aborted,
+      getActiveNativeAttempt(attempt.sessionId) === queueHandle && !input.getRunState().aborted,
     isReplaySafeTool: input.isReplaySafeTool,
     nestedToolActivities: input.nestedToolActivities,
   });
@@ -450,7 +450,7 @@ function prepareStream(
     return (
       registration !== undefined &&
       ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(queueHandle) === registration &&
-      ACTIVE_EMBEDDED_RUNS.get(attempt.sessionId) === queueHandle &&
+      getActiveNativeAttempt(attempt.sessionId) === queueHandle &&
       ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(attempt.runId) === queueHandle
     );
   };
@@ -597,6 +597,7 @@ function prepareStream(
     attempt.sessionKey,
     attempt.sessionFile,
     input.hookAgentId,
+    attempt.replyOperation,
   );
   const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(queueHandle);
   if (attempt.deferTerminalLifecycle && attempt.onDeferredLifecycleOwner) {
@@ -609,7 +610,7 @@ function prepareStream(
         registration?.delegatedAuthority !== undefined &&
         validateAgentRunDelegatedAuthority(registration.delegatedAuthority) &&
         ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(queueHandle) === registration &&
-        ACTIVE_EMBEDDED_RUNS.get(attempt.sessionId) === queueHandle,
+        getActiveNativeAttempt(attempt.sessionId) === queueHandle,
       trajectoryRecorder: input.trajectoryRecorder ?? null,
       clearActiveRun: () => {
         try {

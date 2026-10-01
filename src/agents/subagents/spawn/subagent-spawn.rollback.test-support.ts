@@ -5,6 +5,7 @@ import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
 import type { createGatewayInstanceRuntime } from "../../../gateway/server-instance-runtime.js";
 import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
 import { withTimeout } from "../../../infra/fs-safe.js";
+import { requestRpcSourceCancellation } from "../../../sessions/session-controller.rpc-sources.js";
 import type { AdmittedRunOperatorAuthority } from "../../admitted-run-context.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { persistSubagentRunsToDiskOrThrow } from "../registry/subagent-registry-state.js";
@@ -79,10 +80,10 @@ export function registerOperatorSpawnRollbackCases(options: {
           childSessionKey = record.childSessionKey;
           childRunId = record.runId;
           const acceptedRun = expectDefined(
-            context.chatAbortControllers.get(record.runId),
+            context.rpcSources.get(record.runId),
             "accepted child execution owner",
           );
-          expect(acceptedRun.sessionKey).toBe(record.childSessionKey);
+          expect(acceptedRun.adapter.sessionKey).toBe(record.childSessionKey);
           source.revoke();
           throw new Error("ordinary child registry write failed");
         });
@@ -107,7 +108,7 @@ export function registerOperatorSpawnRollbackCases(options: {
           expect(options.runEmbeddedAgent).not.toHaveBeenCalled();
         } else {
           const runId = expectDefined(childRunId, "accepted child run");
-          expect(context.chatAbortControllers.has(runId)).toBe(false);
+          expect(context.rpcSources.has(runId)).toBe(false);
           expect(context.dedupe.get(`agent:${runId}`)).toMatchObject({
             payload: { runId, status: expect.stringMatching(/^(error|timeout)$/) },
           });
@@ -124,9 +125,9 @@ export function registerOperatorSpawnRollbackCases(options: {
       } finally {
         spawnTesting.setDepsForTest();
         vi.mocked(persistSubagentRunsToDiskOrThrow).mockReset();
-        for (const entry of context.chatAbortControllers.values()) {
+        for (const entry of context.rpcSources.values()) {
           if (entry !== bound.parent.entry) {
-            entry.controller.abort(new Error("spawn rollback fixture cleanup"));
+            requestRpcSourceCancellation(entry, new Error("spawn rollback fixture cleanup"));
           }
         }
         failures.push(...(await options.closeBoundGateway(bound, runtime, childRunId)));

@@ -19,7 +19,6 @@ import * as gatewayProcess from "../../gateway/process-instance.js";
 import { cronHandlers } from "../../gateway/server-methods/cron.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import {
-  clearCommandLane,
   enqueueCommandInLane,
   getCommandLaneSnapshot,
   getTotalQueueSize,
@@ -35,6 +34,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 
 type CallerClosure = "revoked" | "aborted";
 type CronGatewayFixture = {
+  cron: CronService;
   storePath: string;
   logger: ReturnType<typeof createNoopLogger>;
   closeCaller: (closure: CallerClosure) => void;
@@ -110,6 +110,7 @@ async function withCronGateway(
     };
     try {
       await run({
+        cron,
         storePath,
         logger,
         runIsolatedAgentJob,
@@ -137,7 +138,7 @@ async function withCronGateway(
 }
 
 describe("Cron mutation outcomes through the in-process router", () => {
-  it.each(["execute", "revoke", "abort", "clear queue"] as const)(
+  it.each(["execute", "revoke", "abort", "stop service"] as const)(
     "retains caller cleanup only through accepted manual admission: %s",
     async (outcome) => {
       await withCronGateway(async (fixture) => {
@@ -181,8 +182,8 @@ describe("Cron mutation outcomes through the in-process router", () => {
           if (outcome === "abort") {
             fixture.closeCaller("aborted");
           }
-          if (outcome === "clear queue") {
-            clearCommandLane(CommandLane.Cron);
+          if (outcome === "stop service") {
+            fixture.cron.stop();
           }
           releaseBlocker.resolve();
           await blocker;
@@ -197,7 +198,12 @@ describe("Cron mutation outcomes through the in-process router", () => {
           releasePayload.resolve();
           const terminal = await fixture.finished.promise;
           await cleanupFinished.promise;
-          expect(terminal.status).toBe(outcome === "execute" ? "ok" : "error");
+          expect(terminal.status).toBe(
+            outcome === "execute" ? "ok" : outcome === "stop service" ? "skipped" : "error",
+          );
+          if (outcome === "stop service") {
+            expect(terminal.error).toBe("queued manual run skipped before execution: stopped");
+          }
           if (outcome !== "execute") {
             expect(fixture.runIsolatedAgentJob).not.toHaveBeenCalled();
           }
@@ -206,9 +212,11 @@ describe("Cron mutation outcomes through the in-process router", () => {
             (await loadCronStore(fixture.storePath)).jobs[0]?.state.queuedAtMs,
           ).toBeUndefined();
         } finally {
+          fixture.cron.stop();
           releaseBlocker.resolve();
           releasePayload.resolve();
           await blocker;
+          await enqueueCommandInLane(CommandLane.Cron, async () => {});
         }
       });
     },

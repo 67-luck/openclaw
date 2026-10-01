@@ -6,9 +6,19 @@ import {
 import { isAgentEventLifecycleGenerationCurrent } from "../../../infra/agent-events.js";
 import { getAgentRunContext } from "../../../infra/agent-run-registry.js";
 import {
-  isSessionLifecycleMutationActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../../../sessions/session-lifecycle-admission.js";
+  matchingEntries,
+  selectedOperations,
+  inputMatchesSessionId,
+} from "../../../sessions/session-controller.lifecycle-projections.js";
+import {
+  isSessionMutationActive,
+  runSessionMutation,
+  captureSessionTarget,
+} from "../../../sessions/session-controller.lifecycle.js";
+import {
+  captureSessionControllerStop,
+  stopSessionController,
+} from "../../../sessions/session-controller.stop.js";
 import {
   SUBAGENT_ENDED_REASON_COMPLETE,
   SUBAGENT_ENDED_REASON_KILLED,
@@ -133,22 +143,27 @@ export async function reconcileDurableSubagentKillIntent(params: {
   ) {
     return await completeKill(true);
   }
-  const identities = [params.entry.childSessionKey, killIntent.sessionId];
+  const target = captureSessionTarget({
+    storeScope: storePath,
+    sessionKey: params.entry.childSessionKey,
+    incarnation: killIntent.sessionId,
+  });
+  const identities = target.aliases;
   // A live mutation owns this cancellation; reconcile other rows without waiting behind it.
-  if (isSessionLifecycleMutationActive(storePath, identities)) {
+  if (isSessionMutationActive(storePath, identities)) {
     return false;
   }
   try {
     const runtime = await params.loadKillRuntime();
-    if (!ownsCurrentGeneration() || isSessionLifecycleMutationActive(storePath, identities)) {
+    if (!ownsCurrentGeneration() || isSessionMutationActive(storePath, identities)) {
       return false;
     }
     if (!ownsSessionIncarnation()) {
       return await completeKill(true);
     }
-    return await runExclusiveSessionLifecycleMutation({
-      scope: storePath,
-      identities,
+    return await runSessionMutation({
+      target,
+      requiredSessionId: killIntent.sessionId,
       run: async () => {
         if (!ownsCurrentGeneration()) {
           return false;
@@ -156,21 +171,46 @@ export async function reconcileDurableSubagentKillIntent(params: {
         if (!ownsSessionIncarnation()) {
           return await completeKill(true);
         }
+        const sessionId = killIntent.sessionId;
+        const capture = captureSessionControllerStop({
+          inputs: killIntent.sessionId
+            ? matchingEntries(target).flatMap(
+                (owner) =>
+                  owner.mailbox?.entries.filter((input) =>
+                    inputMatchesSessionId(input, killIntent.sessionId),
+                  ) ?? [],
+              )
+            : [],
+          operations: sessionId
+            ? [...selectedOperations([target])].filter((operation) =>
+                operation.hasOwnedSessionId(sessionId),
+              )
+            : [],
+        });
+        const assertCurrent = () => {
+          if (!ownsCurrentGeneration() || !ownsSessionIncarnation()) {
+            throw new Error("Durable kill ownership changed before cancellation");
+          }
+        };
         const hasLiveRunContext = Boolean(getAgentRunContext(params.runId));
         const active = killIntent.sessionId
-          ? runtime.isEmbeddedAgentRunActive(killIntent.sessionId)
+          ? runtime.isEmbeddedAgentRunActive(killIntent.sessionId, target)
           : false;
+        const stopped = stopSessionController(capture, { source: "gateway", assertCurrent });
+        assertCurrent();
         const aborted =
-          killIntent.sessionId && active
-            ? runtime.abortEmbeddedAgentRun(killIntent.sessionId)
-            : false;
+          stopped.activeCancelled > 0 ||
+          (!capture.inputs.length && !capture.operations.length && killIntent.sessionId && active
+            ? runtime.abortEmbeddedAgentRun(killIntent.sessionId, target)
+            : false);
+        await Promise.all(capture.queuedInputs.map((input) => input.settlement.promise));
         if (!ownsSessionIncarnation()) {
           return await completeKill(true);
         }
-        runtime.clearSessionQueues([params.entry.childSessionKey, killIntent.sessionId]);
         if ((active || hasLiveRunContext) && !aborted) {
           return false;
         }
+        await capture.settled;
         if (!ownsCurrentGeneration()) {
           return false;
         }

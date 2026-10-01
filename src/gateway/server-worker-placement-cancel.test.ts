@@ -25,6 +25,7 @@ import { createGatewayWorkerPlacementReclaimBarriers } from "./server-worker-pla
 import { admitWorkerStopChat } from "./server-worker-placement.test-harness.js";
 import * as lifecycleState from "./session-lifecycle-state.js";
 import { closeSessionSqliteDatabasesForTest } from "./session-utils.test-support.js";
+import { claimRpcSourceForTest } from "./test-helpers.rpc-source.js";
 const routing = vi.hoisted(() => ({ load: vi.fn() }));
 vi.mock("./session-utils.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./session-utils.js")>()),
@@ -75,8 +76,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
     const context = {
       dedupe: new Map(),
       chatRunState,
-      chatAbortControllers: new Map(),
-      chatQueuedTurns: new Map(),
+      rpcSources: new Map(),
       agentRunSeq: new Map(),
       getRuntimeConfig: () => ({}),
       removeChatRun: vi.fn(),
@@ -142,7 +142,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         toolEventRecipients: chatRunState.toolEventRecipients,
         sessionEventSubscribers: createSessionEventSubscriberRegistry(),
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-        chatAbortControllers: context.chatAbortControllers,
+        rpcSources: context.rpcSources,
         restartRecoveryCandidates: new Map(),
         refreshConnectedUserProfiles: vi.fn(),
       });
@@ -152,7 +152,12 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         throw new Error("active admission missing");
       }
       const owned = active.value;
+      let releaseClaim: (() => void) | undefined;
       if (outcome !== "setup-failed-write") {
+        if (!owned.activeRunAbort.entry) {
+          throw new Error("Missing worker source");
+        }
+        releaseClaim = await claimRpcSourceForTest(owned.activeRunAbort.entry);
         expect(owned.activeRunAbort.markExecutionStarted()).toBe(true);
       }
       await replaceSessionEntry(target, {
@@ -165,6 +170,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         "abort",
         () => {
           if (outcome !== "setup-failed-write") {
+            releaseClaim?.();
             owned.cleanupAdmittedRun();
           }
           abortObserved.resolve();
@@ -218,8 +224,10 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         },
       });
       await abortObserved.promise;
-      expect(context.chatAbortControllers.has(runId)).toBe(true);
-      expect(owned.activeRunAbort.entry?.projectSessionTerminalPersistence).toBeInstanceOf(Promise);
+      expect(context.rpcSources.has(runId)).toBe(true);
+      expect(owned.activeRunAbort.entry?.adapter.projectSessionTerminalPersistence).toBeInstanceOf(
+        Promise,
+      );
       expect(reclaimEffectStarted).toBe(false);
       expect(loadSessionEntry(target)?.status).toBe("running");
       const late = await admit("during-terminal-write");
@@ -241,7 +249,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
           session: { agentId: "main", clientRunId: runId, sessionKey: target.sessionKey },
           terminalizeRestartSafeAdmission: vi.fn(async () => false),
         });
-        expect(context.chatAbortControllers.get(runId)).toBe(owned.activeRunAbort.entry);
+        expect(context.rpcSources.get(runId)).toBe(owned.activeRunAbort.entry);
         expect(reclaimEffectStarted).toBe(false);
       }
       if (outcome !== "success") {
@@ -260,7 +268,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
       expect(events.filter((event) => event.phase === "end")).toEqual([
         { phase: "end", status: "cancelled", aborted: true, stopReason: "rpc" },
       ]);
-      expect(context.chatAbortControllers.has(runId)).toBe(false);
+      expect(context.rpcSources.has(runId)).toBe(false);
       await closeSessionSqliteDatabasesForTest();
       const persisted = loadSessionEntry({ ...target, readConsistency: "latest" });
       expect(persisted).toMatchObject({ status: "killed", lastRunId: runId, abortedLastRun: true });

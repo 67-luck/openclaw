@@ -10,7 +10,6 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import type { ReplyDispatcher } from "../auto-reply/reply/reply-dispatcher.types.js";
-import { replyRunRegistry } from "../auto-reply/reply/reply-run-registry.js";
 import { loadSessionEntry, updateSessionEntry } from "../config/sessions/session-accessor.js";
 import { replaceTranscriptEvents } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
@@ -28,10 +27,11 @@ import {
   resetGatewayWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
+import { replyRunRegistry } from "../sessions/session-controller.js";
 import {
-  beginSessionWorkAdmission,
-  getActiveSessionWorkAdmissionCount,
-} from "../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  getSessionControllerWorkCount,
+} from "../sessions/session-controller.lifecycle.js";
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
 import { drainOpenClawAgentWriteQueuesForTest } from "../state/openclaw-agent-write-admission.test-support.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
@@ -512,7 +512,7 @@ describe("gateway server chat", () => {
         idempotencyKey: "idem-chat-interrupt-throw-new",
       });
       expect(res.ok).toBe(false);
-      await waitForFast(() => expect(getActiveSessionWorkAdmissionCount()).toBe(0));
+      await waitForFast(() => expect(getSessionControllerWorkCount()).toBe(0));
       await requestExecution.waitForCompletion("idem-chat-interrupt-throw-old");
       await requestExecution.waitForCompletion("idem-chat-interrupt-throw-new");
       expect(getActiveGatewayRootWorkCount()).toBe(0);
@@ -528,7 +528,7 @@ describe("gateway server chat", () => {
       if (!storePath) {
         throw new Error("session store path was not initialized");
       }
-      const activeAdmission = await beginSessionWorkAdmission({
+      const activeAdmission = await beginSessionEffect({
         scope: storePath,
         identities: ["agent:main:main", "sess-main"],
         assertAllowed: () => {},
@@ -547,7 +547,7 @@ describe("gateway server chat", () => {
         });
 
         expect(res.ok).toBe(false);
-        await waitForFast(() => expect(getActiveSessionWorkAdmissionCount()).toBe(0));
+        await waitForFast(() => expect(getSessionControllerWorkCount()).toBe(0));
         await requestExecution.waitForCompletion("idem-chat-interrupt-non-reply-throw");
         expect(getActiveGatewayRootWorkCount()).toBe(0);
 
@@ -567,7 +567,7 @@ describe("gateway server chat", () => {
       }
       const onInterrupt = vi.fn();
       const interrupted = createDeferred();
-      const activeAdmission = await beginSessionWorkAdmission({
+      const activeAdmission = await beginSessionEffect({
         scope: storePath,
         identities: ["agent:main:main", "sess-main"],
         assertAllowed: () => {},

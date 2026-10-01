@@ -1,8 +1,23 @@
 /**
  * Shared helpers for chat abort gateway method tests.
  */
-import { vi } from "vitest";
+import { randomUUID } from "node:crypto";
+import { afterEach, vi } from "vitest";
 import type { Mock } from "vitest";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import {
+  reserveSessionControllerSource,
+  abortSessionControllerInput,
+  retireSessionControllerInput,
+  releaseSessionControllerClaim,
+  claimSessionControllerTask,
+} from "../../sessions/session-controller.mailbox.js";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
+import type {
+  RpcSourceAdapter,
+  RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
+import { removeChatAbortControllerEntry } from "../chat-abort.js";
 import { createChatRunState, type ChatRunState } from "../server-chat-state.js";
 import type { GatewayRequestHandler, RespondFn } from "./types.js";
 
@@ -17,34 +32,98 @@ export function createAbortTestRunState(entries: Array<[string, Partial<TestChat
   return state;
 }
 
+const testSources = new Set<RpcSourceRef>();
+const testAdmissions: Array<Promise<{ error: unknown } | undefined>> = [];
+afterEach(async () => {
+  const settlements = [...testSources].map((ref) => ref.input.settlement.promise);
+  for (const ref of testSources) {
+    abortSessionControllerInput(ref.input, "Fixture finished");
+    if (!ref.input.claim) {
+      retireSessionControllerInput(ref.input);
+    }
+  }
+  testSources.clear();
+  await Promise.allSettled(settlements);
+  const results = await Promise.all(testAdmissions.splice(0));
+  const failures = results.flatMap((result) => (result ? [result.error] : []));
+  if (failures.length) {
+    throw new AggregateError(failures, "Fixture admission failed");
+  }
+});
+
 export function createActiveRun(
   sessionKey: string,
   params: {
     sessionId?: string;
+    storeScope?: string;
     agentId?: string;
     controlUiVisible?: boolean;
     owner?: { connId?: string; deviceId?: string };
     turnKind?: "main" | "btw";
+    queued?: boolean;
+    runId?: string;
   } = {},
-) {
-  const now = Date.now();
-  return {
-    controller: new AbortController(),
+): RpcSourceRef {
+  const adapter: RpcSourceAdapter = {
     sessionId: params.sessionId ?? `${sessionKey}-session`,
     sessionKey,
     agentId: params.agentId,
-    startedAtMs: now,
-    expiresAtMs: now + 30_000,
     controlUiVisible: params.controlUiVisible,
     ownerConnId: params.owner?.connId,
     ownerDeviceId: params.owner?.deviceId,
     turnKind: params.turnKind,
   };
+  const input = reserveSessionControllerSource(sessionKey, {
+    protocolRunId: params.runId,
+    target: captureSessionTarget({
+      storeScope: params.storeScope ?? `/synthetic/chat-abort/${randomUUID()}/sessions.db`,
+      sessionKey,
+      incarnation: adapter.sessionId,
+      agentId: params.agentId,
+    }),
+    policy: { mode: "followup" },
+    adapter,
+  });
+  const ref = { input, adapter };
+  testSources.add(ref);
+  if (!params.queued) {
+    // Drive the actual mailbox admission before attaching the operation. Each
+    // fixture has an isolated physical owner, not a fake activity field.
+    let started = false;
+    const admission = claimSessionControllerTask(input, (claim) => {
+      started = true;
+      const operation = createReplyOperation({
+        sessionKey,
+        sessionId: adapter.sessionId,
+        agentId: params.agentId,
+        resetTriggered: false,
+        mailboxClaim: claim,
+      });
+      // This fixture owns a real producer that returns after observing cancellation.
+      // Stop must still join its finally block rather than treating abort as settlement.
+      void (async () => {
+        try {
+          await new Promise<void>((resolve) => {
+            input.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        } finally {
+          operation.complete();
+          releaseSessionControllerClaim(claim);
+        }
+      })();
+    });
+    testAdmissions.push(
+      admission.then(
+        () => undefined,
+        (error: unknown) => (!started && input.abortSignal.aborted ? undefined : { error }),
+      ),
+    );
+  }
+  return ref;
 }
 
 type ChatAbortTestContext = Record<string, unknown> & {
-  chatAbortControllers: Map<string, ReturnType<typeof createActiveRun>>;
-  chatQueuedTurns: Map<string, import("../chat-queued-turns.js").QueuedChatTurnEntry>;
+  rpcSources: Map<string, RpcSourceRef>;
   chatRunState: ChatRunState;
   dedupe: Map<string, unknown>;
   removeChatRun: (
@@ -66,8 +145,7 @@ export function createChatAbortContext(
       ? (overrides.chatRunState as ChatRunState)
       : createChatRunState();
   const context = {
-    chatAbortControllers: new Map(),
-    chatQueuedTurns: new Map(),
+    rpcSources: new Map(),
     chatRunState,
     dedupe: new Map(),
     removeChatRun: vi
@@ -80,6 +158,12 @@ export function createChatAbortContext(
     logGateway: { warn: vi.fn() },
     ...overrides,
   } as ChatAbortTestContext;
+  // Synthetic registrations retire through the real index owner only after the
+  // producer's exact source receipt, preserving replacements and foreign runs.
+  for (const [runId, ref] of context.rpcSources) {
+    const remove = () => removeChatAbortControllerEntry(context.rpcSources, runId, ref);
+    void ref.input.settlement.promise.then(remove, remove);
+  }
   return context;
 }
 

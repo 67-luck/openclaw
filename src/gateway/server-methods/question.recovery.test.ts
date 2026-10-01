@@ -8,18 +8,18 @@ import {
 import { prepareEmbeddedAttemptTimeout } from "../../agents/embedded-agent-runner/run/attempt-timeout-prepare.js";
 import {
   abortAndDrainEmbeddedAgentRun,
-  clearActiveEmbeddedRun,
   queueEmbeddedAgentMessageWithOutcomeAsync,
-  setActiveEmbeddedRun,
   type EmbeddedAgentQueueHandle,
 } from "../../agents/embedded-agent-runner/runs.js";
-import { testing as embeddedRunTesting } from "../../agents/embedded-agent-runner/runs.test-support.js";
+import {
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  testing as embeddedRunTesting,
+} from "../../agents/embedded-agent-runner/runs.test-support.js";
 import {
   createAdmittedGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
 } from "../../agents/tools/gateway-caller-context.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
-import { isReplyRunEvidenceStale } from "../../auto-reply/reply/reply-run-registry.state.js";
 import { admitReplyTurn } from "../../auto-reply/reply/reply-turn-admission.js";
 import {
   claimAgentRunDelegatedAuthority,
@@ -39,6 +39,8 @@ import {
 import { recoverStuckDiagnosticSession } from "../../logging/diagnostic-stuck-session-recovery.runtime.js";
 import { startGatewayDiagnosticHeartbeat } from "../../logging/diagnostic.js";
 import { resetDiagnosticStateForTest } from "../../logging/diagnostic.test-support.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
+import { isReplyRunEvidenceStale } from "../../sessions/session-controller.state.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";

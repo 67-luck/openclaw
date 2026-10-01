@@ -30,10 +30,15 @@ export function isGatewayAgentAbortRejection(error: unknown, signal: AbortSignal
     // The run can cancel its own controller without aborting the Gateway observer.
     return isAgentRunDirectAbortReason(error);
   }
-  if (isAgentRunRestartAbortReason(signal.reason)) {
+  if (signal.reason === "rpc" || signal.reason === "stop") {
+    // The controller Stop kernel carries its committed cause, not necessarily
+    // a DOMException. An unrelated provider failure remains a failure.
+    return error === signal.reason || isAbortError(error);
+  }
+  if (isAgentRunRestartAbortReason(signal.reason) || signal.reason === "restart") {
     return true;
   }
-  if (readErrorName(signal.reason) === "TimeoutError") {
+  if (signal.reason === "timeout" || readErrorName(signal.reason) === "TimeoutError") {
     return true;
   }
   if (!isGatewayAbortSignalReason(signal.reason)) {
@@ -44,8 +49,11 @@ export function isGatewayAgentAbortRejection(error: unknown, signal: AbortSignal
 
 export function resolveGatewayAgentAbortStopReason(
   signal: AbortSignal,
-): "restart" | "rpc" | "timeout" {
-  if (isAgentRunRestartAbortReason(signal.reason)) {
+): "restart" | "rpc" | "stop" | "timeout" {
+  if (signal.reason === "rpc" || signal.reason === "stop" || signal.reason === "timeout") {
+    return signal.reason;
+  }
+  if (isAgentRunRestartAbortReason(signal.reason) || signal.reason === "restart") {
     return "restart";
   }
   return readErrorName(signal.reason) === "TimeoutError" ? "timeout" : "rpc";

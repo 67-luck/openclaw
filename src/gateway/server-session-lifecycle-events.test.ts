@@ -46,7 +46,7 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["observer"]) },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
     });
     await handler({
       sessionKey: sessionRow.key,
@@ -102,7 +102,7 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["reader"]) },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
       getSessionRowProjection: () => (scenario.projection ? projection : undefined),
     });
     const pending = handler({ sessionKey: query.key, agentId: query.agentId, reason: "updated" });
@@ -137,7 +137,7 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["observer"]) },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
     });
     await handler({ sessionKey: sessionRow.key, reason: "delete" });
     expect(broadcastToConnIds).toHaveBeenCalledWith(
@@ -160,7 +160,7 @@ describe("createLifecycleEventBroadcastHandler", () => {
       const handler = createLifecycleEventBroadcastHandler({
         broadcastToConnIds,
         sessionEventSubscribers: { getAll: () => new Set(["observer"]) },
-        chatAbortControllers: new Map(),
+        rpcSources: new Map(),
       });
 
       await handler({ sessionKey: sessionRow.key, agentId: "main", reason });
@@ -178,7 +178,7 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["conn-1"]) },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
     });
 
     await handler({
@@ -210,7 +210,7 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set() },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
     });
 
     try {
@@ -248,7 +248,7 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["conn-1"]) },
-      chatAbortControllers: new Map([["run-before-finalize", activeRun]]),
+      rpcSources: new Map([["run-before-finalize", activeRun]]),
     });
 
     await handler({ sessionKey: "global", ...(agentId ? { agentId } : {}), reason: "updated" });
@@ -306,7 +306,7 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["conn-events"]) },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
     });
 
     await handler({ sessionKey: "global", reason: "patch", catalogChanged: true });

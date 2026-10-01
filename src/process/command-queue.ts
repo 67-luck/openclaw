@@ -640,15 +640,6 @@ export function listCommandLaneTotals(): Array<{
   }));
 }
 
-/**
- * Active task ids for a lane. Ids are process-monotonic, so recovery can
- * detect a turn that started after a point in time it captured earlier.
- */
-export function getCommandLaneActiveTaskIds(lane: string = CommandLane.Main): number[] {
-  const state = getQueueState().lanes.get(normalizeLane(lane));
-  return state ? [...state.activeTaskIds] : [];
-}
-
 /** Return whether this exact lane task still owns an active queue slot. */
 export function isCommandLaneTaskMarkerCurrent(marker: CommandLaneTaskMarker | undefined): boolean {
   if (!marker) {
@@ -664,41 +655,6 @@ export function getTotalQueueSize() {
     total += getLaneDepth(s);
   }
   return total;
-}
-
-export function clearCommandLane(lane: string = CommandLane.Main) {
-  const cleaned = normalizeLane(lane);
-  const state = getQueueState().lanes.get(cleaned);
-  if (!state) {
-    return 0;
-  }
-  const removed = state.queue.length;
-  let entry: QueueEntry | undefined;
-  while ((entry = dequeueLaneQueue(state.queue))) {
-    entry.reject(new CommandLaneClearedError(cleaned));
-  }
-  return removed;
-}
-
-/**
- * Force a single lane back to idle and immediately pump any queued entries.
- * Used only by recovery paths after the owner has already attempted to abort
- * the active work; stale completions from the previous generation are ignored.
- */
-export function resetCommandLane(lane: string = CommandLane.Main): number {
-  const cleaned = normalizeLane(lane);
-  const state = getQueueState().lanes.get(cleaned);
-  if (!state) {
-    return 0;
-  }
-  const released = state.activeTaskIds.size;
-  state.generation += 1;
-  state.activeTaskIds.clear();
-  state.draining = false;
-  // Clearing activeTaskIds may release multiple shared slots. Re-arbitrate the
-  // whole group so the reset lane cannot reclaim them ahead of older siblings.
-  drainReadyCommandLane(cleaned);
-  return released;
 }
 
 /**

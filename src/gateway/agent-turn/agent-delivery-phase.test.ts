@@ -50,7 +50,7 @@ describe("resolveAgentDeliveryPhase", () => {
       bestEffortDeliver: false,
       runId: "strict-target-resolution",
       client: null,
-      context: { chatAbortControllers: new Map() } as never,
+      context: { rpcSources: new Map() } as never,
       respond,
       isWebchatConnect: () => false,
     });
@@ -105,7 +105,7 @@ describe("resolveAgentDeliveryPhase", () => {
           bestEffortDeliver: false,
           runId: "private-delivery",
           client: null,
-          context: { chatAbortControllers: new Map(), logGateway: { info } } as never,
+          context: { rpcSources: new Map(), logGateway: { info } } as never,
           respond,
           isWebchatConnect: () => false,
         };

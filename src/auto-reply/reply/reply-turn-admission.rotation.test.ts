@@ -4,8 +4,8 @@ import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import * as sessionEntries from "../../config/sessions/session-accessor.sqlite-entry.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
-import * as sessionAdmissions from "../../sessions/session-lifecycle-admission.js";
-import { createReplyOperation, type ReplyOperation } from "./reply-run-registry.js";
+import { createReplyOperation, type ReplyOperation } from "../../sessions/session-controller.js";
+import * as sessionAdmissions from "../../sessions/session-controller.lifecycle.js";
 import { testing } from "./reply-run-registry.test-support.js";
 import {
   admitTestReplyTurn,
@@ -53,9 +53,9 @@ describe("reply turn admission rotation", () => {
 
       const snapshotRead = createDeferred();
       const returnAdmission = createDeferred();
-      const beginAdmission = sessionAdmissions.beginSessionWorkAdmission;
+      const beginAdmission = sessionAdmissions.beginSessionEffect;
       const delayedAdmission = vi
-        .spyOn(sessionAdmissions, "beginSessionWorkAdmission")
+        .spyOn(sessionAdmissions, "beginSessionEffect")
         .mockImplementationOnce(async (params) => {
           if (beforeRead) {
             snapshotRead.resolve();

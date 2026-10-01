@@ -8,7 +8,7 @@ import {
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
-import type { AdmittedFollowupTurn } from "./followup-turn-admission.js";
+import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
 import type { FollowupExecutionResult } from "./followup-turn-execution.js";
 import type { FollowupRun } from "./queue.js";
 
@@ -35,8 +35,8 @@ vi.mock("./agent-runner-result-accounting.js", () => ({
   accountFollowupTurn: (...args: unknown[]) => state.account(...args),
 }));
 
-vi.mock("./followup-turn-admission.js", () => ({
-  admitFollowupTurn: (...args: unknown[]) => state.admit(...args),
+vi.mock("./claimed-turn-preparation.js", () => ({
+  prepareClaimedReplyTurn: (...args: unknown[]) => state.admit(...args),
 }));
 
 vi.mock("./followup-turn-execution.js", () => ({
@@ -50,13 +50,11 @@ vi.mock("./followup-delivery.js", () => ({
 
 vi.mock("./queue.js", () => ({
   completeFollowupRunLifecycle: (...args: unknown[]) => state.completeLifecycle(...args),
-  FollowupRunDeferredError: class FollowupRunDeferredError extends Error {},
 }));
 
 vi.mock("../../runtime.js", () => ({ defaultRuntime: { error: vi.fn() } }));
 
 const { createFollowupRunner } = await import("./followup-runner.js");
-const { FollowupRunDeferredError } = await import("./queue.js");
 
 function createQueuedRun(overrides: Partial<FollowupRun> = {}): FollowupRun {
   return {
@@ -179,7 +177,9 @@ describe("createFollowupRunner", () => {
       const order: string[] = [];
       state.admit.mockImplementation(
         async (
-          params: Parameters<typeof import("./followup-turn-admission.js").admitFollowupTurn>[0],
+          params: Parameters<
+            typeof import("./claimed-turn-preparation.js").prepareClaimedReplyTurn
+          >[0],
         ) => {
           await params.onCompactionNoticePayload?.(notice, turn);
           if (!succeeds) {
@@ -228,7 +228,9 @@ describe("createFollowupRunner", () => {
     const order: string[] = [];
     state.admit.mockImplementation(
       async (
-        params: Parameters<typeof import("./followup-turn-admission.js").admitFollowupTurn>[0],
+        params: Parameters<
+          typeof import("./claimed-turn-preparation.js").prepareClaimedReplyTurn
+        >[0],
       ) => {
         await params.onCompactionNoticePayload?.({ text: "Compacting context" }, turn);
         order.push("compaction-finished");
@@ -447,16 +449,16 @@ describe("createFollowupRunner", () => {
     expect(typing.markDispatchIdle).toHaveBeenCalledOnce();
   });
 
-  it("turns active-lane deferral into a restorable queue error", async () => {
+  it("settles invalidated claimed input without executing or replaying", async () => {
     const typing = createTypingController();
     const queued = createQueuedRun();
-    state.admit.mockResolvedValue({ kind: "deferred", reason: "active-run" });
+    state.admit.mockResolvedValue({ kind: "skipped", reason: "lifecycle-invalidated" });
 
     await expect(
       createFollowupRunner({ typing, typingMode: "instant", defaultModel: "claude" })(queued),
-    ).rejects.toBeInstanceOf(FollowupRunDeferredError);
+    ).resolves.toBeUndefined();
 
-    expect(state.completeLifecycle).not.toHaveBeenCalled();
+    expect(state.completeLifecycle).toHaveBeenCalledWith(queued);
     expect(typing.markRunComplete).toHaveBeenCalledOnce();
     expect(typing.markDispatchIdle).toHaveBeenCalledOnce();
   });

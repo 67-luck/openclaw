@@ -5,8 +5,6 @@ import {
   queueEmbeddedAgentMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunOwner,
 } from "../../agents/embedded-agent-runner/runs.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
-import { isReplyRunEvidenceStale } from "../../auto-reply/reply/reply-run-registry.state.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import {
@@ -20,6 +18,8 @@ import {
   startGatewayDiagnosticHeartbeat,
   stopGatewayDiagnosticHeartbeat,
 } from "../../logging/diagnostic.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
+import { isReplyRunEvidenceStale } from "../../sessions/session-controller.state.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
 import { createWorkerLiveEventReceiver } from "./live-events.js";
@@ -54,8 +54,9 @@ describe("cloud worker run ownership", () => {
   ] as const)(
     "keeps a bounded remote tool alive until $cancellation cancellation after a $firstToolDelayMs ms tool-start delay",
     async ({ cancellation, firstToolDelayMs }) => {
-      const turnStartedAtMs = Date.UTC(2026, 7, 29);
-      vi.useFakeTimers({ toFake: ["Date"], now: turnStartedAtMs });
+      let now = Date.UTC(2026, 7, 29);
+      const turnStartedAtMs = now;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
       await seedActivePlacement();
       const launched = createDeferred();
       const finishLaunch = createDeferred();
@@ -143,10 +144,7 @@ describe("cloud worker run ownership", () => {
         credentialExpiresAtMs: Date.now() + input.timeoutMs,
       };
       const receiver = createWorkerLiveEventReceiver();
-      vi.useFakeTimers({
-        toFake: ["Date", "setInterval", "clearInterval", "setTimeout", "clearTimeout"],
-        now: turnStartedAtMs + firstToolDelayMs,
-      });
+      now = turnStartedAtMs + firstToolDelayMs;
       const previousDiagnostics = areDiagnosticsEnabledForProcess();
       setDiagnosticsEnabledForProcess(true);
       logSessionStateChange({
@@ -185,7 +183,7 @@ describe("cloud worker run ownership", () => {
             },
           }),
         ).toEqual({ ok: true, result: { ackedSeq: 1 } });
-        await vi.advanceTimersByTimeAsync(20 * 60_000 + 1 - firstToolDelayMs);
+        now = turnStartedAtMs + 20 * 60_000 + 1;
 
         expect(operation.abortSignal.aborted).toBe(false);
         expect(isReplyRunEvidenceStale(operation)).toBe(false);
@@ -226,15 +224,17 @@ describe("cloud worker run ownership", () => {
               },
             }),
           ).toEqual({ ok: true, result: { ackedSeq: 2 } });
-          vi.setSystemTime(turnStartedAtMs + input.timeoutMs);
+          now = turnStartedAtMs + input.timeoutMs - 1;
           expect(isReplyRunEvidenceStale(operation)).toBe(false);
-          vi.setSystemTime(turnStartedAtMs + input.timeoutMs + 1);
+          now += 1;
           expect(isReplyRunEvidenceStale(operation)).toBe(true);
-          await vi.advanceTimersByTimeAsync(60_000);
+          await operation.watchdog.tick();
           expect(operation.result).toMatchObject({ kind: "failed", code: "run_stalled" });
         }
         expect(workerSignal?.aborted).toBe(true);
         await attempt;
+        operation.complete();
+        await operation.ownerSettlement;
         expect(isEmbeddedAgentRunHandleActive(SESSION_ID)).toBe(false);
         expect(placements.get(SESSION_ID)).toMatchObject({ state: "active", turnClaim: null });
         expect(
@@ -249,10 +249,73 @@ describe("cloud worker run ownership", () => {
         await attempt;
         operation.complete();
         receiver.clear();
-        vi.useRealTimers();
+        clock.mockRestore();
       }
     },
   );
+
+  it("uses accepted approval expiry and live custody without trusting worker events", async () => {
+    const { captureWorkerTurnLiveEventOwner, createWorkerTurnRunOwner } =
+      await import("./worker-turn-run-owner.js");
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+    await seedActivePlacement();
+    const runId = "worker-approval-wait";
+    const claim = await placements.claimTurn({
+      sessionId: SESSION_ID,
+      sessionKey: SESSION_KEY,
+      agentId: "main",
+      runId,
+      claimId: "approval-wait-claim",
+      owner: { kind: "worker", environmentId: ENVIRONMENT_ID, ownerEpoch: OWNER_EPOCH },
+    });
+    const operation = createReplyOperation({
+      sessionId: SESSION_ID,
+      sessionKey: SESSION_KEY,
+      resetTriggered: false,
+    });
+    operation.setPhase("running");
+    const worker = createWorkerTurnRunOwner({
+      placements,
+      claim,
+      sessionKey: SESSION_KEY,
+      turn: { ...turn(runId), timeoutMs: 30 * 60_000, replyOperation: operation },
+    });
+    const owner = captureWorkerTurnLiveEventOwner({ sessionId: SESSION_ID, turnClaim: claim });
+    let pending = true;
+    const expiresAtMs = now + 12 * 60_000;
+    const wait = owner?.beginApprovalWait(expiresAtMs, () => pending);
+    try {
+      expect(wait).toBeDefined();
+      clock.mockReturnValue(now + 7 * 60_000);
+      expect(operation.watchdog.decide()).toMatchObject({
+        action: "observe",
+        reason: "approval",
+        deadlineAtMs: expiresAtMs,
+      });
+      pending = false;
+      expect(operation.watchdog.decide()).toMatchObject({
+        action: "stop",
+        reason: "semantic_stall",
+      });
+      pending = true;
+      clock.mockReturnValue(expiresAtMs);
+      expect(operation.watchdog.decide()).toMatchObject({
+        action: "stop",
+        reason: "semantic_stall",
+      });
+      wait?.close();
+      expect(operation.watchdog.snapshot().waits).toEqual([]);
+      await placements.releaseTurn(claim);
+      owner?.beginApprovalWait(expiresAtMs + 60_000, () => true);
+      expect(operation.watchdog.snapshot().waits).toEqual([]);
+    } finally {
+      wait?.close();
+      worker.dispose();
+      operation.complete();
+      clock.mockRestore();
+    }
+  });
 
   it.each(["replacement", "claim-loss", "shutdown"] as const)(
     "fences retained event recorders after %s, including a reused run ID",
@@ -269,10 +332,16 @@ describe("cloud worker run ownership", () => {
         owner: { kind: "worker" as const, environmentId: ENVIRONMENT_ID, ownerEpoch: OWNER_EPOCH },
       };
       const firstClaim = await placements.claimTurn({ ...claimInput, claimId: "first-claim" });
+      const operation = createReplyOperation({
+        sessionKey: SESSION_KEY,
+        sessionId: SESSION_ID,
+        agentId: "main",
+        resetTriggered: false,
+      });
       const first = createWorkerTurnRunOwner({
         placements,
         claim: firstClaim,
-        turn: turn(runId),
+        turn: { ...turn(runId), replyOperation: operation },
         sessionKey: SESSION_KEY,
       });
       const identity: WorkerConnectionIdentity = {
@@ -299,6 +368,7 @@ describe("cloud worker run ownership", () => {
         },
       };
       let replacement: ReturnType<typeof createWorkerTurnRunOwner> | undefined;
+      let replacementOperation: ReturnType<typeof createReplyOperation> | undefined;
       try {
         if (closure === "shutdown") {
           rotateAgentEventLifecycleGeneration();
@@ -307,14 +377,23 @@ describe("cloud worker run ownership", () => {
         } else {
           await placements.releaseTurn(firstClaim);
           if (closure === "replacement") {
+            first.dispose();
+            operation.complete();
+            await operation.ownerSettlement;
             const nextClaim = await placements.claimTurn({
               ...claimInput,
               claimId: "replacement-claim",
             });
+            replacementOperation = createReplyOperation({
+              sessionKey: SESSION_KEY,
+              sessionId: SESSION_ID,
+              agentId: "main",
+              resetTriggered: false,
+            });
             replacement = createWorkerTurnRunOwner({
               placements,
               claim: nextClaim,
-              turn: turn(runId),
+              turn: { ...turn(runId), replyOperation: replacementOperation },
               sessionKey: SESSION_KEY,
             });
             expect(captureWorkerTurnLiveEventOwner(identity)).toBeUndefined();
@@ -339,6 +418,8 @@ describe("cloud worker run ownership", () => {
       } finally {
         first.dispose();
         replacement?.dispose();
+        replacementOperation?.complete();
+        operation.complete();
       }
     },
   );

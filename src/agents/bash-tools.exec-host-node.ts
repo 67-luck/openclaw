@@ -414,6 +414,7 @@ export async function executeNodeHostCommand(
         // approval-pending here closes the authority before the operator can act.
         const outcome = await execHostShared.resolveExecApprovalWaitOutcome({
           approvalId,
+          expiresAtMs,
           preResolvedDecision,
           signal: params.signal,
           askFallback,
@@ -473,6 +474,7 @@ export async function executeNodeHostCommand(
         void (async () => {
           const approvalOutcome = await execHostShared.resolveExecApprovalWaitOutcome({
             approvalId,
+            expiresAtMs,
             preResolvedDecision,
             signal: params.signal,
             askFallback,

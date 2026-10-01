@@ -1162,7 +1162,7 @@ describe("scheduleRestartSentinelWake", () => {
         broadcastToConnIds,
         sessionEventSubscribers: { getAll: () => subscribers },
         sessionMessageSubscribers: { get: () => subscribers },
-        chatAbortControllers: new Map(),
+        rpcSources: new Map(),
       });
       const publications: Promise<void>[] = [];
       const publicationErrors: unknown[] = [];

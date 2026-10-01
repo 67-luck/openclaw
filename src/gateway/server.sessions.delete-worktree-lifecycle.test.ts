@@ -22,7 +22,7 @@ import {
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
-import { isSessionLifecycleMutationActive } from "../sessions/session-lifecycle-admission.js";
+import { isSessionMutationActive } from "../sessions/session-controller.lifecycle.js";
 import { listSessionStateEventsSince } from "../sessions/session-state-events.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
@@ -164,7 +164,7 @@ test.each(["none", "restore-failed", "placement-changed"] as const)(
         await vi.waitFor(() => {
           expect(SQLITE_SESSION_WRITER_QUEUES.get(writerQueuePath)?.pending.length).toBe(1);
         });
-        expect(isSessionLifecycleMutationActive(storePath, [key, sessionId])).toBe(true);
+        expect(isSessionMutationActive(storePath, [key, sessionId])).toBe(true);
         await placements!.startDispatch({ sessionId, sessionKey: key, agentId: "main" });
         // A stopped replacement is eligible, but cannot reuse preparation owned by the prior placement.
         placements!.fail({ sessionId, expectedGeneration: 1, recoveryError: "preparation failed" });
@@ -202,7 +202,7 @@ test.each(["none", "restore-failed", "placement-changed"] as const)(
       restore?.mockRestore();
       coordinator.completeDispatchReplyOperation();
       await coordinator.releasePreDispatchLifecycleAdmission();
-      expect(isSessionLifecycleMutationActive(storePath, [key, sessionId])).toBe(false);
+      expect(isSessionMutationActive(storePath, [key, sessionId])).toBe(false);
     }
   },
 );
@@ -411,7 +411,7 @@ test("sessions.delete keeps same-key successor worktree creation behind exact cl
 
     removeSpy.mockImplementation(async (params) => {
       if (params.id === predecessorWorktree.id && params.reason === "session-delete") {
-        expect(isSessionLifecycleMutationActive(storePath, [key, predecessorSessionId])).toBe(true);
+        expect(isSessionMutationActive(storePath, [key, predecessorSessionId])).toBe(true);
         expect(threadBindingMocks.unbindThreadBindingsBySessionKey).toHaveBeenCalledWith({
           targetSessionKey: key,
           reason: "session-delete",

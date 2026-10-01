@@ -3,14 +3,6 @@ import type {
   SourceReplyDeliveryMode,
   TaskSuggestionDeliveryMode,
 } from "../../auto-reply/get-reply-options.types.js";
-import type {
-  ReplyBackendQueueMessageOptions,
-  ReplyToolAuthorityOverlay,
-  ReplyTurnParticipants,
-  ReplyBackendQueueMessageResult,
-  ReplyBackendMessageInjection,
-  ReplyBackendMessageInjectionV2,
-} from "../../auto-reply/reply/reply-run-registry.contracts.js";
 import type { AgentRuntimeIdentity } from "../../gateway/agent-runtime-identity-token.js";
 import {
   isAgentEventLifecycleGenerationCurrent,
@@ -22,6 +14,27 @@ import {
   type AgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
 import type { DiagnosticEmbeddedRunOwner } from "../../logging/diagnostic-run-activity.js";
+import type {
+  ReplyOperation,
+  ReplyBackendHandle,
+  ReplyBackendQueueMessageOptions,
+  ReplyToolAuthorityOverlay,
+  ReplyTurnParticipants,
+  ReplyBackendQueueMessageResult,
+  ReplyBackendMessageInjection,
+  ReplyBackendMessageInjectionV2,
+} from "../../sessions/session-controller.contracts.js";
+import {
+  attachControllerNativeAttempt,
+  detachControllerNativeAttempt,
+  resolveControllerNativeAttempt,
+  activeSessionOperations,
+  resolveReplyRunForCurrentSessionId,
+  getSessionControllerEntryForOperation,
+  getAttachedBackend,
+} from "../../sessions/session-controller.state.js";
+import type { SessionControllerWatchdogAttempt } from "../../sessions/session-controller.watchdog.js";
+import type { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { OperationalRunInstanceRef } from "../admitted-run-context.js";
 import type { ReplyExpectation } from "../reply-completion.js";
@@ -111,13 +124,22 @@ export type EmbeddedRunToolAuthorityBinding = (registration: {
   handle: EmbeddedAgentQueueHandle;
 }) => {
   source: "reply" | "attempt";
+  detached?: true;
+  operation?: ReplyOperation;
   sourceTurnId?: string;
+  watchdogAttempt?: SessionControllerWatchdogAttempt;
   project: (overlay: ReplyToolAuthorityOverlay) => string | undefined;
   assertActive: () => void;
   personalToolParticipants?: ReplyTurnParticipants;
 };
 
 export type EmbeddedRunRegistration = {
+  /** Resolves only when this exact native producer clears, including after replacement. */
+  settlement: ReturnType<typeof createDeferredCore<void>>;
+  watchdogAttempt?: SessionControllerWatchdogAttempt;
+  closeWatchdogWait?: () => void;
+  operation?: ReplyOperation;
+  backend?: ReplyBackendHandle;
   /** Registration-owned presentation fact; retained cleanup must not reappear after context release. */
   projectSessionActive?: boolean;
   toolAuthority?: ReturnType<EmbeddedRunToolAuthorityBinding>;
@@ -136,16 +158,11 @@ export type EmbeddedRunCompletionRegistration = {
 
 export type EmbeddedRunCompletionClaim = {
   runId: string;
+  operation?: ReplyOperation;
   lifecycleGeneration: string;
   operationalRunInstance?: OperationalRunInstanceRef;
   promoted: boolean;
   settleRegistration: (registration: EmbeddedRunCompletionRegistration | undefined) => void;
-};
-
-export type EmbeddedRunWaiter = {
-  resolve: (ended: boolean) => void;
-  handle?: EmbeddedAgentQueueHandle;
-  timer?: NodeJS.Timeout;
 };
 
 export type AbandonedEmbeddedRun = {
@@ -162,7 +179,7 @@ const EMBEDDED_RUN_STATE_KEY = Symbol.for("openclaw.embeddedRunState");
 
 // Lazy imports and reloads in one Gateway process must retain the same run owners.
 const embeddedRunState = resolveGlobalSingleton(EMBEDDED_RUN_STATE_KEY, () => ({
-  activeRuns: new Map<string, EmbeddedAgentQueueHandle>(),
+  detachedAttempts: new Set<EmbeddedAgentQueueHandle>(),
   activeRunsByRunId: new Map<string, EmbeddedAgentQueueHandle>(),
   activeRunRegistrations: new WeakMap<EmbeddedAgentQueueHandle, EmbeddedRunRegistration>(),
   // Talk prepares before registration; only the matching live run promotes this
@@ -171,19 +188,61 @@ const embeddedRunState = resolveGlobalSingleton(EMBEDDED_RUN_STATE_KEY, () => ({
   activeRunLifecycleGenerations: new WeakMap<EmbeddedAgentQueueHandle, string>(),
   retainedAbortabilityRunIds: new Set<string>(),
   snapshots: new Map<string, ActiveEmbeddedRunSnapshot>(),
-  sessionIdsByKey: new Map<string, string>(),
   sessionIdsByFile: new Map<string, string>(),
   abandonedRunsBySessionId: new Map<string, AbandonedEmbeddedRun>(),
   abandonedRunSessionIdsByKey: new Map<string, string>(),
   abandonedRunSessionIdsByFile: new Map<string, string>(),
   // The exact handle owns forced cleanup so a stale session id cannot release a replacement turn.
   forcedTerminalSettlements: new WeakMap<EmbeddedAgentQueueHandle, () => Promise<void>>(),
-  waiters: new Map<string, Set<EmbeddedRunWaiter>>(),
 }));
 
-export const ACTIVE_EMBEDDED_RUNS =
-  embeddedRunState.activeRuns ??
-  (embeddedRunState.activeRuns = new Map<string, EmbeddedAgentQueueHandle>());
+// Detached/sessionless attempts retain native authority without creating a session
+// scheduling identity. Scoped attempts exist only on their exact controller turn.
+const detachedAttempts = embeddedRunState.detachedAttempts;
+export function getActiveNativeAttempt(sessionId: string): EmbeddedAgentQueueHandle | undefined {
+  const scoped = resolveControllerNativeAttempt(sessionId);
+  if (scoped || resolveReplyRunForCurrentSessionId(sessionId)) {
+    return scoped;
+  }
+  for (const handle of detachedAttempts) {
+    if (ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.sessionId === sessionId) {
+      return handle;
+    }
+  }
+  return undefined;
+}
+export function* activeNativeAttempts(): IterableIterator<[string, EmbeddedAgentQueueHandle]> {
+  for (const operation of activeSessionOperations()) {
+    const handle = resolveControllerNativeAttempt(operation.sessionId);
+    if (handle) {
+      yield [operation.sessionId, handle];
+    }
+  }
+  for (const handle of detachedAttempts) {
+    const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+    if (registration) {
+      yield [registration.sessionId, handle];
+    }
+  }
+}
+export function attachNativeAttempt(
+  handle: EmbeddedAgentQueueHandle,
+  operation?: ReplyOperation,
+): void {
+  if (operation) {
+    attachControllerNativeAttempt(operation, handle);
+  } else {
+    detachedAttempts.add(handle);
+  }
+}
+export function detachNativeAttempt(handle: EmbeddedAgentQueueHandle): void {
+  const operation = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.operation;
+  if (operation) {
+    detachControllerNativeAttempt(operation, handle);
+  } else {
+    detachedAttempts.delete(handle);
+  }
+}
 export const ACTIVE_EMBEDDED_RUNS_BY_RUN_ID =
   embeddedRunState.activeRunsByRunId ??
   (embeddedRunState.activeRunsByRunId = new Map<string, EmbeddedAgentQueueHandle>());
@@ -215,7 +274,7 @@ export function captureActiveEmbeddedRunPersonalToolParticipants(identity: Agent
     registration.agentId === identity.agentId &&
     handle.runId === instance.runId &&
     ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(instance.runId) === handle &&
-    ACTIVE_EMBEDDED_RUNS.get(registration.sessionId) === handle &&
+    getActiveNativeAttempt(registration.sessionId) === handle &&
     ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) === registration &&
     registration.delegatedAuthority === delegatedAuthority &&
     registration.toolAuthority === toolAuthority;
@@ -245,10 +304,15 @@ export function registerActiveEmbeddedRunHumanInputWait(
 ): ((resolved: boolean) => void) | undefined {
   const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(authority.operationalRunInstance.runId);
   const registration = handle && ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+  const isRegistered = () =>
+    registration?.operation
+      ? getSessionControllerEntryForOperation(registration.operation).nativeAttempt?.handle ===
+        handle
+      : ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(authority.operationalRunInstance.runId) === handle;
   if (
     !handle ||
     !registration ||
-    ACTIVE_EMBEDDED_RUNS.get(registration.sessionId) !== handle ||
+    !isRegistered() ||
     !validateAgentRunDelegatedAuthority(authority) ||
     registration.delegatedAuthority !==
       getActiveAgentRunDelegatedAuthority(authority.operationalRunInstance)
@@ -257,14 +321,25 @@ export function registerActiveEmbeddedRunHumanInputWait(
   }
   const waits = (registration.humanInputWaits ??= new Set());
   waits.add(isPending);
+  const wait = registration.watchdogAttempt?.beginWait({
+    kind: "human_question",
+    isCurrent: () =>
+      waits.has(isPending) &&
+      isPending() &&
+      isRegistered() &&
+      validateAgentRunDelegatedAuthority(authority) &&
+      !handle.isAborted?.(),
+  });
   return (resolved) => {
+    wait?.close();
     if (
       waits.delete(isPending) &&
       resolved &&
-      ACTIVE_EMBEDDED_RUNS.get(registration.sessionId) === handle &&
+      isRegistered() &&
       validateAgentRunDelegatedAuthority(authority) &&
       !handle.isAborted?.()
     ) {
+      registration.watchdogAttempt?.progress("semantic", "human_input:resolved");
       registration.onHumanInputResolved?.();
     }
   };
@@ -275,7 +350,7 @@ export function resolveActiveEmbeddedRunRecoveryBlocker(
   sessionId: string,
   expectedHandle?: object,
 ): "human_input_wait" | "runtime_owned_wait" | "stale_session_state" | undefined {
-  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  const handle = getActiveNativeAttempt(sessionId);
   if (expectedHandle && handle !== expectedHandle) {
     return "stale_session_state";
   }
@@ -288,7 +363,7 @@ export function resolveActiveEmbeddedRunRecoveryBlocker(
     // Question validation can synchronously close authority or replace the run.
     const pending = isPending() && !handle.isAborted?.();
     if (
-      ACTIVE_EMBEDDED_RUNS.get(sessionId) !== handle ||
+      getActiveNativeAttempt(sessionId) !== handle ||
       !registration.humanInputWaits?.has(isPending)
     ) {
       return "stale_session_state";
@@ -306,7 +381,7 @@ export function resolveActiveEmbeddedRunRecoveryBlocker(
   }
   // Runtime probes may synchronously replace a handle or close its admission.
   if (
-    ACTIVE_EMBEDDED_RUNS.get(sessionId) !== handle ||
+    getActiveNativeAttempt(sessionId) !== handle ||
     ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) !== registration
   ) {
     return "stale_session_state";
@@ -329,9 +404,6 @@ export const RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS =
 export const ACTIVE_EMBEDDED_RUN_SNAPSHOTS =
   embeddedRunState.snapshots ??
   (embeddedRunState.snapshots = new Map<string, ActiveEmbeddedRunSnapshot>());
-export const ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY =
-  embeddedRunState.sessionIdsByKey ??
-  (embeddedRunState.sessionIdsByKey = new Map<string, string>());
 export const ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE =
   embeddedRunState.sessionIdsByFile ??
   (embeddedRunState.sessionIdsByFile = new Map<string, string>());
@@ -350,13 +422,10 @@ export const EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS =
     EmbeddedAgentQueueHandle,
     () => Promise<void>
   >());
-export const EMBEDDED_RUN_WAITERS =
-  embeddedRunState.waiters ??
-  (embeddedRunState.waiters = new Map<string, Set<EmbeddedRunWaiter>>());
 
 function evictPriorLifecycleEmbeddedRuns(): void {
   const staleHandles = new Set<EmbeddedAgentQueueHandle>();
-  for (const [sessionId, handle] of ACTIVE_EMBEDDED_RUNS) {
+  for (const [sessionId, handle] of activeNativeAttempts()) {
     const lifecycleGeneration = ACTIVE_EMBEDDED_RUN_LIFECYCLE_GENERATIONS.get(handle);
     if (lifecycleGeneration && isAgentEventLifecycleGenerationCurrent(lifecycleGeneration)) {
       continue;
@@ -364,8 +433,8 @@ function evictPriorLifecycleEmbeddedRuns(): void {
     handle.closeDiagnostics?.();
     ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle)?.humanInputWaits?.clear();
     staleHandles.add(handle);
-    if (ACTIVE_EMBEDDED_RUNS.get(sessionId) === handle) {
-      ACTIVE_EMBEDDED_RUNS.delete(sessionId);
+    if (getActiveNativeAttempt(sessionId) === handle) {
+      detachNativeAttempt(handle);
     }
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.delete(sessionId);
   }
@@ -389,32 +458,29 @@ function evictPriorLifecycleEmbeddedRuns(): void {
       EMBEDDED_RUN_COMPLETION_CLAIMS.delete(sessionId);
     }
   }
-  for (const index of [
-    ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY,
-    ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE,
-  ]) {
+  for (const index of [ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE]) {
     for (const [key, sessionId] of index) {
-      if (!ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
+      if (!getActiveNativeAttempt(sessionId)) {
         index.delete(key);
       }
-    }
-  }
-  for (const [sessionId, waiters] of EMBEDDED_RUN_WAITERS) {
-    if (ACTIVE_EMBEDDED_RUNS.has(sessionId)) {
-      continue;
-    }
-    EMBEDDED_RUN_WAITERS.delete(sessionId);
-    for (const waiter of waiters) {
-      if (waiter.timer) {
-        clearTimeout(waiter.timer);
-      }
-      waiter.resolve(true);
     }
   }
   const abortErrors: unknown[] = [];
   // Remove stale ownership first so synchronous abort callbacks may register a
   // replacement without the cleanup above erasing that current-generation run.
   for (const handle of staleHandles) {
+    const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
+    if (
+      registration?.operation &&
+      registration.backend &&
+      getSessionControllerEntryForOperation(registration.operation).active ===
+        registration.operation &&
+      getAttachedBackend(registration.operation) === registration.backend
+    ) {
+      // The controller cancels its exact attached backend. This adapter only
+      // revokes native indexes; detached or superseded attempts still cancel here.
+      continue;
+    }
     try {
       handle.abort("restart");
     } catch (error) {

@@ -3,8 +3,10 @@ import { WORKER_LAUNCH_V2_PROTOCOL_FEATURE } from "../../../packages/gateway-pro
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   abortAndDrainEmbeddedAgentRun,
+  clearActiveEmbeddedRun,
   setActiveEmbeddedRun,
 } from "../../agents/embedded-agent-runner/runs.js";
+import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
 import {
   installSessionPlacementAdmissionProvider,
   resolveSessionPlacementRuntimeOverride,
@@ -19,6 +21,11 @@ import {
   patchSessionEntryCore,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import {
+  captureSessionTarget,
+  isCompetingSessionControllerWorkActive,
+} from "../../sessions/session-controller.lifecycle.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { prepareSessionLifecycleDrain } from "../server-methods/sessions-lifecycle-drain.js";
@@ -393,8 +400,9 @@ describe("worker turn launcher local placement", () => {
     expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
   });
 
-  it("releases a force-cleared embedded turn for archive without clearing its replacement", async () => {
-    const startedAt = Date.now() - 60_000;
+  it("retains a recovered native turn through raw settlement and fences its stale placement cleanup", async () => {
+    const clock = vi.spyOn(Date, "now");
+    const startedAt = Date.now();
     setRuntimeConfigSnapshot({ session: { store: sessionTarget.storePath } });
     await upsertSessionEntryCore(sessionTarget, {
       sessionId: SESSION_ID,
@@ -409,114 +417,156 @@ describe("worker turn launcher local placement", () => {
       status: "running",
       updatedAt: expect.any(Number),
     });
-    if (!runningEntry) {
-      throw new Error("expected running session entry");
-    }
     const provider = createWorkerSessionTurnPlacementProvider({
       environments: unusedEnvironments(),
       placements,
     });
+    const target = captureSessionTarget({
+      storeScope: sessionTarget.storePath,
+      sessionKey: SESSION_KEY,
+      incarnation: SESSION_ID,
+      agentId: "main",
+    });
+    const turnOwner = { target, sessionKey: SESSION_KEY, sessionId: SESSION_ID, agentId: "main" };
     const oldRunStarted = createDeferred();
     const finishOldRun = createDeferred();
     const replacementStarted = createDeferred();
     const finishReplacement = createDeferred();
     let assertOldSettlementCurrent: (() => void) | undefined;
-    const handle = {
-      queueMessage: async () => {},
-      isStreaming: () => true,
-      isCompacting: () => false,
-      abort: () => {},
-    };
-
-    const oldRun = provider.executeLocalTurn(
-      {
-        sessionId: SESSION_ID,
-        sessionKey: SESSION_KEY,
-        agentId: "main",
-        runId: "run-force-cleared",
-      },
-      async () => {
-        assertOldSettlementCurrent = resolveSessionPlacementTurnSettlementAssertion();
-        assertOldSettlementCurrent?.();
-        setActiveEmbeddedRun(SESSION_ID, handle, SESSION_KEY);
-        oldRunStarted.resolve();
-        await finishOldRun.promise;
-      },
-    );
-    await oldRunStarted.promise;
-    const oldClaimId = placements.get(SESSION_ID)?.turnClaim?.claimId;
-    expect(oldClaimId).toBeTruthy();
-
-    await expect(
-      abortAndDrainEmbeddedAgentRun({
-        sessionId: SESSION_ID,
-        sessionKey: SESSION_KEY,
-        settleMs: 100,
-        forceClear: true,
-        reason: "stuck_recovery",
-      }),
-    ).resolves.toMatchObject({ forceCleared: true });
-    expect(assertOldSettlementCurrent).toBeDefined();
-    expect(() => assertOldSettlementCurrent?.()).toThrow("settlement is closed");
-    const killedEntry = loadSessionEntry(sessionTarget);
-    expect(killedEntry).toMatchObject({
-      sessionId: SESSION_ID,
-      status: "killed",
-      abortedLastRun: true,
+    let settleOldPlacement: (() => Promise<void>) | undefined;
+    const cancel = vi.fn();
+    const handle = createEmbeddedRunHandle({ runId: "run-recovered", abort: cancel });
+    const oldRun = withSessionTurn(turnOwner, async (operation) => {
+      if (!operation) {
+        throw new Error("expected retained native operation");
+      }
+      operation.setPhase("running");
+      await provider.executeLocalTurn(
+        {
+          sessionId: SESSION_ID,
+          sessionKey: SESSION_KEY,
+          agentId: "main",
+          runId: "run-recovered",
+        },
+        async () => {
+          assertOldSettlementCurrent = resolveSessionPlacementTurnSettlementAssertion();
+          settleOldPlacement = resolveSessionPlacementForcedTerminalSettlement();
+          assertOldSettlementCurrent?.();
+          setActiveEmbeddedRun(SESSION_ID, handle, SESSION_KEY, undefined, "main", operation);
+          oldRunStarted.resolve();
+          try {
+            await finishOldRun.promise;
+          } finally {
+            clearActiveEmbeddedRun(SESSION_ID, handle, SESSION_KEY);
+          }
+        },
+      );
     });
-    expect(killedEntry?.updatedAt).toBeGreaterThan(runningEntry.updatedAt);
-
-    const context = {
-      agentRunSeq: new Map(),
-      broadcast: vi.fn(),
-      cancelRunBoundApprovals: vi.fn(),
-      chatAbortControllers: new Map(),
-      chatQueuedTurns: new Map(),
-      chatRunState: createChatRunState(),
-      dedupe: new Map(),
-      getRuntimeConfig: () => ({}),
-      logGateway: { warn: vi.fn() },
-      nodeSendToSession: vi.fn(),
-      removeChatRun: vi.fn(),
-      workerSessionPlacementService: placements,
-    } as unknown as GatewayRequestContext;
-    const archiveDrain = await prepareSessionLifecycleDrain({
-      action: "archive",
-      context,
-      storePath: sessionTarget.storePath,
-      sessionKeys: [SESSION_KEY],
-      sessionId: SESSION_ID,
-      agentId: "main",
-      sessionKey: SESSION_KEY,
-      lifecycleIdentities: [SESSION_KEY, SESSION_ID],
-    });
-    expect(archiveDrain.hasAuthoritativeWork()).toBe(false);
-    archiveDrain.release();
-
-    const replacement = provider.executeLocalTurn(
-      {
+    let replacement: Promise<void> | undefined;
+    let archive: ReturnType<typeof prepareSessionLifecycleDrain> | undefined;
+    let archiveOwner: Awaited<ReturnType<typeof prepareSessionLifecycleDrain>> | undefined;
+    try {
+      await oldRunStarted.promise;
+      const oldClaimId = placements.get(SESSION_ID)?.turnClaim?.claimId;
+      expect(oldClaimId).toBeTruthy();
+      clock.mockReturnValue(Date.now() + 6 * 60_000);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const recovery = abortAndDrainEmbeddedAgentRun({
+          sessionId: SESSION_ID,
+          sessionKey: SESSION_KEY,
+          settleMs: 100,
+          forceClear: true,
+          reason: "stuck_recovery",
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await expect(recovery).resolves.toMatchObject({
+          aborted: true,
+          drained: false,
+          forceCleared: false,
+        });
+      } finally {
+        vi.useRealTimers();
+        clock.mockRestore();
+      }
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(assertOldSettlementCurrent).toBeDefined();
+      expect(() => assertOldSettlementCurrent?.()).toThrow("settlement is closed");
+      expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
+      // Retiring placement authority neither publishes a fabricated killed row nor
+      // proves that the raw backend stopped writing.
+      expect(loadSessionEntry(sessionTarget)).toEqual(runningEntry);
+      expect(
+        isCompetingSessionControllerWorkActive(sessionTarget.storePath, [SESSION_KEY, SESSION_ID]),
+      ).toBe(true);
+      const context = {
+        agentRunSeq: new Map(),
+        broadcast: vi.fn(),
+        cancelRunBoundApprovals: vi.fn(),
+        rpcSources: new Map(),
+        chatRunState: createChatRunState(),
+        dedupe: new Map(),
+        getRuntimeConfig: () => ({}),
+        logGateway: { warn: vi.fn() },
+        nodeSendToSession: vi.fn(),
+        removeChatRun: vi.fn(),
+        workerSessionPlacementService: placements,
+      } as unknown as GatewayRequestContext;
+      let archived = false;
+      archive = prepareSessionLifecycleDrain({
+        action: "archive",
+        context,
+        storePath: sessionTarget.storePath,
+        sessionKeys: [SESSION_KEY],
         sessionId: SESSION_ID,
-        sessionKey: SESSION_KEY,
         agentId: "main",
-        runId: "run-replacement",
-      },
-      async () => {
-        replacementStarted.resolve();
-        await finishReplacement.promise;
-      },
-    );
-    await replacementStarted.promise;
-    const replacementClaimId = placements.get(SESSION_ID)?.turnClaim?.claimId;
-    expect(replacementClaimId).toBeTruthy();
-    expect(replacementClaimId).not.toBe(oldClaimId);
-
-    finishOldRun.resolve();
-    await oldRun;
-    expect(placements.get(SESSION_ID)?.turnClaim?.claimId).toBe(replacementClaimId);
-
-    finishReplacement.resolve();
-    await replacement;
-    expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
+        sessionKey: SESSION_KEY,
+        lifecycleIdentities: [SESSION_KEY, SESSION_ID],
+      }).then((owner) => {
+        archived = true;
+        return owner;
+      });
+      await Promise.resolve();
+      expect(archived).toBe(false);
+      finishOldRun.resolve();
+      await oldRun;
+      archiveOwner = await archive;
+      expect(archiveOwner.hasAuthoritativeWork()).toBe(false);
+      archiveOwner.release();
+      replacement = withSessionTurn(turnOwner, async () => {
+        await provider.executeLocalTurn(
+          {
+            sessionId: SESSION_ID,
+            sessionKey: SESSION_KEY,
+            agentId: "main",
+            runId: "run-replacement",
+          },
+          async () => {
+            replacementStarted.resolve();
+            await finishReplacement.promise;
+          },
+        );
+      });
+      await replacementStarted.promise;
+      const replacementClaimId = placements.get(SESSION_ID)?.turnClaim?.claimId;
+      expect(replacementClaimId).toBeTruthy();
+      expect(replacementClaimId).not.toBe(oldClaimId);
+      expect(settleOldPlacement).toBeDefined();
+      await settleOldPlacement?.();
+      clearActiveEmbeddedRun(SESSION_ID, handle, SESSION_KEY);
+      expect(placements.get(SESSION_ID)?.turnClaim?.claimId).toBe(replacementClaimId);
+      finishReplacement.resolve();
+      await replacement;
+      expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
+    } finally {
+      clock.mockRestore();
+      finishOldRun.resolve();
+      finishReplacement.resolve();
+      await oldRun;
+      archiveOwner ??= await archive;
+      archiveOwner?.release();
+      await replacement;
+    }
   });
 
   it("rejects local CLI execution after worker activation", async () => {

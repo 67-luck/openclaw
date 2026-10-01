@@ -11,19 +11,18 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { saveCronJobsStore } from "../../cron/store.js";
 import type { CronJob } from "../../cron/types.js";
+import { retireSessionControllerSourceCancellation } from "../../sessions/session-controller.mailbox.js";
+import { requestRpcSourceCancellation } from "../../sessions/session-controller.rpc-sources.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import * as userProfileList from "../../state/user-profile-list.js";
 import { ensureProfileForEmail, setAvatar } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import {
-  abortQueuedChatTurnById,
-  registerQueuedChatTurn,
-  retireQueuedChatTurnCancellation,
-} from "../chat-queued-turns.js";
+import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { chatHistoryHandlers } from "./chat-history-handler.js";
 import { createHistoryReadContext } from "./chat-history.test-helpers.js";
 import { chatMessageGetHandlers } from "./chat-message-get-handler.js";
 import { readChatPendingInputs } from "./chat-pending-inputs.js";
+import { captureRpcTargetForTest } from "./rpc-source-fixtures.test-support.js";
 import type { GatewayRequestContext } from "./types.js";
 
 describe("pending input read boundary", () => {
@@ -193,21 +192,20 @@ describe("pending input read boundary", () => {
           {},
           {},
         ].entries()) {
-          const controller = new AbortController();
           const runId = index === 5 ? "external-run-".repeat(30) : `pending-display-run-${index}`;
-          expect(
-            registerQueuedChatTurn({
-              chatQueuedTurns: context.chatQueuedTurns,
-              ...scope,
-              ...overrides,
+          const ref = createRpcSourceForTest(
+            { ...scope, ...overrides },
+            {
               runId,
-              controller,
-            }),
-          ).toBe(true);
+              storeScope: captureRpcTargetForTest(scope).storeScope,
+              phase: "waiting",
+            },
+          );
+          context.rpcSources.set(runId, ref);
           if (index === 3) {
-            retireQueuedChatTurnCancellation(context.chatQueuedTurns, runId, controller);
+            retireSessionControllerSourceCancellation(ref.input);
           } else if (index === 4) {
-            controller.abort();
+            requestRpcSourceCancellation(ref);
           }
         }
         const readPage = async () => {
@@ -510,14 +508,12 @@ describe("pending input consumption receipts", () => {
               ),
             );
           }
-          expect(
-            registerQueuedChatTurn({
-              chatQueuedTurns: context.chatQueuedTurns,
-              ...scope,
-              runId: "retained-0",
-              controller: new AbortController(),
-            }),
-          ).toBe(true);
+          const retainedSource = createRpcSourceForTest(scope, {
+            runId: "retained-0",
+            storeScope: captureRpcTargetForTest(scope).storeScope,
+            phase: "waiting",
+          });
+          context.rpcSources.set("retained-0", retainedSource);
           const retainedPage = await call({ inputRunIds: ["retained-0", "retained-1"], limit: 1 });
           expect(retainedPage.inputReceipts).toEqual([
             { runId: "retained-0", state: "pending", queued: true },
@@ -529,12 +525,7 @@ describe("pending input consumption receipts", () => {
             queuedCount: 1,
             items: [{ runId: "retained-20" }],
           });
-          expect(
-            abortQueuedChatTurnById(context.chatQueuedTurns, {
-              runId: "retained-0",
-              sessionKey: scope.sessionKey,
-            }).aborted,
-          ).toBe(true);
+          expect(requestRpcSourceCancellation(retainedSource)).toBe(true);
           retained[0]?.finish("cancelled");
           const cancelledPage = await call({ inputRunIds: ["retained-0"], limit: 1 });
           expect(cancelledPage.pendingInputs).toMatchObject({ queuedCount: 0 });

@@ -3,17 +3,17 @@ import { AsyncResource } from "node:async_hooks";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../../agents/embedded-agent-runner/runs.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+} from "../../agents/embedded-agent-runner/runs.test-support.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { PluginHookReplyDispatchEvent } from "../../plugins/hook-types.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import {
-  interruptSessionWorkAdmissions,
-  isSessionWorkAdmissionActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  interruptSessionControllerEffects,
+  isSessionControllerWorkActive,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import { recordAgentDatabaseAdmissions } from "../../state/agent-database-admission.js";
 import {
   createChannelTestPluginBase,
@@ -917,10 +917,10 @@ describe("dispatchReplyFromConfig", () => {
     let inBandMutationRan = false;
     const rotatedSessionId = "rotated-session";
     const replyResolver = vi.fn(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
-      expect(isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
-        true,
-      );
-      await runExclusiveSessionLifecycleMutation({
+      expect(
+        isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
+      ).toBe(true);
+      await runSessionMutation({
         scope: "/tmp/mock-sessions.json",
         identities: [sessionKey, sessionId],
         run: async () => {
@@ -1002,7 +1002,7 @@ describe("dispatchReplyFromConfig", () => {
       ((hookName?: string) => hookName === "before_dispatch") as () => boolean,
     );
     hookMocks.runner.runBeforeDispatch.mockImplementationOnce(async () => {
-      lifecycleMutation = runExclusiveSessionLifecycleMutation({
+      lifecycleMutation = runSessionMutation({
         scope: "/tmp/mock-sessions.json",
         identities: [sessionKey, sessionId],
         run: async () => {
@@ -1037,9 +1037,9 @@ describe("dispatchReplyFromConfig", () => {
 
       expect(result).toMatchObject({ queuedFinal: false });
       expect(replyResolver).not.toHaveBeenCalled();
-      expect(isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
-        false,
-      );
+      expect(
+        isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
+      ).toBe(false);
     } finally {
       releaseMutation();
       originalOperation.complete();
@@ -1078,11 +1078,11 @@ describe("dispatchReplyFromConfig", () => {
     const externalLifecycleRequest = new AsyncResource("slack-bypass-settle-race");
     const mutation = externalLifecycleRequest.runInAsyncScope(
       async () =>
-        await runExclusiveSessionLifecycleMutation({
+        await runSessionMutation({
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
           prepare: async () => {
-            await interruptSessionWorkAdmissions({
+            await interruptSessionControllerEffects({
               scope: "/tmp/mock-sessions.json",
               identities: [sessionKey, sessionId],
             });
@@ -1096,7 +1096,7 @@ describe("dispatchReplyFromConfig", () => {
 
     expect(result.queuedFinal).toBe(false);
     expect(mutationRan).toBe(false);
-    expect(isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
+    expect(isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
       true,
     );
 
@@ -1104,7 +1104,7 @@ describe("dispatchReplyFromConfig", () => {
     await mutation;
 
     expect(mutationRan).toBe(true);
-    expect(isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
+    expect(isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
       false,
     );
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
@@ -1141,7 +1141,7 @@ describe("dispatchReplyFromConfig", () => {
       await vi.waitFor(
         () => {
           expect(
-            isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
+            isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
           ).toBe(false);
         },
         { timeout: 500 },
@@ -1185,13 +1185,13 @@ describe("dispatchReplyFromConfig", () => {
       await requireBlockReplyHandler(opts?.onBlockReply)({ text: "queued block" });
       mutation = externalLifecycleRequest.runInAsyncScope(
         async () =>
-          await runExclusiveSessionLifecycleMutation({
+          await runSessionMutation({
             scope: "/tmp/mock-sessions.json",
             identities: [sessionKey, sessionId],
             prepare: async () => {
               signalMutationPrepared();
               await lifecycleInterruptGate;
-              await interruptSessionWorkAdmissions({
+              await interruptSessionControllerEffects({
                 scope: "/tmp/mock-sessions.json",
                 identities: [sessionKey, sessionId],
               });
@@ -1222,9 +1222,9 @@ describe("dispatchReplyFromConfig", () => {
       });
       expect(dispatcher.sendBlockReply).toHaveBeenCalledOnce();
       expect(mutationRan).toBe(false);
-      expect(isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
-        true,
-      );
+      expect(
+        isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
+      ).toBe(true);
 
       releaseDelivery();
       await dispatch;
@@ -1251,11 +1251,11 @@ describe("dispatchReplyFromConfig", () => {
       if (!(event as { isTailDispatch?: boolean }).isTailDispatch) {
         return undefined;
       }
-      await runExclusiveSessionLifecycleMutation({
+      await runSessionMutation({
         scope: "/tmp/mock-sessions.json",
         identities: [sessionKey, sessionId],
         prepare: async () => {
-          initiatingAdmissionExcluded = await interruptSessionWorkAdmissions({
+          initiatingAdmissionExcluded = await interruptSessionControllerEffects({
             scope: "/tmp/mock-sessions.json",
             identities: [sessionKey, sessionId],
             timeoutMs: 25,

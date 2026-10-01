@@ -632,7 +632,7 @@ describe("sessions.patch personal model-account ownership", () => {
     const requestContext = {
       ...context(connections),
       terminalSessions,
-      chatQueuedTurns: new Map(),
+      rpcSources: new Map(),
       dedupe: new Map(),
     };
     const response = await patchSession(

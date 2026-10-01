@@ -10,11 +10,12 @@ import {
   isAgentRunRestartAbortReason,
 } from "../../agents/run-termination.js";
 import {
-  beginSessionWorkAdmission,
-  cancelSessionWorkAdmissionHandoff,
-  interruptSessionWorkAdmissions,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  cancelSessionEffectHandoff,
+  interruptSessionControllerEffects,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
+import { requestRpcSourceCancellation } from "../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
@@ -746,7 +747,7 @@ describe("gateway agent handler", () => {
           [false, undefined, { code: ErrorCodes.UNAVAILABLE, message: inputError.message }],
         ]);
         expect(mocks.agentCommand).not.toHaveBeenCalled();
-        expect(context.chatAbortControllers.has(runId)).toBe(false);
+        expect(context.rpcSources.has(runId)).toBe(false);
         expect(context.dedupe.has(`agent:${runId}`)).toBe(false);
       } finally {
         releaseCleanup.resolve();
@@ -938,7 +939,7 @@ describe("gateway agent handler", () => {
     const runId = "idem-abort-during-admission";
     let releaseMutation = () => {};
     const { promise: mutationStarted, resolve: markMutationStarted } = createDeferredCore();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: "/tmp/sessions.json",
       identities: [sessionKey, "existing-session-id"],
       run: async () => {
@@ -980,7 +981,7 @@ describe("gateway agent handler", () => {
 
     expect(mockCallArg(abortRespond)).toBe(true);
     expect(mocks.agentCommand).not.toHaveBeenCalled();
-    expect(context.chatAbortControllers.has(runId)).toBe(false);
+    expect(context.rpcSources.has(runId)).toBe(false);
     expect(
       respond.mock.calls.some(
         ([ok, payload]) => ok === true && (payload as { status?: string })?.status === "timeout",
@@ -995,7 +996,7 @@ describe("gateway agent handler", () => {
     const runId = "idem-expired-during-admission";
     let releaseMutation = () => {};
     const { promise: mutationStarted, resolve: markMutationStarted } = createDeferredCore();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: "/tmp/sessions.json",
       identities: [sessionKey, "existing-session-id"],
       run: async () => {
@@ -1036,7 +1037,7 @@ describe("gateway agent handler", () => {
     await request;
 
     expect(mocks.agentCommand).not.toHaveBeenCalled();
-    expect(context.chatAbortControllers.has(runId)).toBe(false);
+    expect(context.rpcSources.has(runId)).toBe(false);
     expect(
       respond.mock.calls.some(
         ([ok, payload]) =>
@@ -1054,7 +1055,7 @@ describe("gateway agent handler", () => {
     const runId = "idem-terminal-during-admission";
     let releaseMutation = () => {};
     const { promise: mutationStarted, resolve: markMutationStarted } = createDeferredCore();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: "/tmp/sessions.json",
       identities: [sessionKey, "existing-session-id"],
       run: async () => {
@@ -1107,7 +1108,7 @@ describe("gateway agent handler", () => {
     const sessionId = "existing-session-id";
     mocks.agentCommand.mockImplementationOnce(async () => {
       await expect(
-        interruptSessionWorkAdmissions({
+        interruptSessionControllerEffects({
           scope: "/tmp/sessions.json",
           identities: [sessionKey, sessionId],
           timeoutMs: 5,
@@ -1139,7 +1140,7 @@ describe("gateway agent handler", () => {
       const scope = "/tmp/sessions.json";
       primeMainAgentRun({ sessionId });
       mocks.agentCommand.mockClear();
-      const admission = await beginSessionWorkAdmission({
+      const admission = await beginSessionEffect({
         scope,
         identities: [sessionKey, sessionId],
         assertAllowed: () => {},
@@ -1147,13 +1148,13 @@ describe("gateway agent handler", () => {
       const handoffId = admission.createHandoff();
       const { promise: mutationStarted, resolve: markMutationStarted } = createDeferredCore();
       let mutationRan = false;
-      const mutation = runExclusiveSessionLifecycleMutation({
+      const mutation = runSessionMutation({
         scope,
         identities: [sessionKey, sessionId],
         prepare: async () => {
           markMutationStarted();
           expect(
-            await interruptSessionWorkAdmissions({
+            await interruptSessionControllerEffects({
               scope,
               identities: [sessionKey, sessionId],
               reason,
@@ -1187,7 +1188,7 @@ describe("gateway agent handler", () => {
         );
         await mutation;
 
-        expect(cancelSessionWorkAdmissionHandoff(handoffId)).toBe(false);
+        expect(cancelSessionEffectHandoff(handoffId)).toBe(false);
         expect(mutationRan).toBe(true);
         expect(mocks.agentCommand).not.toHaveBeenCalled();
         expect(respond).toHaveBeenCalledWith(
@@ -1197,7 +1198,7 @@ describe("gateway agent handler", () => {
           expect.objectContaining({ cached: true, runId }),
         );
       } finally {
-        cancelSessionWorkAdmissionHandoff(handoffId);
+        cancelSessionEffectHandoff(handoffId);
         admission.release();
         await mutation;
       }
@@ -1246,23 +1247,20 @@ describe("gateway agent handler", () => {
       );
       await waitForAgentCommandCall();
 
-      const abortEntry = requireValue(
-        context.chatAbortControllers.get(runId),
-        "admitted controller",
-      );
+      const abortEntry = requireValue(context.rpcSources.get(runId), "admitted controller");
       if (interruption === "already stopped") {
-        abortEntry.abortStopReason = "rpc";
-        abortEntry.controller.abort(reason);
+        abortEntry.adapter.abortStopReason = "rpc";
+        requestRpcSourceCancellation(abortEntry, reason);
       }
-      const draining = interruptSessionWorkAdmissions({
+      const draining = interruptSessionControllerEffects({
         scope: "/tmp/sessions.json",
         identities: [sessionKey, sessionId],
         reason: interruption === "already stopped" ? createAgentRunRestartAbortError() : reason,
       });
       try {
-        expect(abortEntry.abortStopReason).toBe(terminal ? "rpc" : "restart");
+        expect(abortEntry.adapter.abortStopReason).toBe(terminal ? "rpc" : "restart");
         if (terminal) {
-          expect(abortEntry.controller.signal.reason).toBe(reason);
+          expect(abortEntry.input.abortSignal.reason).toBe(reason);
         }
       } finally {
         settled.resolve();

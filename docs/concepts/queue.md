@@ -18,7 +18,7 @@ OpenClaw serializes inbound auto-reply runs (all channels) through a tiny in-pro
 ## How it works
 
 - A lane-aware FIFO queue drains each lane with a configurable concurrency cap (default 1 for unconfigured lanes; `main` uses `max(8, available CPU parallelism * 4)`, ordinary sub-agent queues default to 8 per spawning session, and Swarm collector queues default to 32 per group).
-- CLI, embedded, and Codex runs share the same **session-key lane** (`session:<key>`). Each turn waits there before acquiring the session's execution claim, so changing runtimes cannot start a competing turn.
+- CLI, embedded, and Codex runs enter the same **session controller mailbox**. Its selector grants one turn for the physical session before global capacity or backend preparation, so changing runtimes cannot start a competing turn.
 - Inbound session runs then enter the **global `main` lane**, whose parallelism is capped by `agents.defaults.maxConcurrent`. Ordinary sub-agent runs instead use their immediate spawning/controller session's budget, set by `agents.defaults.subagents.maxConcurrent`. Swarm collector children use their group's separate budget, set by `tools.swarm.maxConcurrent`.
 - Embedded attempt preparation yields to the event loop after 16 stage starts or at least 8 ms of synchronous dispatch work per slice, so concurrent starts leave room for Gateway requests. A running stage is not preempted. Asynchronous stage work can still overlap and does not count toward that time budget; this does not lower the run concurrency limit or change session serialization.
 - When verbose logging is enabled, queued runs emit a short notice if they waited more than ~2s before starting.
@@ -189,11 +189,11 @@ does not repeat their effects.
 
 - Applies to auto-reply agent runs across all inbound channels that use the gateway reply pipeline (WhatsApp web, Telegram, Slack, Discord, Signal, iMessage, webchat, etc.).
 - Default lane (`main`) is process-wide for inbound turns; set `agents.defaults.maxConcurrent` to allow multiple sessions in parallel.
-- Heartbeat embedded runs use the bounded `cron-nested` lane for global admission so slow background work does not block inbound replies, while their configured heartbeat session lane still serializes work for that session.
+- Heartbeat embedded runs use the bounded `cron-nested` lane for global admission so slow background work does not block inbound replies, while the configured heartbeat session controller still serializes work for that session.
 - Additional lanes may exist (e.g. `cron`, `cron-nested`, `nested`) so background jobs can run in parallel without blocking inbound replies. Isolated cron agent turns hold a `cron` slot while their inner agent execution uses `cron-nested`. Shared non-cron `nested` flows keep their own lane behavior. These detached runs remain owned by their native runtime.
 - Ordinary sub-agent execution uses `subagent:<immediate session>`. `agents.defaults.subagents.maxConcurrent` defaults to `8` for each session; independent sessions and nested orchestrators do not share those slots. The separate `maxChildrenPerAgent` admission limit still applies. [Codex-native subagents](/plugins/codex-harness) use Codex's own scheduler.
 - [Swarm](/tools/swarm) collector children use `subagent:swarm:<schedulerGroupKey>`, capped by the group's resolved `tools.swarm.maxConcurrent` (default `32`). They do not occupy their parent's ordinary sub-agent lane. An ordinary child spawned by a collector uses that collector's own session lane. Swarm's `maxChildrenPerGroup` and `maxTotalPerGroup` remain separate admission limits. Lane diagnostics identify the swarm lane and its group key.
-- Per-session lanes guarantee that only one agent run touches a given session at a time.
+- The session controller selects one turn at a time; retained source, delivery, and writer settlement can continue to fence its successor.
 - No external dependencies or background worker threads; pure TypeScript + promises.
 
 ## Background work
@@ -207,17 +207,18 @@ The Control UI **System busyness** overlay and `diagnostics.lanes` report this w
 ## Troubleshooting
 
 - If commands seem stuck, enable verbose logs and look for "queued for ...ms" lines to confirm the queue is draining.
-- Codex app-server runs that accept a turn and then stop emitting progress are interrupted by the Codex adapter so the active session lane can release instead of waiting for the outer run timeout.
+- The operation-owned watchdog observes native progress and real wait deadlines independently of diagnostic logging. A stalled turn requests cancellation of its captured native attempt; unresolved cleanup continues to fence the next turn.
 - When diagnostics are enabled, sessions that remain in `processing` past the built-in warning threshold with no observed reply, tool, status, block, or ACP progress are classified by current activity:
   - Active work with recent progress logs as `session.long_running`. Owned silent model calls also stay `session.long_running` until the built-in abort threshold so slow or non-streaming providers are not reported as stalled too early.
   - Active work with no recent progress logs as `session.stalled`; owned model calls, blocked tool calls, and stalled embedded runs switch to `session.stalled` at or after the abort threshold. Ownerless stale model/tool activity is not hidden as long-running.
   - `session.stuck` is reserved for recoverable stale session bookkeeping, including idle queued sessions with stale ownerless model/tool activity.
-  - `session.stuck` always triggers recovery that can release the affected session lane. A `session.stalled` classification past the abort threshold (blocked tool call, stalled model call, or stalled embedded run) can also trigger active-abort recovery, so both classifications can unstick a queue, not only `session.stuck`.
+  - Diagnostics project controller state; they do not reset lanes, clear run owners, or manufacture idle state. The controller watchdog owns recovery. A timeout requests cleanup but never proves that a writer has stopped.
   - Repeated model requests without semantic progress share one stagnation clock. Fresh transport bytes or another retry cannot renew it indefinitely. Recovery rechecks that evidence before aborting, honors owned tool and provider retry deadlines, and lets the existing run owner settle before the queue drains.
-  - Repeated `session.stuck` and `session.long_running` warning log lines back off exponentially while the session remains unchanged; recovery attempts still run on every heartbeat tick regardless of that backoff.
+  - Repeated warning lines back off while the session remains unchanged. Watchdog progress, recovery deduplication, and cleanup remain owned by the exact operation, independent of the diagnostic heartbeat.
 
 ## Related
 
+- [Session controller](/concepts/session-controller) - scheduling ownership and lifecycle invariants
 - [Agent loop](/concepts/agent-loop)
 - [Session management](/concepts/session)
 - [Steering queue](/concepts/queue-steering)

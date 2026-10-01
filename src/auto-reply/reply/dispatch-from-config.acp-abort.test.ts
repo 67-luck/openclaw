@@ -1,6 +1,6 @@
 // Tests ACP dispatch abort behavior and emitted lifecycle hooks.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred, raceWithTimeoutResult } from "../../../test/helpers/promise.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import type {
   AcpSessionResolution,
   SessionAcpMeta,
@@ -14,7 +14,19 @@ import type {
   AcpRuntimeEvent,
   AcpRuntimeTurnInput,
 } from "../../plugin-sdk/acp-runtime.js";
+import {
+  captureSessionTarget,
+  runSessionMutation,
+  interruptSessionControllerEffects,
+} from "../../sessions/session-controller.lifecycle.js";
+import {
+  captureSessionControllerSourceSettlement,
+  reserveSessionControllerSource,
+  claimSessionControllerTask,
+  releaseSessionControllerClaim,
+} from "../../sessions/session-controller.mailbox.js";
 import { createInternalHookEventPayload } from "../../test-utils/internal-hook-event-payload.js";
+import { registerNativeDispatchAbortCases } from "./dispatch-from-config.native-abort.cases.js";
 import {
   acpManagerRuntimeMocks,
   acpMocks,
@@ -37,14 +49,15 @@ import {
   resolveReplyOperationAgentTurn,
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
+import { prepareReplySourceInput } from "./reply-source-binding.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 let dispatchReplyFromConfig: typeof import("./dispatch-from-config.js").dispatchReplyFromConfig;
 let tryDispatchAcpReplyHook: typeof import("../../plugin-sdk/acpx.js").tryDispatchAcpReplyHook;
 let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
-let replyRunRegistry: typeof import("./reply-run-registry.js").replyRunRegistry;
-let getActiveReplyRunCount: typeof import("./reply-run-registry.registry.js").getActiveReplyRunCount;
-let createReplyOperation: typeof import("./reply-run-registry.js").createReplyOperation;
+let replyRunRegistry: typeof import("../../sessions/session-controller.js").replyRunRegistry;
+let listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.registry.js").listActiveReplyRunSessionKeys;
+let createReplyOperation: typeof import("../../sessions/session-controller.js").createReplyOperation;
 let replyRunTesting: typeof import("./reply-run-registry.test-support.js").testing;
 
 function shouldUseAcpReplyDispatchHook(eventUnknown: unknown): boolean {
@@ -170,8 +183,10 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     ({ dispatchReplyFromConfig } = await import("./dispatch-from-config.js"));
     ({ tryDispatchAcpReplyHook } = await import("../../plugin-sdk/acpx.js"));
     ({ resetInboundDedupe } = await import("./inbound-dedupe.js"));
-    ({ replyRunRegistry, createReplyOperation } = await import("./reply-run-registry.js"));
-    ({ getActiveReplyRunCount } = await import("./reply-run-registry.registry.js"));
+    ({ replyRunRegistry, createReplyOperation } =
+      await import("../../sessions/session-controller.js"));
+    ({ listActiveReplyRunSessionKeys } =
+      await import("../../sessions/session-controller.registry.js"));
     ({ testing: replyRunTesting } = await import("./reply-run-registry.test-support.js"));
   });
 
@@ -325,7 +340,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       releaseTurn.resolve();
       await operation?.ownerSettlement;
       expectNoReplies(dispatcher);
-      expect(getActiveReplyRunCount()).toBe(0);
+      expect(listActiveReplyRunSessionKeys()).toEqual([]);
     } finally {
       releaseTurn.resolve();
       await Promise.allSettled([dispatchPromise, operation?.ownerSettlement]);
@@ -375,7 +390,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
 
     expect(result.counts.final).toBe(0);
     expect(hookMocks.runner.runReplyDispatch).toHaveBeenCalledTimes(2);
-    expect(getActiveReplyRunCount()).toBe(0);
+    expect(listActiveReplyRunSessionKeys()).toEqual([]);
   });
 
   it("suppresses late reply_dispatch sends when a hook ignores a dispatch abort", async () => {
@@ -438,7 +453,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       await operation?.ownerSettlement;
       expect(lateSendResults).toEqual([false, false, false]);
       expectNoReplies(dispatcher);
-      expect(getActiveReplyRunCount()).toBe(0);
+      expect(listActiveReplyRunSessionKeys()).toEqual([]);
     } finally {
       releaseHook.resolve();
       await Promise.allSettled([dispatchPromise, operation?.ownerSettlement]);
@@ -568,7 +583,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       releaseTailDispatch.resolve();
       await operation?.ownerSettlement;
       expectNoReplies(dispatcher);
-      expect(getActiveReplyRunCount()).toBe(0);
+      expect(listActiveReplyRunSessionKeys()).toEqual([]);
     } finally {
       releaseTailDispatch.resolve();
       await Promise.allSettled([dispatchPromise, operation?.ownerSettlement]);
@@ -616,12 +631,118 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       releaseBeforeDispatch.resolve();
       await operation?.ownerSettlement;
       expectNoReplies(dispatcher);
-      expect(getActiveReplyRunCount()).toBe(0);
+      expect(listActiveReplyRunSessionKeys()).toEqual([]);
     } finally {
       releaseBeforeDispatch.resolve();
       await Promise.allSettled([dispatchPromise, operation?.ownerSettlement]);
     }
   });
+
+  it.each(["before_dispatch", "reply_dispatch"] as const)(
+    "retains unclaimed %s source custody until abort-insensitive hook return",
+    async (hook) => {
+      const key = "agent:main:raw-preparation-" + hook;
+      const cfg = createDispatchConfig();
+      const ctx = buildTestCtx({ Provider: "discord", Surface: "discord", SessionKey: key });
+      const origin = new AbortController();
+      const predecessor = createReplyOperation({
+        sessionKey: key,
+        sessionId: "older-" + hook,
+        resetTriggered: false,
+      });
+      const prepared = prepareReplySourceInput(ctx, cfg, { abortSignal: origin.signal });
+      const input = prepared.input;
+      if (!input) {
+        throw new Error("missing prepared source");
+      }
+      const receipt = captureSessionControllerSourceSettlement(input);
+      const settled = vi.fn();
+      void receipt.then(settled);
+      const entered = createDeferred();
+      const release = createDeferred();
+      const returned = createDeferred();
+      hookMocks.runner.hasHooks.mockImplementation((name?: string) => name === hook);
+      const heldHook = async () => {
+        entered.resolve();
+        await release.promise;
+        returned.resolve();
+        return undefined;
+      };
+      if (hook === "before_dispatch") {
+        hookMocks.runner.runBeforeDispatch.mockImplementation(heldHook);
+      } else {
+        hookMocks.runner.runReplyDispatch.mockImplementation(heldHook);
+      }
+      const dispatcher = createDispatcher();
+      const resolver = vi.fn();
+      const dispatch = dispatchReplyFromConfig({
+        ctx,
+        cfg,
+        dispatcher,
+        replyOptions: prepared.options,
+        replyResolver: resolver,
+      });
+      let mutation: Promise<void> | undefined;
+      let next: ReturnType<typeof claimSessionControllerTask> | undefined;
+      try {
+        await entered.promise;
+        expect(input.claim).toBeUndefined();
+        origin.abort();
+        await expect(dispatch).resolves.toMatchObject(expectedNoQueuedReplyResult());
+        // The unrelated predecessor did not grant this source its cancellation authority.
+        expect(predecessor.result).toBeNull();
+        predecessor.complete();
+        await predecessor.ownerSettlement;
+        expect(settled).not.toHaveBeenCalled();
+        const target = captureSessionTarget({
+          storeScope: "/tmp/mock-sessions.json",
+          sessionKey: key,
+        });
+        const mutationEntered = createDeferred();
+        const mutated = vi.fn();
+        mutation = runSessionMutation({
+          target,
+          prepare: async () => {
+            mutationEntered.resolve();
+            await interruptSessionControllerEffects({ target });
+          },
+          run: async () => {
+            mutated();
+          },
+        });
+        await mutationEntered.promise;
+        const successor = reserveSessionControllerSource(key, {
+          target,
+          policy: { mode: "followup" },
+        });
+        const selected = vi.fn();
+        next = claimSessionControllerTask(successor, selected);
+        expect(mutated).not.toHaveBeenCalled();
+        expect(selected).not.toHaveBeenCalled();
+        release.resolve();
+        await returned.promise;
+        await receipt;
+        await mutation;
+        const claim = await next;
+        expect(settled).toHaveBeenCalledOnce();
+        expect(mutated).toHaveBeenCalledOnce();
+        expect(selected).toHaveBeenCalledOnce();
+        releaseSessionControllerClaim(claim);
+        await claim.settlement.promise;
+        expect(resolver).not.toHaveBeenCalled();
+        expectNoReplies(dispatcher);
+      } finally {
+        release.resolve();
+        predecessor.complete();
+        await Promise.allSettled([dispatch, returned.promise, receipt, mutation]);
+        const claim = await next;
+        if (claim) {
+          releaseSessionControllerClaim(claim);
+          await claim.settlement.promise;
+        }
+      }
+    },
+  );
 
   it("suppresses handled before_dispatch final delivery after active source abort", async () => {
     hookMocks.runner.hasHooks.mockImplementation(
@@ -652,6 +773,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       ctx,
       cfg: createDispatchConfig(),
       dispatcher,
+      replyOptions: { abortSignal: existingOperation.abortSignal },
       replyResolver: vi.fn(),
     });
 
@@ -659,7 +781,9 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     expect(mocks.routeReply).not.toHaveBeenCalled();
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
     expect(existingOperation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
-    expect(getActiveReplyRunCount()).toBe(0);
+    existingOperation.complete();
+    await existingOperation.ownerSettlement;
+    expect(listActiveReplyRunSessionKeys()).toEqual([]);
   });
 
   it("wires active source operation abort into pre-dispatch reply_dispatch hooks", async () => {
@@ -718,6 +842,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       ctx,
       cfg: createDispatchConfig(),
       dispatcher,
+      replyOptions: { abortSignal: existingOperation.abortSignal },
       replyResolver: vi.fn(),
     });
 
@@ -737,7 +862,9 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     expect(abortStates).toEqual([true]);
     expect(lateSendResults).toEqual([false, false, false]);
     expectNoReplies(dispatcher);
-    expect(getActiveReplyRunCount()).toBe(0);
+    existingOperation.complete();
+    await existingOperation.ownerSettlement;
+    expect(listActiveReplyRunSessionKeys()).toEqual([]);
   });
 
   it("suppresses reply resolver runs after active source abort", async () => {
@@ -759,6 +886,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       ctx,
       cfg: createDispatchConfig(),
       dispatcher,
+      replyOptions: { abortSignal: existingOperation.abortSignal },
       replyResolver,
     });
 
@@ -769,7 +897,8 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     expect(replyResolver).not.toHaveBeenCalled();
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
     existingOperation.complete();
-    expect(getActiveReplyRunCount()).toBe(0);
+    await existingOperation.ownerSettlement;
+    expect(listActiveReplyRunSessionKeys()).toEqual([]);
   });
 
   it("keeps caller abort active while waiting for an active source operation", async () => {
@@ -802,7 +931,9 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     expect(replyResolver).not.toHaveBeenCalled();
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
     existingOperation.abortByUser();
-    expect(getActiveReplyRunCount()).toBe(0);
+    existingOperation.complete();
+    await existingOperation.ownerSettlement;
+    expect(listActiveReplyRunSessionKeys()).toEqual([]);
   });
 
   it.each([
@@ -870,7 +1001,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       expect(dispatcher.sendToolResult).not.toHaveBeenCalled();
       expect(dispatcher.sendBlockReply).not.toHaveBeenCalled();
       expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
-      expect(getActiveReplyRunCount()).toBe(0);
+      expect(listActiveReplyRunSessionKeys()).toEqual([]);
     },
   );
 
@@ -913,174 +1044,15 @@ describe("dispatchReplyFromConfig ACP abort", () => {
         reason: "reply_operation_aborted",
       }),
     );
-    expect(getActiveReplyRunCount()).toBe(0);
+    expect(listActiveReplyRunSessionKeys()).toEqual([]);
   });
 
-  it("keys native command pre-dispatch ownership to the source session", async () => {
-    // Contract: reply-run admission is source-keyed for native command turns.
-    // Command handlers still resolve the target via CommandTargetSessionKey /
-    // initialSessionStoreEntry; only the reply-operation key is source-owned
-    // so mid-run status/stop/etc. do not wait on the target's active run.
-    hookMocks.runner.hasHooks.mockImplementation(
-      (hookName?: string) => hookName === "before_dispatch",
-    );
-    const beforeDispatchStarted = createDeferred();
-    const releaseBeforeDispatch = createDeferred();
-    hookMocks.runner.runBeforeDispatch.mockImplementation(async () => {
-      beforeDispatchStarted.resolve();
-      await releaseBeforeDispatch.promise;
-      return undefined;
-    });
-
-    const sourceSessionKey = "agent:main:discord:slash:user-1";
-    const targetSessionKey = "agent:main:discord:channel:target-1";
-    const dispatcher = createDispatcher();
-    const ctx = buildTestCtx({
-      Provider: "discord",
-      Surface: "discord",
-      CommandSource: "native",
-      CommandTurn: {
-        kind: "native",
-        source: "native",
-        authorized: true,
-      },
-      SessionKey: sourceSessionKey,
-      CommandTargetSessionKey: targetSessionKey,
-      BodyForAgent: "hang before command source dispatch",
-    });
-    const dispatchPromise = dispatchReplyFromConfig({
-      ctx,
-      cfg: createDispatchConfig(),
-      dispatcher,
-      replyResolver: vi.fn(),
-    });
-
-    let operation: ReturnType<typeof createReplyOperation> | undefined;
-    try {
-      await expect(
-        raceWithTimeoutResult(
-          beforeDispatchStarted.promise.then(() => "started" as const),
-          100,
-          "pending" as const,
-        ),
-      ).resolves.toBe("started");
-      operation = replyRunRegistry.get(sourceSessionKey);
-      expect(operation?.ownerSettlement).toBeDefined();
-      expect(replyRunRegistry.abort(targetSessionKey)).toBe(false);
-      expect(replyRunRegistry.abort(sourceSessionKey)).toBe(true);
-
-      await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
-      expect(replyRunRegistry.get(sourceSessionKey)).toBe(operation);
-      expect(replyRunRegistry.get(targetSessionKey)).toBeUndefined();
-      expect(operation?.abortSignal.aborted).toBe(true);
-
-      releaseBeforeDispatch.resolve();
-      await operation?.ownerSettlement;
-      expectNoReplies(dispatcher);
-      expect(getActiveReplyRunCount()).toBe(0);
-    } finally {
-      releaseBeforeDispatch.resolve();
-      await Promise.allSettled([dispatchPromise, operation?.ownerSettlement]);
-    }
-  });
-
-  it("admits unauthorized native /stop on the source while the target has an active run", async () => {
-    const sourceSessionKey = "agent:main:telegram:slash:user-unauth";
-    const targetSessionKey = "agent:main:telegram:group:target-run";
-    const targetOperation = createReplyOperation({
-      sessionKey: targetSessionKey,
-      sessionId: "target-active-session",
-      resetTriggered: false,
-    });
-    targetOperation.setPhase("running");
-
-    const replyResolver = vi.fn(async () => ({
-      text: "You are not authorized to use this command.",
-    }));
-    const dispatcher = createDispatcher();
-    const ctx = buildTestCtx({
-      Provider: "telegram",
-      Surface: "telegram",
-      CommandSource: "native",
-      CommandAuthorized: false,
-      CommandTurn: {
-        kind: "native",
-        source: "native",
-        authorized: false,
-        commandName: "stop",
-        body: "/stop",
-      },
-      SessionKey: sourceSessionKey,
-      CommandTargetSessionKey: targetSessionKey,
-      Body: "/stop",
-      RawBody: "/stop",
-      CommandBody: "/stop",
-      BodyForAgent: "/stop",
-    });
-
-    const dispatchPromise = dispatchReplyFromConfig({
-      ctx,
-      cfg: createDispatchConfig(),
-      dispatcher,
-      replyResolver,
-    });
-
-    type DispatchOutcome =
-      | { status: "settled"; result: Awaited<typeof dispatchPromise> }
-      | { status: "pending" };
-    const outcome = await raceWithTimeoutResult<DispatchOutcome>(
-      dispatchPromise.then((result) => ({ status: "settled" as const, result })),
-      200,
-      { status: "pending" as const },
-    );
-    expect(outcome).toMatchObject({
-      status: "settled",
-      result: {
-        queuedFinal: true,
-      },
-    });
-    expect(replyResolver).toHaveBeenCalledOnce();
-    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({
-      text: "You are not authorized to use this command.",
-    });
-    // Target run must remain active — command admission is source-keyed.
-    expect(targetOperation.result).toBeNull();
-    expect(replyRunRegistry.get(targetSessionKey)).toBe(targetOperation);
-    expect(replyRunRegistry.get(sourceSessionKey)).toBeUndefined();
-    targetOperation.complete();
-    expect(getActiveReplyRunCount()).toBe(0);
-  });
-
-  it("does not let a current-session fast abort abort its own dispatch operation", async () => {
-    const dispatcher = createDispatcher();
-    const ctx = buildTestCtx({
-      Provider: "discord",
-      Surface: "discord",
-      SessionKey: "agent:main:self-stop",
-      BodyForAgent: "/stop",
-    });
-    const replyResolver = vi.fn();
-
-    await expect(
-      dispatchReplyFromConfig({
-        ctx,
-        cfg: createDispatchConfig(),
-        dispatcher,
-        replyOptions: { sourceReplyDeliveryMode: "automatic" },
-        replyResolver,
-        fastAbortResolver: async () => {
-          expect(replyRunRegistry.abort("agent:main:self-stop")).toBe(false);
-          return { handled: true, aborted: true };
-        },
-        formatAbortReplyTextResolver: () => "stopped",
-      }),
-    ).resolves.toMatchObject({
-      queuedFinal: true,
-    });
-
-    expect(replyResolver).not.toHaveBeenCalled();
-    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({ text: "stopped" });
-    expect(getActiveReplyRunCount()).toBe(0);
-  });
+  registerNativeDispatchAbortCases(() => ({
+    dispatchReplyFromConfig,
+    replyRunRegistry,
+    createReplyOperation,
+    listActiveReplyRunSessionKeys,
+    createDispatchConfig,
+    expectNoReplies,
+  }));
 });
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

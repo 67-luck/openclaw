@@ -5,8 +5,8 @@ import {
   type ErrorShape,
   errorShape,
 } from "../../packages/gateway-protocol/src/index.js";
-import { isEmbeddedAgentRunActive } from "../agents/embedded-agent.js";
-import { isSessionWorkAdmissionActive } from "../sessions/session-lifecycle-admission.js";
+import { isSessionControllerWorkActive } from "../sessions/session-controller.lifecycle.js";
+import { isSessionRunActive } from "../sessions/session-controller.queries.js";
 import { authorizeGatewaySessionCreation } from "./operator-role-policy.js";
 import type { CreateGatewaySessionParams } from "./session-create-service.types.js";
 import { resolvePluginSessionOwnershipError } from "./session-plugin-ownership.js";
@@ -59,8 +59,8 @@ export function readSessionCreateTarget(
         };
       }
       if (
-        isSessionWorkAdmissionActive(target.storePath, lifecycleIdentities) ||
-        isEmbeddedAgentRunActive(currentTargetEntry.sessionId)
+        isSessionControllerWorkActive(target.storePath, lifecycleIdentities) ||
+        isSessionRunActive(currentTargetEntry.sessionId)
       ) {
         return {
           ok: false,

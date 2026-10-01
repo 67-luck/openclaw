@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { createGatewayActiveWorkSnapshot } from "../../infra/gateway-active-work.js";
+import {
+  claimSessionControllerTask,
+  releaseSessionControllerClaim,
+} from "../../sessions/session-controller.mailbox.js";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import { registerWorkerInferenceSessionControl } from "../worker-environments/inference-control-internal.js";
 import { createWorkerInferenceCancellationService } from "../worker-environments/inference-control.test-helpers.js";
 import { handleChatAbortRequestWithLifecycle } from "./chat-abort-handler.js";
@@ -29,7 +35,7 @@ describe("chat.abort original authority and registration", () => {
     const partialFailure = new Error("partial persistence failed");
     const context = createChatAbortContext();
     const run = createActiveRun("main", { sessionId: "main-session", agentId: "main" });
-    context.chatAbortControllers.set("parent-run", run);
+    context.rpcSources.set("parent-run", run);
     context.chatRunState.getOrCreate("parent-run").buffer = "captured parent output";
     const descendants = vi
       .spyOn(abortRuntime, "abortControlledSubagents")
@@ -51,7 +57,7 @@ describe("chat.abort original authority and registration", () => {
           respond,
         }),
       ).rejects.toMatchObject({ errors: [descendantFailure, partialFailure] });
-      expect(run.controller.signal.aborted).toBe(true);
+      expect(run.input.abortSignal.aborted).toBe(true);
       expect(persist).toHaveBeenCalledOnce();
       expect(respond).not.toHaveBeenCalled();
     } finally {
@@ -126,7 +132,7 @@ describe("chat.abort original authority and registration", () => {
     });
     const context = createChatAbortContext({ workerEnvironmentService: service });
     const run = createActiveRun("main", { sessionId: "main-session", agentId: "main" });
-    context.chatAbortControllers.set("worker-run", run);
+    context.rpcSources.set("worker-run", run);
     context.chatRunState.getOrCreate("worker-run").buffer = "captured output";
     const persist = vi
       .spyOn(persistence, "persistAbortedPartials")
@@ -144,7 +150,7 @@ describe("chat.abort original authority and registration", () => {
     });
     try {
       await cancelled.promise;
-      expect(run.controller.signal.aborted).toBe(true);
+      expect(run.input.abortSignal.aborted).toBe(true);
       expect(respond).not.toHaveBeenCalled();
       workerPersistence.reject(workerFailure);
       await rejected;
@@ -169,19 +175,27 @@ describe("chat.abort original authority and registration", () => {
           cancelInferenceForSession,
         ),
       });
-      const first = createActiveRun("main", { sessionId: "main-session", agentId: "main" });
-      const second = createActiveRun("main", { sessionId: "main-session", agentId: "main" });
+      const first = createActiveRun("main", {
+        sessionId: "main-session",
+        agentId: "main",
+        queued: firstEffect === "queued",
+      });
+      const second = createActiveRun("main", {
+        sessionId: "main-session",
+        agentId: "main",
+        queued: firstEffect === "queued",
+      });
       if (firstEffect === "queued") {
-        context.chatQueuedTurns.set("first", first);
-        context.chatQueuedTurns.set("second", second);
+        context.rpcSources.set("first", first);
+        context.rpcSources.set("second", second);
       } else {
-        context.chatAbortControllers.set("first", first);
-        context.chatAbortControllers.set("second", second);
+        context.rpcSources.set("first", first);
+        context.rpcSources.set("second", second);
         context.chatRunState.getOrCreate("first").buffer = "committed partial";
         context.chatRunState.getOrCreate("second").buffer = "untouched partial";
       }
       if (firstEffect !== "lifecycle") {
-        first.controller.signal.addEventListener(
+        first.input.abortSignal.addEventListener(
           "abort",
           () => {
             current = false;
@@ -225,8 +239,8 @@ describe("chat.abort original authority and registration", () => {
             client: { connect: { scopes: ["operator.admin"] } },
           }),
         ).rejects.toThrow("requester authority changed");
-        expect(first.controller.signal.aborted).toBe(firstEffect !== "lifecycle");
-        expect(second.controller.signal.aborted).toBe(false);
+        expect(first.input.abortSignal.aborted).toBe(firstEffect !== "lifecycle");
+        expect(second.input.abortSignal.aborted).toBe(false);
         expect([...context.dedupe]).toEqual(pending);
         expect(cancelInferenceForSession).not.toHaveBeenCalled();
         expect(lifecycle).toHaveBeenCalledTimes(firstEffect === "queued" ? 0 : 1);
@@ -262,8 +276,8 @@ describe("chat.abort original authority and registration", () => {
     const first = createActiveRun("main", { sessionId: "main-session", agentId: "main" });
     const stale = createActiveRun("main", { sessionId: "main-session", agentId: "main" });
     const replacement = createActiveRun("main", { sessionId: "main-session", agentId: "main" });
-    context.chatAbortControllers.set("first", first);
-    context.chatAbortControllers.set("reused", stale);
+    context.rpcSources.set("first", first);
+    context.rpcSources.set("reused", stale);
     for (const prefix of ["agent", "pending-chat"]) {
       context.dedupe.set(`${prefix}:pending`, {
         ts: 1,
@@ -279,10 +293,10 @@ describe("chat.abort original authority and registration", () => {
       });
     }
     let pending: Array<[string, unknown]> = [];
-    first.controller.signal.addEventListener(
+    first.input.abortSignal.addEventListener(
       "abort",
       () => {
-        context.chatAbortControllers.set("reused", replacement);
+        context.rpcSources.set("reused", replacement);
         for (const prefix of ["agent", "pending-chat"]) {
           context.dedupe.set(`${prefix}:pending`, {
             ts: 2,
@@ -309,8 +323,8 @@ describe("chat.abort original authority and registration", () => {
       scopes: ["operator.admin"],
     });
     expectAbortPayload(requireLastRespondCall(response)[1], { aborted: true, runIds: ["first"] });
-    expect(stale.controller.signal.aborted).toBe(false);
-    expect(replacement.controller.signal.aborted).toBe(false);
+    expect(stale.input.abortSignal.aborted).toBe(false);
+    expect(replacement.input.abortSignal.aborted).toBe(false);
     expect([...context.dedupe]).toEqual(pending);
   });
 
@@ -319,7 +333,10 @@ describe("chat.abort original authority and registration", () => {
     async (kind) => {
       for (const changed of ["source", "target"] as const) {
         const cancelInferenceForSession = vi.fn(() => ["run-1"]);
-        const run = createActiveRun("agent:main:main", { agentId: "main" });
+        const run = createActiveRun("agent:main:main", {
+          agentId: "main",
+          queued: kind === "queued",
+        });
         const context = createChatAbortContext({
           workerEnvironmentService: createWorkerInferenceCancellationService(
             "main-session",
@@ -328,9 +345,9 @@ describe("chat.abort original authority and registration", () => {
           ),
         });
         if (kind === "active") {
-          context.chatAbortControllers.set("run-1", run);
+          context.rpcSources.set("run-1", run);
         } else if (kind === "queued") {
-          context.chatQueuedTurns.set("run-1", run);
+          context.rpcSources.set("run-1", run);
         } else if (kind !== "worker") {
           context.dedupe.set(`${kind}:run-1`, {
             ts: Date.now(),
@@ -364,9 +381,8 @@ describe("chat.abort original authority and registration", () => {
             client: { connId: "owner", connect: { scopes: ["operator.admin"] } },
           }),
         ).rejects.toThrow(changed === "source" ? "requester authority changed" : "target changed");
-        expect(run.controller.signal.aborted).toBe(false);
-        expect(context.chatAbortControllers.has("run-1")).toBe(kind === "active");
-        expect(context.chatQueuedTurns.has("run-1")).toBe(kind === "queued");
+        expect(run.input.abortSignal.aborted).toBe(false);
+        expect(context.rpcSources.has("run-1")).toBe(kind === "active" || kind === "queued");
         expect([...context.dedupe]).toEqual(before);
         expect(cancelInferenceForSession).not.toHaveBeenCalled();
       }
@@ -394,3 +410,84 @@ describe("chat.abort original authority and registration", () => {
     expect(cancelInferenceForSession).not.toHaveBeenCalled();
   });
 });
+
+it.each([undefined, "retained-run"])(
+  "bounds Stop acknowledgment without releasing raw source custody for runId=%s",
+  async (runId) => {
+    vi.useFakeTimers();
+    const raw = createDeferred();
+    const cancelled = createDeferred();
+    const source = createActiveRun("main", {
+      sessionId: "main-session",
+      agentId: "main",
+      queued: true,
+    });
+    const claim = await claimSessionControllerTask(source.input, (selected) => {
+      createReplyOperation({
+        sessionKey: "main",
+        sessionId: "main-session",
+        agentId: "main",
+        resetTriggered: false,
+        mailboxClaim: selected,
+      });
+    });
+    const producer = (async () => {
+      try {
+        await raw.promise;
+      } finally {
+        claim.operation?.complete();
+        releaseSessionControllerClaim(claim);
+      }
+    })();
+    source.input.abortSignal.addEventListener("abort", () => cancelled.resolve(), { once: true });
+    const context = createChatAbortContext({ rpcSources: new Map([["retained-run", source]]) });
+    let acknowledged = false;
+    const stopping = invokeChatAbortHandler({
+      handler: handleChatAbortRequestWithLifecycle,
+      context,
+      request: { sessionKey: "main", ...(runId ? { runId } : {}) },
+      client: { connect: { scopes: ["operator.admin"] } },
+    })
+      .then(
+        () => ({ error: undefined }),
+        (error: unknown) => ({ error }),
+      )
+      .finally(() => {
+        acknowledged = true;
+      });
+    try {
+      await cancelled.promise;
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(acknowledged).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(acknowledged).toBe(true);
+      expect((await stopping).error).toMatchObject({
+        message: expect.stringContaining("cleanup is still pending"),
+      });
+      expect(claim.released).toBe(false);
+      expect(source.input.phase).toBe("claimed");
+      const snapshot = createGatewayActiveWorkSnapshot({
+        getChatRuns: () => 0,
+        getQueuedTurns: () => 0,
+        getTerminalPersistence: () => 0,
+      });
+      expect(snapshot.idle).toBe(false);
+      expect(snapshot.counts.sessionAdmissions).toBe(1);
+      expect(() =>
+        createReplyOperation({
+          sessionKey: "main",
+          sessionId: "successor",
+          resetTriggered: false,
+          target: source.input.target,
+        }),
+      ).toThrow("already active");
+    } finally {
+      raw.resolve();
+      await producer;
+      await claim.settlement.promise;
+      await stopping;
+      vi.useRealTimers();
+    }
+  },
+);

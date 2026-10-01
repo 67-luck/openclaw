@@ -1,4 +1,4 @@
-import { SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS } from "../sessions/session-lifecycle-admission.js";
+import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../sessions/session-controller.lifecycle.js";
 import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-internal.js";
 import { createChatAbortOps } from "./chat-abort-ops.js";
 import { abortChatRunsForSessionKeyWithPartials } from "./server-methods/chat-abort-runtime.js";
@@ -34,9 +34,9 @@ export async function cancelGatewayWorkerSessionWork(
     onCancellationStarted: request.onCancellationStarted,
     onControllerTargets: (targets) => {
       controllerDrain = waitForChatAbortControllerRemoval({
-        entries: context.chatAbortControllers,
+        entries: context.rpcSources,
         targets,
-        timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+        timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
       });
     },
   });

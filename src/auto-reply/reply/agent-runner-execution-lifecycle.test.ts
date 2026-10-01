@@ -5,12 +5,11 @@ import type {
   CompactionAccountingFact,
   RunEmbeddedAgentInternalParams,
 } from "../../agents/embedded-agent-runner/run/internal-params.js";
+import type { EmbeddedAgentQueueHandle } from "../../agents/embedded-agent-runner/runs.js";
 import {
-  clearActiveEmbeddedRun,
-  isEmbeddedAgentRunActive,
-  setActiveEmbeddedRun,
-  type EmbeddedAgentQueueHandle,
-} from "../../agents/embedded-agent-runner/runs.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+} from "../../agents/embedded-agent-runner/runs.test-support.js";
 import {
   createAgentRunDirectAbortError,
   createAgentRunRestartAbortError,
@@ -19,6 +18,13 @@ import { configureExecutionIdentityAdmissionSink } from "../../audit/execution-i
 import { createChannelAdmissionAudit } from "../../channels/message-access/admission-evidence.js";
 import { getDiagnosticSessionActivitySnapshot } from "../../logging/diagnostic-run-activity.js";
 import { useBundledProviderPolicyArtifactsForTest } from "../../plugin-sdk/test-helpers/provider-policy-artifacts.test-support.js";
+import {
+  createReplyOperation,
+  hasReplyOperationExecutionStarted,
+  replyRunRegistry,
+  type ReplyOperation,
+} from "../../sessions/session-controller.js";
+import { isSessionRunActive as isEmbeddedAgentRunActive } from "../../sessions/session-controller.queries.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { GetReplyOptions } from "../types.js";
 import {
@@ -39,12 +45,6 @@ import type {
   EmbeddedAgentParams,
 } from "./agent-runner-execution.test-support.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
-import {
-  createReplyOperation,
-  hasReplyOperationExecutionStarted,
-  replyRunRegistry,
-  type ReplyOperation,
-} from "./reply-run-registry.js";
 
 useBundledProviderPolicyArtifactsForTest(["openai", "anthropic"]);
 const state = await setupAgentRunnerExecutionTestState();

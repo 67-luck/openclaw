@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import { testing as replyRunTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
 import {
   onDiagnosticEvent,
@@ -10,12 +9,13 @@ import {
   resetDiagnosticSessionStateForTest,
 } from "../../logging/diagnostic-session-state.js";
 import { logMessageQueued, logSessionStateChange } from "../../logging/diagnostic.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
+import { queueEmbeddedAgentMessageWithOutcome } from "./runs.js";
 import {
-  clearActiveEmbeddedRun,
-  queueEmbeddedAgentMessageWithOutcome,
-  setActiveEmbeddedRun,
-} from "./runs.js";
-import { testing } from "./runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  testing,
+} from "./runs.test-support.js";
 
 function startDiagnosticTurn(sessionId: string): void {
   logMessageQueued({ sessionId, source: "test-turn" });

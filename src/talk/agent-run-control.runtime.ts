@@ -1,12 +1,12 @@
-import { resolveActiveEmbeddedRunSessionId } from "../agents/embedded-agent-runner/active-run-projections.js";
 import {
   abortEmbeddedAgentRun,
   queueEmbeddedAgentMessageWithOutcomeAsync,
   queueGuardedEmbeddedAgentMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunOwnerByRunId,
 } from "../agents/embedded-agent-runner/runs.js";
-import { resolveActiveReplyRunOwnerForSignal } from "../auto-reply/reply/reply-run-registry.state.js";
 import { getDiagnosticSessionActivitySnapshot } from "../logging/diagnostic-run-activity.js";
+import { resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId } from "../sessions/session-controller.queries.js";
+import { resolveActiveReplyRunOwnerForSignal } from "../sessions/session-controller.state.js";
 
 export const realtimeVoiceControlRuntime = {
   abortEmbeddedAgentRun,

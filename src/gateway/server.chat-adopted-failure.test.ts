@@ -20,7 +20,7 @@ import * as replyRun from "../auto-reply/reply/get-reply-run.js";
 import { getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
 import { clearConfigCache, getRuntimeConfig, readConfigFileSnapshot } from "../config/config.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
-import { getSessionWorkAdmissionRelease } from "../sessions/session-lifecycle-admission.js";
+import { captureSessionControllerSettlement } from "../sessions/session-controller.lifecycle.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./server-methods/types.js";
@@ -194,7 +194,10 @@ describe("chat.send quoted model profiles", () => {
   });
 
   afterEach(async () => {
-    await getSessionWorkAdmissionRelease({ scope: storePath, identities: [sessionKey, sessionId] });
+    await captureSessionControllerSettlement({
+      scope: storePath,
+      identities: [sessionKey, sessionId],
+    });
     testState.agentConfig = undefined;
     runPreparedReply.mockRestore();
     Object.assign(agentDiscoveryMock, { enabled: false, models: [] });
@@ -217,9 +220,12 @@ describe("chat.send quoted model profiles", () => {
     });
     expect(respond.mock.calls[0]?.[0]).toBe(true);
     expect(respond.mock.calls[0]?.[1]).toMatchObject({ status: "started" });
-    await getSessionWorkAdmissionRelease({ scope: storePath, identities: [sessionKey, sessionId] });
+    await captureSessionControllerSettlement({
+      scope: storePath,
+      identities: [sessionKey, sessionId],
+    });
     expect(context.logGateway.error).not.toHaveBeenCalled();
-    expect(context.chatAbortControllers.size).toBe(0);
+    expect(context.rpcSources.size).toBe(0);
   }
 
   async function expectUnchangedModelScope(

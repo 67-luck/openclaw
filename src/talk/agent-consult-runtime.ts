@@ -9,7 +9,6 @@ import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent-runner/types.js";
 import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
-import type { ReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-run-registry.contracts.js";
 import {
   buildSessionCreationStamp,
   inheritSessionCreationPolicy,
@@ -20,6 +19,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeLogger, PluginRuntimeCore } from "../plugins/runtime/types-core.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { isModelSelectionLocked, ModelSelectionLockedError } from "../sessions/model-overrides.js";
+import type { ReplyToolAuthorityOverlay } from "../sessions/session-controller.contracts.js";
 import { deliveryContextFromSession } from "../utils/delivery-context.read.js";
 import {
   hasDeliveryTargetFields,
@@ -397,8 +397,8 @@ export async function consultRealtimeVoiceAgent(params: {
   }) => RealtimeVoiceAgentConsultRunRegistration | void;
 }): Promise<RealtimeVoiceAgentConsultResult> {
   params.abortSignal?.throwIfAborted();
-  const [{ beginSessionWorkAdmission }, { resolveSessionWorkStartError }] = await Promise.all([
-    import("../sessions/session-lifecycle-admission.js"),
+  const [{ beginSessionEffect }, { resolveSessionWorkStartError }] = await Promise.all([
+    import("../sessions/session-controller.lifecycle.js"),
     import("../config/sessions/lifecycle.js"),
   ]);
   params.abortSignal?.throwIfAborted();
@@ -419,7 +419,7 @@ export async function consultRealtimeVoiceAgent(params: {
   };
   assertRealtimeVoiceAgentConsultModelSelectionUnlocked(modelLockParams);
   const lifecycleAbortController = new AbortController();
-  const sessionWorkAdmission = await beginSessionWorkAdmission({
+  const sessionWorkAdmission = await beginSessionEffect({
     scope: storePath,
     identities: [params.sessionKey, initialSessionEntry?.sessionId],
     onInterrupt: () =>

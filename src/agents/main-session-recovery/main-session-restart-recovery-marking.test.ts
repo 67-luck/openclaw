@@ -2,7 +2,6 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import {
   admitReplyTurn,
   runWithReplyOperationLifecycleAdmission,
@@ -27,12 +26,13 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayContextResolver,
 } from "../../plugins/runtime/gateway-request-scope.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import {
-  beginSessionWorkAdmission,
-  captureGatewaySessionWorkAdmissions,
-  getSessionWorkAdmissionRelease,
-  type SessionWorkAdmissionLease,
-} from "../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  captureGatewaySessionControllerWork,
+  captureSessionControllerSettlement,
+  type SessionEffectRef,
+} from "../../sessions/session-controller.lifecycle.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -254,7 +254,7 @@ it("marks only the closing Gateway's exact active admissions", async () => {
   const storePath = path.join(stateDir, "sessions.json");
   const resolveGatewayContext = () => undefined;
   const otherGatewayContext = () => undefined;
-  const admissions: SessionWorkAdmissionLease[] = [];
+  const admissions: SessionEffectRef[] = [];
   try {
     for (const [name, resolver] of [
       ["closing", resolveGatewayContext],
@@ -266,7 +266,7 @@ it("marks only the closing Gateway's exact active admissions", async () => {
         { sessionId: name, status: "running", updatedAt: Date.now() },
       );
       admissions.push(
-        await beginSessionWorkAdmission({
+        await beginSessionEffect({
           scope: storePath,
           identities: [sessionKey, name],
           resolveGatewayContext: resolver,
@@ -301,7 +301,7 @@ it.each(["release", "completed", "rotation"] as const)(
     const sessionKey = "agent:main:closing";
     const sessionId = "closing";
     const resolveGatewayContext = () => undefined;
-    let admission: SessionWorkAdmissionLease | undefined;
+    let admission: SessionEffectRef | undefined;
     const apply = sessionAccessor.applySessionEntryReplacements;
     let restoreSpy = () => {};
     try {
@@ -309,7 +309,7 @@ it.each(["release", "completed", "rotation"] as const)(
         { storePath, sessionKey },
         { sessionId, status: "running", updatedAt: Date.now() },
       );
-      admission = await beginSessionWorkAdmission({
+      admission = await beginSessionEffect({
         scope: storePath,
         identities: [sessionKey, sessionId],
         resolveGatewayContext,
@@ -396,7 +396,7 @@ it("does not adopt an ambient Gateway when moving an unbound reply owner", async
         async () => getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext,
       );
       expect({
-        selected: captureGatewaySessionWorkAdmissions(otherGatewayContext).isActive({
+        selected: captureGatewaySessionControllerWork(otherGatewayContext).isActive({
           scope: storePath,
           sessionKey,
           sessionId,
@@ -405,7 +405,10 @@ it("does not adopt an ambient Gateway when moving an unbound reply owner", async
       }).toEqual({ selected: false, observedScope: undefined });
     });
   } finally {
-    const released = getSessionWorkAdmissionRelease({ scope: storePath, identities: [sessionKey] });
+    const released = captureSessionControllerSettlement({
+      scope: storePath,
+      identities: [sessionKey],
+    });
     operation.complete();
     await released;
     closeOpenClawAgentDatabasesForTest();
@@ -417,7 +420,7 @@ it("keeps another active session recoverable when one owner releases after batch
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-restart-batch-"));
   const storePath = path.join(stateDir, "sessions.json");
   const resolveGatewayContext = () => undefined;
-  const admissions: SessionWorkAdmissionLease[] = [];
+  const admissions: SessionEffectRef[] = [];
   const apply = sessionAccessor.applySessionEntryReplacements;
   let restoreSpy = () => {};
   try {
@@ -428,7 +431,7 @@ it("keeps another active session recoverable when one owner releases after batch
         { sessionId: name, status: "done", updatedAt: Date.now() },
       );
       admissions.push(
-        await beginSessionWorkAdmission({
+        await beginSessionEffect({
           scope: storePath,
           identities: [sessionKey, name],
           resolveGatewayContext,

@@ -37,11 +37,11 @@ import {
   beginPromptCacheObservation,
   completePromptCacheObservation,
 } from "../prompt-cache-observability.js";
+import { getActiveEmbeddedRunSnapshot } from "../runs.js";
 import {
-  clearActiveEmbeddedRun,
-  getActiveEmbeddedRunSnapshot,
-  setActiveEmbeddedRun,
-} from "../runs.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+} from "../runs.test-support.js";
 import {
   clearEmbeddedSessionPromptStates,
   getEmbeddedSessionPromptState,

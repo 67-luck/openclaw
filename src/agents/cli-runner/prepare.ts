@@ -33,7 +33,6 @@ import { claimHeartbeatContextForUserRun } from "../../infra/heartbeat-outcome-s
 import { buildSystemAgentToolsMcpServerConfig } from "../../mcp/openclaw-tools-serve-config.js";
 import { CliBackendAuthProfilePreparationError } from "../../plugins/cli-backend-errors.js";
 import type {
-  CliBackendAuthEpochMode,
   CliBackendPreparedExecution,
   CliBackendPromptContext,
 } from "../../plugins/cli-backend.types.js";
@@ -132,10 +131,7 @@ import {
 import { prepareCliBundleMcpConfig, resolveCliNativeWebSearchEnabled } from "./bundle-mcp.js";
 import { prepareClaudeCliSkillsPlugin } from "./claude-skills-plugin.js";
 import { runCliCleanup } from "./cleanup.js";
-import {
-  resolveBundledCliBackendAuthPolicy,
-  type BundledCliBackendAuthPolicy,
-} from "./cli-backend-auth-policy.js";
+import { resolveBundledCliBackendAuthPolicy } from "./cli-backend-auth-policy.js";
 import { getCliLiveSessionGeneration } from "./cli-live-session-registry.js";
 import { resolveCliSessionId } from "./cli-run-recovery.js";
 import {
@@ -148,6 +144,10 @@ import { prepareCliHistoryBoundary } from "./history-boundary.js";
 import { cliBackendLog } from "./log.js";
 import { buildCliMcpGrantContext, finalizeCliMcpGrant } from "./mcp-grant-context.js";
 import { resolveCliCatalogCapabilities } from "./model-capabilities.js";
+import {
+  shouldSkipLocalCliCredentialEpoch,
+  shouldResolveAuthProfileForExecution,
+} from "./prepare-auth-policy.js";
 import { CLAUDE_CLI_CONTEXT_MODEL_ALIASES, detectNodeClaudePlacement } from "./prepare-claude.js";
 import {
   buildCliTurnAppendContext,
@@ -232,20 +232,6 @@ function resetCliRunnerPrepareTestDeps(): void {
   Object.assign(prepareDeps, defaultPrepareDeps);
 }
 
-function shouldSkipLocalCliCredentialEpoch(params: {
-  authEpochMode?: CliBackendAuthEpochMode;
-  authProfileId?: string;
-  authCredential?: AuthProfileCredential;
-  preparedExecution?: CliBackendPreparedExecution | null;
-}): boolean {
-  return Boolean(
-    params.authEpochMode === "profile-only" &&
-    params.authProfileId &&
-    params.authCredential &&
-    params.preparedExecution,
-  );
-}
-
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.cliRunnerPrepareTestApi")] = {
     resetCliRunnerPrepareTestDeps,
@@ -253,22 +239,6 @@ if (process.env.VITEST || process.env.NODE_ENV === "test") {
       setCliRunnerPrepareTestDeps(overrides as Partial<typeof prepareDeps>);
     },
   };
-}
-
-function shouldResolveAuthProfileForExecution(params: {
-  policy?: BundledCliBackendAuthPolicy;
-  authCredential?: AuthProfileCredential;
-}): boolean {
-  if (!params.policy) {
-    return false;
-  }
-  if (!params.authCredential) {
-    return params.policy.strictSelectedProfile;
-  }
-  if (params.authCredential.type === "oauth") {
-    return params.policy.oauthRefreshOwner === "core";
-  }
-  return params.authCredential.type === "api_key" || params.authCredential.type === "token";
 }
 
 export async function prepareCliRunContext(
@@ -402,7 +372,15 @@ async function prepareCliRunContextWithinReadFence(
         backendResolved.prepareExecution !== undefined));
   // Native callbacks retain the original caller cap, before translation clears toolsAllow.
   // Reply-owned runs already have the richer admission snapshot; never reconstruct that one.
-  const questionOperation = params.toolAuthorityFingerprint ? params.replyOperation : undefined;
+  const ownsDirectPolicy =
+    params.replyOperation?.turnKind === "direct" &&
+    params.trigger !== "memory" &&
+    !params.controlOperation;
+  let questionOperation =
+    params.toolAuthorityFingerprint ||
+    (ownsDirectPolicy && params.replyOperation?.toolAuthorityFingerprint)
+      ? params.replyOperation
+      : undefined;
   const questionSessionKey = params.sessionKey ?? params.sessionId;
   const questionAbortSignal = params.abortSignal;
   const assertQuestionSourceCurrent = params.assertCurrent;
@@ -413,6 +391,15 @@ async function prepareCliRunContextWithinReadFence(
         workspaceDir,
         cwd,
       });
+  if (
+    params.replyOperation &&
+    ownsDirectPolicy &&
+    !params.replyOperation.toolAuthorityFingerprint &&
+    questionSnapshot
+  ) {
+    params.replyOperation.bindToolAuthoritySnapshot(questionSnapshot);
+    questionOperation = params.replyOperation;
+  }
   let runtimeToolsAllowPolicy: string[] | undefined;
   const rootedToolsAllow = params.rootedExecution
     ? params.cliToolAvailability?.openClaw

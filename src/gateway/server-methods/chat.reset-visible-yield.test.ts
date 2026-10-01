@@ -12,7 +12,7 @@ import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/confi
 import { clearSessionStoreCacheForTest } from "../../config/sessions/store-writer-state.js";
 import { onAgentEvent } from "../../infra/agent-events.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
-import * as sessionAdmission from "../../sessions/session-lifecycle-admission.js";
+import * as sessionAdmission from "../../sessions/session-controller.lifecycle.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
@@ -227,9 +227,9 @@ describe("visible yielded session continuation", () => {
         );
         return pending;
       });
-      const originalInterrupt = sessionAdmission.interruptSessionWorkAdmissions;
+      const originalInterrupt = sessionAdmission.interruptSessionControllerEffects;
       const admissionSpy = vi
-        .spyOn(sessionAdmission, "interruptSessionWorkAdmissions")
+        .spyOn(sessionAdmission, "interruptSessionControllerEffects")
         .mockImplementation((params) => {
           record("admission-interrupt-entry");
           const pending = originalInterrupt(params);

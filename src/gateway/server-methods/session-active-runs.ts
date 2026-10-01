@@ -1,4 +1,3 @@
-import { resolveEmbeddedAgentSessionProgressState } from "../../agents/embedded-agent-runner/runs.js";
 import {
   getLatestLiveSubagentRunByChildSessionKey,
   isSubagentRunLive,
@@ -12,6 +11,12 @@ import {
   type ProjectedAgentRunIndex,
 } from "../../infra/agent-run-registry.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { resolveSessionRunProgressState as resolveEmbeddedAgentSessionProgressState } from "../../sessions/session-controller.queries.js";
+import {
+  isRpcSourceActive,
+  type RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
+import { resolveReplyRunForCurrentSessionId } from "../../sessions/session-controller.state.js";
 import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import type { GatewayRequestContext } from "./types.js";
 
@@ -32,25 +37,24 @@ type VisibleActiveSessionRunState = {
 };
 
 function collectTrackedActiveSessionRuns(
-  context: Partial<Pick<GatewayRequestContext, "chatAbortControllers">>,
+  context: Partial<Pick<GatewayRequestContext, "rpcSources">>,
   includeTerminalPersistence = false,
   selection?: { requestedKey: string; canonicalKey: string; sessionId?: string },
+  captured?: Iterable<readonly [string, RpcSourceRef]>,
 ): TrackedActiveSessionRun[] {
   const runs: TrackedActiveSessionRun[] = [];
-  if (!(context.chatAbortControllers instanceof Map)) {
+  if (!(context.rpcSources instanceof Map)) {
     return runs;
   }
-  for (const [runId, active] of context.chatAbortControllers) {
+  for (const [runId, ref] of captured ?? context.rpcSources) {
+    const active = ref.adapter;
     const terminalPersistence =
       includeTerminalPersistence &&
       active.projectSessionActive === false &&
       active.projectSessionTerminalPending === true;
-    if (
-      (active.projectSessionActive !== false || terminalPersistence) &&
-      active.controlUiVisible !== false
-    ) {
-      const sessionKey = active.sessionKey?.trim();
-      const sessionId = active.sessionId?.trim();
+    if ((isRpcSourceActive(ref) || terminalPersistence) && active.controlUiVisible !== false) {
+      const sessionKey = active.sessionKey.trim();
+      const sessionId = active.sessionId.trim();
       if (!sessionKey && !sessionId) {
         continue;
       }
@@ -124,17 +128,17 @@ function isTrackedActiveSessionRunForSessionId(
 }
 
 export function hasRegisteredChatRunForSessionKey(params: {
-  context: Partial<Pick<GatewayRequestContext, "chatAbortControllers">>;
+  context: Partial<Pick<GatewayRequestContext, "rpcSources">>;
   sessionKey: string;
   agentId: string | undefined;
   defaultAgentId?: string;
 }): boolean {
-  const controllers = params.context.chatAbortControllers;
+  const controllers = params.context.rpcSources;
   return (
     controllers instanceof Map &&
     [...controllers.values()].some((active) =>
       isTrackedActiveSessionRunForKey(
-        active,
+        active.adapter,
         params.sessionKey,
         params.agentId,
         params.defaultAgentId,
@@ -145,7 +149,7 @@ export function hasRegisteredChatRunForSessionKey(params: {
 
 /** Returns true when either requested or canonical session key has a visible active run. */
 export function hasTrackedActiveSessionRun(params: {
-  context: Partial<Pick<GatewayRequestContext, "chatAbortControllers">>;
+  context: Partial<Pick<GatewayRequestContext, "rpcSources">>;
   requestedKey: string;
   canonicalKey: string;
   agentId?: string;
@@ -170,7 +174,7 @@ export function hasTrackedActiveSessionRun(params: {
 }
 
 export function resolveVisibleActiveSessionRunState(params: {
-  context: Partial<Pick<GatewayRequestContext, "chatAbortControllers">>;
+  context: Partial<Pick<GatewayRequestContext, "rpcSources">>;
   requestedKey: string;
   canonicalKey: string;
   sessionId?: string;
@@ -180,7 +184,7 @@ export function resolveVisibleActiveSessionRunState(params: {
   projectedAgentRunIndex?: ProjectedAgentRunIndex;
   includeTerminalPersistence?: boolean;
 }): VisibleActiveSessionRunState {
-  const sessionId = params.sessionId?.trim();
+  const sessionId = params.sessionId;
   const resolvedAgentId =
     params.agentId ??
     parseAgentSessionKey(params.canonicalKey)?.agentId ??
@@ -251,15 +255,22 @@ export function resolveVisibleActiveSessionRunState(params: {
     ...(params.defaultAgentId ? { defaultAgentId: params.defaultAgentId } : {}),
     ...(params.projectedAgentRunIndex ? { index: params.projectedAgentRunIndex } : {}),
   });
+  const localOperation = sessionId ? resolveReplyRunForCurrentSessionId(sessionId) : undefined;
+  // RPC metadata is correlation for this very same logical owner, not another
+  // liveness vote. Include hidden/queued refs in representation, not visibility.
+  const representedLocally =
+    Boolean(localOperation) &&
+    [...(params.context.rpcSources?.values() ?? [])].some(
+      (ref) => ref.input.claim?.operation === localOperation,
+    );
   const embeddedRunState =
-    sessionId === undefined
+    sessionId === undefined || representedLocally
       ? undefined
       : resolveEmbeddedAgentSessionProgressState(sessionId, {
           agentId: resolvedAgentId,
           defaultAgentId: params.defaultAgentId,
         });
-  // Connection, worker-lifecycle, and embedded registries are independent owners.
-  // Settlement in one must not hide live work owned by another.
+  // Remote lifecycle/subagent facts remain separately attributed projections.
   const running =
     ((hasLiveSubagent || hasQueuedSubagent) && !subagentCapacityWait) ||
     matchingTrackedRuns.some((active) => !isAgentRunWaitingForCapacity(active.runId)) ||
@@ -293,12 +304,13 @@ export function resolveVisibleActiveSessionRunState(params: {
 
 /** Request-scoped index; candidate selection must not rescan all controllers per row. */
 export function createVisibleActiveSessionRunProjector(
-  context: Partial<Pick<GatewayRequestContext, "chatAbortControllers">>,
+  context: Partial<Pick<GatewayRequestContext, "rpcSources">>,
   projectedAgentRunIndex = buildProjectedAgentRunIndex(),
+  captured?: Iterable<readonly [string, RpcSourceRef]>,
 ) {
   const byKey = new Map<string, TrackedActiveSessionRun[]>();
   const byId = new Map<string, TrackedActiveSessionRun[]>();
-  for (const run of collectTrackedActiveSessionRuns(context)) {
+  for (const run of collectTrackedActiveSessionRuns(context, false, undefined, captured)) {
     for (const [index, key] of [
       [byKey, run.sessionKey],
       [byId, run.sessionId],
@@ -324,7 +336,7 @@ export function createVisibleActiveSessionRunProjector(
         ...new Set([
           ...(byKey.get(params.canonicalKey) ?? []),
           ...(byKey.get(params.requestedKey) ?? []),
-          ...(byId.get(params.sessionId?.trim() ?? "") ?? []),
+          ...(byId.get(params.sessionId ?? "") ?? []),
         ]),
       ],
     });

@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { AgentTurnIo } from "../../gateway/agent-turn/types.js";
-import {
-  registerChatAbortController,
-  resolveAgentRunExpiresAtMs,
-} from "../../gateway/chat-abort.js";
+import { registerChatAbortController } from "../../gateway/chat-abort.js";
 import { createGatewayMethodRegistry } from "../../gateway/methods/registry.js";
 import { createDirectChatContext } from "../../gateway/server-chat.agent-events.test-helpers.js";
 import { createGatewayInstanceRuntime } from "../../gateway/server-instance-runtime.js";
@@ -16,6 +13,9 @@ import { registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { getCommandLaneSnapshot, setCommandLaneConcurrency } from "../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import { MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL } from "../../sessions/input-provenance.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { createTestAdmittedRunContext } from "../admitted-run-context.test-support.js";
 import { createEmbeddedRunLaneController } from "../embedded-agent-runner/run/lane-controller.js";
@@ -25,7 +25,6 @@ import { dispatchRestartRecoveryUntilStarted } from "./main-session-restart-disp
 const sessionKey = "agent:main:recovery-capacity";
 const sessionId = "recovery-session";
 const runId = "recovery-run";
-const sessionLane = `session:${sessionKey}`;
 const globalLane = "recovery-capacity-global";
 const startTurn = vi.hoisted(() => vi.fn<(params: { io: AgentTurnIo }) => Promise<void>>());
 
@@ -77,8 +76,19 @@ describe("restart recovery startup ownership", () => {
     const finish = createDeferred();
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const timeoutMs = 60_000;
+    const target = captureSessionTarget({
+      storeScope: "/synthetic/recovery-start.db",
+      sessionKey,
+      incarnation: sessionId,
+      agentId: "main",
+    });
+    const predecessor =
+      stage === "session queue"
+        ? createReplyOperation({ sessionKey, sessionId, resetTriggered: false, target })
+        : undefined;
     const registration = registerChatAbortController({
-      chatAbortControllers: context.chatAbortControllers,
+      rpcSources: context.rpcSources,
+      target,
       runId,
       agentId: "main",
       sessionId,
@@ -86,7 +96,6 @@ describe("restart recovery startup ownership", () => {
       lifecycleGeneration,
       kind: "agent",
       timeoutMs,
-      expiresAtMs: resolveAgentRunExpiresAtMs({ now: Date.now(), timeoutMs }),
     });
     registerAgentRunContext(runId, { sessionKey, sessionId, lifecycleGeneration });
     let params: RunEmbeddedAgentParams & { sessionFile: string } = {
@@ -112,21 +121,17 @@ describe("restart recovery startup ownership", () => {
       getParams: () => params,
       globalLane,
       initialQueuedLifecycleGeneration: lifecycleGeneration,
-      sessionLane,
       setLifecycleGeneration: () => {},
       setParams: (next) => {
         params = next;
       },
     });
     const blockedLane =
-      stage === "session queue"
-        ? sessionLane
-        : stage === "global queue" || stage === "cached queue"
-          ? globalLane
-          : undefined;
+      stage === "global queue" || stage === "cached queue" ? globalLane : undefined;
     if (blockedLane) {
       setCommandLaneConcurrency(blockedLane, 0);
     }
+    const startupDeadlineAtMs = Date.now() + timeoutMs;
     let execution: Promise<void> | undefined;
     startTurn.mockImplementation(({ io }) => {
       execution = (async () => {
@@ -137,23 +142,43 @@ describe("restart recovery startup ownership", () => {
           io.emitStartOwner?.(runId, registration.entry);
         }
         registered.resolve();
-        if (stage === "runtime preparation" || stage === "expired startup") {
-          await preparation.promise;
-          registration.controller.signal.throwIfAborted();
-        }
         io.emitAcceptance(
           [true, { runId, status: stage === "cached queue" ? "in_flight" : "accepted" }, undefined],
           { runId, ...(stage === "cached queue" ? { cached: true } : {}) },
         );
-        await lanes.enqueueSession(() =>
-          lanes.enqueueGlobal(async () => {
-            registration.markExecutionStarted();
-            if (stage !== "cached queue") {
-              io.emitExecutionStarted?.();
+        await withSessionTurn(
+          {
+            sessionKey,
+            sessionId,
+            target,
+            controllerInput: registration.entry.input,
+            abortSignal: registration.controller.signal,
+          },
+          async (operation) => {
+            if (!operation) {
+              throw new Error("expected admitted recovery operation");
             }
-            await finish.promise;
-            return { meta: { durationMs: 0 } };
-          }),
+            params = { ...params, replyOperation: operation };
+            const startup = operation.watchdog.beginExecution(() => startupDeadlineAtMs);
+            try {
+              if (stage === "runtime preparation" || stage === "expired startup") {
+                await preparation.promise;
+                operation.abortSignal.throwIfAborted();
+              }
+              await lanes.enqueueSession(() =>
+                lanes.enqueueGlobal(async () => {
+                  expect(registration.markExecutionStarted()).toBe(true);
+                  if (stage !== "cached queue") {
+                    io.emitExecutionStarted?.();
+                  }
+                  await finish.promise;
+                  return { meta: { durationMs: 0 } };
+                }),
+              );
+            } finally {
+              startup.close();
+            }
+          },
         );
         io.emitFinal([true, { runId, status: "ok" }, undefined], { runId });
       })();
@@ -179,16 +204,18 @@ describe("restart recovery startup ownership", () => {
       }
       if (stage === "expired startup") {
         await vi.advanceTimersByTimeAsync(120_000);
-        expect(registration.controller.signal.aborted).toBe(true);
+        expect(registration.entry?.input.claim?.operation?.abortSignal.aborted).toBe(true);
+        expect(registration.entry?.input.claim?.released).toBe(false);
         await expect(recovery).resolves.toMatchObject({
           kind: "failed",
-          observation: { executionStarted: false, preStartAbortConfirmed: true },
+          observation: { executionStarted: false },
         });
         return;
       }
       await vi.advanceTimersByTimeAsync(30_000);
       expect(registration.controller.signal.aborted).toBe(false);
       preparation.resolve();
+      predecessor?.complete();
       if (blockedLane) {
         setCommandLaneConcurrency(blockedLane, 1);
       }
@@ -201,6 +228,7 @@ describe("restart recovery startup ownership", () => {
         observation: { dispatchAccepted: true, executionStarted: true },
       });
     } finally {
+      predecessor?.complete();
       preparation.resolve();
       finish.resolve();
       if (blockedLane) {

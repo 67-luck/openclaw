@@ -7,7 +7,7 @@ import {
   replaceSessionEntrySync,
 } from "../../config/sessions/session-accessor.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import { testing } from "./reply-run-registry.test-support.js";
 import { admitReplyTurn } from "./reply-turn-admission.js";
@@ -65,7 +65,7 @@ it("leaves a named live recovery owner intact and skips the monitor", async () =
   const sessionKey = "agent:main:main";
   const sessionId = "recovering-session";
   replaceSessionEntrySync({ storePath, sessionKey }, { sessionId, updatedAt: Date.now() });
-  const owner = await beginSessionWorkAdmission({
+  const owner = await beginSessionEffect({
     scope: storePath,
     identities: [sessionKey, sessionId],
     owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,

@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
@@ -213,7 +213,7 @@ async function beginClaimedTurn(params: {
       .finally(() => releaseAdmission());
     return releasing;
   };
-  const admission = await beginSessionWorkAdmission({
+  const admission = await beginSessionEffect({
     scope: params.storePath,
     identities: [params.sessionKey, params.sessionId],
     assertAllowed: () => {},

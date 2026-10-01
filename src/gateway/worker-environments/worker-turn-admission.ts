@@ -9,7 +9,7 @@ import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import { createAbortError } from "../../infra/abort-signal.js";
-import { SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS } from "../../sessions/session-lifecycle-admission.js";
+import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../../sessions/session-controller.lifecycle.js";
 import { matchesWorkerPlacementTarget } from "./placement-reclaim-contract.js";
 import { projectWorkerSessionTurnClaim } from "./placement-record.js";
 import type {
@@ -366,7 +366,7 @@ export async function claimWorkerTurn(params: {
     }
   }
   await params.placements.waitForTurnClaimRelease(params.identity.sessionId, {
-    timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+    timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
     ...(params.signal ? { signal: params.signal } : {}),
   });
   const refreshed = params.placements.get(params.identity.sessionId);

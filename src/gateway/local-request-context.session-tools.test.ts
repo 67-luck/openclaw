@@ -30,7 +30,10 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../plugins/runtime/gateway-request-scope.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import {
+  beginSessionEffect,
+  captureSessionTarget,
+} from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { ensureGatewayOwnerProfile } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -201,7 +204,7 @@ describe("built-in session tool role authority", () => {
             cwd: cfg.agents?.entries?.main?.workspace,
           });
         }
-        const admission = await beginSessionWorkAdmission({
+        const admission = await beginSessionEffect({
           scope: resolveSessionStorePathCore(cfg.session?.store, { agentId: "main" }),
           identities: [REQUESTER, sessionId],
           assertAllowed: () => {},
@@ -354,7 +357,13 @@ describe("built-in session tool role authority", () => {
           }
           if (generation === "reset" || generation === "active") {
             registeredRun = registerChatAbortController({
-              chatAbortControllers: context.chatAbortControllers,
+              target: captureSessionTarget({
+                storeScope: resolveSessionStorePathCore(cfg.session?.store, { agentId: "main" }),
+                sessionKey: childKey,
+                incarnation: successor.sessionId,
+                agentId: "main",
+              }),
+              rpcSources: context.rpcSources,
               runId: `${generation}-run`,
               sessionId: successor.sessionId,
               sessionKey: childKey,
@@ -494,7 +503,7 @@ describe("built-in session tool role authority", () => {
         };
         const sessionId = "session-tools-requester-id";
         const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId: "main" });
-        const admission = await beginSessionWorkAdmission({
+        const admission = await beginSessionEffect({
           scope: storePath,
           identities: [REQUESTER, sessionId],
           assertAllowed: () => {},

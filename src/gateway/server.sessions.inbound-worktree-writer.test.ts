@@ -3,7 +3,7 @@ import path from "node:path";
 import { expect, onTestFinished, test, vi } from "vitest";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
-import { isSessionLifecycleMutationActive } from "../sessions/session-lifecycle-admission.js";
+import { isSessionMutationActive } from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawStateLease } from "../state/openclaw-state-lease.js";
 import {
@@ -108,7 +108,7 @@ test.each([false, true])(
       } else {
         await Promise.race([restoreEntered.promise, admission]);
         expect(restore).toHaveBeenCalledOnce();
-        expect(isSessionLifecycleMutationActive(storePath, [key, sessionId])).toBe(true);
+        expect(isSessionMutationActive(storePath, [key, sessionId])).toBe(true);
       }
       independent = directSessionReq("sessions.patch", {
         key: peerKey,
@@ -125,7 +125,7 @@ test.each([false, true])(
         });
       if (!alreadyRestored) {
         expect(admissionDone).toBe(false);
-        expect(isSessionLifecycleMutationActive(storePath, [key, sessionId])).toBe(true);
+        expect(isSessionMutationActive(storePath, [key, sessionId])).toBe(true);
         expect(loadSessionEntry({ storePath, sessionKey: key })?.archivedAt).toEqual(
           expect.any(Number),
         );

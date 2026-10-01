@@ -7,7 +7,7 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { formatSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-marker.js";
 import { listSessionEntriesCore, loadSessionEntry } from "../config/sessions/session-accessor.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import { embeddedRunMock, testState, writeSessionStore } from "./test-helpers.js";
 import {
   setupGatewaySessionsHandlerTestHarness,
@@ -758,7 +758,7 @@ test("sessions.create waits for the parent run lifecycle before firing hooks", a
 test("sessions.create waits for the parent work admission to release", async () => {
   const { storePath } = await createSessionStoreDir();
   await writeMainSessionEntry("sess-finishing-parent");
-  const admission = await beginSessionWorkAdmission({
+  const admission = await beginSessionEffect({
     scope: storePath,
     identities: ["agent:main:main", "sess-finishing-parent"],
     assertAllowed: () => {},
@@ -785,7 +785,7 @@ test("sessions.create fences new parent work while rollover hooks run", async ()
   const hookEntered = createDeferred();
   const releaseHook = createDeferred();
   const admissionController = new AbortController();
-  let admission: ReturnType<typeof beginSessionWorkAdmission> | undefined;
+  let admission: ReturnType<typeof beginSessionEffect> | undefined;
   sessionHookMocks.triggerInternalHook.mockImplementationOnce(async () => {
     hookEntered.resolve();
     await releaseHook.promise;
@@ -822,7 +822,7 @@ test("sessions.create fences new parent work while rollover hooks run", async ()
     expect(sessionHookMocks.triggerInternalHook).toHaveBeenCalledTimes(1);
 
     let admissionStarted = false;
-    admission = beginSessionWorkAdmission({
+    admission = beginSessionEffect({
       scope: storePath,
       identities: ["agent:main:main", "sess-parent-fenced"],
       signal: admissionController.signal,

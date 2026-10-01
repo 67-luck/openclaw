@@ -14,8 +14,8 @@ import {
 import { createSessionDiffBaselineCaptureClaim } from "../config/sessions/session-diff-baseline-capture.js";
 import type { InternalSessionEntry, SessionDiffBaseline } from "../config/sessions/types.js";
 import { LegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import { ensureSessionDiffBaseline } from "../sessions/session-diff-baseline.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { withLocalGatewayRequestScope } from "./local-request-context.js";
@@ -307,7 +307,7 @@ test("sessions.reset rejects a stale expected session without interrupting curre
     entries: { [sessionKey]: sessionStoreEntry(currentSessionId) },
   });
   let interrupted = false;
-  const admission = await beginSessionWorkAdmission({
+  const admission = await beginSessionEffect({
     scope: storePath,
     identities: [sessionKey, currentSessionId],
     assertAllowed: () => {},
@@ -362,7 +362,7 @@ test("sessions.reset rechecks the expected session before interrupting replaceme
     entries: { [sessionKey]: sessionStoreEntry(observedSessionId) },
   });
   let replacementInterrupted = false;
-  const replacementAdmission = await beginSessionWorkAdmission({
+  const replacementAdmission = await beginSessionEffect({
     scope: storePath,
     identities: [sessionKey, replacementSessionId],
     assertAllowed: () => {},

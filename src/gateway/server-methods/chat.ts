@@ -7,7 +7,7 @@ import {
   validateChatToolTitlesParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveSessionWorkStartError } from "../../config/sessions.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import {
   projectChatDisplayMessage,
   resolveEffectiveChatHistoryMaxChars,
@@ -81,7 +81,7 @@ export const chatHandlers: GatewayRequestHandlers = {
 
     let appended: Awaited<ReturnType<typeof appendAssistantTranscriptMessage>>;
     try {
-      const admission = await beginSessionWorkAdmission({
+      const admission = await beginSessionEffect({
         scope: storePath,
         identities: [sessionKey, sessionId],
         assertAllowed: () => {

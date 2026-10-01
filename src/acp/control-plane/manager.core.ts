@@ -7,7 +7,11 @@ import { toErrorObject } from "../../infra/errors.js";
 import { recordSubagentTerminalState } from "../../sessions/subagent-terminal-state.js";
 import { AcpRuntimeError } from "../runtime/errors.js";
 import { runAcceptedManagerTurn, type AcceptedTurns } from "./manager.accepted-turns.js";
-import { cancelManagerAcceptedTurn, runManagerCancelSession } from "./manager.cancel-session.js";
+import {
+  captureManagerCancellation,
+  cancelManagerAcceptedTurn,
+  runManagerCancelSession,
+} from "./manager.cancel-session.js";
 import { runManagerCloseSession } from "./manager.close-session.js";
 import { reconcileManagerRuntimeSessionIdentifiers } from "./manager.identity-reconcile.js";
 import { runManagerInitializeSession } from "./manager.initialize-session.js";
@@ -84,6 +88,15 @@ export class AcpSessionManager {
   constructor(deps: AcpSessionManagerDeps = DEFAULT_DEPS) {
     this.deps = deps;
     registerAcpSessionResetControls(this, {
+      captureCancellation: () =>
+        captureManagerCancellation({
+          acceptedTurns: this.acceptedTurns,
+          runtimeHandles: this.runtimeHandles,
+          actorQueue: this.actorQueue,
+          resolveTarget: resolveAcpSessionTarget,
+          resolveSession: this.resolveSessionAsync.bind(this),
+          cancel: (params) => this.#cancelSession(params),
+        }),
       captureSessionRuntimeOwnership: (params) => {
         const ownership = this.actorQueue.capture(
           acpSessionActorKey(resolveAcpSessionTarget(params)),
@@ -406,8 +419,17 @@ export class AcpSessionManager {
     expectedInstanceId?: string;
     expectedOwnerKey?: string;
   }): Promise<void> {
+    await this.#cancelSession(params);
+  }
+
+  async #cancelSession(
+    params: Parameters<AcpSessionManager["cancelSession"]>[0] & {
+      captured?: Parameters<typeof runManagerCancelSession>[0]["captured"];
+    },
+  ): Promise<void> {
     const target = resolveAcpSessionTarget(params);
     await runManagerCancelSession({
+      captured: params.captured,
       assertActive: params.assertActive,
       cfg: params.cfg,
       ...target,

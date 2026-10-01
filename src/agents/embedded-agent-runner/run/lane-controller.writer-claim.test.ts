@@ -21,8 +21,10 @@ import {
 import { SessionManager } from "../../sessions/session-manager.js";
 import { buildAssistantMessage, buildUsageWithNoCost } from "../../stream-message-shared.js";
 import { log } from "../logger.js";
-import { setActiveEmbeddedRun } from "../runs.js";
-import { testing as runsTesting } from "../runs.test-support.js";
+import {
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  testing as runsTesting,
+} from "../runs.test-support.js";
 import type { EmbeddedAgentRunResult } from "../types.js";
 import { createEmbeddedRunLaneController } from "./lane-controller.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
@@ -130,7 +132,6 @@ describe("embedded run durable writer admission", () => {
       getParams: () => params,
       globalLane: "writer-global",
       initialQueuedLifecycleGeneration: lifecycleGeneration,
-      sessionLane: "writer-session",
       setLifecycleGeneration: () => {},
       setParams: (next) => {
         params = next;
@@ -351,7 +352,6 @@ describe("embedded run durable writer admission", () => {
       getParams: () => params,
       globalLane: "writer-global-conflict",
       initialQueuedLifecycleGeneration: getAgentEventLifecycleGeneration(),
-      sessionLane: "writer-session-conflict",
       setLifecycleGeneration: () => {},
       setParams: (next) => {
         params = next;

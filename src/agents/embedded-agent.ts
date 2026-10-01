@@ -11,14 +11,16 @@ export {
   abortEmbeddedAgentRun,
   preemptAndDrainEmbeddedHeartbeatRun,
   compactEmbeddedAgentSession,
-  isEmbeddedAgentRunAbortableForCompaction,
-  isEmbeddedAgentRunActive,
   isEmbeddedAgentRunHandleActive,
   isEmbeddedAgentRunStreaming,
   queueEmbeddedAgentMessageWithOutcome,
-  resolveActiveEmbeddedRunSessionId,
   resolveActiveEmbeddedRunSessionIdBySessionFile,
   resolveEmbeddedSessionLane,
   runEmbeddedAgent,
   waitForEmbeddedAgentRunEnd,
 } from "./embedded-agent-runner.js";
+export {
+  isSessionRunCompactionBlocked as isEmbeddedAgentRunAbortableForCompaction,
+  isSessionRunActive as isEmbeddedAgentRunActive,
+  resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId,
+} from "../sessions/session-controller.queries.js";

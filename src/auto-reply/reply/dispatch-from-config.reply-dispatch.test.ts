@@ -8,6 +8,11 @@ import {
 } from "../../infra/outbound/deliver-types.js";
 import type { PluginHookReplyDispatchResult } from "../../plugins/hooks.test-fixtures.js";
 import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import {
+  submitSessionControllerTask,
+  releaseSessionControllerClaim,
+} from "../../sessions/session-controller.mailbox.js";
 import { createInternalHookEventPayload } from "../../test-utils/internal-hook-event-payload.js";
 import { withReplyDispatcher } from "../dispatch-dispatcher.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
@@ -32,13 +37,14 @@ import {
   ttsMocks,
 } from "./dispatch-from-config.shared.test-harness.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
+import { readReplySourceInput } from "./reply-source-binding.js";
 
 let dispatchReplyFromConfig: typeof import("./dispatch-from-config.js").dispatchReplyFromConfig;
 let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
-let createReplyOperation: typeof import("./reply-run-registry.js").createReplyOperation;
-let getActiveReplyRunCount: typeof import("./reply-run-registry.registry.js").getActiveReplyRunCount;
-let replyRunRegistry: typeof import("./reply-run-registry.js").replyRunRegistry;
-let runAfterReplyOperationClear: typeof import("./reply-run-registry.js").runAfterReplyOperationClear;
+let createReplyOperation: typeof import("../../sessions/session-controller.js").createReplyOperation;
+let listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.registry.js").listActiveReplyRunSessionKeys;
+let replyRunRegistry: typeof import("../../sessions/session-controller.js").replyRunRegistry;
+let runAfterReplyOperationClear: typeof import("../../sessions/session-controller.js").runAfterReplyOperationClear;
 let resetReplyRunRegistry: typeof import("./reply-run-registry.test-support.js").testing.resetReplyRunRegistry;
 
 const REPLY_RUN_FINALIZATION_SETTLE_TIMEOUT_MS = 60_000;
@@ -108,9 +114,10 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
   beforeAll(async () => {
     ({ dispatchReplyFromConfig } = await import("./dispatch-from-config.js"));
     ({ resetInboundDedupe } = await import("./inbound-dedupe.js"));
-    const replyRunRegistryModule = await import("./reply-run-registry.js");
+    const replyRunRegistryModule = await import("../../sessions/session-controller.js");
     createReplyOperation = replyRunRegistryModule.createReplyOperation;
-    ({ getActiveReplyRunCount } = await import("./reply-run-registry.registry.js"));
+    ({ listActiveReplyRunSessionKeys } =
+      await import("../../sessions/session-controller.registry.js"));
     replyRunRegistry = replyRunRegistryModule.replyRunRegistry;
     runAfterReplyOperationClear = replyRunRegistryModule.runAfterReplyOperationClear;
     const { testing } = await import("./reply-run-registry.test-support.js");
@@ -738,6 +745,8 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
     });
     const dispatcher = createReplyDispatcher({ deliver });
     let queuedOperation: ReturnType<typeof createReplyOperation> | undefined;
+    let queuedClaim: Awaited<ReturnType<typeof submitSessionControllerTask>> | undefined;
+    const queued = createDeferred();
 
     try {
       const result = await dispatchReplyFromConfig({
@@ -751,12 +760,23 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
           }
           operation.fail("run_failed", new Error("provider failed"));
           runAfterReplyOperationClear(operation, () => {
-            deliveryOrder.push("followup");
-            queuedOperation = createReplyOperation({
-              sessionKey: "agent:test:session",
-              sessionId: "queued-session",
-              resetTriggered: false,
-            });
+            void submitSessionControllerTask(operation.key, {
+              target: captureSessionTarget({
+                storeScope: "/tmp/mock-sessions.json",
+                sessionKey: operation.key,
+              }),
+              start: (claim) => {
+                deliveryOrder.push("followup");
+                queuedClaim = claim;
+                queuedOperation = createReplyOperation({
+                  sessionKey: operation.key,
+                  sessionId: "queued-session",
+                  resetTriggered: false,
+                  mailboxClaim: claim,
+                });
+                queued.resolve();
+              },
+            }).catch(queued.reject);
           });
           return { text: "first reply" };
         },
@@ -765,31 +785,37 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
       expect(result.queuedFinal).toBe(true);
       expect(deliver).toHaveBeenCalledOnce();
       expect(deliver).toHaveBeenCalledWith({ text: "first reply" }, { kind: "final" });
-      await vi.waitFor(() => {
-        expect(queuedOperation).toBeDefined();
-      });
+      await queued.promise;
+      expect(queuedOperation).toBeDefined();
       expect(deliveryOrder).toEqual(["final", "followup"]);
       expect(replyRunRegistry.get("agent:test:session")).toBe(queuedOperation);
     } finally {
       dispatcher.markComplete();
       queuedOperation?.complete();
+      if (queuedClaim) {
+        releaseSessionControllerClaim(queuedClaim);
+        await queuedClaim.settlement.promise;
+      }
     }
   });
 
-  it("releases a stalled finalizing dispatch and rejects its late reply", async () => {
+  it("retains a frozen finalizing dispatch until its actual producer settles", async () => {
     vi.useFakeTimers();
     const ownerStarted = createDeferred();
     const releaseOwner = createDeferred();
     const dispatcher = createDispatcher();
     let successor: ReturnType<typeof createReplyOperation> | undefined;
+    let dispatchPromise: ReturnType<typeof dispatchReplyFromConfig> | undefined;
+    let source: ReturnType<typeof readReplySourceInput>;
     hookMocks.runner.hasHooks.mockReturnValue(false);
 
     try {
-      const dispatchPromise = dispatchReplyFromConfig({
+      dispatchPromise = dispatchReplyFromConfig({
         ctx: createHookCtx(),
         cfg: emptyConfig,
         dispatcher,
-        replyResolver: async () => {
+        replyResolver: async (_ctx, options) => {
+          source = readReplySourceInput(options);
           const operation = replyRunRegistry.get("agent:test:session");
           if (!operation) {
             throw new Error("expected dispatch reply operation");
@@ -803,9 +829,21 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
 
       await ownerStarted.promise;
       await vi.advanceTimersByTimeAsync(REPLY_RUN_FINALIZATION_SETTLE_TIMEOUT_MS);
-      await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: false });
-
-      expect(replyRunRegistry.get("agent:test:session")).toBeUndefined();
+      const frozen = replyRunRegistry.get("agent:test:session");
+      expect(frozen?.abortFrozen).toBe(true);
+      expect(frozen?.watchdog.snapshot().recovery?.status).toBe("blocked");
+      expect(() =>
+        createReplyOperation({
+          sessionKey: "agent:test:session",
+          sessionId: "too-early",
+          resetTriggered: false,
+        }),
+      ).toThrow();
+      expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+      releaseOwner.resolve();
+      await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });
+      await frozen?.ownerSettlement;
+      await source?.claim?.settlement.promise;
       successor = createReplyOperation({
         sessionKey: "agent:test:session",
         sessionId: "successor-session",
@@ -815,13 +853,15 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
       releaseOwner.resolve();
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+      expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith({ text: "late reply" });
       expect(replyRunRegistry.get("agent:test:session")).toBe(successor);
     } finally {
       releaseOwner.resolve();
+      await dispatchPromise;
+      await source?.claim?.settlement.promise;
       successor?.complete();
       await vi.runOnlyPendingTimersAsync();
-      expect(getActiveReplyRunCount()).toBe(0);
+      expect(listActiveReplyRunSessionKeys()).toEqual([]);
       expect(vi.getTimerCount()).toBe(0);
       vi.useRealTimers();
     }

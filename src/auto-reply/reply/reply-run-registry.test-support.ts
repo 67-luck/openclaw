@@ -1,4 +1,4 @@
-import "./reply-run-registry.js";
+import "../../sessions/session-controller.js";
 
 type ReplyRunRegistryTestApi = {
   resetReplyRunRegistry(): void;

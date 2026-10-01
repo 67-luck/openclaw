@@ -39,6 +39,7 @@ import {
   secretRequestQuestion,
   storeWriteService,
 } from "./question.test-support.js";
+import { captureRpcTargetForTest } from "./rpc-source-fixtures.test-support.js";
 import type { GatewayClient } from "./types.js";
 
 installQuestionTestHooks();
@@ -567,9 +568,13 @@ describe("question gateway methods", () => {
         } else if (closure === "rotation") {
           rotateAgentRunRegistryLifecycleGeneration();
         } else {
-          const chatAbortControllers = new Map<string, ChatAbortControllerEntry>();
+          const rpcSources = new Map<string, ChatAbortControllerEntry>();
           const registration = registerChatAbortController({
-            chatAbortControllers,
+            target: captureRpcTargetForTest({
+              sessionKey: requestParams.sessionKey,
+              sessionId: "question-session",
+            }),
+            rpcSources,
             runId: requestParams.runId,
             sessionId: "question-session",
             sessionKey: requestParams.sessionKey,
@@ -583,7 +588,7 @@ describe("question gateway methods", () => {
             expect(
               abortChatRunById(
                 {
-                  chatAbortControllers,
+                  rpcSources,
                   chatRunState: createChatRunState(),
                   removeChatRun: () => undefined,
                   agentRunSeq: new Map(),

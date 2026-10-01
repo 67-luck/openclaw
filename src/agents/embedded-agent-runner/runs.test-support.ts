@@ -1,4 +1,56 @@
-import "./runs.js";
+import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
+import {
+  createReplyOperation,
+  resolveActiveReplyOperationForSessionId,
+} from "../../sessions/session-controller.js";
+import { getActiveNativeAttempt } from "./run-state.js";
+import { setActiveEmbeddedRun, clearActiveEmbeddedRun } from "./runs.js";
+const fixtureOperations = new Set<ReplyOperation>();
+/** Native boundary fixtures explicitly reserve their logical turn before publication. */
+export function registerTestEmbeddedRun(
+  ...args: Parameters<typeof setActiveEmbeddedRun>
+): ReplyOperation {
+  const [sessionId, handle, sessionKey, sessionFile, agentId, supplied] = args;
+  let operation = supplied ?? resolveActiveReplyOperationForSessionId(sessionId);
+  const created = !operation;
+  if (!operation) {
+    operation = createReplyOperation({
+      sessionKey: sessionKey ?? "agent:test:" + sessionId,
+      sessionId,
+      agentId,
+      resetTriggered: false,
+    });
+    fixtureOperations.add(operation);
+  }
+  try {
+    setActiveEmbeddedRun(
+      sessionId,
+      handle,
+      sessionKey ?? operation.key,
+      sessionFile,
+      agentId,
+      operation,
+    );
+    return operation;
+  } finally {
+    // A rejected registration may retire only the reservation made by this call.
+    if (created && getActiveNativeAttempt(sessionId) !== handle) {
+      fixtureOperations.delete(operation);
+      operation.complete();
+    }
+  }
+}
+export function clearTestEmbeddedRun(...args: Parameters<typeof clearActiveEmbeddedRun>): void {
+  const [sessionId, handle] = args;
+  const operation =
+    getActiveNativeAttempt(sessionId) === handle
+      ? resolveActiveReplyOperationForSessionId(sessionId)
+      : undefined;
+  clearActiveEmbeddedRun(...args);
+  if (operation && fixtureOperations.delete(operation)) {
+    operation.complete();
+  }
+}
 import type { EmbeddedAgentQueueHandle } from "./run-state.js";
 
 type RunHandle = EmbeddedAgentQueueHandle;
@@ -39,13 +91,6 @@ export function createEmbeddedRunHandle(
 }
 
 type EmbeddedRunsTestApi = {
-  persistForceClearedEmbeddedRunTerminalState(params: {
-    sessionId: string;
-    sessionKey: string;
-    startedAt?: number;
-    storePath: string;
-    updatedAt: number;
-  }): Promise<void>;
   resetActiveEmbeddedRuns(): void;
 };
 
@@ -59,4 +104,13 @@ function getTestApi(): EmbeddedRunsTestApi {
   return api as EmbeddedRunsTestApi;
 }
 
-export const testing = getTestApi();
+export const testing = {
+  ...getTestApi(),
+  resetActiveEmbeddedRuns() {
+    getTestApi().resetActiveEmbeddedRuns();
+    for (const operation of fixtureOperations) {
+      operation.complete();
+    }
+    fixtureOperations.clear();
+  },
+};

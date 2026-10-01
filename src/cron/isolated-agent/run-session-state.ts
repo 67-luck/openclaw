@@ -15,11 +15,12 @@ import {
 } from "../../config/sessions/session-entry-provenance.js";
 import type { SessionCreatedActor } from "../../config/sessions/session-entry-provenance.js";
 import { mergeSessionSnapshotChanges } from "../../config/sessions/session-snapshot-merge.js";
-import { isCronSessionKey } from "../../sessions/session-key-utils.js";
 import {
-  beginSessionWorkAdmission,
-  isSessionWorkAdmissionActive,
-} from "../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  captureSessionTarget,
+  isSessionControllerWorkActive,
+} from "../../sessions/session-controller.lifecycle.js";
+import { isCronSessionKey } from "../../sessions/session-key-utils.js";
 import type { SkillSnapshot } from "../../skills/types.js";
 import {
   normalizeCronScheduledToolCallerOrigin,
@@ -100,8 +101,8 @@ export function resolveCronLifecycleRevisionIdentity(lifecycleRevision: string):
   return `cron-lifecycle-revision:${lifecycleRevision}`;
 }
 
-/** Claim the captured session generation before asynchronous run preparation. */
-export async function beginCronSessionWorkAdmission(params: {
+/** Retain captured metadata/workspace effects before asynchronous preparation; native execution reserves its own controller turn. */
+export async function beginCronPreparationEffect(params: {
   cronSession: MutableCronSession;
   agentSessionKey: string;
   runSessionKey: string;
@@ -110,16 +111,18 @@ export async function beginCronSessionWorkAdmission(params: {
 }) {
   const { cronSession, agentSessionKey, runSessionKey } = params;
   const initialSessionEntry = cronSession.initialSessionEntry;
-  // Claim before async model prep so maintenance cannot delete this session generation.
-  return await beginSessionWorkAdmission({
-    scope: cronSession.storePath,
-    identities: [
-      agentSessionKey,
-      initialSessionEntry?.sessionId,
-      cronSession.sessionEntry.sessionId,
-      resolveCronLifecycleRevisionIdentity(cronSession.lifecycleRevision),
-      runSessionKey,
-    ],
+  // Physical metadata/cleanup custody is subordinate to the same run-key controller.
+  return await beginSessionEffect({
+    target: captureSessionTarget({
+      storeScope: cronSession.storePath,
+      sessionKey: runSessionKey,
+      incarnation: cronSession.sessionEntry.sessionId,
+      aliases: [
+        agentSessionKey,
+        initialSessionEntry?.sessionId,
+        resolveCronLifecycleRevisionIdentity(cronSession.lifecycleRevision),
+      ],
+    }),
     signal: params.signal,
     onInterrupt: params.onInterrupt,
     assertAllowed: () => {
@@ -242,7 +245,7 @@ export function createPersistCronSessionEntry(params: {
           currentEntry?.lifecycleRevision === params.cronSession.lifecycleRevision;
         const currentRevisionActive = Boolean(
           currentEntry?.lifecycleRevision &&
-          isSessionWorkAdmissionActive(params.cronSession.storePath, [
+          isSessionControllerWorkActive(params.cronSession.storePath, [
             resolveCronLifecycleRevisionIdentity(currentEntry.lifecycleRevision),
           ]),
         );

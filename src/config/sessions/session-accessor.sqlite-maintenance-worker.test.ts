@@ -5,9 +5,9 @@ import type { DatabaseSync, StatementSync as NativeStatement } from "node:sqlite
 import { afterEach, expect, it, vi } from "vitest";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import {
-  beginSessionWorkAdmission,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import { sessionChanges, type SessionRowChange } from "../../sessions/session-row-changes.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import * as databaseIdentity from "../../state/openclaw-agent-db-identity.js";
@@ -357,13 +357,13 @@ it.each(["provider", "work-key", "work-id", "lifecycle-key", "lifecycle-id", "an
       } else {
         const identity = protection.endsWith("-key") ? protectedKey : protectedId;
         if (protection.startsWith("lifecycle")) {
-          await runExclusiveSessionLifecycleMutation({
+          await runSessionMutation({
             scope: storePath,
             identities: [identity],
             run,
           });
         } else {
-          const lease = await beginSessionWorkAdmission({
+          const lease = await beginSessionEffect({
             scope: storePath,
             identities: [identity],
             assertAllowed: () => {},

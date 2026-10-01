@@ -23,12 +23,12 @@ import {
 } from "../infra/system-agent-approvals.js";
 import { runWithRetainedGatewayRootWork } from "../process/gateway-work-admission.js";
 import { resolveCommandSecretsFromActiveRuntimeSnapshot } from "../secrets/runtime-command-secrets.js";
+import type { RpcSourceIndex } from "../sessions/session-controller.rpc-sources.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createLazyPromise } from "../shared/lazy-runtime.js";
 import type { AgentRuntimeDelegatedAuthority } from "./agent-runtime-identity-token.js";
 import { resolveApprovalSessionAudienceWithFallback } from "./approval-session-audience.js";
 import { createApprovalWebPushDelivery } from "./approval-web-push.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import {
   createExecApprovalIosPushDelivery,
   createPluginApprovalIosPushDelivery,
@@ -88,7 +88,7 @@ export function createGatewayAuxHandlers(
     getNativeApprovalRouteCoordinator: () => ApprovalNativeRouteCoordinator | undefined;
     /** Config-driven default expiry stamp for freshly minted standing grants. */
     resolveGrantDefaultExpiresAtMs?: (nowMs: number) => number | null;
-    chatAbortControllers?: Map<string, ChatAbortControllerEntry>;
+    rpcSources?: RpcSourceIndex;
     registerWorkerTurnClaimClosedHandler?: (
       handler: (claim: WorkerSessionTurnClaim) => void,
     ) => () => void;

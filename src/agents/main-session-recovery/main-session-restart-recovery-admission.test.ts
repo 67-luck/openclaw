@@ -18,10 +18,10 @@ import {
   tryBeginGatewaySuspendAdmission,
 } from "../../process/gateway-work-admission.js";
 import {
-  getSessionWorkAdmissionOwnerRelease,
-  interruptSessionWorkAdmissions,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  captureSessionEffectOwnerSettlement,
+  interruptSessionControllerEffects,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { waitForFast } from "../subagent-test-fixtures.test-helpers.js";
@@ -128,7 +128,7 @@ describe("startup recovery admission", () => {
     const { storePath, sessionKey } = await makeMainSessionFixture();
     const mutationEntered = createDeferred();
     const releaseMutation = createDeferred();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey, "main-session"],
       run: async () => {
@@ -150,7 +150,7 @@ describe("startup recovery admission", () => {
     try {
       await waitForFast(() =>
         expect(
-          getSessionWorkAdmissionOwnerRelease({
+          captureSessionEffectOwnerSettlement({
             scope: storePath,
             identities: [sessionKey, "main-session"],
             owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
@@ -197,7 +197,7 @@ describe("startup recovery admission", () => {
         expect(
           loadSessionEntry({ sessionKey, storePath })?.mainRestartRecovery?.reservation,
         ).toBeDefined();
-        const ownerReleased = getSessionWorkAdmissionOwnerRelease({
+        const ownerReleased = captureSessionEffectOwnerSettlement({
           scope: storePath,
           identities: [sessionKey, "main-session"],
           owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
@@ -207,7 +207,7 @@ describe("startup recovery admission", () => {
 
         if (action === "interrupt") {
           await expect(
-            interruptSessionWorkAdmissions({
+            interruptSessionControllerEffects({
               scope: storePath,
               identities: [sessionKey, "main-session"],
             }),
@@ -230,7 +230,7 @@ describe("startup recovery admission", () => {
         }
         await ownerReleased;
         expect(
-          getSessionWorkAdmissionOwnerRelease({
+          captureSessionEffectOwnerSettlement({
             scope: storePath,
             identities: [sessionKey, "main-session"],
             owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,

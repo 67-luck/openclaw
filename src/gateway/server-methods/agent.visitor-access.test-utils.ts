@@ -292,7 +292,7 @@ describe("visitor access admitted caller", () => {
           try {
             await expectDefined(proof, "admitted visitor proof missing");
           } finally {
-            await waitForAssertion(() => expect(context.chatAbortControllers.size).toBe(0));
+            await waitForAssertion(() => expect(context.rpcSources.size).toBe(0));
           }
           expect(mocks.agentCommand).toHaveBeenCalledOnce();
           const saved = await grants.lookup(EMAIL);

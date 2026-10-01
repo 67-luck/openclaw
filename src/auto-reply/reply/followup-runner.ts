@@ -12,30 +12,24 @@ import {
   withPluginRuntimeGatewayContextResolver,
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../../runtime.js";
+import type { ReplyOperation } from "../../sessions/session-controller.js";
+import { deferSessionControllerClaimBeforeExecution } from "../../sessions/session-controller.mailbox-claim.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import type { AgentTurnExecutionResult } from "./agent-runner-execution.types.js";
 import { accountFollowupTurn } from "./agent-runner-result-accounting.js";
-import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
-import { settleQueuedFollowupPresentation } from "./followup-presentation.js";
 import {
-  admitFollowupTurn,
+  prepareClaimedReplyTurn,
   type AdmittedFollowupTurn,
   type FollowupRunnerParams,
-} from "./followup-turn-admission.js";
+} from "./claimed-turn-preparation.js";
+import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
+import { settleQueuedFollowupPresentation } from "./followup-presentation.js";
 import { executeFollowupTurn } from "./followup-turn-execution.js";
-import {
-  completeFollowupRunLifecycle,
-  FollowupRunDeferredError,
-  type FollowupRun,
-} from "./queue.js";
+import { completeFollowupRunLifecycle, type FollowupRun } from "./queue.js";
 import { isFollowupRunAborted, type QueuedFollowupReplyBatch } from "./queue/types.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
 
-type FollowupDrainDisposition =
-  | { kind: "consumed" }
-  | { kind: "deferred"; reason: string }
-  | { kind: "retry"; error: unknown };
+type FollowupDrainDisposition = { kind: "consumed" } | { kind: "retry"; error: unknown };
 
 function resolveFollowupCompletion(
   outcome: AgentTurnExecutionResult["outcome"],
@@ -104,6 +98,16 @@ export function createFollowupRunner(
     const admissionNotices: ReplyPayload[] = [];
     let completion: QueuedFollowupReplyBatch["completion"] = { kind: "completed" };
     let queuedFollowupAdmitted = false;
+    let executionEntered = false;
+    const claim = queued.controllerClaim ?? queued.controllerInput?.claim;
+    const hasSurvivingSources = () =>
+      Boolean(
+        claim &&
+        claim.sources.length > 1 &&
+        claim.sources.some(
+          (source) => !isFollowupRunAborted(source) && !source.controllerInput?.retirementRequested,
+        ),
+      );
     const initiallyAborted = isFollowupRunAborted(queued);
     const endDeliveryCorrelations = initiallyAborted
       ? []
@@ -112,15 +116,18 @@ export function createFollowupRunner(
           .filter((end): end is () => void => typeof end === "function");
     try {
       if (initiallyAborted) {
-        disposition = { kind: "consumed" };
+        disposition = hasSurvivingSources()
+          ? { kind: "retry", error: queued.abortSignal?.reason }
+          : { kind: "consumed" };
         return;
       }
-      const admission = await admitFollowupTurn({
+      const admission = await prepareClaimedReplyTurn({
         queued,
         defaults,
-        onCompactionNoticePayload: async (payload, turn) => {
+        onCompactionNoticePayload: async (payload, turn, phase) => {
           const source = turn.queued.queuedFollowupReplyDisposition;
           if (
+            phase !== "memory_flush_degraded" &&
             source?.kind === "deliver" &&
             source.deliver.ownsCompletion?.(turn.queued.originatingChannel)
           ) {
@@ -138,13 +145,12 @@ export function createFollowupRunner(
         },
       });
       switch (admission.kind) {
-        case "deferred":
-          throw new FollowupRunDeferredError(
-            `Follow-up reply lane is still active (${admission.reason})`,
-          );
         case "skipped":
           operation = admission.operation;
-          disposition = { kind: "consumed" };
+          disposition =
+            admission.reason === "aborted" && hasSurvivingSources()
+              ? { kind: "retry", error: queued.abortSignal?.reason }
+              : { kind: "consumed" };
           return;
         case "admitted":
           break;
@@ -154,6 +160,7 @@ export function createFollowupRunner(
       admittedRunId = turn.runId;
       operation = turn.operation;
       queuedFollowupAdmitted = true;
+      executionEntered = true;
       const execution = await executeFollowupTurn({
         turn,
         defaults,
@@ -263,13 +270,11 @@ export function createFollowupRunner(
         disposition = { kind: "consumed" };
         completion = { kind: "aborted" };
         defaultRuntime.error?.("followup queue: canceled input after loss of operator authority");
-      } else if (error instanceof FollowupRunDeferredError) {
-        disposition = { kind: "deferred", reason: error.message };
       } else if (
         operation?.result?.kind === "aborted" &&
         operation.result.code === "aborted_by_user"
       ) {
-        disposition = { kind: "consumed" };
+        disposition = hasSurvivingSources() ? { kind: "retry", error } : { kind: "consumed" };
         completion = resolveFollowupCompletion({ kind: "aborted", reason: "user" });
       } else if (disposition.kind === "consumed") {
         completion = { kind: "failed", error: formatErrorMessage(error) };
@@ -281,6 +286,15 @@ export function createFollowupRunner(
         disposition = { kind: "retry", error };
       }
     } finally {
+      if (
+        disposition.kind === "retry" &&
+        claim &&
+        (executionEntered || !deferSessionControllerClaimBeforeExecution(claim))
+      ) {
+        completion = { kind: "failed", error: formatErrorMessage(disposition.error) };
+        operation?.fail("run_failed", disposition.error);
+        disposition = { kind: "consumed" };
+      }
       const sourceDisposition = admittedTurn?.queued.queuedFollowupReplyDisposition;
       if (
         disposition.kind === "consumed" &&
@@ -319,6 +333,9 @@ export function createFollowupRunner(
         }
       }
       if (disposition.kind === "consumed") {
+        if (claim) {
+          claim.retryBeforeExecution = false;
+        }
         completeFollowupRunLifecycle(queued);
         if (admittedRunId) {
           clearAgentRunContext(admittedRunId);
@@ -330,11 +347,7 @@ export function createFollowupRunner(
       defaults.typing.markRunComplete();
       defaults.typing.markDispatchIdle();
     }
-    if (disposition.kind === "deferred") {
-      throw new FollowupRunDeferredError(
-        `Follow-up reply lane is still active (${disposition.reason})`,
-      );
-    }
+
     if (disposition.kind === "retry") {
       throw disposition.error;
     }

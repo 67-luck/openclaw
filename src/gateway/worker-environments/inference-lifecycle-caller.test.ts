@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { prepareSessionLifecycleDrain } from "../server-methods/sessions-lifecycle-drain.js";
 import { createGatewayRequestContext } from "../server-request-context.js";
@@ -121,7 +121,7 @@ describe("worker inference lifecycle caller", () => {
             }),
           ]);
           if (failureMode !== "refusal") {
-            await runExclusiveSessionLifecycleMutation({
+            await runSessionMutation({
               scope: state.statePath("sessions.sqlite"),
               identities,
               run: async () => {},

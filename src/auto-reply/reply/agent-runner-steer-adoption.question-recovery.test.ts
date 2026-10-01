@@ -6,7 +6,10 @@ import {
   claimEmbeddedPendingUserInputAnswer,
   steerActiveSessionWithOptionalDeliveryWait,
 } from "../../agents/embedded-agent-runner/run/attempt-queue-message.js";
-import type { AgentQuestionDispatcher } from "../../agents/harness/gateway-question-dispatch.js";
+import {
+  QuestionAnswerUnconfirmedError,
+  type AgentQuestionDispatcher,
+} from "../../agents/harness/gateway-question-dispatch.js";
 import { registerPendingAgentQuestion } from "../../agents/harness/gateway-question.js";
 import {
   callGatewayTool,
@@ -14,6 +17,12 @@ import {
 } from "../../agents/harness/gateway-question.test-support.js";
 import type { GatewayQuestionCall } from "../../agents/tools/gateway-question-lifecycle.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
+import type { ReplyBackendQueueMessageResult } from "../../sessions/session-controller.contracts.js";
+import { replyRunRegistry } from "../../sessions/session-controller.js";
+import {
+  captureSessionControllerSourceSettlement,
+  retireSessionControllerInput,
+} from "../../sessions/session-controller.mailbox.js";
 import { runReplyQuestionInput } from "./agent-runner-question-input.js";
 import { runReplyAgent } from "./agent-runner-run.js";
 import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
@@ -25,8 +34,6 @@ import {
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
 import { withQuestionCreator } from "./reply-run-question.test-support.js";
-import type { ReplyBackendQueueMessageResult } from "./reply-run-registry.contracts.js";
-import { replyRunRegistry } from "./reply-run-registry.js";
 import { createMockTypingController } from "./test-helpers.js";
 import { createTypingSignaler } from "./typing-mode.js";
 
@@ -298,7 +305,10 @@ describe("question response custody through reply adoption", () => {
         const tryDuplicate = () =>
           enqueueFollowupRun(
             key,
-            createQueueTestRun({ prompt: text, messageId: run.messageId }),
+            {
+              ...createQueueTestRun({ prompt: text, messageId: run.messageId }),
+              run: { ...run.run },
+            },
             { mode: "followup", debounceMs: 0 },
             "message-id",
             followup,
@@ -322,6 +332,7 @@ describe("question response custody through reply adoption", () => {
           const siblingSettled = vi.fn();
           const siblingCleanup = vi.fn(async (_run: FollowupRun) => {});
           const sibling = createQueueTestRun({ prompt: "cancel sibling", messageId: "sibling" });
+          sibling.run = { ...run.run };
           sibling.abortSignal = siblingSource.signal;
           sibling.turnAdoptionLifecycle = { onAdopted: async () => {}, onSettled: siblingSettled };
           expect(
@@ -336,6 +347,7 @@ describe("question response custody through reply adoption", () => {
           ).toBe(true);
           // An ordinary source's sweep must also respect the parked injection owner.
           siblingSource.abort();
+          await captureSessionControllerSourceSettlement(sibling.controllerInput!);
           expect(siblingSettled).toHaveBeenCalledOnce();
           expect(siblingCleanup).toHaveBeenCalledExactlyOnceWith(sibling);
           expect(abandoned).not.toHaveBeenCalled();
@@ -357,6 +369,104 @@ describe("question response custody through reply adoption", () => {
         } finally {
           delivery.resolve();
           await adoption.catch(() => undefined);
+          clearSessionQueues([key]);
+        }
+      });
+    },
+  );
+
+  it.each(["accepted", "rejected", "indeterminate"] as const)(
+    "serializes the next native steer after an early ACK and a %s outcome",
+    async (outcome) => {
+      const key = "agent:main:steer-outcome-" + outcome;
+      const first = createQueueTestRun({ prompt: "first", messageId: "first" });
+      await withQuestionCreator(key, first, async (operation, fingerprint) => {
+        // Construct before either call binds its immutable controller input.
+        const second: FollowupRun = { ...first, prompt: "second", messageId: "second" };
+        const accepted = createDeferred();
+        const nativeOutcome = createDeferred<void | ReplyBackendQueueMessageResult>();
+        const secondParked = createDeferred();
+        second.turnAdoptionLifecycle = {
+          onDeferred: () => secondParked.resolve(),
+          onAdopted: async () => {},
+        };
+        const abandoned = vi.fn();
+        first.turnAdoptionLifecycle = { onAdopted: async () => {}, onAbandoned: abandoned };
+        const followup = vi.fn(async (_run: FollowupRun) => {});
+        const queueMessage = vi.fn((message: string, options: QueueOptions) => {
+          if (message === "first") {
+            options?.onQueueAccepted?.(true);
+            accepted.resolve();
+            return nativeOutcome.promise;
+          }
+          return Promise.resolve();
+        });
+        operation.attachBackend({
+          kind: "embedded",
+          runId: "accepted-backing-work",
+          toolAuthorityFingerprint: fingerprint,
+          cancel: vi.fn(),
+          messageInjectionV2: { version: 2, isAvailable: () => true, queueMessage },
+        });
+        operation.setPhase("running");
+        const steer = (run: FollowupRun) => {
+          const typing = createMockTypingController();
+          return runActiveReplySteer({
+            followupRun: run,
+            opts: undefined,
+            providedReplyOperation: operation,
+            queueKey: key,
+            releaseAdmissionTicket: () => {},
+            replyOperationRunState: undefined,
+            resolvedQueue: { mode: "steer", debounceMs: 0 },
+            restartRecoverySourceTurnId: run.messageId,
+            runFollowup: followup,
+            sessionCtx: {},
+            sessionKey: key,
+            touchActiveSessionEntry: async () => {},
+            typing,
+            typingSignals: createTypingSignaler({ typing, mode: "never", isHeartbeat: false }),
+            toolAuthorityFingerprint: fingerprint,
+          });
+        };
+        const firstSteer = steer(first);
+        let secondSteer: ReturnType<typeof steer> | undefined;
+        try {
+          await accepted.promise;
+          secondSteer = steer(second);
+          await secondParked.promise;
+          // Fake-clock microtask draining exercises readiness without wall-clock polling.
+          vi.useFakeTimers();
+          try {
+            await vi.advanceTimersByTimeAsync(0);
+          } finally {
+            vi.useRealTimers();
+          }
+          expect(queueMessage.mock.calls.map(([message]) => message)).toEqual(["first"]);
+          expect(first.controllerInput?.injection?.accepted).toBe(true);
+          if (outcome === "accepted") {
+            nativeOutcome.resolve();
+          } else {
+            nativeOutcome.reject(
+              outcome === "indeterminate"
+                ? new QuestionAnswerUnconfirmedError("native input outcome unknown")
+                : new Error("native queue rejected after acceptance"),
+            );
+          }
+          await Promise.all([firstSteer, secondSteer]);
+          await Promise.all(
+            [first, second].map((run) =>
+              captureSessionControllerSourceSettlement(run.controllerInput!),
+            ),
+          );
+          expect(queueMessage.mock.calls.map(([message]) => message)).toEqual(["first", "second"]);
+          expect(followup).not.toHaveBeenCalled();
+          expect(abandoned).not.toHaveBeenCalled();
+          expect(first.controllerInput?.phase).toBe("consumed");
+          expect(second.controllerInput?.phase).toBe("consumed");
+        } finally {
+          nativeOutcome.resolve();
+          await Promise.allSettled([firstSteer, secondSteer]);
           clearSessionQueues([key]);
         }
       });
@@ -706,6 +816,25 @@ describe("question response custody through reply adoption", () => {
                 throw new Error("adoption completed before the committed waiter gate");
               }),
             ]);
+            if (entrypoint === "reply") {
+              const input = run.controllerInput!;
+              let sourceSettled = false;
+              void captureSessionControllerSourceSettlement(input).then(
+                () => {
+                  sourceSettled = true;
+                },
+                () => {
+                  sourceSettled = true;
+                },
+              );
+              // The RPC has committed, but its exact receipt/readback still owns
+              // input custody. Dispatch teardown must not manufacture settlement.
+              retireSessionControllerInput(input);
+              await Promise.resolve();
+              await Promise.resolve();
+              expect(sourceSettled).toBe(false);
+              expect(abandoned).not.toHaveBeenCalled();
+            }
             const resolves = fixture.requests.filter(
               (request) => request.method === "question.resolve",
             );

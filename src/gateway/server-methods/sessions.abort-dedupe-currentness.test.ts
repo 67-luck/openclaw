@@ -49,7 +49,7 @@ it.each(["unchanged", "absent", "successor", "successor from absent"] as const)(
     const originalReceipt = context.dedupe.get(key);
     const removed = createDeferred();
     const registration = registerChatAbortController({
-      chatAbortControllers: context.chatAbortControllers,
+      rpcSources: context.rpcSources,
       ...scope,
       sessionId,
       runId,
@@ -88,7 +88,7 @@ it.each(["unchanged", "absent", "successor", "successor from absent"] as const)(
         Promise.race([committed.promise.then(() => true), request.then(() => false)]),
       ).resolves.toBe(true);
       expect(registration.controller.signal.aborted).toBe(true);
-      expect(context.chatAbortControllers.has(runId)).toBe(false);
+      expect(context.rpcSources.has(runId)).toBe(false);
       await removed.promise;
       expect(respond).not.toHaveBeenCalled();
       expect(context.dedupe.get(key)).toBe(originalReceipt);
@@ -119,7 +119,7 @@ it.each(["unchanged", "absent", "successor", "successor from absent"] as const)(
           sessionKey: scope.sessionKey,
         });
         successor = registerChatAbortController({
-          chatAbortControllers: context.chatAbortControllers,
+          rpcSources: context.rpcSources,
           ...scope,
           sessionId,
           runId,
@@ -141,7 +141,7 @@ it.each(["unchanged", "absent", "successor", "successor from absent"] as const)(
       expect(await loadTranscriptEvents(transcriptScope)).toEqual(committedTranscript);
       if (replacesReceipt) {
         expect(context.dedupe.get(key)).toBe(successorReceipt);
-        expect(context.chatAbortControllers.get(runId)).toBe(successor?.entry);
+        expect(context.rpcSources.get(runId)).toBe(successor?.entry);
         expect(successor?.controller.signal.aborted).toBe(false);
         expect(context.chatRunState.resolveBuffer(runId, { final: true }).text).toBe(
           "Successor partial",

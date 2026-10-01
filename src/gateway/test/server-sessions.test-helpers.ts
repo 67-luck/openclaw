@@ -174,7 +174,10 @@ const acpManagerMocks = vi.hoisted(() => ({
   closeSession: vi.fn(async () => {}),
   forceDiscardSessionRuntime: vi.fn(async () => {}),
 }));
-registerAcpSessionResetControls(acpManagerMocks, acpManagerMocks);
+registerAcpSessionResetControls(acpManagerMocks, {
+  ...acpManagerMocks,
+  captureCancellation: () => ({ cancel: acpManagerMocks.cancelSession, release: () => {} }),
+});
 const browserSessionTabMocks = vi.hoisted(() => ({
   closeTrackedBrowserTabsForSessions: vi.fn(async () => 0),
 }));
@@ -600,8 +603,7 @@ export async function directSessionReq<TPayload = unknown>(
   }
   const contextFields: GatewayRequestContext = createDirectChatContext({
     broadcastToConnIds: vi.fn(),
-    chatAbortControllers: new Map(),
-    chatQueuedTurns: new Map(),
+    rpcSources: new Map(),
     dedupe: new Map(),
     getSessionEventSubscriberConnIds: () => new Set<string>(),
     readPreparedGatewayModelCatalog: async () => {

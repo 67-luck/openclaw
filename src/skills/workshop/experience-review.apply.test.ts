@@ -3,7 +3,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import { resolveAdmittedRunActiveAssertion } from "../../agents/admitted-run-context.js";
-import { resolveSessionLane } from "../../agents/embedded-agent-runner/lanes.js";
+import { resolveEmbeddedSessionLane as resolveSessionLane } from "../../agents/embedded-agent-runner/lanes.js";
 import type {
   RunEmbeddedAgentParams,
   EmbeddedForegroundPromptContext,

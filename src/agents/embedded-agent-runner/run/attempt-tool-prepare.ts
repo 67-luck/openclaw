@@ -44,6 +44,7 @@ import type {
   CronCreatorToolAllowlistEntry,
   CronToolsAllowCaptureRef,
 } from "../../tools/cron-tool.js";
+import { getGatewayToolCallerIdentity } from "../../tools/gateway-caller-context.js";
 import { log } from "../logger.js";
 import type { EmbeddedAttemptSetup } from "./attempt-setup.js";
 import { resolveAttemptSpawnWorkspaceDir } from "./attempt-thread-helpers.js";
@@ -398,6 +399,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
     const toolsRaw = constructTools(params.setup.sessionPermissionPolicy, toolAbortSignal);
     return {
       toolHookContext: {
+        watchdogAttempt: getGatewayToolCallerIdentity()?.watchdogAttempt,
         agentId: params.setup.sessionAgentId,
         config: attempt.config,
         cwd: params.setup.effectiveCwd,

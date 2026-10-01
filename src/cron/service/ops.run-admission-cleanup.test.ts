@@ -18,7 +18,6 @@ import {
 import { resolveCronMutationCommitGuard } from "../../gateway/server-methods/cron-caller-scope.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import {
-  clearCommandLane,
   enqueueCommandInLane,
   getTotalQueueSize,
   setCommandLaneConcurrency,
@@ -146,7 +145,6 @@ describe("cron service run admission cleanup", () => {
         await outcome;
         caller.release();
         closeGatewayDeviceRevocation(context);
-        clearCommandLane(CommandLane.Cron);
         stop(state);
         resetGatewayWorkAdmission();
       }
@@ -296,7 +294,6 @@ describe("cron service run admission cleanup", () => {
     "retains the disconnected queued caller until settlement (revoked: %s)",
     async (revoked) => {
       vi.useRealTimers();
-      clearCommandLane(CommandLane.Cron);
       setCommandLaneConcurrency(CommandLane.Cron, 1);
       const store = opsRegressionFixtures.makeStorePath();
       const dueAt = Date.parse("2026-02-06T10:05:03.000Z");
@@ -356,11 +353,11 @@ describe("cron service run admission cleanup", () => {
         expect((await loadCronStore(store.storePath)).jobs[0]?.state.queuedAtMs).toBeUndefined();
         expect(caller.isCurrent()).toBe(false);
       } finally {
+        stop(state);
         caller.release();
         releaseBlocker.resolve();
         await blocker;
-        clearCommandLane(CommandLane.Cron);
-        stop(state);
+        await enqueueCommandInLane(CommandLane.Cron, async () => {});
       }
     },
   );

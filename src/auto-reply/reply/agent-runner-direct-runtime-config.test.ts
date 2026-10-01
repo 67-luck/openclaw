@@ -16,6 +16,7 @@ import {
   clearMemoryPluginState,
   registerMemoryCapability,
 } from "../../plugins/memory-state.test-fixtures.js";
+import type { ReplyOperation } from "../../sessions/session-controller.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { withReplyDispatcher } from "../dispatch-dispatcher.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
@@ -31,7 +32,6 @@ import {
   resolveReplyOperationAgentTurn,
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
 import { createMockReplyOperation, createMockTypingController } from "./test-helpers.js";
 
 const freshCfg = { runtimeFresh: true };

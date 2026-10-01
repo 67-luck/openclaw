@@ -5,12 +5,14 @@ import {
   resetAgentEventsForTest,
   rotateAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { AsyncWorkScope, trackAsyncWork } from "../../shared/async-work-scope.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { createChatRunState } from "../server-chat-state.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { createSyntheticPluginRuntimeClient } from "../server-plugin-runtime-client.js";
 import { GatewayRequestEntryLifetime } from "../server-request-entry.js";
+import { createRpcSourceForTest, claimRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { createInternalAgentTurnFacade } from "./internal-facade.js";
 import type { AgentTurnStartOwner } from "./internal-facade.types.js";
 
@@ -46,7 +48,7 @@ function createContext() {
     trackExecution: trackAsyncWork,
     agentRunSeq: new Map(),
     broadcast: vi.fn(),
-    chatAbortControllers: new Map(),
+    rpcSources: new Map(),
     chatRunState: createChatRunState(),
     dedupe: new Map(),
     getRuntimeConfig: () => ({}),
@@ -375,23 +377,37 @@ describe("createInternalAgentTurnFacade", () => {
     await expect(result).rejects.toBe(dispatchError);
   });
 
-  it("returns a single acceptance with its metadata when no final is requested", async () => {
-    startTurn.mockImplementation(async ({ io }) => {
-      io.emitAcceptance([true, { runId: "run-2", status: "in_flight" }, undefined], {
-        cached: true,
-        runId: "run-2",
+  it.each([false, true])(
+    "returns cached acceptance and only reports actual execution (executing=%s)",
+    async (executing) => {
+      const context = createContext();
+      const source = createRpcSourceForTest({}, { runId: "run-2" });
+      context.rpcSources.set("run-2", source);
+      if (executing) {
+        await claimRpcSourceForTest(source);
+      }
+      const onExecutionStarted = vi.fn();
+      startTurn.mockImplementation(async ({ io }) => {
+        io.emitAcceptance([true, { runId: "run-2", status: "in_flight" }, undefined], {
+          cached: true,
+          runId: "run-2",
+        });
       });
-    });
 
-    await expect(
-      createFacade().dispatchRaw({ message: "test", idempotencyKey: "run-2" }),
-    ).resolves.toEqual({
-      ok: true,
-      payload: { runId: "run-2", status: "in_flight" },
-      error: undefined,
-      meta: { cached: true, runId: "run-2" },
-    });
-  });
+      await expect(
+        createFacade(context).dispatchRaw(
+          { message: "test", idempotencyKey: "run-2" },
+          { onExecutionStarted },
+        ),
+      ).resolves.toEqual({
+        ok: true,
+        payload: { runId: "run-2", status: "in_flight" },
+        error: undefined,
+        meta: { cached: true, runId: "run-2" },
+      });
+      expect(onExecutionStarted).toHaveBeenCalledTimes(executing ? 1 : 0);
+    },
+  );
 
   it("passes the exact internal execution-start observer to the turn", async () => {
     const onExecutionStarted = vi.fn();
@@ -434,11 +450,16 @@ describe("createInternalAgentTurnFacade", () => {
     };
     const register = () =>
       registerChatAbortController({
-        chatAbortControllers: context.chatAbortControllers,
+        rpcSources: context.rpcSources,
         agentId: request.agentId,
         runId: request.idempotencyKey,
         sessionId: request.expectedExistingSessionId,
         sessionKey: request.sessionKey,
+        target: captureSessionTarget({
+          storeScope: "/synthetic/facade.db",
+          sessionKey: request.sessionKey,
+          incarnation: request.expectedExistingSessionId,
+        }),
         kind: "agent",
         timeoutMs: 60_000,
       });
@@ -467,7 +488,6 @@ describe("createInternalAgentTurnFacade", () => {
     }
     expect(owner.observe()).toEqual({
       executionStarted: false,
-      expiresAtMs: registration.entry.expiresAtMs,
     });
     let replacement: ReturnType<typeof register> | undefined;
     switch (change) {
@@ -482,10 +502,10 @@ describe("createInternalAgentTurnFacade", () => {
         rotateAgentEventLifecycleGeneration();
         break;
       case "agent changed":
-        registration.entry.agentId = "other-agent";
+        registration.entry.adapter.agentId = "other-agent";
         break;
       case "session changed":
-        registration.entry.sessionId = "replacement-session";
+        registration.entry.adapter.sessionId = "replacement-session";
         break;
       case "gateway closed":
         gatewayCurrent = false;
@@ -515,20 +535,28 @@ describe("createInternalAgentTurnFacade", () => {
     vi.useFakeTimers();
     const context = createContext();
     const unrelated = registerChatAbortController({
-      chatAbortControllers: context.chatAbortControllers,
+      rpcSources: context.rpcSources,
       runId: "unrelated-run",
       sessionId: "unrelated-session",
       sessionKey: "agent:main:unrelated",
+      target: captureSessionTarget({
+        storeScope: "/synthetic/facade.db",
+        sessionKey: "agent:main:unrelated",
+      }),
       timeoutMs: 60_000,
       kind: "agent",
     });
     let accepted: ReturnType<typeof registerChatAbortController> | undefined;
     startTurn.mockImplementation(async ({ io }) => {
       const registration = registerChatAbortController({
-        chatAbortControllers: context.chatAbortControllers,
+        rpcSources: context.rpcSources,
         runId: "deadline-run",
         sessionId: "deadline-session",
         sessionKey: "agent:main:deadline",
+        target: captureSessionTarget({
+          storeScope: "/synthetic/facade.db",
+          sessionKey: "agent:main:deadline",
+        }),
         timeoutMs: 60_000,
         kind: "agent",
       });
@@ -573,10 +601,14 @@ describe("createInternalAgentTurnFacade", () => {
     startTurn.mockImplementation(async ({ io }) => {
       await acceptanceGate;
       accepted = registerChatAbortController({
-        chatAbortControllers: context.chatAbortControllers,
+        rpcSources: context.rpcSources,
         runId: "late-run",
         sessionId: "late-session",
         sessionKey: "agent:main:late",
+        target: captureSessionTarget({
+          storeScope: "/synthetic/facade.db",
+          sessionKey: "agent:main:late",
+        }),
         timeoutMs: 60_000,
         kind: "agent",
       });

@@ -3,7 +3,7 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import {
   buildDashboardSessionTitleSource,
   isDashboardSessionTitleCandidate,
@@ -125,7 +125,7 @@ function scheduleDashboardSessionTitle(
       await generateTitle();
       return;
     }
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: params.storePath,
       identities: [params.sessionKey, params.admittedSessionId],
       assertAllowed: () => {},

@@ -265,7 +265,7 @@ describe("runEmbeddedAgent Codex app-server recovery", () => {
     "retries without a durable writer only while its exact native admission is active (%s)",
     async (owner) => {
       const { prepareSystemAgentRunAdmission } = await import("../admitted-run-context.js");
-      const { createReplyOperation } = await import("../../auto-reply/reply/reply-run-registry.js");
+      const { createReplyOperation } = await import("../../sessions/session-controller.js");
       const runId = `run-native-retry-${owner}`;
       const sessionKey = `agent:main:${runId}`;
       const admission = prepareSystemAgentRunAdmission({}, runId, "main", "native-retry-test");

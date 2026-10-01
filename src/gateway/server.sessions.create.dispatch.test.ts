@@ -5,10 +5,10 @@ import { getRuntimeConfig } from "../config/io.js";
 import { loadSessionEntry, loadTranscriptEvents } from "../config/sessions/session-accessor.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import {
-  beginSessionWorkAdmission,
-  getSessionWorkAdmissionRelease,
-  isSessionWorkAdmissionActive,
-} from "../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  captureSessionControllerSettlement,
+  isSessionControllerWorkActive,
+} from "../sessions/session-controller.lifecycle.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
@@ -41,7 +41,7 @@ test("chat.send fences dashboard title persistence from concurrent session delet
   const scheduleTitle = await actualDashboardTitleScheduler();
   dashboardTitleScheduleMocks.schedule.mockImplementationOnce((params, ready) => {
     // Capture chat custody before the independent title admission is created.
-    dispatchAdmissionsReleased = getSessionWorkAdmissionRelease({
+    dispatchAdmissionsReleased = captureSessionControllerSettlement({
       scope: params.storePath,
       identities: [params.sessionKey, params.admittedSessionId],
     });
@@ -88,9 +88,9 @@ test("chat.send fences dashboard title persistence from concurrent session delet
     finishDispatch?.();
     expect(dispatchAdmissionsReleased).toBeDefined();
     await dispatchAdmissionsReleased;
-    expect(isSessionWorkAdmissionActive(storePath, [sessionKey])).toBe(true);
+    expect(isSessionControllerWorkActive(storePath, [sessionKey])).toBe(true);
     const drainStarted = createDeferredCore();
-    const drainProbe = await beginSessionWorkAdmission({
+    const drainProbe = await beginSessionEffect({
       scope: storePath,
       identities: [sessionKey],
       assertAllowed: () => {},
@@ -114,7 +114,7 @@ test("chat.send fences dashboard title persistence from concurrent session delet
         throw new Error(`Deletion returned before draining: ${JSON.stringify(result)}`);
       }),
     ]);
-    expect(isSessionWorkAdmissionActive(storePath, [sessionKey])).toBe(true);
+    expect(isSessionControllerWorkActive(storePath, [sessionKey])).toBe(true);
     expect(deletionSettled).toBe(false);
 
     finishTitle?.();
@@ -217,7 +217,7 @@ test.each(["assistant", "item", "tool", "thinking", "approval", "empty", "error"
       expect(dispatchFinished).toBe(terminalOnly);
     } finally {
       stopTitleObserver();
-      const released = getSessionWorkAdmissionRelease({
+      const released = captureSessionControllerSettlement({
         scope: storePath,
         identities: [sessionKey],
       });
@@ -298,7 +298,7 @@ test.each(mentionCreationOwners)(
       });
       const context = {
         mentionInbox: inbox,
-        chatAbortControllers: new Map<string, ChatAbortControllerEntry>(),
+        rpcSources: new Map<string, ChatAbortControllerEntry>(),
         getClientConnIds: (filter?: (client: GatewayClient) => boolean) =>
           new Set(
             [sender, recipient]

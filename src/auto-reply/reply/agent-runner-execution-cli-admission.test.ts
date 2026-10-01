@@ -12,12 +12,13 @@ import { installSessionPlacementAdmissionProvider } from "../../agents/session-p
 import type { SessionEntry } from "../../config/sessions.js";
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import { resolveSqliteScope } from "../../config/sessions/session-accessor.sqlite-scope.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import {
   setupAgentRunnerExecutionTestState,
-  getExecuteAgentTurnForTest,
+  getExecuteAgentTurnForTest as getUnadmittedExecuteAgentTurnForTest,
   createFollowupRun,
   requireMockCall,
   expectMockCallArgFields,
@@ -27,8 +28,26 @@ import {
   makeTestSessionStorePath,
 } from "./agent-runner-execution.test-support.js";
 import type { FallbackRunnerParams } from "./agent-runner-execution.test-support.js";
+import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
 
 const state = await setupAgentRunnerExecutionTestState();
+
+async function getExecuteAgentTurnForTest() {
+  const execute = await getUnadmittedExecuteAgentTurnForTest();
+  return async (params: Parameters<typeof execute>[0]) =>
+    withSessionTurn(
+      {
+        sessionKey: params.sessionKey ?? params.followupRun.run.sessionKey,
+        sessionId: params.followupRun.run.sessionId,
+        storePath: params.storePath,
+        agentId: params.followupRun.run.agentId,
+      },
+      async (replyOperation) => {
+        replyOperation?.bindToolAuthoritySnapshot(prepareReplyToolAuthority(params.followupRun));
+        return await execute({ ...params, replyOperation });
+      },
+    );
+}
 
 function rejectUnexpectedCompactionSuccessor(): never {
   throw new Error("Unexpected compaction successor during CLI admission test");
@@ -389,7 +408,6 @@ describe("executeAgentTurn: CLI admission", () => {
         "claude-cli": { sessionId: "new-native-session", forceReuse: true },
       },
     };
-    state.runCliAgentMock.mockResolvedValueOnce({ payloads: [{ text: "done" }], meta: {} });
     const followupRun = createFollowupRun();
     followupRun.run.provider = "claude-cli";
     followupRun.run.model = "claude-sonnet-4-6";
@@ -402,46 +420,12 @@ describe("executeAgentTurn: CLI admission", () => {
       executeTurn: async (_claim, _params, runLocal) => await runLocal(),
     });
 
-    try {
-      const executeAgentTurn = await getExecuteAgentTurnForTest();
-      const result = await executeAgentTurn({
-        ...createMinimalRunAgentTurnParams({ followupRun }),
-        getActiveSessionEntry: () => sessionEntry,
-      });
-
-      expect(result.kind).toBe("success");
-      const run = requireMockCall(
-        state.runCliAgentMock,
-        0,
-        "CLI run params",
-      )[0] as RunCliAgentParams;
-      expect(run.sessionEntry).toBe(admittedSessionEntry);
-      expect(run.sessionEntry?.sessionRoot).toBe("/workspace/project");
-      expect(run.cliSessionId).toBe("new-native-session");
-      expect(run.cliSessionBinding).toMatchObject({
-        sessionId: "new-native-session",
-        forceReuse: true,
-      });
+    const nodeExecutionFinished = vi.fn();
+    state.runCliAgentMock.mockImplementationOnce(async (run: RunCliAgentParams) => {
       const observedCliSessionId = run.cliSessionBinding?.sessionId ?? run.cliSessionId;
-      expect(observedCliSessionId).toBe("new-native-session");
       if (!observedCliSessionId) {
-        throw new Error("expected admitted CLI session binding");
+        throw new Error("missing current native binding");
       }
-      expect(
-        buildCliMcpGrantContext({
-          run,
-          config: run.config ?? {},
-          requireExplicitMessageTarget: false,
-          agentId: "main",
-          modelProvider: "anthropic",
-          modelId: "claude-sonnet-4-6",
-        }).execSession,
-      ).toMatchObject({
-        permissionMode: "read-only",
-        execHost: "node",
-        execNode: "node-a",
-      });
-
       const nodeInvoke = vi.fn<typeof executeDeps.invokeNodeClaudeCliRun>(async (request) => {
         expect(request.nodeId).toBe("node-a");
         expect(request.argv).toContain("new-native-session");
@@ -486,6 +470,50 @@ describe("executeAgentTurn: CLI admission", () => {
         executeDeps.invokeNodeClaudeCliRun = restoreNodeInvoke;
       }
       expect(nodeInvoke).toHaveBeenCalledOnce();
+      nodeExecutionFinished();
+      return { payloads: [{ text: "done" }], meta: {} };
+    });
+
+    try {
+      const executeAgentTurn = await getExecuteAgentTurnForTest();
+      const result = await executeAgentTurn({
+        ...createMinimalRunAgentTurnParams({ followupRun }),
+        getActiveSessionEntry: () => sessionEntry,
+      });
+
+      expect(result.kind).toBe("success");
+      const run = requireMockCall(
+        state.runCliAgentMock,
+        0,
+        "CLI run params",
+      )[0] as RunCliAgentParams;
+      expect(nodeExecutionFinished).toHaveBeenCalledOnce();
+      expect(run.sessionEntry).toBe(admittedSessionEntry);
+      expect(run.sessionEntry?.sessionRoot).toBe("/workspace/project");
+      expect(run.cliSessionId).toBe("new-native-session");
+      expect(run.cliSessionBinding).toMatchObject({
+        sessionId: "new-native-session",
+        forceReuse: true,
+      });
+      const observedCliSessionId = run.cliSessionBinding?.sessionId ?? run.cliSessionId;
+      expect(observedCliSessionId).toBe("new-native-session");
+      if (!observedCliSessionId) {
+        throw new Error("expected admitted CLI session binding");
+      }
+      expect(
+        buildCliMcpGrantContext({
+          run,
+          config: run.config ?? {},
+          requireExplicitMessageTarget: false,
+          agentId: "main",
+          modelProvider: "anthropic",
+          modelId: "claude-sonnet-4-6",
+        }).execSession,
+      ).toMatchObject({
+        permissionMode: "read-only",
+        execHost: "node",
+        execNode: "node-a",
+      });
     } finally {
       restoreAdmission();
     }

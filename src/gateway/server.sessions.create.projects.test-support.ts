@@ -6,9 +6,10 @@ import { promisify } from "node:util";
 import { expect } from "vitest";
 import { withTimeout } from "../infra/fs-safe.js";
 import {
-  getSessionWorkAdmissionRelease,
-  SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-} from "../sessions/session-lifecycle-admission.js";
+  captureSessionControllerSettlement,
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+} from "../sessions/session-controller.lifecycle.js";
+import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
@@ -71,55 +72,51 @@ export async function initializeRepository(root: string, name: string): Promise<
 }
 
 export async function settleWorkspaceRuns(
-  context: { chatAbortControllers: Map<string, ChatAbortControllerEntry> },
+  context: { rpcSources: Map<string, ChatAbortControllerEntry> },
   storePath: string,
   sessionKey: string | undefined,
   abort = false,
 ): Promise<void> {
-  const targets = [...context.chatAbortControllers].map(([runId, entry]) => ({ runId, entry }));
-  const released = getSessionWorkAdmissionRelease({
+  const targets = [...context.rpcSources].map(([runId, entry]) => ({ runId, entry }));
+  const released = captureSessionControllerSettlement({
     scope: storePath,
     identities: [sessionKey],
   });
   if (abort) {
     for (const { entry } of targets) {
-      entry.controller.abort();
+      requestRpcSourceCancellation(entry);
     }
   }
   // Error paths revoke registration before persisting failure; the admission
   // retains custody until all dispatch and title work finishes in this test store.
   expect(
     await waitForChatAbortControllerRemoval({
-      entries: context.chatAbortControllers,
+      entries: context.rpcSources,
       targets,
-      timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+      timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
     }),
   ).toBe(true);
   if (released) {
-    await withTimeout(released, SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS, "workspace run cleanup");
+    await withTimeout(released, SESSION_CONTROLLER_DRAIN_TIMEOUT_MS, "workspace run cleanup");
   }
 }
 
 export async function waitForCreatedSessionRun(
-  context: { chatAbortControllers: Map<string, ChatAbortControllerEntry> },
+  context: { rpcSources: Map<string, ChatAbortControllerEntry> },
   storePath: string,
   sessionKey: string | undefined,
 ) {
-  const released = getSessionWorkAdmissionRelease({
+  const released = captureSessionControllerSettlement({
     scope: storePath,
     identities: [sessionKey],
   });
   const removed = await waitForChatAbortControllerRemoval({
-    entries: context.chatAbortControllers,
-    targets: [...context.chatAbortControllers].map(([runId, entry]) => ({ runId, entry })),
-    timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+    entries: context.rpcSources,
+    targets: [...context.rpcSources].map(([runId, entry]) => ({ runId, entry })),
+    timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
   });
   if (released) {
-    await withTimeout(
-      released,
-      SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-      "worktree title run cleanup",
-    );
+    await withTimeout(released, SESSION_CONTROLLER_DRAIN_TIMEOUT_MS, "worktree title run cleanup");
   }
   return removed;
 }

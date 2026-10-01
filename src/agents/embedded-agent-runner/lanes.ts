@@ -7,7 +7,7 @@ import {
   type CommandLaneConfiguration,
 } from "../../process/lanes.js";
 
-export function resolveSessionLane(key: string) {
+function resolveSessionLane(key: string) {
   const cleaned = key.trim() || CommandLane.Main;
   return cleaned.startsWith("session:") ? cleaned : `session:${cleaned}`;
 }

@@ -10,7 +10,7 @@ import {
 } from "../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import { CommandLane } from "../../process/lanes.js";
-import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
+import { resolveGlobalLane, resolveEmbeddedSessionLane as resolveSessionLane } from "./lanes.js";
 
 describe("resolveGlobalLane", () => {
   it("defaults to main lane when no lane is provided", () => {

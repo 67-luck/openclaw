@@ -117,7 +117,7 @@ describe("Gateway close during agent admission", () => {
         }),
       );
       await admissionHeld.promise;
-      expect(kernel.gatewayRequestContext.chatAbortControllers.size).toBe(0);
+      expect(kernel.gatewayRequestContext.rpcSources.size).toBe(0);
       const drain = kernel.connectionWork.drain.bind(kernel.connectionWork);
       vi.spyOn(kernel.connectionWork, "drain").mockImplementationOnce(() => {
         const operation = drain();

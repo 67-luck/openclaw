@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { sanitizeUserFacingText } from "../../agents/embedded-agent-helpers/sanitize-user-facing-text.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { stripHeartbeatToken } from "../heartbeat.js";
 import { appendReplyMediaFailures } from "../reply-payload.js";
@@ -19,7 +20,6 @@ import type { AgentTurnParams } from "./agent-runner-execution.types.js";
 import { createAgentTurnPresentation } from "./agent-runner-presentation.js";
 import { createBlockReplyPipeline } from "./block-reply-pipeline.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
-import { createReplyOperation } from "./reply-run-registry.operation.js";
 import { createTypingSignaler } from "./typing-mode.js";
 import { createTypingController } from "./typing.js";
 

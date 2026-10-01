@@ -2,6 +2,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred, raceWithTimeoutResult } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { listActiveReplyRunSessionKeys } from "../../sessions/session-controller.registry.js";
 import { markCommandReplyForDelivery } from "../reply-payload.js";
 import type { MsgContext } from "../templating.js";
 import {
@@ -16,7 +17,8 @@ import {
   replyRunRegistry,
   setNoAbort,
 } from "./dispatch-from-config.test-harness.js";
-import { getActiveReplyRunCount } from "./reply-run-registry.registry.js";
+import type { DispatchFromConfigParams } from "./dispatch-from-config.types.js";
+import { readReplySourceInput } from "./reply-source-binding.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 beforeAll(globalBeforeAll0);
@@ -113,15 +115,13 @@ describe("dispatch active command admission", () => {
         activeOperation.complete();
         await dispatchPromise;
       }
-      expect(getActiveReplyRunCount()).toBe(0);
+      expect(listActiveReplyRunSessionKeys()).toEqual([]);
     },
   );
 
   it.each([
     { source: "text", body: "/bash echo unsafe", commandName: "bash", authorized: true },
-    { source: "native", body: "/compact", commandName: "compact", authorized: true },
     { source: "text", body: "/reset", commandName: "reset", authorized: false },
-    { source: "native", body: "/help", commandName: "help", authorized: false },
   ] as const)(
     "keeps $source $body (authorized=$authorized) behind active-session admission",
     async ({ source, body, commandName, authorized }) => {
@@ -158,7 +158,39 @@ describe("dispatch active command admission", () => {
       }
       await dispatchPromise;
       expect(replyResolver).not.toHaveBeenCalled();
-      expect(getActiveReplyRunCount()).toBe(0);
+      expect(listActiveReplyRunSessionKeys()).toEqual([]);
+    },
+  );
+
+  it.each([
+    { body: "/compact", commandName: "compact", authorized: true },
+    { body: "/help", commandName: "help", authorized: false },
+  ])(
+    "reaches the native $commandName owner without borrowing an active turn",
+    async ({ body, commandName, authorized }) => {
+      const sessionKey = "agent:main:native-handler-boundary";
+      const active = startOperation(sessionKey);
+      onTestFinished(() => active.complete());
+      const replyResolver = vi.fn<NonNullable<DispatchFromConfigParams["replyResolver"]>>(
+        async (_ctx, options) => {
+          expect(options?.replyOperation).toBeUndefined();
+          expect(readReplySourceInput(options)?.claim).toBeUndefined();
+          // Authorization and a command-specific mutation claim belong to the
+          // native handler, not the mailbox slot of the turn it controls.
+          return markCommandReplyForDelivery({ text: "handled" });
+        },
+      );
+      await dispatchReplyFromConfig({
+        ctx: commandContext("native", body, commandName, {
+          CommandAuthorized: authorized,
+          SessionKey: sessionKey,
+        }),
+        cfg: structuredClone(cfg),
+        dispatcher: createDispatcher(),
+        replyResolver,
+      });
+      expect(replyResolver).toHaveBeenCalledOnce();
+      expect(active.result).toBeNull();
     },
   );
 
@@ -215,7 +247,7 @@ describe("dispatch active command admission", () => {
         releaseLogin.resolve();
         await Promise.all(pending);
         expect(shellEntered).toHaveBeenCalledOnce();
-        expect(getActiveReplyRunCount()).toBe(0);
+        expect(listActiveReplyRunSessionKeys()).toEqual([]);
       } finally {
         releaseLogin.resolve();
         await Promise.all(pending);
@@ -223,7 +255,7 @@ describe("dispatch active command admission", () => {
     },
   );
 
-  it("delivers a directive acknowledgement while its terminal path stays serialized", async () => {
+  it("delivers directive control output without claiming the active target turn", async () => {
     const sessionKey = "agent:main:directive-reply-active";
     const activeOperation = startOperation(sessionKey);
 
@@ -246,31 +278,32 @@ describe("dispatch active command admission", () => {
       await vi.waitFor(() => {
         expect(dispatcher.sendBlockReply).toHaveBeenCalledWith(acknowledgement);
       });
-      expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+      await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });
+      expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith(finalReply);
       expect(replyRunRegistry.get(sessionKey)).toBe(activeOperation);
-      await expect(
-        raceWithTimeoutResult(
-          dispatchPromise.then(() => "settled" as const),
-          100,
-          "pending" as const,
-        ),
-      ).resolves.toBe("pending");
+      expect(activeOperation.result).toBeNull();
     } finally {
       activeOperation.complete();
     }
     await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });
     expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith(finalReply);
-    expect(getActiveReplyRunCount()).toBe(0);
+    expect(listActiveReplyRunSessionKeys()).toEqual([]);
   });
 
-  it("admits authorized native /status on the source while the target has an active run", async () => {
+  it("keeps native controls source-bound but outside the active target mailbox claim", async () => {
     const sourceSessionKey = "agent:main:telegram:slash:user-auth";
     const targetSessionKey = "agent:main:telegram:group:status-target";
     const targetOperation = startOperation(targetSessionKey, "status-target-active-session");
 
-    const replyResolver = vi.fn(async () => ({
-      text: "🧠 Model: mock | ⚙️ Status: ok",
-    }));
+    const replyResolver = vi.fn<NonNullable<DispatchFromConfigParams["replyResolver"]>>(
+      async (_ctx, options) => {
+        const source = readReplySourceInput(options);
+        expect(source?.mailbox.owner.aliases.has(sourceSessionKey)).toBe(true);
+        expect(source?.claim).toBeUndefined();
+        expect(options?.replyOperation).toBeUndefined();
+        return { text: "🧠 Model: mock | ⚙️ Status: ok" };
+      },
+    );
     const dispatcher = createDispatcher();
     const ctx = commandContext("native", "/status", "status", {
       Provider: "telegram",
@@ -307,6 +340,6 @@ describe("dispatch active command admission", () => {
     expect(targetOperation.result).toBeNull();
     expect(replyRunRegistry.get(targetSessionKey)).toBe(targetOperation);
     targetOperation.complete();
-    expect(getActiveReplyRunCount()).toBe(0);
+    expect(listActiveReplyRunSessionKeys()).toEqual([]);
   });
 });

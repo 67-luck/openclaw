@@ -16,9 +16,9 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { replaceTranscriptEvents } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
 import {
-  beginSessionWorkAdmission,
-  runExclusiveSessionLifecycleMutation,
-} from "../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  runSessionMutation,
+} from "../sessions/session-controller.lifecycle.js";
 import { embeddedRunMock, rpcReq, testState, writeSessionStore } from "./test-helpers.js";
 import {
   setupGatewaySessionsTestHarness,
@@ -266,7 +266,7 @@ test("sessions.delete interrupts work admitted before runtime registration", asy
   });
   let interrupted = false;
   let releaseAdmission = () => {};
-  const admissionLease = await beginSessionWorkAdmission({
+  const admissionLease = await beginSessionEffect({
     scope: storePath,
     identities: ["agent:main:subagent:worker", "sess-subagent"],
     assertAllowed: () => {},
@@ -301,7 +301,7 @@ test.each(["session id", "updated at"] as const)(
       },
     });
     let replacementInterrupted = false;
-    const replacementAdmission = await beginSessionWorkAdmission({
+    const replacementAdmission = await beginSessionEffect({
       scope: storePath,
       identities: [sessionKey, replacementSessionId],
       assertAllowed: () => {},
@@ -312,7 +312,7 @@ test.each(["session id", "updated at"] as const)(
     let releaseBlockingMutation = () => {};
     const { promise: blockingMutationStarted, resolve: markBlockingMutationStarted } =
       createDeferred();
-    const blockingMutation = runExclusiveSessionLifecycleMutation({
+    const blockingMutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey],
       run: async () => {
@@ -364,7 +364,7 @@ test("sessions.delete rejects a replacement with the same updated-at timestamp",
     },
   );
   let interrupted = false;
-  const admission = await beginSessionWorkAdmission({
+  const admission = await beginSessionEffect({
     scope: storePath,
     identities: [sessionKey, "replacement-run"],
     assertAllowed: () => {},
@@ -529,7 +529,7 @@ test("sessions.patch waits for an in-flight session lifecycle mutation", async (
   });
   let releaseMutation = () => {};
   const { promise: mutationStarted, resolve: markMutationStarted } = createDeferred();
-  const mutation = runExclusiveSessionLifecycleMutation({
+  const mutation = runSessionMutation({
     scope: storePath,
     identities: [sessionKey, sessionId],
     run: async () => {
@@ -595,7 +595,7 @@ test("sessions.delete keeps lifecycle admission blocked through session unbindin
   );
   await unbindStarted;
   let replacementAdmitted = false;
-  const replacement = beginSessionWorkAdmission({
+  const replacement = beginSessionEffect({
     scope: storePath,
     identities: [sessionKey, sessionId],
     assertAllowed: () => {
@@ -646,7 +646,7 @@ test("sessions.delete limits plugin-runtime cleanup to sessions owned by that pl
     },
   } as never;
   let foreignWorkInterrupted = false;
-  const foreignAdmission = await beginSessionWorkAdmission({
+  const foreignAdmission = await beginSessionEffect({
     scope: storePath,
     identities: ["agent:main:dreaming-narrative-foreign", "sess-foreign"],
     assertAllowed: () => {},

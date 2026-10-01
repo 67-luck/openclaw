@@ -11,7 +11,7 @@ vi.mock("./worker-environments/workspace-sync-preflight.js", () => ({
 
 import { getRuntimeConfig } from "../config/config.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabases } from "../state/openclaw-agent-db.js";
 import { createGatewayWorkerPlacementRuntime } from "./server-worker-placement-startup.js";
@@ -119,7 +119,7 @@ describe("worker automatic resume", () => {
         signal?.throwIfAborted();
       });
       const controller = new AbortController();
-      const admission = await beginSessionWorkAdmission({
+      const admission = await beginSessionEffect({
         scope: target.storePath,
         identities: [REQUEST.sessionKey, REQUEST.sessionId],
         assertAllowed: () => controller.signal.throwIfAborted(),

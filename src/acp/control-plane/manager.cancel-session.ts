@@ -15,12 +15,14 @@ import type { ManagerRuntimeHandleCache } from "./manager.runtime-handle-cache.j
 import type {
   ActiveTurnState,
   AcpSessionManagerDeps,
+  AcpSessionTarget,
   EnsureManagerRuntimeHandle,
   ResolveManagerSessionAsync,
   SetManagerSessionState,
   WithManagerSessionActor,
 } from "./manager.types.js";
 import { acpSessionActorKey, requireReadySessionMeta } from "./manager.utils.js";
+import type { SessionActorQueue } from "./session-actor-queue.js";
 
 async function settleManagerCancellations(cancellations: Promise<void>[]): Promise<void> {
   const settled = await Promise.allSettled(cancellations);
@@ -35,6 +37,103 @@ async function settleManagerCancellations(cancellations: Promise<void>[]): Promi
   }
 }
 
+type CapturedCancellation = {
+  acceptedSet: Set<AcceptedTurnState> | undefined;
+  accepted: readonly AcceptedTurnState[];
+  assertIdleCurrent: () => void;
+};
+
+export type AcpSessionCancellationCapture = {
+  cancel: (params: {
+    cfg: OpenClawConfig;
+    sessionKey: string;
+    agentId?: string;
+    assertActive?: () => void;
+    reason?: string;
+  }) => Promise<void>;
+  release: () => void;
+};
+
+/** Capture in-memory owners before binding I/O; later routing only selects from this view. */
+export function captureManagerCancellation(params: {
+  acceptedTurns: AcceptedTurns;
+  runtimeHandles: ManagerRuntimeHandleCache;
+  actorQueue: SessionActorQueue;
+  resolveTarget: (
+    input: Parameters<AcpSessionCancellationCapture["cancel"]>[0],
+  ) => AcpSessionTarget;
+  resolveSession: ResolveManagerSessionAsync;
+  cancel: (
+    input: Parameters<AcpSessionCancellationCapture["cancel"]>[0] & {
+      agentId: string;
+      captured: CapturedCancellation;
+    },
+  ) => Promise<void>;
+}): AcpSessionCancellationCapture {
+  const accepted = new Map(
+    [...params.acceptedTurns].map(([key, set]) => [key, { set, turns: [...set] }]),
+  );
+  const handles = params.runtimeHandles.capture();
+  const actors = params.actorQueue.captureSelection(handles.keys());
+  let released = false;
+  return {
+    cancel: async (input) => {
+      if (released) {
+        throw new Error("ACP cancellation capture was released.");
+      }
+      input.assertActive?.();
+      const target = params.resolveTarget(input);
+      const key = acpSessionActorKey(target);
+      const selected = accepted.get(key);
+      const cached = handles.get(key);
+      const actor = actors.select(key);
+      const assertIdleCurrent = () => {
+        const current = params.runtimeHandles.get(target);
+        if (
+          !actor.isCurrent() ||
+          params.acceptedTurns.get(key)?.size ||
+          current !== (cached?.state ?? null) ||
+          (current && current.handle !== cached?.handle)
+        ) {
+          throw new AcpRuntimeError(
+            "ACP_TURN_FAILED",
+            "ACP idle runtime changed during cancellation selection.",
+          );
+        }
+      };
+      if (!selected) {
+        assertIdleCurrent();
+        const resolution = await params.resolveSession({
+          ...input,
+          ...target,
+          assertCurrent: () => {
+            input.assertActive?.();
+            assertIdleCurrent();
+          },
+        });
+        if (resolution.kind === "none") {
+          return;
+        }
+      }
+      await params.cancel({
+        ...input,
+        ...target,
+        captured: {
+          acceptedSet: selected?.set,
+          accepted: selected?.turns ?? [],
+          assertIdleCurrent,
+        },
+      });
+    },
+    release: () => {
+      released = true;
+      actors.release();
+      accepted.clear();
+      handles.clear();
+    },
+  };
+}
+
 /** Cancels either the active ACP turn or the idle runtime handle for a session. */
 export async function runManagerCancelSession(params: {
   assertActive?: () => void;
@@ -45,6 +144,7 @@ export async function runManagerCancelSession(params: {
   expectedRunId?: string;
   expectedInstanceId?: string;
   expectedOwnerKey?: string;
+  captured?: CapturedCancellation;
   activeTurnBySession: Map<string, ActiveTurnState>;
   acceptedTurns: AcceptedTurns;
   withSessionActor: WithManagerSessionActor;
@@ -83,9 +183,13 @@ export async function runManagerCancelSession(params: {
     return current;
   };
   // Snapshot accepted instances before yielding: a later successor is never cancelled.
-  const acceptedSet = params.acceptedTurns.get(actorKey);
-  const accepted = [...(acceptedSet ?? [])].filter(
+  const acceptedSet = params.captured
+    ? params.captured.acceptedSet
+    : params.acceptedTurns.get(actorKey);
+  const accepted = [...(params.captured?.accepted ?? acceptedSet ?? [])].filter(
     (turn) =>
+      (!params.captured ||
+        (params.acceptedTurns.get(actorKey) === acceptedSet && acceptedSet?.has(turn))) &&
       (!expectedRunId || turn.requestId === expectedRunId) &&
       (!expectedInstanceId || turn.instanceId === expectedInstanceId),
   );
@@ -194,9 +298,15 @@ export async function runManagerCancelSession(params: {
     }
     return;
   }
+  // An earlier accepted selection never falls back to cancelling its idle successor.
+  if (params.captured?.acceptedSet) {
+    return;
+  }
   requireExpectedTurn(undefined);
+  params.captured?.assertIdleCurrent();
 
   await params.withSessionActor(params, async (isCurrentActor) => {
+    params.captured?.assertIdleCurrent();
     const control = await params.prepareSessionControlRead(target);
     let runtimeLocator: AcpSessionRuntimeLocator | undefined;
     const assertTargetCurrent = () => {
@@ -223,6 +333,7 @@ export async function runManagerCancelSession(params: {
       const { entry, constraint } = await requireExpectedOwner(control);
       assertAdmission();
       const ownerKey = resolveAcpSessionControlOwner(entry);
+      params.captured?.assertIdleCurrent();
       const { runtime, handle } = await params.ensureRuntimeHandle({
         ...target,
         assertActive: assertAdmission,

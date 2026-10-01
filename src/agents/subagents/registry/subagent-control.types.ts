@@ -1,4 +1,13 @@
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import type { SessionControllerInput } from "../../../sessions/session-controller.mailbox.js";
+
+/** Exact source/target references retained across a kill's admission cleanup. */
+export type SubagentKillInputSnapshot = {
+  input: SessionControllerInput;
+  source: SessionControllerInput["source"];
+  target: SessionControllerInput["target"];
+  mailbox: SessionControllerInput["mailbox"];
+};
 
 export type SubagentCancellationControl = {
   assertCurrent: () => void;

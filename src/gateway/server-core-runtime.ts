@@ -88,8 +88,7 @@ export async function startGatewayCoreRuntime(input: {
     nodeSendToAllSubscribed,
     refreshGatewayHealthSnapshotWithRuntime,
     dedupe,
-    chatAbortControllers,
-    chatQueuedTurns,
+    rpcSources,
     restartRecoveryCandidates,
     chatRunState,
     removeChatRun,
@@ -195,8 +194,7 @@ export async function startGatewayCoreRuntime(input: {
             resetEventLoopHealth: readinessEventLoopHealth.reset,
             logHealth,
             dedupe,
-            chatAbortControllers,
-            chatQueuedTurns,
+            rpcSources,
             restartRecoveryCandidates,
             chatRunState,
             removeChatRun,
@@ -254,7 +252,7 @@ export async function startGatewayCoreRuntime(input: {
       toolEventRecipients,
       sessionEventSubscribers,
       sessionMessageSubscribers,
-      chatAbortControllers,
+      rpcSources,
       restartRecoveryCandidates,
       refreshConnectedUserProfiles: () =>
         runtime.resolvePluginGatewayContext()?.refreshConnectedUserProfile?.(),
@@ -312,7 +310,7 @@ export async function startGatewayCoreRuntime(input: {
       ...createGatewayAuxHandlers({
         scheduler: runtime.scheduler,
         log,
-        chatAbortControllers,
+        rpcSources,
         hasRunAbortMarker: (runId) => chatRunState.hasAbortMarker(runId),
         getNativeApprovalRouteCoordinator: () =>
           runtime.gatewayInstanceRuntimeRef.current?.nativeApprovals.routeCoordinator,

@@ -20,7 +20,7 @@ import { createReplyDispatcher } from "./reply-dispatcher.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 let dispatchReplyFromConfig: typeof import("./dispatch-from-config.js").dispatchReplyFromConfig;
-let createReplyOperation: typeof import("./reply-run-registry.js").createReplyOperation;
+let createReplyOperation: typeof import("../../sessions/session-controller.js").createReplyOperation;
 let replyRunTesting: typeof import("./reply-run-registry.test-support.js").testing;
 let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
 
@@ -49,7 +49,7 @@ function createVisibleDispatchParams(
 describe("dispatchReplyFromConfig terminal visible admission recovery", () => {
   beforeAll(async () => {
     ({ dispatchReplyFromConfig } = await import("./dispatch-from-config.js"));
-    ({ createReplyOperation } = await import("./reply-run-registry.js"));
+    ({ createReplyOperation } = await import("../../sessions/session-controller.js"));
     ({ testing: replyRunTesting } = await import("./reply-run-registry.test-support.js"));
     ({ resetInboundDedupe } = await import("./inbound-dedupe.js"));
   });
@@ -72,13 +72,14 @@ describe("dispatchReplyFromConfig terminal visible admission recovery", () => {
     resetInboundDedupe();
   });
 
-  it("reclaims a leftover active reply operation when the session entry is terminal/killed", async () => {
+  it("does not force-clear a live raw owner because its persisted row is terminal", async () => {
     const activeOperation = createReplyOperation({
       sessionKey,
       sessionId: "active-session",
       resetTriggered: false,
     });
     activeOperation.setPhase("running");
+    const tick = vi.spyOn(activeOperation.watchdog, "tick");
     sessionStoreMocks.currentEntry = {
       sessionId: "active-session",
       status: "killed",
@@ -93,11 +94,9 @@ describe("dispatchReplyFromConfig terminal visible admission recovery", () => {
 
     const result = await dispatchReplyFromConfig(dispatchParams);
 
-    expect(activeOperation.result).toMatchObject({
-      kind: "failed",
-      code: "run_failed",
-      cause: { message: "clearing stale terminal reply operation" },
-    });
+    expect(tick).toHaveBeenCalledOnce();
+    expect(activeOperation.result).toBeNull();
+    activeOperation.complete();
     expect(result).toMatchObject({
       queuedFinal: true,
       counts: { tool: 0, block: 0, final: 0 },

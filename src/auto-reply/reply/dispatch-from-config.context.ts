@@ -8,6 +8,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { isPluginOwnedSessionBindingRecord } from "../../plugins/conversation-binding-metadata.js";
 import { isAcpSessionKey } from "../../routing/session-key.js";
+import type { ReplyOperation } from "../../sessions/session-controller.js";
 import { classifySessionStateActor } from "../../sessions/session-state-events.js";
 import {
   isNativeCommandTurn,
@@ -20,7 +21,6 @@ import {
   resolveSessionStorePathCore,
 } from "./dispatch-from-config.runtime.js";
 import { DispatchSessionRefreshRequiredError } from "./dispatch-session-refresh-error.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
 import { isSlackDirectRoutedThreadTurn } from "./routed-delivery-thread.js";
 import {
   assertPreparedConversationBindingRoute,

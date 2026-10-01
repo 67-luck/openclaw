@@ -57,12 +57,12 @@ export function isAcceptedAgentDedupePayload(payload: unknown): payload is {
 }
 
 export function resolveAgentWaitSource(
-  context: Pick<GatewayRequestContext, "chatAbortControllers" | "dedupe">,
+  context: Pick<GatewayRequestContext, "rpcSources" | "dedupe">,
   runId: string,
 ): "agent" | "chat" | undefined {
-  const activeChatEntry = context.chatAbortControllers.get(runId);
+  const activeChatEntry = context.rpcSources.get(runId);
   if (activeChatEntry) {
-    return activeChatEntry.kind === "agent" ? "agent" : "chat";
+    return activeChatEntry.adapter.kind === "agent" ? "agent" : "chat";
   }
   // Cancellation can retire the controller before dispatch publishes its result;
   // sessionless admissions also retain their RPC owner in the accepted dedupe.
@@ -98,7 +98,7 @@ export function isPreRegistrationAbortedAgentDedupeEntryForSession(params: {
     return false;
   }
   const payload = params.entry.payload;
-  const payloadRunId = typeof payload.runId === "string" ? payload.runId.trim() : "";
+  const payloadRunId = typeof payload.runId === "string" ? payload.runId : "";
   if (payloadRunId && payloadRunId !== params.runId) {
     return false;
   }
@@ -184,7 +184,7 @@ export function setAbortedAgentDedupeEntries(params: {
 export function replayAgentTurnIfCached(params: {
   acceptedOnly?: boolean;
   preflight: { agentDedupeKeys: readonly string[]; runId: string };
-  context: Pick<GatewayRequestContext, "dedupe" | "chatAbortControllers">;
+  context: Pick<GatewayRequestContext, "dedupe" | "rpcSources">;
   io: AgentTurnIo;
 }): boolean {
   const { agentDedupeKeys, runId } = params.preflight;
@@ -202,7 +202,7 @@ export function replayAgentTurnIfCached(params: {
     params.acceptedOnly &&
     isAcceptedAgentDedupePayload(cached.payload) &&
     !cached.payload.reservationId &&
-    !params.context.chatAbortControllers.has(runId)
+    !params.context.rpcSources.has(runId)
   ) {
     // Durable private input owns recovery after the accepted controller is gone.
     return false;

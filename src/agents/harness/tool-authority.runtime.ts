@@ -1,12 +1,17 @@
-import { resolveActiveReplyOperationForSessionId } from "../../auto-reply/reply/reply-run-registry.js";
-import { getAttachedBackend } from "../../auto-reply/reply/reply-run-registry.state.js";
-import { createReplyTurnParticipants } from "../../auto-reply/reply/reply-run-registry.tool-authority.js";
 import {
   prepareReplyToolAuthority,
   type ReplyToolAuthorityInput,
 } from "../../auto-reply/reply/reply-tool-authority.js";
 import { readChannelSourceTurnId } from "../../auto-reply/reply/source-turn-id.js";
+import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { withSessionTranscriptQuestionAnswers } from "../../config/sessions/session-transcript-read-fence.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import { resolveActiveReplyOperationForSessionId } from "../../sessions/session-controller.js";
+import {
+  assertSessionControllerOperation,
+  resolveControllerNativeAttempt,
+} from "../../sessions/session-controller.state.js";
+import { createReplyTurnParticipants } from "../../sessions/session-controller.tool-authority.js";
 import {
   readAdmittedRunOperatorAuthority,
   resolveAdmittedRunActiveAssertion,
@@ -42,7 +47,49 @@ type ToolAuthorityAttempt = Pick<
 
 /** Execution-only: policy preparation must finish before authority reaches a publisher. */
 export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends ToolAuthorityAttempt>(
-  internal: Pick<EmbeddedRunAttemptInternalParams, "admittedRunContext" | "replyOperation">,
+  internal: Pick<
+    EmbeddedRunAttemptInternalParams,
+    | "admittedRunContext"
+    | "replyOperation"
+    | "sessionPersistence"
+    | "trigger"
+    | "bindWatchdogAttempt"
+  >,
+  attempt: Attempt,
+  narrow: ((input: ReplyToolAuthorityInput) => ReplyToolAuthorityInput) | undefined,
+  run: (prepared: Attempt & { toolAuthorityFingerprint?: string }) => Promise<T>,
+): Promise<T> {
+  return await withSessionTurn(
+    {
+      sessionKey: attempt.sessionKey,
+      sessionId: attempt.sessionId,
+      agentId: attempt.agentId,
+      storePath: attempt.config
+        ? resolveSessionStorePathCore(attempt.config.session?.store, { agentId: attempt.agentId })
+        : undefined,
+      replyOperation: internal.replyOperation,
+      abortSignal: attempt.abortSignal,
+      detached: internal.sessionPersistence === "detached",
+    },
+    (replyOperation) =>
+      withPreparedEmbeddedRunToolAuthorityOwned(
+        { ...internal, replyOperation },
+        attempt,
+        narrow,
+        run,
+      ),
+  );
+}
+
+async function withPreparedEmbeddedRunToolAuthorityOwned<T, Attempt extends ToolAuthorityAttempt>(
+  internal: Pick<
+    EmbeddedRunAttemptInternalParams,
+    | "admittedRunContext"
+    | "replyOperation"
+    | "sessionPersistence"
+    | "trigger"
+    | "bindWatchdogAttempt"
+  >,
   attempt: Attempt,
   narrow: ((input: ReplyToolAuthorityInput) => ReplyToolAuthorityInput) | undefined,
   run: (prepared: Attempt & { toolAuthorityFingerprint?: string }) => Promise<T>,
@@ -55,7 +102,12 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
   const { sessionId, sessionKey, sessionFile, agentId, runId } = attempt;
   const route = { provider: attempt.provider, model: attempt.modelId };
   // Maintenance borrows an operation for cancellation, not its injection snapshot.
-  const operation = attempt.toolAuthorityFingerprint ? internal.replyOperation : undefined;
+  const turn = internal.replyOperation;
+  const ownsDirectPolicy = turn?.turnKind === "direct" && internal.trigger !== "memory";
+  let operation =
+    attempt.toolAuthorityFingerprint || (ownsDirectPolicy && turn?.toolAuthorityFingerprint)
+      ? turn
+      : undefined;
   const assertHostActive = attempt.hostCapabilities?.assertActive;
   const input: ReplyToolAuthorityInput = {
     originatingChannel: attempt.messageChannel,
@@ -83,6 +135,10 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
   // Preserve the complete admitted snapshot, but bind its hash and projection
   // only after hooks or native ownership have selected the actual model.
   const direct = operation ? undefined : prepareReplyToolAuthority(input, narrow);
+  if (turn && ownsDirectPolicy && !turn.toolAuthorityFingerprint && direct) {
+    turn.bindToolAuthoritySnapshot(direct);
+    operation = turn;
+  }
   if (operation) {
     assertActive();
   }
@@ -100,6 +156,9 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
       throw new Error("embedded tool authority is no longer active");
     }
     assertAdmitted();
+    if (turn) {
+      assertSessionControllerOperation(turn);
+    }
     assertHostActive?.();
     if (
       (source && (source.agentId !== agentId || source.sessionKey !== sessionKey)) ||
@@ -125,6 +184,21 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
       throw new Error("question creator reply authority is no longer active");
     }
   };
+  let registered = false;
+  const watchdogAttempt = turn
+    ? turn.watchdog.attachAttempt({
+        assertCurrent: () => {
+          if (!assertAdmitted) {
+            throw new Error("Attempt admission retired");
+          }
+          assertAdmitted();
+          assertSessionControllerOperation(turn);
+        },
+      })
+    : undefined;
+  if (watchdogAttempt) {
+    internal.bindWatchdogAttempt?.(watchdogAttempt);
+  }
   const runPrepared = () =>
     withSessionTranscriptQuestionAnswers(
       attempt.userTurnTranscriptRecorder,
@@ -161,6 +235,7 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
         sessionKey,
         operationalRunInstance: instance,
         personalToolParticipants,
+        watchdogAttempt,
         embeddedRunToolAuthorityBinding: (registration) => {
           assertActive();
           const { handle } = registration;
@@ -184,12 +259,16 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
           const ownsOperation = () =>
             !operation ||
             (resolveActiveReplyOperationForSessionId(sessionId) === operation &&
-              getAttachedBackend(operation) === handle &&
+              resolveControllerNativeAttempt(sessionId) === handle &&
               operation.toolAuthorityRoute?.provider === route.provider &&
               operation.toolAuthorityRoute.model === route.model);
           assertRegistered();
+          registered = true;
           return {
+            watchdogAttempt,
             personalToolParticipants,
+            operation: turn,
+            ...(!turn ? { detached: true as const } : {}),
             source: operation ? "reply" : "attempt",
             sourceTurnId: readChannelSourceTurnId(internal) ?? runId,
             assertActive: assertRegistered,
@@ -212,6 +291,9 @@ export async function withPreparedEmbeddedRunToolAuthority<T, Attempt extends To
   } finally {
     // Retained ALS callbacks do not extend the attempt's authority.
     live = false;
+    if (!registered) {
+      watchdogAttempt?.close();
+    }
     if (!operation) {
       personalToolParticipants?.close();
     }

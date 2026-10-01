@@ -4,16 +4,7 @@ import { join } from "node:path";
 import { setImmediate } from "node:timers/promises";
 // E2E tests for run-reply-agent execution and generated session artifacts.
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-  type MockInstance,
-} from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import {
   emptySqliteCounts,
@@ -53,6 +44,12 @@ import {
   buildHandledBeforeAgentReplyPayloads,
   runBeforeAgentReplyForTurn,
 } from "../../plugins/before-agent-reply.js";
+import {
+  clearReplyRunForResetBySessionId,
+  createReplyOperation,
+  type ReplyOperation,
+  replyRunRegistry,
+} from "../../sessions/session-controller.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -64,6 +61,8 @@ import { createReplyAgentRestartRecoveryController } from "./agent-runner-execut
 import { registerReasoningFallbackTests } from "./agent-runner.reasoning-fallback.test-support.js";
 import { registerReplyAdmissionCases } from "./agent-runner.runreplyagent.admission.cases.js";
 import { registerImmediateFailurePolicyCases } from "./agent-runner.runreplyagent.failure-policy.cases.js";
+import { registerOverflowPresentationCases } from "./agent-runner.runreplyagent.overflow.cases.js";
+import { createReplyQueueFixture } from "./agent-runner.runreplyagent.queue.test-support.js";
 import { registerRequiredReplyCompletionCases } from "./agent-runner.runreplyagent.required-reply.cases.js";
 import { registerSteeringReceiptCases } from "./agent-runner.runreplyagent.steering-receipts.cases.js";
 import { registerWaitingStatusCases } from "./agent-runner.runreplyagent.waiting-status.cases.js";
@@ -72,7 +71,6 @@ import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import {
   clearSessionQueues,
   enqueueFollowupRun,
-  refreshQueuedFollowupSession,
   scheduleFollowupDrain,
   type FollowupRun,
   type QueueSettings,
@@ -83,12 +81,6 @@ import {
   resolveReplyOperationAgentTurn,
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
-import {
-  clearReplyRunForResetBySessionId,
-  createReplyOperation,
-  type ReplyOperation,
-  replyRunRegistry,
-} from "./reply-run-registry.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
 import { bindReplyOperationTyping } from "./reply-run-typing.js";
 import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
@@ -96,6 +88,11 @@ import { runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.
 import { consumeReplyUsageState } from "./reply-usage-state.js";
 import { buildChannelSourceTurnId, setChannelSourceTurnId } from "./source-turn-id.js";
 import { createMockTypingController } from "./test-helpers.js";
+
+export type ReplyOverflowFixture = {
+  createMinimalRun: typeof createMinimalRun;
+  state: typeof state;
+};
 
 type AgentRunParams = {
   sessionId?: string;
@@ -129,21 +126,14 @@ const state = vi.hoisted(() => ({
   activeBackendCancelMock: vi.fn(),
   runEmbeddedAgentMock: vi.fn(),
 }));
-const parkedSteer = vi.hoisted(() => {
-  const admit = vi.fn(async () => "steer" as const);
-  const accepted = vi.fn();
-  const fallback = vi.fn();
-  const consume = vi.fn();
-  return {
-    admit,
-    accepted,
-    fallback,
-    consume,
-    park: vi.fn(() => ({ admit, accepted, fallback, consume })),
-  };
-});
-
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const parkedSteer = createReplyQueueFixture();
+const { requireScheduledFollowupRunner } = parkedSteer;
+const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
+  afterEach(async () => {
+    await parkedSteer.settle();
+    cleanup();
+  }),
+);
 
 function countMatching<T>(items: readonly T[], predicate: (item: T) => boolean): number {
   let count = 0;
@@ -165,8 +155,12 @@ function mockCallArgs(mock: ReturnType<typeof vi.fn>, label: string, callIndex =
   return call;
 }
 
-function requireStoredSessionEntry(storePath: string, sessionKey = "main"): SessionEntry {
-  const entry = loadSessionEntry({ storePath, sessionKey, readConsistency: "latest" });
+function requireStoredSessionEntry(
+  storePath: string,
+  sessionKey = "main",
+  agentId = "main",
+): SessionEntry {
+  const entry = loadSessionEntry({ agentId, storePath, sessionKey, readConsistency: "latest" });
   if (!entry) {
     throw new Error(`expected stored session entry for ${sessionKey}`);
   }
@@ -176,7 +170,7 @@ function requireStoredSessionEntry(storePath: string, sessionKey = "main"): Sess
 async function createSessionStoreFile(entry: SessionEntry, sessionKey = "main"): Promise<string> {
   const dir = tempDirs.make("openclaw-agent-runner-");
   const storePath = join(dir, "sessions.json");
-  await replaceSessionEntry({ storePath, sessionKey }, entry);
+  await replaceSessionEntry({ agentId: "main", storePath, sessionKey }, entry);
   return storePath;
 }
 
@@ -339,7 +333,7 @@ vi.mock("../../gateway/mcp-app-channel-action.js", () => ({
 vi.mock("./queue.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./queue.js")>()),
   enqueueFollowupRun: vi.fn(),
-  parkSteerCandidate: parkedSteer.park,
+  reserveSteerCandidate: vi.fn(),
   refreshQueuedFollowupSession: vi.fn(),
   scheduleFollowupDrain: vi.fn(),
 }));
@@ -372,20 +366,7 @@ beforeEach(() => {
   state.queueEmbeddedAgentMessageMock.mockReturnValue(false);
   state.getChannelPluginMock.mockReset();
   state.materializeMcpAppChannelPresentationMock.mockReset();
-  parkedSteer.admit.mockReset().mockResolvedValue("steer");
-  parkedSteer.accepted.mockReset();
-  parkedSteer.fallback.mockReset();
-  parkedSteer.consume.mockReset();
-  parkedSteer.park.mockReset();
-  parkedSteer.park.mockReturnValue({
-    admit: parkedSteer.admit,
-    accepted: parkedSteer.accepted,
-    fallback: parkedSteer.fallback,
-    consume: parkedSteer.consume,
-  });
-  vi.mocked(enqueueFollowupRun).mockReset().mockReturnValue(true);
-  vi.mocked(refreshQueuedFollowupSession).mockReset();
-  vi.mocked(scheduleFollowupDrain).mockReset();
+  parkedSteer.reset();
   vi.stubEnv("OPENCLAW_TEST_FAST", "1");
 });
 
@@ -430,10 +411,14 @@ function createMinimalRun(params?: {
   setChannelSourceTurnId(sessionCtx, sourceTurnId);
   const resolvedQueue = {
     mode: params?.resolvedQueueMode ?? "interrupt",
+    debounceMs: 0,
   } as unknown as QueueSettings;
   const sessionKey = params?.sessionKey ?? "main";
+  const config = params?.runOverrides?.config ?? {};
   const followupRun = {
     prompt: "hello",
+    sourceTurnId,
+    abortSignal: opts?.abortSignal,
     summaryLine: "hello",
     enqueuedAt: Date.now(),
     turnAdoptionLifecycle: opts?.turnAdoptionLifecycle,
@@ -442,12 +427,12 @@ function createMinimalRun(params?: {
     originatingTo: sessionCtx.OriginatingTo,
     originatingChatId: sessionCtx.NativeChannelId ?? sessionCtx.ChatId,
     run: {
-      sessionId: "session",
+      agentId: "main",
+      sessionId: params?.sessionEntry?.sessionId ?? "session",
       sessionKey,
       messageProvider: "whatsapp",
       sessionFile: "/tmp/session.jsonl",
       workspaceDir: "/tmp",
-      config: {},
       skillsSnapshot: {},
       provider: "anthropic",
       model: "claude",
@@ -473,8 +458,13 @@ function createMinimalRun(params?: {
       blockReplyBreak: "message_end",
       skipProviderRuntimeHints: process.env.OPENCLAW_TEST_FAST === "1",
       ...params?.runOverrides,
+      // Mailbox admission and persistence must select the same physical store.
+      config: params?.storePath
+        ? { ...config, session: { ...config.session, store: params.storePath } }
+        : config,
     },
   } as unknown as FollowupRun;
+  parkedSteer.track(followupRun);
   const activeOperation = replyRunRegistry.get(sessionKey);
   if (activeOperation && params?.isActive && params.bindActiveAuthority !== false) {
     activeOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
@@ -532,7 +522,7 @@ function createMinimalRun(params?: {
       return runReplyAgent({
         commandBody: "hello",
         followupRun,
-        queueKey: "main",
+        queueKey: sessionKey,
         resolvedQueue,
         shouldSteer: params?.shouldSteer ?? false,
         shouldFollowup: params?.shouldFollowup ?? false,
@@ -573,15 +563,6 @@ function createDiscordFallbackRun() {
       MessageSid: "1503645939964055592",
     },
   });
-}
-
-function requireScheduledFollowupRunner(): (run: FollowupRun) => Promise<void> {
-  const scheduled = vi.mocked(scheduleFollowupDrain).mock.calls.at(-1);
-  if (!scheduled) {
-    throw new Error("expected a scheduled follow-up drain");
-  }
-  expect(scheduled[0]).toBe("main");
-  return scheduled[1];
 }
 
 async function runHookBackedEmbeddedAgent(params: {
@@ -689,7 +670,7 @@ describe("runReplyAgent active steering", () => {
     active.complete();
   });
 
-  it("keeps the replacement source when retired admission completes", async () => {
+  it("retains canceled admission before admitting a replacement source", async () => {
     const { sessionEntry, sessionStore, storePath } = await makeSessionFixture();
     const sourceContext = {
       Provider: "discord",
@@ -767,8 +748,22 @@ describe("runReplyAgent active steering", () => {
         "source-first",
       );
       clearReplyRunForResetBySessionId("session");
+      expect(() =>
+        createReplyOperation({
+          sessionKey: "main",
+          sessionId: "replacement-session",
+          resetTriggered: true,
+        }),
+      ).toThrow("already active");
+      returnAdmission.resolve();
+      await firstSettled;
+      first.complete();
+      await first.ownerSettlement;
       const replacementEntry = makeSessionEntry({ sessionId: "replacement-session" });
-      await replaceSessionEntry({ storePath, sessionKey: "main" }, replacementEntry);
+      await replaceSessionEntry(
+        { agentId: "main", storePath, sessionKey: "main" },
+        replacementEntry,
+      );
       sessionStore.main = replacementEntry;
       replacement = createReplyOperation({
         sessionKey: "main",
@@ -801,13 +796,6 @@ describe("runReplyAgent active steering", () => {
       await createController(replacement, replacementEntry, "source-replacement").admitUserTurn(
         replacementRecorder,
       );
-      expect(replyRunRegistry.resolveCurrentMessageInjectionTarget("main")).toMatchObject({
-        sourceTurnId: "source-replacement",
-      });
-
-      returnAdmission.resolve();
-      await firstSettled;
-
       expect(replyRunRegistry.get("main")).toBe(replacement);
       expect(replyRunRegistry.resolveCurrentMessageInjectionTarget("main")).toMatchObject({
         sourceTurnId: "source-replacement",
@@ -1376,9 +1364,15 @@ describe("runReplyAgent active steering", () => {
       reason,
       gatewayHealth: "live",
     });
+    const active = createReplyOperation({
+      sessionKey: "main",
+      sessionId: "session",
+      resetTriggered: false,
+    });
+    active.setPhase("running");
     const onAdopted = vi.fn();
     const onBlockReply = vi.fn();
-    const { run } = createMinimalRun({
+    const { run, followupRun } = createMinimalRun({
       opts: { onBlockReply, turnAdoptionLifecycle: { onAdopted } },
       isActive: true,
       shouldSteer: true,
@@ -1386,16 +1380,26 @@ describe("runReplyAgent active steering", () => {
       resolvedQueueMode: "steer",
     });
 
-    await expect(run()).resolves.toBeUndefined();
+    try {
+      await expect(run()).resolves.toBeUndefined();
 
-    expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
-    expect(vi.mocked(scheduleFollowupDrain)).toHaveBeenCalled();
-    expect(state.beforeAgentReplyRunMock).not.toHaveBeenCalled();
-    expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
-    expect(onBlockReply).not.toHaveBeenCalled();
-    expect(onAdopted).not.toHaveBeenCalled();
-    expect(parkedSteer.fallback).toHaveBeenCalledOnce();
-    expect(parkedSteer.consume).not.toHaveBeenCalled();
+      expect(vi.mocked(enqueueFollowupRun)).not.toHaveBeenCalled();
+      expect(vi.mocked(scheduleFollowupDrain)).not.toHaveBeenCalled();
+      expect(state.beforeAgentReplyRunMock).not.toHaveBeenCalled();
+      expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
+      expect(onBlockReply).not.toHaveBeenCalled();
+      expect(onAdopted).not.toHaveBeenCalled();
+      expect(parkedSteer.fallback).toHaveBeenCalledOnce();
+      expect(parkedSteer.consume).not.toHaveBeenCalled();
+    } finally {
+      // The test owns this predecessor; only producer completion releases its successor.
+      active.complete();
+    }
+    expect(vi.mocked(scheduleFollowupDrain)).toHaveBeenCalledOnce();
+    await requireScheduledFollowupRunner()(followupRun);
+    expect(onAdopted).toHaveBeenCalledOnce();
+    expect(state.beforeAgentReplyRunMock).toHaveBeenCalledOnce();
+    expect(state.runEmbeddedAgentMock).toHaveBeenCalledOnce();
   });
 
   it("adopts and consumes non-handoff unconfirmed steering without replay", async () => {
@@ -1447,17 +1451,15 @@ describe("runReplyAgent active steering", () => {
     });
     active.setPhase("running");
     const activeAbortByUser = vi.spyOn(active, "abortByUser");
-    let successor: ReplyOperation | undefined;
-    let successorAbortByUser: MockInstance<ReplyOperation["abortByUser"]> | undefined;
     state.queueEmbeddedAgentMessageMock.mockImplementationOnce(() => {
       active.complete();
-      successor = createReplyOperation({
-        sessionKey: "main",
-        sessionId: "session-b",
-        resetTriggered: false,
-      });
-      successor.setPhase("running");
-      successorAbortByUser = vi.spyOn(successor, "abortByUser");
+      expect(() =>
+        createReplyOperation({
+          sessionKey: "main",
+          sessionId: "session-b",
+          resetTriggered: false,
+        }),
+      ).toThrow();
       return {
         queued: true,
         sessionId: "session-a",
@@ -1467,7 +1469,7 @@ describe("runReplyAgent active steering", () => {
         errorMessage: "receipt unavailable",
       };
     });
-    const { run } = createMinimalRun({
+    const { run, followupRun } = createMinimalRun({
       isActive: true,
       shouldSteer: true,
       shouldFollowup: true,
@@ -1475,12 +1477,19 @@ describe("runReplyAgent active steering", () => {
     });
 
     await expect(run()).resolves.toBeUndefined();
-    if (!successor || !successorAbortByUser) {
-      throw new Error("expected same-key successor operation");
-    }
+    await followupRun.controllerInput?.settlement.promise;
+    const successor = createReplyOperation({
+      sessionKey: "main",
+      sessionId: "session-b",
+      resetTriggered: false,
+    });
+    successor.setPhase("running");
+    const successorAbortByUser = vi.spyOn(successor, "abortByUser");
     try {
-      expect(successorAbortByUser).not.toHaveBeenCalled();
       expect(activeAbortByUser).toHaveBeenCalledOnce();
+      expect(active.abortByUser()).toBe(false);
+      expect(successorAbortByUser).not.toHaveBeenCalled();
+      expect(replyRunRegistry.get("main")).toBe(successor);
     } finally {
       successor.complete();
     }
@@ -1975,18 +1984,24 @@ describe("runReplyAgent heartbeat followup guard", () => {
       runOverrides: { terminalReplyExpectation: "optional" },
     });
 
-    const result = await run();
-    await blockFlush;
-    const reply = Array.isArray(result) ? result[0] : result;
+    try {
+      const result = await run();
+      await blockFlush;
+      const reply = Array.isArray(result) ? result[0] : result;
 
-    if (label === "aborted answer" || label === "rejected answer") {
-      expect(reply?.text).toBe("NO_REPLY");
-    } else {
-      expect(reply).toMatchObject({ isError: true, text: expect.any(String) });
-      expect(reply?.text).not.toBe("NO_REPLY");
-    }
-    if (label !== "aborted answer") {
-      expect(resolveReplyOperationAgentTurn(runState)).toBe("failed");
+      if (label === "aborted answer" || label === "rejected answer") {
+        expect(reply?.text).toBe("NO_REPLY");
+      } else {
+        expect(reply).toMatchObject({ isError: true, text: expect.any(String) });
+        expect(reply?.text).not.toBe("NO_REPLY");
+      }
+      if (label !== "aborted answer") {
+        expect(resolveReplyOperationAgentTurn(runState)).toBe("failed");
+      }
+    } finally {
+      // An externally provided operation stays caller-owned even after abort.
+      replyOperation?.complete();
+      await blockFlush;
     }
   });
 
@@ -2060,9 +2075,12 @@ describe("runReplyAgent heartbeat followup guard", () => {
       opts: { onPartialReply },
       replyOperation,
     });
-    const result = await run();
-
-    expect(result).toEqual({ text: "NO_REPLY" });
+    try {
+      const result = await run();
+      expect(result).toEqual({ text: "NO_REPLY" });
+    } finally {
+      replyOperation.complete();
+    }
   });
 
   it.each(["reasoning", "commentary"] as const)(
@@ -2200,7 +2218,7 @@ describe("runReplyAgent pending final delivery capture", () => {
           }),
         }),
       );
-      expect(await readStoredMainSession(storePath)).toMatchObject({
+      expect(requireStoredSessionEntry(storePath, "main", "ops")).toMatchObject({
         pendingFinalDelivery: {
           kind: "replayable",
           text: "custom default agent reply",
@@ -2406,6 +2424,7 @@ describe("runReplyAgent pending final delivery capture", () => {
       // final-delivery persistence instead of the competing-work guard.
       await runWithReplyOperationLifecycleAdmission(operation, () =>
         applySessionEntryLifecycleMutation({
+          agentId: "main",
           removals: [{ sessionKey }],
           skipMaintenance: true,
           storePath,
@@ -2621,7 +2640,7 @@ describe("runReplyAgent pending final delivery capture", () => {
     state.runEmbeddedAgentMock.mockImplementationOnce(async () => {
       const current = await readStoredMainSession(storePath);
       await replaceSessionEntry(
-        { storePath, sessionKey: "main" },
+        { agentId: "main", storePath, sessionKey: "main" },
         {
           ...current,
           restartRecoveryDeliveryReceiptState: "terminal-pending",
@@ -2775,7 +2794,9 @@ describe("runReplyAgent pending final delivery capture", () => {
     });
 
     // Retire the completed turn's automatic maintenance before observing cold redelivery.
-    const database = toDatabaseOptions(resolveSqliteScope({ storePath, sessionKey: "main" }));
+    const database = toDatabaseOptions(
+      resolveSqliteScope({ agentId: "main", storePath, sessionKey: "main" }),
+    );
     await closeOpenClawAgentDatabaseByPathAsync(
       resolveOpenClawAgentSqlitePath(database),
       database.agentId,
@@ -2980,7 +3001,6 @@ describe("runReplyAgent pending final delivery capture", () => {
       expectedSourceTurnId,
     ]);
   });
-
   it("admits the next channel turn after a failed recovery became terminal", async () => {
     const { sessionEntry, sessionStore, storePath } = await makeSessionFixture({
       abortedLastRun: true,
@@ -3269,7 +3289,7 @@ describe("runReplyAgent pending final delivery capture", () => {
       expect(replyOperation.abortByUser()).toBe(true);
       const current = await readStoredMainSession(storePath);
       await replaceSessionEntry(
-        { storePath, sessionKey: "main" },
+        { agentId: "main", storePath, sessionKey: "main" },
         { ...current, abortedLastRun: true, status: "killed", updatedAt: Date.now() },
       );
       throw new Error("cancelled");
@@ -3764,7 +3784,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
     const dir = await mkdtemp(join(tmpdir(), "openclaw-heartbeat-pending-"));
     const storePath = join(dir, "sessions.json");
     await replaceSessionEntry(
-      { storePath, sessionKey: "main" },
+      { agentId: "main", storePath, sessionKey: "main" },
       { sessionId: "session", updatedAt: 1 },
     );
     try {
@@ -4156,7 +4176,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
         modelProvider: "openai",
         model: "gpt-5.6-sol",
       });
-      await replaceSessionEntry({ storePath, sessionKey: "main" }, sessionEntry);
+      await replaceSessionEntry({ agentId: "main", storePath, sessionKey: "main" }, sessionEntry);
       const sessionStore = { main: sessionEntry };
       state.runEmbeddedAgentMock.mockResolvedValueOnce({
         payloads: [{ text: "final" }],
@@ -4244,7 +4264,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
     const sessionEntry = makeSessionEntry({
       traceLevel: "raw",
     });
-    await replaceSessionEntry({ storePath, sessionKey: "main" }, sessionEntry);
+    await replaceSessionEntry({ agentId: "main", storePath, sessionKey: "main" }, sessionEntry);
     try {
       state.runEmbeddedAgentMock.mockResolvedValueOnce({
         payloads: [{ text: "Terminal tool summary", isError: true }],
@@ -4642,7 +4662,10 @@ describe("runReplyAgent typing (heartbeat)", () => {
     const sessionStore = { main: sessionEntry };
     const storeRoot = await mkdtemp(join(tmpdir(), "openclaw-internal-fallback-"));
     const storePath = join(storeRoot, "sessions.json");
-    await replaceSessionEntry({ storePath, sessionKey: "main" }, sessionStore.main);
+    await replaceSessionEntry(
+      { agentId: "main", storePath, sessionKey: "main" },
+      sessionStore.main,
+    );
     try {
       state.runEmbeddedAgentMock.mockResolvedValueOnce({
         payloads: [{ text: "subagent timed out" }],
@@ -5248,12 +5271,15 @@ describe("runReplyAgent typing (heartbeat)", () => {
       }),
     );
     try {
-      const { run } = createMinimalRun({
-        resolvedVerboseLevel: "on",
-        sessionEntry,
-        sessionStore,
-        sessionKey: "main",
-      });
+      let message = 0;
+      const run = () =>
+        createMinimalRun({
+          resolvedVerboseLevel: "on",
+          sessionEntry,
+          sessionStore,
+          sessionKey: "main",
+          sourceTurnId: `fallback-source-${++message}`,
+        }).run();
       const fallbackEvents: Array<Record<string, unknown>> = [];
       const off = onAgentEvent((evt) => {
         if (evt.stream === "lifecycle" && evt.data?.phase === "fallback") {
@@ -5318,12 +5344,15 @@ describe("runReplyAgent typing (heartbeat)", () => {
         };
       });
     try {
-      const { run } = createMinimalRun({
-        resolvedVerboseLevel: "on",
-        sessionEntry,
-        sessionStore,
-        sessionKey: "main",
-      });
+      let message = 0;
+      const run = () =>
+        createMinimalRun({
+          resolvedVerboseLevel: "on",
+          sessionEntry,
+          sessionStore,
+          sessionKey: "main",
+          sourceTurnId: `fallback-source-${++message}`,
+        }).run();
       const first = await run();
       const second = await run();
       const third = await run();
@@ -5388,14 +5417,17 @@ describe("runReplyAgent typing (heartbeat)", () => {
           };
         });
       try {
-        const { run } = createMinimalRun({
-          resolvedVerboseLevel: "on",
-          sessionEntry,
-          sessionStore,
-          sessionKey: "main",
-          storePath,
-          sessionCtx: { ChatType: chatType },
-        });
+        let message = 0;
+        const run = () =>
+          createMinimalRun({
+            resolvedVerboseLevel: "on",
+            sessionEntry,
+            sessionStore,
+            sessionKey: "main",
+            sourceTurnId: `fallback-source-${++message}`,
+            storePath,
+            sessionCtx: { ChatType: chatType },
+          }).run();
         const phases: string[] = [];
         const off = onAgentEvent((evt) => {
           const phase = typeof evt.data?.phase === "string" ? evt.data.phase : null;
@@ -5696,12 +5728,15 @@ describe("runReplyAgent typing (heartbeat)", () => {
         };
       });
     try {
-      const { run } = createMinimalRun({
-        resolvedVerboseLevel: "off",
-        sessionEntry,
-        sessionStore,
-        sessionKey: "main",
-      });
+      let message = 0;
+      const run = () =>
+        createMinimalRun({
+          resolvedVerboseLevel: "off",
+          sessionEntry,
+          sessionStore,
+          sessionKey: "main",
+          sourceTurnId: `fallback-source-${++message}`,
+        }).run();
       const phases: string[] = [];
       const off = onAgentEvent((evt) => {
         const phase = typeof evt.data?.phase === "string" ? evt.data.phase : null;
@@ -5812,7 +5847,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
     const sessionStore = { main: sessionEntry };
     const dir = await mkdtemp(join(tmpdir(), "openclaw-agent-runner-cli-alias-"));
     const storePath = join(dir, "sessions.json");
-    await replaceSessionEntry({ storePath, sessionKey: "main" }, sessionEntry);
+    await replaceSessionEntry({ agentId: "main", storePath, sessionKey: "main" }, sessionEntry);
 
     state.runEmbeddedAgentMock.mockResolvedValue({
       payloads: [{ text: "final" }],
@@ -5847,51 +5882,7 @@ describe("runReplyAgent typing (heartbeat)", () => {
     expect(stored.totalTokensFresh).toBe(false);
   });
 
-  it("surfaces overflow fallback when embedded run returns empty payloads", async () => {
-    state.runEmbeddedAgentMock.mockImplementationOnce(async () => ({
-      payloads: [],
-      meta: {
-        durationMs: 1,
-        error: {
-          kind: "context_overflow",
-          message: 'Context overflow: Summarization failed: 400 {"message":"prompt is too long"}',
-        },
-      },
-    }));
-
-    const { run } = createMinimalRun();
-    const res = await run();
-    const payload = Array.isArray(res) ? res[0] : res;
-    if (!payload) {
-      throw new Error("expected payload");
-    }
-    expect(payload.text).toContain("Auto-compaction could not recover this turn");
-    expect(payload.text).toContain("fresh session or using a model with a larger context window");
-    expect(payload.text).toContain("/new");
-  });
-
-  it("surfaces overflow fallback when embedded payload text is whitespace-only", async () => {
-    state.runEmbeddedAgentMock.mockImplementationOnce(async () => ({
-      payloads: [{ text: "   \n\t  ", isError: true }],
-      meta: {
-        durationMs: 1,
-        error: {
-          kind: "context_overflow",
-          message: 'Context overflow: Summarization failed: 400 {"message":"prompt is too long"}',
-        },
-      },
-    }));
-
-    const { run } = createMinimalRun();
-    const res = await run();
-    const payload = Array.isArray(res) ? res[0] : res;
-    if (!payload) {
-      throw new Error("expected payload");
-    }
-    expect(payload.text).toContain("Auto-compaction could not recover this turn");
-    expect(payload.text).toContain("fresh session or using a model with a larger context window");
-    expect(payload.text).toContain("/new");
-  });
+  registerOverflowPresentationCases({ createMinimalRun, state });
 
   it("returns friendly message for role ordering errors thrown as exceptions", async () => {
     state.runEmbeddedAgentMock.mockImplementationOnce(async () => {

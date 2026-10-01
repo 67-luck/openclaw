@@ -258,18 +258,21 @@ vi.mock("/src/agents/embedded-agent-runner/runs.js", async () => {
   >("../agents/embedded-agent-runner/runs.js");
 });
 
-vi.mock("../agents/embedded-agent-runner/active-run-projections.js", async (importOriginal) => ({
-  ...(await importOriginal<
-    typeof import("../agents/embedded-agent-runner/active-run-projections.js")
-  >()),
-  getActiveEmbeddedRunCount: () => embeddedRunMock.activeIds.size,
+vi.mock("../sessions/session-controller.queries.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../sessions/session-controller.queries.js")>()),
+  isSessionRunActive: (sessionId: string) => embeddedRunMock.activeIds.has(sessionId),
+  isSessionRunInProgress: (sessionId: string) => embeddedRunMock.activeIds.has(sessionId),
+  resolveSessionRunProgressState: (sessionId: string) =>
+    embeddedRunMock.activeIds.has(sessionId) ? "running" : undefined,
+  getActiveSessionRunCount: () => embeddedRunMock.activeIds.size,
 }));
-
-vi.mock("/src/agents/embedded-agent-runner/active-run-projections.js", async (importOriginal) => ({
-  ...(await importOriginal<
-    typeof import("../agents/embedded-agent-runner/active-run-projections.js")
-  >()),
-  getActiveEmbeddedRunCount: () => embeddedRunMock.activeIds.size,
+vi.mock("/src/sessions/session-controller.queries.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../sessions/session-controller.queries.js")>()),
+  isSessionRunActive: (sessionId: string) => embeddedRunMock.activeIds.has(sessionId),
+  isSessionRunInProgress: (sessionId: string) => embeddedRunMock.activeIds.has(sessionId),
+  resolveSessionRunProgressState: (sessionId: string) =>
+    embeddedRunMock.activeIds.has(sessionId) ? "running" : undefined,
+  getActiveSessionRunCount: () => embeddedRunMock.activeIds.size,
 }));
 
 vi.mock("./health/collector.js", () => ({

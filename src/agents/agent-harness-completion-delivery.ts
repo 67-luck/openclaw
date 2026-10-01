@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from "node:util";
-import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import {
   getRestartRecoveryTerminalDeliveryEvidence,
   hasRestartRecoveryTerminalRun,
@@ -17,6 +16,8 @@ import {
 } from "../infra/agent-run-registry.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
+import { isRpcSourceQueued } from "../sessions/session-controller.rpc-sources.js";
+import { isCurrentSessionControllerOperation } from "../sessions/session-controller.state.js";
 import {
   getOwedHarnessCompletionTask,
   hasHarnessCompletionFinalReceipt,
@@ -39,17 +40,32 @@ function readCurrent(target: CompletionTarget): SessionEntry | undefined {
 function hasLiveCompletionOwner(claim: HarnessCompletionRecovery, runId: string): boolean {
   const scope = getPluginRuntimeGatewayRequestScope();
   const gateway = scope?.resolveGatewayContext ? scope.resolveGatewayContext() : scope?.context;
-  const admission = gateway?.chatAbortControllers.get(runId);
+  const admission = gateway?.rpcSources.get(runId);
+  const input = admission?.input;
+  const sourceClaim = input?.claim;
+  const operation = sourceClaim?.operation;
+  const claimed =
+    input &&
+    sourceClaim &&
+    input.mailbox.claim === sourceClaim &&
+    !sourceClaim.released &&
+    !sourceClaim.releaseRequested &&
+    !sourceClaim.abortController.signal.aborted &&
+    (!operation ||
+      (isCurrentSessionControllerOperation(operation) &&
+        !operation.result &&
+        !operation.abortSignal.aborted));
   if (
     admission &&
-    admission.sessionKey === claim.requesterSessionKey &&
-    admission.sessionId === claim.sessionId &&
-    admission.agentId === claim.requesterAgentId &&
-    admission.lifecycleGeneration === getAgentRunLifecycleGeneration() &&
-    admission.projectSessionActive === true &&
-    !admission.registrationCleanupRequested &&
-    !admission.controller.signal.aborted &&
-    isFutureDateTimestampMs(admission.expiresAtMs)
+    admission.adapter.sessionKey === claim.requesterSessionKey &&
+    admission.adapter.sessionId === claim.sessionId &&
+    admission.adapter.agentId === claim.requesterAgentId &&
+    admission.adapter.lifecycleGeneration === getAgentRunLifecycleGeneration() &&
+    admission.adapter.projectSessionActive === true &&
+    !admission.adapter.registrationCleanupRequested &&
+    !admission.input.abortSignal.aborted &&
+    !admission.input.custody.cancellationRetired &&
+    (isRpcSourceQueued(admission) || claimed)
   ) {
     return true;
   }

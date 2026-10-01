@@ -187,22 +187,21 @@ export async function prepareSessionWorkspace(params: {
   if (!entry) {
     throw new Error(SESSION_PROJECT_OWNERSHIP_ERROR);
   }
-  const { controller } = admission.activeRunAbort;
-  const signal = controller.signal;
+  const signal = admission.activeRunAbort.entry.input.abortSignal;
   const assertRunOwnership = () => {
     signal.throwIfAborted();
-    const activeRun = context.chatAbortControllers.get(clientRunId);
+    const activeRun = context.rpcSources.get(clientRunId);
     if (
       !activeRun ||
       activeRun !== admission.activeRunAbort.entry ||
-      activeRun.controller !== controller ||
-      activeRun.sessionKey !== sessionKey ||
-      activeRun.sessionId !== entry.sessionId ||
+      activeRun.input.abortSignal !== signal ||
+      activeRun.adapter.sessionKey !== sessionKey ||
+      activeRun.adapter.sessionId !== entry.sessionId ||
       entry.sessionId !== admission.admittedSessionId ||
-      activeRun.lifecycleGeneration !== admission.lifecycleGeneration ||
-      activeRun.projectSessionActive === false ||
-      activeRun.projectSessionTerminalPending === true ||
-      activeRun.projectSessionTerminalPersisted === true ||
+      activeRun.adapter.lifecycleGeneration !== admission.lifecycleGeneration ||
+      activeRun.adapter.projectSessionActive === false ||
+      activeRun.adapter.projectSessionTerminalPending === true ||
+      activeRun.adapter.projectSessionTerminalPersisted === true ||
       !hasActiveAgentRuntimeAuthority(client, context)
     ) {
       throw new Error(SESSION_PROJECT_OWNERSHIP_ERROR);

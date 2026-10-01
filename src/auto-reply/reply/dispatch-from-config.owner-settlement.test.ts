@@ -6,10 +6,17 @@ import { clearAgentHarnesses } from "../../agents/harness/registry.js";
 import { resolveReplyCompletion } from "../../agents/reply-completion.js";
 import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-types.js";
 import {
-  interruptSessionWorkAdmissions,
-  isSessionWorkAdmissionActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  interruptSessionControllerEffects,
+  isSessionControllerWorkActive,
+  runSessionMutation,
+  captureSessionTarget,
+} from "../../sessions/session-controller.lifecycle.js";
+import {
+  claimSessionControllerTask,
+  reserveSessionControllerSource,
+  releaseSessionControllerClaim,
+} from "../../sessions/session-controller.mailbox.js";
+import { getSessionControllerEntryForOperation } from "../../sessions/session-controller.state.js";
 import type { RuntimeMsgContext as MsgContext } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
 import {
@@ -34,17 +41,19 @@ import {
 } from "./dispatch-from-config.test-harness.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
 import { resolveReplyOperationRunState } from "./reply-operation-run-state.js";
+import { readReplySourceInput } from "./reply-source-binding.js";
 import { buildTestCtx } from "./test-ctx.js";
 
-let getActiveReplyRunCount: typeof import("./reply-run-registry.registry.js").getActiveReplyRunCount;
-let runAfterReplyOperationClear: typeof import("./reply-run-registry.js").runAfterReplyOperationClear;
+let listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.registry.js").listActiveReplyRunSessionKeys;
+let runAfterReplyOperationClear: typeof import("../../sessions/session-controller.js").runAfterReplyOperationClear;
 let resetReplyRunRegistry: typeof import("./reply-run-registry.test-support.js").testing.resetReplyRunRegistry;
 let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
 
 beforeAll(async () => {
   await globalBeforeAll0();
-  ({ getActiveReplyRunCount } = await import("./reply-run-registry.registry.js"));
-  ({ runAfterReplyOperationClear } = await import("./reply-run-registry.js"));
+  ({ listActiveReplyRunSessionKeys } =
+    await import("../../sessions/session-controller.registry.js"));
+  ({ runAfterReplyOperationClear } = await import("../../sessions/session-controller.js"));
   ({ resetInboundDedupe } = await import("./inbound-dedupe.js"));
   const { testing } = await import("./reply-run-registry.test-support.js");
   resetReplyRunRegistry = () => testing.resetReplyRunRegistry();
@@ -58,6 +67,80 @@ describe("dispatchReplyFromConfig owner settlement", () => {
     resetInboundDedupe();
     vi.useRealTimers();
     clearAgentHarnesses();
+  });
+
+  it("retains the pre-dispatch source claim until actual resolver and delivery settle", async () => {
+    setNoAbort();
+    const resolverEntered = createDeferred();
+    const releaseResolver = createDeferred();
+    const releaseDelivery = createDeferred();
+    const deliveryEntered = createDeferred();
+    const sessionKey = "agent:main:mailbox-source-boundary";
+    const storePath = "/test/mailbox-source.sqlite";
+    sessionStoreMocks.resolveSessionStorePathCore.mockReturnValue(storePath);
+    let source: ReturnType<typeof readReplySourceInput>;
+    const dispatcher = createReplyDispatcher({
+      deliver: async () => {
+        deliveryEntered.resolve();
+        await releaseDelivery.promise;
+      },
+    });
+    const dispatch = dispatchReplyFromConfig({
+      ctx: buildTestCtx({ Provider: "discord", Surface: "discord", SessionKey: sessionKey }),
+      cfg: { ...emptyConfig, session: { ...emptyConfig.session, store: storePath } },
+      dispatcher,
+      replyResolver: async (_ctx, options) => {
+        source = readReplySourceInput(options);
+        expect(source?.claim?.operation).toBe(options?.replyOperation);
+        expect(source?.mailbox.owner.target?.storeScope).toBe(storePath);
+        resolverEntered.resolve();
+        await releaseResolver.promise;
+        return { text: "settled answer" };
+      },
+    });
+    await resolverEntered.promise;
+    const successor = reserveSessionControllerSource(sessionKey, {
+      target: captureSessionTarget({ storeScope: storePath, sessionKey }),
+      policy: { mode: "followup" },
+    });
+    const selected = vi.fn();
+    const next = claimSessionControllerTask(successor, selected);
+    expect(selected).not.toHaveBeenCalled();
+    releaseResolver.resolve();
+    await deliveryEntered.promise;
+    expect(selected).not.toHaveBeenCalled();
+    expect(source?.claim?.released).toBe(false);
+    releaseDelivery.resolve();
+    await dispatch;
+    const claim = await next;
+    expect(selected).toHaveBeenCalledOnce();
+    releaseSessionControllerClaim(claim);
+  });
+
+  it("renews finalization only for delivered content, not transport callbacks", async () => {
+    setNoAbort();
+    const forwarded = vi.fn(async () => true);
+    await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: "discord",
+        Surface: "discord",
+        SessionKey: "agent:main:finalization-progress",
+      }),
+      cfg: emptyConfig,
+      dispatcher: createDispatcher(),
+      replyOptions: { onPartialReply: forwarded, onAssistantMessageStart: async () => {} },
+      replyResolver: async (_ctx, options) => {
+        expect(options?.replyOperation).toBeDefined();
+        const progress = vi.spyOn(options!.replyOperation!.watchdog, "progress");
+        options!.replyOperation!.freezeAbort();
+        await options?.onAssistantMessageStart?.();
+        expect(progress).not.toHaveBeenCalledWith("finalization", expect.anything());
+        await options?.onPartialReply?.({ text: "delivered answer" });
+        expect(progress).toHaveBeenCalledWith("finalization", "reply:partial_delivered");
+        return undefined;
+      },
+    });
+    expect(forwarded).toHaveBeenCalledOnce();
   });
 
   it("waits for late resolver cleanup and real delivery after finalization expiry", async () => {
@@ -97,8 +180,8 @@ describe("dispatchReplyFromConfig owner settlement", () => {
     try {
       operation?.freezeAbort();
       await vi.advanceTimersByTimeAsync(60_000);
-      await dispatch;
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+      // Expiry requests cleanup; it cannot settle this unresolved resolver.
+      expect(replyRunRegistry.get(sessionKey)).toBe(operation);
       expect(settled).not.toHaveBeenCalled();
       expect(delivered).not.toHaveBeenCalled();
 
@@ -108,10 +191,11 @@ describe("dispatchReplyFromConfig owner settlement", () => {
       expect(delivered).not.toHaveBeenCalled();
 
       delivery.resolve();
+      await dispatch;
       await operation?.ownerSettlement;
       expect(delivered).toHaveBeenCalledOnce();
       expect(settled).toHaveBeenCalledOnce();
-      expect(operation?.result).toMatchObject({ kind: "failed", code: "run_stalled" });
+      expect(operation?.result).toMatchObject({ kind: "completed" });
     } finally {
       ownerWork.resolve();
       delivery.resolve();
@@ -210,7 +294,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
       expect(receipt?.counts.final.delivered).toBe(1);
       expect(delivered).toEqual(["successor answer"]);
       expect(settled).toHaveBeenCalledOnce();
-      expect(getActiveReplyRunCount()).toBe(0);
+      expect(listActiveReplyRunSessionKeys()).toEqual([]);
     } finally {
       releaseOld.resolve();
       releaseDelivery.resolve();
@@ -268,11 +352,11 @@ describe("dispatchReplyFromConfig owner settlement", () => {
     let mutationRan = false;
     const mutation = externalLifecycleRequest.runInAsyncScope(
       async () =>
-        await runExclusiveSessionLifecycleMutation({
+        await runSessionMutation({
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
           prepare: async () => {
-            await interruptSessionWorkAdmissions({
+            await interruptSessionControllerEffects({
               scope: "/tmp/mock-sessions.json",
               identities: [sessionKey, sessionId],
             });
@@ -290,9 +374,9 @@ describe("dispatchReplyFromConfig owner settlement", () => {
       expect(replyRunRegistry.get(sessionKey)).toBe(operation);
       expect(operation?.abortSignal.aborted).toBe(true);
       expect(mutationRan).toBe(false);
-      expect(isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
-        true,
-      );
+      expect(
+        isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
+      ).toBe(true);
 
       releaseResolver();
       await mutation;
@@ -605,6 +689,8 @@ describe("dispatchReplyFromConfig owner settlement", () => {
         });
         let operation: ReturnType<typeof createReplyOperation> | undefined;
         let queuedOperation: ReturnType<typeof createReplyOperation> | undefined;
+        let successorClaim: Awaited<ReturnType<typeof claimSessionControllerTask>> | undefined;
+        let successorAdmission: Promise<void> | undefined;
         const abortController = new AbortController();
         hookMocks.runner.runReplyDispatch.mockImplementation(async (_event, contextValue) => {
           operation = replyRunRegistry.get("agent:test:session");
@@ -612,12 +698,20 @@ describe("dispatchReplyFromConfig owner settlement", () => {
             throw new Error("expected dispatch reply operation");
           }
           runAfterReplyOperationClear(operation, () => {
-            deliveryOrder.push("followup");
-            queuedOperation = createReplyOperation({
-              sessionKey: "agent:test:session",
-              sessionId: "queued-session",
-              resetTriggered: false,
+            const source = reserveSessionControllerSource("agent:test:session", {
+              policy: { mode: "followup" },
+              target: getSessionControllerEntryForOperation(operation!).target,
             });
+            successorAdmission = claimSessionControllerTask(source, (claim) => {
+              deliveryOrder.push("followup");
+              successorClaim = claim;
+              queuedOperation = createReplyOperation({
+                mailboxClaim: claim,
+                sessionKey: "agent:test:session",
+                sessionId: "queued-session",
+                resetTriggered: false,
+              });
+            }).then(() => {});
           });
           if (holdReceiptCallback) {
             return undefined;
@@ -690,8 +784,13 @@ describe("dispatchReplyFromConfig owner settlement", () => {
               expect(queuedOperation).toBeDefined();
             });
           }
+          await successorAdmission;
           queuedOperation?.complete();
-          expect(getActiveReplyRunCount()).toBe(0);
+          if (successorClaim) {
+            releaseSessionControllerClaim(successorClaim);
+            await successorClaim.settlement.promise;
+          }
+          expect(listActiveReplyRunSessionKeys()).toEqual([]);
         }
       },
     );

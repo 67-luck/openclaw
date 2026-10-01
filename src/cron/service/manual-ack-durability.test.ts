@@ -5,7 +5,11 @@ import {
   resolveRuntimeWorkerArgv,
   resolveRuntimeWorkerUrl,
 } from "../../infra/runtime-worker-url.js";
-import { clearCommandLane, setCommandLaneConcurrency } from "../../process/command-queue.js";
+import {
+  enqueueCommandInLane,
+  getCommandLaneSnapshot,
+  setCommandLaneConcurrency,
+} from "../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import { runCommandBuffered } from "../../process/exec.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -107,7 +111,7 @@ it("records the exact acknowledged manual run after SIGKILL before command-lane 
   expect(persisted?.state.runningAtMs).toBeUndefined();
 }, 45_000);
 
-it.each(["cleared", "write-failed"] as const)(
+it.each(["stopped", "write-failed"] as const)(
   "preserves accounting on manual admission failure: %s",
   async (failure) => {
     resetCommandQueueStateForTest();
@@ -160,8 +164,13 @@ it.each(["cleared", "write-failed"] as const)(
           throw new Error("Expected manual run acknowledgement");
         }
         expect(completion.isCommitted()).toBe(true);
-        expect(clearCommandLane("cron")).toBe(1);
+        expect(getCommandLaneSnapshot("cron").queuedCount).toBe(1);
+        cron.stop();
+        // The service retires the reservation; lane capacity only lets its owner
+        // observe retirement and settle the acknowledged work without execution.
+        setCommandLaneConcurrency("cron", 1);
         await finished.promise;
+        await enqueueCommandInLane("cron", async () => {});
         expect(
           database
             .prepare("SELECT status, error_text FROM cron_run_receipts WHERE request_run_id = ?")
@@ -176,9 +185,12 @@ it.each(["cleared", "write-failed"] as const)(
       const persisted = (await loadCronStore(storePath)).jobs[0];
       expect(persisted?.state.nextRunAtMs).toBe(job.state.nextRunAtMs);
       expect(persisted?.state.queuedAtMs).toBeUndefined();
+      expect(persisted?.state.runningAtMs).toBeUndefined();
     } finally {
       database.exec("DROP TRIGGER IF EXISTS reject_manual_receipt");
       cron.stop();
+      setCommandLaneConcurrency("cron", 1);
+      await enqueueCommandInLane("cron", async () => {});
       resetCommandQueueStateForTest();
     }
   },

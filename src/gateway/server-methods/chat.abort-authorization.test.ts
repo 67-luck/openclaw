@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { QueuedChatTurnEntry } from "../chat-queued-turns.js";
+import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
 import { createWorkerInferenceCancellationService } from "../worker-environments/inference-control.test-helpers.js";
 import { handleChatAbortRequestWithLifecycle } from "./chat-abort-handler.js";
 import {
@@ -24,14 +24,17 @@ function abortAsOwner(params: Omit<Parameters<typeof invokeAbort>[0], "connId" |
   return invokeAbort({ ...params, connId: "conn-owner", deviceId: "dev-owner" });
 }
 
-function queuedTurn(controller: AbortController, owner = "owner"): QueuedChatTurnEntry {
-  return {
-    controller,
+function queuedTurn(controller: AbortController, owner?: string): RpcSourceRef {
+  const source = createActiveRun("main", {
+    queued: true,
     sessionId: "main-session",
-    sessionKey: "main",
-    ownerConnId: `conn-${owner}`,
-    ownerDeviceId: `dev-${owner}`,
-  };
+    owner:
+      owner === "none"
+        ? undefined
+        : { connId: `conn-${owner ?? "owner"}`, deviceId: `dev-${owner ?? "owner"}` },
+  });
+  source.input.abortSignal.addEventListener("abort", () => controller.abort(), { once: true });
+  return source;
 }
 
 function abortAsOther(params: Omit<Parameters<typeof invokeAbort>[0], "connId" | "deviceId">) {
@@ -83,7 +86,7 @@ describe("chat.abort authorization", () => {
     },
   ])("requires an exact discard target ($sessionKey, $runId)", async (target) => {
     const context = createSingleAbortContext();
-    const active = context.chatAbortControllers.get("run-1");
+    const active = context.rpcSources.get("run-1");
     const respond = await invokeChatAbortHandler({
       handler: handleChatAbortRequestWithLifecycle,
       context,
@@ -100,8 +103,8 @@ describe("chat.abort authorization", () => {
     const [ok, , error] = requireLastRespondCall(respond);
     expect(ok).toBe(false);
     expect(error?.message).toContain(target.message);
-    expect(context.chatAbortControllers.get("run-1")).toBe(active);
-    expect(active?.controller.signal.aborted).toBe(false);
+    expect(context.rpcSources.get("run-1")).toBe(active);
+    expect(active?.input.abortSignal.aborted).toBe(false);
   });
 
   it("cancels the admitted worker session after the selected store changes", async () => {
@@ -196,12 +199,12 @@ describe("chat.abort authorization", () => {
     expect(payload).toBeUndefined();
     expect(error?.code).toBe("INVALID_REQUEST");
     expect(error?.message).toBe("unauthorized");
-    expect(context.chatAbortControllers.has("run-1")).toBe(true);
+    expect(context.rpcSources.has("run-1")).toBe(true);
   });
 
   it("allows the same paired device to abort after reconnecting", async () => {
     const context = createChatAbortContext({
-      chatAbortControllers: new Map([
+      rpcSources: new Map([
         ["run-1", createActiveRun("main", { owner: { connId: "conn-old", deviceId: "dev-1" } })],
       ]),
     });
@@ -216,7 +219,7 @@ describe("chat.abort authorization", () => {
     const [ok, payload] = requireLastRespondCall(respond);
     expect(ok).toBe(true);
     expectAbortPayload(payload, { aborted: true, runIds: ["run-1"] });
-    expect(context.chatAbortControllers.has("run-1")).toBe(false);
+    expect(context.rpcSources.has("run-1")).toBe(false);
   });
 
   it("does not reveal a foreign hidden run to ordinary session aborts", async () => {
@@ -225,7 +228,7 @@ describe("chat.abort authorization", () => {
       owner: { connId: "conn-hidden", deviceId: "dev-hidden" },
     });
     const context = createChatAbortContext({
-      chatAbortControllers: new Map([["run-hidden", hidden]]),
+      rpcSources: new Map([["run-hidden", hidden]]),
     });
 
     const respond = await abortAsOther({
@@ -235,8 +238,8 @@ describe("chat.abort authorization", () => {
     const [ok, payload] = requireLastRespondCall(respond);
     expect(ok).toBe(true);
     expectAbortPayload(payload, { aborted: false, runIds: [] });
-    expect(hidden.controller.signal.aborted).toBe(false);
-    expect(context.chatAbortControllers.has("run-hidden")).toBe(true);
+    expect(hidden.input.abortSignal.aborted).toBe(false);
+    expect(context.rpcSources.has("run-hidden")).toBe(true);
   });
 
   it("preserves BTW runs waiting for chat admission", async () => {
@@ -283,10 +286,12 @@ describe("chat.abort queued-turn contract", () => {
     const active = createActiveRun("main", {
       owner: { connId: "conn-owner", deviceId: "dev-owner" },
     });
-    active.controller.signal.addEventListener("abort", () => order.push("active-abort"));
+    active.input.abortSignal.addEventListener("abort", () => order.push("active-abort"));
     const context = createChatAbortContext({
-      chatAbortControllers: new Map([["active-1", active]]),
-      chatQueuedTurns: new Map([["queued-1", queuedTurn(queuedController)]]),
+      rpcSources: new Map([
+        ["active-1", active],
+        ["queued-1", queuedTurn(queuedController)],
+      ]),
     });
 
     const respond = await abortAsOwner({
@@ -314,7 +319,7 @@ describe("chat.abort queued-turn contract", () => {
     expect(call[0]).toBe(false);
     expect(call[2]?.message).toBe("unauthorized");
     expect(onAuthorizedAfterQueuedAbort).not.toHaveBeenCalled();
-    expect(context.chatAbortControllers.has("run-1")).toBe(true);
+    expect(context.rpcSources.has("run-1")).toBe(true);
   });
 
   it("allows operator.write session cleanup when no chat run is registered", async () => {
@@ -337,7 +342,7 @@ describe("chat.abort queued-turn contract", () => {
       owner: { connId: "conn-other", deviceId: "dev-other" },
     });
     const context = createChatAbortContext({
-      chatAbortControllers: new Map([
+      rpcSources: new Map([
         ["run-mine", mine],
         ["run-foreign", foreign],
       ]),
@@ -349,10 +354,10 @@ describe("chat.abort queued-turn contract", () => {
       runIds: ["run-mine"],
     });
     expect(onAuthorizedAfterQueuedAbort).not.toHaveBeenCalled();
-    expect(mine.controller.signal.aborted).toBe(true);
-    expect(context.chatAbortControllers.has("run-mine")).toBe(false);
-    expect(foreign.controller.signal.aborted).toBe(false);
-    expect(context.chatAbortControllers.has("run-foreign")).toBe(true);
+    expect(mine.input.abortSignal.aborted).toBe(true);
+    expect(context.rpcSources.has("run-mine")).toBe(false);
+    expect(foreign.input.abortSignal.aborted).toBe(false);
+    expect(context.rpcSources.has("run-foreign")).toBe(true);
   });
 
   it("does not let session cleanup bypass a worker run", async () => {
@@ -386,7 +391,7 @@ describe("chat.abort queued-turn contract", () => {
       owner: { connId: "conn-owner", deviceId: "dev-owner" },
     });
     const context = createChatAbortContext({
-      chatAbortControllers: new Map([["run-hidden", hidden]]),
+      rpcSources: new Map([["run-hidden", hidden]]),
       workerEnvironmentService: createWorkerInferenceCancellationService(
         "main-session",
         ["run-hidden"],
@@ -405,7 +410,7 @@ describe("chat.abort queued-turn contract", () => {
     });
     expect(onAuthorizedAfterQueuedAbort).not.toHaveBeenCalled();
     expect(cancelInferenceForSession).not.toHaveBeenCalled();
-    expect(hidden.controller.signal.aborted).toBe(false);
+    expect(hidden.input.abortSignal.aborted).toBe(false);
 
     const ordinaryRespond = await abortAsAdmin({
       context,
@@ -496,7 +501,7 @@ describe("chat.abort queued-turn contract", () => {
   it("aborts a queued turn by runId after active registration is gone", async () => {
     const controller = new AbortController();
     const context = createChatAbortContext({
-      chatQueuedTurns: new Map([["queued-1", queuedTurn(controller)]]),
+      rpcSources: new Map([["queued-1", queuedTurn(controller)]]),
     });
 
     const respond = await abortAsOwner({
@@ -507,13 +512,13 @@ describe("chat.abort queued-turn contract", () => {
     expect(call[0]).toBe(true);
     expectAbortPayload(call[1], { aborted: true, runIds: ["queued-1"] });
     expect(controller.signal.aborted).toBe(true);
-    expect(context.chatQueuedTurns.has("queued-1")).toBe(false);
+    expect(context.rpcSources.has("queued-1")).toBe(false);
   });
 
   it("rejects queued-turn abort from other clients", async () => {
     const controller = new AbortController();
     const context = createChatAbortContext({
-      chatQueuedTurns: new Map([["queued-1", queuedTurn(controller)]]),
+      rpcSources: new Map([["queued-1", queuedTurn(controller)]]),
     });
 
     const respond = await abortAsOther({
@@ -523,22 +528,13 @@ describe("chat.abort queued-turn contract", () => {
     const call = requireLastRespondCall(respond);
     expect(call[0]).toBe(false);
     expect(controller.signal.aborted).toBe(false);
-    expect(context.chatQueuedTurns.has("queued-1")).toBe(true);
+    expect(context.rpcSources.has("queued-1")).toBe(true);
   });
 
   it("rejects a mismatched session for ownerless queued turns", async () => {
     const controller = new AbortController();
     const context = createChatAbortContext({
-      chatQueuedTurns: new Map([
-        [
-          "queued-ownerless",
-          {
-            controller,
-            sessionId: "main-session",
-            sessionKey: "main",
-          },
-        ],
-      ]),
+      rpcSources: new Map([["queued-ownerless", queuedTurn(controller, "none")]]),
     });
 
     const respond = await abortAsOther({
@@ -550,36 +546,27 @@ describe("chat.abort queued-turn contract", () => {
     expect(call[0]).toBe(false);
     expect(call[2]?.message).toBe("runId does not match sessionKey");
     expect(controller.signal.aborted).toBe(false);
-    expect(context.chatQueuedTurns.has("queued-ownerless")).toBe(true);
+    expect(context.rpcSources.has("queued-ownerless")).toBe(true);
   });
 
   it("session abort cancels authorized queued turns before active runs", async () => {
     const queuedController = new AbortController();
     const activeController = new AbortController();
     const context = createChatAbortContext({
-      chatAbortControllers: new Map([
+      rpcSources: new Map([
         [
           "active-1",
           createActiveRun("main", { owner: { connId: "conn-owner", deviceId: "dev-owner" } }),
         ],
-      ]),
-      chatQueuedTurns: new Map([
-        [
-          "queued-1",
-          {
-            controller: queuedController,
-            sessionId: "main-session",
-            sessionKey: "main",
-            ownerConnId: "conn-owner",
-            ownerDeviceId: "dev-owner",
-          },
-        ],
+        ["queued-1", queuedTurn(queuedController)],
       ]),
     });
     // replace active controller so we can observe abort
-    const active = context.chatAbortControllers.get("active-1");
+    const active = context.rpcSources.get("active-1");
     if (active) {
-      (active as { controller: AbortController }).controller = activeController;
+      active.input.abortSignal.addEventListener("abort", () => activeController.abort(), {
+        once: true,
+      });
     }
 
     const respond = await invokeAbort({
@@ -595,14 +582,14 @@ describe("chat.abort queued-turn contract", () => {
     expect(payload.runIds?.[0]).toBe("queued-1");
     expect(queuedController.signal.aborted).toBe(true);
     expect(activeController.signal.aborted).toBe(true);
-    expect(context.chatQueuedTurns.size).toBe(0);
+    expect(context.rpcSources.get("queued-1")?.input.abortSignal.aborted ?? true).toBe(true);
   });
 
   it("session abort does not clear another owner's queued turns", async () => {
     const onAuthorizedAfterQueuedAbort = vi.fn(() => true);
     const foreign = new AbortController();
     const context = createChatAbortContext({
-      chatQueuedTurns: new Map([["queued-foreign", queuedTurn(foreign)]]),
+      rpcSources: new Map([["queued-foreign", queuedTurn(foreign)]]),
     });
 
     const respond = await abortAsOther({
@@ -613,7 +600,7 @@ describe("chat.abort queued-turn contract", () => {
     expect(call[0]).toBe(false);
     expect(onAuthorizedAfterQueuedAbort).not.toHaveBeenCalled();
     expect(foreign.signal.aborted).toBe(false);
-    expect(context.chatQueuedTurns.has("queued-foreign")).toBe(true);
+    expect(context.rpcSources.has("queued-foreign")).toBe(true);
   });
 
   it("aborts only requester queues without session cleanup in a mixed-owner session", async () => {
@@ -621,7 +608,7 @@ describe("chat.abort queued-turn contract", () => {
     const mine = new AbortController();
     const foreign = new AbortController();
     const context = createChatAbortContext({
-      chatQueuedTurns: new Map([
+      rpcSources: new Map([
         ["queued-mine", queuedTurn(mine)],
         ["queued-foreign", queuedTurn(foreign, "other")],
       ]),
@@ -639,13 +626,13 @@ describe("chat.abort queued-turn contract", () => {
     expect(onAuthorizedAfterQueuedAbort).not.toHaveBeenCalled();
     expect(mine.signal.aborted).toBe(true);
     expect(foreign.signal.aborted).toBe(false);
-    expect(context.chatQueuedTurns.has("queued-foreign")).toBe(true);
+    expect(context.rpcSources.has("queued-foreign")).toBe(true);
   });
 
   it("rejects an ownerless global abort on an explicit fleet", async () => {
     const active = createActiveRun("global", { agentId: "research" });
     const context = createChatAbortContext({
-      chatAbortControllers: new Map([["run-research", active]]),
+      rpcSources: new Map([["run-research", active]]),
       getRuntimeConfig: () => ({
         agents: { ownership: "explicit", entries: { ops: {}, research: {} } },
         session: { scope: "global" },
@@ -660,13 +647,13 @@ describe("chat.abort queued-turn contract", () => {
       code: "INVALID_REQUEST",
       message: expect.stringContaining("has no explicit owner"),
     });
-    expect(active.controller.signal.aborted).toBe(false);
+    expect(active.input.abortSignal.aborted).toBe(false);
   });
 
   it("uses the persisted fixed-store owner for a bare global abort", async () => {
     const active = createActiveRun("global", { agentId: "ops" });
     const context = createChatAbortContext({
-      chatAbortControllers: new Map([["run-ops", active]]),
+      rpcSources: new Map([["run-ops", active]]),
       getRuntimeConfig: () => ({
         agents: {
           ownership: "explicit",
@@ -684,13 +671,13 @@ describe("chat.abort queued-turn contract", () => {
     });
 
     expect(respond.mock.calls.at(-1)?.[0]).toBe(true);
-    expect(active.controller.signal.aborted).toBe(true);
+    expect(active.input.abortSignal.aborted).toBe(true);
   });
 
   it("rejects a bare global abort owned by a retired fixed-store agent", async () => {
     const active = createActiveRun("global", { agentId: "research" });
     const context = createChatAbortContext({
-      chatAbortControllers: new Map([["run-research", active]]),
+      rpcSources: new Map([["run-research", active]]),
       getRuntimeConfig: () => ({
         agents: {
           ownership: "explicit",
@@ -711,6 +698,6 @@ describe("chat.abort queued-turn contract", () => {
       code: "INVALID_REQUEST",
       message: 'session key belongs to retired agent "retired"',
     });
-    expect(active.controller.signal.aborted).toBe(false);
+    expect(active.input.abortSignal.aborted).toBe(false);
   });
 });

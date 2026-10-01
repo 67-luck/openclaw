@@ -12,7 +12,13 @@ export type InternalAgentTurnPrincipalOptions = {
 };
 
 export type AgentTurnStartOwner = {
-  observe: () => { executionStarted: boolean; expiresAtMs: number } | undefined;
+  observe: () =>
+    | {
+        executionStarted: boolean;
+        /** Exact controller budget; null means a live owner wait has no deadline. */
+        startDeadlineAtMs?: number | null;
+      }
+    | undefined;
   abort: () => boolean;
 };
 

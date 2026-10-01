@@ -282,7 +282,7 @@ describe("required maintenance with restart-safe admitted input", () => {
             agentId: "main",
             cfg,
             clientRunId: runId,
-            context: { chatAbortControllers: new Map(), chatQueuedTurns: new Map() },
+            context: { rpcSources: new Map() },
             entry,
             initialSessionEntry: entry,
             now: Date.now(),

@@ -3,9 +3,11 @@
 // sits at the max-lines cap; mocks are hoisted per file, so the module-mock
 // preamble is repeated while pure fixtures stay local to each block.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { retireSessionControllerInput } from "../sessions/session-controller.mailbox.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "./server-constants.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
+import { createRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 const cleanupManagedOutgoingMediaRecordsMock = vi.fn(async () => ({
   deletedRecordCount: 0,
@@ -41,21 +43,15 @@ vi.mock("../media/store.js", async () => {
   };
 });
 
-const ABORTED_RUN_TTL_MS = 60 * 60_000;
+const fixtureSources: ChatAbortControllerEntry[] = [];
 
 function createActiveRun(
   sessionKey: string,
-  kind?: ChatAbortControllerEntry["kind"],
+  kind?: ChatAbortControllerEntry["adapter"]["kind"],
 ): ChatAbortControllerEntry {
-  const now = Date.now();
-  return {
-    controller: new AbortController(),
-    sessionId: "sess-1",
-    sessionKey,
-    startedAtMs: now,
-    expiresAtMs: now + ABORTED_RUN_TTL_MS,
-    kind,
-  };
+  const ref = createRpcSourceForTest({ sessionKey, sessionId: "sess-1", kind });
+  fixtureSources.push(ref);
+  return ref;
 }
 
 function createMaintenanceTimerDeps() {
@@ -94,6 +90,9 @@ async function stopMaintenanceTimers(
 
 describe("gateway dedupe maintenance", () => {
   afterEach(() => {
+    for (const ref of fixtureSources.splice(0)) {
+      retireSessionControllerInput(ref.input);
+    }
     vi.useRealTimers();
     vi.restoreAllMocks();
     vi.clearAllMocks();
@@ -103,7 +102,7 @@ describe("gateway dedupe maintenance", () => {
   it("keeps active exec approval dedupe aliases past the normal ttl", async () => {
     const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
     const runId = "exec-approval-followup:req-active:nonce:retry-1";
-    deps.chatAbortControllers.set(runId, createActiveRun("agent:main:main", "agent"));
+    deps.rpcSources.set(runId, createActiveRun("agent:main:main", "agent"));
     deps.dedupe.set("agent:exec-approval-followup:req-active", {
       ts: now - DEDUPE_TTL_MS - 1,
       ok: true,
@@ -128,11 +127,7 @@ describe("gateway dedupe maintenance", () => {
   it("keeps queued chat dedupe entries past the normal ttl", async () => {
     const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
     const runId = "queued-chat";
-    deps.chatQueuedTurns.set(runId, {
-      controller: new AbortController(),
-      sessionId: "session-main",
-      sessionKey: "agent:main:main",
-    });
+    deps.rpcSources.set(runId, createActiveRun("agent:main:main"));
     deps.dedupe.set(`chat:${runId}`, {
       ts: now - DEDUPE_TTL_MS - 1,
       ok: true,
@@ -150,11 +145,7 @@ describe("gateway dedupe maintenance", () => {
     const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
     const runId = "queued-oldest";
     seedStableDedupeEntries(deps, now);
-    deps.chatQueuedTurns.set(runId, {
-      controller: new AbortController(),
-      sessionId: "session-main",
-      sessionKey: "agent:main:main",
-    });
+    deps.rpcSources.set(runId, createActiveRun("agent:main:main"));
     deps.dedupe.set(`chat:${runId}`, {
       ts: now - 10_000,
       ok: true,
@@ -210,7 +201,7 @@ describe("gateway dedupe maintenance", () => {
     const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
 
     seedStableDedupeEntries(deps, now);
-    deps.chatAbortControllers.set("active-oldest", createActiveRun("agent:main:main", "agent"));
+    deps.rpcSources.set("active-oldest", createActiveRun("agent:main:main", "agent"));
     deps.dedupe.set("agent:active-oldest", {
       ts: now - 10_000,
       ok: true,

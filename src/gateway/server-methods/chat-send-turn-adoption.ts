@@ -1,16 +1,13 @@
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveAgentRunAbortLifecycleFields } from "../../agents/run-termination.js";
 import type { TurnAdoptionLifecycle } from "../../auto-reply/get-reply-options.types.js";
 import type { QueuedFollowupReplyDelivery } from "../../auto-reply/reply/queue/types.js";
-import { createDeferredCore, type Deferred } from "../../shared/deferred.js";
+import { bindReplySourceInput } from "../../auto-reply/reply/reply-source-binding.js";
+import { retireSessionControllerSourceCancellation } from "../../sessions/session-controller.mailbox.js";
+import type {
+  RpcSourceAdapter,
+  RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.js";
-import {
-  completeQueuedChatTurn,
-  registerQueuedChatTurn,
-  retireQueuedChatTurnCancellation,
-  type QueuedChatTurnMap,
-} from "../chat-queued-turns.js";
 import { buildAbortedChatSendPayload } from "./chat-abort-authorization.js";
 import type { WebchatReplyMediaRequesterContext } from "./chat-reply-media.js";
 import { createChatSendLateFollowupDisposition } from "./chat-send-late-followup.js";
@@ -21,14 +18,14 @@ import type { GatewayRequestContext } from "./types.js";
 export function createChatSendTurnAdoptionLifecycle(params: {
   requesterContext?: WebchatReplyMediaRequesterContext;
   accountId: string | undefined;
-  chatQueuedTurns: QueuedChatTurnMap;
+  sourceRef: RpcSourceRef;
   context: GatewayRequestContext;
   runId: string;
   controller: AbortController;
   sessionBinding: Readonly<
-    Pick<ChatAbortControllerEntry, "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration">
+    Pick<RpcSourceAdapter, "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration">
   > &
-    Pick<ChatAbortControllerEntry, "abortDiagnosticReason">;
+    Pick<RpcSourceAdapter, "abortDiagnosticReason">;
   sessionKey: string;
   agentId?: string;
   ownerConnId?: string;
@@ -52,17 +49,17 @@ export function createChatSendTurnAdoptionLifecycle(params: {
   onQueueDisposition: (reason: string) => void;
   onQueuedFollowupReplyBatch: QueuedFollowupReplyDelivery;
 } {
-  let enqueued = false;
   let terminalKnown = false;
   let completed = false;
-  let adoptionStarted = false;
-  let withdrawalHold: Deferred | undefined;
+  let settlementRecorded = false;
   let releaseWorkAdmission: (() => void) | undefined;
   const recordQueuedTerminal = (status: "completed" | "aborted") => {
     // An active source dispatch still owns terminal recording after its work settles.
     if (
       !params.suppressReplies &&
-      (status !== "aborted" || params.context.chatAbortControllers.has(params.runId))
+      (status !== "aborted" ||
+        (params.sourceRef.input.claim?.operation !== undefined &&
+          !params.sourceRef.input.claim.released))
     ) {
       return;
     }
@@ -103,79 +100,49 @@ export function createChatSendTurnAdoptionLifecycle(params: {
           session: params.session,
         }),
   });
+  const priorCancel = params.sourceRef.adapter.cancel?.bind(params.sourceRef.adapter);
+  params.sourceRef.adapter.cancel = (reason) => {
+    priorCancel?.(reason);
+    recordQueuedTerminal("aborted");
+  };
   const lifecycle: TurnAdoptionLifecycle = {
     // Gateway cancel identity only — share collect key via ownerKey.
     admission: "cancel-only",
-    abortSignal: params.controller.signal,
+    abortSignal: params.sourceRef.input.abortSignal,
     ...(params.originatingLeafEntryId !== undefined
       ? { originatingLeafEntryId: params.originatingLeafEntryId }
       : {}),
     ownerKey: params.ownerKey,
-    onAdopted: async () => {
-      adoptionStarted = true;
-      if (withdrawalHold) {
-        await withdrawalHold.promise;
-      }
-      params.controller.signal.throwIfAborted();
+    onAdopted: () => {
+      params.sourceRef.input.abortSignal.throwIfAborted();
     },
     onDeferred: () => {
       if (params.hasCronCreatorAuthority) {
         lifecycle.cronCreatorAuthorityUnavailable = "queued-local-operator";
       }
-      enqueued = registerQueuedChatTurn({
-        chatQueuedTurns: params.chatQueuedTurns,
-        runId: params.runId,
-        controller: params.controller,
-        sessionId: params.sessionBinding.sessionId,
-        sessionKey: params.sessionKey,
-        agentId: params.agentId,
-        ownerConnId: normalizeOptionalString(params.ownerConnId),
-        ownerDeviceId: normalizeOptionalString(params.ownerDeviceId),
-        holdPendingInputWithdrawal: () => {
-          if (adoptionStarted || withdrawalHold || params.controller.signal.aborted) {
-            return undefined;
-          }
-          const hold = createDeferredCore();
-          withdrawalHold = hold;
-          return () => {
-            if (withdrawalHold === hold) {
-              withdrawalHold = undefined;
-            }
-            hold.resolve();
-          };
-        },
-        // Queue cancellation supersedes the source run's earlier custody acknowledgement.
-        onAborted: (reason) => {
-          params.sessionBinding.abortDiagnosticReason = reason;
-          recordQueuedTerminal("aborted");
-        },
-      });
-      if (enqueued && !releaseWorkAdmission) {
-        // Retain the session fence until this detached queued ownership ends.
-        releaseWorkAdmission = params.retainWorkAdmission();
+      const input = params.sourceRef.input;
+      if (input.abortSignal.aborted || input.phase === "consumed") {
+        return false;
       }
-      if (enqueued) {
-        lateFollowup.recordQueued();
-        params.armOperatorRunCancellation?.();
-      }
-      return enqueued;
+      // Only physical source-publication custody survives ACK; selection lives on input.
+      releaseWorkAdmission ??= params.retainWorkAdmission();
+      lateFollowup.recordQueued();
+      params.armOperatorRunCancellation?.();
+      return true;
     },
     onCancellationRetired: () => {
-      if (
-        retireQueuedChatTurnCancellation(params.chatQueuedTurns, params.runId, params.controller)
-      ) {
-        params.retireOperatorRunCancellation?.();
-      }
+      retireSessionControllerSourceCancellation(params.sourceRef.input);
+      params.retireOperatorRunCancellation?.();
     },
     onAbandoned: () => {
       terminalKnown = true;
     },
     onSettled: () => {
-      const ownsCompletion = completeQueuedChatTurn(
-        params.chatQueuedTurns,
-        params.runId,
-        params.controller,
-      );
+      if (settlementRecorded) {
+        return;
+      }
+      settlementRecorded = true;
+      const ownsCompletion = params.context.rpcSources.get(params.runId) === params.sourceRef;
       // Consumed steering also settles custody, but has no terminal batch. Only
       // the exact queued owner can retire an executed or abandoned refresh.
       completed = ownsCompletion && terminalKnown;
@@ -184,7 +151,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
           params.retireOperatorRunCancellation?.();
         }
         if (completed) {
-          recordQueuedTerminal("completed");
+          recordQueuedTerminal(params.controller.signal.aborted ? "aborted" : "completed");
         }
       } finally {
         releaseWorkAdmission?.();
@@ -192,9 +159,18 @@ export function createChatSendTurnAdoptionLifecycle(params: {
       }
     },
   };
+  bindReplySourceInput(lifecycle, params.sourceRef.input);
+  const priorSettled = params.sourceRef.adapter.onSettled?.bind(params.sourceRef.adapter);
+  params.sourceRef.adapter.onSettled = async () => {
+    try {
+      await lifecycle.onSettled?.();
+    } finally {
+      await priorSettled?.();
+    }
+  };
   return {
     lifecycle,
-    isEnqueued: () => enqueued,
+    isEnqueued: () => params.sourceRef.input.custody.enqueued === true,
     isCompleted: () => completed,
     onQueueDisposition: (reason) => {
       params.context.logGateway.info("chat queue turn intentionally skipped", {

@@ -21,12 +21,13 @@ import { parseInboundMediaUri } from "../../media/media-reference.js";
 import { MEDIA_MAX_BYTES, readMediaBuffer } from "../../media/store.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { ModelSelectionLockedError } from "../../sessions/model-overrides.js";
+import {
+  captureSessionTarget,
+  isCompetingSessionControllerWorkActive,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import { recordSessionCreated } from "../../sessions/session-created.js";
 import { withSessionInitializationSource } from "../../sessions/session-initialization.js";
-import {
-  isCompetingSessionWorkAdmissionActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
 import { readSessionUpstreamLink } from "../../sessions/session-upstream-links.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
@@ -281,9 +282,14 @@ async function mutateSessionAtMessage(
   ];
   let targetStillCurrent = true;
   let blockedByActiveRun = false;
-  await runExclusiveSessionLifecycleMutation({
-    scope: initial.storePath,
-    identities: lifecycleIdentities,
+  await runSessionMutation({
+    target: captureSessionTarget({
+      storeScope: initial.storePath,
+      sessionKey: initial.canonicalKey ?? sessionKey,
+      aliases: lifecycleIdentities,
+      incarnation: initialSessionId,
+      agentId: requestedAgent.agentId,
+    }),
     prepare: async () => {
       const current = loadAccessorSessionEntryForGatewayTarget({
         key: sessionKey,
@@ -299,7 +305,7 @@ async function mutateSessionAtMessage(
       // A message cut cannot disturb its source or invalidate queued work on failure.
       // Reject live work before transcript mutation instead of interrupting it.
       blockedByActiveRun =
-        isCompetingSessionWorkAdmissionActive(initial.storePath, lifecycleIdentities) ||
+        isCompetingSessionControllerWorkActive(initial.storePath, lifecycleIdentities) ||
         (asWorkerInferenceControl(context.workerEnvironmentService)?.hasInferenceForSession(
           initialSessionId,
         ) ??

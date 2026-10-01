@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { rotateAgentEventLifecycleGeneration } from "../infra/agent-events.js";
-import { enqueueCommandInLane, resetCommandLane } from "../process/command-queue.js";
+import { withSessionTurn } from "../sessions/session-controller.admission.js";
+import { getCurrentSessionControllerOwner } from "../sessions/session-controller.lifecycle.js";
+import { createReplyOperation } from "../sessions/session-controller.operation.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { mergeAcceptedSessionSpawnsForRun } from "./accepted-session-spawn.js";
 import { closeAdmittedRunDelegatedAuthority } from "./admitted-run-context.js";
@@ -16,7 +18,6 @@ import {
   createTestAdmittedRunContext,
   withTestRunAdmission,
 } from "./admitted-run-context.test-support.js";
-import { resolveSessionLane } from "./embedded-agent-runner/lanes.js";
 import { hasModelFallbackStop, resolveModelFallbackError } from "./failover-error.js";
 import {
   captureSessionPlacementCompactionSuccessorAssertion,
@@ -156,8 +157,12 @@ describe("local turn placement admission", () => {
       const parent =
         runtime === "local CLI"
           ? withLocalSessionPlacementTurnSettlement(claim, parentTask)
-          : enqueueCommandInLane("session:agent:main:busy", () =>
-              withSessionPlacementTurnAdmission(claim, turnParams, parentTask),
+          : withSessionTurn(claim, () =>
+              withSessionPlacementTurnAdmission(
+                claim,
+                { ...turnParams, admittedRunContext: undefined },
+                parentTask,
+              ),
             );
       await turnStarted.promise;
       const followup = withLocalSessionPlacementTurnSettlement(
@@ -218,7 +223,7 @@ describe("local turn placement admission", () => {
     uninstallProvider = installSessionPlacementAdmissionProvider(provider);
     const blocker =
       stage === "queued"
-        ? enqueueCommandInLane("session:agent:main:fenced", async () => {
+        ? withSessionTurn({ sessionKey: "agent:main:fenced", sessionId: "fenced" }, async () => {
             started.resolve();
             await gate.promise;
           })
@@ -605,16 +610,19 @@ describe("local turn placement admission", () => {
     },
   );
 
-  it.each(["settled", "reset-without-successor", "reset-with-successor"] as const)(
-    "closes a standalone CLI settlement assertion after its lane task is %s",
+  it.each(["settled", "cancelled-without-successor", "cancelled-with-successor"] as const)(
+    "closes a captured CLI settlement assertion after its controller turn is %s",
     async (ending) => {
       const sessionId = `standalone-${ending}`;
       const started = createDeferredCore();
       const release = createDeferredCore();
+      const sessionKey = `agent:main:${sessionId}`;
+      let operation: ReturnType<typeof createReplyOperation> | undefined;
       let retained: (() => void) | undefined;
       const running = withLocalSessionPlacementTurnSettlement(
-        { sessionId, runId: sessionId },
+        { sessionId, sessionKey, runId: sessionId },
         async (assertCurrent) => {
+          operation = getCurrentSessionControllerOwner();
           retained = assertCurrent;
           assertCurrent();
           started.resolve();
@@ -625,15 +633,18 @@ describe("local turn placement admission", () => {
       await started.promise;
       try {
         if (ending !== "settled") {
-          expect(resetCommandLane(resolveSessionLane(sessionId))).toBe(1);
-          if (ending === "reset-with-successor") {
-            await withLocalSessionPlacementTurnSettlement(
-              { sessionId, runId: `${sessionId}-replacement` },
+          expect(operation?.abortByUser()).toBe(true);
+          if (ending === "cancelled-with-successor") {
+            const successor = withLocalSessionPlacementTurnSettlement(
+              { sessionId, sessionKey, runId: `${sessionId}-replacement` },
               async (assertCurrent) => {
                 assertCurrent();
                 return { meta: { durationMs: 1 } };
               },
             );
+            release.resolve();
+            await running.catch(() => {});
+            await successor;
           }
         } else {
           release.resolve();
@@ -660,7 +671,7 @@ describe("local turn placement admission", () => {
         expect((thrownError as Error).name).toBe("AbortError");
       } finally {
         release.resolve();
-        await running;
+        await running.catch(() => {});
       }
     },
   );

@@ -8,7 +8,7 @@ const { runtimeFactoryMocks } = getWorkerPlacementStartupMocks();
 
 import { getRuntimeConfig } from "../config/config.js";
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGatewayWorkerPlacementMoveBarrier } from "./server-worker-placement-move-barrier.js";
 import { createGatewayWorkerPlacementRuntime } from "./server-worker-placement-startup.js";
@@ -149,7 +149,7 @@ describe("worker placement move destination", () => {
       });
       const identities = [sessionKey, target.canonicalKey, ...target.storeKeys, sessionId];
       const observed: string[] = [];
-      const admission = await beginSessionWorkAdmission({
+      const admission = await beginSessionEffect({
         scope: target.storePath,
         identities,
         assertAllowed: () => undefined,
@@ -301,7 +301,7 @@ describe("worker placement move destination", () => {
         });
         const identities = [sessionKey, target.canonicalKey, ...target.storeKeys, sessionId];
         const onInterrupt = vi.fn();
-        const admission = await beginSessionWorkAdmission({
+        const admission = await beginSessionEffect({
           scope: target.storePath,
           identities,
           assertAllowed: () => undefined,

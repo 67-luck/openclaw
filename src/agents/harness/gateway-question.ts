@@ -1,10 +1,14 @@
 import { randomBytes } from "node:crypto";
 import type { QuestionWaitAnswerResult } from "../../../packages/gateway-protocol/src/schema/questions.js";
-import type { ReplyToolAuthorityOverlay } from "../../auto-reply/reply/reply-run-registry.contracts.js";
+import type { ReplyToolAuthorityOverlay } from "../../sessions/session-controller.contracts.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import type { EmbeddedRunAttemptParams } from "../embedded-agent-runner/run/types.js";
+import {
+  getGatewayToolCallerIdentity,
+  captureGatewayToolCallerAssertion,
+} from "../tools/gateway-caller-context.js";
 import {
   createQuestionPromptLifetime,
   isTerminalQuestionResolveError,
@@ -551,6 +555,9 @@ async function runScopedAgentHarnessQuestion(
   const questionId = params.questionId ?? `ask_${randomBytes(16).toString("hex")}`;
   const questions = buildAgentQuestionRequestQuestions(params.questions);
   let aborted = false;
+  const watchdogAttempt = getGatewayToolCallerIdentity()?.watchdogAttempt;
+  const assertCurrent = captureGatewayToolCallerAssertion();
+  let watchdogWait: ReturnType<NonNullable<typeof watchdogAttempt>["beginWait"]> | undefined;
   params.signal?.throwIfAborted();
   using prompt = createQuestionPromptLifetime(params.signal);
   const claim = registerPendingAgentQuestion({
@@ -574,7 +581,7 @@ async function runScopedAgentHarnessQuestion(
           timeoutMs: params.timeoutMs,
         },
         params.signal ? { signal: params.signal } : undefined,
-      ) as Promise<{ id?: unknown }>,
+      ) as Promise<{ id?: unknown; expiresAtMs?: number }>,
   );
   claim.attachRegistration(registration);
   const cancel = async (resolvedBy: string): Promise<QuestionWaitAnswerResult | undefined> => {
@@ -631,6 +638,15 @@ async function runScopedAgentHarnessQuestion(
       }
       return { status: "cancelled" };
     }
+    watchdogWait = watchdogAttempt?.beginWait({
+      kind: "human_question",
+      deadlineAtMs: request.expiresAtMs,
+      isCurrent: () => {
+        params.signal?.throwIfAborted();
+        assertCurrent?.();
+        return !aborted && !claim.isCancellationRequested();
+      },
+    });
     const answer = gatewayCall(
       "question.waitAnswer",
       { timeoutMs: params.timeoutMs + QUESTION_RPC_GRACE_MS },
@@ -647,6 +663,9 @@ async function runScopedAgentHarnessQuestion(
         result.status === "pending"
           ? ((await cancel("wait-timeout")) ?? ({ status: "cancelled" } as const))
           : result;
+      if (terminal.status === "answered") {
+        watchdogAttempt?.progress("semantic", "human_input:resolved");
+      }
       // The receipt belongs to the input claim, not the harness/model answer.
       return terminal.status === "answered"
         ? { status: terminal.status, answers: terminal.answers }
@@ -720,6 +739,7 @@ async function runScopedAgentHarnessQuestion(
     }
     throw error;
   } finally {
+    watchdogWait?.close();
     params.signal?.removeEventListener("abort", onAbort);
     claim.dispose();
   }

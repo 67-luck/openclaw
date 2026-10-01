@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { isSessionRunActive as isEmbeddedAgentRunActive } from "../../sessions/session-controller.queries.js";
 import { testing as deliveryTesting } from "../subagents/announce/subagent-announce-delivery.test-support.js";
 import { sendSubagentAnnounceDirectly } from "../subagents/announce/subagent-announce-direct-delivery.js";
 import {
-  clearActiveEmbeddedRun,
-  isEmbeddedAgentRunActive,
   markActiveEmbeddedRunAbandoned,
   markEmbeddedRunRecoveringTimeout,
   restoreEmbeddedRunTimeoutAbandonment,
-  setActiveEmbeddedRun,
 } from "./runs.js";
-import { createEmbeddedRunHandle, testing as runsTesting } from "./runs.test-support.js";
+import {
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+  testing as runsTesting,
+} from "./runs.test-support.js";
 
 const sessionId = "session-timeout-delivery";
 const sessionKey = "agent:main:timeout-delivery";

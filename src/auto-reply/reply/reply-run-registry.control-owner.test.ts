@@ -2,12 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   beginReplyMessageInjectionTarget,
-  forceClearReplyOperation,
   ReplyRunSuccessorAdmissionBlockedError,
   replyRunRegistry,
   waitForReplyRunSuccessorAdmission,
-} from "./reply-run-registry.js";
-import { resolveActiveReplyRunOwnerForSignal } from "./reply-run-registry.state.js";
+} from "../../sessions/session-controller.js";
+import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-controller.state.js";
+import { SESSION_WATCHDOG_CLEANUP_MS } from "../../sessions/session-controller.watchdog-state.js";
 import { createTestReplyOperation } from "./reply-run-registry.test-helpers.js";
 
 const sessionKey = "agent:main:voice-control";
@@ -16,8 +16,8 @@ afterEach(() => replyRunRegistry.get(sessionKey)?.complete());
 
 describe("reply run control ownership", () => {
   it.each([false, true])(
-    "settles producer handoff before delivery can admit a successor (forced clear=%s)",
-    async (forcedClear) => {
+    "settles producer handoff before delivery can admit a successor (cleanup expired=%s)",
+    async (cleanupExpired) => {
       const controller = new AbortController();
       const operation = createTestReplyOperation({
         sessionKey,
@@ -41,8 +41,11 @@ describe("reply run control ownership", () => {
         ).toBe(true);
 
         controller.abort();
-        if (forcedClear) {
-          expect(forceClearReplyOperation(operation)).toBe(true);
+        if (cleanupExpired) {
+          await expect(
+            operation.watchdog.tick(Date.now() + SESSION_WATCHDOG_CLEANUP_MS),
+          ).resolves.toMatchObject({ action: "blocked" });
+          expect(replyRunRegistry.get(sessionKey)).toBe(operation);
         }
         await Promise.resolve();
         expect(started).not.toHaveBeenCalled();
@@ -55,15 +58,26 @@ describe("reply run control ownership", () => {
           ReplyRunSuccessorAdmissionBlockedError,
         );
         const nextAdmission = waitForReplyRunSuccessorAdmission(operation.key, null);
+        if (cleanupExpired) {
+          // Raw delivery settlement cannot settle the separately owned handoff fence.
+          delivery.resolve();
+          await operation.ownerSettlement;
+          expect(() => createTestReplyOperation({ sessionKey })).toThrow(
+            ReplyRunSuccessorAdmissionBlockedError,
+          );
+        }
         persistence.resolve();
         await handoff;
         await expect(nextAdmission).resolves.toMatchObject({ settled: true });
 
-        // Delivery is allowed to depend on a new operation without a settlement cycle.
-        const successor = createTestReplyOperation({ sessionKey, sessionId: "successor" });
-        successor.complete();
+        // Handoff settlement alone cannot release raw delivery custody.
+        if (!cleanupExpired) {
+          expect(() => createTestReplyOperation({ sessionKey, sessionId: "successor" })).toThrow();
+        }
         delivery.resolve();
         await operation.ownerSettlement;
+        const successor = createTestReplyOperation({ sessionKey, sessionId: "successor" });
+        successor.complete();
         expect(owner?.handoff(async () => {})).toBe(false);
       } finally {
         persistence.resolve();

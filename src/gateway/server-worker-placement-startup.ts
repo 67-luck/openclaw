@@ -11,10 +11,10 @@ import { formatErrorMessage } from "../infra/errors.js";
 import type { GatewayScheduler, GatewayScheduledJob } from "../infra/gateway-scheduler.js";
 import { getGatewayRestartDrainSignal } from "../process/gateway-work-admission.js";
 import {
-  interruptSessionWorkAdmissions,
-  runExclusiveSessionLifecycleMutation,
-  SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-} from "../sessions/session-lifecycle-admission.js";
+  interruptSessionControllerEffects,
+  runSessionMutation,
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+} from "../sessions/session-controller.lifecycle.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { getSessionRepositoryWorkspaceStore } from "../state/session-repository-workspaces.js";
@@ -273,7 +273,7 @@ export function createGatewayWorkerPlacementRuntime(
           sessionId,
         ];
         let placement: Awaited<ReturnType<typeof startDispatch>> | undefined;
-        await runExclusiveSessionLifecycleMutation({
+        await runSessionMutation({
           scope: target.storePath,
           identities: lifecycleIdentities,
           signal,
@@ -319,16 +319,16 @@ export function createGatewayWorkerPlacementRuntime(
               sessionId,
               sessionKeys: lifecycleIdentities,
             });
-            const released = await interruptSessionWorkAdmissions({
+            const released = await interruptSessionControllerEffects({
               scope: target.storePath,
               identities: lifecycleIdentities,
-              timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+              timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
             });
             if (!released) {
               throw new Error(`Session ${sessionKey} is still active; dispatch stopped`);
             }
             await params.placements.waitForTurnClaimRelease(sessionId, {
-              timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+              timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
             });
             await runExclusiveSessionStoreWrite(target.storePath, async () => {}, {
               reentrant: true,

@@ -18,9 +18,8 @@ import {
 import { resolveContextEngine } from "../../../context-engine/registry.js";
 import { rotateAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import * as workerAdmission from "../../../infra/sqlite-worker-operation-admission.js";
-import { beginSessionWorkAdmission } from "../../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../../sessions/session-controller.lifecycle.js";
 import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
-import { clearActiveEmbeddedRun, setActiveEmbeddedRun } from "../../embedded-agent-runner/runs.js";
 import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import {
@@ -29,6 +28,10 @@ import {
   seedSubagentCompletionDelivery,
 } from "../completion/subagent-completion-admission.test-helpers.js";
 import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
+import {
+  setActiveEmbeddedRun,
+  clearActiveEmbeddedRun,
+} from "./subagent-control-native.test-support.js";
 import { killAllControlledSubagentRuns, killSubagentRunAdmin } from "./subagent-control.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import { PROVISIONAL_KILL_RECONCILIATION_MS } from "./subagent-registry-helpers.js";
@@ -330,7 +333,7 @@ it.each(
   const ancestor = subagentRuns.get("draining-ancestor")!;
   const child = subagentRuns.get("draining-child")!;
   const entered = createDeferred();
-  const admission = await beginSessionWorkAdmission({
+  const admission = await beginSessionEffect({
     scope: storePath,
     identities: [ancestorKey, "draining-ancestor-session"],
     assertAllowed: () => {},
@@ -455,7 +458,7 @@ it.each(["default", "template", "fixed JSON-style", "exact SQLite"])(
     });
     const abort = vi.fn();
     const handle = createEmbeddedRunHandle({ abort, runId: "fixed-store-child" });
-    setActiveEmbeddedRun(sessionId, handle, childSessionKey);
+    setActiveEmbeddedRun(sessionId, handle, childSessionKey, storePath);
     try {
       const result = await killAllControlledSubagentRuns({
         cfg: { ...getRuntimeConfig(), session: { store } },
@@ -478,7 +481,7 @@ it.each(["default", "template", "fixed JSON-style", "exact SQLite"])(
           ?.abortedLastRun,
       ).toBeUndefined();
     } finally {
-      clearActiveEmbeddedRun(sessionId, handle, childSessionKey);
+      await clearActiveEmbeddedRun(sessionId, handle, childSessionKey);
     }
   },
 );

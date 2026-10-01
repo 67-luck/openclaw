@@ -73,7 +73,7 @@ describe("gateway agent follow-up activity", () => {
         };
         try {
           await invokeAgent(request, { context, reqId: runId, client: backendGatewayClient() });
-          expect(context.chatAbortControllers.get(runId)?.sessionKey).toBe(childSessionKey);
+          expect(context.rpcSources.get(runId)?.adapter.sessionKey).toBe(childSessionKey);
           const callCount = mocks.agentCommand.mock.calls.length;
           await invokeAgent(request, { context, reqId: "replay", client: backendGatewayClient() });
           expect(mocks.agentCommand).toHaveBeenCalledTimes(callCount);

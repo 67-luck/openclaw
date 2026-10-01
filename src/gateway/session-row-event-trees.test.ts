@@ -15,6 +15,7 @@ import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-cloc
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareGatewayRecipientProfile } from "./expected-profile.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
+import { createActiveRpcSourceForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
 import {
   emitSessionsChanged,
   flushPendingSessionsChangedEvents,
@@ -143,19 +144,20 @@ it.each(["sessions.list", "sessions.subscribe"])(
         expect(payloadFor(peers[0]!).ancestorSessionRefs).toHaveLength(1);
 
         // Runtime-only content can change and return without invalidating stored row facts.
-        connection.chatAbortControllers.set("ancestor-run", {
-          controller: new AbortController(),
-          agentId: "main",
-          sessionKey: root,
-          sessionId: root,
-          startedAtMs: 1,
-          expiresAtMs: 2,
-        });
+        connection.rpcSources.set(
+          "ancestor-run",
+          await createActiveRpcSourceForTest({
+            agentId: "main",
+            sessionKey: root,
+            sessionId: root,
+          }),
+        );
         publish("activity-summary");
         expect(payloadFor(peers[0]!).ancestorSessions).toEqual([
           expect.objectContaining({ key: root, hasActiveRun: true }),
         ]);
-        connection.chatAbortControllers.delete("ancestor-run");
+        connection.rpcSources.get("ancestor-run")?.input.claim?.operation?.complete();
+        connection.rpcSources.delete("ancestor-run");
         publish();
         expect(payloadFor(peers[0]!).ancestorSessions).toEqual([
           expect.objectContaining({ key: root, hasActiveRun: false }),
@@ -212,7 +214,7 @@ it("publishes fresh ancestor rows through private intermediates with list visibi
       cfg,
     });
     const context = requestContext(cfg);
-    context.chatAbortControllers = connection.chatAbortControllers;
+    context.rpcSources = connection.rpcSources;
     context.broadcastToConnIds = connection.broadcastToConnIds;
     const createPeer = (profile: (typeof profiles)[number], connId: string) => {
       const send = vi.fn();

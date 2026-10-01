@@ -32,15 +32,18 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { normalizeResolvedMaintenanceConfigInput } from "../../config/sessions/store-maintenance.js";
 import type { SessionAcpMeta, SessionEntry } from "../../config/sessions/types.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import {
+  beginSessionEffect,
+  bindSessionControllerTarget,
+  captureSessionTarget,
+  isSessionControllerWorkActive,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import {
   captureSessionInitializationOwner,
   createSessionInitialization,
 } from "../../sessions/session-initialization.js";
-import {
-  beginSessionWorkAdmission,
-  isSessionWorkAdmissionActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
 import { createLazyRuntimeMethod, createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { getPluginRuntimeGatewayRequestScope } from "./gateway-request-scope.js";
 import { resolveAgentCatalogCreateTarget } from "./runtime-agent-session-catalog.js";
@@ -227,13 +230,13 @@ async function createSessionEntry(
     return isDeepStrictEqual(leftStable, rightStable);
   };
   const identities = new Set([target.canonicalKey, ...target.storeKeys]);
-  return await runExclusiveSessionLifecycleMutation({
+  return await runSessionMutation({
     scope: target.storePath,
     identities,
     prepare: async () => {
       // Activate the mutation fence before checking admission state. New work
       // then queues, while pre-existing work makes creation fail without interruption.
-      if (isSessionWorkAdmissionActive(target.storePath, identities)) {
+      if (isSessionControllerWorkActive(target.storePath, identities)) {
         throw new Error(`Session "${target.canonicalKey}" is still active; retry creation later.`);
       }
     },
@@ -591,42 +594,52 @@ async function runWithSessionWorkAdmission<T>(
     sessionKey: params.sessionKey,
     readConsistency: "latest",
   });
-  const lifecycleAbortController = new AbortController();
-  const admission = await beginSessionWorkAdmission({
-    scope: params.storePath,
-    identities: [params.sessionKey, initialEntry?.sessionId],
-    signal: params.signal,
-    onInterrupt: () =>
-      lifecycleAbortController.abort(
-        new Error("Agent work interrupted by a session lifecycle change."),
-      ),
-    assertAllowed: () => {
-      const currentEntry = getSessionEntry({
-        storePath: params.storePath,
-        sessionKey: params.sessionKey,
-        readConsistency: "latest",
-      });
-      const changed = initialEntry
-        ? !currentEntry || currentEntry.sessionId !== initialEntry.sessionId
-        : Boolean(currentEntry);
-      if (changed) {
-        throw session.createSessionWorkStartChangedError(params.sessionKey);
-      }
-      const startError = session.resolveSessionWorkStartError(params.sessionKey, currentEntry);
-      if (startError) {
-        throw new Error(startError);
-      }
+  return await withSessionTurn(
+    {
+      sessionKey: params.sessionKey,
+      storePath: params.storePath,
+      sessionId: initialEntry?.sessionId,
+      abortSignal: params.signal,
     },
-  });
-
-  try {
-    const signal = params.signal
-      ? AbortSignal.any([params.signal, lifecycleAbortController.signal])
-      : lifecycleAbortController.signal;
-    return await admission.run(async () => await run(signal));
-  } finally {
-    admission.release();
-  }
+    async (operation, signal) => {
+      const target = captureSessionTarget({
+        storeScope: params.storePath,
+        sessionKey: params.sessionKey,
+        incarnation: initialEntry?.sessionId,
+        agentId: operation?.agentId,
+      });
+      if (operation) {
+        bindSessionControllerTarget(operation, target);
+      }
+      // The shipped SDK adapter still validates under the physical store writer.
+      // Its callback borrows the same turn; no turn lease survives this boundary.
+      const effect = await beginSessionEffect({
+        target,
+        operation,
+        signal,
+        assertAllowed: () => {
+          const current = getSessionEntry({
+            storePath: params.storePath,
+            sessionKey: params.sessionKey,
+            readConsistency: "latest",
+          });
+          if (
+            initialEntry
+              ? !current || current.sessionId !== initialEntry.sessionId
+              : Boolean(current)
+          ) {
+            throw session.createSessionWorkStartChangedError(params.sessionKey);
+          }
+          const error = session.resolveSessionWorkStartError(params.sessionKey, current);
+          if (error) {
+            throw new Error(error);
+          }
+        },
+      });
+      effect.release();
+      return await run(signal);
+    },
+  );
 }
 
 /** Creates the plugin runtime agent facade with lazy embedded-agent/session helpers. */

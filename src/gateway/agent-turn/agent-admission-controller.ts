@@ -7,9 +7,10 @@ import {
 import { resolveSessionWorkStartError } from "../../config/sessions.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
-  beginSessionWorkAdmission,
-  type SessionWorkAdmissionLease,
-} from "../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  captureSessionTarget,
+  type SessionEffectRef,
+} from "../../sessions/session-controller.lifecycle.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import {
   assertExpectedExistingSession,
@@ -47,7 +48,7 @@ export function createAgentAdmissionController(params: {
   getSupersededSessionId: () => string | undefined;
   setAdmittedSessionId: (sessionId: string) => void;
 }) {
-  let admission: SessionWorkAdmissionLease | undefined;
+  let admission: SessionEffectRef | undefined;
   let admittedRunAbort: ReturnType<typeof registerChatAbortController> | undefined;
   let postAdmissionAbort: ReturnType<typeof readGatewayDedupeEntry>;
   let postAdmissionTimeout: ReturnType<typeof buildAbortedAgentPayload> | undefined;
@@ -180,14 +181,14 @@ export function createAgentAdmissionController(params: {
       ? "rpc"
       : AGENT_RUN_RESTART_ABORT_STOP_REASON;
     if (admittedRunAbort?.entry) {
-      admittedRunAbort.entry.abortStopReason = stopReason;
+      admittedRunAbort.entry.adapter.abortStopReason = stopReason;
     }
     if (admittedRunAbort) {
       const entry = admittedRunAbort.entry;
       const ownsRun =
         entry !== undefined &&
-        params.context.chatAbortControllers.get(params.runId) === entry &&
-        !entry.registrationCleanupRequested;
+        params.context.rpcSources.get(params.runId) === entry &&
+        !entry.adapter.registrationCleanupRequested;
       admittedRunAbort.controller.abort(
         stopReason === "rpc" ? reason : createAgentRunRestartAbortError(),
       );
@@ -211,16 +212,26 @@ export function createAgentAdmissionController(params: {
     if (admission) {
       return;
     }
+    const sessionKey = params.getResolvedSessionKey();
+    if (!sessionKey) {
+      assertAllowed();
+      return;
+    }
+    const target = captureSessionTarget({
+      storeScope: scope,
+      sessionKey,
+      aliases: [params.getRequestedSessionKey()],
+      agentId: admissionAgentId(),
+      incarnation: params.getResolvedSessionId(),
+    });
     admission =
       consumeExpectedSessionWorkAdmission({
         constraint: params.expectedSession,
-        scope,
-        identities: [params.getResolvedSessionKey(), params.getResolvedSessionId()],
+        target,
         onInterrupt: interrupt,
       }) ??
-      (await beginSessionWorkAdmission({
-        scope,
-        identities: [params.getResolvedSessionKey(), params.getResolvedSessionId()],
+      (await beginSessionEffect({
+        target,
         ...(params.admissionOwner ? { owner: params.admissionOwner } : {}),
         assertAllowed: () => assertAllowed(false),
         revalidateAllowed: assertAllowed,
@@ -275,6 +286,9 @@ export function createAgentAdmissionController(params: {
     setAdmittedRunAbort: (value: ReturnType<typeof registerChatAbortController>) => {
       admittedRunAbort = value;
     },
-    release: () => admission?.release(),
+    release: () => {
+      admittedRunAbort?.cleanup();
+      admission?.release();
+    },
   };
 }

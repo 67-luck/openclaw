@@ -1,5 +1,11 @@
 // Tests prepared reply queue state resolution before get-reply starts a run.
 import { describe, expect, it, vi } from "vitest";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
+import {
+  interruptReplyRunTarget,
+  replyRunRegistry,
+} from "../../sessions/session-controller.registry.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { resolvePreparedReplyQueueState } from "./get-reply-run-queue.js";
 
 describe("resolvePreparedReplyQueueState", () => {
@@ -79,5 +85,47 @@ describe("resolvePreparedReplyQueueState", () => {
         text: "⚠️ Previous run is still shutting down. Please try again in a moment.",
       },
     });
+  });
+  it("does not admit after interrupt timeout merely because the old slot cleared", async () => {
+    vi.useFakeTimers();
+    const operation = createReplyOperation({
+      sessionKey: "agent:main:interrupt-settlement",
+      sessionId: "old-writer",
+      resetTriggered: false,
+    });
+    const delivery = createDeferredCore();
+    const refreshPreparedState = vi.fn(async () => {});
+    try {
+      operation.setPhase("running");
+      const target = replyRunRegistry.resolveCurrentInterruptTarget(operation.key);
+      if (!target) {
+        throw new Error("Missing interrupt owner");
+      }
+      const waiting = resolvePreparedReplyQueueState({
+        activeRunQueueAction: "run-now",
+        activeSessionId: operation.sessionId,
+        queueMode: "interrupt",
+        interruptActiveRun: async () => (await interruptReplyRunTarget(target, 100)).settled,
+        waitForActiveRunEnd: async () => {
+          throw new Error("wrong wait owner");
+        },
+        refreshPreparedState,
+        resolveBusyState: () => ({
+          activeSessionId: replyRunRegistry.resolveSessionId(operation.key),
+          isActive: replyRunRegistry.isActive(operation.key),
+        }),
+      });
+      expect(operation.abortSignal.aborted).toBe(true);
+      operation.completeWithAfterClearBarrier(delivery.promise);
+      expect(replyRunRegistry.isActive(operation.key)).toBe(false);
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(waiting).resolves.toMatchObject({ kind: "reply" });
+      expect(refreshPreparedState).not.toHaveBeenCalled();
+    } finally {
+      delivery.resolve();
+      operation.complete();
+      await operation.ownerSettlement;
+      vi.useRealTimers();
+    }
   });
 });

@@ -9,7 +9,7 @@ import type {
   EmbeddedRunAttemptParams,
   EmbeddedRunAttemptResult,
 } from "../agents/embedded-agent-runner/run/types.js";
-import { clearActiveEmbeddedRun } from "../agents/embedded-agent-runner/runs.js";
+import { clearTestEmbeddedRun as clearActiveEmbeddedRun } from "../agents/embedded-agent-runner/runs.test-support.js";
 import {
   createAssistant,
   createAssistantResultStream,
@@ -18,12 +18,12 @@ import {
 } from "../agents/sessions/agent-session-loop-correctness.test-support.js";
 import { runAnnounceAgentCall } from "../agents/subagents/announce/subagent-announce-completion-delivery.js";
 import { makeEmbeddedRunnerAttempt } from "../agents/test-helpers/embedded-agent-runner-e2e-fixtures.js";
-import { replyRunRegistry } from "../auto-reply/reply/reply-run-registry.js";
 import { getRuntimeConfig, writeConfigFile } from "../config/config.js";
 import { getAgentRunContext } from "../infra/agent-run-registry.js";
 import { createDiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
 import { createDiagnosticEmbeddedRunOwner } from "../logging/diagnostic-run-activity.js";
 import { diagnosticLogger } from "../logging/diagnostic-runtime.js";
+import { replyRunRegistry } from "../sessions/session-controller.js";
 import {
   agentCommandMock,
   connectOk,

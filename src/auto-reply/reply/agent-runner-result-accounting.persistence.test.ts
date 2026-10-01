@@ -18,6 +18,7 @@ import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { createReplyOperation, type ReplyOperation } from "../../sessions/session-controller.js";
 import {
   disposeOpenClawAgentDatabaseByPath,
   isOpenClawAgentDatabaseOpen,
@@ -33,13 +34,8 @@ import { accountAgentTurn, accountFollowupTurn } from "./agent-runner-result-acc
 import { completeReplyAgentRun } from "./agent-runner-result-complete.js";
 import { finalizeReplyAgentRun } from "./agent-runner-result.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
+import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
 import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
-import type { AdmittedFollowupTurn } from "./followup-turn-admission.js";
-import {
-  createReplyOperation,
-  retainReplyOperationUntilComplete,
-  type ReplyOperation,
-} from "./reply-run-registry.js";
 import { createReplySessionEntryHandle } from "./session-entry-handle.js";
 import { incrementCompactionCount } from "./session-updates.js";
 import { createMockFollowupRun, createMockTypingController } from "./test-helpers.js";
@@ -146,7 +142,6 @@ async function createFixture() {
     resetTriggered: false,
   });
   replyOperation.setPhase("running");
-  retainReplyOperationUntilComplete(replyOperation);
   operations.push(replyOperation);
   const context: FinalizeReplyAgentRunInput & { storePath: string } = {
     activeIsNewSession: false,

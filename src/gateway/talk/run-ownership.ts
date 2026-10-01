@@ -1,21 +1,19 @@
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
-  ACTIVE_EMBEDDED_RUNS,
+  getActiveNativeAttempt,
   ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
 } from "../../agents/embedded-agent-runner/run-state.js";
+import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import {
   getAttachedBackend,
-  operationsByUpstreamAbortSignal,
-  resolveActiveReplyRunOwnerForSignal,
-} from "../../auto-reply/reply/reply-run-registry.state.js";
-import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
+  isCurrentSessionControllerOperation,
+} from "../../sessions/session-controller.state.js";
 import type { controlRealtimeVoiceAgentRun } from "../../talk/agent-run-control.js";
 import { resolveClientVoiceRunBinding } from "../../talk/client-voice-session.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
 export function resolveOwnedActiveTalkRunTarget(params: {
-  context: Pick<GatewayRequestContext, "chatAbortControllers">;
+  context: Pick<GatewayRequestContext, "rpcSources">;
   clientConnId?: string;
   sessionTarget: PreparedTalkSessionTarget;
   /** The shipped talk.client.steer RPC is session-wide; attached transports select their call. */
@@ -26,34 +24,39 @@ export function resolveOwnedActiveTalkRunTarget(params: {
       toolAuthoritySource?: "reply" | "attempt";
     })
   | null {
-  const connId = normalizeOptionalString(params.clientConnId);
+  const connId = params.clientConnId;
   if (!connId) {
     return null;
   }
   const { agentId, sessionKey, canonicalKey } = params.sessionTarget;
-  for (const [runId, entry] of params.context.chatAbortControllers) {
-    const generation = entry.lifecycleGeneration;
+  for (const [runId, entry] of params.context.rpcSources) {
+    const generation = entry.adapter.lifecycleGeneration;
     if (!generation) {
       continue;
     }
-    const signal = entry.controller.signal;
-    const handle = ACTIVE_EMBEDDED_RUNS.get(entry.sessionId);
+    const signal = entry.input.abortSignal;
+    const claim = entry.input.claim;
+    const operation = claim?.operation;
+    if (!claim || claim.released || !operation || !isCurrentSessionControllerOperation(operation)) {
+      continue;
+    }
+    const handle = getActiveNativeAttempt(entry.adapter.sessionId);
     const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
     const voiceBinding =
       params.scope.kind === "voice-session" ? resolveClientVoiceRunBinding(runId) : undefined;
     // Session RPCs can own a queued reply before its backend exists. Attached
     // voice controls instead preserve captured backend absence across their FIFO.
-    const reply =
-      params.scope.kind === "session" && !handle
-        ? operationsByUpstreamAbortSignal.get(signal)
-        : undefined;
+    const reply = params.scope.kind === "session" && !handle ? operation : undefined;
     const isCurrent = (resolvedSessionId?: string) => {
       params.assertCurrent?.();
       const replyOwner =
-        reply && operationsByUpstreamAbortSignal.get(signal) === reply
-          ? resolveActiveReplyRunOwnerForSignal(signal)
+        reply &&
+        entry.input.claim === claim &&
+        claim.operation === reply &&
+        isCurrentSessionControllerOperation(reply)
+          ? reply
           : undefined;
-      const replyHandle = replyOwner ? ACTIVE_EMBEDDED_RUNS.get(replyOwner.sessionId) : undefined;
+      const replyHandle = replyOwner ? getActiveNativeAttempt(replyOwner.sessionId) : undefined;
       if (params.scope.kind === "voice-session") {
         // Retain the claim instance: A-to-B-to-A is reassignment, not revival.
         // Identical registrations preserve this snapshot at the producer.
@@ -68,25 +71,30 @@ export function resolveOwnedActiveTalkRunTarget(params: {
         }
       }
       return (
-        params.context.chatAbortControllers.get(runId) === entry &&
-        entry.agentId === agentId &&
-        (entry.sessionKey === sessionKey || entry.sessionKey === canonicalKey) &&
-        entry.ownerConnId === connId &&
-        entry.kind !== "agent" &&
-        entry.registrationCleanupRequested !== true &&
+        params.context.rpcSources.get(runId) === entry &&
+        entry.input.claim === claim &&
+        claim.operation === operation &&
+        !claim.released &&
+        isCurrentSessionControllerOperation(operation) &&
+        !operation.abortSignal.aborted &&
+        !operation.result &&
+        entry.adapter.agentId === agentId &&
+        (entry.adapter.sessionKey === sessionKey || entry.adapter.sessionKey === canonicalKey) &&
+        entry.adapter.ownerConnId === connId &&
+        entry.adapter.kind !== "agent" &&
         (!reply ||
-          (replyOwner?.sessionKey === canonicalKey &&
+          (replyOwner?.key === canonicalKey &&
             (!replyHandle || getAttachedBackend(reply) === replyHandle))) &&
         (resolvedSessionId === undefined ||
-          (entry.sessionId === resolvedSessionId &&
+          (entry.adapter.sessionId === resolvedSessionId &&
             (replyOwner
               ? replyOwner.sessionId === resolvedSessionId
               : handle !== undefined &&
-                ACTIVE_EMBEDDED_RUNS.get(resolvedSessionId) === handle &&
+                getActiveNativeAttempt(resolvedSessionId) === handle &&
                 ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) === registration))) &&
-        entry.controller.signal === signal &&
+        entry.input.abortSignal === signal &&
         !signal.aborted &&
-        entry.lifecycleGeneration === generation &&
+        entry.adapter.lifecycleGeneration === generation &&
         isAgentEventLifecycleGenerationCurrent(generation)
       );
     };

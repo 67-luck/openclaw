@@ -8,13 +8,14 @@ import {
 import { SessionFollowupCompletion } from "../../agents/subagents/completion/session-followup-completion.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import { getCurrentSessionControllerOwner } from "../../sessions/session-controller.lifecycle.js";
 import { isWebchatClient } from "../../utils/message-channel.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import * as sessionChange from "../server-methods/session-change-event.js";
 import { replayAgentTurnIfCached } from "./agent-dedupe.js";
 import { resolveAgentDeliveryPhase } from "./agent-delivery-phase.js";
 import { startAgentRunExecution } from "./agent-run-execution-phase.js";
+import { createTestRpcSource, testRpcSourceController } from "./rpc-source.test-support.js";
 import type { AgentTurnPrincipal } from "./types.js";
 
 const dispatchAgentRunFromGateway = vi.hoisted(() => vi.fn());
@@ -127,28 +128,33 @@ function bindFollowupCompletion(execution: ReturnType<typeof createExecution>) {
   const { params } = execution;
   const sessionKey = "agent:main:followup-owner";
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
-  const entry: ChatAbortControllerEntry = {
-    controller: params.prepared.activeRunAbort.controller,
-    sessionId: "followup-session",
-    sessionKey,
-    operationalRunInstance: params.prepared.operationalRunInstance,
-    lifecycleGeneration,
-    startedAtMs: 1,
-    expiresAtMs: Number.MAX_SAFE_INTEGER,
-  };
+  const entry = createTestRpcSource(
+    {
+      sessionId: "followup-session",
+      sessionKey,
+      operationalRunInstance: params.prepared.operationalRunInstance,
+      lifecycleGeneration,
+    },
+    params.runId,
+  );
+  if (params.prepared.activeRunAbort.controller.signal.aborted) {
+    testRpcSourceController(entry).abort();
+  }
+  params.prepared.lifecycleStorePath = entry.input.mailbox.owner.target!.storeScope;
   params.resolvedSessionKey = sessionKey;
-  params.resolvedSessionId = entry.sessionId;
+  params.resolvedSessionId = entry.adapter.sessionId;
   params.lifecycleGeneration = lifecycleGeneration;
-  params.context.chatAbortControllers = new Map([[params.runId, entry]]);
+  params.context.rpcSources = new Map([[params.runId, entry]]);
   params.prepared.activeRunAbort = {
     ...params.prepared.activeRunAbort,
     registered: true,
+    controller: testRpcSourceController(entry),
     entry,
   };
-  params.prepared.activeGatewayWorkAdmission.isActive = () => true;
+  params.prepared.activeGatewayWorkAdmission!.isActive = () => true;
   execution.abortCleanup.mockImplementation(() => {
-    if (params.context.chatAbortControllers.get(params.runId) === entry) {
-      params.context.chatAbortControllers.delete(params.runId);
+    if (params.context.rpcSources.get(params.runId) === entry) {
+      params.context.rpcSources.delete(params.runId);
     }
   });
   const custody = new AbortController();
@@ -174,6 +180,34 @@ function bindFollowupCompletion(execution: ReturnType<typeof createExecution>) {
 describe("startAgentRunExecution Gateway ownership", () => {
   beforeEach(() => {
     dispatchAgentRunFromGateway.mockReset();
+  });
+
+  it("selects the exact preparing RPC input and lends its operation to command dispatch", async () => {
+    const execution = createExecution();
+    const completion = bindFollowupCompletion(execution);
+    const source = execution.params.prepared.activeRunAbort.entry!;
+    const entered = createDeferred();
+    const release = createDeferred();
+    dispatchAgentRunFromGateway.mockImplementationOnce(async (dispatch) => {
+      expect(source.input.claim?.inputs).toEqual([source.input]);
+      expect(getCurrentSessionControllerOwner()).toBe(source.input.claim?.operation);
+      expect(source.input.mailbox.entries).toContain(source.input);
+      expect(source.input.mailbox.entries).toHaveLength(1);
+      entered.resolve();
+      await release.promise;
+      dispatch.cleanupAbortController();
+    });
+    const running = startAgentRunExecution(execution.params);
+    try {
+      await Promise.race([entered.promise, running]);
+      expect(dispatchAgentRunFromGateway).toHaveBeenCalledOnce();
+      expect(source.input.claim?.released).toBe(false);
+    } finally {
+      release.resolve();
+      await running;
+      completion.close();
+    }
+    expect(source.input.claim?.released).toBe(true);
   });
 
   it.each([false, true])(
@@ -406,28 +440,36 @@ describe("startAgentRunExecution Gateway ownership", () => {
       const entry = execution.params.prepared.activeRunAbort.entry!;
       const successor =
         registration === "foreign" || registration === "replacement"
-          ? {
-              ...entry,
-              controller: new AbortController(),
-              sessionKey: registration === "foreign" ? "agent:main:unrelated" : entry.sessionKey,
-              operationalRunInstance: { runId: execution.params.runId, instanceId: "successor" },
-            }
+          ? createTestRpcSource(
+              {
+                ...entry.adapter,
+                sessionKey:
+                  registration === "foreign" ? "agent:main:unrelated" : entry.adapter.sessionKey,
+                operationalRunInstance: { runId: execution.params.runId, instanceId: "successor" },
+              },
+              execution.params.runId,
+            )
           : undefined;
       if (successor) {
-        execution.params.context.chatAbortControllers.set(execution.params.runId, successor);
+        execution.params.context.rpcSources.set(execution.params.runId, successor);
       }
       const lostRegistration = !["current", "foreign", "absent"].includes(registration);
-      execution.params.prepared.activeGatewayWorkAdmission.run = async (run) => {
+      execution.params.prepared.activeGatewayWorkAdmission!.run = async (run) => {
         if (registration === "absent") {
-          execution.params.context.chatAbortControllers.delete(execution.params.runId);
+          execution.params.context.rpcSources.delete(execution.params.runId);
         } else if (registration === "controller") {
-          entry.controller = new AbortController();
+          Object.defineProperty(entry.input, "abortSignal", {
+            value: new AbortController().signal,
+          });
         } else if (registration === "session") {
-          entry.sessionKey = "agent:main:unrelated";
+          entry.adapter.sessionKey = "agent:main:unrelated";
         } else if (registration === "instance") {
-          entry.operationalRunInstance = { runId: execution.params.runId, instanceId: "successor" };
+          entry.adapter.operationalRunInstance = {
+            runId: execution.params.runId,
+            instanceId: "successor",
+          };
         } else if (registration === "lifecycle") {
-          entry.lifecycleGeneration = "successor-lifecycle";
+          entry.adapter.lifecycleGeneration = "successor-lifecycle";
         }
         return await run();
       };
@@ -475,9 +517,7 @@ describe("startAgentRunExecution Gateway ownership", () => {
         expect(execution.callerRelease).toHaveBeenCalledOnce();
         expect(finishExecution).toHaveBeenCalledExactlyOnceWith(execution.params.runId);
         if (successor) {
-          expect(execution.params.context.chatAbortControllers.get(execution.params.runId)).toBe(
-            successor,
-          );
+          expect(execution.params.context.rpcSources.get(execution.params.runId)).toBe(successor);
         }
         if (lostRegistration) {
           await expect(reply).rejects.toThrow("Follow-up admission was replaced before cleanup.");

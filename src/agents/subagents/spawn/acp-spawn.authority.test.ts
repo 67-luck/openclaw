@@ -45,6 +45,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../../../plugins/runtime/gateway-request-scope.js";
+import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
 import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
 import { createTestRegistry } from "../../../test-utils/channel-plugins.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
@@ -165,7 +166,7 @@ describe("pending ACP spawn authority", () => {
     "transfers initialized ACP work only from its live parent: %s / %s",
     async (stage, closure) => {
       const cfg = getRuntimeConfig();
-      await writeSubagentSessionEntry({
+      const storePath = await writeSubagentSessionEntry({
         stateDir,
         agentId: "main",
         sessionKey: parentSessionKey,
@@ -195,7 +196,13 @@ describe("pending ACP spawn authority", () => {
         },
       });
       const parent = registerChatAbortController({
-        chatAbortControllers: context.chatAbortControllers,
+        rpcSources: context.rpcSources,
+        target: captureSessionTarget({
+          storeScope: storePath,
+          sessionKey: parentSessionKey,
+          incarnation: "parent-session",
+          agentId: "main",
+        }),
         runId: parentRunId,
         sessionKey: parentSessionKey,
         sessionId: "parent-session",

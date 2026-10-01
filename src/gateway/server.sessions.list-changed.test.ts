@@ -135,8 +135,7 @@ async function invokeSessionMutation({
   const { getRuntimeConfig } = await getGatewayConfigModule();
   const requestContext = {
     broadcastToConnIds,
-    chatAbortControllers: new Map(),
-    chatQueuedTurns: new Map(),
+    rpcSources: new Map(),
     dedupe: new Map(),
     getSessionEventSubscriberConnIds: () => subscribedConnIds,
     loadGatewayModelCatalog: async () => ({ providers: [] }),
@@ -219,7 +218,7 @@ async function expectListedSessionActiveRun(
   const { respond } = await invokeSessionsList({
     requestId,
     context: {
-      chatAbortControllers: new Map([["run-1", { sessionKey: "agent:main:main", ...run }]]),
+      rpcSources: new Map([["run-1", { sessionKey: "agent:main:main", ...run }]]),
     },
   });
 
@@ -742,9 +741,7 @@ test("sessions.changed publishes running status during ordinary startup", async 
     method: "sessions.patch",
     params: { key: "main", label: "Starting main" },
     context: {
-      chatAbortControllers: new Map([
-        ["run-1", { sessionKey: "agent:main:main", executionStarted: false }],
-      ]),
+      rpcSources: new Map([["run-1", { sessionKey: "agent:main:main", executionStarted: false }]]),
     },
   });
 

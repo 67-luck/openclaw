@@ -177,7 +177,7 @@ export async function runCronIsolatedAgentTurn(
               lifecycle.markProcessing();
               return lifecycle;
             } catch (error) {
-              prepared.context.sessionWorkAdmission.release();
+              prepared.context.sessionPreparationEffect.release();
               throw error;
             }
           })();
@@ -256,7 +256,7 @@ export async function runCronIsolatedAgentTurn(
               executionIdentity: params.executionIdentity,
               admissionSource: params.admissionSource,
             };
-            const execution = await prepared.context.sessionWorkAdmission.run(() =>
+            const execution = await prepared.context.sessionPreparationEffect.run(() =>
               withAgentRunLifecycleGeneration(runLifecycleGeneration, () =>
                 executeCronRun(executionParams),
               ),
@@ -275,7 +275,7 @@ export async function runCronIsolatedAgentTurn(
               },
               // Self-deleting sessions must release before their own lifecycle mutation.
               // Other runs retain admission through delivery and release in finally.
-              beforeSessionDelete: prepared.context.sessionWorkAdmission.release,
+              beforeSessionDelete: prepared.context.sessionPreparationEffect.release,
             });
             if (finalized.status === "error") {
               outcome = "error";
@@ -366,7 +366,7 @@ export async function runCronIsolatedAgentTurn(
                     sessionId: prepared.context.currentRunSessionId(),
                     lifecycleRevision: prepared.context.cronSession.lifecycleRevision,
                     sessionUpdatedAt: prepared.context.cronSession.sessionEntry.updatedAt,
-                    beforeDelete: prepared.context.sessionWorkAdmission.release,
+                    beforeDelete: prepared.context.sessionPreparationEffect.release,
                     reason: "cron-delete-after-run-finally",
                   });
                 }
@@ -382,7 +382,7 @@ export async function runCronIsolatedAgentTurn(
                       runContextOwnerToken,
                     });
                   } finally {
-                    prepared.context.sessionWorkAdmission.release();
+                    prepared.context.sessionPreparationEffect.release();
                   }
                   if (prepared.context.runContinuationSession) {
                     try {

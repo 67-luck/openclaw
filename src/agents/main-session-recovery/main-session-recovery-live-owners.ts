@@ -1,9 +1,9 @@
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import {
-  listActiveEmbeddedRunSessionIds,
-  listActiveEmbeddedRunSessionKeys,
-} from "../embedded-agent-runner/active-run-projections.js";
+  listActiveSessionRunIds as listActiveEmbeddedRunSessionIds,
+  listActiveSessionRunKeys as listActiveEmbeddedRunSessionKeys,
+} from "../../sessions/session-controller.queries.js";
 
 function normalizeStringSet(values: Iterable<string> | undefined): Set<string> {
   return new Set(normalizeStringEntries(values ? [...values] : undefined));

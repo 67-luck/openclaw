@@ -6,16 +6,24 @@ import { createDeferred } from "../../../../test/helpers/promise.js";
 import { getRuntimeConfig } from "../../../config/config.js";
 import { reactivateCompletedSubagentSession } from "../../../gateway/session-subagent-reactivation.js";
 import {
-  beginSessionWorkAdmission,
-  getActiveSessionLifecycleMutationCount,
-  getActiveSessionWorkAdmissionCount,
-  runExclusiveSessionLifecycleMutation,
-  type SessionWorkAdmissionLease,
-} from "../../../sessions/session-lifecycle-admission.js";
-import { clearActiveEmbeddedRun, setActiveEmbeddedRun } from "../../embedded-agent-runner/runs.js";
+  beginSessionEffect,
+  captureSessionTarget,
+  getSessionMutationCount,
+  getSessionControllerWorkCount,
+  runSessionMutation,
+  type SessionEffectRef,
+} from "../../../sessions/session-controller.lifecycle.js";
+import {
+  reserveSessionControllerSource,
+  retireSessionControllerInput,
+} from "../../../sessions/session-controller.mailbox.js";
 import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";
 import { createSubagentsTool } from "../../tools/subagents-tool.js";
 import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
+import {
+  setActiveEmbeddedRun,
+  clearActiveEmbeddedRun,
+} from "./subagent-control-native.test-support.js";
 import * as nativeControl from "./subagent-control.js";
 import { killAllControlledSubagentRuns, killSubagentRunAdmin } from "./subagent-control.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
@@ -85,14 +93,14 @@ it("does not transfer a selected task cancellation to an admitted follow-up gene
     ).toBe(true);
     const successor = subagentRuns.get("selected-followup")!;
     expect(successor.generation).toBeGreaterThan(original.generation!);
-    setActiveEmbeddedRun(sessionId, handle, sessionKey);
+    setActiveEmbeddedRun(sessionId, handle, sessionKey, undefined, controller.signal);
     release.resolve();
     expect((await pending).details).toMatchObject({ killed: false });
     expect(controller.signal.aborted).toBe(false);
   } finally {
     release.resolve();
     await pending;
-    clearActiveEmbeddedRun(sessionId, handle, sessionKey);
+    await clearActiveEmbeddedRun(sessionId, handle, sessionKey);
   }
 });
 
@@ -127,7 +135,7 @@ it.each(["before interruption", "after interruption", "after abort"] as const)(
       }
     });
     const handle = createEmbeddedRunHandle({ runId, abort });
-    setActiveEmbeddedRun(sessionId, handle, sessionKey);
+    setActiveEmbeddedRun(sessionId, handle, sessionKey, undefined, controller.signal);
     const interrupted = createDeferred();
     const onInterrupt = vi.fn(() => {
       interrupted.resolve();
@@ -135,7 +143,7 @@ it.each(["before interruption", "after interruption", "after abort"] as const)(
         admission.release();
       }
     });
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: storePath,
       identities: [sessionKey, sessionId],
       assertAllowed: () => {},
@@ -145,7 +153,7 @@ it.each(["before interruption", "after interruption", "after abort"] as const)(
     const releaseBlocker = createDeferred();
     const blocker =
       revocation === "before interruption"
-        ? runExclusiveSessionLifecycleMutation({
+        ? runSessionMutation({
             scope: storePath,
             identities: [sessionKey, sessionId],
             run: async () => {
@@ -192,9 +200,9 @@ it.each(["before interruption", "after interruption", "after abort"] as const)(
       releaseBlocker.resolve();
       admission.release();
       await Promise.allSettled([blocker, pending]);
-      clearActiveEmbeddedRun(sessionId, handle, sessionKey);
-      expect(getActiveSessionWorkAdmissionCount()).toBe(0);
-      expect(getActiveSessionLifecycleMutationCount()).toBe(0);
+      await clearActiveEmbeddedRun(sessionId, handle, sessionKey);
+      expect(getSessionControllerWorkCount()).toBe(0);
+      expect(getSessionMutationCount()).toBe(0);
     }
   },
 );
@@ -230,9 +238,9 @@ it.each([
     const aborted = vi.fn();
     controller.signal.addEventListener("abort", aborted, { once: true });
     const handle = createEmbeddedRunHandle({ runId, abort: () => controller.abort() });
-    setActiveEmbeddedRun(sessionId, handle, sessionKey);
+    setActiveEmbeddedRun(sessionId, handle, sessionKey, undefined, controller.signal);
     const interrupted = createDeferred();
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: storePath,
       identities: [sessionKey, sessionId],
       assertAllowed: () => {},
@@ -249,7 +257,7 @@ it.each([
     const releaseBlocker = createDeferred();
     const blocker =
       phase === "queued"
-        ? runExclusiveSessionLifecycleMutation({
+        ? runSessionMutation({
             scope: storePath,
             identities: [sessionKey, sessionId],
             run: async () => {
@@ -312,7 +320,7 @@ it.each([
       ]);
       expect(settled).toBe(false);
       expect(aborted).toHaveBeenCalledTimes(phase === "accepted" ? 1 : 0);
-      expect(getActiveSessionLifecycleMutationCount()).toBeGreaterThan(0);
+      expect(getSessionMutationCount()).toBeGreaterThan(0);
       if (terminal) {
         expect(markSubagentRunTerminated({ runId, reason: "killed" })).toBe(1);
         expect(resolveSubagentSessionStatus(subagentRuns.get(runId))).toBe("killed");
@@ -339,9 +347,9 @@ it.each([
       releaseRead.resolve();
       admission.release();
       await Promise.allSettled([blocker, pending]);
-      clearActiveEmbeddedRun(sessionId, handle, sessionKey);
-      expect(getActiveSessionWorkAdmissionCount()).toBe(0);
-      expect(getActiveSessionLifecycleMutationCount()).toBe(0);
+      await clearActiveEmbeddedRun(sessionId, handle, sessionKey);
+      expect(getSessionControllerWorkCount()).toBe(0);
+      expect(getSessionMutationCount()).toBe(0);
     }
   },
 );
@@ -392,7 +400,7 @@ it.each(["bulk", "admin"] as const)(
     }
     const interrupted: string[] = [];
     const firstInterrupted = createDeferred();
-    const leases: SessionWorkAdmissionLease[] = [];
+    const leases: SessionEffectRef[] = [];
     const activeRuns = running.map((runId) => ({
       runId,
       handle: createEmbeddedRunHandle({ runId }),
@@ -400,7 +408,7 @@ it.each(["bulk", "admin"] as const)(
     for (const { runId, handle } of activeRuns) {
       setActiveEmbeddedRun(`${runId}-session`, handle, sessionKey(runId));
       leases.push(
-        await beginSessionWorkAdmission({
+        await beginSessionEffect({
           scope: storePath,
           identities: [sessionKey(runId), `${runId}-session`],
           assertAllowed: () => {},
@@ -436,7 +444,7 @@ it.each(["bulk", "admin"] as const)(
     try {
       await firstInterrupted.promise;
       await vi.waitFor(() => expect(interrupted.toSorted()).toEqual(running));
-      expect(getActiveSessionWorkAdmissionCount()).toBe(running.length);
+      expect(getSessionControllerWorkCount()).toBe(running.length);
       expect(start).not.toHaveBeenCalled();
       for (const lease of leases.toReversed()) {
         lease.release();
@@ -464,10 +472,10 @@ it.each(["bulk", "admin"] as const)(
       }
       await pending;
       for (const { runId, handle } of activeRuns) {
-        clearActiveEmbeddedRun(`${runId}-session`, handle, sessionKey(runId));
+        await clearActiveEmbeddedRun(`${runId}-session`, handle, sessionKey(runId));
       }
-      expect(getActiveSessionWorkAdmissionCount()).toBe(0);
-      expect(getActiveSessionLifecycleMutationCount()).toBe(0);
+      expect(getSessionControllerWorkCount()).toBe(0);
+      expect(getSessionMutationCount()).toBe(0);
     }
   },
 );
@@ -520,20 +528,20 @@ it.each(["after interrupt", "before capacity release"] as const)(
     const aInterrupted = createDeferred();
     const bInterrupted = createDeferred();
     const bReleased = createDeferred();
-    const admissionA = await beginSessionWorkAdmission({
+    const admissionA = await beginSessionEffect({
       scope: storePath,
       identities: [key("a"), "a-session"],
       assertAllowed: () => {},
       onInterrupt: () => aInterrupted.resolve(),
     });
-    const admissionB = await beginSessionWorkAdmission({
+    const admissionB = await beginSessionEffect({
       scope: storePath,
       identities: [key("b"), "b-session"],
       assertAllowed: () => {},
       onInterrupt: () => bInterrupted.resolve(),
     });
     const interruptD = vi.fn(() => admissionD.release());
-    const admissionD = await beginSessionWorkAdmission({
+    const admissionD = await beginSessionEffect({
       scope: storePath,
       identities: [key("d"), "d-session"],
       assertAllowed: () => {},
@@ -611,10 +619,89 @@ it.each(["after interrupt", "before capacity release"] as const)(
       admissionB.release();
       admissionD.release();
       await Promise.all([pending, lateRegistration]);
-      clearActiveEmbeddedRun("b-session", handleB, key("b"));
-      clearActiveEmbeddedRun("x-session", handleX, key("x"));
-      expect(getActiveSessionWorkAdmissionCount()).toBe(0);
-      expect(getActiveSessionLifecycleMutationCount()).toBe(0);
+      await clearActiveEmbeddedRun("b-session", handleB, key("b"));
+      await clearActiveEmbeddedRun("x-session", handleX, key("x"));
+      expect(getSessionControllerWorkCount()).toBe(0);
+      expect(getSessionMutationCount()).toBe(0);
     }
   },
 );
+
+it("full child Stop preserves later and foreign sources while joining captured queue cleanup", async () => {
+  const sessionKey = "agent:main:subagent:captured-queue";
+  const sessionId = "captured-queue-session";
+  const runId = "captured-queue-run";
+  const storePath = await writeSubagentSessionEntry({
+    stateDir: fixture.stateDir,
+    agentId: "main",
+    sessionKey,
+    defaultSessionId: sessionId,
+  });
+  await registerSubagentRun({
+    runId,
+    childSessionKey: sessionKey,
+    requesterSessionKey: "agent:main:main",
+    requesterAgentId: "main",
+    requesterDisplayKey: "main",
+    task: "captured queue",
+    cleanup: "keep",
+    expectsCompletionMessage: false,
+  });
+  const target = captureSessionTarget({
+    storeScope: storePath,
+    sessionKey,
+    incarnation: sessionId,
+  });
+  const interrupted = createDeferred();
+  const cleaning = createDeferred();
+  const cleanupFinish = createDeferred();
+  const admission = await beginSessionEffect({
+    target,
+    assertAllowed: () => {},
+    onInterrupt: () => interrupted.resolve(),
+  });
+  const own = reserveSessionControllerSource(sessionKey, {
+    target,
+    policy: { mode: "followup" },
+    adapter: {
+      onSettled: async () => {
+        cleaning.resolve();
+        await cleanupFinish.promise;
+      },
+    },
+  });
+  const foreign = reserveSessionControllerSource(sessionKey, {
+    target: captureSessionTarget({ ...target, storeScope: storePath + ".foreign" }),
+    policy: { mode: "followup" },
+  });
+  let later: typeof own | undefined;
+  let completed = false;
+  const pending = killSubagentRunAdmin({
+    cfg: getRuntimeConfig(),
+    sessionKey,
+    expectedRunId: runId,
+  }).finally(() => {
+    completed = true;
+  });
+  try {
+    await interrupted.promise;
+    later = reserveSessionControllerSource(sessionKey, { target, policy: { mode: "followup" } });
+    admission.release();
+    await cleaning.promise;
+    expect(own.abortSignal.aborted).toBe(true);
+    expect(later.abortSignal.aborted).toBe(false);
+    expect(foreign.abortSignal.aborted).toBe(false);
+    expect(completed).toBe(false);
+    cleanupFinish.resolve();
+    expect(await pending).toMatchObject({ found: true, killed: true });
+    await own.settlement.promise;
+    expect(later.abortSignal.aborted).toBe(false);
+  } finally {
+    cleanupFinish.resolve();
+    admission.release();
+    await pending;
+    const inputs = [own, foreign, ...(later ? [later] : [])];
+    inputs.forEach(retireSessionControllerInput);
+    await Promise.all(inputs.map((input) => input.settlement.promise));
+  }
+});

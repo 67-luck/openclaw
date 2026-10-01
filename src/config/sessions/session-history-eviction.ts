@@ -1,8 +1,8 @@
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
-  collectActiveSessionWorkAdmissions,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  collectSessionControllerTargets,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import { runQueuedStoreWrite, type StoreWriterQueue } from "../../shared/store-writer-queue.js";
 import {
   isIncognitoOpenClawAgentSqlitePath,
@@ -150,7 +150,7 @@ export function collectAdmissionProtectedSessionIds(params: {
 }): Set<string> {
   return collectSessionAdmissionReferences({
     database: params.database,
-    admissionIdentities: [...(collectActiveSessionWorkAdmissions().get(params.storePath) ?? [])],
+    admissionIdentities: [...(collectSessionControllerTargets().get(params.storePath) ?? [])],
   });
 }
 
@@ -161,7 +161,7 @@ async function readHistoricalSessionIds(params: {
   storePath: string;
 }): Promise<string[]> {
   const input = {
-    admissionIdentities: [...(collectActiveSessionWorkAdmissions().get(params.storePath) ?? [])],
+    admissionIdentities: [...(collectSessionControllerTargets().get(params.storePath) ?? [])],
     preserveRecentMs: params.preserveRecentMs,
   };
   if (
@@ -402,7 +402,7 @@ async function enforceSessionHistoryMaintenanceForDatabase(
     if (usage.totalBytes <= highWaterBytes) {
       break;
     }
-    const eviction = await runExclusiveSessionLifecycleMutation({
+    const eviction = await runSessionMutation({
       scope: params.storePath,
       identities: [sessionId],
       run: async () => {
@@ -544,7 +544,7 @@ async function enforceSessionHistoryMaintenanceForDatabase(
         if (usage.totalBytes <= highWaterBytes) {
           break;
         }
-        const deletion = await runExclusiveSessionLifecycleMutation({
+        const deletion = await runSessionMutation({
           scope: params.storePath,
           identities: [candidate.sessionKey, candidate.entry.sessionId],
           run: async () =>

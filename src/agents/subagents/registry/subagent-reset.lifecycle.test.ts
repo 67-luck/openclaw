@@ -13,7 +13,6 @@ import {
   getFollowupQueueDepth,
 } from "../../../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../../../auto-reply/reply/queue.test-helpers.js";
-import { createReplyOperation } from "../../../auto-reply/reply/reply-run-registry.js";
 import { initSessionState } from "../../../auto-reply/reply/session.js";
 import { getRuntimeConfig } from "../../../config/config.js";
 import {
@@ -25,7 +24,8 @@ import {
 import { createChatAbortContext } from "../../../gateway/server-methods/chat.abort.test-helpers.js";
 import { sessionMutationHandlers } from "../../../gateway/server-methods/sessions-mutations.js";
 import { registerInternalHook, unregisterInternalHook } from "../../../hooks/internal-hooks.js";
-import { beginSessionWorkAdmission } from "../../../sessions/session-lifecycle-admission.js";
+import { createReplyOperation } from "../../../sessions/session-controller.js";
+import { beginSessionEffect } from "../../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { killAllControlledSubagentRuns, killSessionSubagentRuns } from "./subagent-control-kill.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
@@ -224,13 +224,13 @@ it.each(["chat", "rpc", "chat-rebind"] as const)(
     const parentInterrupted = createDeferredCore();
     const childInterrupted = createDeferredCore();
     const interruptChild = vi.fn(() => childInterrupted.resolve());
-    const parentAdmission = await beginSessionWorkAdmission({
+    const parentAdmission = await beginSessionEffect({
       scope: storePath,
       identities: [parentKey, "parent"],
       assertAllowed: () => {},
       onInterrupt: () => parentInterrupted.resolve(),
     });
-    const childAdmission = await beginSessionWorkAdmission({
+    const childAdmission = await beginSessionEffect({
       scope: storePath,
       identities: [childKey("draining"), "draining"],
       assertAllowed: () => {},
@@ -238,7 +238,7 @@ it.each(["chat", "rpc", "chat-rebind"] as const)(
     });
     const respond = vi.fn();
     const replacementInterrupted = createDeferredCore();
-    let replacementAdmission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+    let replacementAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
     const reset =
       boundary !== "rpc"
         ? initSessionState({
@@ -276,7 +276,7 @@ it.each(["chat", "rpc", "chat-rebind"] as const)(
           ...entry,
           sessionId: "replacement-parent",
         }));
-        replacementAdmission = await beginSessionWorkAdmission({
+        replacementAdmission = await beginSessionEffect({
           scope: storePath,
           identities: ["replacement-parent"],
           assertAllowed: () => {},

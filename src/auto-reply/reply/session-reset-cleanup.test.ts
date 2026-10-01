@@ -1,5 +1,6 @@
 // Tests session reset cleanup for stale files and persisted state.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   clearEmbeddedSessionPromptStates,
   getEmbeddedSessionPromptState,
@@ -11,7 +12,7 @@ import {
   resetSystemEventsForTest,
 } from "../../infra/system-events.js";
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
-import { createReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
+import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
 import { clearSessionResetRuntimeState } from "./session-reset-cleanup.js";
 
@@ -63,33 +64,45 @@ describe("clearSessionResetRuntimeState", () => {
     expect(peekSystemEvents("agent:beta:global")).toEqual(["beta"]);
   });
 
-  it("releases active reply work owned by the archived reset session id", () => {
+  it("retains archived reply custody until its actual producer returns", async () => {
     const cancel = vi.fn();
     const operation = createReplyOperation({
       sessionKey: "agent:main:slack:room:1",
       sessionId: "old-session",
       resetTriggered: false,
     });
-    operation.attachBackend({
-      kind: "embedded",
-      cancel,
-      isStreaming: () => false,
-    });
+    operation.attachBackend({ kind: "embedded", cancel, isStreaming: () => false });
     operation.setPhase("running");
-
-    clearSessionResetRuntimeState(["agent:main:slack:room:1", "old-session"], {
-      agentId: "main",
-      activeReplySessionId: "old-session",
-    });
-
-    expect(cancel).toHaveBeenCalledWith("restart");
-    expect(replyRunRegistry.isActive("agent:main:slack:room:1")).toBe(false);
-    const nextOperation = createReplyOperation({
-      sessionKey: "agent:main:slack:room:1",
-      sessionId: "new-session",
-      resetTriggered: false,
-    });
-    expect(nextOperation.sessionId).toBe("new-session");
+    const raw = createDeferred();
+    const producer = raw.promise.then(() => operation.complete());
+    try {
+      clearSessionResetRuntimeState(["agent:main:slack:room:1", "old-session"], {
+        agentId: "main",
+        activeReplySessionId: "old-session",
+      });
+      expect(cancel).toHaveBeenCalledWith("restart");
+      expect(replyRunRegistry.isActive("agent:main:slack:room:1")).toBe(true);
+      expect(() =>
+        createReplyOperation({
+          sessionKey: "agent:main:slack:room:1",
+          sessionId: "new-session",
+          resetTriggered: false,
+        }),
+      ).toThrow("already active");
+      raw.resolve();
+      await producer;
+      await operation.ownerSettlement;
+      const nextOperation = createReplyOperation({
+        sessionKey: "agent:main:slack:room:1",
+        sessionId: "new-session",
+        resetTriggered: false,
+      });
+      expect(nextOperation.sessionId).toBe("new-session");
+      nextOperation.complete();
+    } finally {
+      raw.resolve();
+      await producer;
+    }
   });
 
   it("does not clear a fresh active reply under the same key when only the archived id is reset", () => {

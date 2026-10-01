@@ -19,6 +19,8 @@ import {
 } from "../../logging/diagnostic-run-activity.js";
 import { getCurrentPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-snapshot.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { getCurrentSessionControllerOwner } from "../../sessions/session-controller.lifecycle.js";
+import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
 import {
   consumeCompactionSafeguardCancellation,
   getCompactionSafeguardRuntime,
@@ -321,12 +323,22 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           extraParams: effectiveExtraParams,
           apiKey: transportApiKey,
         });
+        const operation = getCurrentSessionControllerOwner();
         diagnosticOwner = createDiagnosticEmbeddedRunOwner({
+          watchdogAttempt: operation
+            ? operation.watchdog.attachAttempt({
+                assertCurrent: () => {
+                  params.abortSignal?.throwIfAborted();
+                  assertSessionControllerOperation(operation);
+                },
+              })
+            : undefined,
           sessionId: params.sessionId,
           ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
           runId: diagnosticCompactionRunId,
           workKey: diagnosticCompactionRunId,
         });
+        diagnosticOwner.watchdogAttempt?.setExecutionDeadline(Date.now() + compactionTimeoutMs);
         markDiagnosticEmbeddedRunStarted({
           sessionId: params.sessionId,
           ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),

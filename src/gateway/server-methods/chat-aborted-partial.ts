@@ -1,7 +1,7 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import type { ErrorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.types.js";
+import type { RpcSourceAdapter } from "../../sessions/session-controller.rpc-sources.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { broadcastChatError } from "./chat-broadcast.js";
@@ -63,7 +63,7 @@ export function captureAbortedPartial(params: {
   text: string;
   abortOrigin: ChatAbortOrigin;
   session?: ChatAbortSessionSnapshot;
-  resolveTerminalProducer?: ChatAbortControllerEntry["resolveTerminalProducer"];
+  resolveTerminalProducer?: RpcSourceAdapter["resolveTerminalProducer"];
 }) {
   const { runId, abortOrigin } = params;
   try {

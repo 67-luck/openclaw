@@ -19,7 +19,7 @@ import type {
 import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
 import { hasReplyPayloadContent } from "../../interactive/payload.js";
 import { parseThreadSessionSuffix } from "../../routing/session-key.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { CRON_DIRECT_DELIVERY_CONTEXT_KIND } from "../../shared/transcript-only-openclaw-assistant.js";
 import type { CronJob } from "../types.js";
@@ -614,7 +614,7 @@ export async function appendAdmittedDirectCronDeliveryTranscriptMirror(params: {
       ...(expectedLifecycleRevision ? { expectedLifecycleRevision } : {}),
     };
 
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: storePath,
       identities: [
         params.mirror.sessionKey,

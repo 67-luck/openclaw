@@ -95,9 +95,9 @@ describe("update-cli", () => {
   it.each([false, true])("admits non-TTY updates with an active session (yes=%s)", async (yes) => {
     setTty(false);
     setStdoutTty(false);
-    const { beginSessionWorkAdmission, getActiveSessionWorkAdmissionCount } =
-      await import("../sessions/session-lifecycle-admission.js");
-    const admission = await beginSessionWorkAdmission({
+    const { beginSessionEffect, getSessionControllerWorkCount } =
+      await import("../sessions/session-controller.lifecycle.js");
+    const admission = await beginSessionEffect({
       scope: path.join(resolveStateDir(), "agents", "main", "sessions", "sessions.json"),
       identities: ["agent:main:ssh-update", "ssh-update-session"],
       assertAllowed: () => {},
@@ -110,7 +110,7 @@ describe("update-cli", () => {
         "run",
       ]);
       vi.mocked(updateGitCheckout).mockImplementation(async ({ opts }) => {
-        expect(getActiveSessionWorkAdmissionCount()).toBe(1);
+        expect(getSessionControllerWorkCount()).toBe(1);
         await opts.inspectGitTarget({});
         await expectDefined(opts.beforeGitMutation, "Git mutation admission")({});
         return makeOkUpdateResult({ root: process.cwd() });
@@ -121,7 +121,7 @@ describe("update-cli", () => {
       expect(confirm).not.toHaveBeenCalled();
       expect(select).not.toHaveBeenCalled();
       expect(updateFailureActionMocks.runInteractiveUpdateFailureAction).not.toHaveBeenCalled();
-      expect(getActiveSessionWorkAdmissionCount()).toBe(1);
+      expect(getSessionControllerWorkCount()).toBe(1);
     } finally {
       admission.release();
     }

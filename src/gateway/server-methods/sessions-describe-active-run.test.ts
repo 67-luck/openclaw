@@ -8,6 +8,8 @@ import {
 } from "../../infra/agent-run-registry.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../chat-abort.js";
+import { claimRpcSourceForTest } from "../test-helpers.rpc-source.js";
+import { captureRpcTargetForTest } from "./rpc-source-fixtures.test-support.js";
 import { sessionByKeyReadHandlers } from "./sessions-read-by-key.js";
 import {
   identifiedClient,
@@ -84,7 +86,8 @@ it.each(["chat", "projected"] as const)(
       const chat =
         owner === "chat"
           ? registerChatAbortController({
-              chatAbortControllers: context.chatAbortControllers,
+              target: captureRpcTargetForTest({ sessionKey: key, sessionId, agentId: "main" }),
+              rpcSources: context.rpcSources,
               runId,
               sessionId,
               sessionKey: key,
@@ -93,6 +96,7 @@ it.each(["chat", "projected"] as const)(
               kind: "agent",
             })
           : undefined;
+      const releaseSource = chat?.entry ? await claimRpcSourceForTest(chat.entry) : undefined;
       registerAgentRunContext(runId, {
         sessionId,
         sessionKey: key,
@@ -107,6 +111,7 @@ it.each(["chat", "projected"] as const)(
         await assertActivity("queued", true);
         releaseCapacityWait?.();
         await assertActivity("running", true);
+        releaseSource?.();
         chat?.cleanup();
         clearAgentRunContext(runId);
         await assertActivity("done", false);
@@ -118,6 +123,7 @@ it.each(["chat", "projected"] as const)(
         await assertActivity("running", false);
       } finally {
         releaseCapacityWait?.();
+        releaseSource?.();
         chat?.cleanup();
         clearAgentRunContext(runId);
       }

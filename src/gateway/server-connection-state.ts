@@ -1,10 +1,14 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
-import { sessionChanges } from "../sessions/session-row-changes.js";
 // Gateway connection and run registries.
 // This state is transport-fed but can be constructed without HTTP or WebSocket servers.
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
+import {
+  isRpcSourceActive,
+  type RpcSourceIndex,
+  type RpcSourceRef,
+} from "../sessions/session-controller.rpc-sources.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createEventWebPushDelivery } from "./event-web-push.js";
 import { createMentionInbox } from "./mention-inbox.js";
 import { createPresenceRecipientProjection } from "./presence-projection.js";
@@ -169,7 +173,15 @@ export function createGatewayConnectionState(params: {
       const ancestors = projection.ancestorRows(record);
       const enrichment = { includeDerivedTitles: true, includeLastMessage: true };
       let projectedAgentRuns = projection.state.rowContext.projectedAgentRuns;
-      let registrations: (readonly [string, ChatAbortControllerEntry])[] = [];
+      let registrations: Array<{
+        runId: string;
+        ref: RpcSourceRef;
+        sessionKey: string;
+        sessionId: string;
+        agentId?: string;
+        active: boolean;
+        controlUiVisible?: boolean;
+      }> = [];
       let projectRun: ReturnType<typeof createVisibleActiveSessionRunProjector> | undefined;
       return (client) => {
         if (!projection.isCurrent(record)) {
@@ -177,29 +189,35 @@ export function createGatewayConnectionState(params: {
         }
         if (
           !projectRun ||
-          registrations.length !== chatAbortControllers.size ||
+          registrations.length !== rpcSources.size ||
           // Compare copied fields: registrations can mutate in place between recipients.
-          registrations.some(([runId, previous]) => {
-            const current = chatAbortControllers.get(runId);
+          registrations.some((previous) => {
+            const current = rpcSources.get(previous.runId);
             return (
-              !current ||
-              current.sessionKey !== previous.sessionKey ||
-              current.sessionId !== previous.sessionId ||
-              current.agentId !== previous.agentId ||
-              current.projectSessionActive !== previous.projectSessionActive ||
-              current.controlUiVisible !== previous.controlUiVisible
+              current !== previous.ref ||
+              current.adapter.sessionKey !== previous.sessionKey ||
+              current.adapter.sessionId !== previous.sessionId ||
+              current.adapter.agentId !== previous.agentId ||
+              isRpcSourceActive(current) !== previous.active ||
+              current.adapter.controlUiVisible !== previous.controlUiVisible
             );
           }) ||
           projectedAgentRuns !== projection.state.rowContext.projectedAgentRuns
         ) {
-          registrations = Array.from(chatAbortControllers, ([runId, entry]) => [
+          registrations = Array.from(rpcSources, ([runId, ref]) => ({
             runId,
-            { ...entry },
-          ]);
+            ref,
+            sessionKey: ref.adapter.sessionKey,
+            sessionId: ref.adapter.sessionId,
+            agentId: ref.adapter.agentId,
+            active: isRpcSourceActive(ref),
+            controlUiVisible: ref.adapter.controlUiVisible,
+          }));
           projectedAgentRuns = projection.state.rowContext.projectedAgentRuns;
           projectRun = createVisibleActiveSessionRunProjector(
-            { chatAbortControllers: new Map(registrations) },
+            { rpcSources },
             projectedAgentRuns,
+            registrations.map(({ runId, ref }) => [runId, ref] as const),
           );
         }
         const presentation = presentRecipient(client, projectRun);
@@ -305,8 +323,7 @@ export function createGatewayConnectionState(params: {
   const chatRunRegistry = chatRunState.registry;
   const addChatRun = chatRunRegistry.add;
   const removeChatRun = chatRunRegistry.remove;
-  const chatAbortControllers = new Map<string, ChatAbortControllerEntry>();
-  const chatQueuedTurns = new Map<string, import("./chat-queued-turns.js").QueuedChatTurnEntry>();
+  const rpcSources: RpcSourceIndex = new Map();
   const toolEventRecipients = chatRunState.toolEventRecipients;
 
   return {
@@ -340,8 +357,7 @@ export function createGatewayConnectionState(params: {
     chatRunState,
     addChatRun,
     removeChatRun,
-    chatAbortControllers,
-    chatQueuedTurns,
+    rpcSources,
     toolEventRecipients,
     sessionEventSubscribers,
     sessionMessageSubscribers,

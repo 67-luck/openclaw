@@ -6,7 +6,7 @@ import {
   registerReplyOperationSuccessorBarrier,
   ReplyRunSuccessorAdmissionBlockedError,
   waitForReplyRunSuccessorAdmission,
-} from "./reply-run-registry.js";
+} from "../../sessions/session-controller.js";
 import { createTestReplyOperation } from "./reply-run-registry.test-helpers.js";
 import { testing } from "./reply-run-registry.test-support.js";
 

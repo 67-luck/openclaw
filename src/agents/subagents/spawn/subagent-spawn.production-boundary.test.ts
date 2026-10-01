@@ -27,7 +27,8 @@ import {
 import { withTimeout } from "../../../infra/fs-safe.js";
 import { getActivePluginRegistry } from "../../../plugins/runtime.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
-import { beginSessionWorkAdmission } from "../../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../../sessions/session-controller.lifecycle.js";
+import { isRpcSourceExecuting } from "../../../sessions/session-controller.rpc-sources.js";
 import { createTestRegistry } from "../../../test-utils/channel-plugins.js";
 import {
   createOpenClawTestState,
@@ -79,8 +80,10 @@ const runEmbeddedAgent = vi.hoisted(() =>
 );
 
 vi.mock("../../embedded-agent.js", async () => {
-  const { abortEmbeddedAgentRun, isEmbeddedAgentRunActive, waitForEmbeddedAgentRunEnd } =
+  const { abortEmbeddedAgentRun, waitForEmbeddedAgentRunEnd } =
     await import("../../embedded-agent-runner/runs.js");
+  const { isSessionRunActive: isEmbeddedAgentRunActive } =
+    await import("../../../sessions/session-controller.queries.js");
   return {
     abortEmbeddedAgentRun,
     isEmbeddedAgentRunActive,
@@ -250,7 +253,7 @@ function readBoundExecutionState(
   const receipt = childRunId ? context.dedupe.get(`agent:${childRunId}`) : undefined;
   const payload = asOptionalRecord(receipt?.payload);
   const cause = asOptionalRecord(asOptionalRecord(receipt?.error)?.cause);
-  const controller = childRunId ? context.chatAbortControllers.get(childRunId) : undefined;
+  const controller = childRunId ? context.rpcSources.get(childRunId) : undefined;
   const execution = childRunId ? subagentRuns.get(childRunId)?.execution : undefined;
   const collector = childRunId ? subagentRuns.get(childRunId) : undefined;
   const label = (value: unknown, allowed: readonly string[]) =>
@@ -271,8 +274,8 @@ function readBoundExecutionState(
       "FailoverError",
     ]),
     controllerPresent: controller !== undefined,
-    controllerAborted: controller?.controller.signal.aborted,
-    executionStarted: controller?.executionStarted,
+    controllerAborted: controller?.input.abortSignal.aborted,
+    executionStarted: isRpcSourceExecuting(controller),
     executionStatus: label(execution?.status, ["queued", "running", "interrupted", "terminal"]),
     runStatus: label(
       childRunId ? resolveSubagentSessionStatus(subagentRuns.get(childRunId)) : undefined,
@@ -325,7 +328,7 @@ async function closeBoundGateway(
       () => {
         expect(bound.execution.hasPendingWork).toBe(false);
         if (childRunId) {
-          expect(bound.context.chatAbortControllers.has(childRunId)).toBe(false);
+          expect(bound.context.rpcSources.has(childRunId)).toBe(false);
         }
         // Fence new work in the same turn that observes idle; never start an unbounded drain.
         return bound.execution.drain();
@@ -475,7 +478,7 @@ describe("recursive spawn production boundary", () => {
         provider: "custom",
         model: "child-model",
       });
-      expect(context.chatAbortControllers.get(details.runId)).toMatchObject({
+      expect(context.rpcSources.get(details.runId)?.adapter).toMatchObject({
         agentId: "main",
         sessionKey: details.childSessionKey,
         operationalRunInstance: { runId: details.runId },
@@ -683,7 +686,7 @@ describe("recursive spawn production boundary", () => {
             );
           }
           expect(runEmbeddedAgent).not.toHaveBeenCalled();
-          expect(context.chatAbortControllers.has(childRunId)).toBe(false);
+          expect(context.rpcSources.has(childRunId)).toBe(false);
           expect(
             loadSessionEntry({ storePath: bound.storePath, sessionKey: parentSessionKey }),
           ).toMatchObject({ sessionId: "parent-session" });
@@ -701,7 +704,7 @@ describe("recursive spawn production boundary", () => {
         if (parentState === "stopped" || parentState === "operator-stopped") {
           await Promise.resolve();
           expect(runEmbeddedAgent).not.toHaveBeenCalled();
-          expect(context.chatAbortControllers.has(childRunId)).toBe(false);
+          expect(context.rpcSources.has(childRunId)).toBe(false);
           expect(subagentRuns.get(childRunId)).toMatchObject({
             collectorCompletion: { status: "killed" },
           });
@@ -711,7 +714,7 @@ describe("recursive spawn production boundary", () => {
             runId: childRunId,
             sessionKey: details.childSessionKey,
           });
-          expect(context.chatAbortControllers.get(childRunId)).toMatchObject({
+          expect(context.rpcSources.get(childRunId)?.adapter).toMatchObject({
             sessionKey: details.childSessionKey,
             operationalRunInstance: { runId: childRunId },
           });
@@ -798,7 +801,7 @@ describe("recursive spawn production boundary", () => {
     const errors: unknown[] = [];
     const failures: unknown[] = [];
     const interrupted = createDeferred();
-    let work: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+    let work: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
     const caller = createAdmittedGatewayToolCallerIdentity({
       admittedRunContext: bound.admitted,
       agentId: "main",
@@ -842,7 +845,7 @@ describe("recursive spawn production boundary", () => {
       );
     try {
       if (target === "worker-reassigned-during-delete") {
-        work = await beginSessionWorkAdmission({
+        work = await beginSessionEffect({
           scope: bound.storePath,
           identities: [childSessionKey, original.sessionId],
           assertAllowed: () => {},

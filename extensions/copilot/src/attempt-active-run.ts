@@ -154,6 +154,7 @@ export function registerCopilotActiveRun(params: {
     params.input.sessionKey,
     params.input.sessionFile,
     params.agentId,
+    params.input.replyOperation,
   );
   params.input.replyOperation?.attachBackend(activeRunHandle);
   return activeRunHandle;

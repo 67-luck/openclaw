@@ -149,6 +149,9 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                       onVisible: (payload) => {
                         if (hasOutboundReplyContent(payload, { trimText: true })) {
                           didDeliverVisiblePartialReply = true;
+                          state
+                            .getDispatchReplyOperation()
+                            ?.watchdog.progress("finalization", "reply:partial_delivered");
                         }
                       },
                     }),

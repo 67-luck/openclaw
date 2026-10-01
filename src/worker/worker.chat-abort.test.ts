@@ -16,6 +16,7 @@ import {
   invokeChatAbortHandler,
 } from "../gateway/server-methods/chat.abort.test-helpers.js";
 import { coreGatewayHandlers } from "../gateway/server-methods/core-handlers.js";
+import { claimRpcSourceForTest } from "../gateway/test-helpers.rpc-source.js";
 import { hashWorkerCredential } from "../gateway/worker-environments/credential.js";
 import { projectWorkerSessionTurnClaim } from "../gateway/worker-environments/placement-record.js";
 import { createWorkerTurnRunOwner } from "../gateway/worker-environments/worker-turn-run-owner.js";
@@ -29,6 +30,7 @@ import {
   getActiveAgentRunDelegatedAuthority,
   getAgentRunContext,
 } from "../infra/agent-run-registry.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
 import { runWorkerCommand } from "./worker-command.runtime.js";
 import {
   ComposedGatewayHarness,
@@ -94,7 +96,13 @@ describe("worker chat.abort settlement", () => {
         throw new Error("managed worker turn has no admitted authority");
       }
       const registration = registerChatAbortController({
-        chatAbortControllers: context.chatAbortControllers,
+        rpcSources: context.rpcSources,
+        target: captureSessionTarget({
+          storeScope: harness.sessionTarget.storePath,
+          sessionKey: SESSION_KEY,
+          incarnation: SESSION_ID,
+          agentId: "main",
+        }),
         runId: RUN_ID,
         sessionId: SESSION_ID,
         sessionKey: SESSION_KEY,
@@ -106,8 +114,16 @@ describe("worker chat.abort settlement", () => {
         timeoutMs: 60_000,
         kind: "chat-send",
       });
+      if (!registration.registered) {
+        throw new Error("expected managed worker RPC source");
+      }
       registration.bindAgentRunDelegatedAuthority(authority);
-      registration.markExecutionStarted();
+      const releaseSource = await claimRpcSourceForTest(registration.entry);
+      const operation = registration.entry.input.claim?.operation;
+      if (!operation) {
+        throw new Error("expected admitted worker operation");
+      }
+      expect(registration.markExecutionStarted()).toBe(true);
       const owner = createWorkerTurnRunOwner({
         placements: harness.placementStore,
         claim: claim!,
@@ -125,6 +141,7 @@ describe("worker chat.abort settlement", () => {
           config: harness.cfg,
           lifecycleGeneration,
           abortSignal: registration.controller.signal,
+          replyOperation: operation,
         },
       });
       const providerRelease = createDeferred<WorkerInferenceTerminalOutcome>();
@@ -349,6 +366,8 @@ describe("worker chat.abort settlement", () => {
         owner.signal.removeEventListener("abort", cancelWorker);
         owner.dispose();
         registration.cleanup();
+        releaseSource();
+        await registration.entry.input.settlement.promise;
         unsubscribe();
         if (previousConfig) {
           setRuntimeConfigSnapshot(previousConfig, previousSourceConfig ?? undefined);

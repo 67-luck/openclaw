@@ -27,7 +27,10 @@ import { resolveSessionPublicShare } from "../../config/sessions/session-public-
 import { listSessionMembersInWorker } from "../../config/sessions/session-sharing-store.js";
 import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import {
+  captureSessionTarget,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import { listProfiles } from "../../state/user-profiles.js";
 import {
   loadPublicSessionShareTokenCodec,
@@ -65,9 +68,15 @@ function runExclusiveSharingMutation<T>(
 ): Promise<T> {
   // Sharing and lifecycle mutations share one exact-row fence so authorization
   // cannot change between archive's stop and commit boundaries.
-  return runExclusiveSessionLifecycleMutation({
-    scope: target.storePath,
-    identities: [target.canonicalKey, target.storeKey, ...target.storeKeys, target.entry.sessionId],
+  return runSessionMutation({
+    target: captureSessionTarget({
+      storeScope: target.storePath,
+      sessionKey: target.canonicalKey,
+      aliases: [target.storeKey, ...target.storeKeys],
+      incarnation: target.entry.sessionId,
+      agentId: target.agentId,
+    }),
+    policy: "allow-live",
     run,
   });
 }

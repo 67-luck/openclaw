@@ -12,11 +12,13 @@ import {
   normalizeMainKey,
   parseAgentSessionKey,
 } from "../../../routing/session-key.js";
-import { resolveActiveEmbeddedRunSessionId } from "../../embedded-agent-runner/active-run-projections.js";
+import {
+  resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId,
+  isSessionRunActive as isEmbeddedAgentRunActive,
+} from "../../../sessions/session-controller.queries.js";
 import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runner/run-state.js";
 import {
   formatEmbeddedAgentQueueFailureSummary,
-  isEmbeddedAgentRunActive,
   queueEmbeddedAgentMessageWithOutcomeAsync,
   queueGuardedEmbeddedAgentMessageWithOutcomeAsync,
   resolveEmbeddedRunAbandonment,

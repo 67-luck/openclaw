@@ -1,4 +1,5 @@
 // Tests media-only get-reply runs and sandboxed media attachment handling.
+
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
@@ -23,6 +24,7 @@ import {
 } from "../../agents/tools/gateway-caller-context.js";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { AgentRuntimeIdentity } from "../../gateway/agent-runtime-identity-token.js";
 import {
   getCronManagementAuthority,
@@ -42,7 +44,15 @@ import {
   resetSystemEventsForTest,
 } from "../../infra/system-events.js";
 import { MESSAGE_TOOL_ONLY_DELIVERY_HINT } from "../../plugin-sdk/message-tool-delivery-hints.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import {
+  REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
+  createReplyOperation,
+} from "../../sessions/session-controller.js";
+import {
+  beginSessionEffect,
+  captureSessionTarget,
+} from "../../sessions/session-controller.lifecycle.js";
+import { listActiveReplyRunSessionKeys } from "../../sessions/session-controller.registry.js";
 import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { hasControlCommand } from "../command-detection.js";
@@ -66,6 +76,7 @@ import {
   ownerParams,
   requireMockCallArg,
 } from "./get-reply-run.test-support.js";
+import { registerPreparedReplyThinkingCases } from "./get-reply-run.thinking.cases.js";
 import { buildDirectChatContext, buildGroupChatContext, buildGroupIntro } from "./groups.js";
 import { finalizeInboundContext } from "./inbound-context.js";
 import {
@@ -75,8 +86,6 @@ import {
 } from "./inbound-meta.js";
 import { prepareReplyConversation } from "./prompt-session-context.js";
 import { resolveFollowupAbortSignal } from "./queue/types.js";
-import { REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS, createReplyOperation } from "./reply-run-registry.js";
-import { getActiveReplyRunCount } from "./reply-run-registry.registry.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
 import { routeReply } from "./route-reply.runtime.js";
 import { drainFormattedSystemEvents } from "./session-system-events.js";
@@ -88,6 +97,11 @@ import {
 import { buildChannelSourceTurnId } from "./source-turn-id.js";
 import { withReplySystemEventContext } from "./system-event-session-key.js";
 import { resolveTypingMode } from "./typing-mode.js";
+
+export type PreparedReplyThinkingFixture = {
+  runPrepared: typeof runPrepared;
+  requireRunReplyAgentCall: typeof requireRunReplyAgentCall;
+};
 
 vi.mock("../../agents/auth-profiles/session-override.js", () => ({
   resolveSessionAuthSelection: vi.fn().mockResolvedValue(undefined),
@@ -274,7 +288,6 @@ vi.mock("../../globals.js", () => ({
 }));
 
 vi.mock("../../process/command-queue.js", () => ({
-  clearCommandLane: vi.fn().mockReturnValue(0),
   getQueueSize: vi.fn().mockReturnValue(0),
 }));
 
@@ -377,6 +390,26 @@ function createGatewayDrainingError(): Error {
 
 const ROOM_EVENT_MESSAGE_TOOL_DIRECTIVE =
   "Treat this message as observed room activity, not a request. You were not explicitly tagged or mentioned in this room event. Default: stay silent. Only respond if you have something useful, substantial, or important to add. A previous mention or reply is not an invitation to keep talking. To respond visibly, use message(action=send); your final text here stays private either way.";
+
+const activePreparedFixtures: ReturnType<typeof createReplyOperation>[] = [];
+function activatePreparedRun(sessionKey = "session-key") {
+  const operation = createReplyOperation({
+    sessionKey,
+    sessionId: "active-session",
+    resetTriggered: false,
+  });
+  operation.setPhase("running");
+  activePreparedFixtures.push(operation);
+  return operation;
+}
+function preparedTarget(sessionId: string) {
+  return captureSessionTarget({
+    storeScope: resolveSessionStorePathCore(undefined, { agentId: "default" }),
+    sessionKey: "session-key",
+    incarnation: sessionId,
+    agentId: "default",
+  });
+}
 
 function runPrepared(overrides: Partial<Parameters<typeof runPreparedReply>[0]> = {}) {
   return runPreparedReply(baseParams(overrides));
@@ -775,6 +808,10 @@ describe("runPreparedReply media-only handling", () => {
   });
 
   afterEach(async () => {
+    for (const operation of activePreparedFixtures.splice(0)) {
+      operation.complete();
+      await operation.ownerSettlement;
+    }
     vi.useRealTimers();
     resetSystemEventsForTest();
     expect(preparedReplyMockState.unexpectedCalls).toEqual([]);
@@ -902,117 +939,7 @@ describe("runPreparedReply media-only handling", () => {
     );
   });
 
-  it("hydrates runtime thinking metadata before trusting static provider support", async () => {
-    const resolveThinkingCatalog = vi.fn(async () => [
-      {
-        provider: "openai",
-        id: "chat-latest",
-        reasoning: false,
-      },
-    ]);
-
-    await runPrepared({
-      provider: "openai",
-      model: "chat-latest",
-      resolvedThinkLevel: "high",
-      modelState: {
-        resolveDefaultThinkingLevel: async () => "high",
-        resolveThinkingCatalog,
-        allowedModelCatalog: [
-          {
-            provider: "openai",
-            id: "chat-latest",
-            name: "Chat Latest",
-          },
-        ],
-      } as never,
-    });
-
-    expect(resolveThinkingCatalog).toHaveBeenCalledOnce();
-    const call = requireRunReplyAgentCall();
-    expect(call.followupRun.run.thinkLevel).toBe("off");
-    expect(call.followupRun.run.thinkingCatalog).toEqual([
-      {
-        provider: "openai",
-        id: "chat-latest",
-        reasoning: false,
-      },
-    ]);
-  });
-
-  it("reports unsupported explicit one-turn thinking overrides", async () => {
-    const result = await runPrepared({
-      provider: "openai",
-      model: "chat-latest",
-      resolvedThinkLevel: "xhigh",
-      opts: { thinkingLevelOverride: "xhigh" },
-      modelState: {
-        resolveDefaultThinkingLevel: async () => "high",
-        resolveThinkingCatalog: async () => [
-          {
-            provider: "openai",
-            id: "chat-latest",
-            reasoning: false,
-          },
-        ],
-        allowedModelCatalog: [
-          {
-            provider: "openai",
-            id: "chat-latest",
-            name: "Chat Latest",
-          },
-        ],
-      } as never,
-    });
-
-    expect(Array.isArray(result) ? undefined : result?.text).toContain(
-      'Thinking level "xhigh" is not supported',
-    );
-    expect(runReplyAgent).not.toHaveBeenCalled();
-  });
-
-  it("does not persist turn-local thinking fallback over a stored session override", async () => {
-    const sessionEntry: SessionEntry = {
-      sessionId: "session-thinking",
-      sessionFile: "/tmp/session-thinking.jsonl",
-      thinkingLevel: "high",
-      updatedAt: 1,
-    };
-    const sessionStore: Record<string, SessionEntry> = {
-      "session-key": sessionEntry,
-    };
-
-    await runPrepared({
-      provider: "openai",
-      model: "chat-latest",
-      resolvedThinkLevel: "high",
-      sessionEntry,
-      sessionStore,
-      storePath: "/tmp/openclaw-sessions.json",
-      modelState: {
-        resolveDefaultThinkingLevel: async () => "high",
-        resolveThinkingCatalog: async () => [
-          {
-            provider: "openai",
-            id: "chat-latest",
-            reasoning: false,
-          },
-        ],
-        allowedModelCatalog: [
-          {
-            provider: "openai",
-            id: "chat-latest",
-            name: "Chat Latest",
-          },
-        ],
-      } as never,
-    });
-
-    const call = requireRunReplyAgentCall();
-    expect(call.followupRun.run.thinkLevel).toBe("off");
-    expect(sessionEntry.thinkingLevel).toBe("high");
-    expect(sessionStore["session-key"]?.thinkingLevel).toBe("high");
-  });
+  registerPreparedReplyThinkingCases({ runPrepared, requireRunReplyAgentCall });
 
   it.each(["automatic", "message_tool_only"] as const)(
     "keeps heartbeat replies optional with %s transport",
@@ -1327,6 +1254,7 @@ describe("runPreparedReply media-only handling", () => {
         channel,
       } as never;
 
+      activatePreparedRun(params.sessionKey);
       await runPreparedReply(params);
 
       expect(queueSettings.resolveQueueSettings).toHaveBeenCalledWith(
@@ -2304,9 +2232,16 @@ describe("runPreparedReply media-only handling", () => {
       const sharedPath = "/tmp/shared-media-index.png";
       const sessionId = "prepared-media-index-session";
       const queueSettings = await import("./queue/settings-runtime.js");
-      vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
+      vi.mocked(queueSettings.resolveQueueSettings)
+        .mockReturnValueOnce({ mode: "interrupt" })
+        .mockReturnValueOnce({ mode: "interrupt" });
       const previousRun = wait
-        ? createReplyOperation({ sessionId, sessionKey: "session-key", resetTriggered: false })
+        ? createReplyOperation({
+            sessionId,
+            sessionKey: "session-key",
+            resetTriggered: false,
+            target: preparedTarget(sessionId),
+          })
         : undefined;
       previousRun?.setPhase("running");
       resolveCurrentTurnImagesMock.mockResolvedValueOnce({
@@ -2326,7 +2261,11 @@ describe("runPreparedReply media-only handling", () => {
             { path: sharedPath, contentType: "image/png" },
           ],
         },
-        sessionCtx: createSessionTurn("inspect both images", "webchat", "direct"),
+        sessionCtx: {
+          ...createSessionTurn("inspect both images", "webchat", "direct"),
+          SessionKey: "session-key",
+          AgentId: "default",
+        },
       });
       try {
         if (previousRun) {
@@ -2422,7 +2361,7 @@ describe("runPreparedReply media-only handling", () => {
     const { resolveSessionAuthSelection } =
       await import("../../agents/auth-profiles/session-override.js");
     const sessionId = "reply-operation-auth-failure";
-    const activeBefore = getActiveReplyRunCount();
+    const activeBefore = listActiveReplyRunSessionKeys().length;
     vi.mocked(resolveSessionAuthSelection).mockRejectedValueOnce(new Error("auth failed"));
 
     await expect(
@@ -2431,7 +2370,7 @@ describe("runPreparedReply media-only handling", () => {
       }),
     ).rejects.toThrow("auth failed");
 
-    expect(getActiveReplyRunCount()).toBe(activeBefore);
+    expect(listActiveReplyRunSessionKeys().length).toBe(activeBefore);
   });
 
   it.each([false, true])(
@@ -2512,7 +2451,7 @@ describe("runPreparedReply media-only handling", () => {
       () => embeddedRunActive,
     );
     let releaseActiveAdmission = () => {};
-    const activeAdmission = await beginSessionWorkAdmission({
+    const activeAdmission = await beginSessionEffect({
       scope: storePath,
       identities: ["session-key", "session-embedded-only"],
       assertAllowed: () => {},
@@ -2549,7 +2488,7 @@ describe("runPreparedReply media-only handling", () => {
       const queueSettings = await import("./queue/settings-runtime.js");
       const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
       const storePath = "/tmp/recovery-admission-sessions.json";
-      const recoveryAdmission = await beginSessionWorkAdmission({
+      const recoveryAdmission = await beginSessionEffect({
         scope: storePath,
         identities: ["session-key", "session-recovery-starting"],
         owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
@@ -2810,6 +2749,7 @@ describe("runPreparedReply media-only handling", () => {
       sessionId: "session-active",
       sessionKey: "session-key",
       resetTriggered: false,
+      target: preparedTarget("session-active"),
     });
     activeOperation.attachBackend({
       kind: "embedded",
@@ -2821,10 +2761,11 @@ describe("runPreparedReply media-only handling", () => {
         resetTriggered: true,
         isNewSession: true,
         sessionId: "session-reset-new",
+        sessionCtx: { ...baseParams().sessionCtx, SessionKey: "session-key", AgentId: "default" },
       });
 
       expect(result).toEqual({ text: "ok" });
-      expect(commandQueue.clearCommandLane).toHaveBeenCalledWith("session:session-key");
+      await expect(activeOperation.ownerSettlement).resolves.toBeUndefined();
       expect(embeddedAgentRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
       expect(activeOperation.result).toEqual({
         kind: "aborted",
@@ -2840,6 +2781,7 @@ describe("runPreparedReply media-only handling", () => {
     }
   });
   it("does not enable steering for active heartbeat runs", async () => {
+    activatePreparedRun();
     const queueSettings = await import("./queue/settings-runtime.js");
     const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({
@@ -3079,7 +3021,6 @@ describe("runPreparedReply media-only handling", () => {
     const sessionStore: Record<string, SessionEntry> = {
       "session-key": {
         sessionId: "existing-session",
-        sessionFile: "/tmp/existing-session.jsonl",
         updatedAt: 1,
       },
     };
@@ -3132,7 +3073,8 @@ describe("runPreparedReply media-only handling", () => {
 
       const call = requireLastRunReplyAgentCall();
       expect(call.replyOperation).toBe(operation);
-      expect(commandQueue.clearCommandLane).not.toHaveBeenCalled();
+      expect(operation.abortSignal.aborted).toBe(false);
+      expect(operation.result?.kind).not.toBe("aborted");
       expect(embeddedAgentRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
     } finally {
       operation.complete();
@@ -3149,7 +3091,6 @@ describe("runPreparedReply media-only handling", () => {
     const sessionStore: Record<string, SessionEntry> = {
       "session-key": {
         sessionId: "session-auth-profile",
-        sessionFile: "/tmp/session-auth-profile.jsonl",
         authProfileOverride: "profile-before-wait",
         authProfileOverrideSource: "auto",
         updatedAt: 1,
@@ -3209,7 +3150,6 @@ describe("runPreparedReply media-only handling", () => {
     const sessionStore: Record<string, SessionEntry> = {
       "session-key": {
         sessionId: "session-before-rotation",
-        sessionFile: "/tmp/session-before-rotation.jsonl",
         updatedAt: 1,
       },
     };
@@ -3239,7 +3179,6 @@ describe("runPreparedReply media-only handling", () => {
     sessionStore["session-key"] = {
       ...sessionStore["session-key"],
       sessionId: "session-after-rotation",
-      sessionFile: "/tmp/session-after-rotation.jsonl",
       updatedAt: 2,
     };
     rotatedRun.updateSessionId("session-after-rotation");
@@ -3537,6 +3476,7 @@ describe("runPreparedReply media-only handling", () => {
   });
 
   it("queues active room events as followups instead of steering fake prompts", async () => {
+    activatePreparedRun();
     const queueSettings = await import("./queue/settings-runtime.js");
     const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     const abortController = new AbortController();
@@ -3580,6 +3520,7 @@ describe("runPreparedReply media-only handling", () => {
   });
 
   it("uses queued followup abort ownership instead of borrowed active-lane abort ownership", async () => {
+    activatePreparedRun();
     const queueSettings = await import("./queue/settings-runtime.js");
     const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     const activeLaneAbortController = new AbortController();
@@ -3623,6 +3564,7 @@ describe("runPreparedReply media-only handling", () => {
   });
 
   it("detaches queued user requests from superseded source abort signals", async () => {
+    activatePreparedRun();
     const queueSettings = await import("./queue/settings-runtime.js");
     const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     const abortController = new AbortController();
@@ -3672,6 +3614,7 @@ describe("runPreparedReply media-only handling", () => {
   });
 
   it("queues active room events instead of interrupting active user requests", async () => {
+    activatePreparedRun();
     const queueSettings = await import("./queue/settings-runtime.js");
     const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({
@@ -4194,10 +4137,7 @@ describe("runPreparedReply media-only handling", () => {
         isNewSession: false,
         systemSent: true,
         sessionEntry,
-        ctx: {
-          ...createInboundTurn("@bot check this", "telegram", "group"),
-          MessageSid: "msg-2",
-        },
+        ctx: { ...createInboundTurn("@bot check this", "telegram", "group"), MessageSid: "msg-2" },
         sessionCtx: {
           ...createSessionTurn("@bot check this", "telegram", "group"),
           MessageSid: "msg-2",

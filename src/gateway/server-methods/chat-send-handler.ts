@@ -272,7 +272,7 @@ async function handleChatSendWithOptions(
           !userTurnRecorder.isPendingInputConsumed?.();
         const disposition =
           activeRunAbort.controller.signal.aborted &&
-          activeRunAbort.entry?.abortStopReason !== "restart" &&
+          activeRunAbort.entry?.adapter.abortStopReason !== "restart" &&
           !isAgentRunRestartAbortReason(activeRunAbort.controller.signal.reason)
             ? "cancelled"
             : "interrupted";
@@ -280,7 +280,7 @@ async function handleChatSendWithOptions(
         if (pending && activeRunAbort.controller.signal.aborted) {
           const reason = resolveChatAbortDiagnosticReason(
             activeRunAbort.controller.signal,
-            activeRunAbort.entry,
+            activeRunAbort.entry?.adapter,
           );
           context.logGateway.info(`chat pending input aborted: ${reason} (${disposition})`, {
             runId: clientRunId,
@@ -415,14 +415,14 @@ async function handleChatSendWithOptions(
       }
       if (lifecycleGeneration !== getAgentEventLifecycleGeneration()) {
         if (activeRunAbort.entry) {
-          activeRunAbort.entry.abortStopReason = "restart";
+          activeRunAbort.entry.adapter.abortStopReason = "restart";
         }
         activeRunAbort.controller.abort(createAgentRunRestartAbortError());
       }
       if (activeRunAbort.controller.signal.aborted) {
         if (
           !(await terminalizeRestartSafeAdmission({
-            retryable: activeRunAbort.entry?.abortStopReason === "restart",
+            retryable: activeRunAbort.entry?.adapter.abortStopReason === "restart",
             status: "killed",
           }))
         ) {
@@ -475,6 +475,7 @@ async function handleChatSendWithOptions(
     }
     const beginCapturedMessageInjection = createChatSendMessageInjectionStarter({
       operatorAuthority: admitted.value.operatorAuthority,
+      sourceRef: admitted.value.sourceRef,
       target: messageInjectionTarget,
       abortSignal: activeRunAbort.controller.signal,
       request: normalizedRequest.value,
@@ -507,7 +508,7 @@ async function handleChatSendWithOptions(
     }
     assertInputAdmissionCurrent();
     let messageInjectionAttempt =
-      !p.replyToId || preAckReplyContextPromise ? beginCapturedMessageInjection() : undefined;
+      !p.replyToId || preAckReplyContextPromise ? await beginCapturedMessageInjection() : undefined;
     const preAckInjection = await settleChatSendPreAckMessageInjection({
       attempt: messageInjectionAttempt,
       isAborted: () => activeRunAbort.controller.signal.aborted,

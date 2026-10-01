@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import { resolveActiveEmbeddedRunSessionId } from "../../agents/embedded-agent-runner/active-run-projections.js";
 import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
 import {
   isRestartRecoveryTombstone,
@@ -17,11 +16,27 @@ import {
 import { logVerbose } from "../../globals.js";
 import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
 import {
-  runExclusiveSessionLifecycleMutation,
-  type SessionWorkAdmissionLease,
-} from "../../sessions/session-lifecycle-admission.js";
+  replyRunRegistry,
+  type ReplyOperation,
+  waitForReplyBarrierSettlement,
+} from "../../sessions/session-controller.js";
+import {
+  runSessionMutation,
+  type SessionEffectRef,
+} from "../../sessions/session-controller.lifecycle.js";
+import {
+  claimSessionControllerTask,
+  releaseSessionControllerClaim,
+  tryClaimSessionControllerTask,
+  trackSessionControllerSourceWork,
+} from "../../sessions/session-controller.mailbox.js";
 import { classifySessionStateActor } from "../../sessions/session-state-events.js";
-import { isNativeCommandTurn } from "../command-turn-context.js";
+import {
+  isNativeCommandTurn,
+  resolveCommandTurnContext,
+  resolveCommandTurnTargetSessionKey,
+} from "../command-turn-context.js";
+import { isActiveRunSafeCommandTurn } from "../commands-registry.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import {
   createAbortAwareDispatcher,
@@ -36,20 +51,20 @@ import { loadSessionStoreEntry } from "./dispatch-from-config.runtime.js";
 import { createReplyTurnLedger } from "./dispatch-from-config.turn-ledger.js";
 import type { DispatchFromConfigParams } from "./dispatch-from-config.types.js";
 import { DispatchSessionRefreshRequiredError } from "./dispatch-session-refresh-error.js";
+import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
 import { waitForReplyDispatcherIdle } from "./reply-dispatcher.js";
 import type { ReplyDispatcher } from "./reply-dispatcher.types.js";
 import { resolveReplyOperationRunState } from "./reply-operation-run-state.js";
-import {
-  forceClearReplyRunBySessionId,
-  replyRunRegistry,
-  type ReplyOperation,
-  waitForReplyBarrierSettlement,
-} from "./reply-run-registry.js";
+import { readReplySourceInput } from "./reply-source-binding.js";
 import {
   admitReplyTurn,
   resolveReplyTurnKind,
   runWithReplyOperationLifecycleAdmission,
 } from "./reply-turn-admission.js";
+import {
+  isExplicitSourceReplyCommand,
+  isUnauthorizedTextSlashCommand,
+} from "./source-reply-delivery-mode.js";
 
 type DispatchReplyOperationAcquisition =
   | { status: "ready" }
@@ -114,7 +129,7 @@ async function restoreArchivedDispatchSession(params: {
       return false;
     }
   };
-  return await runExclusiveSessionLifecycleMutation({
+  return await runSessionMutation({
     scope: storePath,
     identities: [sessionKey, snapshotSessionId],
     run: async () => {
@@ -174,7 +189,7 @@ export function createDispatchReplyOperationCoordinator(params: {
   let admittedExpectedSessionId: string | undefined;
   let dispatchAbortOperation: ReplyOperation | undefined;
   let preDispatchAbortOperation: ReplyOperation | undefined;
-  let preDispatchLifecycleAdmission: SessionWorkAdmissionLease | undefined;
+  let preDispatchLifecycleAdmission: SessionEffectRef | undefined;
   let preDispatchLifecycleAbortController: AbortController | undefined;
   let dispatchLifecycleAbortController: AbortController | undefined;
   let preDispatchLifecycleInterrupted = false;
@@ -190,6 +205,10 @@ export function createDispatchReplyOperationCoordinator(params: {
     work: Promise<unknown>,
     phase: "owner" | "delivery" = "owner",
   ) => {
+    const input = readReplySourceInput(params.replyOptions);
+    if (input) {
+      trackSessionControllerSourceWork(input, work);
+    }
     if (!dispatchReplyOperation && !preDispatchLifecycleAdmission) {
       return;
     }
@@ -251,15 +270,30 @@ export function createDispatchReplyOperationCoordinator(params: {
     if (dispatchReplyOperation) {
       return await runWithReplyOperationLifecycleAdmission(dispatchReplyOperation, run);
     }
-    return preDispatchLifecycleAdmission
-      ? await preDispatchLifecycleAdmission.run(run)
-      : await run();
+    const work = preDispatchLifecycleAdmission
+      ? preDispatchLifecycleAdmission.run(run)
+      : Promise.resolve().then(run);
+    const input = readReplySourceInput(params.replyOptions);
+    if (input) {
+      trackSessionControllerSourceWork(input, work);
+    }
+    return await work;
   };
 
   const ensureDispatchReplyOperation = async (
     phase: "pre_dispatch" | "command_resolution" | "dispatch",
     hasPluginOwnedBinding = false,
   ): Promise<DispatchReplyOperationAcquisition> => {
+    // Native controls must never acquire a target turn or wait for its capacity.
+    // A command which continues into model execution retargets its unclaimed
+    // input there and uses the ordinary mailbox selector.
+    if (
+      isNativeCommandTurn(resolveCommandTurnContext(params.ctx)) ||
+      (resolveCommandTurnTargetSessionKey(params.ctx) &&
+        resolveCommandTurnTargetSessionKey(params.ctx) !== params.dispatchOperationSessionKey)
+    ) {
+      return { status: "ready" };
+    }
     // Archive restoration belongs to pre-dispatch ownership resolution. Later calls only upgrade admission.
     if (phase === "pre_dispatch") {
       params.operationSessionStoreEntry.entry = await restoreArchivedDispatchSession({
@@ -321,27 +355,25 @@ export function createDispatchReplyOperationCoordinator(params: {
       params.operationSessionStoreEntry.entry?.sessionId ??
       crypto.randomUUID();
     const replyTurnKind = resolveReplyTurnKind(params.replyOptions);
-    const activeReplyOperation = replyRunRegistry.get(dispatchOperationSessionKey);
-    const activeEmbeddedSessionId = resolveActiveEmbeddedRunSessionId(dispatchOperationSessionKey);
-    const allowGatewayEmbeddedQueueResolution =
-      replyTurnKind === "visible" &&
-      (params.replyOptions?.turnAdoptionLifecycle !== undefined ||
-        params.allowActiveQueueResolution === true) &&
-      activeReplyOperation === undefined &&
-      activeEmbeddedSessionId === operationSessionId;
-    if (allowGatewayEmbeddedQueueResolution) {
-      // An embedded owner can outlive its reply-operation registration. Do not
-      // create a competing operation for the same session before queue policy
-      // gets a chance to steer the active backend.
-      return { status: "ready" };
-    }
+    const sourceInput = readReplySourceInput(params.replyOptions);
+    const activeReplyOperation = sourceInput
+      ? sourceInput.mailbox.owner.active
+      : replyRunRegistry.get(dispatchOperationSessionKey);
+    const commandRequiresTurn =
+      (isExplicitSourceReplyCommand(params.ctx, params.cfg) ||
+        isUnauthorizedTextSlashCommand(params.ctx)) &&
+      !isActiveRunSafeCommandTurn({
+        commandTurn: resolveCommandTurnContext(params.ctx),
+        cfg: params.cfg,
+        provider: params.ctx.Provider ?? params.ctx.Surface,
+      });
+    const allowQueuePreparation = replyTurnKind === "visible" && !commandRequiresTurn;
     const allowActiveResolution =
       replyTurnKind === "visible" && (phase === "pre_dispatch" || phase === "command_resolution");
     const allowGatewayQueueResolution =
       phase !== "pre_dispatch" &&
-      replyTurnKind === "visible" &&
-      (params.replyOptions?.turnAdoptionLifecycle !== undefined ||
-        params.allowActiveQueueResolution === true) &&
+      allowQueuePreparation &&
+      (sourceInput !== undefined || params.allowActiveQueueResolution === true) &&
       activeReplyOperation !== undefined &&
       activeReplyOperation.turnKind !== "heartbeat";
     if (allowGatewayQueueResolution) {
@@ -352,7 +384,7 @@ export function createDispatchReplyOperationCoordinator(params: {
     const allowSlackRoutedThreadBypass =
       phase !== "pre_dispatch" &&
       shouldLetSlackRoutedThreadBypassBusyReplyOperation({
-        activeOperation: replyRunRegistry.get(dispatchOperationSessionKey),
+        activeOperation: activeReplyOperation,
         ctx: params.ctx,
         routeThreadId: params.routeThreadId,
       });
@@ -362,9 +394,58 @@ export function createDispatchReplyOperationCoordinator(params: {
       preDispatchLifecycleInterrupted = true;
       lifecycleOnlyAbortController?.abort();
     };
+    const input = sourceInput;
+    // Queue/steer/question completion may already have handed this exact input
+    // off without a dispatch operation. Final delivery must not reacquire it.
+    if (input && (input.custody.enqueued || input.phase === "consumed" || input.injection)) {
+      return { status: "ready" };
+    }
+    // Fast control events run before this gate. Ordinary pre-dispatch preparation
+    // may proceed while occupied, but only the canonical selector grants a turn.
+    let mailboxClaim = input ? tryClaimSessionControllerTask(input) : undefined;
+    if (input && !mailboxClaim) {
+      if (input.abortSignal.aborted || input.retirementRequested) {
+        return { status: "aborted" };
+      }
+      const predecessor = input.mailbox.owner.active;
+      if (
+        predecessor &&
+        isRecoverableTerminalSessionStatus(params.operationSessionStoreEntry.entry?.status)
+      ) {
+        // Persisted terminal state is not proof that raw producer work settled.
+        // Recovery acts only on this captured owner, never a by-ID successor.
+        await predecessor.watchdog.tick();
+        mailboxClaim = tryClaimSessionControllerTask(input);
+      }
+      if (
+        !mailboxClaim &&
+        (allowActiveResolution ||
+          allowQueuePreparation ||
+          allowSlackRoutedThreadBypass ||
+          allowGatewayQueueResolution)
+      ) {
+        return { status: "ready" };
+      }
+      if (!mailboxClaim) {
+        if (replyTurnKind === "heartbeat") {
+          return { status: "busy" };
+        }
+        const selected = claimSessionControllerTask(input, () => {});
+        params.replyOptions?.[REPLY_ADMISSION_TICKET]?.release();
+        try {
+          mailboxClaim = await selected;
+        } catch (error) {
+          if (input.abortSignal.aborted) {
+            return { status: "aborted" };
+          }
+          throw error;
+        }
+      }
+    }
     const admitCurrentReplyTurn = async () => {
       try {
-        return await admitReplyTurn({
+        const admission = await admitReplyTurn({
+          mailboxClaim,
           runId: params.replyOptions?.runId,
           assertRequestCurrent: () => params.replyOptions?.operatorAuthority?.assertCurrent(),
           providerReviewAcknowledgment: params.replyOptions?.providerReviewAcknowledgment,
@@ -389,12 +470,27 @@ export function createDispatchReplyOperationCoordinator(params: {
           routeThreadId: params.routeThreadId,
           originatingLeafEntryId:
             params.replyOptions?.turnAdoptionLifecycle?.originatingLeafEntryId,
-          upstreamAbortSignal: params.replyOptions?.abortSignal,
+          upstreamAbortSignal: input?.abortSignal ?? params.replyOptions?.abortSignal,
           waitForActive: !allowActiveResolution && !allowSlackRoutedThreadBypass,
           retainLifecycleAdmissionOnActive: allowActiveResolution || allowSlackRoutedThreadBypass,
           onLifecycleInterrupt,
         });
+        if (mailboxClaim) {
+          const claim = mailboxClaim;
+          if (admission.status === "owned") {
+            // Keep adoption open while preparation binds the actual FollowupRun.
+            // Only raw settlement releases the selected claim, not callbacks.
+            const releaseClaim = () => releaseSessionControllerClaim(claim);
+            void admission.operation.ownerSettlement.then(releaseClaim, releaseClaim);
+          } else {
+            releaseSessionControllerClaim(claim);
+          }
+        }
+        return admission;
       } catch (error) {
+        if (mailboxClaim) {
+          releaseSessionControllerClaim(mailboxClaim);
+        }
         if (
           phase === "pre_dispatch" &&
           replyTurnKind === "visible" &&
@@ -405,30 +501,7 @@ export function createDispatchReplyOperationCoordinator(params: {
         throw error;
       }
     };
-    let admission = await admitCurrentReplyTurn();
-    if (
-      admission.status === "skipped" &&
-      admission.reason === "active-run" &&
-      // Only visible turns may clear a terminal predecessor in this session.
-      // A concurrent reset or recovery may already own the key; neither a new
-      // session nor a marked recovery may be cleared by this stale snapshot.
-      replyTurnKind === "visible" &&
-      isRecoverableTerminalSessionStatus(params.operationSessionStoreEntry.entry?.status) &&
-      admission.activeOperation?.sessionId === params.operationSessionStoreEntry.entry?.sessionId &&
-      !admission.activeOperation?.terminalRecovery
-    ) {
-      const cleared = forceClearReplyRunBySessionId(
-        admission.activeOperation?.sessionId ?? operationSessionId,
-        new Error("clearing stale terminal reply operation"),
-      );
-      if (cleared) {
-        admission.lifecycleAdmission?.release();
-        logVerbose(
-          `dispatch-from-config: cleared stale active reply operation for terminal session ${dispatchOperationSessionKey}`,
-        );
-        admission = await admitCurrentReplyTurn();
-      }
-    }
+    const admission = await admitCurrentReplyTurn();
     // Admission has verified the predecessor's lineage in this physical store.
     // Carry that identity through initialization even when the active run still owns the slot.
     admittedExpectedSessionId =
@@ -485,7 +558,6 @@ export function createDispatchReplyOperationCoordinator(params: {
       admission.operation.markTerminalRecovery();
     }
     dispatchReplyOperation = admission.operation;
-    dispatchReplyOperation.retainFailureUntilComplete();
     dispatchAbortOperation = admission.operation;
     return { status: "ready" };
   };
@@ -538,6 +610,7 @@ export function createDispatchReplyOperationCoordinator(params: {
       return;
     }
     observedReplyDelivery = true;
+    dispatchReplyOperation?.watchdog.progress("finalization", "reply:delivery_observed");
     await params.replyOptions?.onObservedReplyDelivery?.();
   };
   const getReplyOptions = (): DispatchFromConfigParams["replyOptions"] => {

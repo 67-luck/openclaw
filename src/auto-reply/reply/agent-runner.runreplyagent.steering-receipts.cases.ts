@@ -2,12 +2,14 @@ import { expect, it, vi, type Mock } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
+import * as controllerMailbox from "../../sessions/session-controller.mailbox.js";
 import type { TemplateContext } from "../templating.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import {
   clearSessionQueues,
   enqueueFollowupRun,
-  parkSteerCandidate,
+  reserveSteerCandidate,
   type FollowupRun,
 } from "./queue.js";
 import { getExistingFollowupQueue } from "./queue/state.js";
@@ -15,7 +17,6 @@ import {
   REPLY_OPERATION_RUN_STATE,
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
-import { createReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
 
 type SteeringReceiptFixture = {
   createMinimalRun: (params: {
@@ -52,7 +53,7 @@ export function registerSteeringReceiptCases({
     "keeps a rejected steer skipped when drop:%s discards it",
     async (dropPolicy) => {
       const actualQueue = await vi.importActual<typeof import("./queue.js")>("./queue.js");
-      vi.mocked(parkSteerCandidate).mockImplementation(actualQueue.parkSteerCandidate);
+      vi.mocked(reserveSteerCandidate).mockImplementation(actualQueue.reserveSteerCandidate);
       const active = createReplyOperation({
         sessionKey: "main",
         sessionId: "session",
@@ -106,7 +107,7 @@ export function registerSteeringReceiptCases({
 
   it("queues a waiting steer when its predecessor outlives terminal delivery", async () => {
     const actualQueue = await vi.importActual<typeof import("./queue.js")>("./queue.js");
-    vi.mocked(parkSteerCandidate).mockImplementation(actualQueue.parkSteerCandidate);
+    vi.mocked(reserveSteerCandidate).mockImplementation(actualQueue.reserveSteerCandidate);
     const { sessionEntry, sessionStore, storePath } = await makeSessionFixture({
       status: "running",
       restartRecoveryDeliveryRunId: "active-recovery",
@@ -121,6 +122,18 @@ export function registerSteeringReceiptCases({
     const firstEntered = createDeferred();
     const firstAcceptance = createDeferred<boolean>();
     const secondParked = createDeferred();
+    const onDeferred = vi.fn();
+    const inject = controllerMailbox.beginSessionControllerSourceInjection;
+    const injection = vi
+      .spyOn(controllerMailbox, "beginSessionControllerSourceInjection")
+      .mockImplementation((input) => {
+        const receipt = inject(input);
+        if (input.source?.messageId === "second-parked-input") {
+          expect(input.phase).toBe("injecting");
+          secondParked.resolve();
+        }
+        return receipt;
+      });
     state.queueEmbeddedAgentMessageMock.mockReturnValue(true);
     state.queueEmbeddedAgentMessageMock.mockImplementationOnce(() => {
       firstEntered.resolve();
@@ -151,7 +164,7 @@ export function registerSteeringReceiptCases({
       opts: {
         [REPLY_OPERATION_RUN_STATE]: secondState,
         turnAdoptionLifecycle: {
-          onDeferred: () => secondParked.resolve(),
+          onDeferred,
           onAdopted: async () => {},
         },
       },
@@ -165,7 +178,7 @@ export function registerSteeringReceiptCases({
       secondRun = second.run();
       await withTestTimeout(secondParked.promise, 5_000, "second steer was not parked");
       await replaceSessionEntry(
-        { storePath, sessionKey: "main" },
+        { agentId: "main", storePath, sessionKey: "main" },
         {
           ...sessionEntry,
           restartRecoveryDeliveryReceiptState: "delivered-terminal",
@@ -177,6 +190,7 @@ export function registerSteeringReceiptCases({
       await Promise.all([firstRun, secondRun]);
 
       expect(state.queueEmbeddedAgentMessageMock).toHaveBeenCalledOnce();
+      expect(onDeferred).toHaveBeenCalledOnce();
       expect(secondState.admission).toEqual({ status: "accepted", mode: "followup" });
       expect(getExistingFollowupQueue("main")?.items).toEqual([
         expect.objectContaining({
@@ -189,6 +203,7 @@ export function registerSteeringReceiptCases({
       await Promise.allSettled([firstRun, ...(secondRun ? [secondRun] : [])]);
       clearSessionQueues(["main"]);
       active.complete();
+      injection.mockRestore();
     }
   });
 

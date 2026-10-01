@@ -9,6 +9,7 @@ import {
   onAgentRuntimeEvent,
   resetAgentEventsForTest,
 } from "../infra/agent-events.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
 import { abortChatRunById, registerChatAbortController } from "./chat-abort.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import { emitAgentEvent, registerChatRun } from "./server-chat.agent-events.test-helpers.js";
@@ -492,9 +493,14 @@ it.each(["native", "dispatch", "abort", "retry", "clearRun", "clear"] as const)(
         });
         chatRunState.clearRun(runId);
       } else {
-        const chatAbortControllers = new Map();
+        const rpcSources = new Map();
         registerChatAbortController({
-          chatAbortControllers,
+          rpcSources,
+          target: captureSessionTarget({
+            storeScope: "/synthetic/chat-wire/" + runId,
+            sessionKey,
+            incarnation: runId,
+          }),
           runId,
           sessionId: runId,
           sessionKey,
@@ -505,7 +511,7 @@ it.each(["native", "dispatch", "abort", "retry", "clearRun", "clear"] as const)(
             {
               ...harness,
               ...broadcaster,
-              chatAbortControllers,
+              rpcSources,
               removeChatRun: (sourceRunId, clientRunId, key) =>
                 chatRunState.registry.remove(sourceRunId, clientRunId, key),
             },

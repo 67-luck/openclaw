@@ -2,31 +2,32 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { createPersonalToolScreenDispatcher } from "../../auto-reply/reply/personal-tool-turn.test-support.js";
 import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
-import type { ReplyToolAuthorityOverlay } from "../../auto-reply/reply/reply-run-registry.contracts.js";
-import {
-  beginReplyMessageInjectionTarget,
-  createReplyOperation,
-  replyRunRegistry,
-} from "../../auto-reply/reply/reply-run-registry.js";
 import { testing as replyTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
 import {
   prepareReplyToolAuthority,
   resolveFollowupRunToolAuthorityFingerprint,
 } from "../../auto-reply/reply/reply-tool-authority.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import type { ReplyToolAuthorityOverlay } from "../../sessions/session-controller.contracts.js";
+import {
+  beginReplyMessageInjectionTarget,
+  createReplyOperation,
+  replyRunRegistry,
+} from "../../sessions/session-controller.js";
+import { resolveSessionRunProgressState as resolveEmbeddedAgentSessionProgressState } from "../../sessions/session-controller.queries.js";
 import { controlRealtimeVoiceAgentRun } from "../../talk/agent-run-control.js";
 import {
   createOperationalRunInstanceRef,
   createAdmittedRunOperatorAuthority,
   prepareAgentRunAdmission,
 } from "../admitted-run-context.js";
+import { queueEmbeddedAgentMessageWithOutcomeAsync } from "../embedded-agent-runner/runs.js";
 import {
-  clearActiveEmbeddedRun,
-  queueEmbeddedAgentMessageWithOutcomeAsync,
-  resolveEmbeddedAgentSessionProgressState,
-  setActiveEmbeddedRun,
-} from "../embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle, testing } from "../embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+  testing,
+} from "../embedded-agent-runner/runs.test-support.js";
 import { prepareOperatorModelPolicy } from "../operator-model-policy.js";
 import { attachToolAllowlistIntersection } from "../tool-policy-shared.js";
 import {

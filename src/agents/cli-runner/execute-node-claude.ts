@@ -266,6 +266,7 @@ export async function executeNodeClaudeRun(params: {
       const decision = await waitForNodeOperation({
         operation: params.deps.resolveRegisteredExecApprovalDecision({
           approvalId: registration.id,
+          expiresAtMs: registration.expiresAtMs,
           preResolvedDecision: registration.finalDecision,
         }),
         signal: skillRuntime?.signal ?? nodeAbortController.signal,

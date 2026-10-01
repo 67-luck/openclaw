@@ -4,7 +4,10 @@ import { isPerAgentSessionStoreConfig } from "../../config/sessions/session-stor
 import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import {
+  captureSessionTarget,
+  beginSessionEffect,
+} from "../../sessions/session-controller.lifecycle.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
 
 /** Resolves a target key without letting requester scope override a durable fixed-store owner. */
@@ -55,9 +58,13 @@ export async function runWithScopedSessionAccess<T>(params: {
       throw new Error(`Session "${params.targetSessionKey}" changed after access was granted.`);
     }
   };
-  const admission = await beginSessionWorkAdmission({
-    scope: storePath,
-    identities: [params.targetSessionKey, expectedSessionId],
+  const admission = await beginSessionEffect({
+    target: captureSessionTarget({
+      storeScope: storePath,
+      sessionKey: params.targetSessionKey,
+      incarnation: expectedSessionId,
+      agentId,
+    }),
     assertAllowed: assertExpectedIncarnation,
     revalidateAllowed: assertExpectedIncarnation,
     ...(params.signal ? { signal: params.signal } : {}),

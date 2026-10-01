@@ -61,12 +61,12 @@ import {
   tryBeginGatewayRootWorkAdmission,
 } from "../../process/gateway-work-admission.js";
 import {
-  beginSessionWorkAdmission,
-  interruptSessionWorkAdmissions,
-  isSessionLifecycleMutationActive,
-  isSessionWorkAdmissionActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  interruptSessionControllerEffects,
+  isSessionMutationActive,
+  isSessionControllerWorkActive,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import {
   beginAgentDeletionJournal,
   removeAgentDeletionJournal,
@@ -85,11 +85,11 @@ import { cleanupSessionStateForTest } from "../../test-utils/session-state-clean
 import { buildCurrentRunRestartRecoveryClaim } from "../agent-command-restart-recovery.js";
 import { deliverAgentCommandResult } from "../command/delivery.js";
 import { setActiveEmbeddedRunLifecycleGeneration } from "../embedded-agent-runner/run-state.js";
+import type { EmbeddedAgentQueueHandle } from "../embedded-agent-runner/runs.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-  type EmbeddedAgentQueueHandle,
-} from "../embedded-agent-runner/runs.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+} from "../embedded-agent-runner/runs.test-support.js";
 import {
   INTERNAL_RUNTIME_CONTEXT_BEGIN,
   INTERNAL_RUNTIME_CONTEXT_END,
@@ -601,7 +601,7 @@ describe("main-session-restart-recovery", () => {
     await writeStorePath(otherStorePath, entries);
     const admissions = await Promise.all(
       identities.map((group) =>
-        beginSessionWorkAdmission({
+        beginSessionEffect({
           resolveGatewayContext,
           scope: storePath,
           identities: group.map((identity) =>
@@ -685,12 +685,12 @@ describe("main-session-restart-recovery", () => {
       });
       const storePath = path.join(tmpDir, "active-custom-store", "sessions.json");
       const sessionKey = "agent:main:custom";
-      let admission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+      let admission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
       try {
         await writeStorePath(storePath, {
           [sessionKey]: runningSessionEntry("custom-session"),
         });
-        admission = await beginSessionWorkAdmission({
+        admission = await beginSessionEffect({
           resolveGatewayContext,
           scope: storePath,
           identities: [sessionKey, "custom-session"],
@@ -738,7 +738,7 @@ describe("main-session-restart-recovery", () => {
           }),
         );
         const configuredBefore = sessionAccessor.loadSessionEntry(configured);
-        const admission = await beginSessionWorkAdmission({
+        const admission = await beginSessionEffect({
           resolveGatewayContext,
           scope: storePath,
           identities: [retired.sessionKey, "retired-active-session"],
@@ -4197,7 +4197,7 @@ describe("main-session-restart-recovery", () => {
     expect(loadSessionEntry({ sessionKey: "agent:main:other", storePath })).toMatchObject({
       abortedLastRun: true,
     });
-    expect(isSessionWorkAdmissionActive(storePath, ["agent:main:main", "main-session"])).toBe(
+    expect(isSessionControllerWorkActive(storePath, ["agent:main:main", "main-session"])).toBe(
       false,
     );
   });
@@ -4476,7 +4476,7 @@ describe("main-session-restart-recovery", () => {
       ) => {
         options?.onAccepted?.({ runId: "recovery-main", status: "accepted" });
         options?.onStartOwner?.({
-          observe: () => ({ executionStarted: true, expiresAtMs: Date.now() + 60_000 }),
+          observe: () => ({ executionStarted: true, startDeadlineAtMs: Date.now() + 60_000 }),
           abort: () => false,
         });
         options?.onExecutionStarted?.();
@@ -4527,7 +4527,7 @@ describe("main-session-restart-recovery", () => {
       ) => {
         accept = () => {
           options?.onStartOwner?.({
-            observe: () => ({ executionStarted: false, expiresAtMs: Date.now() + 60_000 }),
+            observe: () => ({ executionStarted: false, startDeadlineAtMs: Date.now() + 60_000 }),
             abort,
           });
           options?.onAccepted?.({ runId: "recovery-main", status: "accepted" });
@@ -4692,9 +4692,9 @@ describe("main-session-restart-recovery", () => {
           options: Parameters<GatewayRecoveryRuntime["dispatchAgent"]>[2],
         ) => {
           const runId = request.idempotencyKey!;
-          const expiresAtMs = Date.now() + 10_000;
+          const startDeadlineAtMs = Date.now() + 10_000;
           options?.onStartOwner?.({
-            observe: () => ({ executionStarted: false, expiresAtMs }),
+            observe: () => ({ executionStarted: false, startDeadlineAtMs }),
             abort,
           });
           await commitMainSessionRecovery({
@@ -4818,13 +4818,13 @@ describe("main-session-restart-recovery", () => {
     let mutation: Promise<void> | undefined;
     try {
       await dispatchEntered.promise;
-      expect(isSessionWorkAdmissionActive(storePath, [sessionKey, sessionId])).toBe(true);
-      mutation = runExclusiveSessionLifecycleMutation({
+      expect(isSessionControllerWorkActive(storePath, [sessionKey, sessionId])).toBe(true);
+      mutation = runSessionMutation({
         scope: storePath,
         identities: [sessionKey, sessionId],
         prepare: async () => {
           expect(
-            await interruptSessionWorkAdmissions({
+            await interruptSessionControllerEffects({
               scope: storePath,
               identities: [sessionKey, sessionId],
               timeoutMs: 1_000,
@@ -4836,7 +4836,7 @@ describe("main-session-restart-recovery", () => {
         },
       });
       await waitForFast(() =>
-        expect(isSessionLifecycleMutationActive(storePath, [sessionKey, sessionId])).toBe(true),
+        expect(isSessionMutationActive(storePath, [sessionKey, sessionId])).toBe(true),
       );
       expect(mutationRan).toBe(false);
 

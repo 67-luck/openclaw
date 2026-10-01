@@ -12,18 +12,17 @@ import {
   resetDiagnosticRunActivityForTest,
   RUN_STALE_TAKEOVER_MS,
 } from "../../logging/diagnostic-run-activity.js";
-import { markDiagnosticToolStartedForTest } from "../../logging/diagnostic-run-activity.test-support.js";
-import {
-  interruptSessionWorkAdmissions,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
-import { REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS } from "./reply-run-registry.contracts.js";
 import {
   createReplyOperation,
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   replyRunRegistry,
   runAfterReplyOperationClear,
-} from "./reply-run-registry.js";
+} from "../../sessions/session-controller.js";
+import {
+  interruptSessionControllerEffects,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
+import { SESSION_WATCHDOG_CLEANUP_MS } from "../../sessions/session-controller.watchdog-state.js";
 import { testing } from "./reply-run-registry.test-support.js";
 import { runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.js";
 import {
@@ -108,7 +107,7 @@ describe("reply turn admission", () => {
     const storePath = createSessionStoreFor(sessionKey, sessionId);
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey, sessionId],
       run: async () => {
@@ -142,7 +141,7 @@ describe("reply turn admission", () => {
     const storePath = createSessionStoreFor(sessionKey, sessionId);
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey, sessionId],
       run: async () => {
@@ -176,7 +175,7 @@ describe("reply turn admission", () => {
     const storePath = createSessionStoreFor(sessionKey, sessionId);
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey, sessionId],
       run: async () => {
@@ -213,7 +212,7 @@ describe("reply turn admission", () => {
     const storePath = createSessionStoreFor(sessionKey, sessionId);
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey, sessionId],
       run: async () => {
@@ -246,7 +245,7 @@ describe("reply turn admission", () => {
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
     const abortController = new AbortController();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey, sessionId],
       run: async () => {
@@ -769,11 +768,11 @@ describe("reply turn admission", () => {
     }
 
     let mutationRan = false;
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey, sessionId],
       prepare: async () => {
-        await interruptSessionWorkAdmissions({
+        await interruptSessionControllerEffects({
           scope: storePath,
           identities: [sessionKey, sessionId],
         });
@@ -815,11 +814,11 @@ describe("reply turn admission", () => {
     }
 
     await runWithReplyOperationLifecycleAdmission(admission.operation, async () => {
-      await runExclusiveSessionLifecycleMutation({
+      await runSessionMutation({
         scope: storePath,
         identities: [sessionKey, sessionId],
         prepare: async () => {
-          await interruptSessionWorkAdmissions({
+          await interruptSessionControllerEffects({
             scope: storePath,
             identities: [sessionKey, sessionId],
           });
@@ -838,7 +837,7 @@ describe("reply turn admission", () => {
     const storePath = createSessionStoreFor(sessionKey, sessionId);
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey, sessionId],
       run: async () => {
@@ -984,16 +983,9 @@ describe("reply turn admission", () => {
       admissionSessionId = sessionId;
     });
 
+    active.updateSessionId("rotated-session");
     active.completeWithAfterClearBarrier(barrier);
-    const visibleAdmission = await admitTestReplyTurn({
-      sessionKey: "agent:main:discord:channel:42",
-      sessionId: "active-session",
-    });
-    expect(visibleAdmission.status).toBe("owned");
-    if (visibleAdmission.status === "owned") {
-      visibleAdmission.operation.updateSessionId("rotated-session");
-      visibleAdmission.operation.complete();
-    }
+    expect(admissionSessionId).toBeUndefined();
 
     releaseBarrier();
     await barrier;
@@ -1148,12 +1140,8 @@ describe("reply turn admission", () => {
         isStreaming: () => true,
       });
       active.setPhase("running");
-      markDiagnosticToolStartedForTest({
-        sessionId: "quiet-tool-session",
-        sessionKey: "agent:main:telegram:topic:quiet-tool",
-        toolName: "exec",
-        toolCallId: "tool-quiet-1",
-      });
+      const attempt = active.watchdog.attachAttempt({ assertCurrent: () => {} });
+      attempt.beginTool({ toolName: "exec", toolCallId: "tool-quiet-1" });
 
       // 12 minutes of silence with an active tool: past the generic takeover
       // window but inside the blocked-tool floor — must NOT be reclaimed.
@@ -1234,7 +1222,7 @@ describe("reply turn admission", () => {
     },
   );
 
-  it("lets visible turns reclaim terminal operations after settle grace elapsed", async () => {
+  it("keeps terminal raw work owned after cleanup grace until its producer settles", async () => {
     vi.useFakeTimers();
     try {
       const active = createTestReplyOperation({
@@ -1248,7 +1236,14 @@ describe("reply turn admission", () => {
         sessionKey: "agent:main:telegram:topic:terminal-unreleased",
         sessionId: "replacement-terminal-session",
       });
-      await vi.advanceTimersByTimeAsync(REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS);
+      let admitted = false;
+      void admission.then(() => {
+        admitted = true;
+      });
+      await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS);
+      expect(admitted).toBe(false);
+      expect(replyRunRegistry.get("agent:main:telegram:topic:terminal-unreleased")).toBe(active);
+      active.complete();
       const result = await admission;
 
       expect(active.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
@@ -1322,11 +1317,11 @@ describe("reply turn admission", () => {
     // delete on the target session interlocks with the continuation run.
     reservation.setPhase("running");
     let mutationRan = false;
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: [targetSessionKey, targetSessionId],
       prepare: async () => {
-        await interruptSessionWorkAdmissions({
+        await interruptSessionControllerEffects({
           scope: storePath,
           identities: [targetSessionKey, targetSessionId],
         });

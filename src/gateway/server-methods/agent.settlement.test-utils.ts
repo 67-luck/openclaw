@@ -92,7 +92,7 @@ export function registerSuccessfulAgentSettlementCase() {
             status: "ok",
             summary: "completed",
           });
-          expect(context.chatAbortControllers.has("gateway-agent-run")).toBe(false);
+          expect(context.rpcSources.has("gateway-agent-run")).toBe(false);
         });
       });
     });
@@ -255,7 +255,7 @@ export function registerCompactionSessionSettlementCase() {
         throw new Error("expected session id change callback");
       }
       onSessionIdChanged("rotated-session-id");
-      trackedSessionId = context.chatAbortControllers.get("agent-session-rotation")?.sessionId;
+      trackedSessionId = context.rpcSources.get("agent-session-rotation")?.adapter.sessionId;
       return {
         payloads: [{ text: "ok" }],
         meta: { durationMs: 100 },

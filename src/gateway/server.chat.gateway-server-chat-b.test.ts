@@ -1,8 +1,7 @@
-// Gateway chat integration tests cover dashboard chat requests, transcript
-// history limits, model overrides, inbound dispatch, and streaming event fanout.
-
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+// Gateway chat integration tests cover dashboard chat requests, transcript
+// history limits, model overrides, inbound dispatch, and streaming event fanout.
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -13,9 +12,9 @@ import { upsertAcpSessionMeta } from "../acp/runtime/session-meta.js";
 import { bindActiveOperatorTurnAuthority } from "../agents/cron-creator-authority-context.js";
 import type { EmbeddedAgentQueueHandle } from "../agents/embedded-agent-runner/run-state.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../agents/embedded-agent-runner/runs.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+} from "../agents/embedded-agent-runner/runs.test-support.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
 import { createSessionsHistoryTool } from "../agents/tools/sessions-history-tool.js";
 import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
@@ -53,10 +52,11 @@ import { resolveMediaReferenceLocalPath } from "../media/media-reference.js";
 import { getMediaDir } from "../media/store.js";
 import { withPluginMetadataSnapshotScope } from "../plugins/current-plugin-metadata-snapshot.js";
 import {
-  getSessionWorkAdmissionRelease,
-  isSessionWorkAdmissionActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../sessions/session-lifecycle-admission.js";
+  captureSessionControllerSettlement,
+  isSessionControllerWorkActive,
+  runSessionMutation,
+} from "../sessions/session-controller.lifecycle.js";
+import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { buildPersistedUserTurnMessage } from "../sessions/user-turn-transcript.js";
 import { recordAgentProvenance } from "../state/agent-provenance.js";
@@ -77,6 +77,7 @@ import {
 } from "./server-chat.agent-events.test-helpers.js";
 import { getMaxChatHistoryMessagesBytes } from "./server-constants.js";
 import { createGatewayChatMetadataRuntime } from "./server-methods/chat-metadata-runtime.js";
+import { createActiveRpcSourceForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
 import {
   disposeSessionReadContexts,
   initializeSessionReadContext,
@@ -87,6 +88,10 @@ import type {
   RespondFn,
 } from "./server-methods/shared-types.js";
 import { pendingChatSendDedupeKey } from "./server-shared.js";
+import {
+  callDirectChatHandler,
+  callDirectChat,
+} from "./server.chat-direct-handler.test-support.js";
 import {
   captureChatResponse,
   captureChatResult,
@@ -260,7 +265,7 @@ async function withDirectChatSession(
 type StoredSessionEntry = Parameters<typeof writeSessionStore>[0]["entries"][string];
 
 function getDirectChatSessionWorkRelease(sessionKey = "agent:main:main") {
-  return getSessionWorkAdmissionRelease({
+  return captureSessionControllerSettlement({
     scope: resolveSessionStorePathForScope({ sessionKey }, getRuntimeConfig()),
     identities: [sessionKey],
   });
@@ -282,39 +287,6 @@ async function writeStoredMainSession(entry: StoredSessionEntry = {}) {
         ...entry,
       },
     },
-  });
-}
-
-type DirectChatMethod = "chat.abort" | "chat.history" | "chat.send" | "chat.startup";
-
-async function callDirectChatHandler(
-  method: DirectChatMethod,
-  options: GatewayRequestHandlerOptions,
-) {
-  const { coreGatewayHandlers } = await import("./server-methods.js");
-  if (method === "chat.history" || method === "chat.startup") {
-    await initializeSessionReadContext(options.context);
-  }
-  await expectDefined(coreGatewayHandlers[method], `${method} test invariant`)(options);
-}
-
-type DirectChatCallOptions = Omit<
-  GatewayRequestHandlerOptions,
-  "client" | "isWebchatConnect" | "req"
-> & {
-  id: string;
-  client?: GatewayRequestHandlerOptions["client"];
-  isWebchatConnect?: GatewayRequestHandlerOptions["isWebchatConnect"];
-  req?: GatewayRequestHandlerOptions["req"];
-};
-
-async function callDirectChat(method: DirectChatMethod, options: DirectChatCallOptions) {
-  const { client, id, isWebchatConnect, req, ...handlerOptions } = options;
-  await callDirectChatHandler(method, {
-    ...handlerOptions,
-    req: req ?? { type: "req", id, method, params: options.params },
-    client: client ?? null,
-    isWebchatConnect: isWebchatConnect ?? (() => false),
   });
 }
 
@@ -956,19 +928,18 @@ describe("gateway server chat", () => {
         const context = createDirectChatContext({
           getRuntimeConfig: () => writerConfig,
         });
-        const controller = new AbortController();
         // chat.send registers the agent-scoped canonical key; the handler's
         // in-flight adoption must resolve the same scoped key for the bare
         // alias request or the streaming run renders idle on switch-back.
-        context.chatAbortControllers.set("run-writer", {
-          controller,
-          sessionId: "sess-writer",
-          sessionKey: "agent:writer:notes",
-          agentId: "writer",
-          startedAtMs: 1_000,
-          expiresAtMs: Date.now() + 60_000,
-          projectSessionActive: true,
-        });
+        context.rpcSources.set(
+          "run-writer",
+          await createActiveRpcSourceForTest({
+            sessionId: "sess-writer",
+            sessionKey: "agent:writer:notes",
+            agentId: "writer",
+            projectSessionActive: true,
+          }),
+        );
         context.chatRunState.getOrCreate("run-writer").buffer = "writer partial";
         const responses: CapturedChatResponse[] = [];
         await callDirectChat(method, {
@@ -1015,15 +986,14 @@ describe("gateway server chat", () => {
       });
       try {
         await writeMainSessionStore();
-        const controller = new AbortController();
-        context.chatAbortControllers.set("run-active", {
-          controller,
-          sessionId: "sess-main",
-          sessionKey: "main",
-          startedAtMs: 1_000,
-          expiresAtMs: 10_000,
-          projectSessionActive: true,
-        });
+        context.rpcSources.set(
+          "run-active",
+          await createActiveRpcSourceForTest({
+            sessionId: "sess-main",
+            sessionKey: "main",
+            projectSessionActive: true,
+          }),
+        );
         context.chatRunState.registry.add("provider-run", {
           sessionKey: "main",
           clientRunId: "run-active",
@@ -2586,7 +2556,7 @@ describe("gateway server chat", () => {
     try {
       await writeStoredMainSession({});
       const mutationStarted = createDeferred();
-      const mutation = runExclusiveSessionLifecycleMutation({
+      const mutation = runSessionMutation({
         scope: storePath,
         identities: ["sess-main"],
         run: async () => {
@@ -2631,7 +2601,7 @@ describe("gateway server chat", () => {
         expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(true);
       }, FAST_WAIT_OPTS);
       expect(context.dedupe.get(collidingFinalKey)).toBe(collidingFinalEntry);
-      expect(context.chatAbortControllers.has(runId)).toBe(false);
+      expect(context.rpcSources.has(runId)).toBe(false);
 
       const retryResponses: CapturedChatResponse[] = [];
       await callDirectChat("chat.send", {
@@ -2683,7 +2653,7 @@ describe("gateway server chat", () => {
       ]);
       expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(false);
       expect(context.dedupe.get(collidingFinalKey)).toBe(collidingFinalEntry);
-      expect(context.chatAbortControllers.has(runId)).toBe(false);
+      expect(context.rpcSources.has(runId)).toBe(false);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       releaseMutation.resolve();
@@ -2697,7 +2667,7 @@ describe("gateway server chat", () => {
     try {
       await writeStoredMainSession({});
       const mutationStarted = createDeferred();
-      const mutation = runExclusiveSessionLifecycleMutation({
+      const mutation = runSessionMutation({
         scope: storePath,
         identities: ["sess-main"],
         run: async () => {
@@ -2745,7 +2715,7 @@ describe("gateway server chat", () => {
         },
       ]);
       expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(false);
-      expect(context.chatAbortControllers.has(runId)).toBe(false);
+      expect(context.rpcSources.has(runId)).toBe(false);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       releaseMutation.resolve();
@@ -2768,7 +2738,7 @@ describe("gateway server chat", () => {
       const seededSessionId = seededSession.entry?.sessionId;
       expect(seededSessionId).toBe("sess-main");
       const mutationStarted = createDeferred();
-      mutation = runExclusiveSessionLifecycleMutation({
+      mutation = runSessionMutation({
         scope: seededSession.storePath,
         identities: [seededSession.canonicalKey, seededSessionId],
         run: async () => {
@@ -2840,7 +2810,7 @@ describe("gateway server chat", () => {
           meta: undefined,
         },
       ]);
-      expect(context.chatAbortControllers.has(runId)).toBe(false);
+      expect(context.rpcSources.has(runId)).toBe(false);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       performDeletion.resolve();
@@ -2857,7 +2827,7 @@ describe("gateway server chat", () => {
         sessionId: "sess-before-reset",
       });
       const mutationStarted = createDeferred();
-      const mutation = runExclusiveSessionLifecycleMutation({
+      const mutation = runSessionMutation({
         scope: storePath,
         identities: ["agent:main:main", "sess-before-reset"],
         run: async () => {
@@ -2898,7 +2868,7 @@ describe("gateway server chat", () => {
       expect(sendResponses[0]?.error).toMatchObject({
         message: expect.stringMatching(/changed while starting work/i),
       });
-      expect(context.chatAbortControllers.has(runId)).toBe(false);
+      expect(context.rpcSources.has(runId)).toBe(false);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       releaseMutation.resolve();
@@ -2913,7 +2883,7 @@ describe("gateway server chat", () => {
     try {
       await writeStoredMainSession({});
       const mutationStarted = createDeferred();
-      const mutation = runExclusiveSessionLifecycleMutation({
+      const mutation = runSessionMutation({
         scope: storePath,
         identities: ["sess-main"],
         run: async () => {
@@ -2967,11 +2937,11 @@ describe("gateway server chat", () => {
         },
       ]);
       expect(context.dedupe.get(pendingKey)).toBe(replacement);
-      expect(context.chatAbortControllers.has(runId)).toBe(false);
+      expect(context.rpcSources.has(runId)).toBe(false);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
 
       const terminalMutationStarted = createDeferred();
-      const terminalMutation = runExclusiveSessionLifecycleMutation({
+      const terminalMutation = runSessionMutation({
         scope: storePath,
         identities: ["sess-main"],
         run: async () => {
@@ -3236,7 +3206,7 @@ describe("gateway server chat", () => {
       dispatchInboundMessageMock.mockImplementationOnce(async () => dispatchRelease.promise);
       let snapshotAtAck: ReturnType<typeof loadSessionEntry>;
       const freshAdmission = vi.fn(async () => {
-        expect(context.chatAbortControllers.get(nextRunId)?.controlUiVisible).not.toBe(false);
+        expect(context.rpcSources.get(nextRunId)?.adapter.controlUiVisible).not.toBe(false);
         return true;
       });
 
@@ -3256,7 +3226,7 @@ describe("gateway server chat", () => {
       });
 
       expect(freshAdmission).toHaveBeenCalledTimes(1);
-      expect(context.chatAbortControllers.get(nextRunId)?.controlUiVisible).toBeUndefined();
+      expect(context.rpcSources.get(nextRunId)?.adapter.controlUiVisible).toBeUndefined();
       expect(snapshotAtAck).toMatchObject({
         restartRecoveryDeliveryRunId: nextRunId,
         restartRecoveryDeliverySourceRunId: nextRunId,
@@ -3343,7 +3313,7 @@ describe("gateway server chat", () => {
     const runId = "idem-visible-during-admission-callback";
     try {
       await writeStoredMainSession(makeDoneSessionEntry());
-      const context = createDirectChatContext({ chatQueuedTurns: new Map() });
+      const context = createDirectChatContext({ rpcSources: new Map() });
       const sendResponses: Array<{ ok: boolean; payload?: unknown }> = [];
       const sendPromise = sendControlUiChat({
         context,
@@ -3357,7 +3327,7 @@ describe("gateway server chat", () => {
         respond: captureChatResult(sendResponses),
       });
       await callbackEntered.promise;
-      expect(context.chatAbortControllers.get(runId)?.controlUiVisible).not.toBe(false);
+      expect(context.rpcSources.get(runId)?.adapter.controlUiVisible).not.toBe(false);
 
       const abortResponses: Array<{ ok: boolean; payload?: unknown }> = [];
       await callDirectChat("chat.abort", {
@@ -3409,11 +3379,11 @@ describe("gateway server chat", () => {
       const context = createDirectChatContext();
       const abortCommittedTurn = vi.fn(() => {
         const activeRun = expectDefined(
-          context.chatAbortControllers.get(runId),
+          context.rpcSources.get(runId),
           "expected admitted chat run",
         );
-        activeRun.abortStopReason = stopReason;
-        activeRun.controller.abort();
+        activeRun.adapter.abortStopReason = stopReason;
+        requestRpcSourceCancellation(activeRun);
       });
       // The transcript notification follows the atomic user-turn and recovery-claim commit.
       stopListening = onSessionTranscriptUpdate((update) => {
@@ -3673,7 +3643,7 @@ describe("gateway server chat", () => {
     try {
       await writeStoredMainSession(makeDoneSessionEntry());
       const mutationStarted = createDeferred();
-      mutation = runExclusiveSessionLifecycleMutation({
+      mutation = runSessionMutation({
         scope: storePath,
         identities: ["agent:main:main", "sess-main"],
         run: async () => {
@@ -3711,7 +3681,7 @@ describe("gateway server chat", () => {
         },
       ]);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
-      expect(context.chatAbortControllers.has(idempotencyKey)).toBe(false);
+      expect(context.rpcSources.has(idempotencyKey)).toBe(false);
     } finally {
       releaseMutation.resolve();
       await Promise.allSettled(mutation ? [mutation] : []);
@@ -4181,7 +4151,7 @@ describe("gateway server chat", () => {
       const broadcast = vi.fn((_event: string, _payload: unknown) => undefined);
       const context = createDirectChatContext({
         loadGatewayModelCatalog: vi.fn<GatewayRequestContext["loadGatewayModelCatalog"]>(),
-        chatQueuedTurns: new Map(),
+        rpcSources: new Map(),
         broadcast,
       });
       let turnAdoptionLifecycle: GetReplyOptions["turnAdoptionLifecycle"];
@@ -4255,8 +4225,8 @@ describe("gateway server chat", () => {
         }),
         { sessionKeys: ["agent:main:main"] },
       );
-      expect(context.chatQueuedTurns.has("idem-queued-followup")).toBe(true);
-      expect(isSessionWorkAdmissionActive(storePath, ["agent:main:main", "sess-main"])).toBe(true);
+      expect(context.rpcSources.has("idem-queued-followup")).toBe(true);
+      expect(isSessionControllerWorkActive(storePath, ["agent:main:main", "sess-main"])).toBe(true);
       const { createAgentTurnService } = await import("./agent-turn/agent-turn-service.js");
       const service = createAgentTurnService({ context, isWebchatConnect: () => true });
       const { result: waitResult } = await service.waitForTurn({
@@ -4302,14 +4272,18 @@ describe("gateway server chat", () => {
       );
       expect(dispatchInboundMessageMock).toHaveBeenCalledTimes(1);
 
-      const queuedEntry = context.chatQueuedTurns.get("idem-queued-followup");
+      const queuedEntry = context.rpcSources.get("idem-queued-followup");
       expect(queuedEntry).toBeDefined();
-      queuedEntry?.controller.abort();
-      expect(context.chatQueuedTurns.has("idem-queued-followup")).toBe(false);
+      if (queuedEntry) {
+        requestRpcSourceCancellation(queuedEntry);
+      }
+      expect(context.rpcSources.has("idem-queued-followup")).toBe(false);
 
-      turnAdoptionLifecycle?.onSettled?.();
-      expect(context.chatQueuedTurns.has("idem-queued-followup")).toBe(false);
-      expect(isSessionWorkAdmissionActive(storePath, ["agent:main:main", "sess-main"])).toBe(false);
+      await turnAdoptionLifecycle?.onSettled?.();
+      expect(context.rpcSources.has("idem-queued-followup")).toBe(false);
+      expect(isSessionControllerWorkActive(storePath, ["agent:main:main", "sess-main"])).toBe(
+        false,
+      );
       await waitForFast(() => {
         expect(context.removeChatRun).toHaveBeenCalledTimes(2);
         expect(context.removeChatRun).toHaveBeenCalledWith(
@@ -4362,9 +4336,9 @@ describe("gateway server chat", () => {
         ok: true,
         payload: { status: "ok" },
       });
-      expect(context.chatQueuedTurns.has("idem-queued-followup-post-error")).toBe(true);
-      failedDispatchLifecycle?.onSettled?.();
-      expect(context.chatQueuedTurns.has("idem-queued-followup-post-error")).toBe(false);
+      expect(context.rpcSources.has("idem-queued-followup-post-error")).toBe(true);
+      await failedDispatchLifecycle?.onSettled?.();
+      expect(context.rpcSources.has("idem-queued-followup-post-error")).toBe(false);
     });
   });
 

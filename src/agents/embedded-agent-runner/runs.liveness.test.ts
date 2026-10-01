@@ -1,11 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  createReplyOperation,
-  REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
-  replyRunRegistry,
-  type ReplyOperation,
-} from "../../auto-reply/reply/reply-run-registry.js";
-import { isReplyRunEvidenceStale } from "../../auto-reply/reply/reply-run-registry.state.js";
 import { testing as replyTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
 import { admitReplyTurn } from "../../auto-reply/reply/reply-turn-admission.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
@@ -19,6 +12,13 @@ import { RUN_STALE_TAKEOVER_MS } from "../../logging/diagnostic-run-activity.js"
 import { recoverStuckDiagnosticSession } from "../../logging/diagnostic-stuck-session-recovery.runtime.js";
 import { startGatewayDiagnosticHeartbeat } from "../../logging/diagnostic.js";
 import { resetDiagnosticStateForTest } from "../../logging/diagnostic.test-support.js";
+import {
+  createReplyOperation,
+  REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
+  replyRunRegistry,
+  type ReplyOperation,
+} from "../../sessions/session-controller.js";
+import { isReplyRunEvidenceStale } from "../../sessions/session-controller.state.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import {
   prepareSystemAgentRunAdmission,
@@ -30,12 +30,14 @@ import {
 } from "../tools/gateway-caller-context.js";
 import { resolveActiveEmbeddedRunRecoveryBlocker } from "./run-state.js";
 import {
-  clearActiveEmbeddedRun,
   queueEmbeddedAgentMessageWithOutcomeAsync,
-  setActiveEmbeddedRun,
   type EmbeddedAgentQueueHandle,
 } from "./runs.js";
-import { testing } from "./runs.test-support.js";
+import {
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  testing,
+} from "./runs.test-support.js";
 
 const sessionId = "runtime-liveness-session";
 const sessionKey = "agent:main:runtime-liveness";

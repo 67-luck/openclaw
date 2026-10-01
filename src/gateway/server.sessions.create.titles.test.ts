@@ -7,9 +7,9 @@ import { managedWorktrees } from "../agents/worktrees/service.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
 import {
-  interruptSessionWorkAdmissions,
-  isSessionWorkAdmissionActive,
-} from "../sessions/session-lifecycle-admission.js";
+  interruptSessionControllerEffects,
+  isSessionControllerWorkActive,
+} from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
@@ -57,7 +57,7 @@ test.each(["keep", "delete"] as const)(
     const context = {
       broadcastToConnIds: vi.fn(),
       getSessionEventSubscriberConnIds: () => new Set(["title-listener"]),
-      chatAbortControllers: new Map<string, ChatAbortControllerEntry>(),
+      rpcSources: new Map<string, ChatAbortControllerEntry>(),
     };
     let key: string | undefined;
     try {
@@ -80,7 +80,7 @@ test.each(["keep", "delete"] as const)(
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
       // Cloud dispatch uses this drain before provisioning; optional naming cannot hold it.
       expect(
-        await interruptSessionWorkAdmissions({
+        await interruptSessionControllerEffects({
           scope: storePath,
           identities: [key],
           timeoutMs: 100,
@@ -135,7 +135,7 @@ test.each(["adopted", "incognito"] as const)(
       client,
     );
     expect(result.ok, JSON.stringify(result.error)).toBe(true);
-    await settleWorkspaceRuns({ chatAbortControllers: new Map() }, storePath, key);
+    await settleWorkspaceRuns({ rpcSources: new Map() }, storePath, key);
     expect(titleMocks.generate).not.toHaveBeenCalled();
     expect(
       loadSessionEntry({ agentId: "main", sessionKey: result.payload!.key, storePath })
@@ -162,7 +162,7 @@ test("successful naming survives setup failure and is shared with discussion ope
   );
   const context = {
     broadcast: vi.fn(),
-    chatAbortControllers: new Map<string, ChatAbortControllerEntry>(),
+    rpcSources: new Map<string, ChatAbortControllerEntry>(),
     dedupe: new Map(),
   };
   dispatchInboundMessageMock.mockResolvedValue({
@@ -268,7 +268,7 @@ test.each(["generator error", "worktree wait timeout"])(
     const dispatchFinished = createDeferredCore();
     const preparationFailed = createDeferredCore<Error>();
     const context = {
-      chatAbortControllers: new Map<string, ChatAbortControllerEntry>(),
+      rpcSources: new Map<string, ChatAbortControllerEntry>(),
       broadcast: vi.fn<GatewayRequestContext["broadcast"]>((event, payload) => {
         if (event === "chat" && isRecord(payload) && payload.state === "error") {
           preparationFailed.resolve(
@@ -333,7 +333,7 @@ test.each(["generator error", "worktree wait timeout"])(
       } else {
         expect(branch).toBe(`openclaw/${loadSessionEntry(target)?.displayName}`);
       }
-      expect(isSessionWorkAdmissionActive(storePath, [key])).toBe(true);
+      expect(isSessionControllerWorkActive(storePath, [key])).toBe(true);
       expect(titleMocks.generate).toHaveBeenCalledOnce();
     } finally {
       vi.useRealTimers();
@@ -359,7 +359,7 @@ test("creates a two-word worktree name before an initial turn can generate its t
   testState.agentConfig = { workspace };
   const { storePath } = await createSessionStoreDir();
   const context = {
-    chatAbortControllers: new Map<string, ChatAbortControllerEntry>(),
+    rpcSources: new Map<string, ChatAbortControllerEntry>(),
     dedupe: new Map(),
   };
   titleMocks.generate.mockResolvedValue("Canvas video and device presence");

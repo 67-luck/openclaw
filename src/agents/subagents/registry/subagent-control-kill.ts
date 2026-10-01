@@ -53,6 +53,7 @@ type KillTree = KillBinding & {
 };
 
 type KillSelection = {
+  narrowSessionScope?: boolean;
   cfg: OpenClawConfig;
   runs: Iterable<SubagentRunRecord>;
   assertCurrent?: () => void;
@@ -62,6 +63,7 @@ type KillSelection = {
 };
 
 type KillScope = {
+  narrowSessionScope: boolean;
   cancellationControl: SubagentCancellationControl | undefined;
   refresh: () => number;
 };
@@ -242,6 +244,7 @@ async function withSubagentKillScope<T>(
     const trees: KillTree[] = [];
     select(params.runs, trees, params.controller, undefined, params.ownsRoot);
     const scope: KillScope = {
+      narrowSessionScope: params.narrowSessionScope === true,
       cancellationControl,
       refresh: () => {
         trees.forEach(refreshTree);
@@ -285,6 +288,7 @@ async function killLatestSubagentRun(params: {
   scope: KillScope;
   suppressTaskDelivery?: boolean;
   beforeSessionKill?: () => boolean;
+  requiredSessionId?: string;
   expectedRunId?: string;
   expectedGeneration?: number;
   expectedOwnerKey?: string;
@@ -310,6 +314,16 @@ async function killLatestSubagentRun(params: {
   if (!session) {
     return { entry, result: { killed: false } };
   }
+  if (scope.narrowSessionScope && !session.entry?.sessionId.trim()) {
+    return {
+      entry,
+      session,
+      result: {
+        killed: false,
+        error: "Subagent session target is unavailable for narrow cancellation.",
+      },
+    };
+  }
   if (!matchesExpected(entry)) {
     return { entry, session, result: { killed: false, superseded: true } };
   }
@@ -318,6 +332,9 @@ async function killLatestSubagentRun(params: {
         ...params,
         entry,
         session,
+        requiredSessionId:
+          params.requiredSessionId ??
+          (scope.narrowSessionScope ? session.entry?.sessionId : undefined),
         cancellationControl: scope.cancellationControl,
         isCurrent: (candidate) => tree.isCurrent(candidate) && matchesExpected(candidate),
         withdrawQueuedReservation: () => tree.dispatchHold?.withdraw(),
@@ -543,6 +560,7 @@ export async function killSubagentRunAdmin(
     assertCurrent: () => void;
     prepareRead?: () => Promise<void> | undefined;
     beforeSessionKill?: () => boolean;
+    requiredSessionId?: string;
     preparePublication?: KillPublicationPreparation;
   },
 ): Promise<SubagentAdminKillResult> {
@@ -583,6 +601,7 @@ export async function killSubagentRunAdmin(
       runs: [entry],
       assertCurrent: control?.assertCurrent,
       prepareRead: control?.prepareRead,
+      narrowSessionScope: control?.requiredSessionId !== undefined,
     },
     async (scope, [tree]) => {
       if (!tree) {
@@ -593,6 +612,7 @@ export async function killSubagentRunAdmin(
         tree,
         scope,
         beforeSessionKill: control?.beforeSessionKill,
+        requiredSessionId: control?.requiredSessionId,
         // Resolve stable task identity once; a later replacement must not inherit this Stop.
         expectedRunId: expectedRunId || (expectedTaskRunId ? entry.runId : undefined),
         expectedGeneration: params.expectedGeneration,

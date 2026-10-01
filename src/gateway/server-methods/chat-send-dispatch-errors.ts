@@ -5,6 +5,7 @@ import { renderFailoverCodeUserCopy } from "../../agents/failover/user-copy.js";
 import { DispatchSessionRefreshRequiredError } from "../../auto-reply/reply/dispatch-session-refresh-error.js";
 import { SessionGoalOperationError } from "../../config/sessions/goals-operations.js";
 import { clearAgentRunContext, getAgentRunContext } from "../../infra/agent-run-registry.js";
+import { getRpcSourceStartedAt } from "../../sessions/session-controller.rpc-sources.js";
 import { resolveStateContentionPresentation } from "../../sessions/session-run-error-presentation.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
@@ -245,9 +246,9 @@ export function createChatSendDispatchErrorLifecycle(params: {
     const abortedAtDispatchReject = activeRunAbort.controller.signal.aborted;
     const abortMarkerAtDispatchReject = context.chatRunState.runs.get(clientRunId)?.abortMarker;
     const agentTerminalPersistenceOwnedAtDispatchReject =
-      activeRunAbort.entry?.projectSessionTerminalPending === true ||
-      activeRunAbort.entry?.projectSessionTerminalPersistence !== undefined ||
-      activeRunAbort.entry?.projectSessionTerminalPersisted === true;
+      activeRunAbort.entry?.adapter.projectSessionTerminalPending === true ||
+      activeRunAbort.entry?.adapter.projectSessionTerminalPersistence !== undefined ||
+      activeRunAbort.entry?.adapter.projectSessionTerminalPersisted === true;
 
     if (abortedAtDispatchReject && abortMarkerAtDispatchReject !== undefined) {
       // chat.abort has already emitted the canonical terminal lifecycle and
@@ -276,7 +277,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
     // a later chat.abort can publish a second terminal for a rejected run.
     context.chatRunState.deleteAbortMarker(clientRunId);
     if (agentTerminalPersistenceOwnedAtDispatchReject && activeRunAbort.entry) {
-      activeRunAbort.entry.isAbortable = () => false;
+      activeRunAbort.entry.adapter.isAbortable = () => false;
     }
     activeRunAbort.cleanup();
 
@@ -319,8 +320,9 @@ export function createChatSendDispatchErrorLifecycle(params: {
         endedAt: Date.now(),
         error: errorMessage,
         errorKind,
-        sessionId: activeRunAbort.entry?.sessionId ?? backingSessionId ?? clientRunId,
-        startedAt: activeRunAbort.entry?.startedAtMs ?? now,
+        sessionId: activeRunAbort.entry?.adapter.sessionId ?? backingSessionId ?? clientRunId,
+        startedAt:
+          (activeRunAbort.entry ? getRpcSourceStartedAt(activeRunAbort.entry) : undefined) ?? now,
       };
     }
     if (!agentTerminalPersistenceOwnedAtDispatchReject || params.isReplyDispatchRun?.()) {
@@ -391,7 +393,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
             ok: true,
             payload: buildAbortedChatSendPayload({
               runId: clientRunId,
-              stopReason: activeRunAbort.entry?.abortStopReason ?? "rpc",
+              stopReason: activeRunAbort.entry?.adapter.abortStopReason ?? "rpc",
               endedAt,
             }),
           },

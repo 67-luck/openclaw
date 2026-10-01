@@ -4,7 +4,8 @@ import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { withBeforeAgentReplyObserver } from "../../plugins/before-agent-reply.js";
 import { getGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
-import { readPendingUserTurnTranscriptAdmission } from "../../sessions/user-turn-transcript-admission.js";
+import type { ReplyOperation } from "../../sessions/session-controller.js";
+import { replyRunRegistry } from "../../sessions/session-controller.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { ReplyPayload } from "../types.js";
@@ -15,7 +16,6 @@ import {
 } from "./agent-runner-core.js";
 import { executeAgentTurn } from "./agent-runner-execution.js";
 import { markPostCompactionModelFailurePayload } from "./agent-runner-failure-reply.js";
-import { runMemoryFlushIfNeeded, runSessionCompactionIfNeeded } from "./agent-runner-memory.js";
 import { accountAgentTurnCompaction } from "./agent-runner-result-accounting.js";
 import { finalizeReplyAgentRun } from "./agent-runner-result.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
@@ -26,10 +26,10 @@ import {
   buildRecoverablePendingFinalDeliveryText,
   normalizePendingFinalDeliveryPayloads,
 } from "./pending-final-delivery.js";
+import { admitFollowupRunLifecycle } from "./queue/lifecycle.js";
 import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
 import { recordReplyOperationAgentTurn } from "./reply-operation-run-state.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
-import { replyRunRegistry } from "./reply-run-registry.js";
+import { prepareReplyTurnContext } from "./reply-turn-preflight.js";
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
 import { resolveReplySourceTurnId } from "./source-turn-id.js";
 type ExecutePreparedReplyAgentRunInput = Omit<
@@ -101,7 +101,6 @@ export async function executePreparedReplyAgentRun(
     storePath,
     toolProgressDetail,
     traceAgentPhase,
-    turnAdoptionLifecycle,
     typing,
     typingMode,
     typingSignals,
@@ -131,42 +130,16 @@ export async function executePreparedReplyAgentRun(
 
   await typingSignals.signalRunStart();
 
-  const preflightAdmission = readPendingUserTurnTranscriptAdmission(
-    followupRun.userTurnTranscriptRecorder,
-  );
-  const checkpointMemory = async (entry: SessionEntry) => {
-    const flushed = await traceAgentPhase("reply.memory_flush", () =>
-      runMemoryFlushIfNeeded({
-        ...context,
-        preflightAdmission,
-        promptForEstimate: followupRun.prompt,
-        sessionEntry: entry,
-        sessionStore: activeSessionStore,
-      }),
-    );
-    setActiveSessionEntry(flushed.sessionEntry);
-    replyOperation.abortSignal.throwIfAborted();
-    if (flushed.outcome === "exhausted") {
-      await sendDirectCompactionNotice?.("memory_flush_degraded");
-    }
-    return flushed.sessionEntry;
-  };
-
   const prePreflightCompactionCount = activeSessionEntry?.compactionCount ?? 0;
-  activeSessionEntry = await traceAgentPhase("reply.preflight_compaction", () =>
-    runSessionCompactionIfNeeded({
-      ...context,
-      pendingUserEntryId: preflightAdmission?.entryId,
-      promptForEstimate: followupRun.prompt,
-      sessionEntry: activeSessionEntry,
-      sessionStore: activeSessionStore,
-      abortSignal: replyOperation.abortSignal,
-      beforeCompaction: checkpointMemory,
-      onCompactionStart: () => replyOperation.setPhase("preflight_compacting"),
-      onSessionIdChanged: (sessionId) => replyOperation.updateSessionId(sessionId),
-      onCompactionNotice: sendDirectCompactionNotice,
-    }),
-  );
+  activeSessionEntry = await prepareReplyTurnContext({
+    ...context,
+    promptForEstimate: followupRun.prompt,
+    sessionEntry: activeSessionEntry,
+    sessionStore: activeSessionStore,
+    publishCheckpoint: setActiveSessionEntry,
+    onCompactionNotice: sendDirectCompactionNotice,
+    trace: traceAgentPhase,
+  });
   setActiveSessionEntry(activeSessionEntry);
   const preflightCompactionApplied =
     (activeSessionEntry?.compactionCount ?? 0) > prePreflightCompactionCount;
@@ -194,7 +167,7 @@ export async function executePreparedReplyAgentRun(
   // Adoption marks run start and must never be spool-replayed (would re-run tools).
   // Suppressed delivery persists only the user transcript; crashed suppressed runs die
   // silently. Deliverable turns atomically persist transcript plus recovery ownership.
-  await turnAdoptionLifecycle?.onAdopted();
+  await admitFollowupRunLifecycle(followupRun);
   const runOutcome = await withBeforeAgentReplyObserver(
     {
       beforeDispatch: async () => {

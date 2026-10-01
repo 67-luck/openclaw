@@ -56,10 +56,9 @@ import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { RawData, WebSocket } from "ws";
 import { installQueueRuntimeErrorSilencer } from "../../auto-reply/reply/queue.test-helpers.js";
-import * as replyRunRegistryModule from "../../auto-reply/reply/reply-run-registry.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.operation.js";
-import { replyRunRegistry } from "../../auto-reply/reply/reply-run-registry.registry.js";
-import { forceClearReplyOperation } from "../../auto-reply/reply/reply-run-registry.state.js";
+import * as replyRunRegistryModule from "../../sessions/session-controller.js";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
+import { replyRunRegistry } from "../../sessions/session-controller.registry.js";
 import {
   dispatchInboundMessageMock,
   installGatewayTestHooks,
@@ -171,7 +170,7 @@ beforeEach(async () => {
   // Tear down any reply operation left over from the prior test.
   if (liveOperation) {
     try {
-      forceClearReplyOperation(liveOperation.op as never, "test-cleanup");
+      liveOperation.op.complete();
     } catch {
       // best-effort
     }
@@ -209,7 +208,7 @@ async function makeSessionDir(): Promise<string> {
 afterAll(async () => {
   if (liveOperation) {
     try {
-      forceClearReplyOperation(liveOperation.op as never, "test-cleanup-final");
+      liveOperation.op.complete();
     } catch {
       // best-effort
     }

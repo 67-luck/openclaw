@@ -204,24 +204,27 @@ describe("followup queue authority", () => {
 
   it.each(["old", "new", "summarize"] as const)(
     "releases original source holds exactly once across %s overflow and queue clearing",
-    (dropPolicy) => {
+    async (dropPolicy) => {
       const key = `test-operator-overflow-${dropPolicy}`;
       const source = createOperatorAuthority();
+      const runs: ReturnType<typeof createRun>[] = [];
       try {
         for (let index = 0; index < 5; index += 1) {
-          enqueueFollowupRun(
-            key,
-            {
-              ...createRun({ prompt: `request ${index}` }),
-              operatorAuthority: source.authority,
-            },
-            createQueueSettings({ cap: 1, dropPolicy }),
-          );
+          const run = createRun({ prompt: "request " + index });
+          run.operatorAuthority = source.authority;
+          runs.push(run);
+          enqueueFollowupRun(key, run, createQueueSettings({ cap: 1, dropPolicy }));
         }
         source.releaseRequest();
+        await Promise.all(
+          runs
+            .filter((run) => run.controllerInput?.custody.completed)
+            .map((run) => run.controllerInput!.settlement.promise),
+        );
         expect(source.references()).toBe(dropPolicy === "summarize" ? 3 : 1);
         clearFollowupQueue(key);
         clearFollowupQueue(key);
+        await Promise.all(runs.map((run) => run.controllerInput!.settlement.promise));
         expect(source.references()).toBe(0);
       } finally {
         clearFollowupQueue(key);
@@ -254,6 +257,7 @@ describe("followup queue authority", () => {
     try {
       enqueueFollowupRun(key, recovery.run, createQueueSettings());
       completeFollowupRunLifecycle(parent);
+      await parent.controllerInput!.settlement.promise;
       expect(source.references()).toBe(1);
       scheduleFollowupDrain(key, async (run) => {
         try {

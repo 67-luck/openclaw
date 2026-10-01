@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../../config/config.js";
+import { createReplyOperation as createRegisteredReplyOperation } from "../../sessions/session-controller.js";
 import type { TemplateContext } from "../templating.js";
 import type { AgentTurnParams } from "./agent-runner-execution.types.js";
 import {
@@ -9,7 +10,7 @@ import {
   createReplyMediaContextRuntimeMock,
   enqueueFollowupRunMock,
   makeRunReplyAgentParams,
-  parkSteerCandidateMock,
+  reserveSteerCandidateMock,
   parkedSteerConsumeMock,
   parkedSteerFallbackMock,
   queueEmbeddedAgentMessageWithOutcomeAsyncMock,
@@ -22,7 +23,6 @@ import {
   cleanupAgentRunnerMediaTestState,
 } from "./agent-runner.media-paths.test-harness.js";
 import type { FollowupRun, QueueSettings } from "./queue.js";
-import { createReplyOperation as createRegisteredReplyOperation } from "./reply-run-registry.js";
 import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
 
 describe("runReplyAgent media path normalization", () => {
@@ -106,7 +106,7 @@ describe("runReplyAgent media path normalization", () => {
       await runReplyAgent(params);
 
       expect(queueEmbeddedAgentMessageWithOutcomeAsyncMock).not.toHaveBeenCalled();
-      expect(parkSteerCandidateMock).not.toHaveBeenCalled();
+      expect(reserveSteerCandidateMock).not.toHaveBeenCalled();
       expect(enqueueFollowupRunMock).toHaveBeenCalledOnce();
       expect(enqueueFollowupRunMock.mock.calls[0]?.[1]).toBe(followupRun);
     },
@@ -180,7 +180,7 @@ describe("runReplyAgent media path normalization", () => {
       }),
     );
 
-    expect(parkSteerCandidateMock).toHaveBeenCalledWith(
+    expect(reserveSteerCandidateMock).toHaveBeenCalledWith(
       "main",
       followupRun,
       expect.objectContaining({ mode: "steer" }),
@@ -247,7 +247,7 @@ describe("runReplyAgent media path normalization", () => {
     );
 
     expect(queueEmbeddedAgentMessageWithOutcomeAsyncMock).not.toHaveBeenCalled();
-    expect(parkSteerCandidateMock).not.toHaveBeenCalled();
+    expect(reserveSteerCandidateMock).not.toHaveBeenCalled();
     expect(enqueueFollowupRunMock).toHaveBeenCalledOnce();
     expect(enqueueFollowupRunMock.mock.calls[0]?.[1].prompt).toBe("generate chart");
   });
@@ -271,7 +271,7 @@ describe("runReplyAgent media path normalization", () => {
       }),
     );
 
-    expect(parkSteerCandidateMock).toHaveBeenCalledWith(
+    expect(reserveSteerCandidateMock).toHaveBeenCalledWith(
       "main",
       expect.objectContaining({ prompt: "generate chart" }),
       expect.objectContaining({ mode: "steer" }),

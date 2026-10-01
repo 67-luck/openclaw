@@ -1,10 +1,6 @@
 // Embedded run registry tests cover active run handles, queueing, abort
 // ownership, and diagnostics.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  createReplyOperation,
-  isReplyRunActiveForSessionId,
-} from "../../auto-reply/reply/reply-run-registry.js";
 import { testing as replyRunTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
 import { setDiagnosticsEnabledForProcess } from "../../infra/diagnostic-events.js";
 import {
@@ -12,22 +8,29 @@ import {
   resetDiagnosticSessionStateForTest,
 } from "../../logging/diagnostic-session-state.js";
 import { diagnosticLogger } from "../../logging/diagnostic.js";
+import {
+  createReplyOperation,
+  isReplyRunActiveForSessionId,
+} from "../../sessions/session-controller.js";
+import { isSessionRunCompactionBlocked as isEmbeddedAgentRunAbortableForCompaction } from "../../sessions/session-controller.queries.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { prepareEmbeddedRunPermissionChange } from "./run-permissions.js";
 import { createEmbeddedRunPermissionChanges } from "./run/permission-change.js";
 import {
   abortAndDrainEmbeddedAgentRun,
   abortEmbeddedAgentRun,
-  clearActiveEmbeddedRun,
   clearEmbeddedAgentRunAbortabilityForRunId,
   isEmbeddedAgentRunAbortableForRunId,
-  isEmbeddedAgentRunAbortableForCompaction,
   isEmbeddedAgentRunHandleActive,
   retainEmbeddedAgentRunAbortabilityForRunId,
-  setActiveEmbeddedRun,
   supersedeEmbeddedAgentRunByRunId,
 } from "./runs.js";
-import { createEmbeddedRunHandle, testing } from "./runs.test-support.js";
+import {
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+  testing,
+} from "./runs.test-support.js";
 
 describe("embedded-agent runner run registry", () => {
   afterEach(() => {
@@ -306,64 +309,82 @@ describe("embedded-agent runner run registry", () => {
   });
 
   it("expires reply-owned stuck recovery as run_stalled instead of user abort", async () => {
-    const cancel = vi.fn();
-    const operation = createReplyOperation({
-      sessionKey: "agent:main:reply-stuck",
-      sessionId: "session-reply-stuck",
-      resetTriggered: false,
-    });
-    cancel.mockImplementation(() => operation.complete());
-    operation.attachBackend({
-      kind: "embedded",
-      cancel,
-      isStreaming: () => true,
-    });
-    operation.setPhase("running");
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      const cancel = vi.fn();
+      const operation = createReplyOperation({
+        sessionKey: "agent:main:reply-stuck",
+        sessionId: "session-reply-stuck",
+        resetTriggered: false,
+      });
+      cancel.mockImplementation(() => operation.complete());
+      operation.attachBackend({
+        kind: "embedded",
+        cancel,
+        isStreaming: () => true,
+      });
+      operation.setPhase("running");
 
-    const result = await abortAndDrainEmbeddedAgentRun({
-      sessionId: "session-reply-stuck",
-      sessionKey: "agent:main:reply-stuck",
-      reason: "stuck_recovery",
-      forceClear: true,
-    });
+      vi.setSystemTime(6 * 60_000);
+      const result = await abortAndDrainEmbeddedAgentRun({
+        sessionId: "session-reply-stuck",
+        sessionKey: "agent:main:reply-stuck",
+        reason: "stuck_recovery",
+        forceClear: true,
+      });
 
-    expect(result).toEqual({ aborted: true, drained: true, forceCleared: false });
-    expect(operation.result).toEqual({ kind: "failed", code: "run_stalled" });
-    expect(cancel).toHaveBeenCalledWith("superseded");
+      expect(result).toEqual({ aborted: true, drained: true, forceCleared: false });
+      expect(operation.result).toEqual({ kind: "failed", code: "run_stalled" });
+      expect(cancel).toHaveBeenCalledWith("superseded");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("expires stuck recovery as run_stalled even with a live embedded handle", async () => {
-    // The live-handle path is the common field case: the wedged run still owns
-    // a registered handle, and its abort handler re-enters abortByUser. The
-    // expiry must win the attribution race (run_stalled, not aborted_by_user).
-    const operation = createReplyOperation({
-      sessionKey: "agent:main:reply-stuck-live",
-      sessionId: "session-reply-stuck-live",
-      resetTriggered: false,
-    });
-    const handle = createEmbeddedRunHandle({
-      abort: () => {
-        operation.abortByUser();
-      },
-    });
-    operation.attachBackend({
-      kind: "embedded",
-      cancel: handle.abort,
-      isStreaming: handle.isStreaming,
-    });
-    operation.setPhase("running");
-    setActiveEmbeddedRun("session-reply-stuck-live", handle);
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    try {
+      // The live-handle path is the common field case: the wedged run still owns
+      // a registered handle, and its abort handler re-enters abortByUser. The
+      // expiry must win the attribution race (run_stalled, not aborted_by_user).
+      const operation = createReplyOperation({
+        sessionKey: "agent:main:reply-stuck-live",
+        sessionId: "session-reply-stuck-live",
+        resetTriggered: false,
+      });
+      const handle = createEmbeddedRunHandle({
+        abort: () => {
+          operation.abortByUser();
+        },
+      });
+      operation.attachBackend({
+        kind: "embedded",
+        cancel: handle.abort,
+        isStreaming: handle.isStreaming,
+      });
+      operation.setPhase("running");
+      setActiveEmbeddedRun("session-reply-stuck-live", handle);
 
-    const result = await abortAndDrainEmbeddedAgentRun({
-      sessionId: "session-reply-stuck-live",
-      sessionKey: "agent:main:reply-stuck-live",
-      reason: "stuck_recovery",
-      forceClear: true,
-      settleMs: 50,
-    });
+      vi.setSystemTime(6 * 60_000);
+      const pending = abortAndDrainEmbeddedAgentRun({
+        sessionId: "session-reply-stuck-live",
+        sessionKey: "agent:main:reply-stuck-live",
+        reason: "stuck_recovery",
+        forceClear: true,
+        settleMs: 50,
+      });
 
-    expect(result.aborted).toBe(true);
-    expect(operation.result).toEqual({ kind: "failed", code: "run_stalled" });
+      await vi.advanceTimersByTimeAsync(100);
+      const result = await pending;
+      expect(result.aborted).toBe(true);
+      expect(operation.result).toEqual({ kind: "failed", code: "run_stalled" });
+      clearActiveEmbeddedRun("session-reply-stuck-live", handle);
+      operation.complete();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("claims shared restart ownership before invoking an attached handle", () => {
@@ -457,9 +478,8 @@ describe("embedded-agent runner run registry", () => {
       isAbortable: handle.isAbortable,
       isCompacting: handle.isCompacting,
     });
-    operation.retainFailureUntilComplete();
-    operation.fail("run_failed", new Error("terminal failure"));
     setActiveEmbeddedRun("session-restart-failed-compacting", handle);
+    operation.fail("run_failed", new Error("terminal failure"));
 
     expect(abortEmbeddedAgentRun(undefined, { mode: "compacting", reason: "restart" })).toBe(false);
     expect(operation.result).toMatchObject({ kind: "failed", code: "run_failed" });

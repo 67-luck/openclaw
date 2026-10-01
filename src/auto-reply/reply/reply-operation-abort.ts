@@ -8,7 +8,7 @@ import {
   resolveAgentRunErrorLifecycleFields,
 } from "../../agents/run-termination.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
+import type { ReplyOperation } from "../../sessions/session-controller.js";
 
 export function buildRestartLifecycleReplyText(): string {
   return "⚠️ Gateway is restarting. Please wait a few seconds and try again.";

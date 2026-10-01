@@ -4,7 +4,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionEntry } from "../../config/sessions.js";
-import { isSessionWorkAdmissionActive } from "../../sessions/session-lifecycle-admission.js";
+import { isSessionControllerWorkActive } from "../../sessions/session-controller.lifecycle.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { createSyntheticPluginRuntimeClient } from "../server-plugin-runtime-client.js";
 import type { GatewaySessionRow } from "../session-utils.types.js";
@@ -1642,7 +1642,7 @@ describe("gateway agent handler", () => {
     let admissionActiveAtFinalResponse: boolean | undefined;
     first.mockImplementation((ok, payload) => {
       if (ok && payload && typeof payload === "object" && "status" in payload) {
-        admissionActiveAtFinalResponse = isSessionWorkAdmissionActive("/tmp/sessions.json", [
+        admissionActiveAtFinalResponse = isSessionControllerWorkActive("/tmp/sessions.json", [
           sessionKey,
           "run-1",
         ]);

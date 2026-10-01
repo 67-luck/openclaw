@@ -13,7 +13,7 @@ import { testing as swarmSchedulerTesting } from "../../agents/subagents/swarm/s
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import * as gatewayWorkAdmission from "../../process/gateway-work-admission.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { createWorkerInferenceCancellationService } from "../worker-environments/inference-control.test-helpers.js";
 import { handleChatAbortRequestWithLifecycle } from "./chat-abort-handler.js";
 import * as transcriptInject from "./chat-transcript-inject.js";
@@ -96,10 +96,10 @@ describe("descendant cascade ownership", () => {
     });
     let current = true;
     const parent = createActiveRun(sessionKey, { agentId: "main", owner: { connId: "owner" } });
-    parent.controller.signal.addEventListener("abort", () => {
+    parent.input.abortSignal.addEventListener("abort", () => {
       current = false;
     });
-    const context = createChatAbortContext({ chatAbortControllers: new Map([["parent", parent]]) });
+    const context = createChatAbortContext({ rpcSources: new Map([["parent", parent]]) });
     context.chatRunState.getOrCreate("parent").buffer = "cancelled parent partial";
     const persist = vi
       .spyOn(transcriptPersistence, "persistAbortedPartials")
@@ -124,7 +124,7 @@ describe("descendant cascade ownership", () => {
         ),
       }),
     );
-    expect(parent.controller.signal.aborted).toBe(true);
+    expect(parent.input.abortSignal.aborted).toBe(true);
     expect(persist).toHaveBeenCalledOnce();
     expect(persist.mock.calls[0]?.[0].snapshots.map((snapshot) => snapshot.runId)).toEqual([
       "parent",
@@ -165,6 +165,7 @@ describe("descendant cascade ownership", () => {
       owner: { connId: "conn-owner", deviceId: "dev-owner" },
     });
     const foreign = createActiveRun(sessionKey, {
+      queued: kind === "mixed queued",
       sessionId: "main-session",
       agentId: "main",
       owner: { connId: "conn-foreign", deviceId: "dev-foreign" },
@@ -175,9 +176,9 @@ describe("descendant cascade ownership", () => {
     });
     const context = createChatAbortContext({ getRuntimeConfig: () => cfg });
     if (hasOwnedActive) {
-      context.chatAbortControllers.set("run-mine", mine);
+      context.rpcSources.set("run-mine", mine);
       context.chatRunState.getOrCreate("run-mine").buffer = "partial parent reply";
-      mine.controller.signal.addEventListener("abort", () => {
+      mine.input.abortSignal.addEventListener("abort", () => {
         if (kind !== "late descendant") {
           releaseSwarmRun("capacity");
         }
@@ -193,17 +194,10 @@ describe("descendant cascade ownership", () => {
         "hidden worker",
       ].includes(kind)
     ) {
-      context.chatAbortControllers.set("run-foreign", foreign);
+      context.rpcSources.set("run-foreign", foreign);
     }
     if (kind === "mixed queued") {
-      context.chatQueuedTurns.set("run-foreign", {
-        controller: foreign.controller,
-        sessionKey,
-        sessionId: "main-session",
-        agentId: "main",
-        ownerConnId: "conn-foreign",
-        ownerDeviceId: "dev-foreign",
-      });
+      context.rpcSources.set("run-foreign", foreign);
     }
     if (kind.includes("pending")) {
       const prefix = kind === "mixed pending chat" ? "pending-chat:" : "agent:";
@@ -277,7 +271,7 @@ describe("descendant cascade ownership", () => {
     const proceed = createDeferred();
     const admission =
       kind === "late descendant"
-        ? await beginSessionWorkAdmission({
+        ? await beginSessionEffect({
             scope: resolveSessionStorePathCore(undefined, { agentId: "main" }),
             identities: ["agent:main:subagent:orchestrator"],
             assertAllowed: () => {},
@@ -355,7 +349,7 @@ describe("descendant cascade ownership", () => {
         expect(child?.execution.endedAt).toBeUndefined();
         expect(start).toHaveBeenCalledOnce();
       }
-      expect(foreign.controller.signal.aborted).toBe(false);
+      expect(foreign.input.abortSignal.aborted).toBe(false);
       expect(cancelInferenceForSession).not.toHaveBeenCalled();
     } finally {
       admission?.release();

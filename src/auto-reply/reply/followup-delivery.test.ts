@@ -4,8 +4,8 @@ import { createChatSendLateFollowupDisposition } from "../../gateway/server-meth
 import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import type { AgentTurnExecutionResult } from "./agent-runner-execution.types.js";
+import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
 import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
-import type { AdmittedFollowupTurn } from "./followup-turn-admission.js";
 import type { FollowupRun } from "./queue/types.js";
 
 const deliveryState = vi.hoisted(() => ({

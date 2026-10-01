@@ -20,7 +20,7 @@ import {
   isIncognitoSessionKey,
   resolveAgentIdFromSessionKey,
 } from "../routing/session-key.js";
-import { isSessionWorkAdmissionActive } from "../sessions/session-lifecycle-admission.js";
+import { isSessionControllerWorkActive } from "../sessions/session-controller.lifecycle.js";
 import { recordGatewaySessionRunFailure } from "../sessions/session-run-error.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import {
@@ -128,7 +128,7 @@ async function reconcileStartupOrphans(
           isUnsettledPredecessor(current);
         const hasOwner = () =>
           hasSubagentSessionRecoveryOwner(identity) ||
-          isSessionWorkAdmissionActive(connection.path, [sessionKey, entry.sessionId]);
+          isSessionControllerWorkActive(connection.path, [sessionKey, entry.sessionId]);
         const assertOwnerless = () => {
           assertGatewayOwner();
           if (hasOwner()) {

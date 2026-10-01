@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
 import {
   closeOpenClawAgentDatabasesAsync,
@@ -358,7 +358,7 @@ describe("SQLite reclamation admission races", () => {
       }
     };
     let admissionSettled = false;
-    const admissionOutcome = beginSessionWorkAdmission({
+    const admissionOutcome = beginSessionEffect({
       scope: storePath,
       identities: [sessionKey, historicalSessionId],
       assertAllowed: assertHistoricalGenerationExists,

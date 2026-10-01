@@ -7,7 +7,6 @@ import {
   type SessionsRecoverResult,
 } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
-import { isEmbeddedAgentRunActive } from "../agents/embedded-agent.js";
 import {
   inspectMainRestartRecoveryRolloverEligibility,
   isMainSessionRecoveryReconciliationCandidate,
@@ -22,12 +21,13 @@ import {
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { recordSessionCreated } from "../sessions/session-created.js";
 import {
-  closeSessionWorkAdmissions,
-  isSessionWorkAdmissionActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../sessions/session-lifecycle-admission.js";
+  closeSessionControllerAdmission,
+  isSessionControllerWorkActive,
+  runSessionMutation,
+} from "../sessions/session-controller.lifecycle.js";
+import { isSessionRunActive } from "../sessions/session-controller.queries.js";
+import { recordSessionCreated } from "../sessions/session-created.js";
 import { normalizeSessionIdentities } from "../sessions/session-lifecycle-identity.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import { runQueuedStoreWrite, type StoreWriterQueue } from "../shared/store-writer-queue.js";
@@ -89,17 +89,17 @@ export async function reconcileOrphanedGatewaySessionRecovery(params: {
   const identities = [...target.storeKeys, initialSource.sessionId];
   if (
     !isMainSessionRecoveryReconciliationCandidate(initialSource) ||
-    isSessionWorkAdmissionActive(target.storePath, identities)
+    isSessionControllerWorkActive(target.storePath, identities)
   ) {
     return undefined;
   }
   const readSource = () =>
     loadGatewaySessionEntryReadOnly(target.canonicalKey, { agentId: target.agentId }).entry;
-  return await runExclusiveSessionLifecycleMutation({
+  return await runSessionMutation({
     scope: target.storePath,
     identities,
     run: async () => {
-      if (isSessionWorkAdmissionActive(target.storePath, identities)) {
+      if (isSessionControllerWorkActive(target.storePath, identities)) {
         return undefined;
       }
       const assertPlacementCurrent = prepareSessionWorkerPlacementMutationCheck({
@@ -127,7 +127,7 @@ export async function reconcileOrphanedGatewaySessionRecovery(params: {
           current.activeWriterRunId !== initialSource.activeWriterRunId ||
           current.mainRestartRecovery?.cycleId !== initialSource.mainRestartRecovery?.cycleId ||
           current.mainRestartRecovery?.revision !== initialSource.mainRestartRecovery?.revision ||
-          isSessionWorkAdmissionActive(target.storePath, identities)
+          isSessionControllerWorkActive(target.storePath, identities)
         ) {
           throw new Error("Session changed before recovery; refresh and retry.");
         }
@@ -255,8 +255,8 @@ export async function recoverGatewaySession(params: {
       }
     }
     if (
-      isEmbeddedAgentRunActive(currentSource.sessionId) ||
-      isSessionWorkAdmissionActive(sourceTarget.storePath, [
+      isSessionRunActive(currentSource.sessionId) ||
+      isSessionControllerWorkActive(sourceTarget.storePath, [
         sourceTarget.canonicalKey,
         currentSource.sessionId,
       ])
@@ -287,7 +287,7 @@ export async function recoverGatewaySession(params: {
   const commitRecovery = async () => {
     let release = () => {};
     try {
-      const prepared = await runExclusiveSessionLifecycleMutation({
+      const prepared = await runSessionMutation({
         scope: sourceTarget.storePath,
         identities: sourceIdentities,
         run: async () => {
@@ -311,7 +311,7 @@ export async function recoverGatewaySession(params: {
             return { ok: false as const, error: stopFailure(error) };
           }
           // Reclaim may need both queues after this short exact-owner preflight.
-          release = closeSessionWorkAdmissions({
+          release = closeSessionControllerAdmission({
             scope: sourceTarget.storePath,
             identities: sourceIdentities,
             reason: createAgentRunDirectAbortError(),
@@ -335,7 +335,7 @@ export async function recoverGatewaySession(params: {
           return current.ok ? { ok: false as const, error: stopFailure(error) } : current;
         }
       }
-      return await runExclusiveSessionLifecycleMutation({
+      return await runSessionMutation({
         targets: [
           { scope: sourceTarget.storePath, identities: sourceIdentities },
           {

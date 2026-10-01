@@ -1,34 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const REPLY_RUN_STATE_KEY = Symbol.for("openclaw.replyRunRegistry");
-
-type RetainedReplyRunState = {
-  activeRunsByKey: Map<string, unknown>;
-  activeSessionIdsByKey: Map<string, string>;
-  activeKeysBySessionId: Map<string, string>;
-  waitKeysBySessionId: Map<string, string>;
-  waitersByKey: Map<string, Set<unknown>>;
-  followupAdmissionBarriersByKey: Map<string, unknown>;
-  successorAdmissionBarriersByKey: Map<string, unknown>;
-  sourceTurnByKey?: Map<string, string>;
-  evictOperationByOperation: WeakMap<object, () => void>;
-  executionStartedOperations: WeakSet<object>;
-};
-
-function buildRetainedStateWithoutSourceTurnByKey(): RetainedReplyRunState {
-  // Retained state from before source-turn bindings were introduced.
-  return {
-    activeRunsByKey: new Map(),
-    activeSessionIdsByKey: new Map(),
-    activeKeysBySessionId: new Map(),
-    waitKeysBySessionId: new Map(),
-    waitersByKey: new Map(),
-    followupAdmissionBarriersByKey: new Map(),
-    successorAdmissionBarriersByKey: new Map(),
-    evictOperationByOperation: new WeakMap(),
-    executionStartedOperations: new WeakSet(),
-  };
-}
+const REPLY_RUN_STATE_KEY = Symbol.for("openclaw.sessionControllers");
 
 afterEach(() => {
   const store = globalThis as Record<PropertyKey, unknown>;
@@ -38,7 +10,8 @@ afterEach(() => {
 
 describe("reply run registry retained singleton", () => {
   it("retains a live source binding across module reload and clears it with its owner", async () => {
-    const { createReplyOperation, replyRunRegistry } = await import("./reply-run-registry.js");
+    const { createReplyOperation, replyRunRegistry } =
+      await import("../../sessions/session-controller.js");
     const key = "agent:main:reload";
     const operation = createReplyOperation({
       sessionKey: key,
@@ -47,10 +20,10 @@ describe("reply run registry retained singleton", () => {
     });
     operation.setPhase("running");
     replyRunRegistry.bindSourceTurnId(operation, "reload-source");
-    let reloaded: typeof import("./reply-run-registry.js");
+    let reloaded: typeof import("../../sessions/session-controller.js");
     try {
       vi.resetModules();
-      reloaded = await import("./reply-run-registry.js");
+      reloaded = await import("../../sessions/session-controller.js");
       expect(reloaded.replyRunRegistry.get(key)).toBe(operation);
       expect(reloaded.replyRunRegistry.getSourceTurnId(key)).toBe("reload-source");
     } finally {
@@ -60,23 +33,36 @@ describe("reply run registry retained singleton", () => {
     expect(reloaded.replyRunRegistry.getSourceTurnId(key)).toBeUndefined();
   });
 
-  it("backfills sourceTurnByKey when the retained singleton predates the field", async () => {
-    (globalThis as Record<PropertyKey, unknown>)[REPLY_RUN_STATE_KEY] =
-      buildRetainedStateWithoutSourceTurnByKey();
-
-    vi.resetModules();
-    const { createReplyOperation, replyRunRegistry } = await import("./reply-run-registry.js");
-
-    const operation = createReplyOperation({
-      sessionKey: "agent:main:legacy",
-      sessionId: "legacy-session",
+  it("keeps frozen outcome and retention with the owner across module reload", async () => {
+    const initial = await import("../../sessions/session-controller.js");
+    const operation = initial.createReplyOperation({
+      sessionKey: "agent:main:frozen-reload",
+      sessionId: "frozen-session",
       resetTriggered: false,
     });
-    replyRunRegistry.bindSourceTurnId(operation, "source-legacy-1");
-    expect(replyRunRegistry.getSourceTurnId("agent:main:legacy")).toBe("source-legacy-1");
-    expect(replyRunRegistry.get("agent:main:legacy")).toBe(operation);
-    operation.complete();
-    expect(replyRunRegistry.getSourceTurnId("agent:main:legacy")).toBeUndefined();
-    expect(replyRunRegistry.isActive("agent:main:legacy")).toBe(false);
+    operation.setPhase("running");
+    operation.freezeAbort();
+    try {
+      vi.resetModules();
+      const reloaded = await import("../../sessions/session-controller.js");
+      expect(reloaded.hasCommittedReplyOperationOutcome(operation)).toBe(true);
+      expect(operation.abortByUser()).toBe(false);
+      operation.complete();
+      const retained = reloaded.createReplyOperation({
+        sessionKey: "agent:main:frozen-reload",
+        sessionId: "retained-session",
+        resetTriggered: false,
+      });
+      try {
+        vi.resetModules();
+        const latest = await import("../../sessions/session-controller.js");
+        expect(retained.abortByUser()).toBe(true);
+        expect(latest.replyRunRegistry.get(retained.key)).toBe(retained);
+      } finally {
+        retained.complete();
+      }
+    } finally {
+      operation.complete();
+    }
   });
 });

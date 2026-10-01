@@ -28,6 +28,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../../state/user-profiles.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
+import { createActiveRpcSourceForTest } from "./rpc-source-fixtures.test-support.js";
 import type { GatewayRequestContext, RespondFn, GatewayClient } from "./types.js";
 
 const mocks = vi.hoisted(() => ({
@@ -52,7 +53,7 @@ import {
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
 import { listSessionStateEventsSince } from "../../sessions/session-state-events.js";
 import { upsertSessionUpstreamLink } from "../../sessions/session-upstream-links.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -193,11 +194,18 @@ it("drains rewind fixture owners before closing handles and restoring selectors"
   });
 });
 
-function context(active = false): GatewayRequestContext {
+async function context(active = false): Promise<GatewayRequestContext> {
   return {
     broadcastToConnIds: vi.fn(),
-    chatAbortControllers: new Map(
-      active ? [["active-run", { sessionId: sourceSessionId, sessionKey }]] : undefined,
+    rpcSources: new Map(
+      active
+        ? [
+            [
+              "active-run",
+              await createActiveRpcSourceForTest({ sessionId: sourceSessionId, sessionKey }),
+            ],
+          ]
+        : undefined,
     ),
     getRuntimeConfig: () => ({ agents: { list: [{ id: "main", default: true }] } }),
     getSessionEventSubscriberConnIds: () => new Set(),
@@ -233,8 +241,8 @@ async function invoke(
     },
     respond: respond as unknown as RespondFn,
     context: runtimeConfig
-      ? { ...context(active), getRuntimeConfig: runtimeConfig }
-      : context(active),
+      ? { ...(await context(active)), getRuntimeConfig: runtimeConfig }
+      : await context(active),
     client,
     isWebchatConnect: () => false,
   });
@@ -448,7 +456,7 @@ describe("session message-cut methods", () => {
       req: { id: "fresh-branches-list" } as never,
       params: { sessionKey: "agent:main:never-materialized" },
       respond,
-      context: context(),
+      context: await context(),
       client: null,
       isWebchatConnect: () => false,
     });
@@ -681,7 +689,7 @@ describe("session message-cut methods", () => {
     const storePath = resolveSessionStorePathCore(undefined, { agentId: "main" });
     const mutationEntered = createDeferredCore();
     const releaseMutation = createDeferredCore();
-    const archiving = runExclusiveSessionLifecycleMutation({
+    const archiving = runSessionMutation({
       scope: storePath,
       identities: [sourceSessionId],
       run: async () => {

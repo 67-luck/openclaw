@@ -5,7 +5,13 @@ import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-co
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { createChatSendMessageInjectionStarter } from "../../gateway/server-methods/chat-send-message-injection.js";
+import { createRpcSourceForTest } from "../../gateway/test-helpers.rpc-source.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import {
+  beginReplyMessageInjectionTarget,
+  createReplyOperation,
+  replyRunRegistry,
+} from "../../sessions/session-controller.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { AgentTurnParams } from "./agent-runner-execution.types.js";
 import {
@@ -19,11 +25,6 @@ import {
   collectRuntimeMetadata,
   createOverflowSummaryRetrySource,
 } from "./queue/delivery-context.js";
-import {
-  beginReplyMessageInjectionTarget,
-  createReplyOperation,
-  replyRunRegistry,
-} from "./reply-run-registry.js";
 import { readChannelSourceTurnId } from "./source-turn-id.js";
 
 const state = getFollowupTurnTestState();
@@ -111,7 +112,12 @@ describe("queued turn steering", () => {
         });
         for (const [index, message] of steeringMessages.entries()) {
           const clientRunId = `new-human-input-${index}`;
-          const attempt = createChatSendMessageInjectionStarter({
+          const sourceRef = createRpcSourceForTest(
+            { sessionKey, sessionId: entry.sessionId, agentId: "main" },
+            { runId: clientRunId, storeScope: storePath },
+          );
+          const attempt = await createChatSendMessageInjectionStarter({
+            sourceRef,
             target: replyRunRegistry.resolveCurrentMessageInjectionTarget(sessionKey),
             abortSignal: new AbortController().signal,
             request: {

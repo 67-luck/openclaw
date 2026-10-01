@@ -1,5 +1,14 @@
 // Tests queue state storage, dedupe, and cleanup primitives.
 import { afterEach, describe, expect, it } from "vitest";
+import {
+  submitSessionControllerInput,
+  reserveSessionControllerSource,
+  bindSessionControllerSource,
+  sessionControllerMailboxes,
+  releaseSessionControllerClaim,
+  tryClaimSessionControllerTask,
+  type SessionControllerMailbox,
+} from "../../../sessions/session-controller.mailbox.js";
 import { enqueueFollowupRun } from "./enqueue.js";
 import {
   clearFollowupQueue,
@@ -12,9 +21,45 @@ import type { FollowupRun } from "./types.js";
 
 const QUEUE_KEY = "agent:main:dm:test";
 
-afterEach(() => {
-  clearFollowupQueue(QUEUE_KEY);
-});
+async function clearOwnedQueues() {
+  // Capture owners before cleanup can mutate the registry or publish a successor.
+  const capturedOwners = Array.from(sessionControllerMailboxes());
+  for (const queue of capturedOwners) {
+    if (!queue.owner.aliases.has(QUEUE_KEY)) {
+      continue;
+    }
+    const sources = [
+      ...queue.entries.flatMap((input) => (input.source ? [input.source] : [])),
+      ...queue.summarySources,
+      ...queue.summaryElisions.flatMap((part) => part.sources),
+    ];
+    // Metadata-only summary fixtures still retire through the exact physical
+    // queue they were inserted into, not through a newly inferred config path.
+    for (const source of sources) {
+      if (!source.controllerInput) {
+        const input = reserveSessionControllerSource(queue.key, {
+          target: queue.owner.target,
+          policy: { mode: queue.mode },
+        });
+        bindSessionControllerSource(input, source);
+      }
+    }
+    const inputs = [...queue.entries];
+    const claim = queue.claim;
+    clearFollowupQueue(QUEUE_KEY, queue);
+    if (claim) {
+      releaseSessionControllerClaim(claim);
+    }
+    await Promise.allSettled([
+      ...inputs.map((input) => input.settlement.promise),
+      ...sources.flatMap((source) =>
+        source.controllerInput ? [source.controllerInput.settlement.promise] : [],
+      ),
+      ...(claim ? [claim.settlement.promise] : []),
+    ]);
+  }
+}
+afterEach(clearOwnedQueues);
 
 function makeRun(): FollowupRun["run"] {
   return {
@@ -24,7 +69,7 @@ function makeRun(): FollowupRun["run"] {
     sessionKey: QUEUE_KEY,
     sessionFile: "/tmp/session-1.jsonl",
     workspaceDir: "/tmp/workspace",
-    config: {} as FollowupRun["run"]["config"],
+    config: { session: { store: "/synthetic/queue-state/sessions.sqlite" } },
     provider: "anthropic",
     model: "claude-opus-4-6",
     requestedRouteResolution: "resolved",
@@ -63,14 +108,14 @@ describe("clearRemovedQueuedAuthProfiles", () => {
       fallbackAuthProfileId: "profile-b",
     };
     queue.lastRun = lastRun;
-    queue.items.push(source(queued), source(newer), source(otherAgent));
+    addSources(queue, source(queued), source(newer), source(otherAgent));
     queue.summarySources.push(source(summarized));
     queue.summaryElisions.push({
       contextKey: "context",
       count: 1,
       sources: [source(elided)],
       summaryLines: ["pending summary"],
-      sourceRefs: new WeakMap(),
+      sourceRefs: new Map(),
     });
     const rewrittenConfig = { agents: { entries: { main: { model: "anthropic/model" } } } };
 
@@ -116,7 +161,7 @@ describe("refreshQueuedFollowupSession", () => {
       run: makeRun(),
     };
     queue.lastRun = lastRun;
-    queue.items.push(queuedRun);
+    addSources(queue, queuedRun);
     queue.summarySources.push(summarizedRun);
     queue.summaryElisions.push({
       contextKey: "context",
@@ -129,7 +174,7 @@ describe("refreshQueuedFollowupSession", () => {
         },
       ],
       summaryLines: ["elided summary"],
-      sourceRefs: new WeakMap(),
+      sourceRefs: new Map(),
     });
 
     refreshQueuedFollowupSession({
@@ -161,7 +206,7 @@ describe("refreshQueuedFollowupSession", () => {
       enqueuedAt: Date.now(),
       run: { ...makeRun(), hasAutoFallbackProvenance: true },
     };
-    queue.items.push(queuedRun);
+    addSources(queue, queuedRun);
 
     refreshQueuedFollowupSession({
       key: QUEUE_KEY,
@@ -182,7 +227,7 @@ describe("refreshQueuedFollowupSession", () => {
 
   it("clears queued model override strictness when retargeting to the configured default", () => {
     const queue = getFollowupQueue(QUEUE_KEY, { mode: "followup" });
-    queue.items.push({
+    addSources(queue, {
       prompt: "queued message",
       enqueuedAt: Date.now(),
       run: {
@@ -208,7 +253,7 @@ describe("refreshQueuedFollowupSession", () => {
 
   it("preserves queued Sol Ultra work when switching to Codex Luna", () => {
     const queue = getFollowupQueue(QUEUE_KEY, { mode: "followup" });
-    queue.items.push({
+    addSources(queue, {
       prompt: "queued message",
       enqueuedAt: Date.now(),
       run: {
@@ -241,7 +286,7 @@ describe("refreshQueuedFollowupSession", () => {
 
   it("preserves harness-only Ultra when retargeting queued work", () => {
     const queue = getFollowupQueue(QUEUE_KEY, { mode: "followup" });
-    queue.items.push({
+    addSources(queue, {
       prompt: "queued message",
       enqueuedAt: Date.now(),
       run: { ...makeRun(), thinkLevel: "ultra" },
@@ -280,14 +325,14 @@ describe("refreshQueuedFollowupSession", () => {
         run,
       });
       queue.lastRun = runs[0];
-      queue.items.push(wrap(runs[1]!));
+      addSources(queue, wrap(runs[1]!));
       queue.summarySources.push(wrap(runs[2]!));
       queue.summaryElisions.push({
         contextKey: "elided",
         count: 1,
         sources: [wrap(runs[3]!)],
         summaryLines: ["queued"],
-        sourceRefs: new WeakMap(),
+        sourceRefs: new Map(),
       });
       refreshQueuedFollowupSession({
         key: QUEUE_KEY,
@@ -330,7 +375,7 @@ describe("refreshQueuedFollowupSession", () => {
         thinkLevel: "high",
         thinkLevelOverride: requested,
       };
-      queue.items.push({ prompt: "task", enqueuedAt: Date.now(), run });
+      addSources(queue, { prompt: "task", enqueuedAt: Date.now(), run });
       for (const [index, model] of ["gpt-5.6-sol", "non-reasoner", "gpt-5.6-luna"].entries()) {
         refreshQueuedFollowupSession({
           key: QUEUE_KEY,
@@ -404,7 +449,7 @@ describe("refreshQueuedFollowupSession", () => {
         thinkLevel: "medium",
         thinkLevelOverride: source,
       };
-      queue.items.push({ prompt: "task", enqueuedAt: Date.now(), run });
+      addSources(queue, { prompt: "task", enqueuedAt: Date.now(), run });
       refreshQueuedFollowupSession({
         key: QUEUE_KEY,
         nextProvider: "openai",
@@ -421,7 +466,7 @@ describe("refreshQueuedFollowupSession", () => {
 
   it("recomputes the retargeted model default when the session has no thinking override", () => {
     const queue = getFollowupQueue(QUEUE_KEY, { mode: "followup" });
-    queue.items.push({
+    addSources(queue, {
       prompt: "queued message",
       enqueuedAt: Date.now(),
       run: { ...makeRun(), thinkLevel: "ultra" },
@@ -471,7 +516,7 @@ describe("getFollowupQueue", () => {
           run: makeRun(),
         })),
         summaryLines: Array.from({ length: count }, () => contextKey),
-        sourceRefs: new WeakMap(),
+        sourceRefs: new Map(),
       });
     }
     queue.evictedSummaryCount = 5;
@@ -486,17 +531,17 @@ describe("getFollowupQueue", () => {
 });
 
 describe("hasPendingFollowupQueueWork", () => {
-  it("detects each actionable queued-work representation", () => {
+  it("detects each actionable queued-work representation", async () => {
     const cases = [
       (queue: ReturnType<typeof getFollowupQueue>) => {
-        queue.items.push({
+        addSources(queue, {
           prompt: "queued message",
           enqueuedAt: Date.now(),
           run: makeRun(),
         });
       },
       (queue: ReturnType<typeof getFollowupQueue>) => {
-        queue.inFlight.add({
+        claimSource(queue, {
           prompt: "in-flight collected message",
           enqueuedAt: Date.now(),
           run: makeRun(),
@@ -511,7 +556,7 @@ describe("hasPendingFollowupQueueWork", () => {
       const queue = getFollowupQueue(QUEUE_KEY, { mode: "followup" });
       populate(queue);
       expect(hasPendingFollowupQueueWork(["", ` ${QUEUE_KEY} `, QUEUE_KEY])).toBe(true);
-      clearFollowupQueue(QUEUE_KEY);
+      await clearOwnedQueues();
     }
   });
 
@@ -522,3 +567,18 @@ describe("hasPendingFollowupQueueWork", () => {
     expect(hasPendingFollowupQueueWork([undefined, "", QUEUE_KEY])).toBe(false);
   });
 });
+
+function addSources(queue: SessionControllerMailbox, ...sources: FollowupRun[]): void {
+  for (const source of sources) {
+    const input = submitSessionControllerInput(queue.key, source, { mode: queue.mode });
+    input.payload = "ready";
+    input.phase = "waiting";
+  }
+}
+function claimSource(queue: SessionControllerMailbox, source: FollowupRun): void {
+  const input = submitSessionControllerInput(queue.key, source, { mode: queue.mode });
+  const claim = tryClaimSessionControllerTask(input);
+  if (!claim) {
+    throw new Error("Expected isolated test input to be selected");
+  }
+}

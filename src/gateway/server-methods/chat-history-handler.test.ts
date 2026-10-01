@@ -21,9 +21,11 @@ import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
+import { claimRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { chatHistoryHandlers } from "./chat-history-handler.js";
 import { createHistoryReadContext } from "./chat-history.test-helpers.js";
 import { connectChatMetadataAccount } from "./chat-metadata-runtime.test-support.js";
+import { captureRpcTargetForTest } from "./rpc-source-fixtures.test-support.js";
 import { identifiedClient } from "./sessions-read-cache.test-support.js";
 import type { GatewayRequestContext, GatewayRequestHandlerOptions, RespondFn } from "./types.js";
 
@@ -587,24 +589,27 @@ describe("chat history recovery byte budget", () => {
         expect(inactive.inFlightRun).toBeUndefined();
         const historyJson = JSON.stringify(inactive.messages);
         const registration = registerChatAbortController({
-          chatAbortControllers: context.chatAbortControllers,
+          target: captureRpcTargetForTest(scope),
+          rpcSources: context.rpcSources,
           runId: "run-history-bytes",
           ...scope,
-          now: 1_000,
           timeoutMs: 60_000,
         });
+        const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
+        const releaseSource = await claimRpcSourceForTest(
+          expectDefined(registration.entry, "history source"),
+        );
         const run = context.chatRunState.getOrCreate("run-history-bytes");
         run.buffer = "partial reply ".repeat(1_000);
         run.planSnapshot = { steps: [{ step: "Read history", status: "in_progress" }] };
         const expected = {
           runId: "run-history-bytes",
           text: run.buffer,
-          startedAt: 1_000,
+          startedAt: 1_800_000_000_000,
           plan: run.planSnapshot,
         };
         const exactBytes =
           Buffer.byteLength(historyJson) + Buffer.byteLength(JSON.stringify(expected));
-        const clock = vi.spyOn(Date, "now").mockReturnValue(1_800_000_000_000);
         try {
           const bounded = await call({ maxBytes: exactBytes - 1 });
           expect(bounded.messages).toEqual(inactive.messages);
@@ -664,6 +669,7 @@ describe("chat history recovery byte budget", () => {
           expect(JSON.stringify(inactive.messages)).toBe(historyJson);
         } finally {
           clock.mockRestore();
+          releaseSource();
           registration.cleanup();
           context.chatRunState.clearRun("run-history-bytes");
         }

@@ -1,6 +1,5 @@
 /** Polls watched adopted sessions for direct upstream human activity. */
 import { createHash } from "node:crypto";
-import { isEmbeddedAgentRunActive } from "../agents/embedded-agent.js";
 import { allowsProcessHomeSessionScan } from "../config/paths.js";
 import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../config/sessions/session-store-path.js";
@@ -11,6 +10,7 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
 import type { SessionCatalogProvider, SessionUpstreamProbe } from "../plugins/session-catalog.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import { isSessionRunActive as isEmbeddedAgentRunActive } from "./session-controller.queries.js";
 import {
   recordSessionHumanDirectMessage,
   recordSessionStateEventAsync,

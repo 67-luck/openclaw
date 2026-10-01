@@ -1,7 +1,6 @@
 // Ambient trusted caller context for model-mediated Gateway tool calls.
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
-import type { ReplyTurnParticipants } from "../../auto-reply/reply/reply-run-registry.contracts.js";
 import type { AgentRuntimeIdentity } from "../../gateway/agent-runtime-identity-token.js";
 import type { CronCreatorAuthorityGrant } from "../../gateway/cron-creator-authority-grant.types.js";
 import type {
@@ -19,6 +18,8 @@ import {
   bindGatewayContextResolver,
   getGatewayContextResolver,
 } from "../../plugins/runtime/gateway-request-scope.js";
+import type { ReplyTurnParticipants } from "../../sessions/session-controller.contracts.js";
+import type { SessionControllerWatchdogAttempt } from "../../sessions/session-controller.watchdog.js";
 import {
   getAdmittedRunDelegatedAuthority,
   readAdmittedRunOperatorAuthority,
@@ -38,6 +39,7 @@ import {
 import type { AnyAgentTool } from "./common.js";
 
 type GatewayToolCallerIdentity = {
+  watchdogAttempt?: SessionControllerWatchdogAttempt;
   personalToolParticipants?: ReplyTurnParticipants;
   personalToolUser?: string;
   agentId: string;
@@ -390,6 +392,7 @@ export async function withGatewayToolCallerIdentity<T>(
     {
       agentId: inheritedOwner?.agentId ?? identity.agentId.trim(),
       sessionKey: inheritedOwner?.sessionKey ?? identity.sessionKey.trim(),
+      watchdogAttempt: identity.watchdogAttempt ?? inheritedOwner?.watchdogAttempt,
       personalToolParticipants:
         inheritedOwner?.personalToolParticipants ?? identity.personalToolParticipants,
       personalToolUser: inheritedOwner?.personalToolUser ?? identity.personalToolUser,

@@ -28,7 +28,7 @@ export function bindSubagentSpawnCleanup(params: {
     | {
         runId: string;
         entry: ChatAbortControllerEntry | undefined;
-        operationalRunInstance: ChatAbortControllerEntry["operationalRunInstance"];
+        operationalRunInstance: ChatAbortControllerEntry["adapter"]["operationalRunInstance"];
       }
     | undefined;
   const isCurrent = () => {
@@ -39,13 +39,13 @@ export function bindSubagentSpawnCleanup(params: {
     if (!identity.expectedSessionId || !identity.expectedLifecycleRevision) {
       return false;
     }
-    const currentRun = acceptedRun && context.chatAbortControllers.get(acceptedRun.runId);
+    const currentRun = acceptedRun && context.rpcSources.get(acceptedRun.runId);
     return (
       !currentRun ||
       (currentRun === acceptedRun?.entry &&
-        currentRun.operationalRunInstance === acceptedRun?.operationalRunInstance &&
-        currentRun.sessionKey === params.childSessionKey &&
-        currentRun.sessionId === identity.expectedSessionId)
+        currentRun.adapter.operationalRunInstance === acceptedRun?.operationalRunInstance &&
+        currentRun.adapter.sessionKey === params.childSessionKey &&
+        currentRun.adapter.sessionId === identity.expectedSessionId)
     );
   };
   const callGateway: GatewayCall = async (request) => {
@@ -84,8 +84,7 @@ export function bindSubagentSpawnCleanup(params: {
     assertCurrent();
     if (
       method === "chat.abort" &&
-      (!acceptedRun?.entry ||
-        context?.chatAbortControllers.get(acceptedRun.runId) !== acceptedRun.entry)
+      (!acceptedRun?.entry || context?.rpcSources.get(acceptedRun.runId) !== acceptedRun.entry)
     ) {
       return { aborted: false, runIds: [] };
     }
@@ -106,8 +105,8 @@ export function bindSubagentSpawnCleanup(params: {
       if (acceptedRun) {
         throw new Error("Subagent cleanup already owns an accepted run");
       }
-      const entry = context?.chatAbortControllers.get(runId);
-      acceptedRun = { runId, entry, operationalRunInstance: entry?.operationalRunInstance };
+      const entry = context?.rpcSources.get(runId);
+      acceptedRun = { runId, entry, operationalRunInstance: entry?.adapter.operationalRunInstance };
     },
   };
 }

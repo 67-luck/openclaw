@@ -181,7 +181,7 @@ export async function completeReplyAgentRun(input: {
     } else if (recovery.kind === "retry") {
       const retryEnqueued = enqueueFollowupRun(
         queueKey,
-        recovery.run,
+        { ...recovery.run, controllerInput: undefined, controllerClaim: undefined },
         resolvedQueue,
         "none",
         runFollowupTurn,

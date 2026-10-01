@@ -1224,7 +1224,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     expect(turnAdoptionLifecycle.onDeferred).toHaveBeenCalledOnce();
     await capturedReplyOptions?.turnAdoptionLifecycle?.onAdopted();
     expect(turnAdoptionLifecycle.onAdopted).toHaveBeenCalledOnce();
-    capturedReplyOptions?.turnAdoptionLifecycle?.onSettled?.();
+    await capturedReplyOptions?.turnAdoptionLifecycle?.onSettled?.();
   });
 
   it("forwards the instance-bound reply dispatcher", async () => {
@@ -1252,7 +1252,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     expect(getSlackSessionRuns(prepared.ctx, { channelId: "C123", threadTs: THREAD_TS })).toEqual(
       [],
     );
-    capturedReplyOptions?.turnAdoptionLifecycle?.onSettled?.();
+    await capturedReplyOptions?.turnAdoptionLifecycle?.onSettled?.();
     expect(onSettled).toHaveBeenCalledOnce();
   });
 
@@ -1322,7 +1322,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
       const endQueuedRun = executed
         ? capturedReplyOptions?.queuedDeliveryCorrelations?.[0]?.begin()
         : undefined;
-      capturedReplyOptions?.turnAdoptionLifecycle?.onSettled?.();
+      await capturedReplyOptions?.turnAdoptionLifecycle?.onSettled?.();
       expect(getSlackSessionRuns(prepared.ctx, address)).toHaveLength(executed ? 1 : 0);
       expect(getSlackSessionRuns({ ...prepared.ctx }, address)).toHaveLength(executed ? 1 : 0);
       const restarted: Parameters<typeof dispatchPreparedSlackMessage>[0] =

@@ -31,6 +31,7 @@ import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-even
 import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import { retainGatewayRootWorkAdmissionContinuation } from "../../process/gateway-work-admission.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import { isOperatorUiClient } from "../../utils/message-channel.js";
 import { discardPreparedInboundMedia } from "../chat-attachments.js";
 import { errorShapeFromError } from "../error-shape.js";
@@ -74,7 +75,7 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
     params.sessionEntry?.incognito,
     params.context.logGateway,
   );
-  const jobSessionBinding = prepared.activeRunAbort.entry ?? {
+  const jobSessionBinding = prepared.activeRunAbort.entry?.adapter ?? {
     sessionKey: params.resolvedSessionKey,
     sessionId: params.resolvedSessionId,
     agentId: params.activeSessionAgentId,
@@ -90,13 +91,13 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
     const abortEntry = abortRegistration.entry;
     const abortController = abortRegistration.controller;
     const operationalRunInstance = prepared.operationalRunInstance;
-    const sessionKey = abortEntry?.sessionKey;
+    const sessionKey = abortEntry?.adapter.sessionKey;
     const admittedRunIdentity = abortEntry
       ? {
           controller: abortController,
           operationalRunInstance,
           lifecycleGeneration: params.lifecycleGeneration,
-          sessionKey: abortEntry.sessionKey,
+          sessionKey: abortEntry.adapter.sessionKey,
         }
       : undefined;
     const assertSettlementCurrent = () => {
@@ -105,7 +106,7 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
       // Cancellation closes execution, but its retained producer still records the outcome.
       if (
         !leaseActive ||
-        (abortRegistration.registered && !prepared.activeGatewayWorkAdmission.isActive())
+        (abortRegistration.registered && prepared.activeGatewayWorkAdmission?.isActive() === false)
       ) {
         throw new Error("Agent settlement no longer owns this Gateway run");
       }
@@ -118,14 +119,14 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
       if (
         !leaseActive ||
         (abortRegistration.registered &&
-          (!prepared.activeGatewayWorkAdmission.isActive() ||
+          (prepared.activeGatewayWorkAdmission?.isActive() === false ||
             !abortEntry ||
-            params.context.chatAbortControllers.get(params.runId) !== abortEntry ||
-            abortEntry.controller !== abortController ||
-            abortEntry.operationalRunInstance !== operationalRunInstance ||
-            abortEntry.lifecycleGeneration !== params.lifecycleGeneration ||
-            abortEntry.sessionKey !== sessionKey ||
-            abortEntry.registrationCleanupRequested))
+            params.context.rpcSources.get(params.runId) !== abortEntry ||
+            abortEntry.input.abortSignal !== abortController.signal ||
+            abortEntry.adapter.operationalRunInstance !== operationalRunInstance ||
+            abortEntry.adapter.lifecycleGeneration !== params.lifecycleGeneration ||
+            abortEntry.adapter.sessionKey !== sessionKey ||
+            abortEntry.adapter.registrationCleanupRequested))
       ) {
         throw new Error("agent dispatch no longer owns this Gateway run");
       }
@@ -135,7 +136,7 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
       const refsToDiscard = unpersistedOffloadedRefs;
       unpersistedOffloadedRefs = [];
       try {
-        const stopReason = prepared.activeRunAbort.entry?.abortStopReason;
+        const stopReason = prepared.activeRunAbort.entry?.adapter.abortStopReason;
         const outcome = buildAgentRunTerminalOutcome({ status: "error", stopReason });
         const cancelled =
           prepared.activeRunAbort.controller.signal.aborted &&
@@ -146,7 +147,7 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
         diagnostics.warning("failed to settle pending agent input")(error);
       }
       prepared.activeRunAbort.cleanup();
-      prepared.activeGatewayWorkAdmission.release();
+      prepared.activeGatewayWorkAdmission?.release();
       leaseActive = false;
       mediaCleanup ??= discardPreparedInboundMedia(refsToDiscard, params.context.logGateway);
       if (prepared.userTurn.recorder && params.resolvedSessionKey) {
@@ -161,21 +162,35 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
         );
       }
     };
+    let dispatched = false;
     const dispatchAdmittedAgentRun = (
       dispatch: Parameters<typeof dispatchAgentRunFromGateway>[0],
     ) => {
       const run = () =>
-        withPreparedModelRuntimePluginGenerationScope(
-          prepared.replyDispatchRuntime.pluginGeneration,
-          () => dispatchAgentRunFromGateway(dispatch),
-          () => (leaseActive ? preparedModelRuntimeLease.snapshot : undefined),
+        withSessionTurn(
+          {
+            controllerInput: abortEntry?.input,
+            sessionKey: params.resolvedSessionKey,
+            sessionId: params.resolvedSessionId,
+            agentId: params.activeSessionAgentId,
+            storePath: params.resolvedSessionKey ? prepared.lifecycleStorePath : undefined,
+            abortSignal: abortController.signal,
+          },
+          async () =>
+            withPreparedModelRuntimePluginGenerationScope(
+              prepared.replyDispatchRuntime.pluginGeneration,
+              () => {
+                dispatched = true;
+                return dispatchAgentRunFromGateway(dispatch);
+              },
+              () => (leaseActive ? preparedModelRuntimeLease.snapshot : undefined),
+            ),
         );
       const recorder = prepared.userTurn.recorder;
       return recorder?.withPendingInput ? recorder.withPendingInput(run) : run();
     };
-    return await prepared.activeGatewayWorkAdmission.run(async () => {
+    const execute = async () => {
       await yieldAfterAgentAcceptedAck();
-      let dispatched = false;
       let pendingRecovery: MainSessionRecoveryPendingTarget | undefined;
       const settleUnstartedFollowup = (outcome: AgentRunTerminalOutcome) =>
         !dispatched
@@ -564,7 +579,7 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
                 }),
                 onSessionIdChanged: (sessionId) => {
                   if (prepared.activeRunAbort.entry) {
-                    prepared.activeRunAbort.entry.sessionId = sessionId;
+                    prepared.activeRunAbort.entry.adapter.sessionId = sessionId;
                   }
                 },
                 workspaceDir: prepared.workspaceOverride,
@@ -606,10 +621,12 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
             executionIdentitySpawnFacts,
           ),
         );
-        dispatched = true;
         await execution;
       } catch (err) {
-        if (prepared.activeRunAbort.controller.signal.aborted && isAbortError(err)) {
+        if (
+          prepared.activeRunAbort.controller.signal.aborted &&
+          (!dispatched || isAbortError(err))
+        ) {
           await finishUndispatchedAbort();
           return;
         }
@@ -656,7 +673,10 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
           }
         }
       }
-    });
+    };
+    return await (prepared.activeGatewayWorkAdmission
+      ? prepared.activeGatewayWorkAdmission.run(execute)
+      : execute());
   } finally {
     // Shutdown joins the execution through asynchronous runtime disposal, not just bookkeeping.
     try {

@@ -12,6 +12,7 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { addSessionMember, listSessionMembers } from "../config/sessions/session-sharing-store.js";
+import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import {
   openOpenClawAgentDatabase,
@@ -278,7 +279,7 @@ it.each(["agent", "chat"] as const)(
       // An earlier identity observer can retire the live caller after COMMIT.
       const abort = onSessionIdentityMutation((mutation) => {
         if (mutation.kind === "replace" && mutation.previous.sessionId === entry.sessionId) {
-          run.entry.controller.abort();
+          requestRpcSourceCancellation(run.entry);
           run.cleanup();
         }
       });
@@ -288,7 +289,7 @@ it.each(["agent", "chat"] as const)(
         const input = {
           currentTarget: { ...scope, sessionId: entry.sessionId },
           expectedEntry: entry,
-          assertActive: () => run.entry.controller.signal.throwIfAborted(),
+          assertActive: () => run.entry.input.abortSignal.throwIfAborted(),
           config: {},
         };
         await acceptCompactionSuccessor({ ...input, result: { ok: true, compacted: true } });
@@ -302,8 +303,8 @@ it.each(["agent", "chat"] as const)(
           },
         });
         expect(committed.entry.sessionId).toBe("successor");
-        expect(run.entry.controller.signal.aborted).toBe(true);
-        expect(params.chatAbortControllers.has(runId)).toBe(false);
+        expect(run.entry.input.abortSignal.aborted).toBe(true);
+        expect(params.rpcSources.has(runId)).toBe(false);
         expect(readGatewayAccessRevision()).toBeGreaterThan(revision);
         expect(loadSessionEntry(scope)?.visibility).toBeUndefined();
         expect(listSessionMembers(scope)).toEqual([]);

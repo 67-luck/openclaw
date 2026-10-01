@@ -11,10 +11,6 @@ import { createEmbeddedRunHandle } from "../../../agents/embedded-agent-runner/r
 import { withPreparedEmbeddedRunToolAuthority } from "../../../agents/harness/tool-authority.runtime.js";
 import type { AgentSession } from "../../../agents/sessions/agent-session.js";
 import { AuthStorage } from "../../../agents/sessions/auth-storage.js";
-import {
-  createAdmittedGatewayToolCallerIdentity,
-  withGatewayToolCallerIdentity,
-} from "../../../agents/tools/gateway-caller-context.js";
 import { replaceSessionEntry } from "../../../config/sessions/session-accessor.js";
 import type { TalkRealtimeConfig } from "../../../config/types.gateway.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
@@ -28,6 +24,7 @@ import {
   restoreActivePluginRegistrySnapshot,
   setActivePluginRegistry,
 } from "../../../plugins/runtime.js";
+import { getCurrentSessionControllerOwner } from "../../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { loadBundledPluginFacade } from "../../../test-utils/bundled-plugin-public-surface.js";
@@ -42,7 +39,9 @@ import type {
 import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
 import { cleanupTalkConnection } from "../session-registry.js";
+import { withRegisteredNativeEmbeddedRun } from "./client-native-embedded-run.test-support.js";
 import { talkClientHandlers } from "./client.js";
+export { withRegisteredNativeEmbeddedRun } from "./client-native-embedded-run.test-support.js";
 
 const nativeUpstream = await vi.hoisted(async () => {
   const { EventEmitter } = await import("node:events");
@@ -141,36 +140,6 @@ export function requireString(record: Record<string, unknown>, key: string): str
   return value;
 }
 
-export async function withRegisteredNativeEmbeddedRun<T>(
-  params: Pick<
-    RunEmbeddedAgentParams,
-    "agentId" | "preparedRunAdmission" | "runId" | "sessionId" | "sessionKey"
-  >,
-  run: () => Promise<T> | T,
-): Promise<T> {
-  const { agentId, preparedRunAdmission, sessionKey } = params;
-  if (!agentId || !preparedRunAdmission || !sessionKey) {
-    throw new Error("Expected real Talk admission");
-  }
-  const admittedRunContext = await preparedRunAdmission.admit("embedded", "native-test-backend");
-  return await withGatewayToolCallerIdentity(
-    createAdmittedGatewayToolCallerIdentity({
-      admittedRunContext,
-      agentId,
-      sessionKey,
-    }),
-    async () => {
-      const handle = createEmbeddedRunHandle({ runId: params.runId });
-      embeddedRuns.setActiveEmbeddedRun(params.sessionId, handle, sessionKey);
-      try {
-        return await run();
-      } finally {
-        embeddedRuns.clearActiveEmbeddedRun(params.sessionId, handle, sessionKey);
-      }
-    },
-  );
-}
-
 function requireSuccessfulReply(respond: ReturnType<typeof vi.fn<RespondFn>>) {
   const reply = respond.mock.calls.at(-1);
   if (!reply) {
@@ -199,7 +168,7 @@ type NativePluginFixture = {
     response: ReturnType<typeof createResponse>;
   };
   broadcast: ReturnType<typeof vi.fn>;
-  chatAbortControllers: GatewayRequestContext["chatAbortControllers"];
+  rpcSources: GatewayRequestContext["rpcSources"];
 };
 
 export async function withNativePlugin(
@@ -247,7 +216,7 @@ export async function withNativePlugin(
         getRuntimeConfig: () => config,
         getClientConnIds: (filter?: (candidate: GatewayClient) => boolean) =>
           new Set(!filter || filter(client) ? [CONNECTION_ID] : []),
-        chatAbortControllers: new Map(),
+        rpcSources: new Map(),
         broadcastToConnIds: broadcast,
         logGateway: { warn: vi.fn() },
       } as unknown as GatewayRequestContext;
@@ -341,7 +310,7 @@ export async function withNativePlugin(
             return { handling, response };
           },
           broadcast,
-          chatAbortControllers: context.chatAbortControllers,
+          rpcSources: context.rpcSources,
         });
       } finally {
         for (const voiceSessionId of voiceSessionIds) {
@@ -577,6 +546,8 @@ export async function withParkedNativeTask(
                 handle,
                 params.sessionKey,
                 prepared.sessionFile,
+                params.agentId,
+                params.replyOperation ?? getCurrentSessionControllerOwner(),
               );
             }
             activeRun = params;

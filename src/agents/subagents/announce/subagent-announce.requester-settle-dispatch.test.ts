@@ -18,12 +18,18 @@ import {
   bindGatewayContextResolver,
   withPluginRuntimeGatewayRequestScope,
 } from "../../../plugins/runtime/gateway-request-scope.js";
-import { enqueueCommandInLane, getCommandLaneSnapshot } from "../../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../../process/command-queue.test-support.js";
-import { beginSessionWorkAdmission } from "../../../sessions/session-lifecycle-admission.js";
+import { withSessionTurn } from "../../../sessions/session-controller.admission.js";
+import {
+  beginSessionEffect,
+  captureSessionTarget,
+} from "../../../sessions/session-controller.lifecycle.js";
+import { getExistingSessionControllerMailbox } from "../../../sessions/session-controller.mailbox.js";
+import { markReplyOperationExecutionStarted } from "../../../sessions/session-controller.state.js";
 import { trackAsyncWork } from "../../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../../state/openclaw-agent-db.js";
+import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
 import { runWithAgentCommandRecoveryOwner } from "../../agent-command-recovery-owner.js";
 import type { AgentCommandOpts } from "../../command/types.js";
 import { prepareEmbeddedAttemptTimeout } from "../../embedded-agent-runner/run/attempt-timeout-prepare.js";
@@ -95,7 +101,18 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
 );
 
 const REQUESTER_KEY = "agent:main:main";
-const SESSION_LANE = `session:${REQUESTER_KEY}`;
+const REQUESTER_TARGET = captureSessionTarget({
+  storeScope: "/synthetic/requester-settle-dispatch/sessions.db",
+  sessionKey: REQUESTER_KEY,
+  incarnation: "requester-session",
+  agentId: "main",
+});
+const REQUESTER_TURN = {
+  target: REQUESTER_TARGET,
+  sessionKey: REQUESTER_KEY,
+  sessionId: "requester-session",
+  agentId: "main",
+};
 const GLOBAL_LANE = "subagent-settle-dispatch-proof";
 
 function settledChild(): SubagentRunRecord {
@@ -128,7 +145,7 @@ function createContext(): GatewayRequestContext {
     trackExecution: trackAsyncWork,
     agentRunSeq: new Map(),
     broadcast: vi.fn(),
-    chatAbortControllers: new Map(),
+    rpcSources: new Map(),
     chatRunState,
     dedupe: new Map(),
     getRuntimeConfig: () => ({}),
@@ -493,7 +510,7 @@ describe("requester settle dispatch deadline", () => {
       restartRecoveryRuns: [{ runId: "recovery-run", lifecycleGeneration }],
       mainRestartRecovery: { cycleId: "cycle-1", revision: 3, chargedAttempts: 1 },
     });
-    const recovery = await beginSessionWorkAdmission({
+    const recovery = await beginSessionEffect({
       scope: storePath,
       identities: [REQUESTER_KEY, "requester-session"],
       owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
@@ -625,7 +642,8 @@ describe("requester settle dispatch deadline", () => {
       startTurn.mockImplementation(async ({ preflight, io }) => {
         const request = preflight.request as { idempotencyKey: string; sessionKey: string };
         const registration = registerChatAbortController({
-          chatAbortControllers: context.chatAbortControllers,
+          rpcSources: context.rpcSources,
+          target: REQUESTER_TARGET,
           runId: request.idempotencyKey,
           sessionId: "requester-session",
           sessionKey: request.sessionKey,
@@ -637,38 +655,58 @@ describe("requester settle dispatch deadline", () => {
           runId: request.idempotencyKey,
         });
         try {
-          await enqueueCommandInLane(SESSION_LANE, async () => {
-            io.emitExecutionStarted?.();
-            const timeout = prepareEmbeddedAttemptTimeout({
-              attempt: { runId: request.idempotencyKey, sessionId: "requester-session", timeoutMs },
-              activeSession: { isCompacting: false, isStreaming: true },
-              compactionState: { isCompacting: () => false },
-              compactionTimeoutMs: 100,
-              runAbortSignal: registration.controller.signal,
-              isProbeSession: true,
-              abortRun: () => registration.controller.abort(new Error("requester run timed out")),
-              markTimedOutDuringCompaction: vi.fn(),
-              markTimedOutByRunBudget: timedOut,
-            });
-            executionStarted.resolve();
-            try {
-              await waitForGatewayDispatch(
-                "synthetic requester work",
-                workDone.promise,
-                undefined,
-                registration.controller.signal,
-              );
-              finalReceipts.push("consolidated requester final");
-            } finally {
-              timeout.clearTimers();
-            }
-          });
+          if (!registration.registered) {
+            throw new Error("expected requester RPC source");
+          }
+          await withSessionTurn(
+            {
+              ...REQUESTER_TURN,
+              controllerInput: registration.entry.input,
+              abortSignal: registration.controller.signal,
+            },
+            async (operation) => {
+              if (!operation) {
+                throw new Error("expected requester operation");
+              }
+              markReplyOperationExecutionStarted(operation);
+              operation.setPhase("running");
+              io.emitExecutionStarted?.();
+              const timeout = prepareEmbeddedAttemptTimeout({
+                attempt: {
+                  runId: request.idempotencyKey,
+                  sessionId: "requester-session",
+                  timeoutMs,
+                },
+                activeSession: { isCompacting: false, isStreaming: true },
+                compactionState: { isCompacting: () => false },
+                compactionTimeoutMs: 100,
+                runAbortSignal: registration.controller.signal,
+                isProbeSession: true,
+                abortRun: () => registration.controller.abort(new Error("requester run timed out")),
+                markTimedOutDuringCompaction: vi.fn(),
+                markTimedOutByRunBudget: timedOut,
+              });
+              executionStarted.resolve();
+              try {
+                await waitForGatewayDispatch(
+                  "synthetic requester work",
+                  workDone.promise,
+                  undefined,
+                  registration.controller.signal,
+                );
+                finalReceipts.push("consolidated requester final");
+              } finally {
+                timeout.clearTimers();
+              }
+            },
+          );
           io.emitFinal([
             true,
             { status: "ok", result: { payloads: [{ text: finalReceipts[0] }] } },
           ]);
         } finally {
           registration.cleanup();
+          await registration.entry?.input.settlement.promise;
         }
       });
       setSubagentAnnounceDeliveryDepsForTest({
@@ -730,13 +768,12 @@ describe("requester settle dispatch deadline", () => {
           expect(child.requesterSettleWake).toMatchObject({ status: "pending", attemptCount: 1 });
         }
         const later = vi.fn();
-        await enqueueCommandInLane(SESSION_LANE, async () => later());
+        await withSessionTurn(REQUESTER_TURN, async () => later());
         expect(later).toHaveBeenCalledOnce();
-        expect(getCommandLaneSnapshot(SESSION_LANE)).toMatchObject({
-          activeCount: 0,
-          queuedCount: 0,
-        });
-        expect(context.chatAbortControllers.size).toBe(0);
+        const mailbox = getExistingSessionControllerMailbox(REQUESTER_KEY, REQUESTER_TARGET);
+        expect(mailbox?.claim).toBeUndefined();
+        expect(mailbox?.entries ?? []).toEqual([]);
+        expect(context.rpcSources.size).toBe(0);
         expect(child.execution.outcome).toEqual({ status: "ok" });
         expect(child.completion?.resultText).toBe("child result");
       } finally {
@@ -763,7 +800,8 @@ describe("requester settle dispatch deadline", () => {
     startTurn.mockImplementation(async ({ preflight, io }) => {
       const request = preflight.request as { idempotencyKey: string; sessionKey: string };
       const registration = registerChatAbortController({
-        chatAbortControllers: context.chatAbortControllers,
+        rpcSources: context.rpcSources,
+        target: REQUESTER_TARGET,
         runId: request.idempotencyKey,
         sessionId: "requester-session",
         sessionKey: request.sessionKey,
@@ -771,7 +809,8 @@ describe("requester settle dispatch deadline", () => {
         kind: "agent",
       });
       let lifecycleGeneration = getAgentEventLifecycleGeneration();
-      let params = {
+      let params: RunEmbeddedAgentParams & { sessionFile: string } = {
+        admittedRunContext: createTestAdmittedRunContext(request.idempotencyKey),
         abortSignal: registration.controller.signal,
         lifecycleGeneration,
         prompt: "requester settle wake",
@@ -781,13 +820,12 @@ describe("requester settle dispatch deadline", () => {
         sessionKey: request.sessionKey,
         timeoutMs: 60_000,
         workspaceDir: "/tmp",
-      } as RunEmbeddedAgentParams & { sessionFile: string };
+      };
       const lane = createEmbeddedRunLaneController({
         getLifecycleGeneration: () => lifecycleGeneration,
         getParams: () => params,
         globalLane: GLOBAL_LANE,
         initialQueuedLifecycleGeneration: lifecycleGeneration,
-        sessionLane: SESSION_LANE,
         setLifecycleGeneration: (value) => {
           lifecycleGeneration = value;
         },
@@ -800,16 +838,30 @@ describe("requester settle dispatch deadline", () => {
         runId: request.idempotencyKey,
       });
       try {
-        await lane.enqueueSession(() =>
-          lane.enqueueGlobal(async () => {
-            executions.push(request.idempotencyKey);
-            await ghostGate;
-            return { meta: { durationMs: 1 } };
-          }),
+        if (!registration.registered) {
+          throw new Error("expected requester RPC source");
+        }
+        await withSessionTurn(
+          {
+            ...REQUESTER_TURN,
+            controllerInput: registration.entry.input,
+            abortSignal: registration.controller.signal,
+          },
+          async (operation) => {
+            params = { ...params, replyOperation: operation };
+            return await lane.enqueueSession(() =>
+              lane.enqueueGlobal(async () => {
+                executions.push(request.idempotencyKey);
+                await ghostGate;
+                return { meta: { durationMs: 1 } };
+              }),
+            );
+          },
         );
         io.emitFinal([true, { runId: request.idempotencyKey, status: "ok" }]);
       } finally {
         registration.cleanup();
+        await registration.entry?.input.settlement.promise;
       }
     });
 
@@ -844,9 +896,11 @@ describe("requester settle dispatch deadline", () => {
     const blockerGate = new Promise<void>((resolve) => {
       releaseBlocker = resolve;
     });
-    const blocker = enqueueCommandInLane(SESSION_LANE, async () => await blockerGate);
+    const blocker = withSessionTurn(REQUESTER_TURN, async () => await blockerGate);
     await vi.advanceTimersByTimeAsync(0);
-    expect(getCommandLaneSnapshot(SESSION_LANE)).toMatchObject({ activeCount: 1 });
+    expect(
+      getExistingSessionControllerMailbox(REQUESTER_KEY, REQUESTER_TARGET)?.claim,
+    ).toBeDefined();
 
     const transitionBatch = (
       _batch: readonly SubagentRunRecord[],
@@ -891,16 +945,19 @@ describe("requester settle dispatch deadline", () => {
       await vi.advanceTimersByTimeAsync(0);
 
       let laterRan = false;
-      later = enqueueCommandInLane(SESSION_LANE, async () => {
+      later = withSessionTurn(REQUESTER_TURN, async () => {
         laterRan = true;
       });
       await vi.advanceTimersByTimeAsync(0);
-      const afterLaterDispatch = getCommandLaneSnapshot(SESSION_LANE);
+      const afterLaterDispatch = getExistingSessionControllerMailbox(
+        REQUESTER_KEY,
+        REQUESTER_TARGET,
+      );
 
       expect({
         afterLaterDispatch: {
-          activeCount: afterLaterDispatch.activeCount,
-          queuedCount: afterLaterDispatch.queuedCount,
+          activeCount: Number(Boolean(afterLaterDispatch?.claim)),
+          queuedCount: afterLaterDispatch?.entries.length ?? 0,
         },
         deadlineCancelled,
         executions,

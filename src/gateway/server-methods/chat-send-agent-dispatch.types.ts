@@ -1,5 +1,5 @@
-import type { ReplyMessageInjectionAttempt } from "../../auto-reply/reply/reply-run-registry.js";
 import type { PrepareAssistantTranscriptMessage } from "../../config/sessions/transcript-assistant-delivery.js";
+import type { ReplyMessageInjectionAttempt } from "../../sessions/session-controller.js";
 import type { SkillWorkshopProposalRevisionConstraint } from "../../skills/workshop/types.js";
 import type { ChatRunTiming } from "../server-chat-state.js";
 import type { RestartSafeChatTerminalState } from "./chat-restart-recovery.js";
@@ -27,7 +27,7 @@ export type StartChatDispatchParams = {
   assertDashboardReadCurrent?: () => void;
   externalAuthorityAdmission: ChatSendExternalAuthorityAdmission | undefined;
   injection: {
-    beginCapturedMessageInjection: () => ReplyMessageInjectionAttempt | undefined;
+    beginCapturedMessageInjection: () => Promise<ReplyMessageInjectionAttempt | undefined>;
     messageInjectionAttempt: ReplyMessageInjectionAttempt | undefined;
     preAckReplyContextPromise: Promise<ChatSendReplyContextFields> | undefined;
     replyContextFieldsPromise: Promise<ChatSendReplyContextFields> | undefined;

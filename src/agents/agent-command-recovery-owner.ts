@@ -8,7 +8,7 @@ import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../infra/agent-events.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { getSessionWorkAdmissionOwnerRelease } from "../sessions/session-lifecycle-admission.js";
+import { captureSessionEffectOwnerSettlement } from "../sessions/session-controller.lifecycle.js";
 import type { AgentCommandOpts } from "./command/types.js";
 import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "./main-session-recovery/main-session-recovery-admission.js";
 import { repairMainSessionRecoveryMutation } from "./main-session-recovery/main-session-recovery-lifecycle.js";
@@ -198,7 +198,7 @@ export async function runWithAgentCommandRecoveryOwner<
       !params.opts.mainRestartRecoveryOwnerLease;
     const recoveryOwnerRelease = () =>
       mayWaitForRecovery
-        ? getSessionWorkAdmissionOwnerRelease({
+        ? captureSessionEffectOwnerSettlement({
             scope: target.storePath,
             identities: [target.sessionKey, target.previousSessionId ?? target.sessionId],
             owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,

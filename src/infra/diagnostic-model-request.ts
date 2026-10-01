@@ -28,6 +28,13 @@ export function emitCoreModelRequestStartedDiagnosticEvent(
   requestTimeoutMs?: number,
   privateData?: DiagnosticEventPrivateData,
 ): void {
+  // Publish synchronously before optional/asynchronous diagnostics. Retries retain the
+  // logical operation's semantic origin, while the first request owns its allowance.
+  generation?.watchdogAttempt?.requestEvent({
+    phase: "start",
+    callId: event.callId,
+    requestTimeoutMs,
+  });
   const startedEvent = {
     ...event,
     type: "model.call.started" as const,
@@ -56,6 +63,7 @@ export function emitCoreModelRequestEndedDiagnosticEvent(
   generation?: CoreModelRequestOwnerGeneration,
   privateData?: DiagnosticEventPrivateData,
 ): void {
+  generation?.watchdogAttempt?.requestEvent({ phase: "end", callId: event.callId });
   emitTrustedDiagnosticEventWithPrivateData(
     generation
       ? markCoreModelRequestLifecycleDiagnosticEvent(event, { generation, phase: "ended" })

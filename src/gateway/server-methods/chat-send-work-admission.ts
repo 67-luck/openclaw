@@ -1,12 +1,12 @@
 import { hasPendingFollowupQueueWork } from "../../auto-reply/reply/queue/state.js";
-import { replyRunRegistry } from "../../auto-reply/reply/reply-run-registry.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { retireProviderReviewAcknowledgment } from "../../sessions/provider-review.js";
+import { replyRunRegistry } from "../../sessions/session-controller.js";
 import {
-  isCompetingSessionWorkAdmissionActive,
-  type SessionWorkAdmissionLease,
-} from "../../sessions/session-lifecycle-admission.js";
+  isCompetingSessionControllerWorkActive,
+  type SessionEffectRef,
+} from "../../sessions/session-controller.lifecycle.js";
 import type { registerChatAbortController } from "../chat-abort.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
@@ -64,7 +64,7 @@ export function releaseChatSendCallerAuthority(params: {
 
 /** Queued and collected turns share the original session and caller admission until settlement. */
 export function createChatSendWorkAdmission(params: {
-  admission: Pick<SessionWorkAdmissionLease, "release">;
+  admission: Pick<SessionEffectRef, "release">;
   releaseCallerAuthority?: () => void;
   logGateway: Pick<GatewayRequestContext["logGateway"], "warn">;
 }) {
@@ -128,7 +128,7 @@ export function assertChatSendExclusiveAdmission(
   }
   const { storePath, sessionKey, backingSessionId, activeRunScopeKey } = session;
   if (
-    isCompetingSessionWorkAdmissionActive(storePath, [sessionKey, backingSessionId]) ||
+    isCompetingSessionControllerWorkActive(storePath, [sessionKey, backingSessionId]) ||
     hasPendingFollowupQueueWork([sessionKey, backingSessionId, activeRunScopeKey]) ||
     replyRunRegistry.isActive(activeRunScopeKey)
   ) {

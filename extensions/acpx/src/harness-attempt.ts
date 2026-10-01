@@ -94,7 +94,14 @@ export async function runAcpHarnessAttempt(params: {
   let timer: ReturnType<typeof setTimeout> | undefined;
   assertActive();
   try {
-    setActiveEmbeddedRun(input.sessionId, activeRun, sessionKey, input.sessionFile, agentId);
+    setActiveEmbeddedRun(
+      input.sessionId,
+      activeRun,
+      sessionKey,
+      input.sessionFile,
+      agentId,
+      input.replyOperation,
+    );
     activeRegistered = true;
     input.replyOperation?.attachBackend(activeRun);
     signal.addEventListener("abort", stopDelivery, { once: true });

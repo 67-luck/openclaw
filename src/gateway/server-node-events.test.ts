@@ -136,7 +136,7 @@ function buildCtx(
     broadcastVoiceWakeChanged: () => {},
     addChatRun: () => {},
     removeChatRun: () => undefined,
-    chatAbortControllers: new Map(),
+    rpcSources: new Map(),
     dedupe: new Map(),
     agentRunSeq: new Map(),
     getHealthCache: () => null,

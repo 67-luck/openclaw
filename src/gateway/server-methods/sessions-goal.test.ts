@@ -99,7 +99,7 @@ async function invoke(
     getRuntimeConfig: () => cfg,
     getSessionEventSubscriberConnIds: () => new Set<string>(),
     broadcastToConnIds: vi.fn(),
-    chatAbortControllers: new Map(),
+    rpcSources: new Map(),
     logGateway: { warn: vi.fn() },
   } as unknown as GatewayRequestContext;
   await handleGatewayRequest({

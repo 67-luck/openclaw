@@ -6,9 +6,7 @@ import {
   setupCronRegressionFixtures,
 } from "../../../test/helpers/cron/service-regression-fixtures.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { DEFAULT_CRON_MAX_CONCURRENT_RUNS } from "../../config/cron-limits.js";
 import {
-  clearCommandLane,
   enqueueCommandInLane,
   getTotalQueueSize,
   setCommandLaneConcurrency,
@@ -31,19 +29,6 @@ import { onTimer } from "./timer.test-support.js";
 const opsRegressionFixtures = setupCronRegressionFixtures({
   prefix: "cron-service-run-admission-",
 });
-
-type CronStateParams = Parameters<typeof createCronRegressionState>[0] & {
-  testAdmissionLimit?: number;
-};
-
-function createAdmissionTestState(params: CronStateParams) {
-  const { testAdmissionLimit, ...stateParams } = params;
-  const state = createCronRegressionState(stateParams);
-  if (testAdmissionLimit !== undefined) {
-    state.runAdmission.active = DEFAULT_CRON_MAX_CONCURRENT_RUNS - testAdmissionLimit;
-  }
-  return state;
-}
 
 function expectQueuedRunAck(result: unknown) {
   const ack = result as { ok?: unknown; enqueued?: unknown; runId?: unknown };
@@ -86,7 +71,7 @@ describe("cron service run admission", () => {
       fire: true,
       state: { owner: "completed evaluation" },
     }));
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 1,
       cronConfig: { triggers: { enabled: true } },
@@ -141,7 +126,6 @@ describe("cron service run admission", () => {
 
   it("rechecks a queued if-enabled run after the job is disabled", async () => {
     vi.useRealTimers();
-    clearCommandLane(CommandLane.Cron);
     setCommandLaneConcurrency(CommandLane.Cron, 1);
 
     const store = opsRegressionFixtures.makeStorePath();
@@ -163,29 +147,36 @@ describe("cron service run admission", () => {
 
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
     const onEvent = vi.fn();
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       nowMs: () => dueAt,
       runIsolatedAgentJob,
       onEvent,
     });
 
-    expectQueuedRunAck(await enqueueRun(state, job.id, "if-enabled"));
-    await update(state, job.id, { enabled: false });
-    releaseBlocker.resolve();
-    await blocker;
-    await vi.waitFor(() => expect(getTotalQueueSize()).toBe(0), { timeout: 5_000 });
+    try {
+      expectQueuedRunAck(await enqueueRun(state, job.id, "if-enabled"));
+      await update(state, job.id, { enabled: false });
+      releaseBlocker.resolve();
+      await blocker;
+      await enqueueCommandInLane(CommandLane.Cron, async () => {});
+      expect(getTotalQueueSize()).toBe(0);
 
-    expect(runIsolatedAgentJob).not.toHaveBeenCalled();
-    expect(onEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        jobId: job.id,
-        action: "finished",
-        status: "skipped",
-        error: "queued manual run skipped before execution: disabled",
-      }),
-    );
-    clearCommandLane(CommandLane.Cron);
+      expect(runIsolatedAgentJob).not.toHaveBeenCalled();
+      expect(onEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          jobId: job.id,
+          action: "finished",
+          status: "skipped",
+          error: "queued manual run skipped before execution: disabled",
+        }),
+      );
+    } finally {
+      stop(state);
+      releaseBlocker.resolve();
+      await blocker;
+      await enqueueCommandInLane(CommandLane.Cron, async () => {});
+    }
   });
 
   it("drains a burst of scheduled jobs without exceeding shared admission", async () => {
@@ -205,7 +196,7 @@ describe("cron service run admission", () => {
     let peakActive = 0;
     const completed = new Set<string>();
     const releaseRunners = createDeferred();
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 4,
       nowMs: () => dueAt,
@@ -270,7 +261,7 @@ describe("cron service run admission", () => {
       completingStarted.resolve();
       return await releaseCompleting.promise;
     });
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 2,
       nowMs: () => dueAt,
@@ -343,7 +334,7 @@ describe("cron service run admission", () => {
       }
       return { status: "ok" as const, summary: "should not run" };
     });
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 1,
       nowMs: () => dueAt,
@@ -411,7 +402,7 @@ describe("cron service run admission", () => {
         }
         return { status: "ok" as const, summary: "replacement" };
       });
-      const state = createAdmissionTestState({
+      const state = createCronRegressionState({
         storePath: store.storePath,
         testAdmissionLimit: 1,
         nowMs: () => dueAt,
@@ -492,7 +483,7 @@ describe("cron service run admission", () => {
       }
       return { status: "ok" as const, summary: "stale stream batch" };
     });
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 1,
       cronConfig: { triggers: { enabled: true } },
@@ -545,7 +536,7 @@ describe("cron service run admission", () => {
     await saveCronStore(store.storePath, { version: 1, jobs: [streamJob] });
 
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const, summary: "ran" }));
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 1,
       cronConfig: { triggers: { enabled: true } },
@@ -595,7 +586,7 @@ describe("cron service run admission", () => {
     streamJob.state.streamSourceIdentity = undefined;
     await saveCronStore(store.storePath, { version: 1, jobs: [streamJob] });
 
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 1,
       cronConfig: { triggers: { enabled: true } },
@@ -632,7 +623,7 @@ describe("cron service run admission", () => {
     await saveCronStore(store.storePath, { version: 1, jobs: [streamJob] });
 
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const, summary: "ran" }));
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 1,
       cronConfig: { triggers: { enabled: true } },
@@ -684,7 +675,7 @@ describe("cron service run admission", () => {
       }
       return { status: "ok" as const, summary: "should not run" };
     });
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 1,
       nowMs: () => dueAt,
@@ -735,7 +726,7 @@ describe("cron service run admission", () => {
     const editedName = "edited after invalid-run commit";
     let edited = false;
     let persistedStatusAtEvent: string | undefined;
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       nowMs: () => dueAt,
       sendCronFailureAlert,
@@ -795,7 +786,7 @@ describe("cron service run admission", () => {
       replacementStarted.resolve();
       return { status: "ok" as const, summary: "replacement" };
     });
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 1,
       nowMs: () => dueAt,
@@ -840,7 +831,7 @@ describe("cron service run admission", () => {
     await saveCronStore(store.storePath, { version: 1, jobs: [job] });
 
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       nowMs: () => dueAt,
       runIsolatedAgentJob,
@@ -875,7 +866,7 @@ describe("cron service run admission", () => {
 
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
     const onEvent = vi.fn();
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       nowMs: () => now,
       runIsolatedAgentJob,
@@ -903,7 +894,7 @@ describe("cron service run admission", () => {
     await saveCronStore(store.storePath, { version: 1, jobs: [job] });
 
     const runIsolatedAgentJob = vi.fn(async () => ({ status: "ok" as const }));
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       nowMs: () => now,
       runIsolatedAgentJob,
@@ -942,7 +933,7 @@ describe("cron service run admission", () => {
       waitingStarted.resolve();
       return await releaseWaiting.promise;
     });
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 1,
       nowMs: () => dueAt,
@@ -995,7 +986,7 @@ describe("cron service run admission", () => {
     const releaseActive = createDeferred<{ status: "ok"; summary: string }>();
     const waitingStarted = createDeferred();
     const releaseWaiting = createDeferred<{ status: "ok"; summary: string }>();
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       testAdmissionLimit: 1,
       nowMs: () => now,
@@ -1056,7 +1047,7 @@ describe("cron service run admission", () => {
     });
     await saveCronStore(store.storePath, { version: 1, jobs: [job] });
 
-    const state = createAdmissionTestState({
+    const state = createCronRegressionState({
       storePath: store.storePath,
       nowMs: () => dueAt,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),

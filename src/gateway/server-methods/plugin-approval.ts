@@ -33,6 +33,7 @@ import { createApprovalRequestAuthority } from "./approval-request-authority.js"
 import { handlePendingApprovalRequestWithDelivery } from "./approval-request-delivery.js";
 import {
   bindApprovalRequesterMetadata,
+  captureApprovalWorkerOwner,
   bindApprovalReviewerDeviceIds,
   handleApprovalResolve,
   handleApprovalWaitDecision,
@@ -99,6 +100,7 @@ export function createPluginApprovalHandlers(
         return;
       }
 
+      const workerOwner = captureApprovalWorkerOwner(trustedAgentRuntime);
       if (trustedAgentRuntime && !trustedAgentRuntime.approvalOwnerPluginId) {
         respond(
           false,
@@ -236,6 +238,7 @@ export function createPluginApprovalHandlers(
         timeoutMs,
         respond,
         context,
+        workerOwner,
       });
       if (!registration) {
         return;

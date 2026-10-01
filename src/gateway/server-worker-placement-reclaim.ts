@@ -5,11 +5,11 @@ import { getRuntimeConfig } from "../config/config.js";
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
 import { withTimeout } from "../infra/fs-safe.js";
 import {
-  closeSessionWorkAdmissions,
-  runExclusiveSessionLifecycleMutation,
-  SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-  startSessionWorkAdmissionInterruption,
-} from "../sessions/session-lifecycle-admission.js";
+  closeSessionControllerAdmission,
+  runSessionMutation,
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+  startSessionControllerInterruption,
+} from "../sessions/session-controller.lifecycle.js";
 import type { WorkerPlacementSessionWorkCancellation } from "./server-worker-placement-cancel.js";
 import {
   resolveWorkerPlacementSessionTarget,
@@ -73,7 +73,7 @@ export function createGatewayWorkerPlacementReclaimBarriers(
         interruptionStarted = true;
         try {
           assertCurrent();
-          released = startSessionWorkAdmissionInterruption({
+          released = startSessionControllerInterruption({
             reason,
             scope: target.storePath,
             identities: lifecycleIdentities,
@@ -107,7 +107,7 @@ export function createGatewayWorkerPlacementReclaimBarriers(
         assertCurrent();
         await withTimeout(
           released!,
-          SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+          SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
           "session work admission drain",
         );
       } catch (error) {
@@ -117,7 +117,7 @@ export function createGatewayWorkerPlacementReclaimBarriers(
         throw error;
       }
       await params.placements.waitForTurnClaimRelease(sessionId, {
-        timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+        timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
       });
       await runExclusiveSessionStoreWrite(target.storePath, async () => {}, { reentrant: true });
     };
@@ -182,7 +182,7 @@ export function createGatewayWorkerPlacementReclaimBarriers(
     }
     // This lease blocks ingress without a mutex: predecessors must still be able to
     // settle their lifecycle work before Stop enters session cleanup.
-    const release = closeSessionWorkAdmissions({
+    const release = closeSessionControllerAdmission({
       scope: target.storePath,
       identities: lifecycleIdentities,
       reason: createAgentRunDirectAbortError(),
@@ -241,7 +241,7 @@ export function createGatewayWorkerPlacementReclaimBarriers(
       });
     let workspace: WorkerSessionWorkspace | undefined;
     let reclaimedPlacement: Awaited<ReturnType<typeof reclaim>> | undefined;
-    await runExclusiveSessionLifecycleMutation({
+    await runSessionMutation({
       scope: target.storePath,
       identities: lifecycleIdentities,
       prepare: async (lifecycle) => {
@@ -335,7 +335,7 @@ export function createGatewayWorkerPlacementReclaimBarriers(
         authorize?.();
       };
       let reclaimedPlacement: Awaited<ReturnType<typeof reclaim>> | undefined;
-      await runExclusiveSessionLifecycleMutation({
+      await runSessionMutation({
         scope: target.storePath,
         identities: lifecycleIdentities,
         prepare: async (lifecycle) => {

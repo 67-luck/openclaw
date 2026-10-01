@@ -6,18 +6,17 @@ import {
   markDiagnosticEmbeddedRunStarted,
   closeDiagnosticEmbeddedRunOwner,
 } from "../../../logging/diagnostic-run-activity.js";
+import { isSessionRunActive as isEmbeddedAgentRunActive } from "../../../sessions/session-controller.queries.js";
 import {
   isAgentRunRestartAbortReason,
   isAgentRunSupersededAbortReason,
   resolveAgentRunErrorLifecycleFields,
 } from "../../run-termination.js";
+import { abortEmbeddedAgentRun, type EmbeddedAgentQueueHandle } from "../runs.js";
 import {
-  abortEmbeddedAgentRun,
-  clearActiveEmbeddedRun,
-  isEmbeddedAgentRunActive,
-  setActiveEmbeddedRun,
-  type EmbeddedAgentQueueHandle,
-} from "../runs.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+} from "../runs.test-support.js";
 import {
   createDeferredEmbeddedRunLifecycleManager,
   createEmbeddedAttemptDeferredLifecycleOwner,

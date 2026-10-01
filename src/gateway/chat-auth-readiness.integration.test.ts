@@ -92,7 +92,7 @@ it("refreshes a retained pane from a persisted profile-only selection through th
     const publishLifecycle = createLifecycleEventBroadcastHandler({
       getSessionRowProjection: () => rowProjection,
       sessionEventSubscribers: { getAll: () => new Set(["reader"]) },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
       broadcastToConnIds: (event, payload) => {
         shell.handleGatewayEvent({ event, payload });
         handlePageGatewayEvent(retained, { type: "event", event, payload });

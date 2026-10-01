@@ -1,14 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OperationalRunInstanceRef } from "../../agents/admitted-run-context.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../../agents/embedded-agent-runner/runs.js";
-import {
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
   createEmbeddedRunHandle,
   testing as embeddedRunsTesting,
 } from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
+import { getCurrentSessionControllerOwner } from "../../sessions/session-controller.lifecycle.js";
 import {
   authorizeClientVoiceConfirmation,
   checkClientVoiceToolConfirmationPolicy,
@@ -18,6 +17,21 @@ import {
   noteClientVoiceConfirmationUtteranceForTest as noteClientVoiceConfirmationUtterance,
   resetClientVoiceConfirmationStateForTest,
 } from "../../talk/client-voice-confirmation.test-support.js";
+
+function publishTalkTestBackend(handle: Parameters<typeof setActiveEmbeddedRun>[1]) {
+  const operation = getCurrentSessionControllerOwner();
+  if (!operation) {
+    throw new Error("Talk consult has no controller-owned turn");
+  }
+  setActiveEmbeddedRun(
+    "session-talk",
+    handle,
+    "agent:researcher:talk",
+    undefined,
+    "researcher",
+    operation,
+  );
+}
 
 const { config, coreParams, deferred, mocks } = await vi.hoisted(
   () => import("./client-gateway-control.agent-consult.test-support.js"),
@@ -52,7 +66,7 @@ function createConsultRunner(
 ) {
   return createTalkClientAgentConsultRunner({
     config,
-    context: { chatAbortControllers: new Map(), logGateway: { warn: vi.fn() } } as never,
+    context: { rpcSources: new Map(), logGateway: { warn: vi.fn() } } as never,
     sessionTarget: {
       agentId: "researcher",
       sessionKey: "main",
@@ -190,7 +204,7 @@ describe("Talk client agent consult admission", () => {
     "steers and claims only the exact registered consult owner through %s",
     async (entrypoint) => {
       const core = deferred<void>();
-      const chatAbortControllers = new Map();
+      const rpcSources = new Map();
       const isRunCurrent = vi.fn(() => true);
       const operationalRunInstance = {
         instanceId: `instance:${entrypoint}`,
@@ -210,14 +224,14 @@ describe("Talk client agent consult admission", () => {
               assertActive: () => {},
             }),
           },
-          () => setActiveEmbeddedRun("session-talk", handle, "agent:researcher:talk"),
+          () => publishTalkTestBackend(handle),
         );
         await core.promise;
         clearActiveEmbeddedRun("session-talk", handle, "agent:researcher:talk");
         return { payloads: [] };
       });
       const runner = createConsultRunner({
-        context: { chatAbortControllers, logGateway: { warn: vi.fn() } } as never,
+        context: { rpcSources, logGateway: { warn: vi.fn() } } as never,
         ownerConnId: "connection-owner",
         isRunCurrent,
       });
@@ -230,7 +244,7 @@ describe("Talk client agent consult admission", () => {
         entrypoint === "runOwnedArgs"
           ? runner.runOwnedArgs({ question: "first task" }, new AbortController().signal)
           : runner.runPrompt({ prompt: "first task" });
-      await vi.waitFor(() => expect(chatAbortControllers.has("run-talk")).toBe(true));
+      await vi.waitFor(() => expect(rpcSources.has("run-talk")).toBe(true));
       const steer = lifecycleRunner.steer;
       if (!steer) {
         throw new Error("owned Talk runner did not expose steering");
@@ -254,7 +268,7 @@ describe("Talk client agent consult admission", () => {
       await expect(run).resolves.toEqual({ text: "done" });
       expect(lifecycleRunner.claimAppend()).toBe(true);
       expect(lifecycleRunner.claimAppend()).toBe(false);
-      expect(chatAbortControllers.has("run-talk")).toBe(false);
+      expect(rpcSources.has("run-talk")).toBe(false);
       expect(isRunCurrent).toHaveBeenCalledWith("run-talk");
     },
   );
@@ -263,7 +277,7 @@ describe("Talk client agent consult admission", () => {
     const announced = deferred<void>();
     const publish = deferred<void>();
     const finish = deferred<void>();
-    const chatAbortControllers = new Map();
+    const rpcSources = new Map();
     const client = sharingPolicyClient({
       deviceId: "caller-device",
       scopes: ["operator.admin"],
@@ -290,14 +304,14 @@ describe("Talk client agent consult admission", () => {
             assertActive: () => {},
           }),
         },
-        () => setActiveEmbeddedRun("session-talk", handle, "agent:researcher:talk"),
+        () => publishTalkTestBackend(handle),
       );
       await finish.promise;
       clearActiveEmbeddedRun("session-talk", handle, "agent:researcher:talk");
       return { payloads: [] };
     });
     const runner = createConsultRunner({
-      context: { chatAbortControllers, logGateway: { warn: vi.fn() } } as never,
+      context: { rpcSources, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
       authority,
       isRunCurrent: () => true,
@@ -341,7 +355,7 @@ describe("Talk client agent consult admission", () => {
   it("refreshes steering authority when the admitted run publishes a new attempt", async () => {
     const secondPublished = deferred<void>();
     const finish = deferred<void>();
-    const chatAbortControllers = new Map();
+    const rpcSources = new Map();
     const firstHandle = createEmbeddedRunHandle({ runId: "run-talk" });
     const secondHandle = createEmbeddedRunHandle({ runId: "run-talk" });
     const operationalRunInstance = {
@@ -373,7 +387,7 @@ describe("Talk client agent consult admission", () => {
             },
           }),
         },
-        () => setActiveEmbeddedRun("session-talk", firstHandle, "agent:researcher:talk"),
+        () => publishTalkTestBackend(firstHandle),
       );
       await Promise.resolve();
       firstLive = false;
@@ -389,7 +403,7 @@ describe("Talk client agent consult admission", () => {
             assertActive: () => {},
           }),
         },
-        () => setActiveEmbeddedRun("session-talk", secondHandle, "agent:researcher:talk"),
+        () => publishTalkTestBackend(secondHandle),
       );
       secondPublished.resolve();
       await finish.promise;
@@ -413,7 +427,7 @@ describe("Talk client agent consult admission", () => {
       };
     });
     const runner = createConsultRunner({
-      context: { chatAbortControllers, logGateway: { warn: vi.fn() } } as never,
+      context: { rpcSources, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
       isRunCurrent: () => true,
     });
@@ -455,7 +469,7 @@ describe("Talk client agent consult admission", () => {
             assertActive: () => {},
           }),
         },
-        () => setActiveEmbeddedRun("session-talk", firstHandle, "agent:researcher:talk"),
+        () => publishTalkTestBackend(firstHandle),
       );
       clearActiveEmbeddedRun("session-talk", firstHandle, "agent:researcher:talk");
       await withGatewayToolCallerIdentity(
@@ -469,7 +483,7 @@ describe("Talk client agent consult admission", () => {
             assertActive: () => {},
           }),
         },
-        () => setActiveEmbeddedRun("session-talk", secondHandle, "agent:researcher:talk"),
+        () => publishTalkTestBackend(secondHandle),
       );
       secondPublished.resolve();
       await finish.promise;
@@ -559,7 +573,7 @@ describe("Talk client agent consult admission", () => {
     const releaseFirst = deferred<void>();
     const secondPublished = deferred<void>();
     const finishSecond = deferred<void>();
-    const chatAbortControllers = new Map();
+    const rpcSources = new Map();
     const registerRun = vi.fn();
     const currentRun = { instanceId: "instance:current-owner", runId: "run-talk" };
     const secondHandle = createEmbeddedRunHandle({ runId: "run-talk" });
@@ -591,7 +605,7 @@ describe("Talk client agent consult admission", () => {
             assertActive: () => {},
           }),
         },
-        () => setActiveEmbeddedRun("session-talk", secondHandle, "agent:researcher:talk"),
+        () => publishTalkTestBackend(secondHandle),
       );
       secondPublished.resolve();
       await finishSecond.promise;
@@ -615,7 +629,7 @@ describe("Talk client agent consult admission", () => {
       };
     });
     const runner = createConsultRunner({
-      context: { chatAbortControllers, logGateway: { warn: vi.fn() } } as never,
+      context: { rpcSources, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
       registerRun,
       isRunCurrent: () => true,
@@ -711,7 +725,7 @@ describe("Talk client agent consult admission", () => {
   it("installs steering ownership before readiness and delays backend admission", async () => {
     const ready = deferred<void>();
     const finish = deferred<void>();
-    const chatAbortControllers = new Map();
+    const rpcSources = new Map();
     const handle = createEmbeddedRunHandle({ runId: "run-talk" });
     const operationalRunInstance = {
       instanceId: "instance:readiness",
@@ -730,14 +744,14 @@ describe("Talk client agent consult admission", () => {
             assertActive: () => {},
           }),
         },
-        () => setActiveEmbeddedRun("session-talk", handle, "agent:researcher:talk"),
+        () => publishTalkTestBackend(handle),
       );
       await finish.promise;
       clearActiveEmbeddedRun("session-talk", handle, "agent:researcher:talk");
       return { payloads: [] };
     });
     const runner = createConsultRunner({
-      context: { chatAbortControllers, logGateway: { warn: vi.fn() } } as never,
+      context: { rpcSources, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
       isRunCurrent: () => true,
     });

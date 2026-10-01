@@ -50,8 +50,7 @@ export async function startGatewayEarlyRuntime(params: {
   resetEventLoopHealth: GatewayMaintenanceParams["resetEventLoopHealth"];
   logHealth: GatewayMaintenanceParams["logHealth"];
   dedupe: GatewayMaintenanceParams["dedupe"];
-  chatAbortControllers: GatewayMaintenanceParams["chatAbortControllers"];
-  chatQueuedTurns: GatewayMaintenanceParams["chatQueuedTurns"];
+  rpcSources: GatewayMaintenanceParams["rpcSources"];
   restartRecoveryCandidates: GatewayMaintenanceParams["restartRecoveryCandidates"];
   chatRunState: GatewayMaintenanceParams["chatRunState"];
   removeChatRun: GatewayMaintenanceParams["removeChatRun"];
@@ -178,8 +177,7 @@ export async function startGatewayEarlyRuntime(params: {
         resetEventLoopHealth: params.resetEventLoopHealth,
         logHealth: params.logHealth,
         dedupe: params.dedupe,
-        chatAbortControllers: params.chatAbortControllers,
-        chatQueuedTurns: params.chatQueuedTurns,
+        rpcSources: params.rpcSources,
         restartRecoveryCandidates: params.restartRecoveryCandidates,
         chatRunState: params.chatRunState,
         removeChatRun: params.removeChatRun,

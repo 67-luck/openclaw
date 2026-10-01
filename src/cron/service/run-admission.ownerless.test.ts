@@ -6,7 +6,6 @@ import {
 } from "../../../test/helpers/cron/service-regression-fixtures.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
-  clearCommandLane,
   enqueueCommandInLane,
   getTotalQueueSize,
   setCommandLaneConcurrency,
@@ -231,9 +230,9 @@ describe("ownerless reservation and manual completion", () => {
       ]);
       expect(execute).not.toHaveBeenCalled();
     } finally {
+      stop(state);
       release.resolve();
       await blocker;
-      clearCommandLane(CommandLane.Cron);
     }
   });
 

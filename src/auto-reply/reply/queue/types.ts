@@ -27,6 +27,10 @@ import type { PromptImageOrderEntry } from "../../../media/prompt-image-order.js
 import type { PluginHookChannelContext } from "../../../plugins/hook-types.js";
 import type { RuntimePluginToolGrant } from "../../../plugins/runtime/tool-grant.js";
 import type { InputProvenance } from "../../../sessions/input-provenance.js";
+import type {
+  SessionControllerInput,
+  SessionControllerMailboxClaim,
+} from "../../../sessions/session-controller.mailbox.js";
 import type { UserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.types.js";
 import type { ExplicitSkillSelection, SkillSnapshot } from "../../../skills/types.js";
 import type { SkillWorkshopProposalRevisionConstraint } from "../../../skills/workshop/types.js";
@@ -100,18 +104,11 @@ type QueuedFollowupReplyDisposition =
   | { kind: "deliver"; deliver: QueuedFollowupReplyDelivery }
   | { kind: "drop"; reason: "source-unavailable" };
 
-export class FollowupRunDeferredError extends Error {
-  constructor(message = "Follow-up run deferred") {
-    super(message);
-    this.name = "FollowupRunDeferredError";
-  }
-}
-
-export function isFollowupRunDeferredError(error: unknown): error is FollowupRunDeferredError {
-  return error instanceof FollowupRunDeferredError;
-}
-
 export type FollowupRun = {
+  /** Controller-owned immutable input identity and mutable source custody. */
+  controllerInput?: SessionControllerInput;
+  /** Execution view of an already selected compatible batch, never another source. */
+  controllerClaim?: SessionControllerMailboxClaim;
   /** External-turn eligibility; queued execution refreshes the session-selected profile. */
   personalBootstrapEligible?: boolean;
   prompt: string;
@@ -157,13 +154,6 @@ export type FollowupRun = {
   disableTools?: boolean;
   /** Force individual drain; never merge this run into a collect batch. */
   disableCollectBatching?: boolean;
-  /** The current-turn hook already ran before this steer became a fallback. */
-  /** Pending same-turn acceptance while this item remains parked in FIFO order. */
-  steerPending?: {
-    phase: "waiting" | "injecting";
-    predecessor: Promise<boolean>;
-    settle: (accepted: boolean) => void;
-  };
   /** Internal marker for the one-shot stranded final recovery retry. */
   strandedReplyRetry?: boolean;
   /** Preserve priority runs when old-item queue overflow eviction runs before drain. */
@@ -300,20 +290,28 @@ export type FollowupRun = {
 };
 
 export function isFollowupRunAborted(
-  run: Pick<FollowupRun, "abortSignal" | "queueAbortSignal" | "operatorAuthority">,
+  run: Pick<
+    FollowupRun,
+    "abortSignal" | "queueAbortSignal" | "operatorAuthority" | "controllerInput"
+  >,
 ): boolean {
   return (
-    run.abortSignal?.aborted === true ||
+    (run.abortSignal?.aborted === true && !run.controllerInput?.custody.cancellationRetired) ||
     run.queueAbortSignal?.aborted === true ||
     run.operatorAuthority?.signal?.aborted === true
   );
 }
 
 export function resolveFollowupAbortSignal(
-  run: Pick<FollowupRun, "abortSignal" | "queueAbortSignal" | "operatorAuthority">,
+  run: Pick<
+    FollowupRun,
+    "abortSignal" | "queueAbortSignal" | "operatorAuthority" | "controllerInput"
+  >,
 ): AbortSignal | undefined {
-  const signals = [run.abortSignal, run.queueAbortSignal, run.operatorAuthority?.signal].filter(
-    (signal): signal is AbortSignal => signal !== undefined,
-  );
+  const signals = [
+    run.controllerInput?.custody.cancellationRetired ? undefined : run.abortSignal,
+    run.queueAbortSignal,
+    run.operatorAuthority?.signal,
+  ].filter((signal): signal is AbortSignal => signal !== undefined);
   return signals.length > 1 ? AbortSignal.any(signals) : signals[0];
 }

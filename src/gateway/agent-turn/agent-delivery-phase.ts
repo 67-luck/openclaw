@@ -90,11 +90,11 @@ export async function resolveAgentDeliveryPhase(params: {
           params.resolvedSessionKey,
         )
       : undefined;
-    for (const [activeRunId, active] of params.context.chatAbortControllers) {
-      const sameSession = active.sessionKey === params.resolvedSessionKey;
+    for (const [activeRunId, active] of params.context.rpcSources) {
+      const sameSession = active.adapter.sessionKey === params.resolvedSessionKey;
       const activeOwner = resolveChatRunOwnerAgentId({
-        agentId: active.agentId,
-        sessionKey: active.sessionKey,
+        agentId: active.adapter.agentId,
+        sessionKey: active.adapter.sessionKey,
         defaultAgentId: compatibilityOwnerAgentId,
       });
       if (activeRunId !== params.runId && sameSession && activeOwner === activeSessionAgentId) {

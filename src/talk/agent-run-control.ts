@@ -8,10 +8,10 @@ import type {
   ActiveEmbeddedRunOwner,
   EmbeddedAgentQueueMessageOutcome,
 } from "../agents/embedded-agent-runner/runs.js";
-import type { ReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-run-registry.contracts.js";
 import { isAbortError } from "../infra/abort-signal.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { getDiagnosticSessionActivitySnapshot } from "../logging/diagnostic-run-activity.js";
+import type { ReplyToolAuthorityOverlay } from "../sessions/session-controller.contracts.js";
 import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.types.js";
 import { captureRealtimeVoiceRunOwner } from "./agent-run-control-owner.js";
 import {
@@ -74,7 +74,9 @@ type RealtimeVoiceAgentControlDeps = {
     sessionKey?: string;
   }) => RealtimeVoiceAgentRunActivity;
   resolveActiveEmbeddedRunSessionId: (sessionKey: string) => string | undefined;
-  resolveActiveEmbeddedRunOwnerByRunId?: (runId: string) => ActiveEmbeddedRunOwner | undefined;
+  resolveActiveEmbeddedRunOwnerByRunId?: (
+    runId: string,
+  ) => Pick<ActiveEmbeddedRunOwner, "sessionId" | "sessionKey" | "abort"> | undefined;
   resolveActiveReplyRunOwnerForSignal?: (
     signal: AbortSignal,
   ) => Pick<ActiveEmbeddedRunOwner, "sessionId" | "sessionKey" | "abort"> | undefined;

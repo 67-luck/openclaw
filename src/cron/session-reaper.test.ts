@@ -18,8 +18,8 @@ import {
 } from "../config/sessions/targets.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
 import {
   listOpenClawRegisteredAgentDatabases,
@@ -713,7 +713,7 @@ describe("sweepCronRunSessions", () => {
       nowMs: now,
       log,
     });
-    const admissionPromise = beginSessionWorkAdmission({
+    const admissionPromise = beginSessionEffect({
       scope: storePath,
       identities: ["active-run"],
       assertAllowed: () => {
@@ -722,7 +722,7 @@ describe("sweepCronRunSessions", () => {
     });
     await firstValidation.promise;
 
-    let admission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+    let admission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
     try {
       releaseWriter.resolve();
       const result = await sweep;
@@ -755,7 +755,7 @@ describe("sweepCronRunSessions", () => {
       },
     });
 
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: storePath,
       identities: ["busy-run"],
       assertAllowed: () => {},

@@ -2,7 +2,7 @@ import { hasPendingFollowupQueueWork } from "../../auto-reply/reply/queue/state.
 import { parseDurationMs } from "../../cli/parse-duration.js";
 import type { OpenClawConfig } from "../../config/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { isSessionWorkAdmissionActive } from "../../sessions/session-lifecycle-admission.js";
+import { isSessionControllerWorkActive } from "../../sessions/session-controller.lifecycle.js";
 import type { WorkerPlacementDispatchService } from "./placement-dispatch.js";
 import type { WorkerSessionPlacementIdentity } from "./placement-record.js";
 import type { WorkerSessionPlacementStore } from "./placement-store.js";
@@ -41,7 +41,7 @@ export function createWorkerPlacementIdleSweep(options: {
         });
         const identities = [sessionKey, target.canonicalKey, ...target.storeKeys, sessionId];
         return () =>
-          isSessionWorkAdmissionActive(target.storePath, identities) ||
+          isSessionControllerWorkActive(target.storePath, identities) ||
           hasPendingFollowupQueueWork(identities);
       }));
 

@@ -8,7 +8,6 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import { createTerminalTool } from "../agents/tools/terminal-tool.js";
 // Gateway plugin tests cover plugin loading, auto-enable, runtime registry setup,
 // request-scope injection, diagnostics, and handler dispatch integration.
-import { makeEmptyPluginMetadataOwners } from "../plugins/current-plugin-metadata.test-support.js";
 import {
   getGlobalPluginRegistry,
   initializeGlobalHookRunner,
@@ -19,18 +18,14 @@ import {
   bindLegacyPluginSdkResourceHost,
   getLegacyPluginSdkResourceHost,
 } from "../plugins/legacy-sdk-resource-host.js";
-import { createPluginRecord } from "../plugins/loader-records.js";
 import type { PluginDiagnostic } from "../plugins/manifest-types.js";
 import {
   createPluginCache,
   invalidatePluginCacheMetadata,
   withPluginCache,
 } from "../plugins/plugin-cache.js";
-import type { PluginLookUpTable } from "../plugins/plugin-lookup-table.js";
-import { buildDeclaredProviderOwnerIndex } from "../plugins/provider-owner-index.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { PluginRegistryInspectionResources } from "../plugins/registry-inspection-resources.js";
-import type { PluginRegistry } from "../plugins/registry.js";
 import { setActiveDegradedPlugins } from "../plugins/runtime-degraded-state.js";
 import type { PluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.test-fixtures.js";
 import { getPluginRuntimeLoadContext } from "../plugins/runtime/load-context.js";
@@ -40,6 +35,12 @@ import { withEnv } from "../test-utils/env.js";
 import { createInternalAgentTurnFacade } from "./agent-turn/internal-facade.js";
 import type { GatewayRequestContext, GatewayRequestOptions } from "./server-methods/types.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
+import {
+  createRegistry,
+  addLoadedPlugin,
+  createDuplexPluginRegistry,
+  createLookUpTableForTest,
+} from "./server-plugins.fixtures.test-support.js";
 
 const loadOpenClawPlugins = vi.hoisted(() => vi.fn());
 const loadPluginLookUpTable = vi.hoisted(() =>
@@ -156,93 +157,6 @@ vi.mock("../channels/registry.js", () => ({
   formatChannelPrimerLine: () => "",
   formatChannelSelectionLine: () => "",
 }));
-
-const createRegistry = (diagnostics: PluginDiagnostic[]): PluginRegistry => ({
-  ...createEmptyPluginRegistry(),
-  diagnostics,
-});
-
-function addLoadedPlugin(
-  registry: PluginRegistry,
-  params: {
-    id: string;
-    origin?: PluginRegistry["plugins"][number]["origin"];
-    trustedOfficialInstall?: boolean;
-  },
-): PluginRegistry {
-  registry.plugins.push(
-    createPluginRecord({
-      id: params.id,
-      name: params.id,
-      source: `/tmp/${params.id}/index.js`,
-      origin: params.origin ?? "bundled",
-      enabled: true,
-      configSchema: false,
-      ...(params.trustedOfficialInstall !== undefined
-        ? { trustedOfficialInstall: params.trustedOfficialInstall }
-        : {}),
-    }),
-  );
-  return registry;
-}
-
-function createDuplexPluginRegistry(command = "image.bridge"): PluginRegistry {
-  const registry = addLoadedPlugin(createRegistry([]), { id: "duplex-plugin" });
-  registry.nodeHostCommands.push({
-    pluginId: "duplex-plugin",
-    pluginName: "Duplex plugin",
-    command: { command, duplex: true, handle: async () => "{}" },
-    source: "test",
-  });
-  return registry;
-}
-
-function createLookUpTableForTest(params: {
-  installRecords?: PluginLookUpTable["index"]["installRecords"];
-  manifestRegistry?: PluginLookUpTable["manifestRegistry"];
-  pluginIds?: readonly string[];
-  workerProviderIds?: readonly string[];
-}): PluginLookUpTable {
-  const index: PluginLookUpTable["index"] = {
-    version: 1,
-    hostContractVersion: "test",
-    compatRegistryVersion: "test",
-    migrationVersion: 1,
-    policyHash: "test",
-    generatedAtMs: 1,
-    installRecords: params.installRecords ?? {},
-    plugins: [],
-    diagnostics: [],
-  };
-  return {
-    policyHash: "test",
-    index,
-    registryIndex: index,
-    registryDiagnostics: [],
-    manifestRegistry: params.manifestRegistry ?? { plugins: [], diagnostics: [] },
-    plugins: [],
-    diagnostics: [],
-    byPluginId: new Map(),
-    normalizePluginId: (pluginId) => pluginId,
-    declaredProviderOwners: buildDeclaredProviderOwnerIndex(params.manifestRegistry?.plugins ?? []),
-    owners: makeEmptyPluginMetadataOwners(),
-    startup: {
-      channelPluginIds: [],
-      pluginIds: params.pluginIds ?? [],
-    },
-    workerProviderIds: params.workerProviderIds ?? [],
-    metrics: {
-      registrySnapshotMs: 0,
-      manifestRegistryMs: 0,
-      startupPlanMs: 0,
-      ownerMapsMs: 0,
-      totalMs: 0,
-      indexPluginCount: 0,
-      manifestPluginCount: 0,
-      startupPluginCount: params.pluginIds?.length ?? 0,
-    },
-  };
-}
 
 type ServerPluginsModule = typeof import("./server-plugins.js") & {
   clearFallbackGatewayContext: () => void;
@@ -687,10 +601,10 @@ describe("loadGatewayPlugins", () => {
 
   test("captures retired plugin reply owners through their canonical Gateway binding", async () => {
     const { admitReplyTurn } = await import("../auto-reply/reply/reply-turn-admission.js");
-    const { captureGatewayReplyRunRestartAbort } =
-      await import("../auto-reply/reply/reply-run-registry.js");
-    const { captureGatewaySessionWorkAdmissions } =
-      await import("../sessions/session-lifecycle-admission.js");
+    const { captureSessionControllerStop, stopSessionController } =
+      await import("../sessions/session-controller.stop.js");
+    const { captureGatewaySessionControllerWork } =
+      await import("../sessions/session-controller.lifecycle.js");
     const { replaceSessionEntry } = await import("../config/sessions/session-accessor.js");
     const { closeOpenClawAgentDatabasesForTest } = await import("../state/openclaw-agent-db.js");
     const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-plugin-restart-owner-"));
@@ -710,7 +624,7 @@ describe("loadGatewayPlugins", () => {
       inspection.register("sdk-wrapper", { id: "native", dispose: () => database.close() });
       return inspection;
     });
-    const operations: import("../auto-reply/reply/reply-run-registry.js").ReplyOperation[] = [];
+    const operations: import("../sessions/session-controller.js").ReplyOperation[] = [];
     const runtimes: ReturnType<ServerPluginsModule["loadGatewayPlugins"]>[] = [];
     try {
       for (const [name, resolver, sdkHost, inspection] of [
@@ -782,8 +696,13 @@ describe("loadGatewayPlugins", () => {
         }),
       );
       expect(closingResolver).not.toHaveBeenCalled();
-      const admissions = captureGatewaySessionWorkAdmissions(closingResolver);
-      const aborted = captureGatewayReplyRunRestartAbort(closingResolver)(() => {});
+      const admissions = captureGatewaySessionControllerWork(closingResolver);
+      const capture = captureSessionControllerStop({
+        operations: operations.filter((operation) =>
+          gatewayRequestScopeModule.hasGatewayContextOwner(operation, closingResolver),
+        ),
+      });
+      const aborted = stopSessionController(capture, { source: "restart" }).activeCancelled;
       expect({
         closing: admissions.isActive({
           scope: storePath,

@@ -14,6 +14,10 @@ import type { AgentInternalEvent } from "../../agents/internal-events.js";
 import { resetSubagentRegistryForTests } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resetDiagnosticEventsForTest } from "../../infra/diagnostic-events.js";
+import {
+  releaseSessionControllerClaim,
+  retireSessionControllerInput,
+} from "../../sessions/session-controller.mailbox.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
 import { createChatRunState } from "../server-chat-state.js";
@@ -48,18 +52,32 @@ export const REAL_PNG = Buffer.from(
 
 export const REAL_PNG_DATA_URL = `data:image/png;base64,${REAL_PNG.toString("base64")}`;
 
+const sourceContexts = new Set<GatewayRequestContext>();
+function disposeTestSources() {
+  for (const context of sourceContexts) {
+    for (const ref of context.rpcSources.values()) {
+      ref.input.claim?.operation?.complete();
+      if (ref.input.claim) {
+        releaseSessionControllerClaim(ref.input.claim);
+      }
+      retireSessionControllerInput(ref.input);
+    }
+    context.rpcSources.clear();
+  }
+  sourceContexts.clear();
+}
+
 export const makeContext = (session?: {
   agentId: string;
   row: GatewaySessionRow;
 }): GatewayRequestContext => {
   const projection = createAgentTestSessionRowProjection(resolveAgentTestConfig, session);
-  return {
+  const context = {
     trackExecution: trackAsyncWork,
     dedupe: new Map(),
     addChatRun: vi.fn(),
     removeChatRun: vi.fn(),
-    chatAbortControllers: new Map(),
-    chatQueuedTurns: new Map(),
+    rpcSources: new Map(),
     chatRunState: createChatRunState(),
     agentRunSeq: new Map(),
     broadcast: vi.fn(),
@@ -70,6 +88,8 @@ export const makeContext = (session?: {
     getRuntimeConfig: () => resolveAgentTestConfig(),
     ...bindSessionRowProjection({}, () => projection),
   } as unknown as GatewayRequestContext;
+  sourceContexts.add(context);
+  return context;
 };
 
 type AgentHandler = NonNullable<typeof agentHandlers.agent>;
@@ -515,6 +535,7 @@ export async function invokeAgentIdentityGet(
 }
 
 export const describe0AfterEach0 = async () => {
+  disposeTestSources();
   mocks.userTurnStorePath = undefined;
   // Drain deferred broadcasts before retiring the test-owned row and runtime state.
   await flushPendingSessionsChangedEvents();
@@ -549,6 +570,8 @@ export const describe0AfterEach0 = async () => {
 };
 
 async function resetIntegrationState() {
+  // Tests hold mocked commands indefinitely; retire their real selector claims between cases.
+  disposeTestSources();
   await flushPendingSessionsChangedEvents();
   envSnapshot.restore();
   resetSubagentRegistryForTests({ persist: false });

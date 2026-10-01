@@ -6,7 +6,13 @@ import type { GatewayClientInfo } from "../../../packages/gateway-protocol/src/c
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { registerAgentSessionLoopTestLifecycle } from "../../agents/sessions/agent-session-loop-correctness.test-support.js";
 import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
-import { replyRunRegistry } from "../../auto-reply/reply/reply-run-registry.js";
+import {
+  createQueueTestRun,
+  createQueueSettings,
+} from "../../auto-reply/reply/queue.test-helpers.js";
+import { enqueueFollowupRun } from "../../auto-reply/reply/queue/enqueue.js";
+import { completeFollowupRunLifecycle } from "../../auto-reply/reply/queue/lifecycle.js";
+import { readReplySourceInput } from "../../auto-reply/reply/reply-source-binding.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import {
   appendTranscriptMessageSync,
@@ -23,7 +29,14 @@ import {
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { initializeGlobalHookRunner } from "../../plugins/hook-runner-global.js";
-import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
+import { replyRunRegistry } from "../../sessions/session-controller.js";
+import { captureSessionControllerSettlement } from "../../sessions/session-controller.lifecycle.js";
+import { bindSessionControllerSource } from "../../sessions/session-controller.mailbox.js";
+import {
+  isRpcSourceActive,
+  isRpcSourceQueued,
+  requestRpcSourceCancellation,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { attachSessionTranscriptRunId } from "../../sessions/transcript-events.js";
 import {
   createUserTurnTranscriptRecorder,
@@ -427,8 +440,8 @@ describe("ordinary chat input admission", () => {
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
       expect(loadTranscriptEventsSync(fixture.scope)).toEqual(fixture.activeTranscript);
       expect(listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
-      expect(fixture.context.chatAbortControllers.has(fixture.params.idempotencyKey)).toBe(false);
-      await getSessionWorkAdmissionRelease({
+      expect(fixture.context.rpcSources.has(fixture.params.idempotencyKey)).toBe(false);
+      await captureSessionControllerSettlement({
         scope: fixture.scope.storePath,
         identities: [fixture.scope.sessionKey, fixture.scope.sessionId],
       });
@@ -468,12 +481,22 @@ describe("ordinary chat input admission", () => {
           });
           return;
         }
-        const active = fixture.context.chatAbortControllers.get(fixture.params.idempotencyKey);
+        const active = fixture.context.rpcSources.get(fixture.params.idempotencyKey);
         if (!active) {
           throw new Error("Expected the browser admission to own its cancellation controller");
         }
-        active.abortStopReason = "rpc";
-        active.controller.abort();
+        // Approval runs after asynchronous source preparation. Its cancellation
+        // must hit the already reserved physical input, not an ACK-time facade.
+        expect(active.input.mailbox.owner.target).toMatchObject({
+          storeScope: fixture.scope.storePath,
+          sessionKey: fixture.scope.sessionKey,
+          incarnation: fixture.scope.sessionId,
+        });
+        expect(active.input.protocolRunId).toBe(fixture.params.idempotencyKey);
+        expect(isRpcSourceActive(active)).toBe(false);
+        expect(isRpcSourceQueued(active)).toBe(true);
+        active.adapter.abortStopReason = "rpc";
+        requestRpcSourceCancellation(active);
       });
       try {
         const respond = await fixture.send();
@@ -494,7 +517,7 @@ describe("ordinary chat input admission", () => {
             loadTranscriptEventsSync({ ...fixture.scope, sessionId: "successor-session" }),
           ).toEqual([]);
         }
-        expect(fixture.context.chatAbortControllers.has(fixture.params.idempotencyKey)).toBe(false);
+        expect(fixture.context.rpcSources.has(fixture.params.idempotencyKey)).toBe(false);
       } finally {
         await fixture.cleanup();
       }
@@ -785,7 +808,7 @@ describe("ordinary chat input admission", () => {
       const fixture = await createBrowserFollowupFixture({ active: false });
       const entered = createDeferred<Parameters<typeof dispatchInboundMessage>[0]>();
       const release = createDeferred();
-      let settleQueued: (() => void) | undefined;
+      let settleQueued: (() => Promise<void>) | undefined;
       if (route === "external") {
         fixture.params.originatingChannel = "discord";
         fixture.params.originatingTo = "channel:synthetic";
@@ -795,8 +818,27 @@ describe("ordinary chat input admission", () => {
         const options = dispatchParams as Parameters<typeof dispatchInboundMessage>[0];
         if (route === "queued-webchat") {
           // The queue retains cancellation/admission after the initial dispatch unwinds.
-          options.replyOptions?.turnAdoptionLifecycle?.onDeferred?.();
-          settleQueued = options.replyOptions?.turnAdoptionLifecycle?.onSettled;
+          const input = readReplySourceInput(options.replyOptions);
+          if (!input) {
+            throw new Error("Expected original controller input");
+          }
+          const run = createQueueTestRun({ prompt: fixture.params.message });
+          run.turnAdoptionLifecycle = options.replyOptions?.turnAdoptionLifecycle;
+          bindSessionControllerSource(input, run);
+          expect(
+            enqueueFollowupRun(
+              fixture.scope.sessionKey,
+              run,
+              createQueueSettings(),
+              "none",
+              undefined,
+              false,
+            ),
+          ).toBe(true);
+          settleQueued = async () => {
+            completeFollowupRunLifecycle(run);
+            await input.settlement.promise;
+          };
         }
         entered.resolve(options);
         if (route !== "queued-webchat") {
@@ -810,9 +852,9 @@ describe("ordinary chat input admission", () => {
         const { replyOptions } = await entered.promise;
         if (route === "queued-webchat") {
           await vi.waitFor(() =>
-            expect(fixture.context.chatAbortControllers.has(fixture.params.idempotencyKey)).toBe(
-              false,
-            ),
+            expect(
+              isRpcSourceQueued(fixture.context.rpcSources.get(fixture.params.idempotencyKey)),
+            ).toBe(true),
           );
         }
         await replyOptions?.userTurnTranscriptRecorder?.persistApproved();
@@ -848,11 +890,11 @@ describe("ordinary chat input admission", () => {
           route === "external" ? "missing" : "delivered",
         );
         if (route === "queued-webchat") {
-          settleQueued?.();
+          await settleQueued?.();
           expect(await replyOptions?.resolveReplyDelivery?.()).toBe("missing");
         }
       } finally {
-        settleQueued?.();
+        await settleQueued?.();
         release.resolve();
         await fixture.cleanup();
       }

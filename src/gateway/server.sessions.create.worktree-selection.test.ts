@@ -177,7 +177,7 @@ test.each([
       }
       let sessionKey: string | undefined;
       const pastedText = `Pasted deployment plan ${"x".repeat(2_000)}`;
-      const context = { chatAbortControllers: new Map<string, ChatAbortControllerEntry>() };
+      const context = { rpcSources: new Map<string, ChatAbortControllerEntry>() };
       const message = "Review this rollout [[reply_to_current]]";
       const attachment = {
         type: "file",

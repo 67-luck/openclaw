@@ -21,7 +21,7 @@ it("keeps admitted session ownership when transformed plugins import the native 
   const source = (relativePath: string) => JSON.stringify(path.join(repo, relativePath));
   const ownerExports = `
     export { admitReplyTurn } from ${source("src/auto-reply/reply/reply-turn-admission.ts")};
-    export { replyRunRegistry } from ${source("src/auto-reply/reply/reply-run-registry.ts")};
+    export { replyRunRegistry } from ${source("src/sessions/session-controller.registry.ts")};
     export { replaceSessionEntrySync } from ${source("src/config/sessions/session-accessor.sqlite-entry.ts")};
     export { closeOpenClawAgentDatabases } from ${source("src/state/openclaw-agent-db.ts")};
     export { closeOpenClawStateDatabase } from ${source("src/state/openclaw-state-db.ts")};
@@ -151,12 +151,12 @@ it("keeps admitted session ownership when transformed plugins import the native 
             const parentStore = scenario.foreign
               ? path.join(caseRoot, "foreign", "sessions.json") : targetStore;
             const write = (storePath, id) => host.replaceSessionEntrySync(
-              { storePath, sessionKey }, { sessionId: id, updatedAt: Date.now() },
+              { agentId: "main", storePath, sessionKey }, { sessionId: id, updatedAt: Date.now() },
             );
             write(targetStore, sessionId);
             if (scenario.foreign) write(parentStore, sessionId);
             const admitted = await bounded(scenario.parent.admitReplyTurn({
-              sessionKey, sessionId, storePath: parentStore, kind: "visible", resetTriggered: false,
+              agentId: "main", sessionKey, sessionId, storePath: parentStore, kind: "visible", resetTriggered: false,
             }), scenario.name + " parent");
             assert.equal(admitted.status, "owned", "parent must hold actual admission");
             const parent = admitted.operation;
@@ -175,18 +175,21 @@ it("keeps admitted session ownership when transformed plugins import the native 
             let pending;
             try {
               pending = host.admitReplyTurn({
-                sessionKey, sessionId, expectedSessionId: sessionId, storePath: targetStore,
+                agentId: "main", sessionKey, sessionId, expectedSessionId: sessionId, storePath: targetStore,
                 kind: "queued_followup", resetTriggered: false, waitTimeoutMs: 5_000,
                 upstreamAbortSignal: controller.signal,
               });
               void pending.catch(() => {});
-              await bounded(waiting, scenario.name + " native waitForIdle");
+              if (scenario.foreign) {
+                // Equal logical keys/UUIDs do not serialize independent physical stores.
+                child = await bounded(pending, scenario.name + " independent physical admission");
+              } else {
+                await bounded(waiting, scenario.name + " native waitForIdle");
+              }
               write(parentStore, successorId);
-              // Equal UUIDs in a separately replaced store cannot prove this parent's ownership.
-              if (scenario.foreign) write(targetStore, successorId);
               parent.updateSessionId(successorId);
               parent.complete();
-              child = await bounded(pending, scenario.name + " successor");
+              child ??= await bounded(pending, scenario.name + " successor");
               if (child.status === "owned") operations.add(child.operation);
               const outcome = child.status === "owned"
                 ? { name: scenario.name, status: child.status, sessionId: child.operation.sessionId }
@@ -207,7 +210,7 @@ it("keeps admitted session ownership when transformed plugins import the native 
           assert.deepEqual(outcomes, [
             { name: "native-same-store", status: "owned", sessionId: "after-native-same-store" },
             { name: "transformed-same-store", status: "owned", sessionId: "after-transformed-same-store" },
-            { name: "transformed-foreign-store", status: "skipped", reason: "lifecycle-invalidated" },
+            { name: "transformed-foreign-store", status: "owned", sessionId: "before-transformed-foreign-store" },
           ]);
         } finally {
           for (const operation of operations) operation.complete();

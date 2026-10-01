@@ -14,11 +14,11 @@ import type { RawData } from "ws";
 import type { HelloOk } from "../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { AgentCommandOpts } from "../agents/command/types.js";
+import { resolveActiveEmbeddedRunOwnerByRunId } from "../agents/embedded-agent-runner/runs.js";
 import {
-  clearActiveEmbeddedRun,
-  resolveActiveEmbeddedRunOwnerByRunId,
-  setActiveEmbeddedRun,
-} from "../agents/embedded-agent-runner/runs.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+} from "../agents/embedded-agent-runner/runs.test-support.js";
 import * as subagentControl from "../agents/subagents/registry/subagent-control.js";
 import { createQueueTestRun } from "../auto-reply/reply/queue.test-helpers.js";
 import * as queueCleanup from "../auto-reply/reply/queue/cleanup.js";
@@ -141,8 +141,8 @@ async function startNativeRun(owner: Awaited<ReturnType<typeof openOperator>>, n
     await started.promise;
     const admission = registration.mock.calls.find(([input]) => input.runId === runId)?.[0];
     expect(admission).toBeDefined();
-    const entry = admission!.chatAbortControllers.get(runId)!;
-    expect(entry).toMatchObject({
+    const entry = admission!.rpcSources.get(runId)!;
+    expect(entry.adapter).toMatchObject({
       ownerConnId: owner.hello.server.connId,
       ownerDeviceId: owner.deviceId,
       kind: "agent",
@@ -151,7 +151,7 @@ async function startNativeRun(owner: Awaited<ReturnType<typeof openOperator>>, n
     expect(resolveActiveEmbeddedRunOwnerByRunId(runId)).toMatchObject({
       runId,
       sessionKey,
-      sessionId: entry.sessionId,
+      sessionId: entry.adapter.sessionId,
     });
     return {
       runId,
@@ -245,7 +245,7 @@ describe("native sessions.abort requester authorization over WebSocket", () => {
       expect
         .soft(result)
         .toMatchObject({ ok: false, error: { code: "INVALID_REQUEST", message: "unauthorized" } });
-      expect.soft(run.entry.controller.signal.aborted).toBe(false);
+      expect.soft(run.entry.input.abortSignal.aborted).toBe(false);
       expect.soft(run.nativeAbort).not.toHaveBeenCalled();
       expect.soft(childCancellation).not.toHaveBeenCalled();
       expect.soft(queueClearing).not.toHaveBeenCalled();
@@ -304,7 +304,7 @@ describe("native sessions.abort requester authorization over WebSocket", () => {
         ok: true,
         payload: { status: "aborted", abortedRunId: run.runId },
       });
-      expect(run.entry.controller.signal.aborted).toBe(true);
+      expect(run.entry.input.abortSignal.aborted).toBe(true);
       expect(run.nativeAbort).toHaveBeenCalledTimes(1);
     } finally {
       try {
@@ -338,7 +338,7 @@ describe("native sessions.abort requester authorization over WebSocket", () => {
         await expect(callGatewayCli({ ...options, scopes: ["operator.write"] })).rejects.toThrow(
           "unauthorized",
         );
-        expect(run.entry.controller.signal.aborted).toBe(false);
+        expect(run.entry.input.abortSignal.aborted).toBe(false);
         expect(run.nativeAbort).not.toHaveBeenCalled();
 
         await expect(callGatewayCli(options)).resolves.toMatchObject(
@@ -346,7 +346,7 @@ describe("native sessions.abort requester authorization over WebSocket", () => {
             ? { aborted: true, runIds: [run.runId] }
             : { status: "aborted", abortedRunId: run.runId },
         );
-        expect(run.entry.controller.signal.aborted).toBe(true);
+        expect(run.entry.input.abortSignal.aborted).toBe(true);
         expect(run.nativeAbort).toHaveBeenCalledTimes(1);
       } finally {
         try {

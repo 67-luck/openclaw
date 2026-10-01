@@ -9,7 +9,7 @@ import { waitForFixtureFile } from "../../../test/helpers/process-wait.js";
 import { withTimeout } from "../../infra/fs-safe.js";
 import * as commandRunner from "../../process/exec.js";
 import type { SpawnResult } from "../../process/exec.js";
-import { SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS } from "../../sessions/session-lifecycle-admission.js";
+import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -132,18 +132,14 @@ describe("ManagedWorktreeService repository code isolation", () => {
     try {
       await withTimeout(
         waitForFixtureFile(pidFile, creation),
-        SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+        SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
         "setup process readiness",
       );
       const pid = Number.parseInt(await fs.readFile(pidFile, "utf8"), 10);
       expect(Number.isInteger(pid) && pid > 0).toBe(true);
       controller.abort(new Error("setup cancelled"));
       expect(
-        await withTimeout(
-          outcome,
-          SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-          "worktree cancellation",
-        ),
+        await withTimeout(outcome, SESSION_CONTROLLER_DRAIN_TIMEOUT_MS, "worktree cancellation"),
       ).toBeInstanceOf(Error);
       expect(() => process.kill(pid, 0)).toThrow();
       expect(await service.list()).toEqual([]);
@@ -298,7 +294,7 @@ describe("ManagedWorktreeService repository code isolation", () => {
               throw new Error(`Worktree creation completed before ${label}`);
             }),
           ]),
-          SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+          SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
           label,
         );
       try {

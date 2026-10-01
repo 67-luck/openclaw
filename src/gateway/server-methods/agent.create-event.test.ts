@@ -107,7 +107,7 @@ describe("agent handler session create events", () => {
           dedupe: new Map(),
           deps: {} as never,
           logGateway: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() } as never,
-          chatAbortControllers: new Map(),
+          rpcSources: new Map(),
           addChatRun: vi.fn(),
           registerToolEventRecipient: vi.fn(),
           getRuntimeConfig: configMocks.getRuntimeConfig,

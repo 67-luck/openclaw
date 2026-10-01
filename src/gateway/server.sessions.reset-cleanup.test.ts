@@ -16,9 +16,9 @@ import { peekSystemEvents } from "../infra/system-events.js";
 import { enqueueSystemEvent } from "../plugin-sdk/system-event-runtime.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
-  beginSessionWorkAdmission,
-  runExclusiveSessionLifecycleMutation,
-} from "../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  runSessionMutation,
+} from "../sessions/session-controller.lifecycle.js";
 import { runExclusiveSessionLifecycle } from "../sessions/session-lifecycle-admission.test-support.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
@@ -390,7 +390,7 @@ test("sessions.reset interrupts work admitted before runtime registration", asyn
   const { storePath } = await seedActiveMainSession();
   let interrupted = false;
   let releaseAdmission = () => {};
-  const admissionLease = await beginSessionWorkAdmission({
+  const admissionLease = await beginSessionEffect({
     scope: storePath,
     identities: ["agent:main:main", "sess-main"],
     assertAllowed: () => {},
@@ -409,7 +409,7 @@ test("sessions.reset interrupts work admitted before runtime registration", asyn
 test("sessions.reset does not interrupt the admission that initiates it", async () => {
   const { storePath } = await seedActiveMainSession();
   let interrupted = false;
-  const admissionLease = await beginSessionWorkAdmission({
+  const admissionLease = await beginSessionEffect({
     scope: storePath,
     identities: ["agent:main:main", "sess-main"],
     assertAllowed: () => {},
@@ -430,7 +430,7 @@ test("sessions.reset does not interrupt the admission that initiates it", async 
 test("sessions.reset rejects an active lifecycle mutation without interrupting admitted work", async () => {
   const { storePath } = await seedActiveMainSession();
   let interrupted = false;
-  const admissionLease = await beginSessionWorkAdmission({
+  const admissionLease = await beginSessionEffect({
     scope: storePath,
     identities: ["agent:main:main", "sess-main"],
     assertAllowed: () => {},
@@ -440,7 +440,7 @@ test("sessions.reset rejects an active lifecycle mutation without interrupting a
   });
   let releaseMutation = () => {};
   const { promise: mutationStarted, resolve: markMutationStarted } = createDeferred();
-  const blocker = runExclusiveSessionLifecycleMutation({
+  const blocker = runSessionMutation({
     scope: storePath,
     identities: ["agent:main:main", "sess-main"],
     run: async () => {
@@ -664,7 +664,7 @@ test("sessions.patch rejects an archive queued behind a rotated session", async 
     },
   });
   await blockerStarted;
-  const queuedReset = runExclusiveSessionLifecycleMutation({
+  const queuedReset = runSessionMutation({
     scope: storePath,
     identities: [sessionKey, initialSessionId],
     run: async () => {

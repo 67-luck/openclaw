@@ -1,5 +1,7 @@
 // Covers server-local chat, cron watcher, queued-turn, and terminal blockers.
 import { describe, expect, it, vi } from "vitest";
+import { retireSessionControllerInput } from "../sessions/session-controller.mailbox.js";
+import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
 import { createGatewayServerActiveWorkInspectors } from "./server-active-work.js";
 import type { GatewayRequestContext } from "./server-methods/shared-types.js";
 import { TerminalSessionManager } from "./terminal/session-manager.js";
@@ -8,6 +10,7 @@ import {
   baseOpenRequest,
   makeFakePty,
 } from "./terminal/session-manager.test-helpers.js";
+import { createRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 vi.mock("../cron/active-jobs.js", () => ({
   getActiveCronJobCount: vi.fn(() => 2),
@@ -17,48 +20,44 @@ vi.mock("../cron/service/active-run-cancellation.js", () => ({
   getSuspensionVisibleCronTaskRunCount: vi.fn(() => 4),
 }));
 
-function controller(aborted = false): AbortController {
-  const value = new AbortController();
-  if (aborted) {
-    value.abort();
-  }
-  return value;
-}
-
 describe("gateway server active work inspectors", () => {
   it("filters completed chat entries while retaining persistence and watcher blockers", () => {
+    const aborted = createRpcSourceForTest();
+    requestRpcSourceCancellation(aborted);
+    const cancelled = createRpcSourceForTest({}, { phase: "waiting" });
+    requestRpcSourceCancellation(cancelled);
     const context = {
       cron: { getSuspensionBlockerCount: () => 1 },
-      chatAbortControllers: new Map([
-        ["active", { controller: controller() }],
-        ["aborted", { controller: controller(true) }],
+      rpcSources: new Map([
+        ["preparing", createRpcSourceForTest()],
+        ["aborted", aborted],
         [
           "persisting",
-          {
-            controller: controller(),
-            registrationCleanupRequested: true,
-            controlUiVisible: true,
-            projectSessionTerminalPending: true,
-          },
+          createRpcSourceForTest(
+            {
+              registrationCleanupRequested: true,
+              controlUiVisible: true,
+              projectSessionTerminalPending: true,
+            },
+            { phase: "consumed" },
+          ),
         ],
-      ]),
-      chatQueuedTurns: new Map([
-        ["queued", { controller: controller() }],
-        ["cancelled", { controller: controller(true) }],
+        ["queued", createRpcSourceForTest({}, { phase: "waiting" })],
+        ["cancelled", cancelled],
       ]),
       terminalSessions: { size: 2 },
-    } as unknown as Pick<
-      GatewayRequestContext,
-      "chatAbortControllers" | "chatQueuedTurns" | "cron" | "terminalSessions"
-    >;
+    } as unknown as Pick<GatewayRequestContext, "rpcSources" | "cron" | "terminalSessions">;
 
     const inspectors = createGatewayServerActiveWorkInspectors(context);
 
     expect(inspectors.getCronRuns?.()).toBe(5);
-    expect(inspectors.getChatRuns?.()).toBe(1);
-    expect(inspectors.getQueuedTurns?.()).toBe(1);
+    expect(inspectors.getChatRuns?.()).toBe(0);
+    expect(inspectors.getQueuedTurns?.()).toBe(2);
     expect(inspectors.getTerminalPersistence?.()).toBe(1);
     expect(inspectors.getTerminalSessions?.()).toBe(2);
+    for (const ref of context.rpcSources.values()) {
+      retireSessionControllerInput(ref.input);
+    }
   });
 
   it("drops the raw terminal-session blocker count during an agent session drain", async () => {
@@ -78,13 +77,9 @@ describe("gateway server active work inspectors", () => {
     await terminalSessions.open(baseOpenRequest({ owner: agentTerminalOwner("agent:main:main") }));
     const inspectors = createGatewayServerActiveWorkInspectors({
       cron: {},
-      chatAbortControllers: new Map(),
-      chatQueuedTurns: new Map(),
+      rpcSources: new Map(),
       terminalSessions,
-    } as unknown as Pick<
-      GatewayRequestContext,
-      "chatAbortControllers" | "chatQueuedTurns" | "cron" | "terminalSessions"
-    >);
+    } as unknown as Pick<GatewayRequestContext, "rpcSources" | "cron" | "terminalSessions">);
 
     expect(inspectors.getTerminalSessions?.()).toBe(2);
     const drain = terminalSessions.beginAgentSessionDrain(drainingOwner);

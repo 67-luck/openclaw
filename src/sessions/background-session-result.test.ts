@@ -20,10 +20,7 @@ import {
 } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { commitBackgroundResultToSession } from "./background-session-result.js";
-import {
-  beginSessionWorkAdmission,
-  getActiveSessionLifecycleMutationCount,
-} from "./session-lifecycle-admission.js";
+import { beginSessionEffect, getSessionMutationCount } from "./session-controller.lifecycle.js";
 import { onSessionTranscriptUpdate } from "./transcript-events.js";
 
 describe("commitBackgroundResultToSession", () => {
@@ -56,7 +53,7 @@ describe("commitBackgroundResultToSession", () => {
 
   it("waits for active source work, commits provenance, and deduplicates retry", async () => {
     const target = await createTarget();
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: target.storePath,
       identities: [target.sessionKey, target.sessionId],
       assertAllowed: () => {},
@@ -85,13 +82,13 @@ describe("commitBackgroundResultToSession", () => {
         },
       ),
     ];
-    let laterAdmission: ReturnType<typeof beginSessionWorkAdmission> | undefined;
+    let laterAdmission: ReturnType<typeof beginSessionEffect> | undefined;
 
     try {
-      await vi.waitFor(() => expect(getActiveSessionLifecycleMutationCount()).toBe(1));
+      await vi.waitFor(() => expect(getSessionMutationCount()).toBe(1));
       expect(commitSettled).toBe(false);
       let laterAdmissionSettled = false;
-      laterAdmission = beginSessionWorkAdmission({
+      laterAdmission = beginSessionEffect({
         scope: target.storePath,
         identities: [target.sessionKey, target.sessionId],
         assertAllowed: () => {},
@@ -175,13 +172,13 @@ describe("commitBackgroundResultToSession", () => {
   it("cancels a background completion's pure wait without waiting for old work release", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const target = await createTarget();
-      const admission = await beginSessionWorkAdmission({
+      const admission = await beginSessionEffect({
         scope: target.storePath,
         identities: [target.sessionKey, target.sessionId],
         assertAllowed: () => {},
       });
-      const lifecycle = await import("./session-lifecycle-admission.js");
-      const releaseSpy = vi.spyOn(lifecycle, "getSessionWorkAdmissionRelease");
+      const lifecycle = await import("./session-controller.lifecycle.js");
+      const releaseSpy = vi.spyOn(lifecycle, "captureSessionControllerSettlement");
       const controller = new AbortController();
       const prepareDisplayContent = vi.fn(async () => undefined);
       const pending: Promise<unknown>[] = [];
@@ -216,7 +213,7 @@ describe("commitBackgroundResultToSession", () => {
         );
         pending.push(completionSettlement);
         await vi.waitFor(() => expect(releaseSpy).toHaveBeenCalledOnce());
-        expect(getActiveSessionLifecycleMutationCount()).toBe(1);
+        expect(getSessionMutationCount()).toBe(1);
         expect(prepareDisplayContent).not.toHaveBeenCalled();
         const sourceMutation = admission.run(async () => {
           sourceResponse = await callGatewayHandler(
@@ -228,8 +225,7 @@ describe("commitBackgroundResultToSession", () => {
                 getRuntimeConfig: () => target.config,
                 getSessionEventSubscriberConnIds: () => new Set<string>(),
                 broadcastToConnIds: vi.fn(),
-                chatAbortControllers: new Map(),
-                chatQueuedTurns: new Map(),
+                rpcSources: new Map(),
                 dedupe: new Map(),
               },
             },
@@ -245,7 +241,7 @@ describe("commitBackgroundResultToSession", () => {
         ).toMatchObject({ status: "rejected", reason: { name: "AbortError" } });
         await expect(sourceMutation).resolves.toMatchObject({ ok: true });
         expect(admission.isActive()).toBe(true);
-        expect(getActiveSessionLifecycleMutationCount()).toBe(0);
+        expect(getSessionMutationCount()).toBe(0);
         expect(prepareDisplayContent).not.toHaveBeenCalled();
         const scope = {
           agentId: "main",
@@ -269,7 +265,7 @@ describe("commitBackgroundResultToSession", () => {
           reason: { name: "AbortError" },
         });
         expect(sourceResponse).toMatchObject({ ok: true });
-        expect(getActiveSessionLifecycleMutationCount()).toBe(0);
+        expect(getSessionMutationCount()).toBe(0);
         expect(
           await loadTranscriptEvents({
             agentId: "main",

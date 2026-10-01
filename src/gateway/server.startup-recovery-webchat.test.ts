@@ -24,9 +24,9 @@ import { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-s
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { bindGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
 import {
-  beginSessionWorkAdmission,
-  getSessionWorkAdmissionOwnerRelease,
-} from "../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  captureSessionEffectOwnerSettlement,
+} from "../sessions/session-controller.lifecycle.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { countPendingQueueItems } from "../utils/queue-helpers.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
@@ -133,7 +133,7 @@ it(
     });
     let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
     let recovery: ReturnType<typeof recoverRestartAbortedMainSessions> | undefined;
-    let replacementOwner: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+    let replacementOwner: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
     let gatewayContext: GatewayRequestContext | undefined;
 
     try {
@@ -275,7 +275,7 @@ it(
       });
       await vi.waitFor(() => expect(targetRequests).toHaveLength(1), { timeout: 30_000 });
       expect(readRecoveryPrompt(targetRequests[0] ?? "").includes(originalChildMarker)).toBe(true);
-      const initialOwner = getSessionWorkAdmissionOwnerRelease({
+      const initialOwner = captureSessionEffectOwnerSettlement({
         scope: storePath,
         identities: [sessionKey, sessionId],
         owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
@@ -323,7 +323,7 @@ it(
         expect(countPendingQueueItems(queue?.items ?? [], queue?.inFlight)).toBe(1);
         expect(targetRequests).toHaveLength(1);
       });
-      replacementOwner = await beginSessionWorkAdmission({
+      replacementOwner = await beginSessionEffect({
         scope: storePath,
         identities: [sessionKey, sessionId],
         owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,

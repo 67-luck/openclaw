@@ -5,16 +5,16 @@ import {
   QuestionDispatchUnsupportedError,
 } from "../../agents/harness/gateway-question-dispatch.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
-import { createDeferredCore } from "../../shared/deferred.js";
 import type {
   ReplyBackendMessageInjectionV2,
   ReplyBackendQueueMessageOptions,
-} from "./reply-run-registry.contracts.js";
+} from "../../sessions/session-controller.contracts.js";
 import {
   beginReplyMessageInjectionTarget,
   finalizeReplyMessageInjectionAttempt,
   replyRunRegistry,
-} from "./reply-run-registry.js";
+} from "../../sessions/session-controller.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { createTestReplyOperation } from "./reply-run-registry.test-helpers.js";
 import { testing } from "./reply-run-registry.test-support.js";
 

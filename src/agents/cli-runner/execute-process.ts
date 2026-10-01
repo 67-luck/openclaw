@@ -15,6 +15,7 @@ import type { CliOutput, CliTerminalInterruption } from "../cli-output-contracts
 import { transformCliResultText } from "../cli-output-results.js";
 import { createCliJsonlStreamingParser } from "../cli-output-stream.js";
 import { parseCliOutput } from "../cli-output.js";
+import { EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS } from "../embedded-agent-runner/run/lane-runtime.js";
 import type { FailoverError } from "../failover-error.js";
 import type { CliExecuteDeps } from "./execute-deps.js";
 import type { CliEventHandlers } from "./execute-events.js";
@@ -135,7 +136,7 @@ export async function executeCliProcess(params: {
   // Only the core lifecycle owner may publish recovery facts. Plugin records
   // carry output, never the authority or deadline used to protect its execution.
   const reportStreamProgress = createModelCallStreamProgressReporter({
-    recordProgress: () => backendActivity?.observeOutput(true) ?? false,
+    recordProgress: () => backendActivity?.observeOutput(false) ?? false,
   });
   const streamProgressTarget = {
     runId: runParams.runId,
@@ -187,6 +188,9 @@ export async function executeCliProcess(params: {
   runParams.assertCurrent?.();
   params.diagnostics?.observeRequestPayload(params.stdin ?? params.argsPrompt ?? "");
   params.assertCurrent();
+  runParams.diagnosticOwner?.watchdogAttempt?.setExecutionDeadline(
+    Date.now() + runParams.timeoutMs + EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS,
+  );
   const backendActivity = runParams.diagnosticOwner
     ? beginDiagnosticBackendActivity({
         owner: runParams.diagnosticOwner,

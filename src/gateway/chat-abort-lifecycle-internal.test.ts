@@ -1,5 +1,6 @@
 import { expect, it } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
 import {
   markChatAbortTerminalPersistenceError,
   waitForChatAbortControllerRemoval,
@@ -16,7 +17,12 @@ function registeredRun() {
   const entries = new Map<string, ChatAbortControllerEntry>();
   const runId = "terminal-drain";
   const registration = registerChatAbortController({
-    chatAbortControllers: entries,
+    target: captureSessionTarget({
+      storeScope: "/synthetic/terminal-drain/sessions",
+      sessionKey: "agent:main:terminal",
+      incarnation: "terminal-session",
+    }),
+    rpcSources: entries,
     runId,
     sessionId: "terminal-session",
     sessionKey: "agent:main:terminal",
@@ -44,9 +50,9 @@ it.each(
   async ({ state, alreadyRemoved }) => {
     const { entries, runId, entry, drain } = registeredRun();
     if (state === "pending") {
-      entry.projectSessionTerminalPending = true;
+      entry.adapter.projectSessionTerminalPending = true;
     } else if (state === "writing") {
-      entry.projectSessionTerminalPersistence = new Promise<void>(() => {});
+      entry.adapter.projectSessionTerminalPersistence = new Promise<void>(() => {});
     } else if (state === "failed") {
       markChatAbortTerminalPersistenceError(entry, new Error("terminal write failed"));
     }
@@ -73,14 +79,14 @@ it("releases the reserved terminal owner when no lifecycle subscriber adopts it"
   expect(
     abortChatRunById(
       {
-        chatAbortControllers: entries,
+        rpcSources: entries,
         chatRunState: createChatRunState(),
         removeChatRun: () => undefined,
         agentRunSeq: new Map(),
         broadcast: () => {},
         nodeSendToSession: () => {},
       },
-      { runId, sessionKey: entry.sessionKey },
+      { runId, sessionKey: entry.adapter.sessionKey },
     ),
   ).toEqual({ aborted: true });
   expect(await result).toBe(true);
@@ -92,7 +98,7 @@ it.each(["fulfilled", "rejected"] as const)(
   async (outcome) => {
     const { entries, runId, entry, registration, drain } = registeredRun();
     const persistence = createDeferred();
-    entry.projectSessionTerminalPersistence = persistence.promise;
+    entry.adapter.projectSessionTerminalPersistence = persistence.promise;
     const result = drain();
     registration.cleanup();
     expect(entries.get(runId)).toBe(entry);
@@ -112,9 +118,9 @@ it.each(["fulfilled", "rejected"] as const)(
     const { entries, runId, entry, registration, drain } = registeredRun();
     const previous = createDeferred();
     const current = createDeferred();
-    entry.projectSessionTerminalPersistence = previous.promise;
+    entry.adapter.projectSessionTerminalPersistence = previous.promise;
     registration.cleanup();
-    entry.projectSessionTerminalPersistence = current.promise;
+    entry.adapter.projectSessionTerminalPersistence = current.promise;
     if (outcome === "fulfilled") {
       previous.resolve();
     } else {

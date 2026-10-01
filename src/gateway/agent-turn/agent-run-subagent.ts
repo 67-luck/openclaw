@@ -149,12 +149,12 @@ export async function settleUnstartedGatewayFollowup(params: {
   runId: string;
   admittedRunEntry: ChatAbortControllerEntry | undefined;
   admittedRunIdentity:
-    | Pick<
-        ChatAbortControllerEntry,
-        "controller" | "operationalRunInstance" | "lifecycleGeneration" | "sessionKey"
-      >
+    | (Pick<
+        ChatAbortControllerEntry["adapter"],
+        "operationalRunInstance" | "lifecycleGeneration" | "sessionKey"
+      > & { controller: Pick<AbortController, "signal" | "abort"> })
     | undefined;
-  context: Pick<AgentTurnContext, "chatAbortControllers" | "logGateway">;
+  context: Pick<AgentTurnContext, "rpcSources" | "logGateway">;
   isIncognito?: boolean;
   outcome: AgentRunTerminalOutcome;
 }): Promise<void> {
@@ -167,20 +167,20 @@ export async function settleUnstartedGatewayFollowup(params: {
       params.runId,
       { ...params.outcome, endedAt: params.outcome.endedAt ?? Date.now() },
       () => {
-        const current = params.context.chatAbortControllers.get(params.runId);
+        const current = params.context.rpcSources.get(params.runId);
         const admitted = params.admittedRunIdentity;
         const ownsRegistration =
           current === params.admittedRunEntry &&
           admitted &&
-          current?.controller === admitted.controller &&
-          current.operationalRunInstance === admitted.operationalRunInstance &&
-          current.lifecycleGeneration === admitted.lifecycleGeneration &&
-          current.sessionKey === admitted.sessionKey;
+          current?.input.abortSignal === admitted.controller.signal &&
+          current.adapter.operationalRunInstance === admitted.operationalRunInstance &&
+          current.adapter.lifecycleGeneration === admitted.lifecycleGeneration &&
+          current.adapter.sessionKey === admitted.sessionKey;
         if (
           current &&
           !ownsRegistration &&
           (current === params.admittedRunEntry ||
-            current.sessionKey === completion.request.targetSessionKey)
+            current.adapter.sessionKey === completion.request.targetSessionKey)
         ) {
           throw new Error("Follow-up admission was replaced before cleanup.");
         }

@@ -319,6 +319,7 @@ describe("worker live events", () => {
   it("settles accepted writes before returning a synchronous diagnostic failure", async () => {
     const failure = new Error("synthetic diagnostic failure");
     const diagnostic = vi.spyOn(workerRunOwner, "captureWorkerTurnLiveEventOwner").mockReturnValue({
+      beginApprovalWait: () => undefined,
       record: () => {
         throw failure;
       },
@@ -449,6 +450,7 @@ describe("worker live events", () => {
     const receipt = vi.spyOn(source, "receiptAuthority");
     const record = vi.fn();
     const owner = vi.spyOn(workerRunOwner, "captureWorkerTurnLiveEventOwner").mockReturnValue({
+      beginApprovalWait: () => undefined,
       isCancelled: () => true,
       record,
     });
@@ -728,9 +730,11 @@ describe("worker live events", () => {
         });
       }
       const diagnostic = vi.fn();
-      const recorder = vi
-        .spyOn(workerRunOwner, "captureWorkerTurnLiveEventOwner")
-        .mockReturnValue({ record: diagnostic, isCancelled: () => false });
+      const recorder = vi.spyOn(workerRunOwner, "captureWorkerTurnLiveEventOwner").mockReturnValue({
+        beginApprovalWait: () => undefined,
+        record: diagnostic,
+        isCancelled: () => false,
+      });
       const stop = onAgentRuntimeEvent((event) => {
         if (event.runId === RUN && event.stream === stream) {
           rx.clearEnvironment(ID.environmentId, EPOCH);

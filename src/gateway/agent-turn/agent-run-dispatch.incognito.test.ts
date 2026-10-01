@@ -6,6 +6,7 @@ import { createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { replayAgentTurnIfCached } from "./agent-dedupe.js";
 import { dispatchAgentRunFromGateway } from "./agent-run-dispatch.js";
 import { createTrackedDispatch } from "./agent-run-dispatch.test-support.js";
+import { testRpcSourceController } from "./rpc-source.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   command: vi.fn<typeof import("../../commands/agent.js").agentCommandFromGatewayIngress>(),
@@ -36,7 +37,7 @@ afterEach(() => {
 
 function createDispatch(session: (typeof sessionCases)[number]) {
   const { context, entry, runId } = createTrackedDispatch();
-  entry.sessionKey = session.key;
+  entry.adapter.sessionKey = session.key;
   const emitFinal = vi.fn();
   return {
     admittedRunEntry: entry,
@@ -48,7 +49,7 @@ function createDispatch(session: (typeof sessionCases)[number]) {
     isIncognito: session.isIncognito,
     runId,
     dedupeKeys: [],
-    abortController: entry.controller,
+    abortController: testRpcSourceController(entry),
     cleanupAbortController: vi.fn(),
     io: { emitAcceptance: vi.fn(), emitFinal },
     context,
@@ -136,7 +137,7 @@ describe.each(sessionCases)("Gateway agent diagnostic output: $name", (session) 
       expect(diagnostics).toMatchObject({ error: privateReply });
     }
 
-    params.context.chatAbortControllers.clear();
+    params.context.rpcSources.clear();
     const emitAcceptance = vi.fn();
     expect(
       replayAgentTurnIfCached({

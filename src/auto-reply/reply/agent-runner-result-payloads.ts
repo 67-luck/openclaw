@@ -494,7 +494,6 @@ export async function prepareReplyAgentPayloads(state: {
     replyPayloads = [...replyPayloads, ...emptyPayloadResult.replyPayloads];
     didLogHeartbeatStrip = emptyPayloadResult.didLogHeartbeatStrip;
     if (emptyPayloadResult.replyPayloads.length > 0) {
-      replyOperation.retainFailureUntilComplete();
       replyOperation.fail(
         "run_failed",
         new Error("interactive agent run completed without a visible reply"),

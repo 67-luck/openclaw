@@ -104,7 +104,7 @@ describe("agent RPC metadata-read authority", () => {
           sessionKey: f.sessionKey,
           status: "accepted",
         });
-        expect(f.context.chatAbortControllers.has(f.runId)).toBe(false);
+        expect(f.context.rpcSources.has(f.runId)).toBe(false);
         expect(saved).toEqual([]);
         if (mode === "stopped") {
           expect(await f.stop()).toMatchObject({ ok: true, payload: { aborted: true } });
@@ -153,7 +153,7 @@ describe("agent RPC metadata-read authority", () => {
           expect.soft(listSessionPendingInputs(f.scope).total).toBe(0);
           expect.soft(execution.observer).not.toHaveBeenCalled();
           expect.soft(agentCommandMock).not.toHaveBeenCalled();
-          expect.soft(f.context.chatAbortControllers.has(f.runId)).toBe(false);
+          expect.soft(f.context.rpcSources.has(f.runId)).toBe(false);
           expect.soft(f.context.dedupe.get(`agent:${f.runId}`)).toBe(retained);
           const response = {
             ok: true,

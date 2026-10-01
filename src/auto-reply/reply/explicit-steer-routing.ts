@@ -1,17 +1,17 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { resolveActiveEmbeddedRunSessionId } from "../../agents/embedded-agent-runner/active-run-projections.js";
 import {
   resolveInternalSessionKey,
   resolveMainSessionAlias,
 } from "../../agents/tools/sessions-helpers.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { replyRunRegistry } from "../../sessions/session-controller.js";
+import { resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId } from "../../sessions/session-controller.queries.js";
 import {
   isAuthorizedTextSlashCommandTurn,
   isNativeCommandTurn,
   resolveCommandTurnContext,
 } from "../command-turn-context.js";
 import type { MsgContext } from "../templating.js";
-import { replyRunRegistry } from "./reply-run-registry.js";
 
 export function parseSteerMessage(raw: string): string | null {
   const match = raw.trim().match(/^\/(?:steer|tell)(?:\s+([\s\S]*))?$/i);

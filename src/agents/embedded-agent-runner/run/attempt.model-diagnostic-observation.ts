@@ -11,6 +11,7 @@ import {
 } from "../../../infra/diagnostic-llm-content.js";
 import { emitCoreSemanticRunProgressDiagnosticEvent } from "../../../infra/diagnostic-semantic-run-progress.js";
 import { createModelCallStreamProgressReporter } from "../../../logging/diagnostic-model-stream-progress.js";
+import type { SessionControllerWatchdogAttempt } from "../../../sessions/session-controller.watchdog.js";
 import { derivePromptTokens, normalizeUsage, type UsageLike } from "../../usage.js";
 
 export type ModelCallEventBase = Omit<
@@ -287,17 +288,21 @@ function maybeEmitModelCallSemanticProgress(
   eventBase: ModelCallEventBase,
   state: ModelCallObservationState,
   result: unknown,
+  attempt?: SessionControllerWatchdogAttempt,
 ): void {
   if (state.semanticProgressEmitted || !isSemanticModelCallResult(result)) {
     return;
   }
   state.semanticProgressEmitted = true;
-  emitCoreSemanticRunProgressDiagnosticEvent({
-    runId: eventBase.runId,
-    ...(eventBase.sessionKey ? { sessionKey: eventBase.sessionKey } : {}),
-    ...(eventBase.sessionId ? { sessionId: eventBase.sessionId } : {}),
-    reason: MODEL_CALL_SEMANTIC_PROGRESS_REASON,
-  });
+  emitCoreSemanticRunProgressDiagnosticEvent(
+    {
+      runId: eventBase.runId,
+      ...(eventBase.sessionKey ? { sessionKey: eventBase.sessionKey } : {}),
+      ...(eventBase.sessionId ? { sessionId: eventBase.sessionId } : {}),
+      reason: MODEL_CALL_SEMANTIC_PROGRESS_REASON,
+    },
+    attempt,
+  );
 }
 
 function observeResponseChunk(
@@ -317,6 +322,7 @@ function observeResponseChunk(
 }
 
 export function createModelObserver(params: {
+  watchdogAttempt?: SessionControllerWatchdogAttempt;
   config?: OpenClawConfig;
   streamContext: unknown;
   contentCapture?: DiagnosticModelContentCapturePolicy;
@@ -333,7 +339,12 @@ export function createModelObserver(params: {
     contentCapture: params.contentCapture,
     suppressPluginHooks: params.suppressPluginHooks,
   };
-  const reportStreamProgress = createModelCallStreamProgressReporter({ config: params.config });
+  const reportStreamProgress = createModelCallStreamProgressReporter({
+    config: params.config,
+    recordProgress: params.watchdogAttempt
+      ? () => params.watchdogAttempt!.progress("transport", "model_call:stream_progress")
+      : undefined,
+  });
   return {
     state,
     promptStats,
@@ -351,7 +362,7 @@ export function createModelObserver(params: {
       observeResultMessageContent(state, startedAt, result);
       // Queue semantic progress beside model lifecycle events so request starts,
       // progress, and the next request retain their authoritative FIFO ordering.
-      maybeEmitModelCallSemanticProgress(eventBase, state, result);
+      maybeEmitModelCallSemanticProgress(eventBase, state, result, params.watchdogAttempt);
     },
     maybeEmitStreamProgress(eventBase: ModelCallEventBase) {
       reportStreamProgress({

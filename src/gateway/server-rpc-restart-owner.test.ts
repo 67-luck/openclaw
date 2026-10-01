@@ -4,13 +4,13 @@ import { expect, it, vi } from "vitest";
 import { writeOpenAiResponsesText } from "../../test/helpers/openai-responses-sse.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as followupDelivery from "../auto-reply/reply/followup-delivery.js";
-import { replyRunRegistry } from "../auto-reply/reply/reply-run-registry.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { replyRunRegistry } from "../sessions/session-controller.js";
 import {
-  captureGatewaySessionWorkAdmissions,
-  getSessionWorkAdmissionRelease,
-} from "../sessions/session-lifecycle-admission.js";
+  captureGatewaySessionControllerWork,
+  captureSessionControllerSettlement,
+} from "../sessions/session-controller.lifecycle.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { GatewayContextResolver, GatewayRequestContext } from "./server-methods/types.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
@@ -170,7 +170,7 @@ it(
       // chat.send acknowledges before dispatch reaches queue admission. Its source
       // run terminalizes after handoff, while the held first reply keeps it queued.
       await expect(queuedRunTerminal.promise).resolves.toMatchObject({ state: "final" });
-      expect(context?.chatQueuedTurns.has("rpc-queued")).toBe(true);
+      expect(context?.rpcSources.has("rpc-queued")).toBe(true);
       firstGate.resolve();
       await finalReached.promise;
       expect(followupReceived).toBe(true);
@@ -183,20 +183,20 @@ it(
         throw new Error("Real RPC did not create a session");
       }
       const target = { scope: storePath, sessionKey, sessionId: entry.sessionId };
-      replyReleased = getSessionWorkAdmissionRelease({
+      replyReleased = captureSessionControllerSettlement({
         scope: storePath,
         identities: [sessionKey],
       });
-      expect(captureGatewaySessionWorkAdmissions(() => context).isActive(target)).toBe(false);
+      expect(captureGatewaySessionControllerWork(() => context).isActive(target)).toBe(false);
       console.log(
         "RPC_OWNER_BEFORE_CLOSE",
         JSON.stringify({
           status: entry.status,
           operation: replyRunRegistry.get(sessionKey)?.turnKind,
-          activeChatRuns: context.chatAbortControllers.size,
-          queued: context.chatQueuedTurns.size,
-          hostCaptured: captureGatewaySessionWorkAdmissions(hostResolver).isActive(target),
-          rpcCaptured: captureGatewaySessionWorkAdmissions(context.resolveGatewayContext).isActive(
+          activeChatRuns: context.rpcSources.size,
+          queued: context.rpcSources.size,
+          hostCaptured: captureGatewaySessionControllerWork(hostResolver).isActive(target),
+          rpcCaptured: captureGatewaySessionControllerWork(context.resolveGatewayContext).isActive(
             target,
           ),
         }),

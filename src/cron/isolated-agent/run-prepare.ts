@@ -19,7 +19,7 @@ import {
   isAgentHarnessSessionKey,
 } from "../../sessions/agent-harness-session-key.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
-import type { SessionWorkAdmissionLease } from "../../sessions/session-lifecycle-admission.js";
+import type { SessionEffectRef } from "../../sessions/session-controller.lifecycle.js";
 import { resolveCronSkillsSnapshot } from "../../skills/runtime/cron-snapshot.js";
 import type { SkillSnapshot } from "../../skills/types.js";
 import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
@@ -54,7 +54,7 @@ import {
 } from "./run-prepare-runtime.js";
 import {
   CronSessionLifecycleClaimError,
-  beginCronSessionWorkAdmission,
+  beginCronPreparationEffect,
   createCronRunContinuationSession,
   createPersistCronSessionEntry,
   markCronSessionPreRun,
@@ -106,7 +106,7 @@ export type PreparedCronRunContext = {
   commandBody: string;
   inputProvenance?: InputProvenance;
   cronSession: MutableCronSession;
-  sessionWorkAdmission: SessionWorkAdmissionLease;
+  sessionPreparationEffect: SessionEffectRef;
   persistSessionEntry: PersistCronSessionEntry;
   runContinuationSession?: CronRunContinuationSession;
   withRunSession: WithRunSession;
@@ -249,7 +249,7 @@ export async function prepareCronRunContext(params: {
   const runSessionKey = usesExactRunSession
     ? `${agentSessionKey}:run:${runSessionId}`
     : agentSessionKey;
-  const sessionWorkAdmission = await beginCronSessionWorkAdmission({
+  const sessionPreparationEffect = await beginCronPreparationEffect({
     cronSession,
     agentSessionKey,
     runSessionKey,
@@ -274,7 +274,7 @@ export async function prepareCronRunContext(params: {
       sessionKey: agentSessionKey,
       cronSession,
       defaultWorkspaceDir: modelOwner.workspaceDir,
-      sessionWorkAdmission,
+      sessionPreparationEffect,
       isFastTestEnv: params.isFastTestEnv,
     });
     workspaceLease = selectedWorkspace.lease;
@@ -346,7 +346,7 @@ export async function prepareCronRunContext(params: {
       workspaceDir: executionWorkspaceDir,
     });
     if (!resolvedModelSelection.ok) {
-      sessionWorkAdmission.release();
+      sessionPreparationEffect.release();
       return {
         ok: false,
         result: withRunSession({
@@ -382,7 +382,7 @@ export async function prepareCronRunContext(params: {
     });
     if (!preflight.ok) {
       logWarn(`[cron:${input.job.id}] ${preflight.reason}`);
-      sessionWorkAdmission.release();
+      sessionPreparationEffect.release();
       return {
         ok: false,
         result: withRunSession({
@@ -675,7 +675,7 @@ export async function prepareCronRunContext(params: {
               }
             : undefined,
         cronSession,
-        sessionWorkAdmission,
+        sessionPreparationEffect,
         persistSessionEntry,
         runContinuationSession,
         withRunSession,
@@ -704,7 +704,7 @@ export async function prepareCronRunContext(params: {
       await using _ = preparedModelRuntimeLease;
       throw error;
     } finally {
-      sessionWorkAdmission.release();
+      sessionPreparationEffect.release();
     }
   } finally {
     if (!workspaceLeaseTransferred) {

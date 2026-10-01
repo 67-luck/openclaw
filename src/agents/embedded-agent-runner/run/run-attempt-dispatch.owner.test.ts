@@ -355,7 +355,6 @@ it.each(dispatchCases)(
         getLifecycleGeneration: () => lifecycleGeneration,
         getParams: () => params,
         globalLane: "owner-dispatch-global",
-        sessionLane: "owner-dispatch-session",
         initialQueuedLifecycleGeneration: lifecycleGeneration,
         setLifecycleGeneration: (value) => {
           lifecycleGeneration = value;

@@ -5,8 +5,8 @@ import {
   isEmbeddedAgentRunHandleActive,
 } from "../../agents/embedded-agent-runner/runs.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { STALE_WORKER_BUILD_REASON, StaleWorkerBuildError } from "./admission.js";
 import { createWorkerPlacementDispatchService } from "./placement-dispatch.js";

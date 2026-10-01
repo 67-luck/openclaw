@@ -92,8 +92,8 @@ it.each([
       agentRunSeq: new Map(),
       broadcast: vi.fn(),
       broadcastToConnIds: vi.fn(),
-      chatAbortControllers: new Map(),
-      chatQueuedTurns: new Map(),
+      rpcSources: new Map(),
+
       chatRunState: createChatRunState(),
       dedupe: new Map(),
       deps: {},
@@ -107,6 +107,9 @@ it.each([
       removeChatRun: vi.fn(() => undefined),
     };
     const respond = vi.fn();
+    const onTargetResolved = vi.fn(() => {
+      expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
+    });
     const result = await prepareAgentContentPhase({
       request: {
         message: "Inspect this synthetic pixel",
@@ -122,6 +125,7 @@ it.each([
       requestedSessionKey: "global",
       agentId,
       knownAgents: ["main", "work"],
+      onTargetResolved,
       normalizedAttachments: [
         {
           type: "file",
@@ -132,6 +136,7 @@ it.each([
         },
       ],
     });
+    expect(onTargetResolved).toHaveBeenCalledExactlyOnceWith({ sessionKey: "global", agentId });
     expect(respond).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       agentId,

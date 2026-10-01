@@ -25,7 +25,10 @@ import {
 } from "../../routing/session-key.js";
 import { isAgentHarnessSessionKey } from "../../sessions/agent-harness-session-key.js";
 import { isModelSelectionLocked } from "../../sessions/model-overrides.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import {
+  captureSessionTarget,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import { handleSessionStateSessionDeleted } from "../../sessions/session-state-events.js";
 import { removeSessionWorktree } from "../../sessions/session-worktree-lifecycle.js";
 import { resolvePluginSessionOwnershipError } from "../session-plugin-ownership.js";
@@ -224,9 +227,14 @@ export async function deleteGatewaySession({
         );
       }
       // Reclaim may wait for an earlier placement operation that needs this mutex.
-      return await runExclusiveSessionLifecycleMutation({
-        scope: storePath,
-        identities: deleteLifecycleIdentities,
+      return await runSessionMutation({
+        target: captureSessionTarget({
+          storeScope: storePath,
+          sessionKey: target.canonicalKey,
+          aliases: deleteLifecycleIdentities,
+          incarnation: initialDeleteEntry?.sessionId,
+          agentId: target.agentId,
+        }),
         prepare: async () => drain?.handoffToMutation(),
         finalize: async () => drain?.release(),
         run: async () => {

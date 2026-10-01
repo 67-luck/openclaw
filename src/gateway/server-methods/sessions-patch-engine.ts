@@ -10,18 +10,19 @@ import type { SqliteLifecycleTargetSnapshot } from "../../config/sessions/sessio
 import type { SessionEntryCanonicalReplacement } from "../../config/sessions/session-accessor.sqlite-replacement-projection.js";
 import { SessionLabelOwnerIndex } from "../../config/sessions/session-entry-selection.js";
 import { resolveMissingAgentHarnessSessionError } from "../../sessions/agent-harness-session-key.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import {
+  captureSessionTarget,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import type { UserModelAccountSelection } from "../model-account-authority.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import { recordSessionStatusModelPatchOutcome } from "../session-model-patch-origin.js";
 import { resolvePluginSessionOwnershipError } from "../session-plugin-ownership.js";
-import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
 import { invalidSessionRequest } from "../session-request-error.js";
 import {
   resolveCanonicalGatewaySessionStoreKey,
   resolveCanonicalSessionEntryFromStoreKeys,
-  resolveGatewaySessionStoreTargetWithStore,
 } from "../session-utils.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
 import { resolveOperatorSessionCreation } from "./session-creation-provenance.js";
@@ -49,6 +50,7 @@ import {
   prepareSessionPatchReplacement,
   createSessionPatchGroupWriter,
 } from "./sessions-patch-replacement.js";
+import { discoverSessionPatchTargets } from "./sessions-patch-target-discovery.js";
 import type {
   GroupMutationOperation,
   MutationCoreResult,
@@ -90,35 +92,9 @@ export async function executeSessionPatchMutations(params: {
   const callerScopes = Array.isArray(client?.connect?.scopes) ? client.connect.scopes : [];
   const callerIsAdmin = client === null || callerScopes.includes(ADMIN_SCOPE);
   const pluginOwnerId = client?.internal?.pluginRuntimeOwnerId;
-  const targetDiscoveryCache = new Map();
-  const preflightTargets = params.targets.map((input) => {
-    const key = input.key.trim();
-    const requestedAgent = resolveRequestedGlobalAgentId(cfg, key, input.agentId);
-    return {
-      input,
-      key,
-      requestedAgent,
-      resolved: requestedAgent.ok
-        ? resolveGatewaySessionStoreTargetWithStore({
-            cfg,
-            key,
-            agentId: requestedAgent.agentId,
-            exactRead: true,
-            targetDiscoveryCache,
-          })
-        : undefined,
-    };
-  });
-  const logicalTargets = new Set<string>();
-  for (const { key, resolved } of preflightTargets) {
-    if (!resolved) {
-      continue;
-    }
-    const logicalId = `${resolved.storePath}\0${resolved.canonicalKey ?? key}`;
-    if (logicalTargets.has(logicalId)) {
-      return invalidSessionRequest("Duplicate target.");
-    }
-    logicalTargets.add(logicalId);
+  const preflightTargets = discoverSessionPatchTargets(cfg, params.targets);
+  if (!preflightTargets) {
+    return invalidSessionRequest("Duplicate target.");
   }
 
   const outcomes = Array.from<MutationOutcome | undefined>({ length: params.targets.length });
@@ -286,11 +262,16 @@ export async function executeSessionPatchMutations(params: {
           }),
       );
       timing?.mark("lifecycleAdmission");
-      await runExclusiveSessionLifecycleMutation({
-        targets: activePrepared.map((target) => ({
-          scope: target.storePath,
-          identities: target.lifecycleIdentities,
-        })),
+      await runSessionMutation({
+        targets: activePrepared.map((target) =>
+          captureSessionTarget({
+            storeScope: target.storePath,
+            sessionKey: target.canonicalKey,
+            aliases: target.lifecycleIdentities,
+            incarnation: target.initialEntry?.sessionId,
+            agentId: target.targetAgentId,
+          }),
+        ),
         prepare: async () => {
           for (const target of activePrepared) {
             target.archivePreparation?.drain.handoffToMutation();

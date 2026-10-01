@@ -15,11 +15,16 @@ import {
   type DiagnosticToolExecutionLiveness,
 } from "../infra/diagnostic-tool-execution-liveness.js";
 import {
+  getSessionControllerOperation,
+  resolveReplyRunForCurrentSessionId,
+} from "../sessions/session-controller.state.js";
+import {
   applyArgumentChurnObservation,
   clearArgumentChurnActivity,
   clearArgumentChurnPolicyWaits,
   type DiagnosticArgumentChurnObservationParams,
 } from "./diagnostic-argument-churn-activity.js";
+import { projectControllerDiagnosticActivity } from "./diagnostic-controller-projection.js";
 import { resolveCurrentDiagnosticOwner } from "./diagnostic-owned-activity.js";
 import {
   clearRepeatedRequestActivity,
@@ -27,14 +32,8 @@ import {
 } from "./diagnostic-repeated-request-activity.js";
 import {
   activityMarkerStartedAfter,
-  clearRecoveredOwnerEmbeddedRuns,
-  clearRecoveredOwnerMarkers,
-  countActiveCoreModelCalls,
-  hasEmbeddedRunStartedAfter,
   markerBelongsToRecoveredOwner,
-  ownerRefsForRecovery,
   ownerRefsForStartedEvent,
-  pruneActivityStartedBeforeRecoveryCutoff,
   rememberRecoveredOwnerStartEventCutoffs,
   shouldIgnoreRecoveredOwnerStartEvent,
 } from "./diagnostic-run-activity-recovery.js";
@@ -48,7 +47,6 @@ import {
   activityByRef,
   activityByRunId,
   embeddedRunIndex,
-  registerSessionActivityRefs,
   resolveSessionActivity,
   sessionRefs,
   touchSessionActivity,
@@ -151,6 +149,7 @@ export function markDiagnosticOwnedToolActivity(
     phase: "start" | "end";
   },
 ): void {
+  owner.watchdogAttempt?.toolEvent({ ...event, toolCallId: event.toolCallId ?? event.toolName });
   if (activeDiagnosticOwners.get(owner.generation)?.owner === owner) {
     const record = event.phase === "start" ? recordToolStarted : recordToolEnded;
     record({ ...event, ...owner });
@@ -268,6 +267,12 @@ function recordModelEnded(
 export function markDiagnosticArgumentChurnObservation(
   params: DiagnosticArgumentChurnObservationParams,
 ): void {
+  if (params.active !== undefined) {
+    params.watchdogAttempt?.observeStagnation({
+      active: params.active,
+      existingOnly: params.existingOnly,
+    });
+  }
   const activity = resolveSessionActivity({ ...params, create: params.active === true });
   if (activity) {
     applyArgumentChurnObservation(activity, activity.activeEmbeddedRuns.values(), params);
@@ -326,9 +331,11 @@ export function createDiagnosticEmbeddedRunOwner(params: {
   sessionKey?: string;
   runId?: string;
   workKey?: string;
+  watchdogAttempt?: DiagnosticEmbeddedRunOwner["watchdogAttempt"];
 }): DiagnosticEmbeddedRunOwner {
   return Object.freeze({
-    generation: Object.freeze({}),
+    generation: Object.freeze({ watchdogAttempt: params.watchdogAttempt }),
+    watchdogAttempt: params.watchdogAttempt,
     sessionId: params.sessionId,
     ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
     ...(params.runId ? { runId: params.runId } : {}),
@@ -376,6 +383,7 @@ export function markDiagnosticEmbeddedRunStarted(params: {
 
 /** Synchronously retires one exact queue owner before its handle authority is lost. */
 export function closeDiagnosticEmbeddedRunOwner(owner: DiagnosticEmbeddedRunOwner): void {
+  owner.watchdogAttempt?.close();
   const registration = activeDiagnosticOwners.get(owner.generation);
   if (!registration || registration.owner !== owner) {
     return;
@@ -438,99 +446,18 @@ function resolveEmbeddedRunWorkKey(params: { sessionId: string; workKey?: string
   return params.workKey ?? params.sessionId;
 }
 
-// Reconciles a session's terminal embedded-run activity at once. Used when an
-// authority (stuck-session recovery) declares the lane idle and the per-run
-// markDiagnosticEmbeddedRunEnded may have been bypassed. Clears the embedded-run
-// owners AND their tool/model markers, matching the default teardown so the lane
-// cannot be left as idle + orphaned tool/model activity (which
-// isIdleQueuedRecoverableSessionStall still treats as recoverable).
-export function clearDiagnosticEmbeddedRunActivityForSession(params: {
-  sessionId?: string;
-  sessionKey?: string;
-  activeSessionId?: string;
-  recoveryStartedAfterEmbeddedRunSequence?: number;
-  recoveryStartedAfterDiagnosticEventSequence?: number;
-}): { cleared: boolean; blockedByActiveEmbeddedRun: boolean } {
-  const shouldCreateCutoffActivity =
-    params.recoveryStartedAfterDiagnosticEventSequence !== undefined;
-  const activity = resolveSessionActivity({
-    sessionId: params.sessionId,
-    sessionKey: params.sessionKey,
-    runId: params.activeSessionId,
-    create: shouldCreateCutoffActivity,
-  });
-  if (!activity) {
-    return { cleared: false, blockedByActiveEmbeddedRun: false };
-  }
-  if (params.activeSessionId) {
-    registerSessionActivityRefs(activity, {
-      sessionId: params.activeSessionId,
-      sessionKey: params.sessionKey,
-      runId: params.activeSessionId,
-    });
-  }
-  const ownerRefs = ownerRefsForRecovery(params);
-  rememberRecoveredOwnerStartEventCutoffs(
-    activity,
-    ownerRefs,
-    params.recoveryStartedAfterDiagnosticEventSequence,
-  );
-  if (
-    activity.activeEmbeddedRuns.size === 0 &&
-    activity.activeTools.size === 0 &&
-    activity.activeModelCalls.size === 0 &&
-    countActiveCoreModelCalls(activity) === 0
-  ) {
-    const clearedChurn = clearArgumentChurnActivity(activity, {
-      runId: params.activeSessionId,
-    });
-    const clearedPolicyWait = clearArgumentChurnPolicyWaits(activity, {
-      runId: params.activeSessionId,
-    });
-    const clearedRepeatedRequests = clearRepeatedRequestActivity(activity);
-    return {
-      cleared: clearedChurn || clearedPolicyWait || clearedRepeatedRequests,
-      blockedByActiveEmbeddedRun: false,
-    };
-  }
-  clearRecoveredOwnerEmbeddedRuns(
-    activity,
-    ownerRefs,
-    params.recoveryStartedAfterEmbeddedRunSequence,
-    (key) => embeddedRunIndex.remove(activity, key),
-  );
-  clearRecoveredOwnerMarkers(
-    activity,
-    ownerRefs,
-    params.recoveryStartedAfterDiagnosticEventSequence,
-  );
-  if (activity.activeEmbeddedRuns.size > 0) {
-    if (hasEmbeddedRunStartedAfter(activity, params.recoveryStartedAfterEmbeddedRunSequence)) {
-      pruneActivityStartedBeforeRecoveryCutoff(
-        activity,
-        params.recoveryStartedAfterEmbeddedRunSequence,
-        params.recoveryStartedAfterDiagnosticEventSequence,
-        (key) => embeddedRunIndex.remove(activity, key),
-      );
-      touchSessionActivity(activity, "embedded_run:recovery_skipped_active_owner");
-      return { cleared: false, blockedByActiveEmbeddedRun: true };
-    }
-    embeddedRunIndex.clear(activity);
-  }
-  activity.activeTools.clear();
-  activity.activeModelCalls.clear();
-  activity.activeCoreModelCalls.clear();
-  clearArgumentChurnActivity(activity, { runId: params.activeSessionId });
-  clearArgumentChurnPolicyWaits(activity, { runId: params.activeSessionId });
-  clearRepeatedRequestActivity(activity);
-  touchSemanticSessionActivity(activity, "embedded_run:ended");
-  return { cleared: true, blockedByActiveEmbeddedRun: false };
-}
-
 export function getDiagnosticSessionActivitySnapshot(
   params: { sessionId?: string; sessionKey?: string },
   now = Date.now(),
 ): DiagnosticSessionActivitySnapshot {
+  const operation = params.sessionKey
+    ? getSessionControllerOperation(params.sessionKey)
+    : params.sessionId
+      ? resolveReplyRunForCurrentSessionId(params.sessionId)
+      : undefined;
+  if (operation) {
+    return projectControllerDiagnosticActivity(operation.watchdog.snapshot(), now);
+  }
   const activity = resolveSessionActivity(params);
   if (!activity) {
     return {};
@@ -578,10 +505,6 @@ export function getDiagnosticSessionActivitySnapshot(
       : {}),
     ...(activeRetryWaitDeadlineAtMs !== undefined ? { activeRetryWaitDeadlineAtMs } : {}),
   };
-}
-
-export function getDiagnosticEmbeddedRunActivitySequence(): number {
-  return embeddedRunSequence;
 }
 
 function markDiagnosticModelStartedForTest(params: ModelStartedActivityEvent): void {

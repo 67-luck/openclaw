@@ -14,11 +14,12 @@ import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/g
 import { createPluginRuntime } from "../../../plugins/runtime/index.js";
 import { createPluginSubagentRequesterContext } from "../../../plugins/runtime/subagent-requester-context.js";
 import {
-  beginSessionWorkAdmission,
-  SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-  startSessionWorkAdmissionInterruption,
-  type SessionWorkAdmissionLease,
-} from "../../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+  startSessionControllerInterruption,
+  type SessionEffectRef,
+} from "../../../sessions/session-controller.lifecycle.js";
+import { requestRpcSourceCancellation } from "../../../sessions/session-controller.rpc-sources.js";
 import { createAgentRunDirectAbortError } from "../../run-termination.js";
 import { createSubagentsTool } from "../../tools/subagents-tool.js";
 import * as nativeControl from "../registry/subagent-control.js";
@@ -143,7 +144,7 @@ export function registerNativeCancellationCases<
     const failures: unknown[] = [];
     let pending: ReturnType<ReturnType<typeof createSubagentsTool>["execute"]> | undefined;
     let pendingSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
-    let blockedAdmission: SessionWorkAdmissionLease | undefined;
+    let blockedAdmission: SessionEffectRef | undefined;
     let stopObserving: (() => void) | undefined;
     let restoreNativeControl: (() => void) | undefined;
     vi.useFakeTimers({ toFake: ["setTimeout"] });
@@ -173,20 +174,20 @@ export function registerNativeCancellationCases<
           expectsCompletionMessage: false,
         }),
       );
-      const target = expectDefined(context.chatAbortControllers.get(targetRunId), "target run");
+      const target = expectDefined(context.rpcSources.get(targetRunId), "target run");
       const onAbort = vi.fn(() => entered.resolve());
-      target.controller.signal.addEventListener("abort", onAbort, { once: true });
+      target.input.abortSignal.addEventListener("abort", onAbort, { once: true });
       if (transition === "blocked drain") {
-        blockedAdmission = await beginSessionWorkAdmission({
+        blockedAdmission = await beginSessionEffect({
           scope: bound.storePath,
-          identities: [targetKey, target.sessionId],
+          identities: [targetKey, target.adapter.sessionId],
           assertAllowed: () => {},
         });
       }
       if (transition === "already interrupted") {
-        startSessionWorkAdmissionInterruption({
+        startSessionControllerInterruption({
           scope: bound.storePath,
-          identities: [targetKey, target.sessionId],
+          identities: [targetKey, target.adapter.sessionId],
           reason: createAgentRunDirectAbortError(),
         });
       }
@@ -255,9 +256,9 @@ export function registerNativeCancellationCases<
           subagentRuns.get(targetRunId)?.killIntent,
           "accepted native kill claim",
         );
-        expect(target.controller.signal.aborted).toBe(true);
+        expect(target.input.abortSignal.aborted).toBe(true);
         expect(onAbort).toHaveBeenCalledOnce();
-        await vi.advanceTimersByTimeAsync(SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS);
+        await vi.advanceTimersByTimeAsync(SESSION_CONTROLLER_DRAIN_TIMEOUT_MS);
         const cancellation = await pending;
         expect(subagentRuns.get(targetRunId)?.killIntent).toBe(originalClaim);
         expect(cancellation.details).toMatchObject({
@@ -286,7 +287,7 @@ export function registerNativeCancellationCases<
         // Revocation refuses the caller result even when the native owner already
         // accepted the stop; the registry assertions below prove that settlement.
         await expect(pending).rejects.toThrow("Subagent cancellation owner changed");
-        expect(target.controller.signal.aborted).toBe(interrupted);
+        expect(target.input.abortSignal.aborted).toBe(interrupted);
         expect(onAbort).toHaveBeenCalledTimes(Number(interrupted));
         expect(resolveSubagentSessionStatus(subagentRuns.get(targetRunId))).toBe(
           accepted ? "killed" : "running",
@@ -302,8 +303,8 @@ export function registerNativeCancellationCases<
       blockedAdmission?.release();
       releaseCancellation.resolve();
       releaseTerminal.resolve();
-      for (const entry of context.chatAbortControllers.values()) {
-        entry.controller.abort(new Error("native cancellation fixture cleanup"));
+      for (const entry of context.rpcSources.values()) {
+        requestRpcSourceCancellation(entry, new Error("native cancellation fixture cleanup"));
       }
       await vi.advanceTimersByTimeAsync(20);
       vi.useRealTimers();

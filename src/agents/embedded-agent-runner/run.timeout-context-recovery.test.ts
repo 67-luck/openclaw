@@ -6,12 +6,12 @@ import { makeAttemptResult } from "./run.overflow-compaction.fixture.js";
 import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-state.js";
 import { recoverEmbeddedRunTimeout } from "./run/timeout-context-recovery.js";
 import type { EmbeddedRunAttemptResult } from "./run/types.js";
+import { resolveEmbeddedRunAbandonment, markActiveEmbeddedRunAbandoned } from "./runs.js";
 import {
-  resolveEmbeddedRunAbandonment,
-  markActiveEmbeddedRunAbandoned,
-  setActiveEmbeddedRun,
-} from "./runs.js";
-import { createEmbeddedRunHandle, testing as runsTesting } from "./runs.test-support.js";
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+  testing as runsTesting,
+} from "./runs.test-support.js";
 import { createUsageAccumulator } from "./usage-accumulator.js";
 
 const mocks = vi.hoisted(() => ({

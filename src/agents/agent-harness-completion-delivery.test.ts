@@ -30,6 +30,11 @@ import {
 } from "../infra/agent-run-registry.js";
 import { deliverAgentHarnessCompletion } from "../plugin-sdk/agent-harness-completion.js";
 import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
+import {
+  claimSessionControllerTask,
+  releaseSessionControllerClaim,
+} from "../sessions/session-controller.mailbox.js";
 import {
   withOpenClawTestState,
   type OpenClawTestState,
@@ -671,19 +676,26 @@ describe("review3 custody ownership", () => {
 describe("review3 Gateway admission custody", () => {
   it.each([
     "held",
+    "claimed-preparation",
     "aborted",
     "foreign-physical",
     "released",
-    "expired",
+    "cleanup-requested",
     "retired-generation",
     "closed-resolver",
     "throwing-resolver",
   ])("uses the real %s pre-execution registration", async (kind) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const { entry, request } = await admit(state);
-      const chatAbortControllers: GatewayRequestContext["chatAbortControllers"] = new Map();
+      const rpcSources: GatewayRequestContext["rpcSources"] = new Map();
       const registration = registerChatAbortController({
-        chatAbortControllers,
+        rpcSources,
+        target: captureSessionTarget({
+          storeScope: request.storePath,
+          sessionKey,
+          incarnation: kind === "foreign-physical" ? "physical-2" : entry.sessionId,
+          agentId: "main",
+        }),
         runId: announceId,
         sessionId: kind === "foreign-physical" ? "physical-2" : entry.sessionId,
         sessionKey,
@@ -691,12 +703,22 @@ describe("review3 Gateway admission custody", () => {
         timeoutMs: 60_000,
         kind: "agent",
         ...(kind === "retired-generation" ? { lifecycleGeneration: "old-gateway" } : {}),
-        ...(kind === "expired" ? { expiresAtMs: Date.now() - 1 } : {}),
       });
-      const context = { chatAbortControllers } as GatewayRequestContext;
+      const context = { rpcSources } as GatewayRequestContext;
+      let releaseClaim: (() => void) | undefined;
       try {
         expect(registration.registered).toBe(true);
-        expect(registration.entry?.executionStarted).toBe(false);
+        if (!registration.entry) {
+          throw new Error("expected registered source");
+        }
+        expect(registration.markExecutionStarted()).toBe(false);
+        if (kind === "claimed-preparation" || kind === "cleanup-requested") {
+          const claim = await claimSessionControllerTask(registration.entry.input, () => {});
+          releaseClaim = () => releaseSessionControllerClaim(claim);
+          if (kind === "cleanup-requested") {
+            registration.cleanup();
+          }
+        }
         if (kind === "aborted") {
           registration.controller.abort();
         }
@@ -716,8 +738,12 @@ describe("review3 Gateway admission custody", () => {
           },
           () => reconcileHarnessCompletionDelivery(request),
         );
-        expect(result).toBe(kind === "held" ? "pending" : "blocked");
+        expect(result).toBe(
+          kind === "held" || kind === "claimed-preparation" ? "pending" : "blocked",
+        );
       } finally {
+        releaseClaim?.();
+        await registration.entry?.input.claim?.settlement.promise;
         registration.cleanup();
       }
     });

@@ -611,7 +611,7 @@ describe("telegram bot message processor", () => {
     );
     dispatchTelegramMessage.mockImplementationOnce(async ({ turnAdoptionLifecycle }) => {
       turnAdoptionLifecycle?.onDeferred?.();
-      turnAdoptionLifecycle?.onAbandoned?.();
+      await turnAdoptionLifecycle?.onAbandoned?.();
       return { kind: "completed" };
     });
     const processMessage = createTelegramMessageProcessor(baseDeps);
@@ -687,7 +687,7 @@ describe("telegram bot message processor", () => {
           turnAbortSignal?.addEventListener("abort", () => resolve(), { once: true });
         });
       }
-      turnAdoptionLifecycle?.onAbandoned?.();
+      await turnAdoptionLifecycle?.onAbandoned?.();
       return { kind: "completed" };
     });
     const processMessage = createTelegramMessageProcessor(baseDeps);

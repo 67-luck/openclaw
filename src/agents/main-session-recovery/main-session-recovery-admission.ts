@@ -1,8 +1,9 @@
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
-  beginSessionWorkAdmission,
-  cancelSessionWorkAdmissionHandoff,
-} from "../../sessions/session-lifecycle-admission.js";
+  captureSessionTarget,
+  beginSessionEffect,
+  cancelSessionEffectHandoff,
+} from "../../sessions/session-controller.lifecycle.js";
 
 /** Process-wide identity for startup recovery before its reply operation is registered. */
 export const MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER = Symbol.for(
@@ -42,11 +43,15 @@ export async function runWithMainSessionRecoveryAdmission<T>(params: {
   }
 
   const ownershipChanged = new Error("restart recovery session ownership changed before dispatch");
-  let admission: Awaited<ReturnType<typeof beginSessionWorkAdmission>>;
+  let admission: Awaited<ReturnType<typeof beginSessionEffect>>;
   try {
-    admission = await beginSessionWorkAdmission({
-      scope: params.storePath,
-      identities: [params.sessionKey, params.canonicalSessionKey, params.sessionId],
+    admission = await beginSessionEffect({
+      target: captureSessionTarget({
+        storeScope: params.storePath,
+        sessionKey: params.canonicalSessionKey ?? params.sessionKey,
+        aliases: [params.sessionKey],
+        incarnation: params.sessionId,
+      }),
       owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
       onInterrupt: () => {
         interrupted = true;
@@ -81,6 +86,6 @@ export async function runWithMainSessionRecoveryAdmission<T>(params: {
       }),
     );
   } finally {
-    cancelSessionWorkAdmissionHandoff(handoffId);
+    cancelSessionEffectHandoff(handoffId);
   }
 }

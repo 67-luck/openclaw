@@ -14,7 +14,6 @@ import {
   recordReplyOperationAgentTurn,
   resolveReplyOperationRunState,
 } from "../auto-reply/reply/reply-operation-run-state.js";
-import { createReplyOperation } from "../auto-reply/reply/reply-run-registry.js";
 import type { OpenClawConfig } from "../config/config.js";
 import {
   listSessionEntriesReadOnly,
@@ -31,6 +30,7 @@ import {
 import { addTestHook } from "../plugins/hooks.test-helpers.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import type { PluginHookReplyDispatchContext } from "../plugins/types.js";
+import { createReplyOperation } from "../sessions/session-controller.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";

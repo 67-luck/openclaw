@@ -52,7 +52,7 @@ export function resolveAgentRunAdmissionModel(params: PrepareAgentRunDispatchPar
         clone: false,
         projection: "list",
       }).storePath
-    : `agent:${params.activeSessionAgentId}`;
+    : undefined;
   return {
     timeoutMs,
     effectiveProviderOverride,

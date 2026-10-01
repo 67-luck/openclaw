@@ -8,8 +8,16 @@ import { runQaGatewayFixture } from "../../test/helpers/qa-gateway-cleanup.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { dispatchInboundMessage } from "../auto-reply/dispatch.js";
 import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
-import { createReplyOperation } from "../auto-reply/reply/reply-run-registry.js";
+import { createQueueTestRun, createQueueSettings } from "../auto-reply/reply/queue.test-helpers.js";
+import { enqueueFollowupRun } from "../auto-reply/reply/queue/enqueue.js";
+import { readReplySourceInput } from "../auto-reply/reply/reply-source-binding.js";
 import { clearConfigCache } from "../config/config.js";
+import { createReplyOperation } from "../sessions/session-controller.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
+import {
+  bindSessionControllerSource,
+  retireSessionControllerInput,
+} from "../sessions/session-controller.mailbox.js";
 import { observeGatewayConnectionWork } from "./server-held-work.test-support.js";
 import {
   connectOk,
@@ -148,6 +156,12 @@ describe("gateway WebSocket chat abort settlement", () => {
           injectionOperation = createReplyOperation({
             sessionKey: "agent:main:main",
             sessionId: "sess-main",
+            target: captureSessionTarget({
+              storeScope: testState.sessionStorePath!,
+              sessionKey: "agent:main:main",
+              incarnation: "sess-main",
+              agentId: "main",
+            }),
             resetTriggered: false,
           });
           const fingerprint = "accepted-steer-tools";
@@ -184,6 +198,30 @@ describe("gateway WebSocket chat abort settlement", () => {
               if (settlement.startsWith("queued-")) {
                 queuedLifecycle = (args as Parameters<typeof dispatchInboundMessage>[0])
                   .replyOptions?.turnAdoptionLifecycle;
+                const input = readReplySourceInput({ turnAdoptionLifecycle: queuedLifecycle });
+                if (!input) {
+                  throw new Error("Missing early queued source");
+                }
+                const queuedRun = createQueueTestRun({ prompt: "abort this dispatched message" });
+                queuedRun.run = {
+                  ...queuedRun.run,
+                  sessionKey: "agent:main:main",
+                  sessionId: "sess-main",
+                  agentId: "main",
+                };
+                queuedRun.abortSignal = input.abortSignal;
+                queuedRun.turnAdoptionLifecycle = queuedLifecycle;
+                bindSessionControllerSource(input, queuedRun);
+                expect(
+                  enqueueFollowupRun(
+                    "agent:main:main",
+                    queuedRun,
+                    createQueueSettings({ mode: "followup" }),
+                    "none",
+                    undefined,
+                    false,
+                  ),
+                ).toBe(true);
               }
               await dispatchRelease.promise;
               if (settlement.endsWith("rejected")) {
@@ -237,17 +275,17 @@ describe("gateway WebSocket chat abort settlement", () => {
             ok: true,
             payload: { runId, status: "pending", timeoutPhase: "queue" },
           });
-          const queue = await import("./chat-queued-turns.js");
-          const queuedAbort = vi.spyOn(queue, "abortQueuedChatTurnById");
-          try {
+          {
             const aborted = await rpcReq(socket, "chat.abort", { sessionKey: "main", runId });
             expect(aborted).toMatchObject({
               ok: true,
               payload: { aborted: true, runIds: [runId] },
             });
-            expect(queuedAbort).toHaveBeenCalledExactlyOnceWith(
-              expect.any(Map),
-              expect.objectContaining({ runId, stopReason: "rpc" }),
+            expect(
+              readReplySourceInput({ turnAdoptionLifecycle: queuedLifecycle })?.abortSignal.aborted,
+            ).toBe(true);
+            expect(readReplySourceInput({ turnAdoptionLifecycle: queuedLifecycle })?.phase).toBe(
+              "consumed",
             );
             expect(queuedLifecycle?.abortSignal?.aborted).toBe(true);
             const outcome = {
@@ -264,7 +302,7 @@ describe("gateway WebSocket chat abort settlement", () => {
               payload: outcome,
             });
             // Settling detached custody must not restore the earlier admission success.
-            queuedLifecycle?.onSettled?.();
+            await queuedLifecycle?.onSettled?.();
             await expect(
               rpcReq(socket, "agent.wait", { runId, timeoutMs: 0 }),
             ).resolves.toMatchObject({
@@ -273,8 +311,6 @@ describe("gateway WebSocket chat abort settlement", () => {
             });
             const replay = await rpcReq(socket, "chat.send", sendParameters);
             expect(replay.payload).toMatchObject({ runId, status: "timeout", summary: "aborted" });
-          } finally {
-            queuedAbort.mockRestore();
           }
           return;
         }
@@ -333,7 +369,11 @@ describe("gateway WebSocket chat abort settlement", () => {
           () => closeGatewayTestWebSocket(socket),
           async () => {
             await Promise.allSettled([...dispatches, ...injectionWork]);
-            queuedLifecycle?.onSettled?.();
+            const input = readReplySourceInput({ turnAdoptionLifecycle: queuedLifecycle });
+            if (input) {
+              retireSessionControllerInput(input);
+            }
+            await queuedLifecycle?.onSettled?.();
             await Promise.allSettled([
               ...frames,
               waitWork,

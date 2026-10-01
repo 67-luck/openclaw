@@ -1,8 +1,8 @@
 // Maintenance preserve providers protect runtime-owned sessions from pruning/capping.
 import {
-  collectActiveSessionWorkAdmissions,
-  collectActiveSessionLifecycleMutationIdentities,
-} from "../../sessions/session-lifecycle-admission.js";
+  collectSessionControllerTargets,
+  collectSessionMutationIdentities,
+} from "../../sessions/session-controller.lifecycle.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
 import {
   collectSessionWorkAdmissionKeysFromSnapshot,
@@ -60,7 +60,7 @@ export function collectActiveSessionWorkAdmissionKeys(params: {
   store: Record<string, SessionEntry>;
 }): Set<string> | undefined {
   const keys = collectSessionWorkAdmissionKeysFromSnapshot(params.store, [
-    ...(collectActiveSessionWorkAdmissions().get(params.storePath) ?? []),
+    ...(collectSessionControllerTargets().get(params.storePath) ?? []),
   ]);
   return keys.size > 0 ? keys : undefined;
 }
@@ -71,8 +71,8 @@ export function captureSessionMaintenancePreservation(
 ): SessionMaintenancePreservationSnapshot {
   return {
     providerKeys: [...(collectSessionMaintenancePreserveKeys() ?? [])].toSorted(),
-    workIdentities: [...(collectActiveSessionWorkAdmissions().get(storePath) ?? [])].toSorted(),
-    lifecycleIdentities: collectActiveSessionLifecycleMutationIdentities(storePath),
+    workIdentities: [...(collectSessionControllerTargets().get(storePath) ?? [])].toSorted(),
+    lifecycleIdentities: collectSessionMutationIdentities(storePath),
   };
 }
 

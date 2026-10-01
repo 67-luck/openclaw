@@ -331,7 +331,7 @@ describe("gateway method authorization", () => {
           broadcast: vi.fn(),
           broadcastToConnIds: vi.fn(),
           getSessionEventSubscriberConnIds: () => new Set(),
-          chatAbortControllers: new Map(),
+          rpcSources: new Map(),
         } as unknown as Parameters<typeof handleGatewayRequest>[0]["context"],
         extraHandlers: {
           "sessions.patch": async (options) => {
@@ -423,7 +423,7 @@ describe("gateway method authorization", () => {
           } as Parameters<typeof handleGatewayRequest>[0]["client"],
           isWebchatConnect: () => false,
           context: {
-            chatAbortControllers: new Map(),
+            rpcSources: new Map(),
             getRuntimeConfig: () => ({}),
             logGateway: { warn: vi.fn() },
           } as unknown as Parameters<typeof handleGatewayRequest>[0]["context"],
@@ -473,8 +473,7 @@ describe("sessions.patchMany orchestration", () => {
       loadGatewayModelCatalog: vi.fn(async () => []),
       broadcastToConnIds: vi.fn(),
       getSessionEventSubscriberConnIds: () => new Set(),
-      chatAbortControllers: new Map(),
-      chatQueuedTurns: new Map(),
+      rpcSources: new Map(),
       dedupe: new Map(),
       ...overrides,
     }) as never;

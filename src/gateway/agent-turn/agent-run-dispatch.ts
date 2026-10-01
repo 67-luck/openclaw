@@ -45,7 +45,7 @@ import { bindGatewayAgentTerminalProducer } from "./agent-run-terminal-producer.
 import type { AgentTurnContext, AgentTurnIo } from "./types.js";
 
 export function resolveAbortedAgentStopReason(entry?: ChatAbortControllerEntry): string {
-  return entry?.abortStopReason?.trim() || "rpc";
+  return entry?.adapter.abortStopReason?.trim() || "rpc";
 }
 
 export function dispatchAgentRunFromGateway(params: {
@@ -59,10 +59,10 @@ export function dispatchAgentRunFromGateway(params: {
   dedupeKeys: readonly string[];
   /**
    * Controller whose signal is wired into `ingressOpts.abortSignal`. Used on
-   * completion to drop the matching `chatAbortControllers` entry without
+   * completion to drop the matching `rpcSources` entry without
    * touching a same-runId entry owned by a concurrent chat.send.
    */
-  abortController: AbortController;
+  abortController: Pick<AbortController, "signal" | "abort">;
   cleanupAbortController: () => void;
   io: AgentTurnIo;
   context: AgentTurnContext;
@@ -83,19 +83,19 @@ export function dispatchAgentRunFromGateway(params: {
   );
   const assertSettlementCurrent = params.assertSettlementCurrent;
   const registeredRunEntry = params.admittedRunEntry;
-  const jobSessionBinding = registeredRunEntry ?? params.ingressOpts;
-  const registeredRunInstance = registeredRunEntry?.operationalRunInstance;
-  const registeredLifecycleGeneration = registeredRunEntry?.lifecycleGeneration;
-  const registeredSessionKey = registeredRunEntry?.sessionKey;
+  const jobSessionBinding = registeredRunEntry?.adapter ?? params.ingressOpts;
+  const registeredRunInstance = registeredRunEntry?.adapter.operationalRunInstance;
+  const registeredLifecycleGeneration = registeredRunEntry?.adapter.lifecycleGeneration;
+  const registeredSessionKey = registeredRunEntry?.adapter.sessionKey;
   const ownsRunRegistration = () => {
-    const current = params.context.chatAbortControllers.get(params.runId);
+    const current = params.context.rpcSources.get(params.runId);
     return (
       !current ||
       (current === registeredRunEntry &&
-        current.controller === params.abortController &&
-        current.operationalRunInstance === registeredRunInstance &&
-        current.lifecycleGeneration === registeredLifecycleGeneration &&
-        current.sessionKey === registeredSessionKey)
+        current.input.abortSignal === params.abortController.signal &&
+        current.adapter.operationalRunInstance === registeredRunInstance &&
+        current.adapter.lifecycleGeneration === registeredLifecycleGeneration &&
+        current.adapter.sessionKey === registeredSessionKey)
     );
   };
   const assertCurrent = () => {
@@ -112,11 +112,11 @@ export function dispatchAgentRunFromGateway(params: {
     try {
       await followupCompletion.settle(params.runId, reply, () => {
         assertSettlementCurrent?.();
-        const current = params.context.chatAbortControllers.get(params.runId);
+        const current = params.context.rpcSources.get(params.runId);
         // Another session may reuse the run ID without adopting this retained result.
         if (
           !ownsRunRegistration() &&
-          (current === registeredRunEntry || current?.sessionKey === registeredSessionKey)
+          (current === registeredRunEntry || current?.adapter.sessionKey === registeredSessionKey)
         ) {
           throw new Error("Followup physical execution lost its Gateway registration.");
         }
@@ -168,7 +168,7 @@ export function dispatchAgentRunFromGateway(params: {
     entry: registeredRunEntry,
     controller: params.abortController,
     ingressOpts: params.ingressOpts,
-    chatAbortControllers: params.context.chatAbortControllers,
+    rpcSources: params.context.rpcSources,
     isOwnerReleased: () => runOwnerCleanedUp,
   });
   const ingressOptsWithSpawnFacts = withAgentCommandExecutionIdentitySpawnFacts(
@@ -193,8 +193,8 @@ export function dispatchAgentRunFromGateway(params: {
       if (
         !registeredRunEntry ||
         !ownsRunRegistration() ||
-        params.context.chatAbortControllers.get(params.runId) !== registeredRunEntry ||
-        registeredRunEntry.registrationCleanupRequested
+        params.context.rpcSources.get(params.runId) !== registeredRunEntry ||
+        registeredRunEntry.adapter.registrationCleanupRequested
       ) {
         throw new Error("Followup no longer owns its Gateway run registration.");
       }

@@ -15,6 +15,7 @@ import {
   bindGatewayContextResolver,
   withPluginRuntimeGatewayRequestScope,
 } from "../../../plugins/runtime/gateway-request-scope.js";
+import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
 import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
 import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import {
@@ -105,7 +106,13 @@ export async function createSpawnBoundaryParent(params: {
     },
   });
   const parent = registerChatAbortController({
-    chatAbortControllers: context.chatAbortControllers,
+    rpcSources: context.rpcSources,
+    target: captureSessionTarget({
+      storeScope: storePath,
+      sessionKey: parentSessionKey,
+      incarnation: "parent-session",
+      agentId: "main",
+    }),
     runId: parentRunId,
     sessionKey: parentSessionKey,
     sessionId: "parent-session",

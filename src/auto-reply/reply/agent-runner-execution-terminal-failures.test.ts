@@ -16,6 +16,7 @@ import {
   createSessionPlacementSettlementClosedAbortError,
 } from "../../agents/run-termination.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -36,7 +37,6 @@ import {
   createTestFallbackSummaryError,
 } from "./agent-runner-execution.test-support.js";
 import { buildKnownAgentRunFailureReplyPayload } from "./agent-runner-failure-reply.js";
-import { createReplyOperation } from "./reply-run-registry.js";
 
 const state = await setupAgentRunnerExecutionTestState();
 

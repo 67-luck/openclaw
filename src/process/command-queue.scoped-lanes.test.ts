@@ -5,7 +5,7 @@ import {
   enqueueCommandInLane,
   getCommandLaneSnapshot,
   getTotalQueueSize,
-  resetCommandLane,
+  resetAllLanes,
   setCommandLaneConcurrency,
 } from "./command-queue.js";
 import { createLaneQueue, type LaneState } from "./command-queue.state.js";
@@ -199,7 +199,7 @@ describe("scoped command lane lifecycle", () => {
     expect(lanes.has(configuredLane)).toBe(true);
   });
 
-  it("does not let stale session completion retire a replacement-generation run", async () => {
+  it("does not let pre-restart session completion retire a replacement-generation run", async () => {
     const lanes = getCommandLaneRegistryForTest();
     const lane = "session:agent:main:autoqa-replacement";
     const staleGate = createDeferred();
@@ -209,7 +209,7 @@ describe("scoped command lane lifecycle", () => {
       return "stale";
     });
 
-    expect(resetCommandLane(lane)).toBe(1);
+    resetAllLanes();
     const replacementRun = enqueueCommandInLane(lane, async () => {
       await replacementGate.promise;
       return "replacement";

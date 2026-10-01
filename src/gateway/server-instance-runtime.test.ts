@@ -21,6 +21,7 @@ import { createGatewayInstanceRuntime } from "./server-instance-runtime.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "./server-methods/types.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
 import { getGatewayRecoveryRuntime } from "./server-recovery-runtime-context.js";
+import { createRpcSourceForTest, claimRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 function createContext(): GatewayRequestContext {
   return {
@@ -31,8 +32,7 @@ function createContext(): GatewayRequestContext {
       warn: vi.fn(),
       error: vi.fn(),
     },
-    chatAbortControllers: new Map(),
-    chatQueuedTurns: new Map(),
+    rpcSources: new Map(),
     dedupe: new Map(),
   } as unknown as GatewayRequestContext;
 }
@@ -125,10 +125,9 @@ describe("createGatewayInstanceRuntime", () => {
       ok: true,
       payload: { runId: "run-cached-active", status: "accepted" },
     });
-    context.chatAbortControllers.set("run-cached-active", {
-      controller: new AbortController(),
-      executionStarted: true,
-    } as never);
+    const activeSource = createRpcSourceForTest({}, { runId: "run-cached-active" });
+    await claimRpcSourceForTest(activeSource);
+    context.rpcSources.set("run-cached-active", activeSource);
     await expect(
       runtime.recovery.dispatchAgent(
         { message: "test", idempotencyKey: "run-cached-active" },

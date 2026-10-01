@@ -34,7 +34,7 @@ type SessionChangedPayload = {
 type SessionChangeContext = Pick<
   GatewayRequestContext,
   | "broadcastToConnIds"
-  | "chatAbortControllers"
+  | "rpcSources"
   | "getRuntimeConfig"
   | "sessionRowProjectionOwner"
   | "getSessionEventSubscriberConnIds"

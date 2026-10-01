@@ -37,6 +37,7 @@ import { createQueueTestRun } from "./queue.test-helpers.js";
 import { admitFollowupRunLifecycle, completeFollowupRunLifecycle } from "./queue/lifecycle.js";
 import { resolveReplyOperationRunState } from "./reply-operation-run-state.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
+import { bindReplySourceToFollowup } from "./reply-source-binding.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 beforeAll(globalBeforeAll0);
@@ -184,9 +185,18 @@ describe("dispatch input custody after a question response", () => {
         outcome === "confirmed"
           ? { status: "accepted", mode: "steer" }
           : { status: "skipped", reason: "question-response-indeterminate" };
-      const input = { turnAdoptionLifecycle: opts?.turnAdoptionLifecycle };
+      const input = createQueueTestRun({ prompt: "answer", messageId: fixture.ctx.MessageSid });
+      input.run.sessionKey = fixture.ctx.SessionKey;
+      input.turnAdoptionLifecycle = opts?.turnAdoptionLifecycle;
+      const source = bindReplySourceToFollowup(opts, input);
+      if (!source) {
+        throw new Error("Dispatch did not carry its source input");
+      }
       await admitFollowupRunLifecycle(input).catch(() => {});
       completeFollowupRunLifecycle(input, "consumed");
+      // The full source receipt also owns this still-running resolver. Join
+      // the adapter cleanup here, not the enclosing invocation itself.
+      await source.custody.settling;
       return undefined;
     });
     try {

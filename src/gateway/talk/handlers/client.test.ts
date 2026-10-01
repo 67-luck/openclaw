@@ -12,7 +12,7 @@ import {
   readSessionTranscriptMessageEvents,
   replaceSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
-import { enqueueCommandInLane, resetCommandLane } from "../../../process/command-queue.js";
+import { enqueueCommandInLane } from "../../../process/command-queue.js";
 import {
   beginGatewayRestartSignalAdmission,
   GatewayDrainingError,
@@ -22,7 +22,7 @@ import {
   resetGatewayWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../../../process/gateway-work-admission.js";
-import { getActiveSessionWorkAdmissionCount } from "../../../sessions/session-lifecycle-admission.js";
+import { getSessionControllerWorkCount } from "../../../sessions/session-controller.lifecycle.js";
 import {
   authorizeClientVoiceConfirmation,
   checkClientVoiceToolConfirmationPolicy,
@@ -131,7 +131,7 @@ function configureDelegatedBrowserProvider(
             .filter((candidate) => !filter || filter(candidate))
             .map((candidate) => candidate.connId),
         ),
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
       logGateway: { warn: vi.fn() },
       broadcastToConnIds: vi.fn(),
     },
@@ -221,10 +221,14 @@ async function useRealConsultRuntime() {
   voiceMocks.consultRealtimeVoiceAgent.mockImplementation(actual.consultRealtimeVoiceAgent);
   voiceMocks.runEmbeddedAgent.mockImplementation(async (params) => {
     params.abortSignal?.throwIfAborted();
-    return await enqueueCommandInLane("talk-admission-test", async () => ({
-      payloads: [{ text: "fixture status" }],
-      meta: { durationMs: 0 },
-    }));
+    return await enqueueCommandInLane(
+      "talk-admission-test",
+      async () => ({
+        payloads: [{ text: "fixture status" }],
+        meta: { durationMs: 0 },
+      }),
+      { abortSignal: params.abortSignal },
+    );
   });
 }
 
@@ -249,7 +253,6 @@ describe("talk.client.transcript", () => {
     for (const resource of offerResources.splice(0)) {
       resource.emitDestroy();
     }
-    resetCommandLane("talk-admission-test");
     if (ownedVoiceSessionId) {
       await closeTalkClientGatewayControlSession({
         voiceSessionId: ownedVoiceSessionId,
@@ -488,7 +491,7 @@ describe("talk.client.transcript", () => {
       sessionKey,
       voiceSessionId: ownedVoiceSessionId,
     });
-    expect(getActiveSessionWorkAdmissionCount()).toBe(0);
+    expect(getSessionControllerWorkCount()).toBe(0);
   });
 
   it("keeps an accepted consult admitted through offer completion and suspension", async () => {
@@ -497,7 +500,7 @@ describe("talk.client.transcript", () => {
     const beforeEnqueue = createDeferred();
     const enqueue = voiceMocks.runEmbeddedAgent.getMockImplementation()!;
     voiceMocks.runEmbeddedAgent.mockImplementationOnce(async (params) => {
-      expect(getActiveSessionWorkAdmissionCount()).toBe(1);
+      expect(getSessionControllerWorkCount()).toBe(1);
       await beforeEnqueue.promise;
       return await enqueue(params);
     });
@@ -509,12 +512,12 @@ describe("talk.client.transcript", () => {
         void work.catch(() => undefined);
         await vi.waitFor(() => expect(voiceMocks.runEmbeddedAgent).toHaveBeenCalledOnce());
       });
-      expect(getActiveSessionWorkAdmissionCount()).toBe(1);
+      expect(getSessionControllerWorkCount()).toBe(1);
       suspension = tryBeginGatewaySuspendAdmission(() => {});
       expect(suspension).not.toBeNull();
       beforeEnqueue.resolve();
       await expect(work).resolves.toEqual({ text: "fixture status" });
-      expect(getActiveSessionWorkAdmissionCount()).toBe(0);
+      expect(getSessionControllerWorkCount()).toBe(0);
     } finally {
       beforeEnqueue.resolve();
       await work?.catch(() => undefined);
@@ -539,7 +542,7 @@ describe("talk.client.transcript", () => {
         resource.runInAsyncScope(() => consult({ prompt: "Must not start" })),
       ).rejects.toThrow(GatewayDrainingError);
       expect(voiceMocks.runEmbeddedAgent).not.toHaveBeenCalled();
-      expect(getActiveSessionWorkAdmissionCount()).toBe(0);
+      expect(getSessionControllerWorkCount()).toBe(0);
     },
   );
 

@@ -127,7 +127,7 @@ it("keeps cold archived ancestor placement and moves through child-event recipie
       cfg,
     });
     const context = requestContext(cfg);
-    context.chatAbortControllers = connection.chatAbortControllers;
+    context.rpcSources = connection.rpcSources;
     context.broadcastToConnIds = connection.broadcastToConnIds;
     bindSessionRowProjection(context, () => projection);
     const detach = connection.attachSessionRowProjection(projection);

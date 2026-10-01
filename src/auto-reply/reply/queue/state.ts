@@ -1,62 +1,29 @@
 // Tracks queue state for active, pending, and recently deduped reply runs.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { QueueMode } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import type { ModelCatalogEntry } from "../../../agents/model-catalog.types.js";
 import type { ModelFallbackRouteResolution } from "../../../agents/model-fallback.types.js";
 import { resolveThinkingSelection } from "../../../agents/model-thinking-default.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { normalizeAgentId } from "../../../routing/session-key.js";
-import { resolveGlobalMap } from "../../../shared/global-singleton.js";
+import type { SessionTarget } from "../../../sessions/session-controller.lifecycle.js";
+import {
+  getSessionControllerMailbox,
+  getExistingSessionControllerMailbox,
+  sessionControllerMailboxes,
+  clearSessionControllerMailbox,
+  retireSessionControllerInput,
+  type SessionControllerMailbox,
+} from "../../../sessions/session-controller.mailbox.js";
 import { applyQueueRuntimeSettings } from "../../../utils/queue-helpers.js";
 import { normalizeThinkLevel } from "../../thinking.js";
 import { completeFollowupRunLifecycle } from "./lifecycle.js";
 import type { FollowupRun, QueueDropPolicy, QueueSettings } from "./types.js";
 
-type FollowupQueueState = {
-  abortController: AbortController;
-  items: FollowupRun[];
-  draining: boolean;
-  /** Exact operational drain generation; recovery may retire only this owner. */
-  drainOwner?: object;
-  /** Identities retained in `items` while delivery awaits; pending cap and depth must exclude them. */
-  inFlight: Set<FollowupRun>;
-  lastEnqueuedAt: number;
-  mode: QueueMode;
-  debounceMs: number;
-  cap: number;
-  dropPolicy: QueueDropPolicy;
-  droppedCount: number;
-  summaryLines: string[];
-  summarySources: FollowupRun[];
-  steerAcceptanceTail: Promise<boolean>;
-  /** Sources currently used by an async summary delivery cannot be evicted mid-run. */
-  activeSummarySources: WeakSet<FollowupRun>;
-  summaryElisions: Array<{
-    contextKey: string;
-    count: number;
-    /** Compact sources stay strong so cancellation follows summarized content until delivery. */
-    sources: FollowupRun[];
-    /** Summary lines stay index-aligned with sources across context isolation and eviction. */
-    summaryLines: string[];
-    /** Weak source mapping keeps concurrent summary consumption identity-safe. */
-    sourceRefs: WeakMap<FollowupRun, FollowupRun>;
-  }>;
-  evictedSummaryCount: number;
-  // Collected transcript recorders retain this source after admission removes queue items.
-  lastRun?: FollowupRun["run"];
-};
+type FollowupQueueState = SessionControllerMailbox;
 
 export const DEFAULT_QUEUE_DEBOUNCE_MS = 500;
 export const DEFAULT_QUEUE_CAP = 20;
 export const DEFAULT_QUEUE_DROP: QueueDropPolicy = "summarize";
-
-/**
- * Share followup queues across bundled chunks so busy-session enqueue/drain
- * logic observes one queue registry per process.
- */
-const FOLLOWUP_QUEUES_KEY = Symbol.for("openclaw.followupQueues");
-
-export const FOLLOWUP_QUEUES = resolveGlobalMap<string, FollowupQueueState>(FOLLOWUP_QUEUES_KEY);
 
 export function* followupQueueSources(
   queue: Pick<FollowupQueueState, "items" | "summarySources" | "summaryElisions">,
@@ -68,12 +35,18 @@ export function* followupQueueSources(
   }
 }
 
-export function getExistingFollowupQueue(key: string): FollowupQueueState | undefined {
+export function getExistingFollowupQueue(
+  key: string,
+  target?: SessionTarget,
+): FollowupQueueState | undefined {
   const cleaned = key.trim();
   if (!cleaned) {
     return undefined;
   }
-  return FOLLOWUP_QUEUES.get(cleaned);
+  const mailbox = getExistingSessionControllerMailbox(cleaned, target);
+  return mailbox && (mailbox.entries.length || mailbox.claim || mailbox.droppedCount)
+    ? mailbox
+    : undefined;
 }
 
 export function hasPendingFollowupQueueWork(keys: Iterable<string | undefined>): boolean {
@@ -94,7 +67,7 @@ export function hasPendingFollowupQueueWork(keys: Iterable<string | undefined>):
 
 type SummaryElisionCapState = Pick<
   FollowupQueueState,
-  "activeSummarySources" | "cap" | "evictedSummaryCount" | "summaryElisions"
+  "activeSummarySources" | "cap" | "evictedSummaryCount" | "summaryElisions" | "droppedCount"
 >;
 
 export function trimSummaryElisionsToCap(queue: SummaryElisionCapState): void {
@@ -116,9 +89,16 @@ export function trimSummaryElisionsToCap(queue: SummaryElisionCapState): void {
       entry.summaryLines.splice(sourceIndex, 1);
       entry.count = entry.sources.length;
       queue.evictedSummaryCount += 1;
+      queue.droppedCount = Math.max(0, queue.droppedCount - 1);
+      for (const [original, compact] of entry.sourceRefs) {
+        if (compact === source) {
+          entry.sourceRefs.delete(original);
+        }
+      }
       sourceCount -= 1;
-      if (source) {
-        completeFollowupRunLifecycle(source);
+      if (source?.controllerInput) {
+        // Eviction closes selection synchronously; callback completion is asynchronous.
+        retireSessionControllerInput(source.controllerInput);
       }
       if (entry.sources.length === 0) {
         queue.summaryElisions.splice(entryIndex, 1);
@@ -133,65 +113,20 @@ export function trimSummaryElisionsToCap(queue: SummaryElisionCapState): void {
   }
 }
 
-export function getFollowupQueue(key: string, settings: QueueSettings): FollowupQueueState {
-  const existing = FOLLOWUP_QUEUES.get(key);
-  if (existing) {
-    applyQueueRuntimeSettings({
-      target: existing,
-      settings,
-    });
-    trimSummaryElisionsToCap(existing);
-    return existing;
-  }
-
-  const created: FollowupQueueState = {
-    abortController: new AbortController(),
-    items: [],
-    draining: false,
-    inFlight: new Set(),
-    lastEnqueuedAt: 0,
-    mode: settings.mode,
-    debounceMs: DEFAULT_QUEUE_DEBOUNCE_MS,
-    cap: DEFAULT_QUEUE_CAP,
-    dropPolicy: DEFAULT_QUEUE_DROP,
-    droppedCount: 0,
-    summaryLines: [],
-    summarySources: [],
-    steerAcceptanceTail: Promise.resolve(true),
-    activeSummarySources: new WeakSet(),
-    summaryElisions: [],
-    evictedSummaryCount: 0,
-  };
-  applyQueueRuntimeSettings({
-    target: created,
-    settings,
-  });
-  FOLLOWUP_QUEUES.set(key, created);
-  return created;
+export function getFollowupQueue(
+  key: string,
+  settings: QueueSettings,
+  target?: SessionTarget,
+): FollowupQueueState {
+  const mailbox = getSessionControllerMailbox(key, target);
+  applyQueueRuntimeSettings({ target: mailbox, settings });
+  trimSummaryElisionsToCap(mailbox);
+  return mailbox;
 }
 
-export function clearFollowupQueue(key: string): number {
-  const cleaned = key.trim();
-  const queue = getExistingFollowupQueue(cleaned);
-  if (!queue) {
-    return 0;
-  }
-  queue.abortController.abort();
-  const cleared = queue.items.length + queue.droppedCount;
-  for (const item of followupQueueSources(queue)) {
-    completeFollowupRunLifecycle(item);
-  }
-  queue.items.length = 0;
-  queue.inFlight.clear();
-  queue.droppedCount = 0;
-  queue.summaryLines = [];
-  queue.summarySources = [];
-  queue.summaryElisions = [];
-  queue.evictedSummaryCount = 0;
-  queue.lastRun = undefined;
-  queue.lastEnqueuedAt = 0;
-  FOLLOWUP_QUEUES.delete(cleaned);
-  return cleared;
+export function clearFollowupQueue(key: string, captured?: SessionControllerMailbox): number {
+  const queue = captured ?? getExistingSessionControllerMailbox(key.trim());
+  return queue ? clearSessionControllerMailbox(queue, completeFollowupRunLifecycle) : 0;
 }
 
 export function clearRemovedQueuedAuthProfiles(params: {
@@ -216,7 +151,7 @@ export function clearRemovedQueuedAuthProfiles(params: {
       delete probe.fallbackAuthProfileIdSource;
     }
   };
-  for (const queue of FOLLOWUP_QUEUES.values()) {
+  for (const queue of sessionControllerMailboxes()) {
     if (queue.lastRun) {
       clearRun(queue.lastRun);
     }

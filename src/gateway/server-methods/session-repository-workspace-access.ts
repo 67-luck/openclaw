@@ -1,4 +1,4 @@
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import {
   parseWorkspaceInspectionResult,
@@ -135,7 +135,7 @@ export function resolveRepositoryWorkspaceAccess(
       if (!mutationService) {
         throw new Error("Cloud repository editing is unavailable; restart the Gateway and retry.");
       }
-      return await runExclusiveSessionLifecycleMutation({
+      return await runSessionMutation({
         scope: loaded.storePath,
         identities: [loaded.canonicalKey, ...loaded.storeKeys, sessionId],
         run: () =>

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { resolveReplyCompletion } from "../../agents/reply-completion.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { resolveFallbackTransition } from "../fallback-state.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
@@ -10,7 +11,6 @@ import {
   resolveAdmittedRunSessionFile,
   resolveReplyRunDeliveryContext,
 } from "./agent-runner-core.js";
-import { createReplyOperation } from "./reply-run-registry.js";
 
 it.each([false, true])(
   "awaits restart recovery before choosing the error reply (%s)",

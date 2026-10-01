@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { SessionControllerWatchdogAttempt } from "../sessions/session-controller.watchdog.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
 export type DiagnosticToolExecutionLiveness = Readonly<{ deadlineAtMs?: number }>;
@@ -18,7 +19,10 @@ const state = resolveGlobalSingleton(
 );
 
 /** The invocation owns the reference; only its execution owner supplies a deadline. */
-export function createDiagnosticToolExecutionLiveness(signal?: AbortSignal) {
+export function createDiagnosticToolExecutionLiveness(
+  signal?: AbortSignal,
+  ownedTool?: { attempt: SessionControllerWatchdogAttempt; toolCallId: string; toolName: string },
+) {
   let active = true;
   let deadlineAtMs: number | undefined;
   const waits = new Map<object, number>();
@@ -32,6 +36,13 @@ export function createDiagnosticToolExecutionLiveness(signal?: AbortSignal) {
         latestDeadline = Math.max(latestDeadline ?? deadline, deadline);
       }
       return latestDeadline;
+    },
+  });
+  const finishOwnedTool = ownedTool?.attempt.beginTool({
+    toolCallId: ownedTool.toolCallId,
+    toolName: ownedTool.toolName,
+    get deadlineAtMs() {
+      return view.deadlineAtMs;
     },
   });
   const record: ToolExecutionDeadlineOwner = (deadline) => {
@@ -54,6 +65,7 @@ export function createDiagnosticToolExecutionLiveness(signal?: AbortSignal) {
       return state.context.run(record, execute);
     },
     close() {
+      finishOwnedTool?.(!signal?.aborted);
       active = false;
       waits.clear();
       // The queued terminal retires the marker. Preserve exec's fixed allowance

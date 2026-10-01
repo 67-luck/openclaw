@@ -212,6 +212,7 @@ export async function runAgentsApiAttempt(
       params.sessionKey,
       params.sessionFile,
       params.agentId,
+      params.replyOperation,
     );
     assertCurrent();
     const environment = resolveAgentsApiEnvironment(readPluginConfig(), params.workspaceDir);

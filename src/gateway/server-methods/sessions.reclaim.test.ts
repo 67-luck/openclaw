@@ -205,7 +205,7 @@ describe("sessions.reclaim", () => {
         });
         const context = makeDispatchTestContext({
           broadcastToConnIds: vi.fn(),
-          chatAbortControllers: new Map(),
+          rpcSources: new Map(),
           getSessionEventSubscriberConnIds: () => new Set(["another-client"]),
           workerPlacementDispatchService: { dispatch: vi.fn(), reclaim },
           workerSessionPlacementService: {

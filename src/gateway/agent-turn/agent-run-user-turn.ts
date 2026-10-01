@@ -136,7 +136,6 @@ export async function prepareAgentRunUserTurn(params: {
   settleWakeReplay?: RequesterSettleWakeReplay;
   abortSignal?: AbortSignal;
   getAbortStopReason?: () => string;
-  deferTimeoutCompletion?: (settle: () => void) => boolean;
   request: AgentRunRequest;
   cfg: OpenClawConfig;
   cfgForAgent?: OpenClawConfig;
@@ -351,26 +350,20 @@ export async function prepareAgentRunUserTurn(params: {
     if (params.privateCompletion && recorder && !recorder.getProcessingCompletion?.()) {
       const recordAbort = () => {
         const stopReason = params.getAbortStopReason?.() ?? "rpc";
-        const settle = () => {
-          try {
-            recorder.completeProcessing?.(
-              buildAgentRunTerminalOutcome({
-                status: stopReason === "timeout" ? "timeout" : "error",
-                stopReason,
-              }),
-            );
-          } catch (error) {
-            params.context.logGateway.warn(
-              `private input cancellation persistence failed: ${formatForLog(error)}`,
-            );
-          }
-        };
-        // Give the timed-out producer its existing terminal grace to supply
-        // final facts. Stop still records its non-retry receipt synchronously.
-        if (stopReason === "timeout" && params.deferTimeoutCompletion?.(settle)) {
+        // Intentional Stop seals non-retry custody immediately. A timeout
+        // retains its source until the producer publishes its actual terminal facts.
+        if (stopReason === "timeout") {
           return;
         }
-        settle();
+        try {
+          recorder.completeProcessing?.(
+            buildAgentRunTerminalOutcome({ status: "error", stopReason }),
+          );
+        } catch (error) {
+          params.context.logGateway.warn(
+            `private input cancellation persistence failed: ${formatForLog(error)}`,
+          );
+        }
       };
       // Abort reserves terminal ownership before notifying listeners. Record
       // the stop while that exact controller still exists, even after input consumption.

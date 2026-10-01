@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
-import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
+import { runSessionMutation } from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createAgentDedupeLifecycle } from "./agent-turn/agent-dedupe-lifecycle.js";
@@ -73,7 +73,7 @@ describe("pending Stop producer binding", () => {
             clearDedupe: lifecycle.clearUnaccepted,
           }),
         ).toBeDefined();
-        expect(context.chatAbortControllers.size).toBe(0);
+        expect(context.rpcSources.size).toBe(0);
         const pending = context.dedupe.get(`agent:${runId}`);
         if (target === "replacement") {
           await upsertSessionEntryCore(
@@ -141,7 +141,7 @@ describe("pending Stop producer binding", () => {
       }
       const entered = createDeferredCore();
       const release = createDeferredCore();
-      const hold = runExclusiveSessionLifecycleMutation({
+      const hold = runSessionMutation({
         scope: session.value.storePath,
         identities: [key, "original"],
         run: async () => {
@@ -162,7 +162,7 @@ describe("pending Stop producer binding", () => {
         await vi.waitFor(() =>
           expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(true),
         );
-        expect(context.chatAbortControllers.has(runId)).toBe(false);
+        expect(context.rpcSources.has(runId)).toBe(false);
         const respond = vi.fn();
         await handleGatewayRequest({
           req: {

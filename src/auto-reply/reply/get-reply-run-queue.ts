@@ -29,7 +29,11 @@ export async function resolvePreparedReplyQueueState(params: {
   }
 
   if (params.queueMode === "interrupt") {
-    await params.interruptActiveRun();
+    // An idle run slot is not evidence that its former writer settled. In
+    // particular a watchdog can release the slot while delivery still owns I/O.
+    if (!(await params.interruptActiveRun())) {
+      return { kind: "reply", reply: { text: REPLY_RUN_STILL_SHUTTING_DOWN_TEXT } };
+    }
   } else {
     await params.waitForActiveRunEnd(params.activeSessionId);
   }

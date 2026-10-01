@@ -9,7 +9,7 @@ import {
   registerAgentRunContext,
 } from "../../../infra/agent-run-registry.js";
 import { bindGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
-import { beginSessionWorkAdmission } from "../../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../../sessions/session-controller.lifecycle.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { restartRecoveryTestHarness } from "./subagent-registry-restart-recovery.test-support.js";
 import { createSubagentSweeperHarness } from "./subagent-registry-sweeper.test-support.js";
@@ -86,7 +86,7 @@ describe("subagent registry restart recovery", () => {
       );
       const lease =
         owner === "admission"
-          ? await beginSessionWorkAdmission({
+          ? await beginSessionEffect({
               scope: mocks.storePath,
               identities: [childSessionKey, "session-id"],
               assertAllowed: () => {},
@@ -229,7 +229,7 @@ describe("subagent registry restart recovery", () => {
         });
         const lease =
           owner === "admission"
-            ? await beginSessionWorkAdmission({
+            ? await beginSessionEffect({
                 scope: mocks.storePath,
                 identities: [childSessionKey, "session-id"],
                 assertAllowed: () => {},

@@ -151,7 +151,7 @@ describe("createTranscriptUpdateBroadcastHandler", () => {
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => broadConnIds },
       sessionMessageSubscribers: { get: getSessionMessageSubscribers },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
     });
 
     await handler({
@@ -312,7 +312,7 @@ describe("createTranscriptUpdateBroadcastHandler", () => {
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["conn-1"]) },
       sessionMessageSubscribers: { get: () => new Set<string>() },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
       getSessionRowProjection: () => projection,
     });
     const tasks: Promise<void>[] = [];
@@ -705,7 +705,7 @@ describe("createTranscriptUpdateBroadcastHandler", () => {
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set<string>() },
       sessionMessageSubscribers: { get: getSessionMessageSubscribers },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
     });
 
     await handler({
@@ -814,7 +814,7 @@ describe("createTranscriptUpdateBroadcastHandler", () => {
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set() },
       sessionMessageSubscribers: { get: () => new Set() },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
     });
     projectChatDisplayMessageMock.mockReturnValueOnce(undefined).mockReturnValueOnce(undefined);
 

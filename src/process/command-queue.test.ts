@@ -35,8 +35,6 @@ vi.mock("../logging/diagnostic-runtime.js", () => ({
 
 type CommandQueueModule = typeof import("./command-queue.js");
 
-let clearCommandLane: CommandQueueModule["clearCommandLane"];
-let CommandLaneClearedError: CommandQueueModule["CommandLaneClearedError"];
 let enqueueCommandInLane: CommandQueueModule["enqueueCommandInLane"];
 let GatewayDrainingError: CommandQueueModule["GatewayDrainingError"];
 let getCommandLaneSnapshot: CommandQueueModule["getCommandLaneSnapshot"];
@@ -44,7 +42,6 @@ let getQueueSize: CommandQueueModule["getQueueSize"];
 let getTotalQueueSize: CommandQueueModule["getTotalQueueSize"];
 let markGatewayDraining: CommandQueueModule["markGatewayDraining"];
 let resetAllLanes: CommandQueueModule["resetAllLanes"];
-let resetCommandLane: CommandQueueModule["resetCommandLane"];
 let setCommandLaneConcurrency: CommandQueueModule["setCommandLaneConcurrency"];
 
 function mockCallArg(
@@ -105,8 +102,6 @@ function captureDiagnosticConsole(level: "warn" | "error") {
 describe("command queue", () => {
   beforeAll(async () => {
     ({
-      clearCommandLane,
-      CommandLaneClearedError,
       enqueueCommandInLane,
       GatewayDrainingError,
       getCommandLaneSnapshot,
@@ -114,7 +109,6 @@ describe("command queue", () => {
       getTotalQueueSize,
       markGatewayDraining,
       resetAllLanes,
-      resetCommandLane,
       setCommandLaneConcurrency,
     } = await import("./command-queue.js"));
   });
@@ -357,14 +351,19 @@ describe("command queue", () => {
     );
   });
 
-  it("does not report capacity waiting for an entry synchronously cleared during enqueue", async () => {
+  it("does not report capacity waiting for an entry synchronously cancelled during enqueue", async () => {
     const lane = "reentrant-clear";
     setCommandLaneConcurrency(lane, 0);
-    diagnosticMocks.logLaneEnqueue.mockImplementationOnce(() => clearCommandLane(lane));
+    const cancellation = new AbortController();
+    const reason = new Error("owner cancelled during enqueue");
+    diagnosticMocks.logLaneEnqueue.mockImplementationOnce(() => cancellation.abort(reason));
     const onQueued = vi.fn();
     await expect(
-      enqueueCommandInLane(lane, async () => undefined, { onQueued }),
-    ).rejects.toBeInstanceOf(CommandLaneClearedError);
+      enqueueCommandInLane(lane, async () => undefined, {
+        onQueued,
+        abortSignal: cancellation.signal,
+      }),
+    ).rejects.toBe(reason);
     expect(onQueued).not.toHaveBeenCalled();
   });
 
@@ -595,46 +594,6 @@ describe("command queue", () => {
     // task2 should have been pumped by resetAllLanes's drain pass.
     await task2;
     expect(task2Ran).toBe(true);
-  });
-
-  it("resetCommandLane releases one stuck lane and drains its queued work", async () => {
-    const lane = `reset-lane-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const otherLane = `reset-lane-other-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    setCommandLaneConcurrency(lane, 1);
-    setCommandLaneConcurrency(otherLane, 1);
-
-    const blocker = createDeferred();
-    const otherBlocker = createDeferred();
-    const first = enqueueCommandInLane(lane, async () => {
-      await blocker.promise;
-      return "first";
-    });
-    const other = enqueueCommandInLane(otherLane, async () => {
-      await otherBlocker.promise;
-      return "other";
-    });
-
-    let secondRan = false;
-    const second = enqueueCommandInLane(lane, async () => {
-      secondRan = true;
-      return "second";
-    });
-
-    expect(secondRan).toBe(false);
-    expect(
-      getCommandLaneSnapshot(lane).activeCount + getCommandLaneSnapshot(otherLane).activeCount,
-    ).toBe(2);
-    expect(resetCommandLane(lane)).toBe(1);
-
-    await expect(second).resolves.toBe("second");
-    expect(secondRan).toBe(true);
-    expect(getQueueSize(lane)).toBe(0);
-    expect(getQueueSize(otherLane)).toBe(1);
-
-    blocker.resolve();
-    otherBlocker.resolve();
-    await expect(first).resolves.toBe("first");
-    await expect(other).resolves.toBe("other");
   });
 
   it("task timeout releases a stuck lane and drains queued work", async () => {
@@ -900,28 +859,33 @@ describe("command queue", () => {
     await expect(second).resolves.toBe("second");
   });
 
-  it("clearCommandLane rejects pending promises at every priority", async () => {
-    // First task blocks the lane.
-    const { task: first, release } = enqueueBlockedMainTask(async () => "first");
-
-    const background = enqueueCommandInLane(CommandLane.Main, async () => "background", {
-      priority: "background",
-    });
-    const normal = enqueueCommandInLane(CommandLane.Main, async () => "normal");
-    const foreground = enqueueCommandInLane(CommandLane.Main, async () => "foreground", {
-      priority: "foreground",
-    });
-    const rejectionChecks = [background, normal, foreground].map((task) =>
-      expect(task).rejects.toBeInstanceOf(CommandLaneClearedError),
+  it("owner cancellation rejects pending promises at every priority without releasing active work", async () => {
+    const gate = createDeferred();
+    const cancellation = new AbortController();
+    const first = enqueueCommandInLane(
+      CommandLane.Main,
+      async () => {
+        await gate.promise;
+        return "first";
+      },
+      { abortSignal: cancellation.signal },
     );
+    const task = vi.fn(async () => "unexpected");
+    const pending = (["background", "normal", "foreground"] as const).map((priority) =>
+      enqueueCommandInLane(CommandLane.Main, task, { priority, abortSignal: cancellation.signal }),
+    );
+    const reason = new Error("owner stopped pending work");
+    const outcomes = Promise.allSettled(pending);
 
-    const removed = clearCommandLane();
-    expect(removed).toBe(3); // only the queued (not active) entries
+    cancellation.abort(reason);
+    expect(getCommandLaneSnapshot(CommandLane.Main)).toMatchObject({
+      activeCount: 1,
+      queuedCount: 0,
+    });
+    expect(await outcomes).toEqual(pending.map(() => ({ status: "rejected", reason })));
+    expect(task).not.toHaveBeenCalled();
 
-    await Promise.all(rejectionChecks);
-
-    // Let the active task finish normally.
-    release();
+    gate.resolve();
     await expect(first).resolves.toBe("first");
   });
 

@@ -4,7 +4,7 @@ import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import { mockAcceptedWaitingStatusRun } from "./agent-runner.runreplyagent.waiting-status.cases.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
-import type { FollowupRun } from "./queue.js";
+import { enqueueFollowupRun, type FollowupRun } from "./queue.js";
 
 type RequiredReplyFixture = {
   createMinimalRun: (params?: {
@@ -104,6 +104,16 @@ export function registerRequiredReplyCompletionCases({
       currentInboundEventKind: "user_request",
       runOverrides: { terminalReplyExpectation: "required" },
     });
+    expect(
+      enqueueFollowupRun(
+        "main",
+        queued.followupRun,
+        { mode: "followup", debounceMs: 0 },
+        "none",
+        undefined,
+        false,
+      ),
+    ).toBe(true);
     await requireScheduledFollowupRunner()(queued.followupRun);
 
     expect(onBlockReply).toHaveBeenCalledExactlyOnceWith(

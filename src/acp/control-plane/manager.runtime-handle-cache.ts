@@ -36,6 +36,13 @@ export class ManagerRuntimeHandleCache {
     return this.runtimeCache.get(acpSessionActorKey(target)) ?? null;
   }
 
+  /** Exact request-local cache view; it grants no cancellation authority. */
+  capture() {
+    return new Map(
+      [...this.runtimeCache].map(([key, state]) => [key, { state, handle: state.handle }]),
+    );
+  }
+
   set(target: AcpSessionTarget, state: CachedRuntimeState): void {
     this.runtimeCache.set(acpSessionActorKey(target), state);
   }

@@ -30,11 +30,11 @@ import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js"
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
 import { createSessionConversationTestRegistry } from "../test-utils/session-conversation-registry.js";
 import { steerActiveSessionWithOptionalDeliveryWait } from "./embedded-agent-runner/run/attempt-queue-message.js";
+import type { EmbeddedAgentQueueMessageOptions } from "./embedded-agent-runner/runs.js";
 import {
-  setActiveEmbeddedRun,
-  type EmbeddedAgentQueueMessageOptions,
-} from "./embedded-agent-runner/runs.js";
-import { testing as embeddedRunsTesting } from "./embedded-agent-runner/runs.test-support.js";
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  testing as embeddedRunsTesting,
+} from "./embedded-agent-runner/runs.test-support.js";
 import { guardSessionManager } from "./session-tool-result-guard-wrapper.js";
 import {
   createAssistant,

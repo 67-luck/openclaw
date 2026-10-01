@@ -1,8 +1,8 @@
 import { expect, it, vi } from "vitest";
 import {
-  beginSessionWorkAdmission,
-  runExclusiveSessionLifecycleMutation,
-} from "../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  runSessionMutation,
+} from "../sessions/session-controller.lifecycle.js";
 import { createGatewayWorkerPlacementReclaimBarriers } from "./server-worker-placement-reclaim.js";
 
 it.each(["active", "failed"] as const)(
@@ -50,7 +50,7 @@ it.each(["active", "failed"] as const)(
     const interrupted = vi.fn();
     const validated = vi.fn();
     const acquiredInterrupted = vi.fn();
-    const acquired = await beginSessionWorkAdmission({
+    const acquired = await beginSessionEffect({
       scope,
       identities: [sessionKey, sessionId],
       assertAllowed: () => {},
@@ -60,11 +60,11 @@ it.each(["active", "failed"] as const)(
     const reclaim = vi.fn();
     let pending!: Promise<{ admitted: boolean; error?: unknown }>;
     try {
-      await runExclusiveSessionLifecycleMutation({
+      await runSessionMutation({
         scope,
         identities: [sessionKey, sessionId],
         run: async () => {
-          pending = beginSessionWorkAdmission({
+          pending = beginSessionEffect({
             scope,
             identities: [sessionKey, sessionId],
             assertAllowed: validated,
@@ -92,7 +92,7 @@ it.each(["active", "failed"] as const)(
       expect(await pending).toEqual({ admitted: false, error: expect.any(Error) });
       expect(interrupted).toHaveBeenCalledOnce();
       expect(validated).not.toHaveBeenCalled();
-      const fresh = await beginSessionWorkAdmission({
+      const fresh = await beginSessionEffect({
         scope,
         identities: [sessionKey, sessionId],
         assertAllowed: () => {},

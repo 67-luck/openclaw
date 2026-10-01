@@ -7,13 +7,13 @@ import type { AgentTurnContext } from "../agent-turn/types.js";
 import { updateChatRunProvider } from "../chat-abort.js";
 
 export function createAgentRunModelSelectionHandler(params: {
-  context: Pick<AgentTurnContext, "chatAbortControllers">;
+  context: Pick<AgentTurnContext, "rpcSources">;
   runId: string;
   cfg: OpenClawConfig;
   cfgForAgent?: OpenClawConfig;
   restoredCronContinuationLifecycleRevision?: string;
   resolvedSessionKey?: string;
-  lifecycleStorePath: string;
+  lifecycleStorePath?: string;
   activeSessionAgentId: string;
   trustedInternalHandoff?: { provider: string; model: string };
 }): (selection: { provider: string; model: string }) => Promise<void> {
@@ -23,7 +23,7 @@ export function createAgentRunModelSelectionHandler(params: {
       params.trustedInternalHandoff.provider = provider.trim().toLowerCase();
       params.trustedInternalHandoff.model = model.trim();
     }
-    updateChatRunProvider(params.context.chatAbortControllers, {
+    updateChatRunProvider(params.context.rpcSources, {
       runId: params.runId,
       providerId: provider,
       authProviderId: resolveProviderIdForAuth(provider, {
@@ -32,6 +32,9 @@ export function createAgentRunModelSelectionHandler(params: {
     });
     if (!params.restoredCronContinuationLifecycleRevision || !params.resolvedSessionKey) {
       return;
+    }
+    if (!params.lifecycleStorePath) {
+      throw new Error("cron continuation physical store is unavailable");
     }
     const persistedSelectedModel = await applySessionEntryReplacements({
       activeSessionKey: params.resolvedSessionKey,

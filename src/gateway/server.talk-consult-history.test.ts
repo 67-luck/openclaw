@@ -22,7 +22,7 @@ import {
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-state.js";
-import { getSessionWorkAdmissionRelease } from "../sessions/session-lifecycle-admission.js";
+import { captureSessionControllerSettlement } from "../sessions/session-controller.lifecycle.js";
 import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -155,7 +155,7 @@ beforeEach(async () => {
     broadcastToConnIds: broadcast,
     sessionEventSubscribers: { getAll: () => new Set([connectionId]) },
     sessionMessageSubscribers: { get: () => new Set([connectionId]) },
-    chatAbortControllers: context.chatAbortControllers,
+    rpcSources: context.rpcSources,
   });
   unsubscribe = onInternalSessionTranscriptUpdate((update) => {
     if ((update.target?.sessionId ?? update.sessionId) !== sessionId) {
@@ -214,8 +214,11 @@ async function rpc(method: string, params: Record<string, unknown>) {
   return expectDefined(asOptionalRecord(result), "Gateway RPC result");
 }
 async function waitForDispatchEnd() {
-  await getSessionWorkAdmissionRelease({ scope: storePath, identities: [canonicalKey, sessionId] });
-  expect(context.chatAbortControllers.size).toBe(0);
+  await captureSessionControllerSettlement({
+    scope: storePath,
+    identities: [canonicalKey, sessionId],
+  });
+  expect(context.rpcSources.size).toBe(0);
 }
 async function drainPublications() {
   await Promise.all(publications);
@@ -284,7 +287,7 @@ async function startHeldConsult() {
   const ack = await consult("Keep this task running until released.", "held-task");
   await Promise.race([
     modelStarted.promise,
-    getSessionWorkAdmissionRelease({ scope: storePath, identities: [canonicalKey, sessionId] }),
+    captureSessionControllerSettlement({ scope: storePath, identities: [canonicalKey, sessionId] }),
   ]);
   const run = expectDefined(runEmbeddedAgent.mock.calls[0]?.[0], "held model invocation");
   const abortSignal = expectDefined(run.abortSignal, "admitted model cancellation signal");
@@ -487,7 +490,10 @@ describe("Browser Talk consult input custody", () => {
       expect(ack.idempotencyKey).toBe(ack.runId);
       await Promise.race([
         modelStarted.promise,
-        getSessionWorkAdmissionRelease({ scope: storePath, identities: [sessionKey, sessionId] }),
+        captureSessionControllerSettlement({
+          scope: storePath,
+          identities: [sessionKey, sessionId],
+        }),
       ]);
       expect(context.logGateway.error).not.toHaveBeenCalled();
       expect(runEmbeddedAgent).toHaveBeenCalledOnce();

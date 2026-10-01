@@ -8,7 +8,6 @@ import {
   addSubagentRunForTests,
   resetSubagentRegistryForTests,
 } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import * as sessionAccessor from "../../config/sessions/session-accessor.js";
 import {
   loadSessionEntry,
@@ -27,6 +26,7 @@ import { mergeSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resetAgentEventsForTest } from "../../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import {
@@ -44,7 +44,9 @@ import { invalidateOperatorRolePolicy } from "../operator-role-policy.js";
 import { persistGatewaySessionLifecycleEvent } from "../session-lifecycle-state.js";
 import { observeSessionRowBackfill } from "../session-row-backfill.test-support.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
+import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import type { WorkerSessionPlacementRecord } from "../worker-environments/placement-store.js";
+import { createActiveRpcSourceForTest } from "./rpc-source-fixtures.test-support.js";
 import {
   identifiedClient,
   initializeSessionReadContext,
@@ -83,12 +85,15 @@ describe("resident sessions.list", () => {
           ...loadSessionEntry(terminalScope)!,
           status: "done",
         });
-        context.chatAbortControllers.set("retained-terminal", {
-          sessionId: "main-active",
-          sessionKey: terminalScope.sessionKey,
-          agentId: "main",
-          projectSessionActive: false,
-        } as never);
+        context.rpcSources.set(
+          "retained-terminal",
+          createRpcSourceForTest({
+            sessionId: "main-active",
+            sessionKey: terminalScope.sessionKey,
+            agentId: "main",
+            projectSessionActive: false,
+          }),
+        );
         if (filtered) {
           expect((await listSessions({ client, context, request })).sessions).toEqual([]);
         }
@@ -890,11 +895,14 @@ describe("resident sessions.list", () => {
         const context = requestContext(config);
         if (filter.activeOnly) {
           for (const name of ["first", "second", "third"]) {
-            context.chatAbortControllers.set(`page-run-${name}`, {
-              sessionId: `page-${name}`,
-              sessionKey: `agent:main:page-${name}`,
-              agentId: "main",
-            } as never);
+            context.rpcSources.set(
+              `page-run-${name}`,
+              await createActiveRpcSourceForTest({
+                sessionId: `page-${name}`,
+                sessionKey: `agent:main:page-${name}`,
+                agentId: "main",
+              }),
+            );
           }
         }
         const client = identifiedClient("viewer@example.com");

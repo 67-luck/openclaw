@@ -59,7 +59,6 @@ import {
 } from "./diagnostic-session-context.js";
 import {
   requestStuckSessionRecovery,
-  resetDiagnosticSessionRecoveryCoordinatorForTest,
   type RecoverStuckSession,
 } from "./diagnostic-session-recovery-coordinator.js";
 import type {
@@ -1044,7 +1043,6 @@ export function stopGatewayDiagnosticHeartbeat() {
 
 function resetDiagnosticStateForTest(): void {
   stopGatewayDiagnosticHeartbeat();
-  resetDiagnosticSessionRecoveryCoordinatorForTest();
   resetDiagnosticSessionStateForTest();
   resetDiagnosticActivityForTest();
   resetDiagnosticRunActivityForTest();

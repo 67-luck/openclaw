@@ -5,9 +5,11 @@ import type {
   LocalTurnPlacementClaim,
   SessionPlacementAdmissionProvider,
 } from "../../agents/session-placement-admission.js";
+import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { WORKER_ADMISSION_DEADLINE_MS } from "../../worker/worker-connection-contract.js";
 import { StaleWorkerBuildError } from "./admission.js";
@@ -181,6 +183,44 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
       });
     },
     async executeTurn(claim, inputTurn, runLocal, onAdmitted, assertRunCurrent) {
+      const current = options.placements.get(claim.sessionId);
+      if (!current && inputTurn.modelRun === true && !claim.sessionKey?.trim()) {
+        return await runLocal();
+      }
+      if (!inputTurn.replyOperation) {
+        // Resolve the existing placement contract before admission. A blank key
+        // is not a sessionless turn, and omitted identity is inherited only once.
+        const identity = resolvePlacementIdentity(claim, current);
+        return await withSessionTurn(
+          {
+            storePath:
+              inputTurn.sessionTarget?.storePath ?? resolveSessionStorePathForScope(identity),
+            sessionKey: identity.sessionKey,
+            sessionId: identity.sessionId,
+            agentId: identity.agentId,
+            abortSignal: inputTurn.abortSignal,
+          },
+          (operation) => {
+            if (!operation) {
+              throw new Error("Worker turn session id is required");
+            }
+            return provider.executeTurn(
+              { ...claim, ...identity },
+              {
+                ...inputTurn,
+                replyOperation: operation,
+                abortSignal: AbortSignal.any([
+                  operation.abortSignal,
+                  ...(inputTurn.abortSignal ? [inputTurn.abortSignal] : []),
+                ]),
+              },
+              runLocal,
+              onAdmitted,
+              assertRunCurrent,
+            );
+          },
+        );
+      }
       const restartSignal = getGatewayRestartDrainSignal();
       const runLocalTurn = () =>
         executeLocalTurn({
@@ -192,10 +232,6 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
             assertRunCurrent?.();
           },
         });
-      const current = options.placements.get(claim.sessionId);
-      if (!current && inputTurn.modelRun === true && !claim.sessionKey?.trim()) {
-        return await runLocal();
-      }
       if (!current || current.state === "local") {
         return await runLocalTurn();
       }

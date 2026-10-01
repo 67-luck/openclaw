@@ -9,8 +9,8 @@ import {
   peekSystemEventEntries,
 } from "../../infra/system-events.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { clearReplyRunForResetBySessionId } from "../../sessions/session-controller.js";
 import { clearSessionQueues, type ClearSessionQueueResult } from "./queue/cleanup.js";
-import { clearReplyRunForResetBySessionId } from "./reply-run-registry.js";
 
 export class SessionResetCleanupError extends Error {}
 

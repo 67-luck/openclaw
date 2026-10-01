@@ -7,6 +7,7 @@ import {
   onAgentEvent as subscribeAgentEvent,
   type AgentEventPayload,
 } from "../../infra/agent-events.js";
+import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
 import {
   getReplyPayloadMetadata,
   markReplyPayloadForSourceSuppressionDelivery,
@@ -25,7 +26,6 @@ import {
   createTestTemplateContext,
 } from "./agent-runner.test-fixtures.js";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
-import { createReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
 import { createMockTypingController } from "./test-helpers.js";
 
 // Hoist mocks before static dependencies, but defer the runner to avoid incomplete cyclic exports.

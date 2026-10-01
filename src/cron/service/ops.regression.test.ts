@@ -16,7 +16,6 @@ import {
 import { resolveCronMutationCommitGuard } from "../../gateway/server-methods/cron-caller-scope.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import {
-  clearCommandLane,
   enqueueCommandInLane,
   getTotalQueueSize,
   setCommandLaneConcurrency,
@@ -36,7 +35,7 @@ import { createCronMutationCompletion } from "../mutation-completion.js";
 import { readCronRunHistoryPageForTests } from "../run-history.test-support.js";
 import { loadCronStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
-import { start } from "./ops-lifecycle.js";
+import { start, stop } from "./ops-lifecycle.js";
 import { remove, update } from "./ops-mutations.js";
 import { enqueueRun, run } from "./ops-run.js";
 import type { CronEvent } from "./state.js";
@@ -77,11 +76,9 @@ describe("cron service ops regressions", () => {
   it("transfers queued manual runs out of the released request root", async () => {
     vi.useRealTimers();
     resetGatewayWorkAdmission();
-    clearCommandLane(CommandLane.Cron);
     setCommandLaneConcurrency(CommandLane.Cron, 1);
 
     const childLane = "cron-manual-admission-child";
-    clearCommandLane(childLane);
     setCommandLaneConcurrency(childLane, 1);
     const store = opsRegressionFixtures.makeStorePath();
     const now = Date.parse("2026-02-06T10:05:00.000Z");
@@ -131,10 +128,10 @@ describe("cron service ops regressions", () => {
       expect(terminalEvent).toMatchObject({ status: "ok" });
       await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
     } finally {
+      stop(state);
       requestRoot?.release();
       enterRunner.resolve();
-      clearCommandLane(childLane);
-      clearCommandLane(CommandLane.Cron);
+      await enqueueCommandInLane(CommandLane.Cron, async () => {});
       resetGatewayWorkAdmission();
     }
   });
@@ -227,7 +224,6 @@ describe("cron service ops regressions", () => {
 
   it("keeps an acknowledged manual reservation ahead of a later timer tick", async () => {
     vi.useRealTimers();
-    clearCommandLane(CommandLane.Cron);
     setCommandLaneConcurrency(CommandLane.Cron, 1);
 
     const store = opsRegressionFixtures.makeStorePath();
@@ -250,21 +246,13 @@ describe("cron service ops regressions", () => {
     });
     await blockerStarted.promise;
 
-    let resolveRun:
-      | ((value: { status: "ok" | "error" | "skipped"; summary?: string; error?: string }) => void)
-      | undefined;
+    const releaseRun = createDeferred<{ status: "ok"; summary: string }>();
     const started = createDeferred();
     const finished = createDeferred();
     const events: CronEvent[] = [];
     const runIsolatedAgentJob = vi.fn(async () => {
       started.resolve();
-      return await new Promise<{
-        status: "ok" | "error" | "skipped";
-        summary?: string;
-        error?: string;
-      }>((resolve) => {
-        resolveRun = resolve;
-      });
+      return await releaseRun.promise;
     });
 
     const state = createCronRegressionState({
@@ -281,29 +269,36 @@ describe("cron service ops regressions", () => {
       },
     });
 
-    const ack = await enqueueRun(state, job.id, "force");
-    const runId = expectQueuedRunAck(ack);
+    try {
+      const ack = await enqueueRun(state, job.id, "force");
+      const runId = expectQueuedRunAck(ack);
 
-    await onTimer(state);
-    expect(runIsolatedAgentJob).not.toHaveBeenCalled();
+      await onTimer(state);
+      expect(runIsolatedAgentJob).not.toHaveBeenCalled();
 
-    releaseBlocker.resolve();
-    await blocker;
-    await started.promise;
-    expect(runIsolatedAgentJob).toHaveBeenCalledTimes(1);
+      releaseBlocker.resolve();
+      await blocker;
+      await started.promise;
+      expect(runIsolatedAgentJob).toHaveBeenCalledTimes(1);
 
-    resolveRun?.({ status: "ok", summary: "done" });
-    await finished.promise;
-    await vi.waitFor(() => expect(getTotalQueueSize()).toBe(0), { timeout: 5_000 });
-    expect(events.filter((event) => event.action === "finished")).toEqual([
-      expect.objectContaining({
-        jobId: job.id,
-        action: "finished",
-        status: "ok",
-        runId,
-      }),
-    ]);
-    clearCommandLane(CommandLane.Cron);
+      releaseRun.resolve({ status: "ok", summary: "done" });
+      await finished.promise;
+      await vi.waitFor(() => expect(getTotalQueueSize()).toBe(0), { timeout: 5_000 });
+      expect(events.filter((event) => event.action === "finished")).toEqual([
+        expect.objectContaining({
+          jobId: job.id,
+          action: "finished",
+          status: "ok",
+          runId,
+        }),
+      ]);
+    } finally {
+      stop(state);
+      releaseBlocker.resolve();
+      releaseRun.resolve({ status: "ok", summary: "done" });
+      await blocker;
+      await enqueueCommandInLane(CommandLane.Cron, async () => {});
+    }
   });
 
   it("does not double-run a job when cron.run overlaps a due timer tick", async () => {
@@ -597,7 +592,6 @@ describe("cron service ops regressions", () => {
 
   it("queues manual cron.run requests behind the cron execution lane", async () => {
     vi.useRealTimers();
-    clearCommandLane(CommandLane.Cron);
     setCommandLaneConcurrency(CommandLane.Cron, 1);
 
     const store = opsRegressionFixtures.makeStorePath();
@@ -648,34 +642,38 @@ describe("cron service ops regressions", () => {
     });
     state.runAdmission.active = DEFAULT_CRON_MAX_CONCURRENT_RUNS - 1;
 
-    const firstAck = await enqueueRun(state, first.id, "force");
-    const secondAck = await enqueueRun(state, second.id, "force");
-    expectQueuedRunAck(firstAck);
-    expectQueuedRunAck(secondAck);
+    try {
+      const firstAck = await enqueueRun(state, first.id, "force");
+      const secondAck = await enqueueRun(state, second.id, "force");
+      expectQueuedRunAck(firstAck);
+      expectQueuedRunAck(secondAck);
 
-    await firstStarted.promise;
-    expectIsolatedRunJobId(runIsolatedAgentJob, 0, first.id);
-    expect(peakActiveRuns).toBe(1);
+      await firstStarted.promise;
+      expectIsolatedRunJobId(runIsolatedAgentJob, 0, first.id);
+      expect(peakActiveRuns).toBe(1);
 
-    firstRun.resolve({ status: "ok", summary: "first queued run" });
-    await secondStarted.promise;
-    expect(runIsolatedAgentJob).toHaveBeenCalledTimes(2);
-    expectIsolatedRunJobId(runIsolatedAgentJob, 1, second.id);
-    expect(peakActiveRuns).toBe(1);
+      firstRun.resolve({ status: "ok", summary: "first queued run" });
+      await secondStarted.promise;
+      expect(runIsolatedAgentJob).toHaveBeenCalledTimes(2);
+      expectIsolatedRunJobId(runIsolatedAgentJob, 1, second.id);
+      expect(peakActiveRuns).toBe(1);
 
-    secondRun.resolve({ status: "ok", summary: "second queued run" });
-    await bothFinished.promise;
-    await vi.waitFor(() => expect(getTotalQueueSize()).toBe(0), { timeout: 5_000 });
-    const jobs = state.store?.jobs ?? [];
-    expect(jobs.find((job) => job.id === first.id)?.state.lastStatus).toBe("ok");
-    expect(jobs.find((job) => job.id === second.id)?.state.lastStatus).toBe("ok");
-
-    clearCommandLane(CommandLane.Cron);
+      secondRun.resolve({ status: "ok", summary: "second queued run" });
+      await bothFinished.promise;
+      await vi.waitFor(() => expect(getTotalQueueSize()).toBe(0), { timeout: 5_000 });
+      const jobs = state.store?.jobs ?? [];
+      expect(jobs.find((job) => job.id === first.id)?.state.lastStatus).toBe("ok");
+      expect(jobs.find((job) => job.id === second.id)?.state.lastStatus).toBe("ok");
+    } finally {
+      stop(state);
+      firstRun.resolve({ status: "ok", summary: "first queued run" });
+      secondRun.resolve({ status: "ok", summary: "second queued run" });
+      await enqueueCommandInLane(CommandLane.Cron, async () => {});
+    }
   });
 
   it("keeps a queued quiet schedule event separate from its one terminal event", async () => {
     vi.useRealTimers();
-    clearCommandLane(CommandLane.Cron);
     setCommandLaneConcurrency(CommandLane.Cron, 1);
 
     const store = opsRegressionFixtures.makeStorePath();
@@ -730,13 +728,13 @@ describe("cron service ops regressions", () => {
         }),
       ]);
     } finally {
-      clearCommandLane(CommandLane.Cron);
+      stop(state);
+      await enqueueCommandInLane(CommandLane.Cron, async () => {});
     }
   });
 
   it("skips queued manual runs when the old cron service stops before lane admission", async () => {
     vi.useRealTimers();
-    clearCommandLane(CommandLane.Cron);
     setCommandLaneConcurrency(CommandLane.Cron, 1);
 
     const store = opsRegressionFixtures.makeStorePath();
@@ -766,29 +764,34 @@ describe("cron service ops regressions", () => {
       onEvent: (evt) => events.push(evt),
     });
 
-    const ack = await enqueueRun(state, job.id, "force");
-    const runId = expectQueuedRunAck(ack);
+    try {
+      const ack = await enqueueRun(state, job.id, "force");
+      const runId = expectQueuedRunAck(ack);
 
-    state.stopped = true;
-    releaseBlocker.resolve();
-    await blocker;
-    await vi.waitFor(() => expect(getTotalQueueSize()).toBe(0), { timeout: 5_000 });
+      stop(state);
+      releaseBlocker.resolve();
+      await blocker;
+      await vi.waitFor(() => expect(getTotalQueueSize()).toBe(0), { timeout: 5_000 });
 
-    expect(runIsolatedAgentJob).not.toHaveBeenCalled();
-    expect(
-      state.store?.jobs.find((entry) => entry.id === job.id)?.state.runningAtMs,
-    ).toBeUndefined();
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        jobId: job.id,
-        action: "finished",
-        status: "skipped",
-        error: "queued manual run skipped before execution: stopped",
-        runId,
-      }),
-    );
-
-    clearCommandLane(CommandLane.Cron);
+      expect(runIsolatedAgentJob).not.toHaveBeenCalled();
+      expect(
+        state.store?.jobs.find((entry) => entry.id === job.id)?.state.runningAtMs,
+      ).toBeUndefined();
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          jobId: job.id,
+          action: "finished",
+          status: "skipped",
+          error: "queued manual run skipped before execution: stopped",
+          runId,
+        }),
+      );
+    } finally {
+      stop(state);
+      releaseBlocker.resolve();
+      await blocker;
+      await enqueueCommandInLane(CommandLane.Cron, async () => {});
+    }
   });
 
   it.each([
@@ -810,7 +813,6 @@ describe("cron service ops regressions", () => {
     },
   ])("aborts and records a queued isolated job when it is $mutation", async (testCase) => {
     vi.useRealTimers();
-    clearCommandLane(CommandLane.Cron);
     setCommandLaneConcurrency(CommandLane.Cron, 1);
 
     const store = opsRegressionFixtures.makeStorePath();
@@ -904,9 +906,10 @@ describe("cron service ops regressions", () => {
         });
       }
     } finally {
+      stop(state);
       releaseProvider.resolve();
-      await vi.waitFor(() => expect(getTotalQueueSize()).toBe(0), { timeout: 5_000 });
-      clearCommandLane(CommandLane.Cron);
+      await enqueueCommandInLane(CommandLane.Cron, async () => {});
+      expect(getTotalQueueSize()).toBe(0);
     }
   });
 

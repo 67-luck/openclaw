@@ -18,9 +18,9 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { waitForGatewayActiveWork } from "../infra/gateway-active-work.js";
 import { initializeGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import {
-  getSessionWorkAdmissionRelease,
-  isSessionWorkAdmissionActive,
-} from "../sessions/session-lifecycle-admission.js";
+  captureSessionControllerSettlement,
+  isSessionControllerWorkActive,
+} from "../sessions/session-controller.lifecycle.js";
 import { listSessionStateEventsSince } from "../sessions/session-state-events.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
@@ -212,8 +212,11 @@ async function rpc(
 }
 
 async function waitForDispatchEnd() {
-  await getSessionWorkAdmissionRelease({ scope: storePath, identities: [sessionKey, sessionId] });
-  expect(context.chatAbortControllers.size).toBe(0);
+  await captureSessionControllerSettlement({
+    scope: storePath,
+    identities: [sessionKey, sessionId],
+  });
+  expect(context.rpcSources.size).toBe(0);
 }
 
 async function withHeldModel(run: () => Promise<void>) {
@@ -237,13 +240,13 @@ function profileClient(profileId: string): GatewayClient {
 function expectNoDispatch() {
   expect(userMessages()).toEqual([]);
   expect(runEmbeddedAgent).not.toHaveBeenCalled();
-  expect(context.chatAbortControllers.size).toBe(0);
+  expect(context.rpcSources.size).toBe(0);
 }
 
 async function waitForModelRun(count = 1) {
   await Promise.race([
     modelStarted.promise,
-    getSessionWorkAdmissionRelease({ scope: storePath, identities: [sessionKey, sessionId] }),
+    captureSessionControllerSettlement({ scope: storePath, identities: [sessionKey, sessionId] }),
   ]);
   expect(context.logGateway.error).not.toHaveBeenCalled();
   expect(
@@ -551,7 +554,7 @@ describe("Goal chat admission and continuation", () => {
     const goal = rpc("chat.send", request);
     try {
       await vi.waitFor(() =>
-        expect(isSessionWorkAdmissionActive(storePath, [sessionId])).toBe(true),
+        expect(isSessionControllerWorkActive(storePath, [sessionId])).toBe(true),
       );
       await rpc("chat.send", {
         sessionKey,

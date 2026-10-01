@@ -13,10 +13,10 @@ import { parseSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-m
 import { isSessionTranscriptProjectionUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
 import { WorkerTaskError } from "../infra/worker-task-pool.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
+import type { RpcSourceIndex } from "../sessions/session-controller.rpc-sources.js";
 import type { SessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import type { InternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { projectChatDisplayMessage } from "./chat-display-projection.js";
 import type { GatewayBroadcastToConnIdsFn } from "./server-broadcast-types.js";
 import type {
@@ -108,7 +108,7 @@ export function createTranscriptUpdateBroadcastHandler(params: {
   broadcastToConnIds: GatewayBroadcastToConnIdsFn;
   sessionEventSubscribers: SessionEventSubscribers;
   sessionMessageSubscribers: SessionMessageSubscribers;
-  chatAbortControllers: Map<string, ChatAbortControllerEntry>;
+  rpcSources: RpcSourceIndex;
   getSessionRowProjection?: () => SessionRowProjection | undefined;
 }) {
   // Ordering is a per-transcript contract: subscribers merge each session's
@@ -290,7 +290,7 @@ async function handleTranscriptUpdateBroadcast(
     broadcastToConnIds: GatewayBroadcastToConnIdsFn;
     sessionEventSubscribers: SessionEventSubscribers;
     sessionMessageSubscribers: SessionMessageSubscribers;
-    chatAbortControllers: Map<string, ChatAbortControllerEntry>;
+    rpcSources: RpcSourceIndex;
     getSessionRowProjection?: () => SessionRowProjection | undefined;
   },
   update: InternalSessionTranscriptUpdate,
@@ -612,7 +612,7 @@ async function handleTranscriptUpdateBroadcast(
 export function createLifecycleEventBroadcastHandler(params: {
   broadcastToConnIds: GatewayBroadcastToConnIdsFn;
   sessionEventSubscribers: SessionEventSubscribers;
-  chatAbortControllers: Map<string, ChatAbortControllerEntry>;
+  rpcSources: RpcSourceIndex;
   getSessionRowProjection?: () => SessionRowProjection | undefined;
 }) {
   return async (event: SessionLifecycleEvent): Promise<void> => {

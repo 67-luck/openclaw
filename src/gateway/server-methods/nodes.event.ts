@@ -83,7 +83,7 @@ export const nodeEventHandlers: GatewayRequestHandlers = {
         broadcastVoiceWakeChanged: context.broadcastVoiceWakeChanged,
         addChatRun: context.addChatRun,
         removeChatRun: context.removeChatRun,
-        chatAbortControllers: context.chatAbortControllers,
+        rpcSources: context.rpcSources,
         dedupe: context.dedupe,
         agentRunSeq: context.agentRunSeq,
         getHealthCache: context.getHealthCache,

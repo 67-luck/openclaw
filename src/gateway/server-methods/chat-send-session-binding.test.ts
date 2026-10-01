@@ -6,7 +6,12 @@ import {
   withGatewayToolCallerIdentity,
 } from "../../agents/tools/gateway-caller-context.js";
 import * as dispatch from "../../auto-reply/dispatch.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
+import {
+  createQueueTestRun,
+  createQueueSettings,
+} from "../../auto-reply/reply/queue.test-helpers.js";
+import { enqueueFollowupRun } from "../../auto-reply/reply/queue/enqueue.js";
+import { completeFollowupRunLifecycle } from "../../auto-reply/reply/queue/lifecycle.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import {
   loadExactSessionEntryReadOnly,
@@ -19,6 +24,13 @@ import {
 } from "../../config/sessions/session-sharing-store.native.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import {
+  bindSessionControllerSource,
+  claimSessionControllerTask,
+  releaseSessionControllerClaim,
+} from "../../sessions/session-controller.mailbox.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../chat-abort.js";
@@ -146,8 +158,7 @@ it.each(admissionScenarios)(
           return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
         });
       const context = {
-        chatAbortControllers: new Map(),
-        chatQueuedTurns: new Map(),
+        rpcSources: new Map(),
         chatRunState: createChatRunState(),
         dedupe: new Map(),
         agentRunSeq: new Map(),
@@ -164,6 +175,7 @@ it.each(admissionScenarios)(
       let reply: ReturnType<typeof createReplyOperation> | undefined;
       let successor: ReturnType<typeof registerChatAbortController> | undefined;
       let options: DispatchOptions | undefined;
+      let queuedRun: ReturnType<typeof createQueueTestRun> | undefined;
       try {
         const respond = vi.fn();
         const params = {
@@ -229,7 +241,7 @@ it.each(admissionScenarios)(
           withGatewayToolCallerIdentity(caller, () => capability.invoke({ action: "list" }));
         const { admission, userTurn } = owned;
         const original = admission.activeRunAbort.entry;
-        expect(original?.sessionId).toBe(initialSessionId);
+        expect(original?.adapter.sessionId).toBe(initialSessionId);
         // This focused test controls preparation; the native WS test proves its real producer.
         await upsertSessionEntryCore(scope, {
           sessionId: membershipRequired ? initialSessionId : "committed-session",
@@ -276,21 +288,42 @@ it.each(admissionScenarios)(
         }
 
         if (closure === "queued") {
-          expect(original?.sessionId).toBe(binding.sessionId);
+          expect(original?.adapter.sessionId).toBe(binding.sessionId);
           expect(admission.admittedSessionId).toBe(runId);
-          expect(options.replyOptions?.turnAdoptionLifecycle?.onDeferred?.()).toBe(true);
-          expect(context.chatQueuedTurns.get(runId)?.sessionId).toBe(binding.sessionId);
+          if (!original) {
+            throw new Error("Expected accepted source");
+          }
+          queuedRun = createQueueTestRun({ prompt: params.message });
+          queuedRun.turnAdoptionLifecycle = options.replyOptions?.turnAdoptionLifecycle;
+          bindSessionControllerSource(original.input, queuedRun);
+          expect(
+            enqueueFollowupRun(
+              sessionKey,
+              queuedRun,
+              createQueueSettings(),
+              "none",
+              undefined,
+              false,
+            ),
+          ).toBe(true);
+          expect(context.rpcSources.get(runId)?.adapter.sessionId).toBe(binding.sessionId);
           await userTurn.persist();
           expect(await loadTranscriptEvents({ ...scope, ...binding })).toContainEqual(
             expect.objectContaining({ message: expect.objectContaining({ role: "user" }) }),
           );
           admission.cleanupAdmittedRun();
-          expect(context.chatQueuedTurns.has(runId)).toBe(true);
+          expect(context.rpcSources.has(runId)).toBe(true);
         } else if (closure === "removed" || closure === "replaced") {
           admission.activeRunAbort.cleanup();
           if (closure === "replaced") {
             successor = registerChatAbortController({
-              chatAbortControllers: context.chatAbortControllers,
+              rpcSources: context.rpcSources,
+              target: captureSessionTarget({
+                storeScope: binding.storePath,
+                sessionKey,
+                incarnation: "successor-session",
+                agentId: "main",
+              }),
               runId,
               sessionKey,
               sessionId: "successor-session",
@@ -302,13 +335,21 @@ it.each(admissionScenarios)(
         } else if (closure === "released") {
           admission.gatewayWorkAdmission.release();
         } else if (closure === "terminal") {
-          reply = createReplyOperation({
-            sessionKey,
-            sessionId: binding.sessionId,
-            resetTriggered: false,
-            upstreamAbortSignal: admission.activeRunAbort.controller.signal,
+          if (!original) {
+            throw new Error("Expected accepted source");
+          }
+          await claimSessionControllerTask(original.input, (claim) => {
+            reply = createReplyOperation({
+              mailboxClaim: claim,
+              target: original.input.mailbox.owner.target,
+              sessionKey,
+              sessionId: binding.sessionId,
+              resetTriggered: false,
+              upstreamAbortSignal: admission.activeRunAbort.controller.signal,
+            });
+            reply.complete();
+            releaseSessionControllerClaim(claim);
           });
-          reply.complete();
           expect(admission.activeRunAbort.controller.signal.aborted).toBe(false);
         } else {
           rotateAgentEventLifecycleGeneration();
@@ -318,8 +359,8 @@ it.each(admissionScenarios)(
         if (dashboardRead) {
           expect(dashboardRead.assertCurrent).toThrow();
         }
-        expect(original?.sessionId).toBe(binding.sessionId);
-        expect(successor?.entry?.sessionId).toBe(
+        expect(original?.adapter.sessionId).toBe(binding.sessionId);
+        expect(successor?.entry?.adapter.sessionId).toBe(
           closure === "replaced" ? "successor-session" : undefined,
         );
         if (closure === "queued") {
@@ -340,12 +381,17 @@ it.each(admissionScenarios)(
         }
       } finally {
         namespaceRun.close();
-        options?.replyOptions?.turnAdoptionLifecycle?.onSettled?.();
+        if (queuedRun) {
+          completeFollowupRunLifecycle(queuedRun);
+          await queuedRun.controllerInput?.settlement.promise;
+        } else {
+          await options?.replyOptions?.turnAdoptionLifecycle?.onSettled?.();
+        }
         reply?.complete();
         successor?.cleanup();
         release.resolve();
         if (owned) {
-          await vi.waitFor(() => expect(context.chatAbortControllers.has(runId)).toBe(false));
+          await vi.waitFor(() => expect(context.rpcSources.has(runId)).toBe(false));
           owned.admission.cleanupAdmittedRun();
           clearAgentRunContext(runId, owned.admission.lifecycleGeneration);
         }

@@ -1,38 +1,50 @@
 import {
   asDateTimestampMs,
-  isFutureDateTimestampMs,
-  resolveDateTimestampMs,
   resolveExpiresAtMsFromDurationMs,
 } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { OperationalRunInstanceRef } from "../agents/admitted-run-context.js";
-import { AGENT_RUN_TERMINAL_RETRY_GRACE_MS } from "../agents/agent-run-terminal-outcome.js";
-import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
+import {
+  createAgentRunRestartAbortError,
+  resolveAgentRunAbortLifecycleFields,
+} from "../agents/run-termination.js";
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
 import { isAbortRequestText } from "../auto-reply/reply/abort-primitives.js";
+import type { QueueSettings } from "../auto-reply/reply/queue/types.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  emitAgentEvent,
-  getAgentEventLifecycleGeneration,
-  type AgentEventPayload,
-} from "../infra/agent-events.js";
+import { emitAgentEvent, getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import {
   releaseAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
-import type { ChatAbortDiagnosticReason } from "./chat-abort-diagnostics.js";
+import type { SessionTarget } from "../sessions/session-controller.lifecycle.js";
+import {
+  reserveSessionControllerSource,
+  retireSessionControllerInput,
+  trackSessionControllerSourceWork,
+  type SessionControllerSourceAdapter,
+} from "../sessions/session-controller.mailbox.js";
+import {
+  getRpcSourceStartedAt,
+  isRpcSourceExecuting,
+  requestRpcSourceCancellation,
+  type RpcSourceAdapter,
+} from "../sessions/session-controller.rpc-sources.js";
+import {
+  captureSessionControllerStop,
+  stopSessionController,
+} from "../sessions/session-controller.stop.js";
+import {
+  resolveChatAbortDiagnosticReason,
+  type ChatAbortDiagnosticReason,
+} from "./chat-abort-diagnostics.js";
 import { notifyChatAbortControllerRemoved } from "./chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
 import { appendChatCanvasBlocksToMessage } from "./chat-display-projection.canvas.js";
 import { resolveChatRunOwnerAgentId } from "./chat-run-owner.js";
-import { projectLiveAssistantBufferedText } from "./live-chat-projector.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
-import {
-  createChatAbortMarker,
-  type ChatRunPlanSnapshot,
-  type ChatRunState,
-} from "./server-chat-state.js";
+import { createChatAbortMarker, type ChatRunState } from "./server-chat-state.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
 import {
   resolveSessionSubscriptionKey,
@@ -40,6 +52,11 @@ import {
 } from "./session-subscription-keys.js";
 
 export type { ChatAbortControllerEntry } from "./chat-abort.types.js";
+export {
+  projectInFlightRunSnapshot,
+  resolveInFlightRunSnapshot,
+  type InFlightRunSnapshot,
+} from "./chat-in-flight-snapshot.js";
 
 const DEFAULT_CHAT_RUN_ABORT_GRACE_MS = 60_000;
 
@@ -51,48 +68,9 @@ export type RestartRecoveryCandidate = {
   observedAt?: number;
 };
 
-export type InFlightRunSnapshot = {
-  runId: string;
-  text: string;
-  startedAt?: number;
-  /**
-   * True when the in-flight run is owned by the embedded-run registry and can
-   * only be cancelled through the session-owned abort path (sessions.abort),
-   * never through run-specific chat.abort. Control UI uses this to keep Stop
-   * routing session-scoped for recovered embedded runs.
-   */
-  sessionAbortable?: boolean;
-  plan?: ChatRunPlanSnapshot;
-  events?: AgentEventPayload[];
-};
-
-export function projectInFlightRunSnapshot(params: {
-  chatRunState: Pick<ChatRunState, "resolveBuffer" | "runs">;
-  runId: string;
-  startedAtMs?: number;
-  sessionAbortable?: boolean;
-}): InFlightRunSnapshot {
-  const run = params.chatRunState.runs.get(params.runId);
-  const projected = projectLiveAssistantBufferedText(
-    params.chatRunState.resolveBuffer(params.runId).text,
-    { suppressLeadFragments: true },
-  );
-  const plan = run?.planSnapshot;
-  const events = run?.progressSnapshot?.events;
-  return {
-    runId: params.runId,
-    text: projected.suppress ? "" : projected.text,
-    ...(params.startedAtMs === undefined ? {} : { startedAt: params.startedAtMs }),
-    ...(params.sessionAbortable ? { sessionAbortable: true } : {}),
-    ...(plan ? { plan } : {}),
-    ...(events?.length ? { events } : {}),
-  };
-}
-
 type RegisteredChatAbortController = {
   controller: AbortController;
   markExecutionStarted: () => boolean;
-  deferTimeoutCompletion: (settle: () => void) => boolean;
   bindAgentRunDelegatedAuthority: (authority: AgentRunDelegatedAuthority) => void;
   cleanup: () => void;
 } & (
@@ -161,7 +139,10 @@ export function resolveAgentRunExpiresAtMs(params: {
 }
 
 export function registerChatAbortController(params: {
-  chatAbortControllers: Map<string, ChatAbortControllerEntry>;
+  rpcSources: Map<string, ChatAbortControllerEntry>;
+  target?: SessionTarget;
+  policy?: QueueSettings;
+  authority?: SessionControllerSourceAdapter["authority"];
   runId: string;
   sessionId: string;
   sessionKey?: string | null;
@@ -176,230 +157,160 @@ export function registerChatAbortController(params: {
   isAbortable?: (entry: ChatAbortControllerEntry) => boolean;
   resolveTerminalProducer?: (
     entry: ChatAbortControllerEntry,
-  ) => ReturnType<NonNullable<ChatAbortControllerEntry["resolveTerminalProducer"]>>;
+  ) => ReturnType<NonNullable<RpcSourceAdapter["resolveTerminalProducer"]>>;
   onRemoved?: () => void;
-  kind?: ChatAbortControllerEntry["kind"];
-  turnKind?: ChatAbortControllerEntry["turnKind"];
+  kind?: RpcSourceAdapter["kind"];
+  turnKind?: RpcSourceAdapter["turnKind"];
   lifecycleGeneration?: string;
   operationalRunInstance?: OperationalRunInstanceRef;
+  /** Raw source work includes preparation and source-specific terminal publication. */
+  sourceWork?: Promise<unknown>;
   now?: number;
   expiresAtMs?: number;
 }): RegisteredChatAbortController {
-  const controller = new AbortController();
-  const bindAgentRunDelegatedAuthority = (authority: AgentRunDelegatedAuthority) => {
-    const entry = params.chatAbortControllers.get(params.runId);
-    if (
-      entry?.controller !== controller ||
-      !entry.operationalRunInstance ||
-      authority.operationalRunInstance !== entry.operationalRunInstance
-    ) {
-      throw new Error("agent run authority does not belong to this controller registration");
-    }
-    if (entry.agentRunDelegatedAuthority && entry.agentRunDelegatedAuthority !== authority) {
-      throw new Error("agent run controller already owns a different authority");
-    }
-    entry.agentRunDelegatedAuthority = authority;
-  };
-  let executionStarted = false;
-  const markExecutionStarted = () => {
-    if (executionStarted) {
-      return false;
-    }
-    const entry = params.chatAbortControllers.get(params.runId);
-    if (entry?.controller !== controller || controller.signal.aborted) {
-      return false;
-    }
-    executionStarted = true;
-    entry.executionStarted = true;
-    if (entry.kind !== "agent") {
-      return true;
-    }
-    const now = Date.now();
-    if (!isFutureDateTimestampMs(entry.expiresAtMs, { nowMs: now })) {
-      return true;
-    }
-    entry.expiresAtMs = resolveAgentRunExpiresAtMs({
-      now,
-      timeoutMs: params.timeoutMs,
-    });
-    return true;
-  };
-  const cleanup = () => {
-    const entry = params.chatAbortControllers.get(params.runId);
-    if (entry?.controller === controller) {
-      // This registration carries the exact operational instance. Close its
-      // capability before terminal cleanup can observe a same-run successor.
-      if (entry.agentRunDelegatedAuthority) {
-        releaseAgentRunDelegatedAuthority(entry.agentRunDelegatedAuthority);
-      }
-      entry.registrationCleanupRequested = true;
-      entry.pendingTimeoutCompletion = undefined;
-      // Terminal event handling owns final removal once the event has been
-      // observed. Runs that never emitted a terminal event still clean up here.
-      if (entry.projectSessionTerminalPending === true) {
-        return;
-      }
-      const persistence = entry.projectSessionTerminalPersistence;
-      if (persistence) {
-        void persistence
-          .then(() => {
-            if (
-              params.chatAbortControllers.get(params.runId)?.controller === controller &&
-              entry.projectSessionTerminalPersistence === persistence
-            ) {
-              entry.projectSessionTerminalPersistence = undefined;
-              removeChatAbortControllerEntry(params.chatAbortControllers, params.runId, entry);
-            }
-          })
-          .catch(() => {
-            if (
-              params.chatAbortControllers.get(params.runId)?.controller === controller &&
-              entry.projectSessionTerminalPersistence === persistence
-            ) {
-              removeChatAbortControllerEntry(params.chatAbortControllers, params.runId, entry);
-            }
-          });
-        return;
-      }
-      removeChatAbortControllerEntry(params.chatAbortControllers, params.runId, entry);
-    }
-  };
-
-  if (!params.sessionKey || params.chatAbortControllers.has(params.runId)) {
-    // Duplicate run ids keep their fresh controller for caller cancellation, but
-    // do not replace the registered entry that owns active-run projection.
+  // Sessionless RPCs retain prepared authority without a fabricated session owner.
+  if (!params.sessionKey || params.rpcSources.has(params.runId)) {
+    const controller = new AbortController();
     return {
       controller,
       registered: false,
-      deferTimeoutCompletion: () => false,
-      markExecutionStarted,
-      bindAgentRunDelegatedAuthority,
-      cleanup,
+      markExecutionStarted: () => false,
+      bindAgentRunDelegatedAuthority: () => {
+        throw new Error("Unregistered source cannot own a projected run authority");
+      },
+      cleanup: () => {},
     };
   }
-
-  const rawNow = params.now ?? Date.now();
-  const now = resolveDateTimestampMs(rawNow, 0);
-  const explicitExpiresAtMs =
-    params.expiresAtMs === undefined ? undefined : (asDateTimestampMs(params.expiresAtMs) ?? 0);
-  const entry: ChatAbortControllerEntry = {
-    controller,
+  if (!params.target) {
+    throw new Error("RPC source requires its captured physical session target");
+  }
+  const adapter: RpcSourceAdapter = {
+    scope: params.target.storeScope,
+    authority: params.authority,
+    requester: { connectionId: params.ownerConnId, deviceId: params.ownerDeviceId },
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
     lifecycleGeneration: params.lifecycleGeneration ?? getAgentEventLifecycleGeneration(),
     operationalRunInstance: params.operationalRunInstance,
     agentId: normalizeOptionalLowercaseString(params.agentId),
-    startedAtMs: now,
-    executionStarted: false,
-    expiresAtMs:
-      explicitExpiresAtMs ??
-      resolveChatRunExpiresAtMs({ now: rawNow, timeoutMs: params.timeoutMs }),
     ownerConnId: params.ownerConnId,
     ownerDeviceId: params.ownerDeviceId,
     providerId: normalizeOptionalLowercaseString(params.providerId),
     authProviderId: normalizeOptionalLowercaseString(params.authProviderId),
     controlUiVisible: params.controlUiVisible,
     isAbortable: params.isAbortable,
-    resolveTerminalProducer: params.resolveTerminalProducer
-      ? () => params.resolveTerminalProducer?.(entry)
-      : undefined,
     onRemoved: params.onRemoved,
     projectSessionActive: params.projectSessionActive ?? true,
     kind: params.kind,
     turnKind: params.turnKind,
   };
-  params.chatAbortControllers.set(params.runId, entry);
+  const input = reserveSessionControllerSource(params.sessionKey, {
+    protocolRunId: params.runId,
+    sourceTurnId: params.runId,
+    policy: params.policy ?? { mode: "followup" },
+    target: params.target,
+    adapter,
+  });
+  if (params.sourceWork) {
+    trackSessionControllerSourceWork(input, params.sourceWork);
+  }
+  const entry: ChatAbortControllerEntry = { input, adapter };
+  adapter.cancel = (reason) => {
+    adapter.abortStopReason ??=
+      typeof reason === "string"
+        ? reason
+        : resolveAgentRunAbortLifecycleFields(input.abortSignal).stopReason;
+    adapter.abortDiagnosticReason ??= resolveChatAbortDiagnosticReason(input.abortSignal, adapter);
+  };
+  adapter.resolveTerminalProducer = params.resolveTerminalProducer
+    ? () => params.resolveTerminalProducer?.(entry)
+    : undefined;
+  // This forwarding handle owns no independent cancellation state.
+  const controller: AbortController = {
+    signal: input.abortSignal,
+    abort: (reason?: unknown) => {
+      requestRpcSourceCancellation(entry, reason);
+    },
+  };
+  const cleanup = () => {
+    if (params.rpcSources.get(params.runId) !== entry) {
+      return;
+    }
+    if (adapter.agentRunDelegatedAuthority) {
+      releaseAgentRunDelegatedAuthority(adapter.agentRunDelegatedAuthority);
+    }
+    adapter.registrationCleanupRequested = true;
+    // Accepted injection retains this source through its native outcome. A
+    // returning dispatcher releases only registration custody, not the input.
+    if (input.injection) {
+      return;
+    }
+    if (input.custody.work?.size || input.custody.adopting || input.custody.settling) {
+      retireSessionControllerInput(input);
+      return;
+    }
+    if (
+      (input.claim && !input.claim.released) ||
+      (input.custody.enqueued && input.phase !== "consumed")
+    ) {
+      return;
+    }
+    if (adapter.projectSessionTerminalPending) {
+      return;
+    }
+    const persistence = adapter.projectSessionTerminalPersistence;
+    if (persistence) {
+      const finish = (persisted: boolean) => {
+        if (
+          params.rpcSources.get(params.runId) === entry &&
+          adapter.projectSessionTerminalPersistence === persistence
+        ) {
+          // Keep a rejected write on the captured receipt: index removal is not
+          // successful persistence, and the drain owner must retain that failure.
+          if (persisted) {
+            adapter.projectSessionTerminalPersistence = undefined;
+          }
+          removeChatAbortControllerEntry(params.rpcSources, params.runId, entry);
+        }
+      };
+      void persistence
+        .then(
+          () => finish(true),
+          () => finish(false),
+        )
+        .catch(() => {});
+      return;
+    }
+    removeChatAbortControllerEntry(params.rpcSources, params.runId, entry);
+  };
+  adapter.onSettled = () => {
+    if (adapter.registrationCleanupRequested) {
+      cleanup();
+    }
+  };
+  params.rpcSources.set(params.runId, entry);
   return {
     controller,
     registered: true,
     entry,
-    deferTimeoutCompletion: (settle) => {
-      if (params.chatAbortControllers.get(params.runId) !== entry) {
-        return false;
+    markExecutionStarted: () => isRpcSourceExecuting(entry),
+    bindAgentRunDelegatedAuthority: (authority) => {
+      if (
+        params.rpcSources.get(params.runId) !== entry ||
+        !adapter.operationalRunInstance ||
+        authority.operationalRunInstance !== adapter.operationalRunInstance ||
+        (adapter.agentRunDelegatedAuthority && adapter.agentRunDelegatedAuthority !== authority)
+      ) {
+        throw new Error("Agent authority does not belong to this exact RPC source");
       }
-      entry.pendingTimeoutCompletion = {
-        expiresAtMs: Date.now() + AGENT_RUN_TERMINAL_RETRY_GRACE_MS,
-        settle,
-      };
-      return true;
+      adapter.agentRunDelegatedAuthority = authority;
     },
-    markExecutionStarted,
-    bindAgentRunDelegatedAuthority,
     cleanup,
   };
 }
 
-/** Restore the newest visible run when chat.history switches back to its session.
- * Match requested and canonical keys, with agent scoping for the shared global row.
- */
-export function resolveInFlightRunSnapshot(params: {
-  chatAbortControllers: Map<string, ChatAbortControllerEntry>;
-  chatRunState: Pick<ChatRunState, "resolveBuffer" | "runs">;
-  requestedSessionKey: string;
-  canonicalSessionKey: string;
-  agentId?: string;
-  defaultAgentId?: string;
-}): InFlightRunSnapshot | undefined {
-  const matchesKey = (entry: ChatAbortControllerEntry, key: string): boolean => {
-    if (entry.sessionKey !== key) {
-      return false;
-    }
-    if (key !== "global") {
-      return true;
-    }
-    const requestedAgentId =
-      normalizeOptionalLowercaseString(params.agentId) ??
-      normalizeOptionalLowercaseString(params.defaultAgentId);
-    if (!requestedAgentId) {
-      return false;
-    }
-    const runAgentId =
-      normalizeOptionalLowercaseString(entry.agentId) ??
-      normalizeOptionalLowercaseString(params.defaultAgentId);
-    return runAgentId === requestedAgentId;
-  };
-  // Some callers/tests run without populated run state; guard like
-  // collectTrackedActiveSessionRuns so a missing map is a no-op, not a throw.
-  if (!(params.chatAbortControllers instanceof Map)) {
-    return undefined;
-  }
-  // Timestamp wins over insertion order; runId breaks ties deterministically.
-  let best: { runId: string; startedAtMs: number } | undefined;
-  for (const [runId, entry] of params.chatAbortControllers) {
-    if (
-      entry.projectSessionActive === false ||
-      entry.controlUiVisible === false ||
-      entry.controller.signal.aborted ||
-      entry.kind === "agent"
-    ) {
-      continue;
-    }
-    if (
-      !matchesKey(entry, params.requestedSessionKey) &&
-      !matchesKey(entry, params.canonicalSessionKey)
-    ) {
-      continue;
-    }
-    const newer = best === undefined || entry.startedAtMs > best.startedAtMs;
-    const tie = best !== undefined && entry.startedAtMs === best.startedAtMs && runId > best.runId;
-    if (newer || tie) {
-      best = { runId, startedAtMs: entry.startedAtMs };
-    }
-  }
-  if (best === undefined) {
-    return undefined;
-  }
-  // A run can be active before its first text arrives. Adopt it now so the UI
-  // stays streaming and can reconcile the eventual reply.
-  return projectInFlightRunSnapshot({
-    chatRunState: params.chatRunState,
-    runId: best.runId,
-    startedAtMs: best.startedAtMs,
-  });
-}
-
 export type ChatAbortOps = {
-  chatAbortControllers: Map<string, ChatAbortControllerEntry>;
+  rpcSources: Map<string, ChatAbortControllerEntry>;
   chatRunState: Pick<ChatRunState, "clearRun" | "getOrCreate" | "resolveBuffer" | "runs">;
   removeChatRun: (
     sessionId: string,
@@ -484,11 +395,19 @@ function resolveDefaultGlobalAgentId(ops: ChatAbortOps): string | undefined {
 }
 
 export function isChatAbortControllerEntryAbortable(entry: ChatAbortControllerEntry): boolean {
-  if (entry.controller.signal.aborted) {
+  if (
+    entry.input.abortSignal.aborted ||
+    entry.input.phase === "consumed" ||
+    entry.input.custody.cancellationRetired ||
+    entry.input.retirementRequested ||
+    entry.input.withdrawalHolds > 0 ||
+    entry.input.claim?.operation?.abortFrozen ||
+    entry.input.claim?.operation?.result
+  ) {
     return false;
   }
   try {
-    return entry.isAbortable?.(entry) !== false;
+    return entry.adapter.isAbortable?.(entry) !== false;
   } catch {
     return false;
   }
@@ -503,22 +422,22 @@ export function removeChatAbortControllerEntry(
   if (!entry || (expectedEntry && entry !== expectedEntry)) {
     return false;
   }
-  const pending = entry.pendingTimeoutCompletion;
-  if (pending) {
-    if (isFutureDateTimestampMs(pending.expiresAtMs, { nowMs: Date.now() })) {
-      return false;
-    }
-    // Orphan cleanup must record the known timeout before revoking this exact
-    // receipt owner. A late producer then reuses that receipt, never rewrites it.
-    entry.pendingTimeoutCompletion = undefined;
-    pending.settle();
-    if (entries.get(runId) !== entry) {
-      return false;
-    }
+  // A timeout or terminal projection does not settle the source. In particular,
+  // never seal a generic private timeout while its producer can still publish facts.
+  if (
+    entry.input.custody.work?.size ||
+    entry.input.injection ||
+    entry.input.custody.adopting ||
+    entry.input.custody.settling ||
+    (entry.input.claim && !entry.input.claim.released) ||
+    (entry.input.custody.enqueued && entry.input.phase !== "consumed")
+  ) {
+    return false;
   }
   entries.delete(runId);
+  retireSessionControllerInput(entry.input);
   try {
-    entry.onRemoved?.();
+    entry.adapter.onRemoved?.();
   } catch {
     // Removal owns state cleanup even if a caller-provided release hook fails.
   } finally {
@@ -527,28 +446,7 @@ export function removeChatAbortControllerEntry(
   return true;
 }
 
-export function abortChatRunById(
-  ops: ChatAbortOps,
-  params: {
-    runId: string;
-    sessionKey: string;
-    stopReason?: string;
-    diagnosticReason?: ChatAbortDiagnosticReason;
-    onAbortCommitted?: () => void;
-  },
-): { aborted: boolean } {
-  const { runId, sessionKey, stopReason } = params;
-  const active = ops.chatAbortControllers.get(runId);
-  if (!active) {
-    return { aborted: false };
-  }
-  if (active.sessionKey !== sessionKey) {
-    return { aborted: false };
-  }
-  if (!isChatAbortControllerEntryAbortable(active)) {
-    return { aborted: false };
-  }
-
+export function captureChatRunAbortPresentation(ops: ChatAbortOps, runId: string) {
   const bufferedText = ops.chatRunState.resolveBuffer(runId, { final: true }).text;
   const run = ops.chatRunState.runs.get(runId);
   const liveTextGroup = run?.liveTextGroup?.signal;
@@ -565,103 +463,206 @@ export function abortChatRunById(
       : undefined,
     canvasBlocks,
   );
-  ops.chatRunState.getOrCreate(runId).abortMarker = createChatAbortMarker();
-  if (stopReason) {
-    active.abortStopReason = stopReason;
+  return { message, liveTextGroup };
+}
+
+export function abortChatRunById(
+  ops: ChatAbortOps,
+  params: {
+    runId: string;
+    sessionKey: string;
+    stopReason?: string;
+    diagnosticReason?: ChatAbortDiagnosticReason;
+    onAbortPrepared?: () => void;
+    onAbortCommitted?: () => void;
+    expectedEntry?: ChatAbortControllerEntry;
+    /** Shutdown can cancel retained cleanup without replacing an already published terminal. */
+    preserveTerminal?: boolean;
+    presentation?: ReturnType<typeof captureChatRunAbortPresentation>;
+    /** Exact primitive supplied by the common captured Stop sequencer. */
+    cancel?: () => boolean;
+    assertCurrent?: () => void;
+  },
+): { aborted: boolean } {
+  const { runId, sessionKey, stopReason } = params;
+  params.assertCurrent?.();
+  const active = params.expectedEntry ?? ops.rpcSources.get(runId);
+  if (!active || ops.rpcSources.get(runId) !== active) {
+    return { aborted: false };
   }
-  active.abortDiagnosticReason = params.diagnosticReason;
+  if (active.adapter.sessionKey !== sessionKey) {
+    return { aborted: false };
+  }
+  if (!isChatAbortControllerEntryAbortable(active)) {
+    return { aborted: false };
+  }
+
+  const executionStarted = isRpcSourceExecuting(active);
+  const priorRetirement = active.input.retirementRequested;
+  const priorOperationResult = active.input.claim?.operation?.result;
+  const { message, liveTextGroup } =
+    params.presentation ?? captureChatRunAbortPresentation(ops, runId);
+  const runProjection = ops.chatRunState.getOrCreate(runId);
+  const previousMarker = runProjection.abortMarker;
+  const previous = {
+    abortStopReason: active.adapter.abortStopReason,
+    abortDiagnosticReason: active.adapter.abortDiagnosticReason,
+    projectSessionActive: active.adapter.projectSessionActive,
+    projectSessionTerminalPending: active.adapter.projectSessionTerminalPending,
+    projectSessionTerminalObservedAt: active.adapter.projectSessionTerminalObservedAt,
+    registrationCleanupRequested: active.adapter.registrationCleanupRequested,
+  };
+  runProjection.abortMarker = createChatAbortMarker();
+  if (stopReason) {
+    active.adapter.abortStopReason = stopReason;
+  }
+  active.adapter.abortDiagnosticReason = params.diagnosticReason;
   // Reserve transcript settlement while this exact producer still has authority.
   try {
-    params.onAbortCommitted?.();
+    params.onAbortPrepared?.();
   } catch {
     // Transcript handoff failure cannot prevent an already accepted cancellation.
   }
-  active.projectSessionActive = false;
+  active.adapter.projectSessionActive = false;
   // Reserve terminal ownership before abort listeners run; synchronous caller
   // cleanup must not erase the entry before Gateway observes the event below.
-  active.projectSessionTerminalPending = true;
-  active.projectSessionTerminalObservedAt = undefined;
-  active.registrationCleanupRequested = true;
-  // Approval cancellation and run abort share this owner so authorization
-  // cannot outlive the active run whose controller is about to terminate.
-  if (active.agentRunDelegatedAuthority) {
-    releaseAgentRunDelegatedAuthority(active.agentRunDelegatedAuthority);
+  if (!params.preserveTerminal) {
+    active.adapter.projectSessionTerminalPending = true;
+    active.adapter.projectSessionTerminalObservedAt = undefined;
+  }
+  active.adapter.registrationCleanupRequested = true;
+  let cancelled: boolean;
+  let cancellationFailure: { error: unknown } | undefined;
+  try {
+    cancelled = params.cancel
+      ? params.cancel()
+      : requestRpcSourceCancellation(
+          active,
+          createChatAbortSignalReason(stopReason),
+          params.assertCurrent,
+        );
+  } catch (error) {
+    cancelled =
+      (!priorOperationResult && active.input.claim?.operation?.result?.kind === "aborted") ||
+      (!priorRetirement &&
+        active.input.retirementRequested === true &&
+        active.input.abortSignal.aborted);
+    if (!cancelled) {
+      Object.assign(active.adapter, previous);
+      runProjection.abortMarker = previousMarker;
+      throw error;
+    }
+    cancellationFailure = { error };
+  }
+  if (!cancelled) {
+    Object.assign(active.adapter, previous);
+    runProjection.abortMarker = previousMarker;
+    return { aborted: false };
+  }
+  // Cancellation is committed. These publication/revocation receipts finish even if
+  // a synchronous abort listener revoked the requesting connection.
+  params.onAbortCommitted?.();
+  if (active.adapter.agentRunDelegatedAuthority) {
+    releaseAgentRunDelegatedAuthority(active.adapter.agentRunDelegatedAuthority);
+  }
+  const replacement = ops.rpcSources.get(runId);
+  if (replacement && replacement !== active) {
+    if (!params.preserveTerminal) {
+      active.adapter.projectSessionTerminalPending = false;
+    }
+    if (cancellationFailure) {
+      throw cancellationFailure.error;
+    }
+    return { aborted: true };
   }
   try {
     ops.onRunAborted?.(runId);
   } catch {
-    // Approval persistence failure must not prevent the requested run abort.
+    /* Requested cancellation already committed. */
   }
-  active.controller.abort(createChatAbortSignalReason(stopReason));
-  ops.chatRunState.clearRun(runId);
+  if (ops.chatRunState.runs.get(runId) === runProjection) {
+    ops.chatRunState.clearRun(runId);
+  }
   const removed = ops.removeChatRun(runId, runId, sessionKey);
-  if (active.controlUiVisible !== false) {
+  if (!params.preserveTerminal && active.adapter.controlUiVisible !== false) {
     broadcastChatAborted(ops, {
       runId,
       sessionKey,
-      agentId: active.agentId,
+      agentId: active.adapter.agentId,
       stopReason,
       message,
-      errorMessage: active.toolErrorSummary,
+      errorMessage: active.adapter.toolErrorSummary,
       liveTextGroup,
     });
   }
-  emitAgentEvent({
-    runId,
-    ...(active.lifecycleGeneration ? { lifecycleGeneration: active.lifecycleGeneration } : {}),
-    sessionKey,
-    sessionId: active.sessionId,
-    agentId: active.agentId,
-    stream: "lifecycle",
-    data: {
-      phase: "end",
-      status: "cancelled",
-      aborted: true,
-      stopReason,
-      ...(active.toolErrorSummary ? { toolErrorSummary: active.toolErrorSummary } : {}),
-      // Pre-execution admission time is not an execution start.
-      startedAt: active.executionStarted === false ? undefined : active.startedAtMs,
-      ...(active.executionStarted === false
-        ? {
-            executionStarted: false,
-            providerStarted: false,
-            ...(stopReason === "timeout" ? { timeoutPhase: "queue" } : {}),
-          }
+  if (!params.preserveTerminal) {
+    emitAgentEvent({
+      runId,
+      ...(active.adapter.lifecycleGeneration
+        ? { lifecycleGeneration: active.adapter.lifecycleGeneration }
         : {}),
-      endedAt: Date.now(),
-    },
-  });
+      sessionKey,
+      sessionId: active.adapter.sessionId,
+      agentId: active.adapter.agentId,
+      stream: "lifecycle",
+      data: {
+        phase: "end",
+        status: "cancelled",
+        aborted: true,
+        stopReason,
+        ...(active.adapter.toolErrorSummary
+          ? { toolErrorSummary: active.adapter.toolErrorSummary }
+          : {}),
+        // Pre-execution admission time is not an execution start.
+        startedAt: !executionStarted ? undefined : (getRpcSourceStartedAt(active) ?? 0),
+        ...(!executionStarted
+          ? {
+              executionStarted: false,
+              providerStarted: false,
+              ...(stopReason === "timeout" ? { timeoutPhase: "queue" } : {}),
+            }
+          : {}),
+        endedAt: Date.now(),
+      },
+    });
+  }
   // Gateway listeners synchronously stamp the terminal observation. Keep the
   // entry as suspension-visible ownership until its persistence write settles.
   if (
-    ops.chatAbortControllers.get(runId) === active &&
-    active.projectSessionTerminalObservedAt === undefined &&
-    !active.projectSessionTerminalPersistence
+    !params.preserveTerminal &&
+    ops.rpcSources.get(runId) === active &&
+    active.adapter.projectSessionTerminalObservedAt === undefined &&
+    !active.adapter.projectSessionTerminalPersistence
   ) {
-    active.projectSessionTerminalPending = false;
-    removeChatAbortControllerEntry(ops.chatAbortControllers, runId, active);
+    active.adapter.projectSessionTerminalPending = false;
+    removeChatAbortControllerEntry(ops.rpcSources, runId, active);
+  } else if (params.preserveTerminal) {
+    removeChatAbortControllerEntry(ops.rpcSources, runId, active);
   }
   ops.agentRunSeq.delete(runId);
   if (removed?.clientRunId) {
     ops.agentRunSeq.delete(removed.clientRunId);
   }
+  if (cancellationFailure) {
+    throw cancellationFailure.error;
+  }
   return { aborted: true };
 }
 
 export function updateChatRunProvider(
-  chatAbortControllers: Map<string, ChatAbortControllerEntry>,
+  rpcSources: Map<string, ChatAbortControllerEntry>,
   params: {
     runId: string;
     providerId?: string;
     authProviderId?: string;
   },
 ): boolean {
-  const entry = chatAbortControllers.get(params.runId);
+  const entry = rpcSources.get(params.runId);
   if (!entry) {
     return false;
   }
-  entry.providerId = normalizeOptionalLowercaseString(params.providerId);
-  entry.authProviderId = normalizeOptionalLowercaseString(params.authProviderId);
+  entry.adapter.providerId = normalizeOptionalLowercaseString(params.providerId);
+  entry.adapter.authProviderId = normalizeOptionalLowercaseString(params.authProviderId);
   return true;
 }
 
@@ -680,32 +681,48 @@ export function abortChatRunsForProvider(
     return { runIds: [] };
   }
   const compatibilityOwnerAgentId = agentId && tryResolveLegacyCompatibilityAgentId(params.cfg);
-  const matches = [...ops.chatAbortControllers.entries()].filter(([, entry]) => {
+  const matches = [...ops.rpcSources.entries()].filter(([, entry]) => {
     if (
-      normalizeOptionalLowercaseString(entry.authProviderId) !== providerId &&
-      normalizeOptionalLowercaseString(entry.providerId) !== providerId
+      normalizeOptionalLowercaseString(entry.adapter.authProviderId) !== providerId &&
+      normalizeOptionalLowercaseString(entry.adapter.providerId) !== providerId
     ) {
       return false;
     }
     return (
       !agentId ||
       resolveChatRunOwnerAgentId({
-        agentId: entry.agentId,
-        sessionKey: entry.sessionKey,
+        agentId: entry.adapter.agentId,
+        sessionKey: entry.adapter.sessionKey,
         defaultAgentId: compatibilityOwnerAgentId,
       }) === agentId
     );
   });
   const runIds: string[] = [];
-  for (const [runId, entry] of matches) {
-    const result = abortChatRunById(ops, {
-      runId,
-      sessionKey: entry.sessionKey,
-      stopReason: params.stopReason,
-    });
-    if (result.aborted) {
-      runIds.push(runId);
-    }
-  }
+  const byInput = new Map(
+    matches.map(([runId, entry]) => [
+      entry.input,
+      { runId, entry, presentation: captureChatRunAbortPresentation(ops, runId) },
+    ]),
+  );
+  const capture = captureSessionControllerStop({ inputs: byInput.keys() });
+  stopSessionController(capture, {
+    source: "operator-revocation",
+    reason: params.stopReason,
+    cancelInput: (input, cancel) => {
+      const target = byInput.get(input);
+      if (!target) {
+        return false;
+      }
+      return abortChatRunById(ops, {
+        runId: target.runId,
+        sessionKey: target.entry.adapter.sessionKey,
+        expectedEntry: target.entry,
+        presentation: target.presentation,
+        cancel,
+        stopReason: params.stopReason,
+        onAbortCommitted: () => runIds.push(target.runId),
+      }).aborted;
+    },
+  });
   return { runIds };
 }

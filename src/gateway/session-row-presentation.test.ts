@@ -23,6 +23,7 @@ import {
   prepareGatewayRecipientProfile,
 } from "./expected-profile.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
+import { createActiveRpcSourceForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
 import { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import { prepareProjectedSessionPresentation } from "./session-row-presentation.js";
@@ -340,23 +341,23 @@ it("presents current recipient roles without SQLite while rejecting source overr
           key: "agent:main:dashboard:incognito-private",
         }),
       ).toMatchObject({ code: "INVALID_REQUEST" });
-      const activeRun = {
-        controller: new AbortController(),
+      const activeRun = await createActiveRpcSourceForTest({
         sessionKey: query.key,
         sessionId: entry.sessionId,
         agentId: query.agentId,
-        startedAtMs: Date.now(),
-        expiresAtMs: Date.now() + 60_000,
-      };
-      connection.chatAbortControllers.set("old-run", activeRun);
+      });
+      connection.rpcSources.set("old-run", activeRun);
       for (let index = 0; index < 49; index++) {
-        connection.chatAbortControllers.set(`unrelated-${index}`, {
-          ...activeRun,
-          sessionKey: `agent:main:unrelated-${index}`,
-          sessionId: `unrelated-session-${index}`,
-        });
+        connection.rpcSources.set(
+          `unrelated-${index}`,
+          await createActiveRpcSourceForTest({
+            ...activeRun.adapter,
+            sessionKey: `agent:main:unrelated-${index}`,
+            sessionId: `unrelated-session-${index}`,
+          }),
+        );
       }
-      const controllerScans = vi.spyOn(connection.chatAbortControllers, Symbol.iterator);
+      const controllerScans = vi.spyOn(connection.rpcSources, Symbol.iterator);
       connection.broadcast("sessions.changed", { sessionKey: query.key, agentId: query.agentId });
       expect(controllerScans).toHaveBeenCalledTimes(1);
       controllerScans.mockRestore();
@@ -369,11 +370,14 @@ it("presents current recipient roles without SQLite while rejecting source overr
         vi.mocked(client.socket).send.mockClear();
       }
       vi.mocked(clients[0]!.socket).send.mockImplementationOnce(() => {
-        connection.chatAbortControllers.delete("old-run");
-        connection.chatAbortControllers.set("replacement-run", {
-          ...activeRun,
-          sessionKey: "agent:main:adopted-source",
-          sessionId: ` ${entry.sessionId} `,
+        connection.rpcSources.delete("old-run");
+        connection.rpcSources.set("replacement-run", {
+          input: activeRun.input,
+          adapter: {
+            ...activeRun.adapter,
+            sessionKey: "agent:main:adopted-source",
+            sessionId: ` ${entry.sessionId} `,
+          },
         });
       });
       connection.broadcastToConnIds(
@@ -393,7 +397,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
         });
       }
       expect(vi.mocked(clients[2]!.socket).send.mock.calls).toHaveLength(0);
-      const replacement = connection.chatAbortControllers.get("replacement-run")!;
+      const replacement = connection.rpcSources.get("replacement-run")!;
       for (const change of [
         "session-id",
         "session-key",
@@ -401,25 +405,27 @@ it("presents current recipient roles without SQLite while rejecting source overr
         "visibility",
         "agent",
       ] as const) {
-        replacement.sessionKey = change === "session-key" ? query.key : "agent:main:adopted-source";
-        replacement.sessionId = change === "session-key" ? "adopted-session" : entry.sessionId;
-        replacement.agentId = query.agentId;
-        replacement.projectSessionActive = true;
-        replacement.controlUiVisible = true;
+        replacement.adapter.sessionKey =
+          change === "session-key" ? query.key : "agent:main:adopted-source";
+        replacement.adapter.sessionId =
+          change === "session-key" ? "adopted-session" : entry.sessionId;
+        replacement.adapter.agentId = query.agentId;
+        replacement.adapter.projectSessionActive = true;
+        replacement.adapter.controlUiVisible = true;
         for (const client of clients) {
           vi.mocked(client.socket).send.mockClear();
         }
         vi.mocked(clients[0]!.socket).send.mockImplementationOnce(() => {
           if (change === "session-id") {
-            replacement.sessionId = "adopted-session";
+            replacement.adapter.sessionId = "adopted-session";
           } else if (change === "session-key") {
-            replacement.sessionKey = "agent:main:adopted-source";
+            replacement.adapter.sessionKey = "agent:main:adopted-source";
           } else if (change === "terminal") {
-            replacement.projectSessionActive = false;
+            replacement.adapter.projectSessionActive = false;
           } else if (change === "visibility") {
-            replacement.controlUiVisible = false;
+            replacement.adapter.controlUiVisible = false;
           } else {
-            replacement.agentId = "other";
+            replacement.adapter.agentId = "other";
           }
         });
         connection.broadcast("sessions.changed", { sessionKey: query.key, agentId: query.agentId });
@@ -433,13 +439,13 @@ it("presents current recipient roles without SQLite while rejecting source overr
         }
         expect(vi.mocked(clients[2]!.socket).send.mock.calls).toHaveLength(0);
       }
-      Object.assign(replacement, activeRun);
-      const joining = connection.chatAbortControllers.get("unrelated-0")!;
+      Object.assign(replacement.adapter, activeRun.adapter);
+      const joining = connection.rpcSources.get("unrelated-0")!;
       for (const client of clients) {
         vi.mocked(client.socket).send.mockClear();
       }
       vi.mocked(clients[0]!.socket).send.mockImplementationOnce(() => {
-        joining.sessionKey = query.key;
+        joining.adapter.sessionKey = query.key;
       });
       connection.broadcast("sessions.changed", { sessionKey: query.key, agentId: query.agentId });
       for (const [index, activeRunIds] of [
@@ -453,7 +459,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
           activeRunIds,
         });
       }
-      connection.chatAbortControllers.clear();
+      connection.rpcSources.clear();
       expect(prepares).not.toHaveBeenCalled();
       expect(exec).not.toHaveBeenCalled();
       prepares.mockRestore();

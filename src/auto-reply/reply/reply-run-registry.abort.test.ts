@@ -2,15 +2,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
-import type { ReplyBackendHandle } from "./reply-run-registry.contracts.js";
+import type { ReplyBackendHandle } from "../../sessions/session-controller.contracts.js";
 import {
   abortActiveReplyRuns,
   clearReplyRunForResetBySessionId,
-  isReplyRunAbortableForCompaction,
   isReplyRunAbortableForSignal,
   isReplyRunActiveForSessionId,
   replyRunRegistry,
-} from "./reply-run-registry.js";
+} from "../../sessions/session-controller.js";
+import { isSessionRunCompactionBlocked as isReplyRunAbortableForCompaction } from "../../sessions/session-controller.queries.js";
 import { createTestReplyOperation } from "./reply-run-registry.test-helpers.js";
 import { testing } from "./reply-run-registry.test-support.js";
 
@@ -52,7 +52,7 @@ describe("reply run registry cancellation", () => {
     expect(isReplyRunAbortableForCompaction("session-compact")).toBe(true);
   });
 
-  it("clears deferred-maintenance operations immediately on user abort", () => {
+  it("retains deferred-maintenance custody until its aborted producer completes", () => {
     const operation = createTestReplyOperation({
       sessionId: "session-waiting-abort",
     });
@@ -61,6 +61,10 @@ describe("reply run registry cancellation", () => {
     operation.abortByUser();
 
     expect(operation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
+    expect(replyRunRegistry.isActive("agent:main:main")).toBe(true);
+    expect(isReplyRunActiveForSessionId("session-waiting-abort")).toBe(true);
+    expect(() => createTestReplyOperation()).toThrow();
+    operation.complete();
     expect(replyRunRegistry.isActive("agent:main:main")).toBe(false);
     expect(isReplyRunActiveForSessionId("session-waiting-abort")).toBe(false);
   });
@@ -83,7 +87,6 @@ describe("reply run registry cancellation", () => {
       isStreaming: () => false,
       isAbortable: () => true,
     });
-    operation.retainFailureUntilComplete();
 
     operation.fail("run_failed", new Error("provider failed"));
     upstreamAbort.abort(new Error("late upstream abort"));
@@ -115,7 +118,7 @@ describe("reply run registry cancellation", () => {
     operation.complete();
   });
 
-  it("clears queued ownership when the upstream signal is already aborted", () => {
+  it("retains already-aborted queued ownership until its producer completes", () => {
     const upstreamAbort = new AbortController();
     upstreamAbort.abort(new Error("caller already cancelled"));
 
@@ -128,6 +131,9 @@ describe("reply run registry cancellation", () => {
     expect(operation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
     expect(operation.phase).toBe("aborted");
     expect(operation.abortSignal.aborted).toBe(true);
+    expect(replyRunRegistry.isActive("agent:main:already-cancelled")).toBe(true);
+    expect(() => createTestReplyOperation({ sessionKey: operation.key })).toThrow();
+    operation.complete();
     expect(replyRunRegistry.isActive("agent:main:already-cancelled")).toBe(false);
   });
 

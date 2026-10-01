@@ -29,6 +29,7 @@ import {
   onGatewaySuspendAdmissionChange,
   runWithRetainedGatewayRootWork,
 } from "../process/gateway-work-admission.js";
+import type { RpcSourceIndex, RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import {
   onSessionIdentityMutation,
   onSessionLifecycleEvent,
@@ -45,11 +46,7 @@ import {
   markChatAbortTerminalPersistenceError,
   type ChatAbortTerminalDispatch,
 } from "./chat-abort-lifecycle-internal.js";
-import {
-  type ChatAbortControllerEntry,
-  removeChatAbortControllerEntry,
-  type RestartRecoveryCandidate,
-} from "./chat-abort.js";
+import { removeChatAbortControllerEntry, type RestartRecoveryCandidate } from "./chat-abort.js";
 import { bumpGatewayAccessRevision } from "./gateway-access-revision.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
 import type {
@@ -111,7 +108,7 @@ export function startGatewayEventSubscriptions(params: {
   toolEventRecipients: ToolEventRecipientRegistry;
   sessionEventSubscribers: SessionEventSubscriberRegistry;
   sessionMessageSubscribers: SessionMessageSubscriberRegistry;
-  chatAbortControllers: Map<string, ChatAbortControllerEntry>;
+  rpcSources: RpcSourceIndex;
   restartRecoveryCandidates: Map<string, RestartRecoveryCandidate>;
   refreshConnectedUserProfiles: () => void;
   getSessionRowProjection?: () => SessionRowProjection | undefined;
@@ -198,33 +195,33 @@ export function startGatewayEventSubscriptions(params: {
     runId === clientRunId ? [runId] : [runId, clientRunId];
   const clearTrackedActiveRun = (run: { runId: string; clientRunId: string }) => {
     for (const candidateRunId of trackedRunIds(run.runId, run.clientRunId)) {
-      const entry = params.chatAbortControllers.get(candidateRunId);
+      const entry = params.rpcSources.get(candidateRunId);
       if (!entry) {
         continue;
       }
-      entry.projectSessionActive = false;
+      entry.adapter.projectSessionActive = false;
       queueMicrotask(() => {
-        const current = params.chatAbortControllers.get(candidateRunId);
+        const current = params.rpcSources.get(candidateRunId);
         if (
           current === entry &&
-          entry.registrationCleanupRequested === true &&
-          !entry.projectSessionTerminalPersistence
+          entry.adapter.registrationCleanupRequested === true &&
+          !entry.adapter.projectSessionTerminalPersistence
         ) {
-          removeChatAbortControllerEntry(params.chatAbortControllers, candidateRunId, entry);
+          removeChatAbortControllerEntry(params.rpcSources, candidateRunId, entry);
         }
       });
     }
   };
   const settleTrackedTerminal = (run: { runId: string; clientRunId: string }) => {
     for (const candidateRunId of trackedRunIds(run.runId, run.clientRunId)) {
-      const entry = params.chatAbortControllers.get(candidateRunId);
-      if (!entry || entry.projectSessionTerminalPersistence) {
+      const entry = params.rpcSources.get(candidateRunId);
+      if (!entry || entry.adapter.projectSessionTerminalPersistence) {
         continue;
       }
-      entry.projectSessionTerminalPending = false;
-      entry.projectSessionTerminalPersisted = false;
-      if (entry.registrationCleanupRequested === true) {
-        removeChatAbortControllerEntry(params.chatAbortControllers, candidateRunId, entry);
+      entry.adapter.projectSessionTerminalPending = false;
+      entry.adapter.projectSessionTerminalPersisted = false;
+      if (entry.adapter.registrationCleanupRequested === true) {
+        removeChatAbortControllerEntry(params.rpcSources, candidateRunId, entry);
       }
     }
   };
@@ -241,36 +238,36 @@ export function startGatewayEventSubscriptions(params: {
     }
     let tracked = false;
     for (const candidateRunId of trackedRunIds(run.runId, run.clientRunId)) {
-      const entry = params.chatAbortControllers.get(candidateRunId);
+      const entry = params.rpcSources.get(candidateRunId);
       if (!entry) {
         continue;
       }
       tracked = true;
-      entry.projectSessionTerminalPersisted = false;
+      entry.adapter.projectSessionTerminalPersisted = false;
       markChatAbortTerminalPersistenceError(entry, undefined);
-      entry.projectSessionTerminalPersistence = run.persistence;
-      const lifecycleGeneration = entry.lifecycleGeneration?.trim();
-      const sessionKey = entry.sessionKey.trim();
-      const sessionId = run.sessionId?.trim() || entry.sessionId.trim();
+      entry.adapter.projectSessionTerminalPersistence = run.persistence;
+      const lifecycleGeneration = entry.adapter.lifecycleGeneration;
+      const sessionKey = entry.adapter.sessionKey;
+      const sessionId = run.sessionId || entry.adapter.sessionId;
       // Lazy chat consumption must retain the terminal time stamped at ingress.
-      const observedAt = entry.projectSessionTerminalObservedAt;
+      const observedAt = entry.adapter.projectSessionTerminalObservedAt;
       const settle = (persisted: boolean, error?: unknown) => {
-        if (entry.projectSessionTerminalPersistence !== run.persistence) {
+        if (entry.adapter.projectSessionTerminalPersistence !== run.persistence) {
           return;
         }
         // Maintenance can retire the registration before its write settles.
         // Captured drain targets still need this exact owner's final facts.
-        entry.projectSessionTerminalPending = false;
-        entry.projectSessionTerminalPersistence = undefined;
-        entry.projectSessionTerminalPersisted = persisted;
+        entry.adapter.projectSessionTerminalPending = false;
+        entry.adapter.projectSessionTerminalPersistence = undefined;
+        entry.adapter.projectSessionTerminalPersisted = persisted;
         markChatAbortTerminalPersistenceError(entry, error);
-        if (params.chatAbortControllers.get(candidateRunId) !== entry) {
+        if (params.rpcSources.get(candidateRunId) !== entry) {
           return;
         }
         if (persisted) {
           params.restartRecoveryCandidates.delete(candidateRunId);
         } else if (
-          entry.controlUiVisible !== false &&
+          entry.adapter.controlUiVisible !== false &&
           lifecycleGeneration &&
           sessionKey &&
           sessionId
@@ -283,8 +280,8 @@ export function startGatewayEventSubscriptions(params: {
             observedAt,
           });
         }
-        if (entry.registrationCleanupRequested === true) {
-          removeChatAbortControllerEntry(params.chatAbortControllers, candidateRunId, entry);
+        if (entry.adapter.registrationCleanupRequested === true) {
+          removeChatAbortControllerEntry(params.rpcSources, candidateRunId, entry);
         }
       };
       void run.persistence.then(
@@ -357,9 +354,9 @@ export function startGatewayEventSubscriptions(params: {
             persistGatewaySessionLifecycleEventForEvent: sessionLifecyclePersistence.persist,
             updateRunToolErrorSummary: ({ runId, clientRunId, summary }) => {
               for (const candidateRunId of new Set([runId, clientRunId])) {
-                const entry = params.chatAbortControllers.get(candidateRunId);
+                const entry = params.rpcSources.get(candidateRunId);
                 if (entry) {
-                  entry.toolErrorSummary = summary;
+                  entry.adapter.toolErrorSummary = summary;
                 }
               }
             },
@@ -367,11 +364,13 @@ export function startGatewayEventSubscriptions(params: {
             settleTrackedTerminal,
             trackTrackedRunTerminalPersistence,
             isChatSendRunActive: (runId) => {
-              const entry = params.chatAbortControllers.get(runId);
-              return entry !== undefined && entry.kind !== "agent";
+              const entry = params.rpcSources.get(runId);
+              // This callback identifies the terminal-response owner, not the
+              // sessions.list activity projection. Retain it while the source settles.
+              return entry !== undefined && entry.adapter.kind !== "agent";
             },
             resolveActiveLifecycleGenerationForRun: (runId) =>
-              params.chatAbortControllers.get(runId)?.lifecycleGeneration,
+              params.rpcSources.get(runId)?.adapter.lifecycleGeneration,
             resolveSessionActiveRunState: (session) =>
               resolveVisibleActiveSessionRunState({
                 context: params,
@@ -427,7 +426,7 @@ export function startGatewayEventSubscriptions(params: {
     }
     let failedDispatchCleanup: (() => void) | undefined;
     let terminalPreparation: Promise<void> | undefined;
-    let terminalEntries: ChatAbortControllerEntry[] | undefined;
+    let terminalEntries: RpcSourceRef[] | undefined;
     sessionObserver.handleEvent(evt);
     sessionActivitySummaries.handleEvent(evt);
     auditRecorder.record(evt);
@@ -446,34 +445,34 @@ export function startGatewayEventSubscriptions(params: {
           ? evt.data.endedAt
           : evt.ts;
       for (const candidateRunId of candidateRunIds) {
-        const entry = params.chatAbortControllers.get(candidateRunId);
-        const eventLifecycleGeneration = evt.lifecycleGeneration?.trim();
+        const entry = params.rpcSources.get(candidateRunId);
+        const eventLifecycleGeneration = evt.lifecycleGeneration;
         if (
           entry &&
           (!eventLifecycleGeneration ||
-            !entry.lifecycleGeneration ||
-            entry.lifecycleGeneration === eventLifecycleGeneration)
+            !entry.adapter.lifecycleGeneration ||
+            entry.adapter.lifecycleGeneration === eventLifecycleGeneration)
         ) {
-          entry.projectSessionTerminalPending = true;
-          entry.projectSessionTerminalObservedAt = observedAt;
+          entry.adapter.projectSessionTerminalPending = true;
+          entry.adapter.projectSessionTerminalObservedAt = observedAt;
           (terminalEntries ??= []).push(entry);
         }
       }
       const trackedEntry = candidateRunIds
-        .map((candidateRunId) => params.chatAbortControllers.get(candidateRunId))
+        .map((candidateRunId) => params.rpcSources.get(candidateRunId))
         .find((entry) => entry !== undefined);
       const runContext = getAgentRunContext(evt.runId);
       // Match the chat projection owner before preparing the shared terminal write.
       // A bound ACP runtime emits its target key, but the chat link owns the source run.
       const sessionAgentId =
-        chatLink?.agentId ?? evt.agentId ?? trackedEntry?.agentId ?? runContext?.agentId;
+        chatLink?.agentId ?? evt.agentId ?? trackedEntry?.adapter.agentId ?? runContext?.agentId;
       const knownSessionKey =
         chatLink?.sessionKey ??
         evt.deliverySessionKey ??
         evt.sessionKey ??
-        trackedEntry?.sessionKey ??
+        trackedEntry?.adapter.sessionKey ??
         runContext?.sessionKey;
-      const eventLifecycleGeneration = evt.lifecycleGeneration?.trim();
+      const eventLifecycleGeneration = evt.lifecycleGeneration;
       const terminalAuthority =
         evt.contextClaimId && eventLifecycleGeneration
           ? {
@@ -485,8 +484,8 @@ export function startGatewayEventSubscriptions(params: {
       const trackedOwnerIsCurrent =
         !trackedEntry ||
         !eventLifecycleGeneration ||
-        !trackedEntry.lifecycleGeneration ||
-        trackedEntry.lifecycleGeneration === eventLifecycleGeneration;
+        !trackedEntry.adapter.lifecycleGeneration ||
+        trackedEntry.adapter.lifecycleGeneration === eventLifecycleGeneration;
       const claimIsComplete = !evt.contextClaimId || terminalAuthority !== undefined;
       const canPersistTerminal =
         isDefinitiveRunLifecycle({ phase: lifecyclePhase, data: evt.data }) &&
@@ -555,17 +554,17 @@ export function startGatewayEventSubscriptions(params: {
         : params.chatRunState.registry.peek(evt.runId);
       const clientRunId = chatLink?.clientRunId ?? evt.runId;
       const candidateRunIds = evt.runId === clientRunId ? [evt.runId] : [evt.runId, clientRunId];
-      const eventLifecycleGeneration = evt.lifecycleGeneration?.trim();
+      const eventLifecycleGeneration = evt.lifecycleGeneration;
       for (const candidateRunId of candidateRunIds) {
-        const entry = params.chatAbortControllers.get(candidateRunId);
+        const entry = params.rpcSources.get(candidateRunId);
         if (
           entry &&
           (!eventLifecycleGeneration ||
-            !entry.lifecycleGeneration ||
-            entry.lifecycleGeneration === eventLifecycleGeneration)
+            !entry.adapter.lifecycleGeneration ||
+            entry.adapter.lifecycleGeneration === eventLifecycleGeneration)
         ) {
-          entry.projectSessionTerminalPending = false;
-          entry.projectSessionTerminalObservedAt = undefined;
+          entry.adapter.projectSessionTerminalPending = false;
+          entry.adapter.projectSessionTerminalObservedAt = undefined;
         }
       }
     }

@@ -44,6 +44,7 @@ export async function dispatchRestartRecoveryUntilStarted(params: {
   let preStartAbortAttempted = false;
   let preStartAbortConfirmed = false;
   let startOwner: AgentTurnStartOwner | undefined;
+  const requesterStartDeadlineAtMs = Date.now() + RESTART_RECOVERY_START_OBSERVATION_MS;
   const observe = (): RestartRecoveryDispatchObservation => ({
     dispatchAccepted,
     executionStarted,
@@ -81,11 +82,17 @@ export async function dispatchRestartRecoveryUntilStarted(params: {
       onExecutionStarted();
       return;
     }
-    if (ownerState && ownerState.expiresAtMs > Date.now()) {
-      // Queueing and runtime preparation already have an exact Gateway owner
-      // and deadline. Recovery observes that budget instead of cancelling healthy waits.
+    const deadlineAtMs =
+      ownerState?.startDeadlineAtMs === null
+        ? null
+        : (ownerState?.startDeadlineAtMs ?? requesterStartDeadlineAtMs);
+    if (ownerState && (deadlineAtMs === null || deadlineAtMs > Date.now())) {
+      // The captured controller owns healthy preparation/capacity waits. Before
+      // it publishes a budget, only this requester's original bound applies.
       scheduleObservation(
-        Math.min(RESTART_RECOVERY_START_OBSERVATION_MS, ownerState.expiresAtMs - Date.now()),
+        deadlineAtMs === null
+          ? RESTART_RECOVERY_START_OBSERVATION_MS
+          : Math.min(RESTART_RECOVERY_START_OBSERVATION_MS, deadlineAtMs - Date.now()),
       );
       return;
     }

@@ -15,7 +15,6 @@ import {
 import {
   getDiagnosticSessionState,
   isDiagnosticSessionStateCurrent,
-  peekDiagnosticSessionState,
 } from "./diagnostic-session-state.js";
 import {
   diagnosticLogger,
@@ -96,8 +95,11 @@ it("retires interrupted diagnostic observations before re-enable without revivin
     startGatewayDiagnosticHeartbeat(scheduler, {}, { sampleLiveness: () => null });
     logMessageQueued({ ...session, source: "test" });
     logSessionStateChange({ ...session, state: "processing" });
-    const generation = peekDiagnosticSessionState(session)?.generation;
+    const generation = getDiagnosticSessionState(session).generation;
     expect(generation).toBeTypeOf("number");
+    expect(isDiagnosticSessionStateCurrent({ ...session, generation, state: "processing" })).toBe(
+      true,
+    );
     setDiagnosticsEnabledForProcess(false);
     stopGatewayDiagnosticHeartbeat();
     logSessionStateChange({ ...session, state: "idle" });

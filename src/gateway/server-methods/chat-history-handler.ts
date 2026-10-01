@@ -19,9 +19,9 @@ import {
 } from "../../infra/diagnostics-timeline.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { scopeLegacySessionKeyToAgent } from "../../routing/session-key.js";
+import { isRpcSourceQueuedForSession } from "../../sessions/session-controller.rpc-sources.js";
 import { resolveInFlightRunSnapshot } from "../chat-abort.js";
 import { resolveEffectiveChatHistoryMaxChars } from "../chat-display-projection.js";
-import { isQueuedChatTurnForSession } from "../chat-queued-turns.js";
 import { resolveClaudeCliBindingSessionId } from "../cli-session-history.js";
 import { projectOperatorModelRead } from "../operator-model-presentation.js";
 import { SerializedJsonArray } from "../serialized-json.js";
@@ -222,7 +222,7 @@ export async function handleChatHistoryRequest({
               before: pendingBefore,
               limit: max,
               maxChars: effectiveMaxChars,
-              queuedTurns: context.chatQueuedTurns,
+              queuedTurns: context.rpcSources,
               cronStorePath: context.cronStorePath,
             },
           )
@@ -238,7 +238,7 @@ export async function handleChatHistoryRequest({
           ).map((receipt) =>
             receipt.state === "pending" &&
             !receipt.cancelled &&
-            isQueuedChatTurnForSession(context.chatQueuedTurns, receipt.runId, {
+            isRpcSourceQueuedForSession(context.rpcSources, receipt.runId, {
               agentId: sessionAgentId,
               sessionKey: canonicalKey,
               sessionId,
@@ -461,7 +461,7 @@ export async function handleChatHistoryRequest({
       // can restore the in-flight assistant text on switch-back.
       const inFlightRun =
         resolveInFlightRunSnapshot({
-          chatAbortControllers: context.chatAbortControllers,
+          rpcSources: context.rpcSources,
           chatRunState: context.chatRunState,
           requestedSessionKey: sessionKey,
           // The agent-scoped canonical key from session load: an unscoped re-resolve

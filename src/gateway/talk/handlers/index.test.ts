@@ -4,10 +4,10 @@ import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 
 import { ErrorCodes } from "../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../../../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../../../agents/embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../../../agents/embedded-agent-runner/runs.test-support.js";
 import { REALTIME_VOICE_AGENT_CONTEXT_INSTRUCTIONS } from "../../../agents/realtime-bootstrap-context.test-support.js";
 import { resolveCommandAuthorization } from "../../../auto-reply/command-auth.js";
 import type { OpenClawConfig } from "../../../config/config.js";
@@ -34,6 +34,7 @@ import type {
 } from "../../server-methods/types.js";
 import { bindSessionRowProjection } from "../../session-row-projection-access.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
+import { claimRpcSourceForTest, createRpcSourceForTest } from "../../test-helpers.rpc-source.js";
 import { prepareTalkAgentConsultTranscript } from "../agent-consult-transcript.js";
 import { buildTalkRealtimeConfig } from "../session-config.js";
 import { preparedTalkSessionProjection as projection } from "../test-helpers.js";
@@ -3253,26 +3254,24 @@ describe("talk.client.toolCall handler", () => {
 });
 
 describe("talk.client.steer handler", () => {
-  const createSteerContext = (ownerConnId = "conn-1") =>
-    ({
+  const createSteerContext = async (ownerConnId = "conn-1") => {
+    const source = createRpcSourceForTest(
+      {
+        sessionId: "session-active",
+        sessionKey: "agent:main:main",
+        agentId: "main",
+        lifecycleGeneration: getAgentEventLifecycleGeneration(),
+        ownerConnId,
+        kind: "chat-send",
+      },
+      { runId: "run-voice-1" },
+    );
+    await claimRpcSourceForTest(source);
+    return {
       getRuntimeConfig: () => ({}),
-      chatAbortControllers: new Map([
-        [
-          "run-voice-1",
-          {
-            controller: new AbortController(),
-            sessionId: "session-active",
-            sessionKey: "agent:main:main",
-            agentId: "main",
-            lifecycleGeneration: getAgentEventLifecycleGeneration(),
-            startedAtMs: 1,
-            expiresAtMs: Date.now() + 60_000,
-            ownerConnId,
-            kind: "chat-send",
-          },
-        ],
-      ]),
-    }) as never;
+      rpcSources: new Map([["run-voice-1", source]]),
+    } as never;
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -3300,7 +3299,7 @@ describe("talk.client.steer handler", () => {
         mode: "steer",
       },
       respond,
-      context: createSteerContext("conn-2"),
+      context: await createSteerContext("conn-2"),
     });
 
     expect(mocks.controlRealtimeVoiceAgentRun).not.toHaveBeenCalled();
@@ -3680,12 +3679,12 @@ describe("talk.client.create handler", () => {
   it("binds GPT-Live delegations to the voice session and browser-owned steer lifecycle", async () => {
     const started = createDeferred();
     const release = createDeferred();
-    const chatAbortControllers = new Map();
+    const rpcSources = new Map();
     const config = {
       talk: { realtime: { provider: "openai", model: "gpt-live-1" } },
     } as OpenClawConfig;
     const context = {
-      chatAbortControllers,
+      rpcSources,
       getRuntimeConfig: () => config,
       logGateway: { warn: vi.fn() },
     };
@@ -3749,7 +3748,7 @@ describe("talk.client.create handler", () => {
       runId: "talk-realtime-consult:gpt-live",
       config,
     });
-    expect(chatAbortControllers.get("talk-realtime-consult:gpt-live")).toMatchObject({
+    expect(rpcSources.get("talk-realtime-consult:gpt-live")?.adapter).toMatchObject({
       sessionId: "session-main",
       sessionKey: "agent:main:main",
       agentId: "main",
@@ -3788,7 +3787,7 @@ describe("talk.client.create handler", () => {
     release.resolve();
     await expect(consult).resolves.toEqual({ text: "Done" });
     expect(providerConsult.claimAppend?.()).toBe(true);
-    expect(chatAbortControllers.has("talk-realtime-consult:gpt-live")).toBe(false);
+    expect(rpcSources.has("talk-realtime-consult:gpt-live")).toBe(false);
   });
 
   it("lets native agent handoff own the Codex OAuth prompt and omits direct tools", async () => {

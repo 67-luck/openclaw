@@ -1,4 +1,8 @@
-export type CoreModelRequestOwnerGeneration = object;
+import type { SessionControllerWatchdogAttempt } from "../sessions/session-controller.watchdog.js";
+
+export type CoreModelRequestOwnerGeneration = Readonly<{
+  watchdogAttempt?: SessionControllerWatchdogAttempt;
+}>;
 
 export type DiagnosticEmbeddedRunOwner = Readonly<{
   generation: CoreModelRequestOwnerGeneration;
@@ -6,6 +10,7 @@ export type DiagnosticEmbeddedRunOwner = Readonly<{
   sessionId: string;
   sessionKey?: string;
   workKey: string;
+  watchdogAttempt?: SessionControllerWatchdogAttempt;
 }>;
 
 type CoreModelRequestLifecycleEvent = {

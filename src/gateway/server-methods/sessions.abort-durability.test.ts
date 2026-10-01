@@ -3,10 +3,10 @@ import { setImmediate } from "node:timers/promises";
 import { expect, it, vi, type MockInstance } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { setRuntimeConfigSnapshot } from "../../config/io.js";
 import {
   loadSessionEntry,
@@ -76,7 +76,7 @@ it.each([
       const embedded = createEmbeddedRunHandle(embeddedState);
       const registration = mode.startsWith("controller")
         ? registerChatAbortController({
-            chatAbortControllers: context.chatAbortControllers,
+            rpcSources: context.rpcSources,
             sessionKey: target.sessionKey,
             sessionId,
             agentId: target.agentId,
@@ -106,7 +106,7 @@ it.each([
         toolEventRecipients: context.chatRunState.toolEventRecipients,
         sessionEventSubscribers: createSessionEventSubscriberRegistry(),
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-        chatAbortControllers: context.chatAbortControllers,
+        rpcSources: context.rpcSources,
         restartRecoveryCandidates: new Map(),
         refreshConnectedUserProfiles: vi.fn(),
       });

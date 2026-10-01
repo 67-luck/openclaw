@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { RUN_STALE_TAKEOVER_MS } from "../../logging/diagnostic-run-activity.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import { SESSION_WATCHDOG_CLEANUP_MS } from "../../sessions/session-controller.watchdog-state.js";
 import type { ReplyPayload } from "../types.js";
 import {
   createDispatcher,
@@ -9,13 +10,12 @@ import {
   resetPluginTtsAndThreadMocks,
 } from "./dispatch-from-config.shared.test-harness.js";
 import type { DispatchFromConfigParams } from "./dispatch-from-config.types.js";
+import { readReplySourceInput } from "./reply-source-binding.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 let dispatchReplyFromConfig: typeof import("./dispatch-from-config.js").dispatchReplyFromConfig;
-let createReplyOperation: typeof import("./reply-run-registry.js").createReplyOperation;
-let expireStaleReplyOperation: typeof import("./reply-run-registry.state.js").expireStaleReplyOperation;
-let REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS: typeof import("./reply-run-registry.contracts.js").REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS;
-let replyRunRegistry: typeof import("./reply-run-registry.js").replyRunRegistry;
+let createReplyOperation: typeof import("../../sessions/session-controller.js").createReplyOperation;
+let replyRunRegistry: typeof import("../../sessions/session-controller.js").replyRunRegistry;
 let replyRunTesting: typeof import("./reply-run-registry.test-support.js").testing;
 let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
 
@@ -48,9 +48,8 @@ function createVisibleDispatchParams(
 describe("dispatchReplyFromConfig stale visible admission recovery", () => {
   beforeAll(async () => {
     ({ dispatchReplyFromConfig } = await import("./dispatch-from-config.js"));
-    ({ createReplyOperation, replyRunRegistry } = await import("./reply-run-registry.js"));
-    ({ expireStaleReplyOperation } = await import("./reply-run-registry.state.js"));
-    ({ REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS } = await import("./reply-run-registry.contracts.js"));
+    ({ createReplyOperation, replyRunRegistry } =
+      await import("../../sessions/session-controller.js"));
     ({ testing: replyRunTesting } = await import("./reply-run-registry.test-support.js"));
     ({ resetInboundDedupe } = await import("./inbound-dedupe.js"));
   });
@@ -83,7 +82,19 @@ describe("dispatchReplyFromConfig stale visible admission recovery", () => {
       once: true,
     });
     const replyResolver = vi.fn(async () => ({ text: "telegram reply" }) satisfies ReplyPayload);
-    const dispatchParams = createVisibleDispatchParams(replyResolver);
+    // Dispatch may prepare queue policy while occupied; execution must use the selector.
+    const dispatchParams = createVisibleDispatchParams(async (_ctx, options) =>
+      withSessionTurn(
+        {
+          sessionKey,
+          sessionId:
+            readReplySourceInput(options)?.claim?.operation?.sessionId ?? activeOperation.sessionId,
+          controllerInput: readReplySourceInput(options),
+          abortSignal: options?.abortSignal,
+        },
+        () => replyResolver(),
+      ),
+    );
     let settled = false;
 
     const resultPromise = dispatchReplyFromConfig(dispatchParams).then((result) => {
@@ -107,9 +118,8 @@ describe("dispatchReplyFromConfig stale visible admission recovery", () => {
     expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
   });
 
-  it("reclaims stale pre-backend work after bounded terminal settlement", async () => {
+  it("waits for stale pre-backend producer settlement after cleanup expires", async () => {
     vi.useFakeTimers();
-    const startedAt = Date.now();
     const activeOperation = createReplyOperation({
       sessionKey,
       sessionId: "active-session",
@@ -117,16 +127,36 @@ describe("dispatchReplyFromConfig stale visible admission recovery", () => {
     });
     activeOperation.setPhase("running");
     const replyResolver = vi.fn(async () => ({ text: "telegram reply" }) satisfies ReplyPayload);
-    const dispatchParams = createVisibleDispatchParams(replyResolver);
-    vi.setSystemTime(startedAt + RUN_STALE_TAKEOVER_MS + 1);
+    // Dispatch may prepare queue policy while occupied; execution must use the selector.
+    const dispatchParams = createVisibleDispatchParams(async (_ctx, options) =>
+      withSessionTurn(
+        {
+          sessionKey,
+          sessionId:
+            readReplySourceInput(options)?.claim?.operation?.sessionId ?? activeOperation.sessionId,
+          controllerInput: readReplySourceInput(options),
+          abortSignal: options?.abortSignal,
+        },
+        () => replyResolver(),
+      ),
+    );
+    vi.setSystemTime(activeOperation.watchdog.snapshot().semanticDeadlineAtMs);
 
-    const resultPromise = dispatchReplyFromConfig(dispatchParams);
-    await vi.waitFor(() => {
-      expect(activeOperation.result).toEqual({ kind: "failed", code: "run_stalled" });
+    let settled = false;
+    const resultPromise = dispatchReplyFromConfig(dispatchParams).then((result) => {
+      settled = true;
+      return result;
     });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(activeOperation.result).toEqual({ kind: "failed", code: "run_stalled" });
     expect(replyRunRegistry.get(sessionKey)).toBe(activeOperation);
 
-    await vi.advanceTimersByTimeAsync(REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS);
+    expect(settled).toBe(false);
+    expect(replyResolver).not.toHaveBeenCalled();
+    expect(replyRunRegistry.get(sessionKey)).toBe(activeOperation);
+    expect(activeOperation.watchdog.snapshot().recovery?.status).toBe("blocked");
+    activeOperation.complete();
     const result = await resultPromise;
 
     expect(activeOperation.result).toEqual({ kind: "failed", code: "run_stalled" });
@@ -138,34 +168,36 @@ describe("dispatchReplyFromConfig stale visible admission recovery", () => {
     expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["no_activity", "stuck_recovery"] as const)(
-    "sends truthful stalled feedback when %s expires the active reply",
-    async (reason) => {
-      let resolverStarted: () => void = () => {};
-      const resolverStartedPromise = new Promise<void>((resolve) => {
-        resolverStarted = resolve;
+  it("sends truthful stalled feedback when the watchdog stops the active reply", async () => {
+    vi.useFakeTimers();
+    let resolverStarted: () => void = () => {};
+    const resolverStartedPromise = new Promise<void>((resolve) => {
+      resolverStarted = resolve;
+    });
+    const dispatchParams = createVisibleDispatchParams(async (_ctx, options) => {
+      resolverStarted();
+      await new Promise<void>((resolve) => {
+        options?.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
       });
-      const dispatchParams = createVisibleDispatchParams(async (_ctx, options) => {
-        resolverStarted();
-        await new Promise<void>((resolve) => {
-          options?.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
-        });
-        const error = new Error("reply expired");
-        error.name = "AbortError";
-        throw error;
-      });
+      const error = new Error("reply expired");
+      error.name = "AbortError";
+      throw error;
+    });
 
-      const dispatchPromise = dispatchReplyFromConfig(dispatchParams);
-      await resolverStartedPromise;
-      const operation = replyRunRegistry.get(sessionKey);
-      expect(operation).toBeDefined();
-      expect(expireStaleReplyOperation(operation!, reason)).toBe(false);
+    const dispatchPromise = dispatchReplyFromConfig(dispatchParams);
+    await resolverStartedPromise;
+    const operation = replyRunRegistry.get(sessionKey);
+    expect(operation).toBeDefined();
+    if (!operation) {
+      throw new Error("Expected the active dispatch owner");
+    }
+    vi.setSystemTime(operation.watchdog.snapshot().semanticDeadlineAtMs);
+    await vi.advanceTimersByTimeAsync(1_000);
 
-      await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });
-      expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledWith({
-        text: "⚠️ This turn was interrupted because it stopped making progress. Please try again.",
-        isError: true,
-      });
-    },
-  );
+    await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });
+    expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledWith({
+      text: "⚠️ This turn was interrupted because it stopped making progress. Please try again.",
+      isError: true,
+    });
+  });
 });

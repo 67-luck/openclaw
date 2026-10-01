@@ -42,11 +42,12 @@ import {
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { resolveAgentRoute } from "../../routing/resolve-route.js";
 import { MODEL_SELECTION_LOCKED_RESET_MESSAGE } from "../../sessions/model-overrides.js";
+import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
 import {
-  beginSessionWorkAdmission,
-  isSessionLifecycleMutationActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  isSessionMutationActive,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import {
   listAmbientGroupWatchTargets,
   listSessionStateEventsSince,
@@ -69,7 +70,6 @@ import { resolveDispatchResetAdmission } from "./dispatch-from-config.context.js
 import { finalizeInboundContext } from "./inbound-context.js";
 import { clearSessionQueues, enqueueFollowupRun, getFollowupQueueDepth } from "./queue.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
-import { createReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
 import { admitReplyTurn, runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.js";
 import { drainFormattedSystemEvents } from "./session-system-events.js";
 import { persistSessionUsageUpdate } from "./session-usage.js";
@@ -4475,7 +4475,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     const interrupted = new Promise<void>((resolve) => {
       signalInterrupted = resolve;
     });
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: storePath,
       identities: [sessionKey, existingSessionId],
       assertAllowed: () => {},
@@ -4522,7 +4522,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       [sessionKey]: { sessionId: existingSessionId, updatedAt: Date.now() },
     });
     const onInterrupt = vi.fn();
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: storePath,
       identities: [sessionKey, existingSessionId],
       assertAllowed: () => {},
@@ -4565,7 +4565,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     const admissions = await Promise.all(
       controllers.map(
         async (controller) =>
-          await beginSessionWorkAdmission({
+          await beginSessionEffect({
             scope: storePath,
             identities: [sessionKey, existingSessionId],
             assertAllowed: () => {},
@@ -4635,20 +4635,18 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     let replacementIdentityFenced = false;
     let postDrainIdentityFenced = false;
     let finalGapIdentityFenced = false;
-    let postDrainAdmission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
-    let finalGapAdmission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+    let postDrainAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
+    let finalGapAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
     let postDrainFinalization = Promise.resolve();
     let finalGapRebind = Promise.resolve();
     let releaseReplacementAdmission = () => {};
-    const replacementAdmission = await beginSessionWorkAdmission({
+    const replacementAdmission = await beginSessionEffect({
       scope: storePath,
       identities: [replacementSessionId],
       assertAllowed: () => {},
       onInterrupt: () => {
         replacementInterrupted = true;
-        replacementIdentityFenced = isSessionLifecycleMutationActive(storePath, [
-          replacementSessionId,
-        ]);
+        replacementIdentityFenced = isSessionMutationActive(storePath, [replacementSessionId]);
         if (!expectedInterruption) {
           releaseReplacementAdmission();
           return;
@@ -4660,26 +4658,24 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
         })
           .then(async () => {
             let releasePostDrainAdmission = () => {};
-            postDrainAdmission = await beginSessionWorkAdmission({
+            postDrainAdmission = await beginSessionEffect({
               scope: storePath,
               identities: [postDrainSessionId],
               assertAllowed: () => {},
               onInterrupt: () => {
-                postDrainIdentityFenced = isSessionLifecycleMutationActive(storePath, [
-                  postDrainSessionId,
-                ]);
+                postDrainIdentityFenced = isSessionMutationActive(storePath, [postDrainSessionId]);
                 releasePostDrainAdmission();
                 finalGapRebind = runExclusiveSessionStoreWrite(storePath, async () => {
                   await writeSessionStoreFast(storePath, {
                     [sessionKey]: { sessionId: finalGapSessionId, updatedAt: Date.now() },
                   });
                   let releaseFinalGapAdmission = () => {};
-                  finalGapAdmission = await beginSessionWorkAdmission({
+                  finalGapAdmission = await beginSessionEffect({
                     scope: storePath,
                     identities: [finalGapSessionId],
                     assertAllowed: () => {},
                     onInterrupt: () => {
-                      finalGapIdentityFenced = isSessionLifecycleMutationActive(storePath, [
+                      finalGapIdentityFenced = isSessionMutationActive(storePath, [
                         finalGapSessionId,
                       ]);
                       releaseFinalGapAdmission();
@@ -4704,7 +4700,7 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     const mutationGate = new Promise<void>((resolve) => {
       releaseMutation = resolve;
     });
-    const blockingMutation = runExclusiveSessionLifecycleMutation({
+    const blockingMutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey, staleSessionId],
       run: async () => {

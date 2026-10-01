@@ -23,7 +23,7 @@ import { readPersistedMediaFacts } from "../media/media-facts.js";
 import { resolveMediaReferenceLocalPath } from "../media/media-reference.js";
 import { ProjectCloneError } from "../projects/project-clone-runtime.js";
 import { registerProjectRegistry } from "../projects/project-registry.js";
-import { SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS } from "../sessions/session-lifecycle-admission.js";
+import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
 import {
@@ -108,7 +108,7 @@ test.each([
     const broadcast = vi.fn();
     const context = {
       broadcast,
-      chatAbortControllers: new Map<string, ChatAbortControllerEntry>(),
+      rpcSources: new Map<string, ChatAbortControllerEntry>(),
     };
     const events: AgentEventPayload[] = [];
     const unsubscribe = onAgentEvent((event) => events.push(event));
@@ -263,10 +263,10 @@ test("chat.abort cancels remote worktree project preparation without late bindin
     counts: { block: 0, final: 0, tool: 0 },
   });
   const broadcast = vi.fn();
-  const chatAbortControllers = new Map<string, ChatAbortControllerEntry>();
+  const rpcSources = new Map<string, ChatAbortControllerEntry>();
   const context = {
     broadcast,
-    chatAbortControllers,
+    rpcSources,
     chatRunState: createChatRunState(),
     dedupe: new Map(),
   };
@@ -295,7 +295,7 @@ test("chat.abort cancels remote worktree project preparation without late bindin
     const { runId, sessionId } = created.payload!;
     key = created.payload!.key;
     await vi.waitFor(() => expect(projectCloneMocks.materialize).toHaveBeenCalledOnce());
-    const signal = chatAbortControllers.get(runId)?.controller.signal;
+    const signal = rpcSources.get(runId)?.input.abortSignal;
     expect(signal).toBeInstanceOf(AbortSignal);
     expect(projectCloneMocks.materialize).toHaveBeenCalledWith(
       expect.anything(),
@@ -355,7 +355,7 @@ test.each([false, true])(
       counts: { block: 0, final: 0, tool: 0 },
     });
     const broadcast = vi.fn();
-    const context = { broadcast, chatAbortControllers: new Map(), dedupe: new Map() };
+    const context = { broadcast, rpcSources: new Map(), dedupe: new Map() };
 
     const created = await directSessionReq<{
       key: string;
@@ -427,7 +427,7 @@ test.each([false, true])(
 
     const retriedMaterialization = createDeferredCore<typeof project>();
     projectCloneMocks.materialize.mockReturnValueOnce(retriedMaterialization.promise);
-    const restartedContext = { broadcast, chatAbortControllers: new Map(), dedupe: new Map() };
+    const restartedContext = { broadcast, rpcSources: new Map(), dedupe: new Map() };
 
     try {
       const retried = await directSessionReq<{ runId: string; status: string }>(
@@ -516,7 +516,7 @@ test.each([false, true])(
     );
     const context = {
       broadcast: vi.fn(),
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
       chatRunState: createChatRunState(),
       dedupe: new Map(),
     };
@@ -541,7 +541,7 @@ test.each([false, true])(
       expect(created.ok, JSON.stringify(created.error)).toBe(true);
       expect(created.payload?.runStarted).toBe(true);
       key = created.payload!.key;
-      await waitForFile(firstStarted, SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS);
+      await waitForFile(firstStarted, SESSION_CONTROLLER_DRAIN_TIMEOUT_MS);
       expect(await fs.readFile(starts, "utf8")).toBe("started\n");
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
       expect(
@@ -565,7 +565,7 @@ test.each([false, true])(
           options,
         );
         expect(aborted.ok, JSON.stringify(aborted.error)).toBe(true);
-        await waitForFile(secondStarted, SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS);
+        await waitForFile(secondStarted, SESSION_CONTROLLER_DRAIN_TIMEOUT_MS);
         expect(await fs.readFile(starts, "utf8")).toBe("started\nstarted\n");
       }
       await fs.writeFile(release, "ready\n");
@@ -654,7 +654,7 @@ test("chat.send visibly rejects corrupt persisted project intent without default
     { ...entry!, pendingProjectGitUrl: "https://token@github.com/openclaw/openclaw.git" },
   );
   const broadcast = vi.fn();
-  const context = { broadcast, chatAbortControllers: new Map<string, ChatAbortControllerEntry>() };
+  const context = { broadcast, rpcSources: new Map<string, ChatAbortControllerEntry>() };
 
   const sent = await directSessionReq(
     "chat.send",
@@ -693,7 +693,7 @@ test("sessions.create terminalizes remote project preparation outside a sandboxe
   const materialization = createDeferredCore<typeof project>();
   projectCloneMocks.materialize.mockReturnValueOnce(materialization.promise);
   const broadcast = vi.fn();
-  const context = { broadcast, chatAbortControllers: new Map<string, ChatAbortControllerEntry>() };
+  const context = { broadcast, rpcSources: new Map<string, ChatAbortControllerEntry>() };
 
   let key: string | undefined;
   try {
@@ -852,7 +852,7 @@ test("sessions.create with an empty message preserves its owned checkout above t
         expect(await fs.readFile(path.join(record.path, "README.md"), "utf8")).toBe("project\n");
         return outcome;
       });
-    const context = { chatAbortControllers: new Map<string, ChatAbortControllerEntry>() };
+    const context = { rpcSources: new Map<string, ChatAbortControllerEntry>() };
     try {
       const created = await directSessionReq<{
         key: string;

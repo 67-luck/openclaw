@@ -1,0 +1,255 @@
+---
+summary: "Session scheduling ownership, input custody, and retained settlement"
+read_when:
+  - Changing turn admission, queueing, stopping, or session mutations
+  - Writing model-based tests for session lifecycle interleavings
+title: "Session controller"
+---
+
+A session controller is the owner of **which turn may use a session next**. It
+coordinates accepted inputs, the current turn, and admission barriers. It is not
+a replacement for runtime execution authority, database write fencing, or
+process-wide concurrency limits.
+
+The in-memory implementation extends the reply-operation owner rather than
+adding another session scheduler. Gateway, channel, direct-native, maintenance,
+and lifecycle adapters share that owner. Public protocols and stored data remain
+unchanged; a durable mailbox is a separate storage change.
+
+For operator-facing queue settings, see [Command queue](/concepts/queue).
+
+## Implementation owners
+
+The retained entries in `src/sessions/session-controller.state.ts` own physical
+session identity, the active operation, its native attempt, mailbox, lifecycle
+effects, waiters, and successor barriers. Exact-instance indexes project these
+facts; they do not independently grant a turn.
+
+- `session-controller.mailbox.ts` selects both reply inputs and direct-native
+  tasks. Preparing inputs reserve their order before payload preparation. Queue
+  adapters retain debounce, overflow, batching, and delivery policy, not another
+  runnable list.
+- `session-controller.admission.ts` reserves a turn before native execution.
+  Nested preparation and compaction borrow the captured operation or unbound
+  claim, rather than waiting behind their own turn.
+- `session-controller.lifecycle.ts` owns mutation admission and subordinate
+  physical effects. A stored incarnation can be bound after guarded row creation;
+  a logical key is never used as a fabricated physical store or session ID.
+- `session-controller.stop.ts` sequences captured cancellation effects.
+  `session-controller.watchdog.ts` owns progress, real waits and deadlines,
+  recovery deduplication, and retained cleanup for each exact operation.
+- Gateway `rpcSources` is a protocol-ID-to-source-reference index with
+  presentation metadata. The source input owns cancellation and custody; the
+  operation owns execution and deadlines.
+
+`reply-operation-state.ts` remains the pure phase and terminal-outcome reducer
+used by real operations. Generated traces compare real controller behavior with
+independent reference models; boundary tests cover native attachment, source
+injection, Stop, mutations, and raw settlement. Failure output retains seeds and
+event prefixes. Automatic trace shrinking is not implemented.
+
+## Identity and ownership
+
+A logical session key, a stored session incarnation, a reply operation, and a
+backend attempt are different identities. Reset can replace a stored session;
+retry can replace a backend without starting a new user turn. Aliases can refer
+to the same stored session. Physical store scope matters for mutations.
+
+A captured operation or attempt is the target of delayed cancellation, steering,
+and completion. Never rediscover a successor by session key when an earlier
+operation finishes. Generation checks remain necessary even without a Gateway
+restart: old callbacks can outlive reset, permission changes, or replacement.
+
+The controller entry is the scheduling owner. Runtime handles provide
+capabilities to its current operation; they cannot grant a second session slot.
+Physical store scope participates in selection, so identical logical keys in
+different stores remain independent. An ambiguous key-only query never chooses
+one arbitrarily.
+
+The global lane and capacity groups continue to own concurrency across sessions.
+Per-session native command lanes no longer select turns. Database and
+worker-placement owners still validate their own authoritative claims immediately
+before effects, and global capacity remains held until actual execution settles.
+
+## Statechart
+
+These are conceptual scheduling phases, not new values in the Gateway protocol:
+
+| Phase       | Meaning                                                                                                                                  |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `idle`      | No turn owns the session slot. Outstanding admission barriers can still prevent a successor.                                             |
+| `admitting` | A turn owns the slot and waits for deferred maintenance or global capacity.                                                              |
+| `preparing` | The turn performs preflight compaction or a memory checkpoint before inference.                                                          |
+| `running`   | The backend is active. Streaming, compaction, tool work, and human-input waits are capabilities or activity facts, not alternate owners. |
+| `finishing` | The backend has committed its terminal outcome and ordinary user cancellation can no longer replace it.                                  |
+| `settling`  | Cancellation, delivery, persistence, or cleanup still has an outstanding owner.                                                          |
+| `mutating`  | A lifecycle mutation holds the session against competing work.                                                                           |
+
+A mailbox exists independently of these phases. So do exact identities of
+outstanding effects. Requesting cancellation is not cancellation completion;
+releasing the scheduling slot is not proof that every old writer has settled.
+
+Do not replace all queries with one interchangeable Boolean. Derive distinct
+answers from authoritative facts:
+
+- **Slot owned:** another turn cannot acquire this slot.
+- **Admissible:** the slot and the relevant mutation and successor barriers permit work.
+- **Execution active:** a concrete backend owns execution.
+- **Injectable:** that backend accepts this input under its current authority and capabilities.
+- **Abortable:** this exact operation still accepts the requested cancellation source.
+- **Settled:** the owning delivery, persistence, and cleanup work has finished.
+
+Queued requests must not appear as executing runs or inherit an active run
+timeout merely because they have a client-visible run ID.
+
+## Inputs and custody
+
+Inputs include channel messages, Gateway user turns, agent RPC turns, scheduled
+wakes, heartbeats, and subagent completion handoffs. Adapters retain each input
+owner's authentication, visibility, routing, idempotency, and acknowledgment
+contract; a common scheduling interface does not make those inputs equivalent.
+
+Stop and lifecycle requests are control events. They must not wait behind the
+work they are supposed to cancel, or be dropped by ordinary mailbox overflow.
+
+For each accepted input, retain identity and custody through these boundaries:
+
+1. Accepted by the source owner.
+2. Waiting, being injected, or claimed by a new turn or collect batch.
+3. Confirmed consumed, deliberately dropped, cancelled, interrupted, or
+   retained with an explicitly uncertain commitment.
+
+Runtime acceptance and transcript commitment are separate facts. A failed or
+lost confirmation after possible commitment does not make an input safe to
+replay. Collect batches and overflow summaries retain their contributing input
+identities so cancellation, attribution, and recovery still target the sources.
+
+A model effect is an instruction to attempt work, not evidence that it happened.
+Its completion or failure returns as an event bound to the same input, operation,
+attempt, and generation. Live permission checks run again at the final effect.
+
+## Queue policy
+
+Queue settings retain the existing debounce, cap, drop, and route-isolation
+contracts in [Command queue](/concepts/queue#queue-options).
+
+| Policy      | Contract                                                                                                                                                   |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `steer`     | Attempt injection into the captured active owner. A definite capability rejection leaves the input queued. An uncertain commitment does not permit replay. |
+| `followup`  | Keep FIFO order among waiting inputs and start a later turn after admission barriers permit it.                                                            |
+| `collect`   | Combine compatible waiting inputs after the quiet window; preserve individual custody and routing.                                                         |
+| `interrupt` | Cancel the captured active turn, prioritize the interrupting input next, and preserve older waiting inputs in relative order after it.                     |
+| heartbeat   | Drop a heartbeat while competing session work owns admission; do not create a duplicate turn.                                                              |
+
+An interrupt reserves its priority synchronously before cancellation or any
+settlement wait can wake an older drain. Priority belongs to that exact input;
+retiring an older interrupt cannot remove a newer reservation. Finishing work
+may refuse cancellation, but the reserved successor still waits for its actual
+settlement rather than letting older backlog take the slot.
+
+Steering does **not** require token streaming and is not universally forbidden
+during compaction. Guarded V2 injection can revalidate dispatch during compaction;
+legacy handles and runtimes that reject that capability still queue the input.
+The runtime owns whether a particular native turn accepts steering.
+
+Collecting or steering requires compatible sender authority, tool permissions,
+visibility, and delivery contracts. Mismatch must not let an input borrow the
+active turn's or newest sender's permissions.
+
+## Stop semantics
+
+One stop owner must receive an explicit target and scope. These are separate
+decisions: cancelling the active turn, withdrawing waiting inputs, stopping
+children, firing a hook, and presenting the result.
+
+Preserve these existing distinctions until an intentional behavior change is
+reviewed:
+
+| Source                                     | Existing scope that must remain explicit                                                                                                                                               |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/stop` command                            | Clears waiting work, attempts active cancellation, stops captured children, and fires `command:stop`. A finalizing parent can refuse cancellation without undoing those other effects. |
+| Inbound fast stop                          | Has its own queue and child effects; it does not currently imply the command hook.                                                                                                     |
+| Bare stop word in the command handler      | Does not implicitly acquire the full command's queue and child scope.                                                                                                                  |
+| Gateway abort with a run ID                | Targets that exact authorized queued or active request.                                                                                                                                |
+| Gateway abort without a run ID             | Cancels authorized queued requests before authorized active runs; another requester's work is not blanket-cleared.                                                                     |
+| Interrupt, supersession, restart, watchdog | Internal causes with their own attribution and settlement rules, not synonyms for user Stop.                                                                                           |
+
+Authorization policy belongs at ingress, but its live host-owned assertion travels
+with delayed effects. A source label, run ID, or `clearWaiting` flag is not
+authorization. Revalidate after waits and immediately before cancellation.
+
+A stop accepted for operation A must never cancel its successor B. Frozen
+finalization rejects ordinary active-run cancellation; it does not mean that
+every stop-related effect is forbidden. Watchdog expiry needs a distinct
+finalization/cleanup transition rather than repeatedly calling a user stop that
+will refuse.
+
+## Lifecycle mutations
+
+`/new` and `/reset` preempt competing work. Manual `/compact` currently attempts
+to abort an abortable active run and waits for settlement. Delete uses the
+existing lifecycle drain and its authorization checks. These policies remain explicit in their adapters; sharing and access mutations
+can allow live execution, while background result commits wait.
+
+A mutation closes competing admission, targets exact current owners, waits for
+real settlement, and then acquires its mutation boundary. In-band commands must
+not wait for their own admitted stack. Multi-identity and cross-store ordering belongs to the lifecycle owner.
+Physical transaction, writer, and worker-placement fences remain subordinate
+effect custody, not competing turn selectors.
+
+An interrupted lease is not a released writer. Clearing a slot or expiring a
+wait cannot authorize reset or deletion while old write-capable work remains
+live. Failed cleanup retains its fence and an actionable outcome.
+
+## Liveness and restart
+
+Global-capacity waits, deferred maintenance, pending human questions, tool and
+retry deadlines, and backend-owned work are not interchangeable with missing
+progress. Watchdogs consume owner-held progress and deadlines, preserve healthy
+waits, and target the exact operation observed. Incoming user messages alone must
+not perpetually renew a stuck run's progress clock.
+
+A bounded recovery claim assumes the scheduler and clock can run. The watchdog
+requests Stop for stalled execution through the captured cancellation kernel.
+Frozen finalization instead has a distinct cleanup transition that preserves
+the committed outcome. Cleanup failure is reported as blocked; it does not
+release an unresolved writer or admit a successor. The watchdog closes only
+after raw owner settlement. No in-process statechart can guarantee recovery
+from a blocked process by itself.
+
+The in-memory stage introduces no new replay or storage contract. Qualifying
+Gateway user inputs already have durable custody before acknowledgment; after
+restart, unconsumed inputs appear as interrupted and require explicit resend.
+Durable channel ingress retains its own recovery contract. Process-local
+execution authority never survives restart.
+
+A later durable mailbox must reconcile these existing custody owners, specify
+retention and upgrade/rollback behavior, and distinguish queued from possibly
+consumed input. It requires a separate storage review. See
+[Input durability](/concepts/queue#input-durability).
+
+## Invariants and verification
+
+The controller and its adapters must preserve:
+
+1. At most one current scheduling owner per canonical session identity.
+2. Every accepted input remains accounted for, including merged and uncertain inputs.
+3. Cancellation and late effects cannot act on a successor or replaced generation.
+4. At most one successor is admitted after the required outcome and settlement barriers.
+5. Mutations exclude competing turns and retain write-capable work until actual settlement.
+6. All scheduling queries read the same owner; presentation and capabilities remain explicit projections.
+7. Recoverable stale state has a bounded recovery path under the stated scheduler assumptions.
+8. Queueing, batching, retries, and deferred effects never expand the original authority.
+
+Use a small independent model and run the same event traces through a real
+implementation adapter. A model tested against itself is not migration proof.
+Control asynchronous effect completion separately from event arrival, use a fake
+clock, report a reproducible seed and minimized failing trace, and retain focused
+regressions for known failures. Include delayed and rejected cleanup, stale
+callbacks, reset during admission, compaction steering, and interrupted backlogs.
+
+Pure model tests do not replace boundary proof for Gateway/channel adapters,
+durable writes, or native runtimes. Each cutover states which invariants its
+adapter actually exercises, which owners it removes, and which remain. Measure
+test time and production changes instead of treating a projected deletion count
+as an acceptance target.

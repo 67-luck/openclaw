@@ -3,13 +3,20 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { getActiveNativeAttempt } from "../../agents/embedded-agent-runner/run-state.js";
+import {
+  setActiveEmbeddedRun,
+  clearActiveEmbeddedRun,
+} from "../../agents/embedded-agent-runner/runs.js";
 import { loadTranscriptEvents } from "../../config/sessions/session-accessor.js";
 import { createGatewaySession } from "../../gateway/session-create-service.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import {
-  interruptSessionWorkAdmissions,
-  isSessionLifecycleMutationActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  getCurrentSessionControllerClaim,
+  interruptSessionControllerEffects,
+  isSessionMutationActive,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createRuntimeAgent } from "./runtime-agent.js";
 
@@ -402,7 +409,7 @@ describe("plugin runtime session creation", () => {
         },
       });
       await callbackStarted.promise;
-      expect(isSessionLifecycleMutationActive(storePath, [key])).toBe(true);
+      expect(isSessionMutationActive(storePath, [key])).toBe(true);
       expect(
         runtime.session.getSessionEntry({ sessionKey: key, readConsistency: "latest" }),
       ).toMatchObject({
@@ -428,7 +435,7 @@ describe("plugin runtime session creation", () => {
       const created = await creation;
       await work;
       expect(workRan).toBe(true);
-      expect(isSessionLifecycleMutationActive(storePath, [key])).toBe(false);
+      expect(isSessionMutationActive(storePath, [key])).toBe(false);
       expect(created.entry.pluginExtensions).toEqual({
         codex: { supervision: { modelLocked: true } },
       });
@@ -766,7 +773,7 @@ describe("plugin runtime session creation", () => {
             initializationPending: true,
           },
         });
-        expect(isSessionLifecycleMutationActive(storePath, [key])).toBe(false);
+        expect(isSessionMutationActive(storePath, [key])).toBe(false);
         let workRan = false;
 
         await expect(
@@ -944,7 +951,7 @@ describe("plugin runtime session work admission", () => {
     const runtime = createRuntimeAgent();
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey, sessionId],
       prepare: async () => {
@@ -972,7 +979,7 @@ describe("plugin runtime session work admission", () => {
     const runtime = createRuntimeAgent();
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runSessionMutation({
       scope: storePath,
       identities: [sessionKey, sessionId],
       prepare: async () => {
@@ -1002,11 +1009,34 @@ describe("plugin runtime session work admission", () => {
     const freshId = "fresh-session-id";
 
     await runtime.session.runWithWorkAdmission({ storePath, sessionKey: freshKey }, async () => {
+      const claim = getCurrentSessionControllerClaim();
+      expect(claim?.operation).toBeUndefined();
       await runtime.session.upsertSessionEntry({
         storePath,
         sessionKey: freshKey,
         entry: { sessionId: freshId, updatedAt: Date.now() },
       });
+      await withSessionTurn(
+        { storePath, sessionKey: freshKey, sessionId: freshId },
+        async (operation) => {
+          expect(operation?.sessionId).toBe(freshId);
+          expect(getCurrentSessionControllerClaim()).toBe(claim);
+          const native = {
+            runId: "fresh-sdk-native",
+            queueMessage: async () => {},
+            isStreaming: () => true,
+            isCompacting: () => false,
+            abort: () => {},
+          };
+          setActiveEmbeddedRun(freshId, native, freshKey, undefined, "main", operation);
+          try {
+            expect(getActiveNativeAttempt(freshId)).toBe(native);
+          } finally {
+            clearActiveEmbeddedRun(freshId, native);
+          }
+        },
+      );
+      expect(claim?.operation?.result).toBeNull();
     });
 
     expect(runtime.session.getSessionEntry({ storePath, sessionKey: freshKey })?.sessionId).toBe(
@@ -1027,7 +1057,7 @@ describe("plugin runtime session work admission", () => {
     });
     await workStarted.promise;
 
-    await interruptSessionWorkAdmissions({
+    await interruptSessionControllerEffects({
       scope: storePath,
       identities: [sessionKey, sessionId],
     });

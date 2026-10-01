@@ -27,15 +27,15 @@ import { cloneConfigWithResolutionFacts } from "../../config/resolution-facts.js
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { GATEWAY_OWNER_ONLY_CORE_TOOLS } from "../../security/dangerous-tools.js";
-import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
-import type { RuntimeMsgContext } from "../templating.js";
-import { resolveOriginMessageProvider } from "./origin-routing.js";
-import type { FollowupRun } from "./queue/types.js";
 import type {
   ReplyToolAuthorityOverlay,
   ReplyToolAuthorityRoute,
   ReplyToolAuthoritySnapshot,
-} from "./reply-run-registry.contracts.js";
+} from "../../sessions/session-controller.contracts.js";
+import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
+import type { RuntimeMsgContext } from "../templating.js";
+import { resolveOriginMessageProvider } from "./origin-routing.js";
+import type { FollowupRun } from "./queue/types.js";
 
 export type ReplyToolAuthorityInput = {
   operatorAuthority?: AdmittedRunOperatorAuthority;

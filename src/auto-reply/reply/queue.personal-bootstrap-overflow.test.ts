@@ -9,11 +9,11 @@ import {
   resetFollowupTurnTestState,
 } from "./followup-turn-execution.test-support.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
-import { clearFollowupDrainCallback, scheduleFollowupDrain } from "./queue/drain.js";
+import { scheduleFollowupDrain } from "./queue/drain.js";
 import { enqueueFollowupRun } from "./queue/enqueue.js";
 import { admitFollowupRunLifecycle, completeFollowupRunLifecycle } from "./queue/lifecycle.js";
 import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
-import { FollowupRunDeferredError, type FollowupRun, type QueueSettings } from "./queue/types.js";
+import type { FollowupRun, QueueSettings } from "./queue/types.js";
 
 const state = getFollowupTurnTestState();
 beforeEach(resetFollowupTurnTestState);
@@ -49,7 +49,6 @@ it.each([
     const tailPrompt = "pending tail";
     const clear = () => {
       clearFollowupQueue(key);
-      clearFollowupDrainCallback(key);
     };
     const enqueue = (prompt: string, sourceEligible: boolean | undefined) => {
       const source = createQueueTestRun({ prompt });
@@ -80,7 +79,7 @@ it.each([
           firstAttempt.resolve();
           await releaseFirstAttempt.promise;
           // Admission defers before adopting sources or invoking the backend.
-          throw new FollowupRunDeferredError("reply lane busy");
+          // The claim remains held through asynchronous preparation.
         }
       }
       try {
@@ -158,15 +157,25 @@ it.each([
       releaseFirstAttempt.resolve();
       await completed.promise;
 
-      expect(summaryAttempts).toBe(path === "deferred retry" ? 2 : 1);
-      expect(executions).toHaveLength(path === "ordinary summary" ? 3 : 2);
-      expect(executions[0]?.prompt).toContain("[Queue overflow] Dropped 2 messages due to cap.");
+      const claimedBeforeOverflow = path === "deferred retry";
+      expect(summaryAttempts).toBe(claimedBeforeOverflow ? 2 : 1);
+      expect(executions).toHaveLength(path === "compacted sources" ? 2 : 3);
+      expect(executions[0]?.prompt).toContain(
+        claimedBeforeOverflow
+          ? "[Queue overflow] Dropped 1 message due to cap."
+          : "[Queue overflow] Dropped 2 messages due to cap.",
+      );
+      if (claimedBeforeOverflow) {
+        // New overflow cannot join an already selected source claim.
+        expect(executions[1]?.prompt).toContain("second summarized request");
+        expect(executions[0]?.prompt).not.toContain("second summarized request");
+      }
       for (const source of sources) {
         expect(source.turnAdoptionLifecycle?.onAdopted).toHaveBeenCalledOnce();
         expect(source.turnAdoptionLifecycle?.onSettled).toHaveBeenCalledOnce();
       }
       expect(executions.slice(1).map((execution) => execution.profile)).toEqual(
-        path === "ordinary summary" ? [currentOwner, currentOwner] : [currentOwner],
+        path === "compacted sources" ? [currentOwner] : [currentOwner, currentOwner],
       );
       expect(executions[0]?.profile).toBe(eligible ? currentOwner : undefined);
     } finally {

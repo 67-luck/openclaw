@@ -5,17 +5,17 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import * as sessionEntries from "../../config/sessions/session-accessor.sqlite-entry.js";
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
+import * as registry from "../../sessions/session-controller.js";
 import {
-  runExclusiveSessionLifecycleMutation,
-  startSessionWorkAdmissionInterruption,
-} from "../../sessions/session-lifecycle-admission.js";
+  runSessionMutation,
+  startSessionControllerInterruption,
+} from "../../sessions/session-controller.lifecycle.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
 } from "../../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
-import * as registry from "./reply-run-registry.js";
 import { testing } from "./reply-run-registry.test-support.js";
 import { admitReplyTurn } from "./reply-turn-admission.js";
 
@@ -84,6 +84,15 @@ it.each([
       return await load(...args);
     }
     const read = ++reads;
+    // A foreign controller cannot invalidate this physical read after it has
+    // completed. Hold its final read before sampling the replaced target row.
+    if (read === 2 && isForeignStore) {
+      const observed = await load(...args);
+      captured.resolve(observed);
+      await release.promise;
+      await observed.databaseClaim.release();
+      return await load(...args);
+    }
     const snapshot = await load(...args);
     if (read === 1 && change.startsWith("later-")) {
       expect(registry.replyRunRegistry.get(sessionKey)).toBeUndefined();
@@ -347,16 +356,16 @@ it("cancels an in-flight admission read when its lifecycle owner interrupts ingr
   try {
     const signal = await started.promise;
     const reason = new Error("Synthetic lifecycle interruption");
-    const interrupted = startSessionWorkAdmissionInterruption({ ...target, reason });
+    const interrupted = startSessionControllerInterruption({ ...target, reason });
     expect(signal.aborted).toBe(true);
     expect(upstream.signal.aborted).toBe(false);
     await interrupted.released;
-    await runExclusiveSessionLifecycleMutation({ ...target, run: async () => {} });
+    await runSessionMutation({ ...target, run: async () => {} });
     expect(await pending).toMatchObject([{ status: "rejected", reason }]);
     expect(registry.replyRunRegistry.get(sessionKey)).toBeUndefined();
   } finally {
     upstream.abort();
     await pending;
-    await runExclusiveSessionLifecycleMutation({ ...target, run: async () => {} });
+    await runSessionMutation({ ...target, run: async () => {} });
   }
 });

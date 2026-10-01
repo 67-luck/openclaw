@@ -5,12 +5,15 @@ import {
   listSessionPendingInputs,
   type SessionPendingInput,
 } from "../../config/sessions/session-accessor.js";
+import {
+  isRpcSourceQueuedForSession,
+  type RpcSourceIndex,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { prepareForwardedMessageCronJobNameResolver } from "../chat-display-projection.history.js";
 import {
   createCurrentUserProfileMessageProjector,
   projectChatDisplayMessage,
 } from "../chat-display-projection.js";
-import { isQueuedChatTurnForSession, type QueuedChatTurnMap } from "../chat-queued-turns.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
 import { replaceOversizedChatHistoryMessages } from "./chat-history-budget.js";
 
@@ -57,7 +60,7 @@ export async function readChatPendingInputs(
     before?: number;
     limit: number;
     maxChars: number;
-    queuedTurns?: QueuedChatTurnMap;
+    queuedTurns?: RpcSourceIndex;
     cronStorePath?: string;
   },
 ): Promise<ChatPendingInputsPage> {
@@ -73,7 +76,7 @@ export async function readChatPendingInputs(
   for (const runId of options.queuedTurns?.keys() ?? []) {
     if (
       runId.length <= PENDING_INPUT_CORRELATION_MAX_CHARS &&
-      isQueuedChatTurnForSession(options.queuedTurns, runId, scope)
+      isRpcSourceQueuedForSession(options.queuedTurns, runId, scope)
     ) {
       queuedCount += 1;
     }
@@ -108,7 +111,7 @@ export async function readChatPendingInputs(
         display.runId = item.runId;
         if (
           item.state === "queued" &&
-          isQueuedChatTurnForSession(options.queuedTurns, item.runId, scope)
+          isRpcSourceQueuedForSession(options.queuedTurns, item.runId, scope)
         ) {
           display.queued = true;
         }

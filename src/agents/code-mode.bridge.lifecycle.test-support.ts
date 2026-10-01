@@ -4,7 +4,7 @@ import type { NestedToolActivity } from "../sessions/nested-tool-activity.js";
 import { createCodeModeTools } from "./code-mode.js";
 import { prepareEmbeddedAttemptStream } from "./embedded-agent-runner/run/attempt-stream-prepare.js";
 import type { EmbeddedRunAttemptParams } from "./embedded-agent-runner/run/types.js";
-import { clearActiveEmbeddedRun } from "./embedded-agent-runner/runs.js";
+import { clearTestEmbeddedRun as clearActiveEmbeddedRun } from "./embedded-agent-runner/runs.test-support.js";
 import { createStubSessionHarness } from "./embedded-agent-subscribe.e2e-harness.js";
 import { guardSessionManager } from "./session-tool-result-guard-wrapper.js";
 import { SessionManager } from "./sessions/session-manager.js";

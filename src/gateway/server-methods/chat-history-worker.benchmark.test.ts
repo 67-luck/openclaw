@@ -14,8 +14,10 @@ import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { serializeGatewayFrame } from "../serialized-json.js";
+import { claimRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { chatHistoryHandlers } from "./chat-history-handler.js";
 import { createHistoryReadContext } from "./chat-history.test-helpers.js";
+import { captureRpcTargetForTest } from "./rpc-source-fixtures.test-support.js";
 import { identifiedClient } from "./sessions-read-cache.test-support.js";
 import type { RespondFn } from "./types.js";
 
@@ -225,12 +227,15 @@ it.runIf(process.env.OPENCLAW_DB_WORKER_BENCH === "1")(
             const runId = `run-${scope.sessionId}`;
             const registration = active
               ? registerChatAbortController({
-                  chatAbortControllers: context.chatAbortControllers,
+                  target: captureRpcTargetForTest(scope),
+                  rpcSources: context.rpcSources,
                   ...scope,
                   runId,
-                  now,
                   timeoutMs: 60_000,
                 })
+              : undefined;
+            const releaseSource = registration?.entry
+              ? await claimRpcSourceForTest(registration.entry)
               : undefined;
             if (active) {
               const run = context.chatRunState.getOrCreate(runId);
@@ -296,6 +301,7 @@ it.runIf(process.env.OPENCLAW_DB_WORKER_BENCH === "1")(
                 }),
               );
             } finally {
+              releaseSource?.();
               registration?.cleanup();
               context.chatRunState.clearRun(runId);
             }

@@ -79,7 +79,6 @@ function createController(options: {
     globalLane: "global-lane",
     initialQueuedLifecycleGeneration:
       options.initialQueuedLifecycleGeneration ?? lifecycleGeneration,
-    sessionLane: "session:agent:main:session-1",
     setLifecycleGeneration: (next) => {
       lifecycleGeneration = next;
     },
@@ -111,7 +110,7 @@ describe("createEmbeddedRunLaneController lifecycle admission", () => {
     const generation = getAgentEventLifecycleGeneration();
     const { controller } = createController({ lifecycleGeneration: generation, enqueue, trigger });
 
-    await controller.enqueueSession(async () => undefined);
+    await controller.enqueueSession(() => controller.enqueueGlobal(async () => completedResult));
 
     expect(priorities).toEqual([expected]);
   });
@@ -136,7 +135,7 @@ describe("createEmbeddedRunLaneController lifecycle admission", () => {
     });
     maxConcurrent = 8;
     await controller.enqueueSession(() => controller.enqueueGlobal(async () => completedResult));
-    expect(capacities).toEqual([undefined, 8]);
+    expect(capacities).toEqual([8]);
   });
 
   it("preserves the selected agent for sessionless admitted runtime events", async () => {

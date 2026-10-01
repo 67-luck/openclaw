@@ -5,13 +5,13 @@ import {
   type ErrorShape,
   type SessionsPatchParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { isEmbeddedAgentRunActive } from "../../agents/embedded-agent-runner/runs.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import {
   hasAgentRunContextExecutionOwner,
   listAgentRunsForSession,
 } from "../../infra/agent-run-registry.js";
-import { isSessionWorkAdmissionActive } from "../../sessions/session-lifecycle-admission.js";
+import { isSessionControllerWorkActive } from "../../sessions/session-controller.lifecycle.js";
+import { isSessionRunActive as isEmbeddedAgentRunActive } from "../../sessions/session-controller.queries.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
@@ -62,7 +62,7 @@ export function validateSessionPatchSandboxChange(params: {
     ? params.context.workerSessionPlacementService?.getMany([sessionId]).get(sessionId)
     : undefined;
   if (
-    isSessionWorkAdmissionActive(params.storePath, params.lifecycleIdentities) ||
+    isSessionControllerWorkActive(params.storePath, params.lifecycleIdentities) ||
     (sessionId && isEmbeddedAgentRunActive(sessionId)) ||
     listAgentRunsForSession({ sessionKey: params.sessionKey, sessionId }).some(({ runId }) =>
       hasAgentRunContextExecutionOwner(runId),

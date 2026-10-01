@@ -50,7 +50,7 @@ export async function invokeAbort({
 
 export function createSingleAbortContext() {
   return createChatAbortContext({
-    chatAbortControllers: new Map([
+    rpcSources: new Map([
       [
         "run-1",
         createActiveRun("main", { owner: { connId: "conn-owner", deviceId: "dev-owner" } }),

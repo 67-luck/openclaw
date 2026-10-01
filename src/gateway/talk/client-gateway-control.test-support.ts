@@ -14,7 +14,7 @@ export function controlContext(
 ) {
   return {
     logGateway: { warn },
-    chatAbortControllers: new Map(),
+    rpcSources: new Map(),
     broadcastToConnIds: vi.fn((_name: string, payload: { talkEvent?: unknown }) => {
       if (payload.talkEvent) {
         onTalkEvent?.(payload.talkEvent as { type: string; payload: unknown });

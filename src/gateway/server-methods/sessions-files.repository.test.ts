@@ -7,7 +7,7 @@ import * as worktreeGit from "../../agents/worktrees/git.js";
 import { NODE_WORKER_WORKSPACE_EXEC_COMMAND } from "../../infra/node-commands.js";
 import { invokeNodeWorkerSupervisorCommand } from "../../node-host/node-worker-supervisor-commands.js";
 import { NodeWorkerWorkspaceRuntime } from "../../node-host/node-worker-workspace.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseByPathAsync,
@@ -565,7 +565,7 @@ it.each(["stop", "reset"])(
     await writing.promise;
     let mutationEntered = false;
     let contentAtMutation: string | undefined;
-    const mutating = runExclusiveSessionLifecycleMutation({
+    const mutating = runSessionMutation({
       scope: path.join(gatewayRoot, "sessions.sqlite"),
       identities: [sessionKey, identity.sessionId],
       run: async () => {
@@ -828,7 +828,7 @@ it("keeps a timed-out remote save owned until its physical write drains before S
   await draining.promise;
   let stopEntered = false;
   let contentAtStop: string | undefined;
-  const stopping = runExclusiveSessionLifecycleMutation({
+  const stopping = runSessionMutation({
     scope: path.join(gatewayRoot, "sessions.sqlite"),
     identities: [sessionKey, identity.sessionId],
     run: async () => {

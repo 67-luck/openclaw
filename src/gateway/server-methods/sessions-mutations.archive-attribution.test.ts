@@ -49,8 +49,7 @@ function context(): GatewayRequestContext {
     loadGatewayModelCatalogSnapshot: vi.fn(async () => ({ entries: [], routeVariants: [] })),
     broadcastToConnIds: vi.fn(),
     getSessionEventSubscriberConnIds: () => new Set(),
-    chatAbortControllers: new Map(),
-    chatQueuedTurns: new Map(),
+    rpcSources: new Map(),
     dedupe: new Map(),
   } as unknown as GatewayRequestContext;
 }

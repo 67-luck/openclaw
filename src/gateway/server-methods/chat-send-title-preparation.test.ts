@@ -6,7 +6,7 @@ import {
   loadSessionEntry,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
-import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
+import { captureSessionControllerSettlement } from "../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -71,7 +71,7 @@ it.each([
           Promise.resolve(),
         );
         await Promise.race([started.promise, failed.promise]);
-        released = getSessionWorkAdmissionRelease({
+        released = captureSessionControllerSettlement({
           scope: scope.storePath,
           identities: [scope.sessionKey, scope.sessionId],
         });

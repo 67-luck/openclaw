@@ -6,8 +6,8 @@ import { markAgentRunFailureReplyPayload } from "./agent-runner-failure-reply.js
 import { accountAgentTurn } from "./agent-runner-result-accounting.js";
 import { prepareReplyAgentPayloads } from "./agent-runner-result-payloads.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
+import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
 import { resolveFollowupDeliveryDecision } from "./followup-delivery.js";
-import type { AdmittedFollowupTurn } from "./followup-turn-admission.js";
 import type { PendingContinuationSettlement } from "./get-reply.types.js";
 import {
   createMockFollowupRun,

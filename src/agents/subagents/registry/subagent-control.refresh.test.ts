@@ -7,14 +7,17 @@ import { createDeferred } from "../../../../test/helpers/promise.js";
 import { getRuntimeConfig } from "../../../config/config.js";
 import * as sessions from "../../../config/sessions/session-accessor.js";
 import {
-  beginSessionWorkAdmission,
-  getActiveSessionLifecycleMutationCount,
-  getActiveSessionWorkAdmissionCount,
-  runExclusiveSessionLifecycleMutation,
-} from "../../../sessions/session-lifecycle-admission.js";
-import { clearActiveEmbeddedRun, setActiveEmbeddedRun } from "../../embedded-agent-runner/runs.js";
+  beginSessionEffect,
+  getSessionMutationCount,
+  getSessionControllerWorkCount,
+  runSessionMutation,
+} from "../../../sessions/session-controller.lifecycle.js";
 import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";
 import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
+import {
+  setActiveEmbeddedRun,
+  clearActiveEmbeddedRun,
+} from "./subagent-control-native.test-support.js";
 import { killAllControlledSubagentRuns } from "./subagent-control.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
@@ -176,21 +179,21 @@ it.each([
     const d = subagentRuns.get("d")!;
     const healthy = subagentRuns.get("healthy")!;
     const entered = createDeferred();
-    const admissionA = await beginSessionWorkAdmission({
+    const admissionA = await beginSessionEffect({
       scope: storePath,
       identities: [aKey, "a-session"],
       assertAllowed: () => {},
       onInterrupt: () => entered.resolve(),
     });
     const interruptD = vi.fn(() => admissionD.release());
-    const admissionD = await beginSessionWorkAdmission({
+    const admissionD = await beginSessionEffect({
       scope: storePath,
       identities: [dKey, "d-session"],
       assertAllowed: () => {},
       onInterrupt: interruptD,
     });
     const healthyEntered = createDeferred();
-    const admissionHealthy = await beginSessionWorkAdmission({
+    const admissionHealthy = await beginSessionEffect({
       scope: storePath,
       identities: [healthyKey, "healthy-session"],
       assertAllowed: () => {},
@@ -293,7 +296,7 @@ it.each([
         await grandchildCancelled.promise;
         // Publication precedes G's abort-marker write. Join its mutation from
         // outside the observer's reentrant context before arming the next fault.
-        await runExclusiveSessionLifecycleMutation({
+        await runSessionMutation({
           scope: storePath,
           identities: [gKey, "g-session"],
           run: async () => {},
@@ -350,11 +353,11 @@ it.each([
         reader.mockRestore();
         releaseSwarmRun("d");
         releaseSwarmRun("g");
-        clearActiveEmbeddedRun("a-session", handleA, aKey);
-        clearActiveEmbeddedRun("d-session", handleD, dKey);
+        await clearActiveEmbeddedRun("a-session", handleA, aKey);
+        await clearActiveEmbeddedRun("d-session", handleD, dKey);
       }
-      expect(getActiveSessionWorkAdmissionCount()).toBe(0);
-      expect(getActiveSessionLifecycleMutationCount()).toBe(0);
+      expect(getSessionControllerWorkCount()).toBe(0);
+      expect(getSessionMutationCount()).toBe(0);
     }
   },
 );

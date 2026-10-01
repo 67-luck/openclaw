@@ -27,6 +27,7 @@ import {
 } from "./dispatch-from-config.runtime-loaders.js";
 import { DispatchSessionRefreshRequiredError } from "./dispatch-session-refresh-error.js";
 import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
+import { readReplySourceInput } from "./reply-source-binding.js";
 import { extractShortModelName } from "./response-prefix-template.js";
 import { assertPreparedConversationBindingRouteCurrent } from "./session-conversation-binding.js";
 
@@ -166,8 +167,13 @@ export async function prepareDispatchOperation(state: PrepareDispatchOperationCo
   // Own the session before plugin-bound handlers or message hooks can perform
   // work. Fast abort, fast approval, and inbound dedupe remain ahead of this gate.
   const admissionTicket = params.replyOptions?.[REPLY_ADMISSION_TICKET];
+  const sourceInput = readReplySourceInput(params.replyOptions);
+  const activeHumanWait = sourceInput?.mailbox.owner.active?.watchdog
+    .snapshot()
+    .waits.some((wait) => wait.kind === "human_question" || wait.kind === "approval");
   if (
     !state.activeRunSafeCommandTurn &&
+    !activeHumanWait &&
     admissionTicket &&
     !(await state.traceReplyPhase("reply.wait_admission_ticket", () =>
       admissionTicket.wait(params.replyOptions?.abortSignal),

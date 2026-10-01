@@ -30,7 +30,10 @@ import {
   releaseAgentRunContext,
 } from "../infra/agent-run-registry.js";
 import type { SubsystemLogger } from "../logging/subsystem.js";
-import { startSessionWorkAdmissionInterruption } from "../sessions/session-lifecycle-admission.js";
+import {
+  startSessionControllerInterruption,
+  captureSessionTarget,
+} from "../sessions/session-controller.lifecycle.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -53,6 +56,7 @@ import {
   getSessionRowProjection,
 } from "./session-row-projection-access.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
+import { claimRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 const routing = vi.hoisted(() => ({ loadSessionEntry: vi.fn() }));
 vi.mock("./session-utils.js", async (importOriginal) => ({
@@ -258,13 +262,19 @@ it.each(["success", "failed-write"])(
     );
     const context = {
       chatRunState,
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
       dedupe: new Map(),
       getRuntimeConfig: () => cfg,
       logGateway: silentLog,
     } as unknown as GatewayRequestContext;
     const registration = registerChatAbortController({
-      chatAbortControllers: context.chatAbortControllers,
+      target: captureSessionTarget({
+        storeScope: target.storePath,
+        sessionKey: target.sessionKey,
+        incarnation: sessionId,
+        agentId: "main",
+      }),
+      rpcSources: context.rpcSources,
       runId,
       sessionId,
       sessionKey: target.sessionKey,
@@ -302,6 +312,8 @@ it.each(["success", "failed-write"])(
     if (!entry) {
       throw new Error("expected registered child");
     }
+    const releaseProducer = await claimRpcSourceForTest(entry);
+    entry.input.abortSignal.addEventListener("abort", releaseProducer, { once: true });
     const startPersisted = createDeferred();
     const terminalWrite = createDeferred();
     let persistenceSpy:
@@ -312,7 +324,7 @@ it.each(["success", "failed-write"])(
     const releaseWriter = createDeferred();
     let heldWriter: Promise<unknown> | undefined;
     let subscriptions: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
-    let interruption: ReturnType<typeof startSessionWorkAdmissionInterruption> | undefined;
+    let interruption: ReturnType<typeof startSessionControllerInterruption> | undefined;
     const actual = await vi.importActual<typeof import("./session-utils.js")>("./session-utils.js");
     routing.loadSessionEntry.mockImplementation(actual.loadSessionEntry);
     const readHistory = async () => {
@@ -353,7 +365,7 @@ it.each(["success", "failed-write"])(
         toolEventRecipients: chatRunState.toolEventRecipients,
         sessionEventSubscribers,
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-        chatAbortControllers: context.chatAbortControllers,
+        rpcSources: context.rpcSources,
         restartRecoveryCandidates,
         refreshConnectedUserProfiles: vi.fn(),
       });
@@ -391,7 +403,7 @@ it.each(["success", "failed-write"])(
         persistenceSpy.mockReturnValueOnce(terminalWrite.promise);
       }
 
-      interruption = startSessionWorkAdmissionInterruption({
+      interruption = startSessionControllerInterruption({
         scope: target.storePath,
         identities: [target.sessionKey, sessionId],
         reason: createAgentRunDirectAbortError(),
@@ -412,8 +424,8 @@ it.each(["success", "failed-write"])(
       admission.release();
       await interruption.released;
       expect(chatRunState.runs.get(runId)?.abortMarker).toBeUndefined();
-      expect(context.chatAbortControllers.get(runId)).toBe(registration.entry);
-      expect(registration.entry?.projectSessionTerminalPersistence).toBeInstanceOf(Promise);
+      expect(context.rpcSources.get(runId)).toBe(registration.entry);
+      expect(registration.entry?.adapter.projectSessionTerminalPersistence).toBeInstanceOf(Promise);
       expect(
         resolveVisibleActiveSessionRunState({
           context,
@@ -429,7 +441,7 @@ it.each(["success", "failed-write"])(
 
       if (outcome === "failed-write") {
         const removed = waitForChatAbortControllerRemoval({
-          entries: context.chatAbortControllers,
+          entries: context.rpcSources,
           targets: [{ runId, entry }],
           timeoutMs: 1_000,
         });
@@ -439,13 +451,13 @@ it.each(["success", "failed-write"])(
           sessionId,
           observedAt: 2_000,
         });
-        expect(entry.projectSessionTerminalPersisted).toBe(false);
+        expect(entry.adapter.projectSessionTerminalPersisted).toBe(false);
         expect(loadSessionEntry(target)?.status).toBe("running");
         return;
       }
       releaseWriter.resolve();
       await heldWriter;
-      await vi.waitFor(() => expect(context.chatAbortControllers.has(runId)).toBe(false));
+      await vi.waitFor(() => expect(context.rpcSources.has(runId)).toBe(false));
       await vi.waitFor(() =>
         expect(broadcast).toHaveBeenCalledWith(
           "chat",
@@ -482,6 +494,7 @@ it.each(["success", "failed-write"])(
       expect(restored?.lifecycleRunId).toBeUndefined();
       expect(restored?.restartRecoveryForceSafeTools).toBeUndefined();
     } finally {
+      releaseProducer();
       admission.release();
       await interruption?.released;
       terminalWrite.resolve();
@@ -588,7 +601,7 @@ it.for([
           toolEventRecipients: chatRunState.toolEventRecipients,
           sessionEventSubscribers: createSessionEventSubscriberRegistry(),
           sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-          chatAbortControllers: new Map(),
+          rpcSources: new Map(),
           restartRecoveryCandidates: new Map(),
           refreshConnectedUserProfiles: vi.fn(),
         });

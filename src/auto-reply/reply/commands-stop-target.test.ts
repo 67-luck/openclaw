@@ -14,13 +14,11 @@ import { handleStopCommand } from "./commands-session-abort.js";
 import "./commands-session-abort.test-support.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
-const abortEmbeddedAgentRunMock = vi.hoisted(() => vi.fn());
 const createInternalHookEventMock = vi.hoisted(() => vi.fn(() => ({})));
 const persistAbortTargetEntryMock = vi.hoisted(() => vi.fn(async () => true));
 const resolveCommandSessionEntryForKeyMock = vi.hoisted(() =>
   vi.fn(() => ({ entry: undefined, key: undefined })),
 );
-const resolveSessionIdMock = vi.hoisted(() => vi.fn(() => undefined));
 const stopSubagentsForRequesterMock = vi.hoisted(() =>
   vi.fn(async (params: { beforeKill?: () => Promise<boolean> }) => {
     await params.beforeKill?.();
@@ -31,10 +29,6 @@ const abortSessionRunTargetWithOutcomeMock = vi.hoisted(() =>
   vi.fn(() => ({ active: false, aborted: false })),
 );
 const formatAbortReplyTextMock = vi.hoisted(() => vi.fn(() => "⚙️ Agent was aborted."));
-
-vi.mock("../../agents/embedded-agent.js", () => ({
-  abortEmbeddedAgentRun: abortEmbeddedAgentRunMock,
-}));
 
 vi.mock("../../globals.js", () => ({
   logVerbose: vi.fn(),
@@ -51,6 +45,7 @@ vi.mock("./abort-cutoff.js", () => ({
 }));
 
 vi.mock("./abort-operation.js", () => ({
+  captureChannelSessionStop: vi.fn((params: { key?: string; sessionId?: string }) => params),
   abortSessionRunTargetWithOutcome: abortSessionRunTargetWithOutcomeMock,
   stopSubagentsForRequester: stopSubagentsForRequesterMock,
 }));
@@ -68,12 +63,6 @@ vi.mock("./abort.js", () => ({
 vi.mock("./commands-session-store.js", () => ({
   persistAbortTargetEntry: persistAbortTargetEntryMock,
   resolveCommandSessionEntryForKey: resolveCommandSessionEntryForKeyMock,
-}));
-
-vi.mock("./reply-run-registry.js", () => ({
-  replyRunRegistry: {
-    resolveSessionId: resolveSessionIdMock,
-  },
 }));
 
 const formatAllowFrom = ({ allowFrom }: { allowFrom: Array<string | number> }) => {
@@ -173,11 +162,17 @@ describe("handleStopCommand target fallback", () => {
       shouldContinue: false,
       reply: { text: "⚙️ Agent was aborted." },
     });
-    expect(abortSessionRunTargetWithOutcomeMock).toHaveBeenCalledWith({
-      key: "agent:target:telegram:direct:123",
-      sessionId: undefined,
-    });
-    expect(abortEmbeddedAgentRunMock).not.toHaveBeenCalledWith("wrapper-session-id");
+    expect(abortSessionRunTargetWithOutcomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capture: expect.objectContaining({
+          key: "agent:target:telegram:direct:123",
+          sessionId: undefined,
+          storePath: "/tmp/sessions.json",
+          includeQueued: true,
+        }),
+        source: "channel-stop",
+      }),
+    );
     const [persistAbortTargetParams] = expectDefined(
       (
         persistAbortTargetEntryMock.mock.calls as unknown as Array<
@@ -235,6 +230,8 @@ describe("handleStopCommand target fallback", () => {
     });
     expect(formatAbortReplyTextMock).toHaveBeenCalledWith(0, "finalizing", 0);
     expect(persistAbortTargetEntryMock).not.toHaveBeenCalled();
+    expect(createInternalHookEventMock).toHaveBeenCalledOnce();
+    expect(stopSubagentsForRequesterMock).toHaveBeenCalledOnce();
   });
 
   it("surfaces child stop failures in the stop reply", async () => {

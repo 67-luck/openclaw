@@ -2,10 +2,10 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionsPatchManyParams } from "../../../packages/gateway-protocol/src/index.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { createDashboardTool } from "../../agents/tools/dashboard-tool.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import { callInProcessGatewayTool } from "../../agents/tools/in-process-gateway.js";
@@ -17,7 +17,7 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { registerInternalHook, unregisterInternalHook } from "../../hooks/internal-hooks.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -661,7 +661,7 @@ describe("sessions.assignOwner", () => {
       }
       const entered = createDeferredCore();
       const release = createDeferredCore();
-      const lifecycle = runExclusiveSessionLifecycleMutation({
+      const lifecycle = runSessionMutation({
         scope: target.storePath,
         identities: [target.storeKey, sessionId],
         run: async () => {
@@ -719,7 +719,7 @@ describe("sessions.assignOwner", () => {
       }
       const entered = createDeferredCore();
       const release = createDeferredCore();
-      const lifecycle = runExclusiveSessionLifecycleMutation({
+      const lifecycle = runSessionMutation({
         scope: target.storePath,
         identities: [target.storeKey, sessionId],
         run: async () => {

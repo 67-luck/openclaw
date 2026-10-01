@@ -93,7 +93,7 @@ describe("realtime relay finalization", () => {
       const session = createTalkRealtimeRelaySession({
         context: {
           broadcastToConnIds,
-          chatAbortControllers: new Map(),
+          rpcSources: new Map(),
           getRuntimeConfig: () => cfg,
           logGateway: { warn },
         } as never,

@@ -111,7 +111,7 @@ function retireRelayAgentRuns(session: RelaySession, reason?: string): void {
 
 export function pruneInactiveRelayAgentRuns(session: RelaySession): number {
   for (const runId of session.activeAgentRuns.keys()) {
-    if (!session.context.chatAbortControllers.has(runId)) {
+    if (!session.context.rpcSources.has(runId)) {
       session.activeAgentRuns.delete(runId);
     }
   }

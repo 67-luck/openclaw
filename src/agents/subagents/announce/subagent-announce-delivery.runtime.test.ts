@@ -10,12 +10,12 @@ import { dispatchGatewayMethodInProcess } from "../../../gateway/server-plugin-i
 import { withPluginRuntimeGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { trackAsyncWork } from "../../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import type { EmbeddedAgentQueueHandle } from "../../embedded-agent-runner/runs.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-  type EmbeddedAgentQueueHandle,
-} from "../../embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../../embedded-agent-runner/runs.test-support.js";
 import { maybeSteerSubagentAnnounce } from "./subagent-announce-active-wake.js";
 import { dispatchSubagentAnnounceAgent } from "./subagent-announce-delivery.runtime.js";
 import { runSubagentAnnounceDispatch } from "./subagent-announce-dispatch.js";
@@ -31,8 +31,7 @@ function createContext(handlers: GatewayRequestHandlers): GatewayRequestContext 
       warn: vi.fn(),
       error: vi.fn(),
     },
-    chatAbortControllers: new Map(),
-    chatQueuedTurns: new Map(),
+    rpcSources: new Map(),
     dedupe: new Map(),
   } as unknown as GatewayRequestContext;
   context.createAgentTurnFacade = (principal) =>

@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
-import {
-  abortEmbeddedAgentRun,
-  isEmbeddedAgentRunActive,
-} from "../../agents/embedded-agent-runner/runs.js";
+import { abortEmbeddedAgentRun } from "../../agents/embedded-agent-runner/runs.js";
 import { testing as embeddedRunTesting } from "../../agents/embedded-agent-runner/runs.test-support.js";
 import {
   runInitialModelFallbackAttempt,
@@ -15,6 +12,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { resetDiagnosticEventsForTest } from "../../infra/diagnostic-events.js";
 import { resetSystemEventsForTest } from "../../infra/system-events.js";
 import { clearMemoryPluginState } from "../../plugins/memory-state.test-fixtures.js";
+import { isSessionRunActive as isEmbeddedAgentRunActive } from "../../sessions/session-controller.queries.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 import { testing as replyRunRegistryTesting } from "./reply-run-registry.test-support.js";
@@ -144,7 +142,7 @@ vi.mock("./queue.js", () => {
   return {
     admitFollowupRunLifecycle: vi.fn(async () => {}),
     enqueueFollowupRun: vi.fn(),
-    parkSteerCandidate: vi.fn(() => ({
+    reserveSteerCandidate: vi.fn(() => ({
       admit: async () => "steer",
       accepted: vi.fn(),
       fallback: vi.fn(),

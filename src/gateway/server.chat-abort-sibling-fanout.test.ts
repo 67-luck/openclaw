@@ -29,11 +29,11 @@ import {
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
 import {
-  beginSessionWorkAdmission,
-  getActiveSessionLifecycleMutationCount,
-  getActiveSessionWorkAdmissionCount,
-  type SessionWorkAdmissionLease,
-} from "../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  getSessionMutationCount,
+  getSessionControllerWorkCount,
+  type SessionEffectRef,
+} from "../sessions/session-controller.lifecycle.js";
 import {
   agentCommandMock,
   connectOk,
@@ -112,7 +112,7 @@ for (const { name, replaceParent } of [
     const socket = await gateway.openWs();
     const parentStarted = createDeferred<AgentCommandOpts>();
     const parentFinish = createDeferred();
-    const leases: SessionWorkAdmissionLease[] = [];
+    const leases: SessionEffectRef[] = [];
     const interrupted: string[] = [];
     const firstInterrupted = createDeferred();
     const slotReleaseResults: boolean[] = [];
@@ -196,7 +196,7 @@ for (const { name, replaceParent } of [
         for (const runId of running) {
           expect(isSwarmRunActive(runId)).toBe(true);
           leases.push(
-            await beginSessionWorkAdmission({
+            await beginSessionEffect({
               scope: storePath,
               identities: [sessionKey(runId), `${runId}-session`],
               assertAllowed: () => {},
@@ -214,7 +214,7 @@ for (const { name, replaceParent } of [
         for (const runId of queued) {
           expect(isSwarmRunWaitingForCapacity(runId, subagentRuns.get(runId)!)).toBe(true);
         }
-        const activeAdmissionCount = getActiveSessionWorkAdmissionCount();
+        const activeAdmissionCount = getSessionControllerWorkCount();
         expect(activeAdmissionCount).toBeGreaterThanOrEqual(running.length);
         expect(start).not.toHaveBeenCalled();
 
@@ -263,7 +263,7 @@ for (const { name, replaceParent } of [
         expect(parent.abortSignal!.aborted).toBe(true);
         expect(slotReleaseResults).toEqual(running.map(() => true));
         expect(leases.every((lease) => lease.isActive())).toBe(true);
-        expect(getActiveSessionWorkAdmissionCount()).toBe(activeAdmissionCount);
+        expect(getSessionControllerWorkCount()).toBe(activeAdmissionCount);
         expect(responseSettled).toBe(false);
         expect(start).not.toHaveBeenCalled();
         if (replaceParent) {
@@ -380,8 +380,8 @@ for (const { name, replaceParent } of [
           releaseSwarmRun(runId);
         }
         socket.close();
-        expect(getActiveSessionLifecycleMutationCount()).toBe(0);
-        expect(getActiveSessionWorkAdmissionCount()).toBe(0);
+        expect(getSessionMutationCount()).toBe(0);
+        expect(getSessionControllerWorkCount()).toBe(0);
       },
     );
   });

@@ -29,7 +29,7 @@ import {
   firstMaintainParams,
   requireRecord,
 } from "./context-engine-maintenance.fixtures.test-support.js";
-import { resolveSessionLane } from "./lanes.js";
+import { resolveEmbeddedSessionLane as resolveSessionLane } from "./lanes.js";
 
 const rewriteTranscriptEntriesInSessionManagerMock = vi.fn((_params?: unknown) => ({
   changed: true,

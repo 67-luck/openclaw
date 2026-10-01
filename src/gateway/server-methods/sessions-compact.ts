@@ -5,8 +5,6 @@ import {
   errorShape,
   validateSessionsCompactParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { resolveEmbeddedSessionLane } from "../../agents/embedded-agent-runner/lanes.js";
-import { hasPendingFollowupQueueWork } from "../../auto-reply/reply/queue/state.js";
 import {
   resolveSessionWorkStartError,
   SESSION_LIFECYCLE_CHANGED_ERROR_REASON,
@@ -21,11 +19,12 @@ import {
 import { projectCompactionAccountingPatch } from "../../config/sessions/session-entry-projection.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { getCommandLaneSnapshot } from "../../process/command-queue.js";
 import {
-  isCompetingSessionWorkAdmissionActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  captureSessionTarget,
+  isCompetingSessionControllerWorkActive,
+  hasSessionControllerQueuedWork,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import { recordSessionCompacted } from "../../sessions/session-state-events.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import {
@@ -189,9 +188,14 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
       let compactionNoopReason: string | undefined;
       let blockedByActiveRun = false;
       let blockedByQueuedWork = false;
-      await runExclusiveSessionLifecycleMutation({
-        scope: storePath,
-        identities: lifecycleIdentities,
+      await runSessionMutation({
+        target: captureSessionTarget({
+          storeScope: storePath,
+          sessionKey: target.canonicalKey,
+          aliases: lifecycleIdentities,
+          incarnation: sessionId,
+          agentId: target.agentId,
+        }),
         kind: "compaction",
         signal: abortSignal,
         prepare: async () => {
@@ -218,7 +222,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
             }
           }
           blockedByActiveRun =
-            isCompetingSessionWorkAdmissionActive(storePath, lifecycleIdentities) ||
+            isCompetingSessionControllerWorkActive(storePath, lifecycleIdentities) ||
             (asWorkerInferenceControl(context.workerEnvironmentService)?.hasInferenceForSession(
               sessionId,
             ) ??
@@ -233,12 +237,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
             }).active;
           // Accepted work can live only in its command lane; waiting behind it
           // while holding the lifecycle fence would deadlock or drop that turn.
-          blockedByQueuedWork =
-            hasPendingFollowupQueueWork(queueIdentities) ||
-            queueIdentities.some(
-              (identity) =>
-                getCommandLaneSnapshot(resolveEmbeddedSessionLane(identity)).queuedCount > 0,
-            );
+          blockedByQueuedWork = hasSessionControllerQueuedWork(storePath, lifecycleIdentities);
         },
         run: async () => {
           assertRequestCurrent();

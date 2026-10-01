@@ -1,8 +1,3 @@
-/**
- * Wrapped before_tool_call execution boundary.
- * Owns tool preparation/finalization, adjusted-param replay state, terminal
- * results, diagnostics around execution, and wrapper metadata.
- */
 import {
   emitTrustedDiagnosticEvent,
   emitTrustedDiagnosticEventWithPrivateData,
@@ -96,6 +91,12 @@ import {
   registerTrustedToolNoStartError,
 } from "./tool-result-error.js";
 import type { AnyAgentTool } from "./tools/common.js";
+/**
+ * Wrapped before_tool_call execution boundary.
+ * Owns tool preparation/finalization, adjusted-param replay state, terminal
+ * results, diagnostics around execution, and wrapper metadata.
+ */
+import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 type ForwardedToolExecution = (...args: unknown[]) => ReturnType<AnyAgentTool["execute"]>;
 const MAX_TRACKED_ADJUSTED_PARAMS = 1024;
@@ -259,7 +260,7 @@ export function buildBlockedToolResult(params: {
 
 export function wrapToolWithBeforeToolCallHook(
   tool: AnyAgentTool,
-  ctx?: HookContext,
+  inputContext?: HookContext,
   options: Partial<BeforeToolCallDiagnosticOptions> = {},
 ): AnyAgentTool {
   const execute = tool.execute;
@@ -279,10 +280,14 @@ export function wrapToolWithBeforeToolCallHook(
     ...options,
     emitDiagnostics: options.emitDiagnostics !== false,
   };
-  const toolContentPolicy = resolveDiagnosticModelContentCapturePolicy(ctx?.config);
+  const toolContentPolicy = resolveDiagnosticModelContentCapturePolicy(inputContext?.config);
+  const preparedContext = inputContext;
   const wrappedTool: AnyAgentTool = {
     ...tool,
     execute: async (toolCallId, params, signal, onUpdate, ...executionArgs: unknown[]) => {
+      const watchdogAttempt =
+        preparedContext?.watchdogAttempt ?? getGatewayToolCallerIdentity()?.watchdogAttempt;
+      const ctx = watchdogAttempt ? { ...preparedContext, watchdogAttempt } : preparedContext;
       assertAgentPluginRuntimeCurrent();
       const prepareControl = readInternalExecutionControl(executionArgs.at(-1));
       if (prepareControl) {
@@ -500,7 +505,12 @@ export function wrapToolWithBeforeToolCallHook(
       recordAdjustedParamsForToolCall(toolCallId, executeParams, ctx?.runId);
       const eventBase = buildEventBase(executeParams);
       recordToolExecutionStarted(toolCallId, ctx?.runId);
-      const liveness = startToolExecutionLiveness(eventBase, hookOptions.emitDiagnostics, signal);
+      const liveness = startToolExecutionLiveness(
+        eventBase,
+        hookOptions.emitDiagnostics,
+        signal,
+        ctx?.watchdogAttempt,
+      );
       const startedAt = Date.now();
       try {
         let result: Awaited<ReturnType<ForwardedToolExecution>>;
@@ -610,7 +620,7 @@ export function wrapToolWithBeforeToolCallHook(
   };
   const executeWithHooks = wrappedTool.execute;
   const prepareExecution = createInternalExecutionPreparer(async (params, control) => {
-    recordToolExecutionTracked(params.toolCallId, ctx?.runId);
+    recordToolExecutionTracked(params.toolCallId, inputContext?.runId);
     try {
       return (await Reflect.apply(executeWithHooks, wrappedTool, [
         params.toolCallId,
@@ -622,7 +632,7 @@ export function wrapToolWithBeforeToolCallHook(
       ])) as Awaited<ReturnType<AnyAgentTool["execute"]>>;
     } finally {
       // Timeout observers may consume this while the call is still pending.
-      clearTrackedToolExecution(params.toolCallId, ctx?.runId);
+      clearTrackedToolExecution(params.toolCallId, inputContext?.runId);
     }
   });
   attachInternalToolExecutionPreparer(wrappedTool, prepareExecution);
@@ -656,7 +666,7 @@ export function wrapToolWithBeforeToolCallHook(
   bindBeforeToolCallMetadata(wrappedTool, {
     options: hookOptions,
     sourceTool: tool,
-    hookContext: ctx,
+    hookContext: inputContext,
   });
   return wrappedTool;
 }

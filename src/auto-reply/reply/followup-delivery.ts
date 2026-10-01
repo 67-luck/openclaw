@@ -34,8 +34,8 @@ import {
 } from "./agent-runner-failure-reply.js";
 import type { AccountedAgentTurn } from "./agent-runner-result-accounting.js";
 import { appendUsageLine, resolveResponseUsageLine } from "./agent-runner-usage-line.js";
+import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./claimed-turn-preparation.js";
 import { resolveFollowupDeliveryPayloads } from "./followup-delivery-payloads.js";
-import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./followup-turn-admission.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { warnPrivateMessageToolFinal } from "./private-message-tool-final.js";
@@ -558,12 +558,16 @@ export async function deliverFollowupDecision(params: {
       sourceDisposition?.kind === "deliver"
         ? sourceDisposition.deliver.createSourceRetry?.()
         : undefined;
-    const retryRun = retryDelivery
-      ? {
-          ...decision.run,
-          queuedFollowupReplyDisposition: { kind: "deliver" as const, deliver: retryDelivery },
-        }
-      : decision.run;
+    // A sanctioned stranded-final retry is a new input, not replay of the
+    // consumed source or its already-released controller claim.
+    const retryRun = {
+      ...decision.run,
+      controllerInput: undefined,
+      controllerClaim: undefined,
+      ...(retryDelivery
+        ? { queuedFollowupReplyDisposition: { kind: "deliver" as const, deliver: retryDelivery } }
+        : {}),
+    };
     const enqueued =
       key &&
       enqueueFollowupRun(

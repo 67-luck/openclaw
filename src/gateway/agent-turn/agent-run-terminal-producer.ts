@@ -1,5 +1,6 @@
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { validateAgentRunDelegatedAuthority } from "../../infra/agent-run-registry.js";
+import { getRpcSourceStartedAt } from "../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.types.js";
 
@@ -7,40 +8,40 @@ import type { ChatAbortControllerEntry } from "../chat-abort.types.js";
 export function bindGatewayAgentTerminalProducer(params: {
   runId: string;
   entry: ChatAbortControllerEntry | undefined;
-  controller: AbortController;
+  controller: Pick<AbortController, "signal" | "abort">;
   ingressOpts: { abortSignal?: AbortSignal };
-  chatAbortControllers: Map<string, ChatAbortControllerEntry>;
+  rpcSources: Map<string, ChatAbortControllerEntry>;
   isOwnerReleased: () => boolean;
 }): {
   complete: () => Promise<void>;
   settle: <T>(execution: Promise<T>) => Promise<T>;
 } {
   const { entry, controller } = params;
-  const registeredRunInstance = entry?.operationalRunInstance;
-  const registeredLifecycleGeneration = entry?.lifecycleGeneration;
-  const registeredSessionKey = entry?.sessionKey;
+  const registeredRunInstance = entry?.adapter.operationalRunInstance;
+  const registeredLifecycleGeneration = entry?.adapter.lifecycleGeneration;
+  const registeredSessionKey = entry?.adapter.sessionKey;
   const producerCompletion = createDeferredCore();
   let terminalSettlement: Promise<void> | undefined;
   if (entry && params.ingressOpts.abortSignal === controller.signal) {
-    entry.resolveTerminalProducer = () => {
-      const { sessionId, sessionKey } = entry;
+    entry.adapter.resolveTerminalProducer = () => {
+      const { sessionId, sessionKey } = entry.adapter;
       const isCurrent = () => {
-        const authority = entry.agentRunDelegatedAuthority;
+        const authority = entry.adapter.agentRunDelegatedAuthority;
         return (
           !params.isOwnerReleased() &&
           !controller.signal.aborted &&
           params.ingressOpts.abortSignal === controller.signal &&
-          params.chatAbortControllers.get(params.runId) === entry &&
-          entry.controller === controller &&
-          entry.operationalRunInstance === registeredRunInstance &&
-          entry.lifecycleGeneration === registeredLifecycleGeneration &&
-          entry.sessionId === sessionId &&
-          entry.sessionKey === sessionKey &&
+          params.rpcSources.get(params.runId) === entry &&
+          entry.input.abortSignal === controller.signal &&
+          entry.adapter.operationalRunInstance === registeredRunInstance &&
+          entry.adapter.lifecycleGeneration === registeredLifecycleGeneration &&
+          entry.adapter.sessionId === sessionId &&
+          entry.adapter.sessionKey === sessionKey &&
           sessionKey === registeredSessionKey &&
-          !entry.registrationCleanupRequested &&
+          !entry.adapter.registrationCleanupRequested &&
           (!registeredLifecycleGeneration ||
             isAgentEventLifecycleGenerationCurrent(registeredLifecycleGeneration)) &&
-          (!entry.executionStarted || authority !== undefined) &&
+          (getRpcSourceStartedAt(entry) === undefined || authority !== undefined) &&
           (!authority ||
             (authority.operationalRunInstance === registeredRunInstance &&
               validateAgentRunDelegatedAuthority(authority)))

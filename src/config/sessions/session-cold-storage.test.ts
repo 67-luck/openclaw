@@ -8,7 +8,7 @@ import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.j
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { flushLogger, setLoggerOverride } from "../../logging/logger.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import {
@@ -805,7 +805,7 @@ describe("cold transcript storage workers", () => {
 
   it("protects historical windows while their logical session has a real work admission", async () => {
     const fixture = await createFixture();
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: fixture.scope.storePath,
       identities: [fixture.scope.sessionKey],
       assertAllowed: () => {},

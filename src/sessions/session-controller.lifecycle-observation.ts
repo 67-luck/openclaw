@@ -1,0 +1,91 @@
+import { settlesWithin } from "../shared/settle-within.js";
+import { sourceSettlements } from "./session-controller.context.js";
+import {
+  selectedClaims,
+  selectedEffects,
+  selectedOperations,
+  allEffects,
+} from "./session-controller.lifecycle-projections.js";
+import type {
+  SessionEffectRef,
+  SessionEffectInterrupt,
+} from "./session-controller.lifecycle.types.js";
+import { targetFrom, type TargetInput } from "./session-controller.target.js";
+export async function waitForSessionControllerSettlement(
+  released: Promise<void>,
+  timeoutMs?: number,
+): Promise<boolean> {
+  if (timeoutMs === undefined) {
+    await released;
+    return true;
+  }
+  return await settlesWithin(released, Math.max(0, timeoutMs));
+}
+export function captureSessionControllerSettlement(params: TargetInput): Promise<void> | undefined {
+  const target = targetFrom(params);
+  const effects = [...selectedEffects([target])].filter((effect) => effect.phase !== "queued");
+  const operations = [...selectedOperations([target])];
+  const sources = sourceSettlements(target);
+  if (!effects.length && !operations.length && !sources.length) {
+    return undefined;
+  }
+  return Promise.all([
+    ...sources,
+    ...effects.map((effect) => effect.ref.released),
+    ...operations.map((operation) => operation.ownerSettlement),
+  ]).then(() => undefined);
+}
+export function captureSessionEffectOwnerSettlement(
+  params: TargetInput & { owner: symbol },
+): Promise<void> | undefined {
+  const effects = [...selectedEffects([targetFrom(params)])].filter(
+    (effect) => effect.owner === params.owner,
+  );
+  return effects.length
+    ? Promise.all(effects.map((effect) => effect.ref.released)).then(() => undefined)
+    : undefined;
+}
+export function isSessionControllerWorkActive(
+  scope: string,
+  identities: Iterable<string | undefined>,
+): boolean {
+  const target = targetFrom({ scope, identities });
+  return (
+    selectedClaims(target).length > 0 ||
+    selectedOperations([target]).size > 0 ||
+    [...selectedEffects([target])].some(
+      (effect) => effect.phase === "acquired" || effect.phase === "writer",
+    )
+  );
+}
+/** Tokens are one-shot references stored on the exact effect owner, not admissions. */
+export function consumeSessionEffectHandoff(
+  params: TargetInput & { handoffId: string; onInterrupt?: SessionEffectInterrupt },
+): SessionEffectRef | undefined {
+  const target = targetFrom(params);
+  const token = params.handoffId.trim();
+  for (const effect of selectedEffects([target])) {
+    if (
+      !effect.handoffs.has(token) ||
+      !target.aliases.every((id) => effect.ref.target.aliases.includes(id))
+    ) {
+      continue;
+    }
+    effect.handoffs.delete(token);
+    effect.interrupt = params.onInterrupt;
+    if (effect.interrupted) {
+      params.onInterrupt?.(effect.interrupted);
+    }
+    return effect.ref;
+  }
+  return undefined;
+}
+export function cancelSessionEffectHandoff(handoffId: string): boolean {
+  for (const effect of allEffects()) {
+    if (effect.handoffs.delete(handoffId.trim())) {
+      effect.ref.release();
+      return true;
+    }
+  }
+  return false;
+}

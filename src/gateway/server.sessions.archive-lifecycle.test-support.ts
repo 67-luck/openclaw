@@ -1,7 +1,11 @@
-import { expect, vi } from "vitest";
+import { expect, onTestFinished, vi } from "vitest";
+import { getRuntimeConfig as getHostRuntimeConfig } from "../config/config.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { onAgentEvent } from "../infra/agent-events.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
+import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { markChatAbortTerminalPersistenceError } from "./chat-abort-lifecycle-internal.js";
 import { registerChatAbortController, removeChatAbortControllerEntry } from "./chat-abort.js";
@@ -22,22 +26,28 @@ export function activeRunContext(params: {
   ownerConnId?: string;
   terminalPersistenceError?: Error;
 }) {
-  const chatAbortControllers = new Map();
+  const rpcSources = new Map();
   const registration = registerChatAbortController({
-    chatAbortControllers,
+    rpcSources,
     runId: params.runId,
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
+    target: captureSessionTarget({
+      storeScope: resolveSessionStorePathCore(getHostRuntimeConfig().session?.store),
+      sessionKey: params.sessionKey,
+      incarnation: params.sessionId,
+    }),
     timeoutMs: 60_000,
     ownerConnId: params.ownerConnId,
   });
   if (!registration.entry) {
     throw new Error("expected active run registration");
   }
+  onTestFinished(registration.cleanup);
   const entry = registration.entry;
   const aborted = createDeferredCore();
   const onAbort = () => aborted.resolve();
-  entry.controller.signal.addEventListener("abort", onAbort, { once: true });
+  entry.input.abortSignal.addEventListener("abort", onAbort, { once: true });
   const terminalStarted = createDeferredCore();
   const unsubscribe = onAgentEvent((event) => {
     if (
@@ -47,17 +57,17 @@ export function activeRunContext(params: {
     ) {
       return;
     }
-    entry.projectSessionTerminalPending = false;
-    entry.projectSessionTerminalPersistence = params.persistence.promise;
+    entry.adapter.projectSessionTerminalPending = false;
+    entry.adapter.projectSessionTerminalPersistence = params.persistence.promise;
     void params.persistence.promise.then(
       () => {
-        entry.projectSessionTerminalPersistence = undefined;
-        entry.projectSessionTerminalPersisted = true;
-        removeChatAbortControllerEntry(chatAbortControllers, params.runId, entry);
+        entry.adapter.projectSessionTerminalPersistence = undefined;
+        entry.adapter.projectSessionTerminalPersisted = true;
+        removeChatAbortControllerEntry(rpcSources, params.runId, entry);
       },
       (error: unknown) => {
         markChatAbortTerminalPersistenceError(entry, error);
-        removeChatAbortControllerEntry(chatAbortControllers, params.runId, entry);
+        removeChatAbortControllerEntry(rpcSources, params.runId, entry);
       },
     );
     terminalStarted.resolve();
@@ -72,7 +82,7 @@ export function activeRunContext(params: {
       agentRunSeq: new Map([[params.runId, 0]]),
       broadcast: vi.fn(),
       cancelRunBoundApprovals: vi.fn(),
-      chatAbortControllers,
+      rpcSources,
       chatRunState,
       logGateway: { warn: vi.fn() },
       nodeSendToSession: vi.fn(),
@@ -84,7 +94,7 @@ export function activeRunContext(params: {
     controller: registration.controller,
     terminalStarted: terminalStarted.promise,
     unsubscribe(this: void) {
-      entry.controller.signal.removeEventListener("abort", onAbort);
+      entry.input.abortSignal.removeEventListener("abort", onAbort);
       unsubscribe();
     },
   };
@@ -202,10 +212,10 @@ export async function archiveLifecycleRequestContext(
   const { getRuntimeConfig } = await getGatewayConfigModule();
   const loadGatewayModelCatalog = async () => [];
   return {
+    trackExecution: trackAsyncWork,
     broadcast: vi.fn(),
     broadcastToConnIds: vi.fn(),
-    chatAbortControllers: new Map(),
-    chatQueuedTurns: new Map(),
+    rpcSources: new Map(),
     dedupe: new Map(),
     getSessionEventSubscriberConnIds: () => new Set<string>(),
     getRuntimeConfig,

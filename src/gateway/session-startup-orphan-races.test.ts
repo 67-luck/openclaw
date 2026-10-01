@@ -11,7 +11,7 @@ import { readSessionEntriesByStatus } from "../config/sessions/session-accessor.
 import * as transcriptStore from "../config/sessions/session-accessor.sqlite-transcript-store.js";
 import { registerAgentRunContext, clearAgentRunContext } from "../infra/agent-run-registry.js";
 import { acquireGatewayLock } from "../infra/gateway-lock.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import * as sessionRunError from "../sessions/session-run-error.js";
 import { ensureSessionEntryValidityProjection } from "../state/openclaw-agent-db-session-migrations.js";
 import {
@@ -65,7 +65,7 @@ it.each([
         if (!lock) {
           throw new Error("expected isolated Gateway ownership");
         }
-        let admission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+        let admission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
         try {
           await lock.run(async () => {
             const scope = { agentId: "main", sessionKey: "agent:main:subagent:race" };
@@ -116,7 +116,7 @@ it.each([
                     projectSessionActive: false,
                   });
                 } else if (race === "session-admission") {
-                  admission = await beginSessionWorkAdmission({
+                  admission = await beginSessionEffect({
                     scope: database.path,
                     identities: [scope.sessionKey, "predecessor"],
                     assertAllowed: () => {},

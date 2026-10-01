@@ -47,6 +47,7 @@ export function createAgentDedupeLifecycle(params: {
 }) {
   let reserved = false;
   let accepted = false;
+  let preservedStop: ReturnType<typeof readGatewayDedupeEntry>;
   let committedResetCompletion: CommittedResetCompletion | undefined;
   const reservationId = randomUUID();
 
@@ -56,17 +57,19 @@ export function createAgentDedupeLifecycle(params: {
     }
     // A private retry bypasses terminal cache replay to reconcile durable input.
     // Preserve an exact intentional Stop for the resolved admission guard.
+    const previous = readGatewayDedupeEntry({
+      dedupe: params.context.dedupe,
+      keys: params.agentDedupeKeys,
+    });
     if (
       isPreRegistrationAbortedAgentDedupeEntryForSession({
-        entry: readGatewayDedupeEntry({
-          dedupe: params.context.dedupe,
-          keys: params.agentDedupeKeys,
-        }),
+        entry: previous,
         runId: params.runId,
         sessionKey,
         agentId: dedupeAgentId,
       })
     ) {
+      preservedStop = previous;
       return;
     }
     const acceptedAt = Date.now();
@@ -80,7 +83,7 @@ export function createAgentDedupeLifecycle(params: {
       keys: params.agentDedupeKeys,
       // Durable private input decides replay after the prior controller ends.
       // Its new reservation must retire stale sticky terminal projections.
-      ...(params.privateCompletion && !params.context.chatAbortControllers.has(params.runId)
+      ...(params.privateCompletion && !params.context.rpcSources.has(params.runId)
         ? { startNewAttempt: true as const }
         : {}),
       entry: {
@@ -136,7 +139,17 @@ export function createAgentDedupeLifecycle(params: {
           preflight: params,
           context: params.context,
           io: params.io,
-          acceptedOnly: params.privateCompletion,
+          // A refused reservation may replay only the exact Stop preserved by
+          // this target, never an unrelated or replaced terminal cache entry.
+          acceptedOnly:
+            params.privateCompletion &&
+            !(
+              preservedStop &&
+              readGatewayDedupeEntry({
+                dedupe: params.context.dedupe,
+                keys: params.agentDedupeKeys,
+              }) === preservedStop
+            ),
         })
       ) {
         return undefined;

@@ -1,13 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../agents/embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../agents/embedded-agent-runner/runs.test-support.js";
 import { claimAgentRunContext, releaseAgentRunContext } from "../infra/agent-run-registry.js";
-import { completeQueuedChatTurn, registerQueuedChatTurn } from "./chat-queued-turns.js";
+import { retireSessionControllerInput } from "../sessions/session-controller.mailbox.js";
 import { createChatAbortMarker } from "./server-chat-state.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
+import { createRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 vi.mock("../infra/device-bootstrap.js", () => ({
   pruneExpiredDevicePairSetupCompletions: vi.fn(async () => 0),
@@ -101,13 +102,8 @@ describe("gateway chat-state maintenance", () => {
   it("keeps stale buffers for active runs that still have abort controllers", async () => {
     const { startGatewayMaintenanceTimers, deps } = await createTimedMaintenanceScenario();
     const runId = "run-active";
-    deps.chatAbortControllers.set(runId, {
-      controller: new AbortController(),
-      sessionId: "maintenance-session",
-      sessionKey: "main",
-      startedAtMs: Date.now(),
-      expiresAtMs: Date.now() + ABORTED_RUN_TTL_MS,
-    });
+    const source = createRpcSourceForTest({ sessionId: "maintenance-session", sessionKey: "main" });
+    deps.rpcSources.set(runId, source);
     seedStaleRunBuffers(deps, runId);
 
     const timers = startGatewayMaintenanceTimers(deps);
@@ -116,6 +112,7 @@ describe("gateway chat-state maintenance", () => {
 
     expectStaleRunBuffersPresent(deps, runId);
 
+    retireSessionControllerInput(source.input);
     await stopMaintenanceTimers(timers);
   });
 
@@ -222,19 +219,22 @@ describe("gateway chat-state maintenance", () => {
       if (kind === "embedded") {
         setActiveEmbeddedRun("maintenance-session", handle, "main");
       }
-      const controller = new AbortController();
-      if (kind === "queued") {
-        registerQueuedChatTurn({
-          chatQueuedTurns: deps.chatQueuedTurns,
-          runId,
-          controller,
-          sessionId: "maintenance-session",
-          sessionKey: "main",
-        });
+      const source =
+        kind === "queued"
+          ? createRpcSourceForTest(
+              { sessionId: "maintenance-session", sessionKey: "main" },
+              { phase: "waiting" },
+            )
+          : undefined;
+      if (source) {
+        deps.rpcSources.set(runId, source);
       }
       const release = () => {
         releaseAgentRunContext(runId, claim);
-        completeQueuedChatTurn(deps.chatQueuedTurns, runId, controller);
+        if (source) {
+          retireSessionControllerInput(source.input);
+          deps.rpcSources.delete(runId);
+        }
         if (kind === "embedded") {
           clearActiveEmbeddedRun("maintenance-session", handle, "main");
         }

@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { testing as controllerTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
 import { resolveSessionStorePathCore } from "../../config/sessions.js";
 import {
   loadSessionEntry,
@@ -7,6 +8,9 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import { claimSessionControllerTask } from "../../sessions/session-controller.mailbox.js";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import {
   ensureProfileForEmail,
   linkEmail,
@@ -14,6 +18,7 @@ import {
 } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
+import { registerChatAbortController } from "../chat-abort.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
 import { SessionMutationAuthorizationChangedError } from "../session-sharing.js";
@@ -112,6 +117,8 @@ function expectConflict(respond: RetryParams["respond"]) {
   );
 }
 
+afterEach(() => controllerTesting.resetReplyRunRegistry());
+
 beforeEach(() => {
   vi.mocked(readSessionSubmittedInput).mockReset();
   vi.mocked(resolveDurableChatClaim).mockReset();
@@ -141,7 +148,7 @@ describe("chat send stop ownership", () => {
 describe("chat send retry identity", () => {
   it.each(["pending", "active", "queued", "terminal"] as const)(
     "rejects changed mention recipients before a %s acknowledgement",
-    (state) => {
+    async (state) => {
       const params = retryFixture(`changed-recipient-${state}`);
       const { clientRunId, pendingChatSendKey, sessionKey } = params.session;
       params.context.dedupe.set(state === "pending" ? pendingChatSendKey : `chat:${clientRunId}`, {
@@ -158,19 +165,33 @@ describe("chat send retry identity", () => {
             }
           : {}),
       });
-      const controller = {
-        controller: new AbortController(),
-        sessionKey,
-        sessionId: "mention-session",
-      };
-      if (state === "active") {
-        params.context.chatAbortControllers.set(clientRunId, {
-          ...controller,
-          startedAtMs: 100,
-          expiresAtMs: 200,
+      if (state === "active" || state === "queued") {
+        const registered = registerChatAbortController({
+          rpcSources: params.context.rpcSources,
+          target: captureSessionTarget({
+            storeScope: params.session.storePath,
+            sessionKey,
+            incarnation: "mention-session",
+            agentId: "main",
+          }),
+          runId: clientRunId,
+          sessionKey,
+          sessionId: "mention-session",
+          timeoutMs: 1000,
         });
-      } else if (state === "queued") {
-        params.context.chatQueuedTurns.set(clientRunId, controller);
+        if (!registered.entry) {
+          throw new Error("Expected reserved retry source");
+        }
+        if (state === "active") {
+          await claimSessionControllerTask(registered.entry.input, (claim) => {
+            createReplyOperation({
+              sessionKey,
+              sessionId: "mention-session",
+              resetTriggered: false,
+              mailboxClaim: claim,
+            }).setPhase("running");
+          });
+        }
       }
       expect(respondChatSendRetry(params)).toBe(true);
       expect(params.respond).toHaveBeenCalledWith(
@@ -455,8 +476,7 @@ describe("chat send retry identity", () => {
           expect(recoveryCompleted).toBe(true);
           expect(loadSessionEntry(scope)).toEqual(originalEntry);
           expect([...fixture.context.dedupe]).toEqual(originalReceipts);
-          expect(fixture.context.chatAbortControllers.size).toBe(0);
-          expect(fixture.context.chatQueuedTurns?.size ?? 0).toBe(0);
+          expect(fixture.context.rpcSources.size).toBe(0);
           expect(client).not.toHaveProperty("invalidated", true);
           if (outcome === "unchanged") {
             expect(settled).toEqual({ value: true, error: undefined });

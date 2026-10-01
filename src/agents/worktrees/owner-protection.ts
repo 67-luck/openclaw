@@ -4,9 +4,9 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveSessionWorkerPlacementContext } from "../../gateway/session-worker-placement-context.js";
 import { prepareSessionWorkerPlacementMutationCheck } from "../../gateway/worker-environments/session-placement-lifecycle.js";
 import {
-  isSessionLifecycleMutationActive,
-  isSessionWorkAdmissionActive,
-} from "../../sessions/session-lifecycle-admission.js";
+  isSessionMutationActive,
+  isSessionControllerWorkActive,
+} from "../../sessions/session-controller.lifecycle.js";
 import { IDLE_GC_MS } from "./service.js";
 import type { ManagedWorktreeOwnerKind } from "./types.js";
 
@@ -28,8 +28,8 @@ export function createManagedWorktreeOwnerPolicy(
       const scope = resolveSessionStorePathCore(cfg.session?.store, { agentId: target.agentId });
       const identities = [target.canonicalKey, ownerId, entry?.sessionId];
       if (
-        isSessionWorkAdmissionActive(scope, identities) ||
-        isSessionLifecycleMutationActive(scope, identities)
+        isSessionControllerWorkActive(scope, identities) ||
+        isSessionMutationActive(scope, identities)
       ) {
         return "active";
       }

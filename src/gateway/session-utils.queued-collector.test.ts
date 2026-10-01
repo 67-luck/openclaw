@@ -1,3 +1,4 @@
+import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
 import "../agents/subagents/spawn/subagent-spawn-model.mocks.shared.js";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
@@ -47,6 +48,7 @@ import { createLifecycleEventBroadcastHandler } from "./server-session-events.js
 import { getSessionRowProjection } from "./session-row-projection-access.js";
 import * as sessionStoreWorker from "./session-utils-store-worker.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
+import { claimRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 const {
   parentKey,
@@ -145,7 +147,7 @@ describe("queued collector session projection", () => {
     const publishLifecycle = createLifecycleEventBroadcastHandler({
       broadcastToConnIds: broadcast,
       sessionEventSubscribers: { getAll: () => new Set(["observer"]) },
-      chatAbortControllers: context.chatAbortControllers,
+      rpcSources: context.rpcSources,
       getSessionRowProjection: () => getSessionRowProjection(context),
     });
     const unsubscribe = onSessionLifecycleEvent((event) => {
@@ -614,10 +616,7 @@ describe("queued collector session projection", () => {
     const { entry, registration } = await createQueuedReservation();
     const unrelated = await createQueuedReservation("unrelated");
     const context = requestContext();
-    const parent = expectDefined(
-      context.chatAbortControllers.get("parent-turn"),
-      "parent admission",
-    );
+    const parent = expectDefined(context.rpcSources.get("parent-turn"), "parent admission");
     let authorizationObserved = false;
     let accessRevoked = false;
     const authorization = createDeferred();
@@ -627,16 +626,16 @@ describe("queued collector session projection", () => {
         return;
       }
       if (failure === "parent replaced") {
-        context.chatAbortControllers.set("parent-turn", { ...parent });
+        context.rpcSources.set("parent-turn", { ...parent });
       }
       if (failure === "parent closed") {
-        parent.controller.abort();
+        requestRpcSourceCancellation(parent);
       }
       if (failure === "parent settled") {
-        parent.isAbortable = () => false;
+        parent.adapter.isAbortable = () => false;
       }
       if (failure === "parent lifecycle retired") {
-        parent.lifecycleGeneration = "retired";
+        parent.adapter.lifecycleGeneration = "retired";
       }
       if (failure === "session access revoked") {
         accessRevoked = true;
@@ -796,24 +795,31 @@ describe("queued collector session projection", () => {
       const foreignRunId = "foreign-admitted-chat";
       const foreignAdmission =
         scenario === "mixed" ? await admitOrdinaryChat(foreignRunId, "other-requester") : undefined;
+      const releaseClaim = await claimRpcSourceForTest(
+        expectDefined(admission.activeRunAbort.entry, "admitted chat source"),
+      );
       admission.activeRunAbort.markExecutionStarted();
       context.chatRunState.getOrCreate(extraRunId).buffer = "Additional run partial";
       const cleanup = () => {
         admission.cleanupAdmittedRun();
         clearAgentRunContext(extraRunId);
       };
-      admission.activeRunAbort.controller.signal.addEventListener(
-        "abort",
-        () =>
-          queueMicrotask(() => {
-            if (scenario === "parent-retired") {
-              context.chatAbortControllers.delete("parent-turn");
-            }
-            cleanup();
-          }),
-        { once: true },
-      );
-      expect(context.chatAbortControllers.get(extraRunId)).toBe(admission.activeRunAbort.entry);
+      const finish = createDeferred();
+      admission.activeRunAbort.controller.signal.addEventListener("abort", () => finish.resolve(), {
+        once: true,
+      });
+      const producer = (async () => {
+        try {
+          await finish.promise;
+        } finally {
+          if (scenario === "parent-retired" && admission.activeRunAbort.controller.signal.aborted) {
+            context.rpcSources.delete("parent-turn");
+          }
+          releaseClaim();
+          cleanup();
+        }
+      })();
+      expect(context.rpcSources.get(extraRunId)).toBe(admission.activeRunAbort.entry);
       expect(isSubagentRunQueued(entry)).toBe(true);
       try {
         const respond = vi.fn();
@@ -845,9 +851,7 @@ describe("queued collector session projection", () => {
         expect.soft(respond.mock.calls[0]?.[0]).toBe(collectorStopped);
         if (foreignAdmission) {
           expect(foreignAdmission.activeRunAbort.controller.signal.aborted).toBe(false);
-          expect(context.chatAbortControllers.get(foreignRunId)).toBe(
-            foreignAdmission.activeRunAbort.entry,
-          );
+          expect(context.rpcSources.get(foreignRunId)).toBe(foreignAdmission.activeRunAbort.entry);
           expect
             .soft(respond)
             .toHaveBeenCalledWith(
@@ -869,7 +873,7 @@ describe("queued collector session projection", () => {
           );
         }
         expect
-          .soft(admission.activeRunAbort.entry?.abortStopReason)
+          .soft(admission.activeRunAbort.entry?.adapter.abortStopReason)
           .toBe(stopped ? (method === "chat.send" ? "stop" : "rpc") : undefined);
         const session = loadGatewaySessionEntryReadOnly(entry.childSessionKey);
         const events = await loadTranscriptEvents({
@@ -892,7 +896,8 @@ describe("queued collector session projection", () => {
         }
         expect(launchedRunIds).toEqual([]);
       } finally {
-        cleanup();
+        finish.resolve();
+        await producer;
         if (foreignAdmission) {
           foreignAdmission.cleanupAdmittedRun();
           clearAgentRunContext(foreignRunId);

@@ -13,7 +13,7 @@ import {
 import { readTranscriptEventRows } from "../../config/sessions/session-accessor.sqlite-read.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target.js";
 import { CURRENT_SESSION_VERSION } from "../../config/sessions/version.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -765,7 +765,7 @@ describe("createPersistCronSessionEntry", () => {
       workspaceDir: "/tmp/workspace",
       persistSessionEntry: makeGuardedPersistSessionEntry(persistedStore),
     });
-    const activeLease = await beginSessionWorkAdmission({
+    const activeLease = await beginSessionEffect({
       scope: storePath,
       identities: [resolveCronLifecycleRevisionIdentity(activeRevision)],
       assertAllowed: () => {},

@@ -45,7 +45,7 @@ export function sessionSharingTestContext(
     broadcast,
     broadcastToConnIds: vi.fn(),
     getSessionEventSubscriberConnIds: () => new Set(),
-    chatAbortControllers: new Map(),
+    rpcSources: new Map(),
   } as unknown as GatewayRequestContext;
 }
 

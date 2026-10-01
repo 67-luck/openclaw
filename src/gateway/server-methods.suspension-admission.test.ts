@@ -32,6 +32,7 @@ import type { GatewayRequestHandler } from "./server-methods/types.js";
 import { GatewayRequestEntryLifetime } from "./server-request-entry.js";
 import { TerminalSessionManager } from "./terminal/session-manager.js";
 import { baseOpenRequest, makeFakePty } from "./terminal/session-manager.test-helpers.js";
+import { createRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 function deferred() {
   let resolve = () => {};
@@ -123,8 +124,7 @@ describe("gateway request suspension admission", () => {
         cron,
         hostLifecycle: host.capability,
         logGateway: { warn: vi.fn() },
-        chatAbortControllers: new Map(),
-        chatQueuedTurns: new Map(),
+        rpcSources: new Map(),
       } as unknown as Parameters<typeof handleGatewayRequest>[0]["context"];
       const rpc = async (method: keyof typeof suspendHandlers, requestParams: unknown) => {
         const result = dispatch({
@@ -517,8 +517,7 @@ describe("gateway request suspension admission", () => {
     const context = {
       cron,
       logGateway: { warn: vi.fn() },
-      chatAbortControllers: new Map(),
-      chatQueuedTurns: new Map(),
+      rpcSources: new Map(),
       terminalSessions: { size: 2 },
     } as unknown as Parameters<typeof handleGatewayRequest>[0]["context"];
     const busy = dispatch({
@@ -582,8 +581,7 @@ describe("gateway request suspension admission", () => {
         getSuspensionBlockerCount: vi.fn(() => 0),
       },
       logGateway: { warn: vi.fn() },
-      chatAbortControllers: new Map(),
-      chatQueuedTurns: new Map(),
+      rpcSources: new Map(),
       terminalSessions: { size: 2 },
     } as unknown as Parameters<typeof handleGatewayRequest>[0]["context"];
 
@@ -627,16 +625,16 @@ describe("gateway request suspension admission", () => {
       resumed: true,
     });
 
-    context.chatAbortControllers.set("persisting", {
-      controller: new AbortController(),
-      sessionId: "session-persisting",
-      sessionKey: "agent:main:session-persisting",
-      startedAtMs: 1,
-      expiresAtMs: 2,
-      registrationCleanupRequested: true,
-      controlUiVisible: true,
-      projectSessionTerminalPending: true,
-    });
+    context.rpcSources.set(
+      "persisting",
+      createRpcSourceForTest({
+        sessionId: "session-persisting",
+        sessionKey: "agent:main:session-persisting",
+        registrationCleanupRequested: true,
+        controlUiVisible: true,
+        projectSessionTerminalPending: true,
+      }),
+    );
     const persisting = dispatch({
       method: "gateway.suspend.prepare",
       scope: "operator.admin",
@@ -686,26 +684,22 @@ describe("gateway request suspension admission", () => {
         spawn: async () => pty,
       });
       await terminalSessions.open(baseOpenRequest());
-      const chatAbortControllers = new Map([
+      const rpcSources = new Map([
         [
           "reply-pending",
-          {
-            controller: new AbortController(),
+          createRpcSourceForTest({
             sessionId: "session-pending",
             sessionKey: "agent:main:session-pending",
-            startedAtMs: 1,
-            expiresAtMs: 2,
             registrationCleanupRequested: true,
             controlUiVisible: true,
             projectSessionTerminalPending: true,
-          },
+          }),
         ],
       ]);
       const context = {
         cron,
         logGateway: { warn: vi.fn() },
-        chatAbortControllers,
-        chatQueuedTurns: new Map(),
+        rpcSources,
         terminalSessions,
       } as unknown as Parameters<typeof handleGatewayRequest>[0]["context"];
 
@@ -799,7 +793,7 @@ describe("gateway request suspension admission", () => {
           writeCustody: [{ phase: "terminal-persistence", count: 1 }],
         });
 
-        chatAbortControllers.clear();
+        rpcSources.clear();
         const ready = dispatch({
           method: "gateway.suspend.status",
           scope: "operator.read",

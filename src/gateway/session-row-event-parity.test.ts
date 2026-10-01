@@ -8,6 +8,7 @@ import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-cloc
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareGatewayRecipientProfile } from "./expected-profile.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
+import { createActiveRpcSourceForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
 import {
   initializeSessionReadContext,
   listSessions,
@@ -69,15 +70,15 @@ it("delivers nested event rows identical to the full list for each viewer and cl
       cfg,
     });
     const context = requestContext(cfg);
-    context.chatAbortControllers = connection.chatAbortControllers;
-    connection.chatAbortControllers.set("current-run", {
-      controller: new AbortController(),
-      sessionKey: key,
-      sessionId: "parent-session",
-      agentId: "main",
-      startedAtMs: now - 100,
-      expiresAtMs: now + 1000,
-    });
+    context.rpcSources = connection.rpcSources;
+    connection.rpcSources.set(
+      "current-run",
+      await createActiveRpcSourceForTest({
+        sessionKey: key,
+        sessionId: "parent-session",
+        agentId: "main",
+      }),
+    );
     const peers = profiles.map((profile, index) => {
       const send = vi.fn();
       const client = {

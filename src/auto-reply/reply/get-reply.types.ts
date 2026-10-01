@@ -12,6 +12,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { DashboardMessageReadAdmission } from "../../gateway/message-action-turn-capability.js";
 import type { ExtractedFileImage } from "../../media-understanding/extracted-file-images.js";
 import type { PluginCommandReplyOptions } from "../../plugins/plugin-command-dispatch-contract.js";
+import type { ReplyOperation } from "../../sessions/session-controller.js";
 import type { SkillWorkshopProposalRevisionConstraint } from "../../skills/workshop/types.js";
 import { getCommandOwnerAuthority } from "../command-owner-authority.js";
 import type { GetReplyOptions } from "../get-reply-options.types.js";
@@ -23,7 +24,7 @@ import type { PreparedReplyConversation } from "./prompt-session-context.js";
 import type { FollowupQueueDisposition, QueuedFollowupReplyDelivery } from "./queue/types.js";
 import type { ReplyOptionsWithAdmissionTicket } from "./reply-admission-ticket.js";
 import type { ReplyOptionsWithOperationRunState } from "./reply-operation-run-state.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
+import type { ReplySourceBinding } from "./reply-source-binding.js";
 
 export type ReplySessionBinding = {
   sessionKey?: string;
@@ -98,7 +99,8 @@ export type InternalGetReplyOptions = GetReplyOptions &
   PluginCommandReplyOptions &
   InternalReplySessionOptions &
   ReplyOptionsWithOperationRunState &
-  ReplyOptionsWithAdmissionTicket;
+  ReplyOptionsWithAdmissionTicket &
+  ReplySourceBinding;
 
 /** Pin the host-issued source before public options cross asynchronous preparation. */
 export function prepareInternalGetReplyOptions(

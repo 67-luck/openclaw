@@ -1,5 +1,5 @@
 import { loadExactSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
-import { captureGatewaySessionWorkAdmissions } from "../../sessions/session-lifecycle-admission.js";
+import { captureGatewaySessionControllerWork } from "../../sessions/session-controller.lifecycle.js";
 import type { GatewayContextResolver } from "../server-methods/types.js";
 import { DEVICE_WORKER_PROVIDER_ID } from "./device-provider-identity.js";
 import { isExactAttachedEnvironment } from "./placement-dispatch-failure.js";
@@ -20,7 +20,7 @@ export function createDevicePlacementDemandReader(sources: DevicePlacementDemand
     if (!params.resolveGatewayContext()) {
       return demand;
     }
-    const admissions = captureGatewaySessionWorkAdmissions(params.resolveGatewayContext);
+    const admissions = captureGatewaySessionControllerWork(params.resolveGatewayContext);
     const targets = new Set<string>();
     for (const identities of admissions.targets.values()) {
       for (const identity of identities) {

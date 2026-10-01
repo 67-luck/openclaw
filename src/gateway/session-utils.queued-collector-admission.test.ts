@@ -1,3 +1,7 @@
+import {
+  isRpcSourceExecuting,
+  requestRpcSourceCancellation,
+} from "../sessions/session-controller.rpc-sources.js";
 import "../agents/subagents/spawn/subagent-spawn-model.mocks.shared.js";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
@@ -189,11 +193,11 @@ describe("queued collector native admission", () => {
           "pending native collector",
         );
         const admission = expectDefined(
-          context.chatAbortControllers.get(entry.runId),
+          context.rpcSources.get(entry.runId),
           "real native controller",
         );
-        expect(admission.kind).toBe("agent");
-        expect(admission.executionStarted).toBe(false);
+        expect(admission.adapter.kind).toBe("agent");
+        expect(isRpcSourceExecuting(admission)).toBe(false);
         expect(getAgentRunContext(entry.runId)).toBeDefined();
         expect(isSubagentRunQueued(entry)).toBe(true);
         expect(
@@ -262,10 +266,10 @@ describe("queued collector native admission", () => {
             .toEqual([true, { ok: true, status: "aborted", abortedRunId: entry.runId }]);
         }
         expect.soft(context.chatRunState.hasAbortMarker(entry.runId)).toBe(true);
-        expect.soft(admission.abortStopReason).toBe("rpc");
+        expect.soft(admission.adapter.abortStopReason).toBe("rpc");
         expect.soft(entry.execution.startedAt).toBeUndefined();
         expect.soft(entry.sessionStartedAt).toBeUndefined();
-        expect(context.chatAbortControllers.has(entry.runId)).toBe(false);
+        expect(context.rpcSources.has(entry.runId)).toBe(false);
         // This unadopted launch still owns its provisional session; join its real cleanup.
         await closeSwarmScheduler();
         expect(order[0]).toBe(publicationFailure ? "deleting" : "published");
@@ -278,7 +282,10 @@ describe("queued collector native admission", () => {
       } finally {
         releasePublication.resolve();
         if (nativeRunId) {
-          context.chatAbortControllers.get(nativeRunId)?.controller.abort();
+          const source = context.rpcSources.get(nativeRunId);
+          if (source) {
+            requestRpcSourceCancellation(source);
+          }
           await dispatched.promise;
           clearAgentRunContext(nativeRunId);
         }

@@ -1,3 +1,4 @@
+import type { SessionControllerWatchdogAttempt } from "../sessions/session-controller.watchdog.js";
 import {
   emitTrustedDiagnosticEvent,
   type DiagnosticEventInput,
@@ -21,7 +22,11 @@ type CoreSemanticRunProgressMetadata = DiagnosticEventMetadata &
 /** Emits semantic run progress from the core boundary that validated the model result. */
 export function emitCoreSemanticRunProgressDiagnosticEvent(
   event: CoreSemanticRunProgressEventInput,
+  attempt?: SessionControllerWatchdogAttempt,
 ): void {
+  if (attempt && !attempt.progress("semantic", event.reason)) {
+    return;
+  }
   emitTrustedDiagnosticEvent(
     markCoreSemanticRunProgressDiagnosticEvent({
       ...event,

@@ -1,8 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { createCliTimeoutError } from "../../agents/cli-runner/no-output-timeout-policy.js";
 import { HEARTBEAT_EXTERNAL_RUN_FAILURE_TEXT } from "../../agents/failover/user-copy.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { withSessionControllerOwner } from "../../sessions/session-controller.context.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { resolveRunAfterAutoFallbackPrimaryProbeRecheck } from "./agent-runner-auto-fallback.js";
 import {
   setupAgentRunnerExecutionTestState,
@@ -20,10 +22,26 @@ import type {
   FallbackRunnerParams,
   EmbeddedAgentParams,
 } from "./agent-runner-execution.test-support.js";
-import { createReplyOperation } from "./reply-run-registry.js";
 import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
 
 const state = await setupAgentRunnerExecutionTestState();
+
+function createCliReplyOperation(followupRun: ReturnType<typeof createFollowupRun>) {
+  const sessionKey = followupRun.run.sessionKey;
+  if (!sessionKey) {
+    throw new Error("CLI probe fixture requires its canonical session key");
+  }
+  const replyOperation = createReplyOperation({
+    sessionKey,
+    sessionId: followupRun.run.sessionId,
+    resetTriggered: false,
+  });
+  replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
+  const failMock = vi.spyOn(replyOperation, "fail");
+  const completeMock = vi.spyOn(replyOperation, "complete");
+  onTestFinished(() => replyOperation.complete());
+  return { replyOperation, failMock, completeMock };
+}
 
 describe("executeAgentTurn: primary probe routing", () => {
   it("rechecks queued auto fallback primary probes before running", async () => {
@@ -336,7 +354,8 @@ describe("executeAgentTurn: primary probe routing", () => {
         },
       ],
     }));
-    const { replyOperation, failMock, retainFailureUntilCompleteMock } = createMockReplyOperation();
+    const { replyOperation, failMock } = createMockReplyOperation();
+    const completeMock = vi.spyOn(replyOperation, "complete");
     const emitAgentEvent = vi.mocked((await import("../../infra/agent-events.js")).emitAgentEvent);
 
     const executeAgentTurn = await getExecuteAgentTurnForTest();
@@ -361,7 +380,7 @@ describe("executeAgentTurn: primary probe routing", () => {
       modelOverrideFallbackOriginProvider: probe.provider,
       modelOverrideFallbackOriginModel: probe.model,
     });
-    expect(retainFailureUntilCompleteMock).toHaveBeenCalledTimes(1);
+    expect(completeMock).not.toHaveBeenCalled();
     expect(failMock).toHaveBeenCalledWith("run_failed", expect.any(Error));
     expect(
       emitAgentEvent.mock.calls
@@ -409,7 +428,8 @@ describe("executeAgentTurn: primary probe routing", () => {
       model: "claude",
       attempts: [],
     }));
-    const { replyOperation, failMock, retainFailureUntilCompleteMock } = createMockReplyOperation();
+    const { replyOperation, failMock } = createMockReplyOperation();
+    const completeMock = vi.spyOn(replyOperation, "complete");
     const emitAgentEvent = vi.mocked((await import("../../infra/agent-events.js")).emitAgentEvent);
 
     const executeAgentTurn = await getExecuteAgentTurnForTest();
@@ -421,7 +441,7 @@ describe("executeAgentTurn: primary probe routing", () => {
     );
 
     expect(result).toMatchObject({ kind: "success", runResult: terminalErrorResult });
-    expect(retainFailureUntilCompleteMock).toHaveBeenCalledTimes(1);
+    expect(completeMock).not.toHaveBeenCalled();
     expect(failMock).toHaveBeenCalledWith("run_failed", expect.any(Error));
     const lifecycleEvents = emitAgentEvent.mock.calls
       .map((call) => call[0])
@@ -532,17 +552,18 @@ describe("executeAgentTurn: primary probe routing", () => {
     const followupRun = createFollowupRun();
     followupRun.run.provider = "codex-cli";
     followupRun.run.model = "gpt-5.4";
-    const { replyOperation, failMock, retainFailureUntilCompleteMock } = createMockReplyOperation();
-    replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
+    const { replyOperation, failMock, completeMock } = createCliReplyOperation(followupRun);
     const emitAgentEvent = vi.mocked((await import("../../infra/agent-events.js")).emitAgentEvent);
 
     const executeAgentTurn = await getExecuteAgentTurnForTest();
-    const result = await executeAgentTurn(
-      createMinimalRunAgentTurnParams({
-        followupRun,
-        replyOperation,
-        opts: { runId: "run-cli-exhausted" },
-      }),
+    const result = await withSessionControllerOwner(replyOperation, () =>
+      executeAgentTurn(
+        createMinimalRunAgentTurnParams({
+          followupRun,
+          replyOperation,
+          opts: { runId: "run-cli-exhausted" },
+        }),
+      ),
     );
 
     expect(state.runCliAgentMock).toHaveBeenCalledOnce();
@@ -552,7 +573,7 @@ describe("executeAgentTurn: primary probe routing", () => {
       fallbackProvider: "codex-cli",
       fallbackModel: "gpt-5.4",
     });
-    expect(retainFailureUntilCompleteMock).toHaveBeenCalledTimes(1);
+    expect(completeMock).not.toHaveBeenCalled();
     expect(failMock).toHaveBeenCalledWith("run_failed", expect.any(Error));
     const lifecycleEvents = emitAgentEvent.mock.calls
       .map((call) => call[0])
@@ -594,14 +615,18 @@ describe("executeAgentTurn: primary probe routing", () => {
     const followupRun = createFollowupRun();
     followupRun.run.provider = "codex-cli";
     followupRun.run.model = "gpt-5.4";
+    const { replyOperation } = createCliReplyOperation(followupRun);
     const emitAgentEvent = vi.mocked((await import("../../infra/agent-events.js")).emitAgentEvent);
 
     const executeAgentTurn = await getExecuteAgentTurnForTest();
-    await executeAgentTurn(
-      createMinimalRunAgentTurnParams({
-        followupRun,
-        opts: { runId: "run-cli-timeout" },
-      }),
+    await withSessionControllerOwner(replyOperation, () =>
+      executeAgentTurn(
+        createMinimalRunAgentTurnParams({
+          followupRun,
+          replyOperation,
+          opts: { runId: "run-cli-timeout" },
+        }),
+      ),
     );
 
     expect(

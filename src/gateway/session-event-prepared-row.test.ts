@@ -100,7 +100,7 @@ it.each(["replacement", "reset"])(
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["viewer"]) },
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
       getSessionRowProjection: () => projection,
     });
     setImmediate(() => {

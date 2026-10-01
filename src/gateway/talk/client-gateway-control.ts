@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { GATEWAY_CLIENT_CAPS } from "../../../packages/gateway-protocol/src/client-info.js";
-import type { ReplyToolAuthorityOverlay } from "../../auto-reply/reply/reply-run-registry.contracts.js";
 import { formatErrorMessage as formatError, readErrorName } from "../../infra/errors.js";
+import type { ReplyToolAuthorityOverlay } from "../../sessions/session-controller.contracts.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   resolveRealtimeVoiceAgentConsultToolsAllow,
@@ -83,10 +83,7 @@ export function createTalkClientGatewayControlOwner(params: {
   controlSource?: "delegation" | "transcript";
   sessionTarget: PreparedTalkSessionTarget;
   connId: string;
-  context: Pick<
-    GatewayRequestContext,
-    "broadcastToConnIds" | "logGateway" | "chatAbortControllers"
-  >;
+  context: Pick<GatewayRequestContext, "broadcastToConnIds" | "logGateway" | "rpcSources">;
   assertConnectionOpen?: () => void;
   runToolAgentConsult: ReusableTalkAgentConsult;
   runAgentConsult: LifecycleBoundTalkAgentConsult;

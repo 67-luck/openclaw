@@ -5,7 +5,6 @@ import type { ChatSendParamsSchema } from "../../../packages/gateway-protocol/sr
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import {
   appendTranscriptMessage,
@@ -15,7 +14,11 @@ import type { SessionCreatedActor } from "../../config/sessions/session-entry-pr
 import { SessionTranscriptProjectionUnavailableError } from "../../config/sessions/session-transcript-projection-error.js";
 import { initializeGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import type { PluginHookBeforeMessageWriteEvent } from "../../plugins/types.js";
-import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
+import {
+  captureSessionTarget,
+  captureSessionControllerSettlement,
+} from "../../sessions/session-controller.lifecycle.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
@@ -66,7 +69,16 @@ export function useBrowserFollowupFixture() {
     });
     const activeTranscript = loadTranscriptEventsSync(scope);
     const activeRun = active
-      ? createReplyOperation({ ...scope, resetTriggered: false })
+      ? createReplyOperation({
+          ...scope,
+          target: captureSessionTarget({
+            storeScope: storePath,
+            sessionKey: scope.sessionKey,
+            incarnation: scope.sessionId,
+            agentId: scope.agentId,
+          }),
+          resetTriggered: false,
+        })
       : undefined;
     // Cloud workers expose a running owner but explicitly reject message injection.
     activeRun?.attachBackend({
@@ -118,7 +130,7 @@ export function useBrowserFollowupFixture() {
       }
       return {};
     });
-    const context = createDirectChatContext({ getRuntimeConfig, chatQueuedTurns: new Map() });
+    const context = createDirectChatContext({ getRuntimeConfig, rpcSources: new Map() });
     const client: GatewayClient = {
       connId: "browser-custody-client",
       connect: {
@@ -165,7 +177,7 @@ export function useBrowserFollowupFixture() {
       return respond;
     };
     const finishDispatch = async () => {
-      const completion = getSessionWorkAdmissionRelease({
+      const completion = captureSessionControllerSettlement({
         scope: storePath,
         identities: [scope.sessionKey, scope.sessionId],
       });
@@ -184,6 +196,7 @@ export function useBrowserFollowupFixture() {
       activeTranscript,
       send,
       dispatchedRecorder: dispatchedRecorder.promise,
+      releaseDispatch: () => dispatchRelease.resolve(),
       finishDispatch,
       cleanup: async () => {
         await finishDispatch();

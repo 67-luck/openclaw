@@ -24,6 +24,7 @@ import {
 import { registerChatAbortController } from "./chat-abort.js";
 import { buildAgentSessionPatch } from "./server-methods/agent-session-patch.js";
 import { createChatAbortContext } from "./server-methods/chat.abort.test-helpers.js";
+import { captureRpcTargetForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
 import { flushPendingSessionsChangedEvents } from "./server-methods/session-change-event.js";
 import { sessionReadHandlers } from "./server-methods/sessions-read.js";
 import type {
@@ -162,7 +163,12 @@ export function useQueuedCollectorFixture() {
       broadcastToConnIds: vi.fn(),
     }) as unknown as GatewayRequestContext;
     registerChatAbortController({
-      chatAbortControllers: context.chatAbortControllers,
+      target: captureRpcTargetForTest({
+        sessionKey: parentKey,
+        sessionId: "parent-session",
+        agentId: "main",
+      }),
+      rpcSources: context.rpcSources,
       runId: "parent-turn",
       sessionId: "parent-session",
       sessionKey: parentKey,
@@ -245,10 +251,12 @@ export function useQueuedCollectorFixture() {
     creationPolicy: Parameters<typeof createInitialSubagentSession>[0]["creationPolicy"] = {
       actor: { type: "agent", id: "main" },
     },
+    requesterSessionKey = parentKey,
+    requesterTurnRunId = "parent-turn",
   ) {
     const childSessionKey = `agent:main:subagent:${name}`;
     const runId = `${name}-collector`;
-    const groupId = `swarm:${parentKey}:parent-turn`;
+    const groupId = `swarm:${requesterSessionKey}:${requesterTurnRunId}`;
     reserveSwarmRun({ runId, groupId, maxConcurrent: 1, activeRunIds: [] });
     expect(
       await createInitialSubagentSession({
@@ -257,8 +265,8 @@ export function useQueuedCollectorFixture() {
         childSessionKey,
         label: "Reserved collector",
         incognito: false,
-        requesterInternalKey: parentKey,
-        completionOwnerSessionKey: parentKey,
+        requesterInternalKey: requesterSessionKey,
+        completionOwnerSessionKey: requesterSessionKey,
         creationPolicy,
         modelPatch: {},
         swarmGroupId: groupId,
@@ -268,9 +276,9 @@ export function useQueuedCollectorFixture() {
     const registration = {
       runId,
       childSessionKey,
-      requesterSessionKey: parentKey,
-      requesterTurnRunId: "parent-turn",
-      requesterDisplayKey: parentKey,
+      requesterSessionKey,
+      requesterTurnRunId,
+      requesterDisplayKey: requesterSessionKey,
       task: "Wait for a slot",
       cleanup: "keep" as const,
       collect: true,

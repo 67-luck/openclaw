@@ -83,7 +83,7 @@ describe("invocation-owned session mutations", () => {
           sessionId: "own-incarnation",
           owner: { connId: client.connId },
         });
-        context.chatAbortControllers.set("selected", rebind ? original : foreign);
+        context.rpcSources.set("selected", rebind ? original : foreign);
         const entered = createDeferredCore();
         const release = createDeferredCore();
         const respond = vi.fn();
@@ -114,20 +114,20 @@ describe("invocation-owned session mutations", () => {
           await Promise.race([entered.promise, request]);
           expect(respond).not.toHaveBeenCalled();
           if (rebind) {
-            context.chatAbortControllers.set("selected", foreign);
+            context.rpcSources.set("selected", foreign);
           }
         } finally {
           release.resolve();
           await request;
         }
-        expect(foreign.controller.signal.aborted).toBe(broad);
-        expect(original.controller.signal.aborted).toBe(false);
+        expect(foreign.input.abortSignal.aborted).toBe(broad);
+        expect(original.input.abortSignal.aborted).toBe(false);
         expect(respond).toHaveBeenCalledOnce();
         expect(respond.mock.calls[0]?.[0]).toBe(broad);
         if (!broad) {
           expect([...context.dedupe]).toEqual(before);
-          expect(context.chatAbortControllers.get("selected")).toBe(foreign);
-          expect(context.chatQueuedTurns.size).toBe(0);
+          expect(context.rpcSources.get("selected")).toBe(foreign);
+          expect(context.rpcSources.size).toBe(1);
         }
       });
     },
@@ -214,6 +214,8 @@ describe("invocation-owned session mutations", () => {
             const runId = `${kind}-${explicit}-${mismatch}`;
             const requestKey = mismatch === "missing-target" ? "agent:main:missing" : key;
             const run = createActiveRun(mismatch === "key" ? "agent:main:other" : requestKey, {
+              // An unbound source cannot publish a native operation with an empty incarnation.
+              queued: kind !== "active" || mismatch === "unbound" || mismatch === "missing-target",
               agentId: "main",
               sessionId:
                 mismatch === "incarnation"
@@ -224,9 +226,9 @@ describe("invocation-owned session mutations", () => {
               owner: { connId: client.connId },
             });
             if (kind === "active") {
-              context.chatAbortControllers.set(runId, run);
+              context.rpcSources.set(runId, run);
             } else if (kind === "queued") {
-              context.chatQueuedTurns.set(runId, run);
+              context.rpcSources.set(runId, run);
             } else {
               context.dedupe.set(`${kind}:${runId}`, {
                 ts: Date.now(),
@@ -238,7 +240,7 @@ describe("invocation-owned session mutations", () => {
                   ownerConnId: client.connId,
                   ...(mismatch === "unbound" || mismatch === "missing-target"
                     ? {}
-                    : { sessionKey: run.sessionKey, sessionId: run.sessionId }),
+                    : { sessionKey: run.adapter.sessionKey, sessionId: run.adapter.sessionId }),
                 },
               });
             }
@@ -265,7 +267,7 @@ describe("invocation-owned session mutations", () => {
             });
             const allowed = mismatch === "none";
             if (kind === "active" || kind === "queued") {
-              expect(run.controller.signal.aborted).toBe(allowed);
+              expect(run.input.abortSignal.aborted).toBe(allowed);
             } else if (!allowed) {
               expect([...context.dedupe]).toEqual(before);
             }
@@ -306,8 +308,9 @@ describe("invocation-owned session mutations", () => {
         });
         for (const changed of ["registration", "key", "sessionId", "agentId"] as const) {
           const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
-          const runs = kind === "active" ? context.chatAbortControllers : context.chatQueuedTurns;
+          const runs = kind === "active" ? context.rpcSources : context.rpcSources;
           const target = {
+            queued: kind === "queued",
             agentId: "main",
             sessionId: "original",
             owner: { connId: client.connId },
@@ -317,15 +320,15 @@ describe("invocation-owned session mutations", () => {
           const replacement = createActiveRun(key, target);
           runs.set("first", first);
           runs.set("second", second);
-          first.controller.signal.addEventListener(
+          first.input.abortSignal.addEventListener(
             "abort",
             () => {
               if (changed === "registration") {
                 runs.set("second", replacement);
               } else if (changed === "key") {
-                second.sessionKey = "agent:main:other";
+                second.adapter.sessionKey = "agent:main:other";
               } else {
-                second[changed] = "replacement";
+                second.adapter[changed] = "replacement";
               }
             },
             { once: true },
@@ -347,9 +350,9 @@ describe("invocation-owned session mutations", () => {
               "sessions.abort": sessionAbortHandlers["sessions.abort"]!,
             },
           });
-          expect(first.controller.signal.aborted).toBe(true);
-          expect(second.controller.signal.aborted).toBe(false);
-          expect(replacement.controller.signal.aborted).toBe(false);
+          expect(first.input.abortSignal.aborted).toBe(true);
+          expect(second.input.abortSignal.aborted).toBe(false);
+          expect(replacement.input.abortSignal.aborted).toBe(false);
           expect(respond.mock.calls[0]?.[1]).toMatchObject(
             method === "chat.abort"
               ? { aborted: true, runIds: ["first"] }
@@ -384,7 +387,7 @@ describe("invocation-owned session mutations", () => {
             sessionId: changed === "key" ? "own-row" : "prior-incarnation",
             owner: { connId: client.connId },
           });
-          context.chatAbortControllers.set("different-run", run);
+          context.rpcSources.set("different-run", run);
           const respond = vi.fn();
           await handleGatewayRequest({
             req: {
@@ -399,7 +402,7 @@ describe("invocation-owned session mutations", () => {
             isWebchatConnect: () => false,
             extraHandlers: { "chat.abort": handleChatAbortRequest },
           });
-          expect(run.controller.signal.aborted).toBe(grant === "operator.write");
+          expect(run.input.abortSignal.aborted).toBe(grant === "operator.write");
           expect(respond.mock.calls[0]?.[0]).toBe(grant === "operator.write");
         }
       });

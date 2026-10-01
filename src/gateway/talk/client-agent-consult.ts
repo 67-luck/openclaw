@@ -16,6 +16,9 @@ import {
   runOutsideGatewayRootWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
 } from "../../process/gateway-work-admission.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
 import {
   buildRunUserTurnIdempotencyKey,
   createUserTurnTranscriptRecorder,
@@ -70,11 +73,16 @@ function createTalkClientAgentRuntime(params: {
   assertCurrent?: () => void;
   getAdditionalSystemPrompt?: () => string | undefined;
   bindOperationalRunInstance?: (instance: OperationalRunInstanceRef) => void;
+  resolveRpcSource: (runId: string) => RpcSourceRef | undefined;
 }) {
   const agentRuntime = createPluginRuntime().agent;
   const runEmbeddedAgent: typeof agentRuntime.runEmbeddedAgent = async (runParams) => {
     runParams.abortSignal?.throwIfAborted();
+    const source = params.resolveRpcSource(runParams.runId);
     const execution = await loadTalkAgentExecution();
+    if (source && params.resolveRpcSource(runParams.runId) !== source) {
+      throw new Error("Talk source changed during runtime preparation");
+    }
     runParams.abortSignal?.throwIfAborted();
     const { agentId, sessionId, sessionKey, storePath } = runParams.sessionTarget ?? {};
     if (!agentId || !sessionId || !sessionKey || !storePath) {
@@ -112,33 +120,44 @@ function createTalkClientAgentRuntime(params: {
       // Provider-owned work can outlive or replace its audio transport. Unlike
       // chat-backed Talk, it has no independent Chat terminal delivery; hiding
       // its final transcript would lose the answer when no spoken replacement arrives.
-      return await execution.runEmbeddedAgent({
-        ...runParams,
-        extraSystemPrompt: [runParams.extraSystemPrompt, params.getAdditionalSystemPrompt?.()]
-          .filter(Boolean)
-          .join("\n\n"),
-        preparedRunAdmission,
-        // Speech is mirrored separately. Keep generated input in current-turn custody,
-        // but never display it or replay it as a later user request.
-        userTurnTranscriptRecorder: createUserTurnTranscriptRecorder({
-          input: {
-            text: runParams.prompt,
-            display: false,
-            excludeFromContext: true,
-            idempotencyKey: buildRunUserTurnIdempotencyKey(runParams.runId),
-          },
-          target: {
-            agentId,
-            sessionId,
-            sessionKey,
-            storePath,
-            expectedSessionId: sessionId,
-            sessionEntry: undefined,
-            config: params.config,
-            cwd: runParams.workspaceDir,
-          },
-        }),
-      });
+      return await withSessionTurn(
+        {
+          sessionKey,
+          sessionId,
+          agentId,
+          storePath,
+          controllerInput: source?.input,
+          abortSignal: runParams.abortSignal,
+        },
+        async () =>
+          execution.runEmbeddedAgent({
+            ...runParams,
+            extraSystemPrompt: [runParams.extraSystemPrompt, params.getAdditionalSystemPrompt?.()]
+              .filter(Boolean)
+              .join("\n\n"),
+            preparedRunAdmission,
+            // Speech is mirrored separately. Keep generated input in current-turn custody,
+            // but never display it or replay it as a later user request.
+            userTurnTranscriptRecorder: createUserTurnTranscriptRecorder({
+              input: {
+                text: runParams.prompt,
+                display: false,
+                excludeFromContext: true,
+                idempotencyKey: buildRunUserTurnIdempotencyKey(runParams.runId),
+              },
+              target: {
+                agentId,
+                sessionId,
+                sessionKey,
+                storePath,
+                expectedSessionId: sessionId,
+                sessionEntry: undefined,
+                config: params.config,
+                cwd: runParams.workspaceDir,
+              },
+            }),
+          }),
+      );
     } finally {
       runParams.abortSignal?.removeEventListener("abort", close);
       close();
@@ -192,7 +211,7 @@ export function prepareTalkClientControlAuthority(params: {
 
 export function createTalkClientAgentConsultRunner(params: {
   config: OpenClawConfig;
-  context: Pick<GatewayRequestContext, "chatAbortControllers" | "logGateway">;
+  context: Pick<GatewayRequestContext, "rpcSources" | "logGateway">;
   sessionTarget: PreparedTalkSessionTarget;
   ownerConnId?: string;
   authority?: TalkAgentConsultAuthority;
@@ -208,6 +227,7 @@ export function createTalkClientAgentConsultRunner(params: {
   let agentRuntime: ReturnType<typeof createPluginRuntime>["agent"] | undefined;
   const getAgentRuntime = () =>
     (agentRuntime ??= createTalkClientAgentRuntime({
+      resolveRpcSource: (runId) => params.context.rpcSources.get(runId),
       config: params.config,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
     }));
@@ -234,6 +254,7 @@ export function createTalkClientAgentConsultRunner(params: {
     getAdditionalSystemPrompt?: () => string | undefined,
   ) =>
     createTalkClientAgentRuntime({
+      resolveRpcSource: (runId) => params.context.rpcSources.get(runId),
       config: params.config,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
       assertCurrent,
@@ -292,6 +313,7 @@ export function createTalkClientAgentConsultRunner(params: {
       ? createOwnedAgentRuntime(owner, assertCurrent, getAdditionalSystemPrompt)
       : assertCurrent || source === "native-delegation" || confirmationGrant
         ? createTalkClientAgentRuntime({
+            resolveRpcSource: (runId) => params.context.rpcSources.get(runId),
             config: params.config,
             ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
             assertCurrent,
@@ -384,7 +406,13 @@ export function createTalkClientAgentConsultRunner(params: {
             }
             const registration = params.ownerConnId
               ? registerChatAbortController({
-                  chatAbortControllers: params.context.chatAbortControllers,
+                  rpcSources: params.context.rpcSources,
+                  target: captureSessionTarget({
+                    storeScope: storePath,
+                    sessionKey: canonicalKey,
+                    agentId,
+                    incarnation: sessionId,
+                  }),
                   runId,
                   sessionId,
                   sessionKey: canonicalKey,
@@ -397,27 +425,26 @@ export function createTalkClientAgentConsultRunner(params: {
               : undefined;
             if (owner) {
               const entry = registration?.entry;
-              const generation = entry?.lifecycleGeneration;
+              const generation = entry?.adapter.lifecycleGeneration;
               owner.cleanup = registration?.cleanup;
-              owner.signal = entry?.controller.signal;
+              owner.signal = entry?.input.abortSignal;
               owner.isCurrent = (resolvedSessionId) =>
                 params.getVoiceSessionId() === voiceSessionId &&
                 (!params.ownerConnId ||
-                  (params.context.chatAbortControllers.get(runId) === entry &&
-                    entry?.controller.signal.aborted === false &&
-                    entry.ownerConnId === params.ownerConnId &&
-                    entry.sessionId === sessionId &&
-                    entry.sessionKey === canonicalKey &&
-                    entry.registrationCleanupRequested !== true &&
+                  (params.context.rpcSources.get(runId) === entry &&
+                    entry?.input.abortSignal.aborted === false &&
+                    entry.adapter.ownerConnId === params.ownerConnId &&
+                    entry.adapter.sessionId === sessionId &&
+                    entry.adapter.sessionKey === canonicalKey &&
                     generation !== undefined &&
-                    entry.lifecycleGeneration === generation &&
+                    entry.adapter.lifecycleGeneration === generation &&
                     isAgentEventLifecycleGenerationCurrent(generation))) &&
                 (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
                 (params.isRunCurrent?.(runId) ?? true);
             }
             return registration
               ? {
-                  abortSignal: registration.controller.signal,
+                  abortSignal: registration.entry?.input.abortSignal,
                   cleanup: owner ? undefined : registration.cleanup,
                 }
               : undefined;

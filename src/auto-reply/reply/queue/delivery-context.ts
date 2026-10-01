@@ -5,7 +5,6 @@ import { normalizeChatType } from "../../../channels/chat-type.js";
 import { combineChannelAdmissionEvidence } from "../../../channels/message-access/admission-evidence.js";
 import { combineGatewayLocalUserIngress } from "../../../gateway/local-user-ingress.js";
 import { channelRouteDedupeKey } from "../../../plugin-sdk/channel-route.js";
-import { resolveGlobalSingleton } from "../../../shared/global-singleton.js";
 import { normalizeMessageChannel } from "../../../utils/message-channel.js";
 import {
   resolveReplyOperatorAuthorityKey,
@@ -20,12 +19,6 @@ export function hasPreparedCurrentTurnImages(run: FollowupRun): boolean {
     (run as FollowupRun & { currentTurnImagesPrepared?: true }).currentTurnImagesPrepared === true
   );
 }
-
-const QUEUED_ADMISSION_OWNER_STATE_KEY = Symbol.for("openclaw.queuedAdmissionOwnerState");
-const queuedAdmissionOwnerState = resolveGlobalSingleton(QUEUED_ADMISSION_OWNER_STATE_KEY, () => ({
-  keys: new WeakMap<NonNullable<FollowupRun["turnAdoptionLifecycle"]>, string>(),
-  nextId: 1,
-}));
 
 export function hasExclusiveTurnAdmission(
   lifecycle: FollowupRun["turnAdoptionLifecycle"],
@@ -47,14 +40,7 @@ function resolveTurnAdoptionLifecycleDeliveryKey(
   if (!hasExclusiveTurnAdmission(lifecycle)) {
     return explicitOwnerKey;
   }
-  let admissionOwnerKey = queuedAdmissionOwnerState.keys.get(lifecycle);
-  if (!admissionOwnerKey) {
-    admissionOwnerKey = `admission:${queuedAdmissionOwnerState.nextId++}`;
-    queuedAdmissionOwnerState.keys.set(lifecycle, admissionOwnerKey);
-  }
-  // Durable admission callbacks own separate ingress identities. Combining
-  // them would let one source commit before a sibling rejects the aggregate.
-  return JSON.stringify([explicitOwnerKey, admissionOwnerKey]);
+  return explicitOwnerKey;
 }
 
 // Keep this key aligned with the fields that affect per-message authorization or
@@ -161,7 +147,7 @@ export function resolveFollowupDeliveryContextKey(run: FollowupRun): string {
   ]);
 }
 
-export function resolveFollowupReplyAnchor(run: FollowupRun): string | undefined {
+function resolveFollowupReplyAnchor(run: FollowupRun): string | undefined {
   if (run.originatingReplyToMode === "off") {
     return undefined;
   }
@@ -265,9 +251,10 @@ export function collectRuntimeMetadata(
   return {
     sourceTurnId: authoritySource?.sourceTurnId,
     operatorAuthority: authoritySource?.operatorAuthority,
-    ...(items.length > 0 && items.every((item) => item.personalBootstrapEligible === true)
-      ? { personalBootstrapEligible: true }
-      : {}),
+    personalBootstrapEligible:
+      items.length > 0 && items.every((item) => item.personalBootstrapEligible === true)
+        ? true
+        : undefined,
     currentInboundEventKind: currentTurnSource?.currentInboundEventKind,
     currentInboundAudio: currentTurnSource?.currentInboundAudio,
     currentInboundContext: collectCurrentInboundContext(items),
@@ -290,17 +277,9 @@ export function collectRuntimeMetadata(
   };
 }
 
-export function resolveOverflowSummaryInboundEventKind(
-  sources: FollowupRun[],
-): "room_event" | undefined {
-  return sources.length > 0 &&
-    sources.every((source) => source.currentInboundEventKind === "room_event")
-    ? "room_event"
-    : undefined;
-}
-
 export function createOverflowSummaryRetrySource(source: FollowupRun): FollowupRun {
   return {
+    controllerInput: source.controllerInput,
     prompt: source.prompt,
     sourceTurnId: source.sourceTurnId,
     admissionSessionId: source.admissionSessionId,

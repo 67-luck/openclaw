@@ -23,14 +23,14 @@ it("reports typed contention without replaying or denying an already applied Sto
   });
   const sessionKey = "agent:main:main";
   const active = createActiveRun(sessionKey, { agentId: "main" });
-  const context = createChatAbortContext({ chatAbortControllers: new Map([["run-1", active]]) });
+  const context = createChatAbortContext({ rpcSources: new Map([["run-1", active]]) });
   const respond = await invokeChatAbortHandler({
     handler: handleChatAbortRequest,
     context,
     request: { sessionKey, runId: "run-1" },
     client: { connect: { scopes: ["operator.admin"] } },
   });
-  expect(active.controller.signal.aborted).toBe(true);
+  expect(active.input.abortSignal.aborted).toBe(true);
   expect(respond).toHaveBeenCalledOnce();
   expect(respond).toHaveBeenCalledWith(
     false,

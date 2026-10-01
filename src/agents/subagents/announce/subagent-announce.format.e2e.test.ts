@@ -24,6 +24,7 @@ import { normalizeLegacySessionEntryDelivery } from "../../../infra/state-migrat
 import * as hookRunnerGlobal from "../../../plugins/hook-runner-global.js";
 import type { HookRunner } from "../../../plugins/hooks.js";
 import { setActivePluginRegistry } from "../../../plugins/runtime.js";
+import * as sessionQueries from "../../../sessions/session-controller.queries.js";
 import { matchesTranscriptEvent } from "../../../sessions/transcript-visible-record.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../../state/openclaw-agent-db.js";
 import {
@@ -161,7 +162,7 @@ const resolveStorePathSpy = vi.spyOn(configSessions, "resolveSessionStorePathCor
 const resolveMainSessionKeySpy = vi.spyOn(configSessions, "resolveMainSessionKey");
 const callGatewaySpy = vi.spyOn(gatewayCall, "callGateway");
 const getGlobalHookRunnerSpy = vi.spyOn(hookRunnerGlobal, "getGlobalHookRunner");
-const isEmbeddedAgentRunActiveSpy = vi.spyOn(embeddedRuns, "isEmbeddedAgentRunActive");
+const isEmbeddedAgentRunActiveSpy = vi.spyOn(sessionQueries, "isSessionRunActive");
 const isEmbeddedAgentRunStreamingSpy = vi.spyOn(embeddedRuns, "isEmbeddedAgentRunStreaming");
 const queueEmbeddedAgentMessageWithOutcomeSpy = vi.spyOn(
   embeddedRuns,
@@ -171,9 +172,7 @@ const waitForEmbeddedAgentRunEndSpy = vi.spyOn(embeddedRuns, "waitForEmbeddedAge
 const readLatestAssistantReplyMock = vi.fn(
   async (_sessionKey?: string): Promise<string | undefined> => "raw subagent reply",
 );
-const embeddedAgentRunActiveMock = vi.fn<typeof embeddedRuns.isEmbeddedAgentRunActive>(
-  (_sessionId: string) => false,
-);
+const embeddedAgentRunActiveMock = vi.fn<typeof sessionQueries.isSessionRunActive>(() => false);
 const embeddedAgentRunStreamingMock = vi.fn<typeof embeddedRuns.isEmbeddedAgentRunStreaming>(
   (_sessionId: string) => false,
 );

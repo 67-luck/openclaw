@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/reply-payload";
 import type { InboundEventKind } from "../../channels/inbound-event/kind.js";
 import { RUN_STALE_TAKEOVER_MS } from "../../logging/diagnostic-run-activity.js";
+import type { ReplyOperation } from "../../sessions/session-controller.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { shouldAttemptTtsPayload } from "../../tts/tts-config.js";
 import {
@@ -18,7 +19,6 @@ import {
 import { prepareReplyPayloadForDispatcher } from "./reply-dispatcher.js";
 import type { ReplyDispatchKind, ReplyDispatcher } from "./reply-dispatcher.types.js";
 import { beginReplyOperationFinalizationWork } from "./reply-run-finalization-lease.js";
-import type { ReplyOperation } from "./reply-run-registry.js";
 
 const ttsRuntimeLoader = createLazyImportLoader(() => import("../../tts/tts.runtime.js"));
 
@@ -181,13 +181,14 @@ export function createFinalizationAwareTtsPayloadApplier(params: {
       ? beginReplyOperationFinalizationWork(replyOperation, RUN_STALE_TAKEOVER_MS)
       : undefined;
     try {
-      return await maybeApplyTtsToReplyPayload({
+      const payload = await maybeApplyTtsToReplyPayload({
         ...ttsParams,
         inboundAudio: params.hasInboundAudio(),
       });
+      replyOperation?.watchdog.progress("finalization", "reply:tts_prepared");
+      return payload;
     } finally {
       finishFinalizationWork?.();
-      replyOperation?.recordActivity();
     }
   };
 }

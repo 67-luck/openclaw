@@ -8,9 +8,9 @@ import { withSessionEntryReadOnlyInWorker } from "../../../config/sessions/sessi
 import type { InternalSessionEntry } from "../../../config/sessions/types.js";
 import { listAgentRunsForSession } from "../../../infra/agent-run-registry.js";
 import {
-  getSessionWorkAdmissionRelease,
-  isSessionWorkAdmissionActive,
-} from "../../../sessions/session-lifecycle-admission.js";
+  captureSessionControllerSettlement,
+  isSessionControllerWorkActive,
+} from "../../../sessions/session-controller.lifecycle.js";
 import {
   isRetiredSubagentExecution,
   isRetiredSubagentSessionOwner,
@@ -22,11 +22,11 @@ import type { SubagentRunRecord } from "./subagent-registry.types.js";
 function retainSessionOwner(storePath: string, sessionKey: string, sessionId: string | undefined) {
   const isCurrent = () =>
     listAgentRunsForSession({ sessionKey, sessionId }).length > 0 ||
-    isSessionWorkAdmissionActive(storePath, [sessionKey, sessionId]);
+    isSessionControllerWorkActive(storePath, [sessionKey, sessionId]);
   return isCurrent()
     ? {
         isCurrent,
-        released: getSessionWorkAdmissionRelease({
+        released: captureSessionControllerSettlement({
           scope: storePath,
           identities: [sessionKey, sessionId],
         }),
@@ -75,7 +75,7 @@ export async function loadSubagentRecoverySession(params: {
     params.isOwnerCurrent() &&
     isRetiredSubagentExecution(params.entry) &&
     listAgentRunsForSession(target).length === 0 &&
-    !isSessionWorkAdmissionActive(storePath, [sessionKey, sessionId]);
+    !isSessionControllerWorkActive(storePath, [sessionKey, sessionId]);
   const interrupted = await patchSessionEntryCore(
     { storePath, sessionKey },
     (current) => {

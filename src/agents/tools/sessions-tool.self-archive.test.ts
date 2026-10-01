@@ -4,7 +4,7 @@ import {
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import type { AgentToolGatewayRequestCaller } from "./in-process-gateway.js";
 import { createSessionsTool } from "./sessions-tool.js";
@@ -28,7 +28,7 @@ async function createArchiveSession(dir: string, name: string, sessionId = `sess
         callGateway,
       }),
     beginAdmission: (id = sessionId) =>
-      beginSessionWorkAdmission({
+      beginSessionEffect({
         scope: storePath,
         identities: [sessionKey, id],
         assertAllowed: () => {},
@@ -189,7 +189,7 @@ describe("sessions tool self-archive", () => {
       const callGateway = vi.fn(async () => ({ ok: true }));
       const tool = createTool(callGateway as never);
       const admission = await beginAdmission();
-      let replacementAdmission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+      let replacementAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
 
       try {
         await admission.run(async () => {
@@ -263,7 +263,7 @@ describe("sessions tool self-archive", () => {
         dir,
         "archive-retry",
       );
-      let competingAdmission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+      let competingAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
       const callGateway = vi.fn(async () => {
         if (!competingAdmission) {
           competingAdmission = await beginAdmission();

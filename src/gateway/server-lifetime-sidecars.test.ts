@@ -232,7 +232,7 @@ describe("gateway lifetime sidecars", () => {
     vi.useFakeTimers();
     const context = {
       broadcastToConnIds: vi.fn(),
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
       getRuntimeConfig: () => ({}),
       getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
       ...bindSessionRowProjection({}, () => projection),

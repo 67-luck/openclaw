@@ -1,14 +1,14 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
-import type { ReplyBackendMessageInjectionV2 } from "../../auto-reply/reply/reply-run-registry.contracts.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import { loadTranscriptEventsSync } from "../../config/sessions/session-accessor.js";
 import {
   getAgentRunContext,
   registerAgentRunContext,
   clearAgentRunContext,
 } from "../../infra/agent-run-registry.js";
+import type { ReplyBackendMessageInjectionV2 } from "../../sessions/session-controller.contracts.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { setUserProfileRole } from "../../state/user-profiles.js";
 import { projectChatDisplayMessages } from "../chat-display-projection.js";
@@ -310,7 +310,7 @@ describe("registered progress refresh admission", () => {
           projectSessionActive: false,
           projectSessionLifecycle: false,
         });
-        expect(f.context.chatAbortControllers.get(payload.runId)).toMatchObject({
+        expect(f.context.rpcSources.get(payload.runId)?.adapter).toMatchObject({
           controlUiVisible: false,
           projectSessionActive: false,
         });
@@ -330,9 +330,7 @@ describe("registered progress refresh admission", () => {
           sessionId: f.scope.sessionId,
           storePath: f.scope.storePath,
         });
-        expect(f.context.chatAbortControllers.get(payload.runId)?.sessionId).toBe(
-          f.scope.sessionId,
-        );
+        expect(f.context.rpcSources.get(payload.runId)?.adapter.sessionId).toBe(f.scope.sessionId);
         await recorder.persistApproved();
         const rows = loadTranscriptEventsSync(f.scope);
         const messages = rows.flatMap((row) =>

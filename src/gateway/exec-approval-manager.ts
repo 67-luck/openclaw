@@ -34,6 +34,7 @@ import {
   prepareExecApprovalPresentation,
   prepareExecApprovalRegistration,
 } from "./exec-approval-registration.js";
+import { assertExecApprovalStandingGrantCurrent } from "./exec-approval-resolution-authority.js";
 import {
   prepareExecApprovalStandingGrant,
   projectClosedApprovalResolution,
@@ -247,19 +248,11 @@ export class ExecApprovalManager<
             ) {
               throw new ApprovalMutationRefusedError("approval authority is no longer active");
             }
-            if (
-              standingGrantSpec &&
-              localEntry &&
-              (JSON.stringify(
-                this.options.resolveStandingGrantMint?.(localEntry.record.request),
-              ) !== JSON.stringify(standingGrantSpec) ||
-                (standingGrantSpec.kind === "mcp-tool" &&
-                  localEntry.record.mcpToolApprovalActive?.() !== true))
-            ) {
-              throw new ApprovalMutationRefusedError(
-                "approval standing grant authority is no longer active",
-              );
-            }
+            assertExecApprovalStandingGrantCurrent(
+              this.options,
+              localEntry?.record,
+              standingGrantSpec,
+            );
           },
           options,
         );
@@ -678,6 +671,20 @@ export class ExecApprovalManager<
       entry.record.consumedBy = result.record.consumedBy;
       return isExecApprovalRuntimeActive(this.options, entry.record);
     }, recordId);
+  }
+
+  /** Exact accepted record liveness for owner-bound waits; never grants a decision. */
+  isPending(record: ExecApprovalRecord<TPayload>): boolean {
+    const entry = this.pending.get(record.id);
+    return (
+      !this.retired &&
+      entry !== undefined &&
+      entry.record === record &&
+      !entry.uncertainVerdict &&
+      record.resolvedAtMs === undefined &&
+      record.expiresAtMs > Date.now() &&
+      isExecApprovalRuntimeActive(this.options, record)
+    );
   }
 
   /** Observes a registered decision; Gateway closure rejects the wait, not the approval. */

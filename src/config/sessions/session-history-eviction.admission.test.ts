@@ -6,7 +6,7 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import * as sqlite from "../../infra/node-sqlite.js";
 import * as integrity from "../../infra/sqlite-integrity-worker.js";
-import { isSessionLifecycleMutationActive } from "../../sessions/session-lifecycle-admission.js";
+import { isSessionMutationActive } from "../../sessions/session-controller.lifecycle.js";
 import { closeCachedOpenClawAgentDatabase } from "../../state/openclaw-agent-db-lifecycle.js";
 import { invalidateOpenClawAgentDatabaseValidation } from "../../state/openclaw-agent-db-validation-cache.js";
 import {
@@ -39,15 +39,13 @@ const hook = vi.hoisted(() => ({
   beforePlan: undefined as (() => Promise<void>) | undefined,
   afterMaterialize: undefined as (() => Promise<void>) | undefined,
 }));
-vi.mock("../../sessions/session-lifecycle-admission.js", async (importOriginal) => {
+vi.mock("../../sessions/session-controller.lifecycle.js", async (importOriginal) => {
   const actual =
-    await importOriginal<typeof import("../../sessions/session-lifecycle-admission.js")>();
+    await importOriginal<typeof import("../../sessions/session-controller.lifecycle.js")>();
   return {
     ...actual,
-    runExclusiveSessionLifecycleMutation: <T>(
-      params: Parameters<typeof actual.runExclusiveSessionLifecycleMutation<T>>[0],
-    ) =>
-      actual.runExclusiveSessionLifecycleMutation({
+    runSessionMutation: <T>(params: Parameters<typeof actual.runSessionMutation<T>>[0]) =>
+      actual.runSessionMutation({
         ...params,
         run: async () => {
           await hook.beforePlan?.();
@@ -271,7 +269,7 @@ it.each([
     if (boundary === "child") {
       await yieldToEventLoop();
       expect(laterWriterRan).toBe(false);
-      expect(isSessionLifecycleMutationActive(storePath, [oldSessionId])).toBe(true);
+      expect(isSessionMutationActive(storePath, [oldSessionId])).toBe(true);
       if (outcome === "protected") {
         // A peer connection can refresh the live entry while the parent validates.
         const peer = realOpen(database.path);
@@ -317,7 +315,7 @@ it.each([
     expect(events.indexOf("later-writer")).toBeGreaterThan(events.indexOf("blocker-released"));
     expect(parentChecks).toBe(0);
     expect(childChecks).toBe(cold ? 1 : 0);
-    expect(isSessionLifecycleMutationActive(storePath, [oldSessionId])).toBe(false);
+    expect(isSessionMutationActive(storePath, [oldSessionId])).toBe(false);
     if (outcome === "revoked") {
       await closeOpenClawAgentDatabaseByPathAsync(database.path);
     }

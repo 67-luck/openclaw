@@ -1,16 +1,8 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { clearBootstrapSnapshotOnSessionRollover } from "../agents/bootstrap-cache.js";
-import {
-  listActiveEmbeddedRunSessionKeys,
-  resolveActiveEmbeddedRunSessionId,
-} from "../agents/embedded-agent-runner/active-run-projections.js";
 import { resolveEmbeddedSessionLane } from "../agents/embedded-agent-runner/lanes.js";
 import { transitionMainSessionRecovery } from "../agents/main-session-recovery/main-session-recovery-state.js";
 import { isHeartbeatAcknowledgementText } from "../auto-reply/heartbeat.js";
-import {
-  listActiveReplyRunSessionKeys,
-  replyRunRegistry,
-} from "../auto-reply/reply/reply-run-registry.js";
 import type { ChannelHeartbeatDeps } from "../channels/plugins/types.public.js";
 import { createReplyPrefixContext } from "../channels/reply-prefix.js";
 import { getRuntimeConfig } from "../config/config.js";
@@ -32,6 +24,11 @@ import { getQueueSize, isCommandLaneTaskMarkerCurrent } from "../process/command
 import { CommandLane } from "../process/lanes.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { listActiveReplyRunSessionKeys } from "../sessions/session-controller.js";
+import {
+  listActiveSessionRunKeys as listActiveEmbeddedRunSessionKeys,
+  resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId,
+} from "../sessions/session-controller.queries.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
 import { getAgentEventLifecycleGeneration } from "./agent-events.js";
 import { formatErrorMessage } from "./errors.js";
@@ -320,13 +317,12 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
     return skippedHeartbeatStage(preflight.skipReason, startedAt);
   }
   const { sessionKey } = preflight.session;
-  const isReplyRunActive =
-    opts.deps?.isReplyRunActive ?? ((key: string) => replyRunRegistry.isActive(key));
-  // Keep injected lists authoritative; production checks the current indexed owner at each fence.
-  const isEmbeddedRunActive = opts.deps?.listActiveEmbeddedRunSessionKeys
+  // One controller owns both direct/native and dispatched turns. Injected
+  // lists remain authoritative for embedders without creating a second vote.
+  const isSessionActive = opts.deps?.listActiveEmbeddedRunSessionKeys
     ? (key: string) => hasActiveRunForSession(key, listActiveEmbeddedRuns)
     : (key: string) => resolveActiveEmbeddedRunSessionId(key) !== undefined;
-  if (isReplyRunActive(sessionKey) || isEmbeddedRunActive(sessionKey)) {
+  if (isSessionActive(sessionKey)) {
     return skippedBusyStage(HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT);
   }
 
@@ -345,8 +341,7 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
     heartbeat,
     scheduledTasks,
     startedAt,
-    isEmbeddedRunActive,
-    isReplyRunActive,
+    isSessionActive,
     preflight,
   } as const;
 }
@@ -357,7 +352,7 @@ export type ReadyHeartbeatWake = StageResult<ReturnType<typeof resolveHeartbeatW
 export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   const { cfg, agentId, heartbeat, preflight } = wake;
   const { scheduledTasks, startedAt } = wake;
-  const { isEmbeddedRunActive, isReplyRunActive } = wake;
+  const { isSessionActive } = wake;
   const { entry, sessionKey, run, conversationEntry } = preflight.session;
   const previousUpdatedAt = entry?.updatedAt;
   const projectionSessionKey = run.kind === "isolated" ? run.baseSessionKey : sessionKey;
@@ -484,7 +479,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
             isolatedSessionKey,
             isolatedBaseSessionKey,
           });
-    if (isReplyRunActive(isolatedSessionKey) || isEmbeddedRunActive(isolatedSessionKey)) {
+    if (isSessionActive(isolatedSessionKey)) {
       return skippedHeartbeatStage(HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT, startedAt);
     }
     const staleIsolatedEntry = staleIsolatedSessionKey

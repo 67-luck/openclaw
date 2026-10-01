@@ -9,10 +9,10 @@ import { registerPluginCommand } from "../../plugins/commands.js";
 import type { PluginTargetedInboundClaimOutcome } from "../../plugins/hooks.test-fixtures.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import {
-  interruptSessionWorkAdmissions,
-  isSessionWorkAdmissionActive,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  interruptSessionControllerEffects,
+  isSessionControllerWorkActive,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import {
   createChannelTestPluginBase,
   createTestRegistry,
@@ -1074,7 +1074,7 @@ describe("dispatchReplyFromConfig", () => {
         const operation = replyRunRegistry.get(sessionKey);
         expect(operation).toBeDefined();
         expect(
-          isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
+          isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
         ).toBe(true);
         if (existingOperation) {
           expect(operation).toBe(existingOperation);
@@ -1083,12 +1083,12 @@ describe("dispatchReplyFromConfig", () => {
         }
         abort.abort(cancellation);
         mutation = externalLifecycleRequest.runInAsyncScope(async () =>
-          runExclusiveSessionLifecycleMutation({
+          runSessionMutation({
             scope: "/tmp/mock-sessions.json",
             identities: [sessionKey, sessionId],
             prepare: async () => {
               mutationPrepared = true;
-              await interruptSessionWorkAdmissions({
+              await interruptSessionControllerEffects({
                 scope: "/tmp/mock-sessions.json",
                 identities: [sessionKey, sessionId],
               });
@@ -1110,7 +1110,7 @@ describe("dispatchReplyFromConfig", () => {
         expect(cleanupFinished).toBe(false);
         expect(mutationRan).toBe(false);
         expect(
-          isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
+          isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
         ).toBe(true);
         expect(replyRunRegistry.get(sessionKey)).toBe(existingOperation ? undefined : operation);
         expect(hookMocks.runner.runInboundClaimForPluginOutcome).not.toHaveBeenCalled();
@@ -1124,7 +1124,7 @@ describe("dispatchReplyFromConfig", () => {
         expect(cleanupFinished).toBe(true);
         expect(mutationRan).toBe(true);
         expect(
-          isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
+          isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
         ).toBe(false);
         expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
         expect(dispatchResult).toHaveBeenCalledOnce();
@@ -1177,18 +1177,18 @@ describe("dispatchReplyFromConfig", () => {
       expect(hookMocks.runner.runInboundClaimForPluginOutcome).toHaveBeenCalledOnce();
     });
     expect(replyRunRegistry.get(sessionKey)).toBeDefined();
-    expect(isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
+    expect(isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
       true,
     );
 
     let mutationRan = false;
     const mutation = externalLifecycleRequest.runInAsyncScope(
       async () =>
-        await runExclusiveSessionLifecycleMutation({
+        await runSessionMutation({
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
           prepare: async () => {
-            await interruptSessionWorkAdmissions({
+            await interruptSessionControllerEffects({
               scope: "/tmp/mock-sessions.json",
               identities: [sessionKey, sessionId],
             });
@@ -1247,7 +1247,7 @@ describe("dispatchReplyFromConfig", () => {
     await vi.waitFor(() => {
       expect(hookMocks.runner.runInboundClaimForPluginOutcome).toHaveBeenCalledOnce();
     });
-    expect(isSessionWorkAdmissionActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
+    expect(isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
       true,
     );
 
@@ -1258,12 +1258,12 @@ describe("dispatchReplyFromConfig", () => {
     let mutationRan = false;
     const mutation = externalLifecycleRequest.runInAsyncScope(
       async () =>
-        await runExclusiveSessionLifecycleMutation({
+        await runSessionMutation({
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
           prepare: async () => {
             mutationPrepared = true;
-            await interruptSessionWorkAdmissions({
+            await interruptSessionControllerEffects({
               scope: "/tmp/mock-sessions.json",
               identities: [sessionKey, sessionId],
             });
@@ -1336,11 +1336,11 @@ describe("dispatchReplyFromConfig", () => {
 
     let mutationRan = false;
     const mutation = runWithReplyOperationLifecycleAdmission(ownerOperation, async () =>
-      runExclusiveSessionLifecycleMutation({
+      runSessionMutation({
         scope: "/tmp/mock-sessions.json",
         identities: [sessionKey, sessionId],
         prepare: async () => {
-          await interruptSessionWorkAdmissions({
+          await interruptSessionControllerEffects({
             scope: "/tmp/mock-sessions.json",
             identities: [sessionKey, sessionId],
           });
@@ -1427,11 +1427,11 @@ describe("dispatchReplyFromConfig", () => {
     const externalLifecycleRequest = new AsyncResource("interrupted-fallback-lifecycle");
     const mutation = externalLifecycleRequest.runInAsyncScope(
       async () =>
-        await runExclusiveSessionLifecycleMutation({
+        await runSessionMutation({
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
           prepare: async () => {
-            await interruptSessionWorkAdmissions({
+            await interruptSessionControllerEffects({
               scope: "/tmp/mock-sessions.json",
               identities: [sessionKey, sessionId],
             });

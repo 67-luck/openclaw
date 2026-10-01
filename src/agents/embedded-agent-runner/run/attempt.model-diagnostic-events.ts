@@ -224,6 +224,7 @@ export function wrapStreamFnWithDiagnosticModelCallEvents(
       requestTimeoutMs,
       createObserver: (capturePromptStats) =>
         createModelObserver({
+          watchdogAttempt: ctx.ownerGeneration?.watchdogAttempt,
           config: ctx.config,
           streamContext,
           contentCapture: ctx.contentCapture,

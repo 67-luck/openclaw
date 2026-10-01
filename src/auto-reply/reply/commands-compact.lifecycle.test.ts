@@ -1,6 +1,7 @@
 // Tests compact-command session authority across awaited lifecycle transitions.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import {
   abortEmbeddedAgentRun,
   buildCompactParams,
@@ -14,7 +15,6 @@ import {
   waitForEmbeddedAgentRunEnd,
 } from "./commands-compact.test-support.js";
 import type { HandleCommandsParams } from "./commands-types.js";
-import { createReplyOperation } from "./reply-run-registry.js";
 
 describe("handleCompactCommand lifecycle authority", () => {
   beforeEach(resetCompactCommandMocks);

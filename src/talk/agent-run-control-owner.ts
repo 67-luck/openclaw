@@ -1,16 +1,16 @@
 import {
-  ACTIVE_EMBEDDED_RUNS,
+  getActiveNativeAttempt,
   ACTIVE_EMBEDDED_RUN_REGISTRATIONS,
 } from "../agents/embedded-agent-runner/run-state.js";
-import type { ReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-run-registry.contracts.js";
+import type { ReplyToolAuthorityOverlay } from "../sessions/session-controller.contracts.js";
 import {
   getAttachedBackend,
   resolveReplyRunForCurrentSessionId,
-} from "../auto-reply/reply/reply-run-registry.state.js";
+} from "../sessions/session-controller.state.js";
 
 /** A session-wide request selects one existing owner; later work cannot inherit it. */
 export function captureRealtimeVoiceRunOwner(sessionId: string, sessionKey: string) {
-  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  const handle = getActiveNativeAttempt(sessionId);
   const registration = handle ? ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) : undefined;
   const operation = resolveReplyRunForCurrentSessionId(sessionId);
   if (!handle && !operation) {
@@ -32,7 +32,7 @@ export function captureRealtimeVoiceRunOwner(sessionId: string, sessionKey: stri
     }
     if (
       handle &&
-      (ACTIVE_EMBEDDED_RUNS.get(sessionId) !== handle ||
+      (getActiveNativeAttempt(sessionId) !== handle ||
         ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle) !== registration ||
         (registration?.sessionKey !== undefined && registration.sessionKey !== sessionKey) ||
         handle.runId !== runId ||

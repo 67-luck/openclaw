@@ -125,7 +125,7 @@ function selectAgentHarnessDecision(
 
 /** Runs the selected harness's fail-closed settled-turn finalization operation. */
 export async function runAgentHarnessSettledTurnFinalization(
-  params: EmbeddedRunAttemptParams,
+  params: EmbeddedRunAttemptInternalParams,
   settledAttempt: EmbeddedRunAttemptResult,
   harness: AgentHarness,
 ) {

@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import * as logging from "../../logging/logger.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabasesAsync,
@@ -131,7 +131,7 @@ describe("SQLite lifecycle cleanup reclamation", () => {
       const entered = createDeferred();
       const prepared = createDeferred();
       const reclaim = vi.spyOn(reclamation, "runSqliteSessionReclamation");
-      const previous = runExclusiveSessionLifecycleMutation({
+      const previous = runSessionMutation({
         scope: storePath,
         identities: [current.sessionKey, current.sessionId],
         run: async () => {

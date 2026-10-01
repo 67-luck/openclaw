@@ -87,7 +87,7 @@ async function withRecoveryRuntime(
   verify: (runtime: {
     context: {
       broadcastToConnIds: ReturnType<typeof vi.fn>;
-      chatAbortControllers: Map<never, never>;
+      rpcSources: Map<never, never>;
       getRuntimeConfig: () => object;
       getSessionEventSubscriberConnIds: () => Set<string>;
     };
@@ -122,7 +122,7 @@ async function withRecoveryRuntime(
     }
     const context = {
       broadcastToConnIds: vi.fn(options.broadcast),
-      chatAbortControllers: new Map<never, never>(),
+      rpcSources: new Map<never, never>(),
       getRuntimeConfig: () => ({}),
       getSessionEventSubscriberConnIds: () =>
         new Set(options.hasSubscribers === false ? [] : ["session-observer"]),

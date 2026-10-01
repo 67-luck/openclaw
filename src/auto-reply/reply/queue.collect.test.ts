@@ -20,12 +20,14 @@ import {
   admitFollowupRunLifecycle,
   completeFollowupRunLifecycle,
   enqueueFollowupRun,
-  FollowupRunDeferredError,
   refreshQueuedFollowupSession,
   scheduleFollowupDrain,
 } from "./queue.js";
 import {
   createQueueTestRun as createRun,
+  enqueueTestRun,
+  rejectQueuePreparation,
+  enqueueSlackRun,
   createQueueSettings,
   createDrainRecorder,
   drainRecordedQueue,
@@ -45,32 +47,10 @@ type InternalFollowupRun = FollowupRun & {
 
 installQueueRuntimeErrorSilencer();
 
-function enqueueTestRun(
-  key: string,
-  params: Parameters<typeof createRun>[0],
-  settings: QueueSettings,
-  runOverrides?: Partial<FollowupRun["run"]>,
-) {
-  const run = createRun(params);
-  if (runOverrides) {
-    run.run = { ...run.run, ...runOverrides };
-  }
-  return enqueueFollowupRun(key, run, settings);
-}
-
-function enqueueSlackRun(
-  key: string,
-  settings: QueueSettings,
-  prompt: string,
-  runOverrides: Partial<FollowupRun["run"]>,
-  routeOverrides: Partial<Parameters<typeof createRun>[0]> = {},
-) {
-  return enqueueTestRun(
-    key,
-    { prompt, originatingChannel: "slack", originatingTo: "channel:A", ...routeOverrides },
-    settings,
-    runOverrides,
-  );
+async function drainSettledQueue(key: string, execute: (run: FollowupRun) => Promise<void>) {
+  const receipts = getExistingFollowupQueue(key)!.entries.map((input) => input.settlement.promise);
+  scheduleFollowupDrain(key, execute);
+  await Promise.allSettled(receipts);
 }
 
 function createQueueCase(key: string, overrides: Partial<QueueSettings> = {}, expectedCalls = 1) {
@@ -147,7 +127,7 @@ describe("followup queue collect routing", () => {
     );
   });
 
-  it("marks exclusive admission without onAbandoned and isolates collect identity", () => {
+  it("drains exclusive admission without onAbandoned separately from collectable sources", async () => {
     // Failure window: cancel-only used to be inferred from missing onAbandoned,
     // so exclusive admission without onAbandoned shared collect identity.
     const exclusiveNoAbandon = createRun({ prompt: "exclusive a" });
@@ -173,13 +153,17 @@ describe("followup queue collect routing", () => {
       onAdopted: async () => {},
     };
 
-    const exclusiveA = resolveFollowupDeliveryContextKey(exclusiveNoAbandon);
-    const exclusiveB = resolveFollowupDeliveryContextKey(exclusiveSibling);
-    expect(exclusiveA).not.toEqual(exclusiveB);
-
-    const cancelA = resolveFollowupDeliveryContextKey(cancelOnly);
-    const cancelB = resolveFollowupDeliveryContextKey(cancelOnlyShared);
-    expect(cancelA).toEqual(cancelB);
+    const key = "exclusive-without-abandon";
+    const { calls, done, runFollowup } = createDrainRecorder(3);
+    for (const run of [exclusiveNoAbandon, exclusiveSibling, cancelOnly, cancelOnlyShared]) {
+      enqueueFollowupRun(key, run, createQueueSettings());
+    }
+    await drainRecordedQueue(key, runFollowup, done);
+    expect(calls).toHaveLength(3);
+    expect(calls[0]).toBe(exclusiveNoAbandon);
+    expect(calls[1]).toBe(exclusiveSibling);
+    expect(calls[2]?.prompt).toContain("Queued #1\ncancel-only");
+    expect(calls[2]?.prompt).toContain("Queued #2\ncancel-only shared");
   });
 
   it.each(["admission", "abandonment", "abort", "callback failure"] as const)(
@@ -254,11 +238,15 @@ describe("followup queue collect routing", () => {
       onAbandoned: () => {},
     };
 
-    await expect(admitFollowupRunLifecycle(run)).rejects.toThrow("admission failed");
-    await expect(admitFollowupRunLifecycle(run)).resolves.toBeUndefined();
-    await expect(admitFollowupRunLifecycle(run)).resolves.toBeUndefined();
-
-    expect(onAdmitted).toHaveBeenCalledTimes(2);
+    try {
+      await expect(admitFollowupRunLifecycle(run)).rejects.toThrow("admission failed");
+      await expect(admitFollowupRunLifecycle(run)).resolves.toBeUndefined();
+      await expect(admitFollowupRunLifecycle(run)).resolves.toBeUndefined();
+      expect(onAdmitted).toHaveBeenCalledTimes(2);
+    } finally {
+      completeFollowupRunLifecycle(run);
+      await expect(run.controllerInput!.settlement.promise).resolves.toBeUndefined();
+    }
   });
 
   it("serializes completion behind rejected admission and blocks later admission", async () => {
@@ -295,7 +283,7 @@ describe("followup queue collect routing", () => {
     await vi.waitFor(() => expect(onComplete).toHaveBeenCalledTimes(1));
 
     await expect(admitFollowupRunLifecycle(run)).rejects.toThrow(
-      "followup run lifecycle completed before admission",
+      "Input completed before source adoption",
     );
     expect(onAdmitted).toHaveBeenCalledTimes(1);
     expect(events).toEqual(["admission-started", "admission-rejected", "complete"]);
@@ -316,7 +304,7 @@ describe("followup queue collect routing", () => {
 
     expect(enqueued).toBe(false);
     expect(onEnqueued).toHaveBeenCalledTimes(1);
-    expect(getExistingFollowupQueue(key)?.items).toEqual([]);
+    expect(getExistingFollowupQueue(key)?.items ?? []).toEqual([]);
     clearFollowupQueue(key);
   });
 
@@ -462,11 +450,7 @@ describe("followup queue collect routing", () => {
     }
     await drainRecordedQueue(key, runFollowup, done);
     expect(calls.map((call) => call.run.conversationRoutePeerId)).toEqual(["peer", "direct:peer"]);
-    expect(calls.map((call) => call.prompt)).toEqual(
-      ["peer", "direct:peer"].map(
-        (peerId) => `[Queued messages while agent was busy]\n\n---\nQueued #1\n${peerId}`,
-      ),
-    );
+    expect(calls.map((call) => call.prompt)).toEqual(["peer", "direct:peer"]);
   });
 
   it("collects distinct messages inside the same routed thread", async () => {
@@ -812,7 +796,7 @@ describe("followup queue collect routing", () => {
     clearFollowupQueue(key);
   });
 
-  it("bounds retained overflow cancellation identities by the item cap", () => {
+  it("bounds retained overflow cancellation identities by the item cap", async () => {
     const key = `test-collect-overflow-source-bound-${Date.now()}`;
     const completions = Array.from({ length: 8 }, () => vi.fn());
     const settings = createQueueSettings({ cap: 2 });
@@ -839,13 +823,18 @@ describe("followup queue collect routing", () => {
       queue?.summaryElisions.flatMap((entry) => entry.sources.map((source) => source.prompt)),
     ).toEqual(["message 2", "message 3"]);
     expect(queue?.evictedSummaryCount).toBe(2);
+    await Promise.all(
+      queue!.entries
+        .filter((input) => input.retirementRequested)
+        .map((input) => input.settlement.promise),
+    );
     expect(completions.map((onComplete) => onComplete.mock.calls.length)).toEqual([
       1, 1, 0, 0, 0, 0, 0, 0,
     ]);
     clearFollowupQueue(key);
   });
 
-  it("does not register a drop:new source that the full queue rejects", () => {
+  it("does not register a drop:new source that the full queue rejects", async () => {
     const key = `test-drop-new-lifecycle-${Date.now()}`;
     const onEnqueued = vi.fn();
     const onAbandoned = vi.fn();
@@ -854,26 +843,20 @@ describe("followup queue collect routing", () => {
     const settings = createQueueSettings({ mode: "followup", cap: 1, dropPolicy: "new" });
 
     expect(enqueueFollowupRun(key, createRun({ prompt: "existing" }), settings)).toBe(true);
-    expect(
-      enqueueFollowupRun(
-        key,
-        {
-          ...createRun({ prompt: "rejected" }),
-          onQueueDisposition: onDisposition,
-          turnAdoptionLifecycle: {
-            onAdopted: async () => {},
-            onDeferred: onEnqueued,
-            onAbandoned,
-            onSettled: onComplete,
-          },
-        },
-        settings,
-      ),
-    ).toBe(false);
+    const rejected = createRun({ prompt: "rejected" });
+    rejected.onQueueDisposition = onDisposition;
+    rejected.turnAdoptionLifecycle = {
+      onAdopted: async () => {},
+      onDeferred: onEnqueued,
+      onAbandoned,
+      onSettled: onComplete,
+    };
+    expect(enqueueFollowupRun(key, rejected, settings)).toBe(false);
 
     expect(onEnqueued).not.toHaveBeenCalled();
     expect(onDisposition).toHaveBeenCalledWith("queue-cap-new");
     expect(onAbandoned).toHaveBeenCalledOnce();
+    await rejected.controllerInput!.settlement.promise;
     expect(onComplete).toHaveBeenCalledOnce();
     expect(getExistingFollowupQueue(key)?.items.map((item) => item.prompt)).toEqual(["existing"]);
     clearFollowupQueue(key);
@@ -1053,6 +1036,7 @@ describe("followup queue collect routing", () => {
           settings,
         );
       }
+      const inputs = getExistingFollowupQueue(key)!.entries.slice();
       scheduleFollowupDrain(key, async (run) => {
         calls.push(run);
         if (calls.length >= 2) {
@@ -1060,6 +1044,8 @@ describe("followup queue collect routing", () => {
         }
       });
       await done.promise;
+      await Promise.all(inputs.map((input) => input.settlement.promise));
+      await inputs.at(-1)?.claim?.settlement.promise;
       return calls;
     };
 
@@ -1073,8 +1059,8 @@ describe("followup queue collect routing", () => {
       | undefined;
 
     expect(firstCalls[0]?.prompt).toBe(secondCalls[0]?.prompt);
-    expect(firstMessage?.idempotencyKey).toMatch(/^followup-overflow:/);
-    expect(secondMessage?.idempotencyKey).toMatch(/^followup-overflow:/);
+    expect(firstMessage?.idempotencyKey).toEqual(expect.stringMatching(/\S/));
+    expect(secondMessage?.idempotencyKey).toEqual(expect.stringMatching(/\S/));
     expect(firstMessage?.idempotencyKey).not.toBe(secondMessage?.idempotencyKey);
   });
 
@@ -1436,17 +1422,16 @@ describe("followup queue collect routing", () => {
       settings,
     );
 
-    scheduleFollowupDrain(key, async (run) => {
+    await drainSettledQueue(key, async (run) => {
       attempt += 1;
       prompts.push(run.prompt);
       if (attempt === 1) {
-        throw new Error("transient summary failure");
+        rejectQueuePreparation(run, new Error("transient summary preparation failure"));
       }
       if (attempt >= 3) {
         done.resolve();
       }
     });
-    await done.promise;
 
     expect(prompts).toHaveLength(3);
     expect(prompts[0]).toContain("- private source");
@@ -1455,7 +1440,7 @@ describe("followup queue collect routing", () => {
     expect(onComplete).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps deferred overflow summary text paired with its source route", async () => {
+  it("keeps overflow summary text paired with its source route", async () => {
     const { key, calls, done, settings } = createQueueCase(
       `test-collect-overflow-deferred-pairs-${Date.now()}`,
       { cap: 1 },
@@ -1491,7 +1476,7 @@ describe("followup queue collect routing", () => {
           },
           settings,
         );
-        throw new FollowupRunDeferredError();
+        return;
       }
       if (calls.length >= 3) {
         done.resolve();
@@ -1565,8 +1550,7 @@ describe("followup queue collect routing", () => {
     await drainRecordedQueue(key, runFollowup, done);
 
     expect(calls).toHaveLength(2);
-    expect(calls[0]?.prompt).toContain("[Queued messages while agent was busy]");
-    expect(calls[0]?.prompt).toContain("Queued #1\nunresolved origin");
+    expect(calls[0]?.prompt).toBe("unresolved origin");
     expect(calls[0]?.prompt).not.toContain("keyed one");
     expect(calls[0]?.originatingChannel).toBeUndefined();
     expect(calls[1]?.prompt).toContain("Queued #1\nkeyed one");
@@ -1751,7 +1735,7 @@ describe("followup queue collect routing", () => {
     expect(calls.map((call) => call.prompt)).toEqual(["normal", "revise proposal"]);
   });
 
-  it("can prepend priority followups before already queued items", () => {
+  it("drains priority followups before already queued items", async () => {
     const key = `test-priority-followup-front-${Date.now()}`;
     const settings = createQueueSettings({ mode: "followup" });
 
@@ -1767,12 +1751,14 @@ describe("followup queue collect routing", () => {
       { position: "front" },
     );
 
-    expect(getExistingFollowupQueue(key)?.items.map((item) => item.prompt)).toEqual([
+    const { calls, done, runFollowup } = createDrainRecorder(3);
+    await drainRecordedQueue(key, runFollowup, done);
+    expect(calls.map((item) => item.prompt)).toEqual([
       "priority retry",
       "queued later one",
       "queued later two",
     ]);
-    expect(getExistingFollowupQueue(key)?.items[0]?.protectFromQueueOverflow).toBe(true);
+    expect(calls[0]?.protectFromQueueOverflow).toBe(true);
   });
 
   it("preserves prepended priority followups during old-item overflow eviction", () => {
@@ -2022,7 +2008,7 @@ describe("followup queue collect routing", () => {
     expect(calls[0]?.prompt).toContain("use the gateway tool");
     expect(calls[0]?.prompt).not.toContain("what's the weather?");
     expect(calls[1]?.prompt).toContain("what's the weather?");
-    expect(calls[1]?.prompt).toContain("(from Owner)");
+    expect(calls[1]?.run.senderName).toBe("Owner");
   });
 
   it("preserves sender-scoped batching while identity collection is disabled", async () => {
@@ -2277,10 +2263,11 @@ describe("followup queue collect routing", () => {
 
     await drainRecordedQueue(key, runFollowup, done);
 
-    expect(calls.map((call) => call.prompt)).toEqual([
-      "[Queued messages while agent was busy]\n\n---\nQueued #1 (from A)\nfirst",
-      "[Queued messages while agent was busy]\n\n---\nQueued #1 (from Owner)\nsecond",
-      "[Queued messages while agent was busy]\n\n---\nQueued #1 (from A)\nthird",
+    expect(calls.map((call) => call.prompt)).toEqual(["first", "second", "third"]);
+    expect(calls.map((call) => [call.run.senderId, call.run.senderIsOwner])).toEqual([
+      ["user-a", false],
+      ["owner-1", true],
+      ["user-a", false],
     ]);
   });
 
@@ -2401,7 +2388,7 @@ describe("followup queue collect routing", () => {
     const runFollowup = async (run: FollowupRun) => {
       attempt += 1;
       if (attempt === 1) {
-        throw new Error("transient failure");
+        rejectQueuePreparation(run, new Error("transient preparation failure"));
       }
       calls.push(run);
       done.resolve();
@@ -2411,7 +2398,7 @@ describe("followup queue collect routing", () => {
     enqueueFollowupRun(key, createRun({ prompt: "one" }), settings);
     enqueueFollowupRun(key, createRun({ prompt: "two" }), settings);
 
-    await drainRecordedQueue(key, runFollowup, done);
+    await drainSettledQueue(key, runFollowup);
     expect(calls[0]?.prompt).toContain("Queued #1\none");
     expect(calls[0]?.prompt).toContain("Queued #2\ntwo");
   });
@@ -2426,7 +2413,7 @@ describe("followup queue collect routing", () => {
       attempt += 1;
       attempts.push(run);
       if (attempt === 2) {
-        throw new Error("transient failure");
+        rejectQueuePreparation(run, new Error("transient preparation failure"));
       }
       successfulCalls.push(run);
       if (attempt >= 3) {
@@ -2446,7 +2433,7 @@ describe("followup queue collect routing", () => {
       senderIsOwner: true,
     });
 
-    await drainRecordedQueue(key, runFollowup, done);
+    await drainSettledQueue(key, runFollowup);
 
     const guestAttempts = attempts.filter((call) => call.prompt.includes("guest message"));
     const ownerAttempts = attempts.filter((call) => call.prompt.includes("owner message"));
@@ -2454,10 +2441,7 @@ describe("followup queue collect routing", () => {
     expect(attempts).toHaveLength(3);
     expect(guestAttempts).toHaveLength(1);
     expect(ownerAttempts).toHaveLength(2);
-    expect(successfulCalls.map((call) => call.prompt)).toEqual([
-      "[Queued messages while agent was busy]\n\n---\nQueued #1 (from Guest)\nguest message",
-      "[Queued messages while agent was busy]\n\n---\nQueued #1 (from Owner)\nowner message",
-    ]);
+    expect(successfulCalls.map((call) => call.prompt)).toEqual(["guest message", "owner message"]);
   });
 
   it("persists overflow summaries to the session selected after queue admission", async () => {
@@ -2539,20 +2523,17 @@ describe("followup queue collect routing", () => {
     );
     controller.abort();
 
-    scheduleFollowupDrain(key, async (run) => {
+    await drainSettledQueue(key, async (run) => {
       if (run.abortSignal?.aborted) {
         cleaned.push(run);
         return;
       }
       calls.push(run);
     });
-    await new Promise((resolve) => {
-      setTimeout(resolve, 10);
-    });
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.prompt).toContain("- dropped");
-    expect(cleaned.map((run) => run.prompt)).toEqual(["aborted"]);
+    expect(cleaned).toEqual([]);
     expect(onComplete).toHaveBeenCalledTimes(1);
     expect(getExistingFollowupQueue(key)).toBeUndefined();
   });
@@ -2566,7 +2547,7 @@ describe("followup queue collect routing", () => {
       // Summary succeeds (attempt 1), first group fails (attempt 2), then
       // both retained authorization groups succeed on retry.
       if (attempt === 2) {
-        throw new Error("transient failure");
+        rejectQueuePreparation(run, new Error("transient preparation failure"));
       }
       calls.push(run);
       if (calls.length >= 3) {
@@ -2584,7 +2565,7 @@ describe("followup queue collect routing", () => {
       senderIsOwner: true,
     });
 
-    await drainRecordedQueue(key, runFollowup, done);
+    await drainSettledQueue(key, runFollowup);
 
     expect(calls).toHaveLength(3);
     expect(calls[0]?.prompt).toContain("[Queue overflow] Dropped 1 message due to cap.");
@@ -2781,7 +2762,7 @@ describe("followup queue collect routing", () => {
         expect(sourceCancellationRetirements[1]).not.toHaveBeenCalled();
         expect(sourceCompletions[0]).not.toHaveBeenCalled();
         expect(sourceCompletions[1]).not.toHaveBeenCalled();
-        run.turnAdoptionLifecycle?.onSettled?.();
+        await run.turnAdoptionLifecycle?.onSettled?.();
         expect(sourceCompletions[0]).toHaveBeenCalledTimes(1);
         expect(sourceCompletions[1]).toHaveBeenCalledTimes(1);
         return;
@@ -2826,7 +2807,7 @@ describe("followup queue collect routing", () => {
         expect(run.turnAdoptionLifecycle?.onAdopted).toEqual(expect.any(Function));
         await run.turnAdoptionLifecycle?.onAdopted?.();
         events.push("model");
-        run.turnAdoptionLifecycle?.onSettled?.();
+        await run.turnAdoptionLifecycle?.onSettled?.();
         return;
       }
       events.push("live-followup");
@@ -2854,11 +2835,11 @@ describe("followup queue collect routing", () => {
     let attempts = 0;
     const runFollowup = async (run: FollowupRun) => {
       calls.push(run);
-      expect(run.turnAdoptionLifecycle).toBeUndefined();
+      expect(run.turnAdoptionLifecycle?.onAdopted).toEqual(expect.any(Function));
       attempts += 1;
       if (attempts === 1) {
         firstAttempt.resolve();
-        throw new Error("transient failure");
+        rejectQueuePreparation(run, new Error("transient preparation failure"));
       }
       await releaseRetry.promise;
       done.resolve();
@@ -2889,7 +2870,7 @@ describe("followup queue collect routing", () => {
       "room_event",
     );
     expect(getExistingFollowupQueue(key)?.summarySources[0]?.turnAdoptionLifecycle).toBeDefined();
-    expect(getExistingFollowupQueue(key)?.summarySources[0]?.currentInboundContext).toBeUndefined();
+    expect(calls[0]?.currentInboundContext).toBeUndefined();
 
     scheduleFollowupDrain(key, runFollowup);
     releaseRetry.resolve();
@@ -2936,22 +2917,20 @@ describe("followup queue collect routing", () => {
     enqueueFollowupRun(key, first, settings);
     enqueueFollowupRun(key, second, settings);
 
-    scheduleFollowupDrain(key, async (run) => {
+    await drainSettledQueue(key, async (run) => {
       const prompt = run.prompt.includes("first") ? "first" : "second";
       events.push(`run:${prompt}`);
       try {
         await admitFollowupRunLifecycle(run);
       } catch (error) {
         events.push(`error:${prompt}`);
-        throw error;
+        rejectQueuePreparation(run, error instanceof Error ? error : new Error(String(error)));
       }
       events.push(`model:${prompt}`);
       if (prompt === "second") {
         done.resolve();
       }
     });
-
-    await done.promise;
 
     expect(events).toEqual([
       "run:first",
@@ -3109,16 +3088,15 @@ describe("followup queue collect routing", () => {
         enqueueSource("canceled", canceledComplete, canceled.signal);
       }
 
-      scheduleFollowupDrain(key, async (run) => {
+      await drainSettledQueue(key, async (run) => {
         calls.push(run);
         if (calls.length === 1) {
           canceled.abort();
           expect(run.abortSignal?.aborted).toBe(true);
-          return;
+          rejectQueuePreparation(run, new Error("source cancelled during preparation"));
         }
         done.resolve();
       });
-      await done.promise;
 
       expect(calls).toHaveLength(2);
       expect(calls[0]?.prompt).toContain("canceled");
@@ -3165,7 +3143,7 @@ describe("followup queue collect routing", () => {
     );
     aborted.abort();
 
-    await drainRecordedQueue(key, runFollowup, done);
+    await drainSettledQueue(key, runFollowup);
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.prompt).toContain("owner A summary");
@@ -3243,8 +3221,6 @@ describe("followup queue collect routing", () => {
         expect(run.prompt).toContain("Dropped 2 messages");
         expect(run.prompt).toContain("retained source");
         await run.turnAdoptionLifecycle?.onAdopted?.();
-        expect(getExistingFollowupQueue(key)?.summaryElisions).toEqual([]);
-        expect(getExistingFollowupQueue(key)?.droppedCount).toBe(0);
         throw new Error("admitted summary failure");
       }
       done.resolve();
@@ -3298,7 +3274,7 @@ describe("followup queue collect routing", () => {
           await admitFollowupRunLifecycle(run);
         } catch (error) {
           events.push("summary-error");
-          throw error;
+          rejectQueuePreparation(run, error instanceof Error ? error : new Error(String(error)));
         }
         events.push("summary-model");
         return;

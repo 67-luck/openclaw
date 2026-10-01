@@ -1,5 +1,5 @@
 import { getRuntimeConfig } from "../config/config.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import type { WorkerPlacementSessionRuntime } from "./server-worker-placement-reclaim.js";
 import {
   WorkerPlacementAdmissionTargetError,
@@ -27,7 +27,7 @@ export function createGatewayWorkerDispatchAdmission(
     const signal = callerSignal
       ? AbortSignal.any([callerSignal, controller.signal])
       : controller.signal;
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: target.storePath,
       identities: [request.sessionKey, target.canonicalKey, ...target.storeKeys, request.sessionId],
       onInterrupt: (reason) => controller.abort(reason),

@@ -9,7 +9,7 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { loadTranscriptEvents, replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { clearAgentRunContext } from "../infra/agent-run-registry.js";
 import { runCommandWithTimeout } from "../process/exec.js";
-import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
+import { runSessionMutation } from "../sessions/session-controller.lifecycle.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
@@ -248,7 +248,7 @@ async function scenario(
     });
   const oldRunId = name + "-before-stop-complete";
   const running = blockedInspection ? await admit(name + "-running").promise : undefined;
-  const activeController = context.chatAbortControllers.get(name + "-running");
+  const activeController = context.rpcSources.get(name + "-running");
   if (pendingMove) {
     context.chatRunState.getOrCreate(name + "-running").buffer = "partial before queued Move Stop";
   }
@@ -333,7 +333,7 @@ async function scenario(
     if (beforeStop) {
       expect((reservation?.payload as { status?: string } | undefined)?.status).toBe("accepted");
     }
-    expect(context.chatAbortControllers.has(oldRunId)).toBe(false);
+    expect(context.rpcSources.has(oldRunId)).toBe(false);
   };
   const stop = async () => {
     const reclaim = coordinated.reclaim(REQUEST).then(
@@ -350,14 +350,14 @@ async function scenario(
     if (blockedInspection) {
       await setImmediate();
       if (pendingMove) {
-        abortedBeforeCancellationLoad = activeController?.controller.signal.aborted === true;
+        abortedBeforeCancellationLoad = activeController?.input.abortSignal.aborted === true;
         cancellationLoad.resolve();
         await setImmediate();
       }
       abortedDuringInspection =
         running?.ok === true && running.value.activeRunAbort.controller.signal.aborted;
       destroyedDuringInspection = vi.mocked(harness.environments.destroy).mock.calls.length > 0;
-      abortReasonDuringInspection = activeController?.abortStopReason;
+      abortReasonDuringInspection = activeController?.adapter.abortStopReason;
       approvalsCancelledDuringInspection = cancelApprovals.mock.calls.some(
         ([runId]) => runId === name + "-running",
       );
@@ -385,7 +385,7 @@ async function scenario(
   if (beforeStop) {
     // A preceding lifecycle owner holds ingress pending while Stop joins that
     // same owner. This fixes ordering without timer delays or editing ingress.
-    await runExclusiveSessionLifecycleMutation({
+    await runSessionMutation({
       scope: storePath,
       identities: [REQUEST.sessionKey, REQUEST.sessionId],
       run: async () => {
@@ -671,13 +671,13 @@ it.each(["missing", "local"] as const)(
     if (!admitted.ok) {
       throw new Error("Active local chat fixture was not admitted");
     }
-    const controller = context.chatAbortControllers.get(runId);
+    const controller = context.rpcSources.get(runId);
     if (!controller) {
       throw new Error("Active local chat fixture has no controller");
     }
     context.chatRunState.getOrCreate(runId).buffer = "partial before queued dispatch Stop";
     const aborted = createDeferred();
-    controller.controller.signal.addEventListener("abort", () => {
+    controller.input.abortSignal.addEventListener("abort", () => {
       admitted.value.cleanupAdmittedRun();
       aborted.resolve();
     });
@@ -707,10 +707,10 @@ it.each(["missing", "local"] as const)(
         state === "local" ? "local" : undefined,
       );
       expect(cancel).toHaveBeenCalledOnce();
-      expect(controller.controller.signal.aborted).toBe(false);
+      expect(controller.input.abortSignal.aborted).toBe(false);
       cancellationLoad.resolve();
       await aborted.promise;
-      expect(controller.abortStopReason).toBe("rpc");
+      expect(controller.adapter.abortStopReason).toBe("rpc");
       expect(cancelApprovals).toHaveBeenCalledWith(runId);
       await stopping;
       expect(dispatchSettled).toBe(true);

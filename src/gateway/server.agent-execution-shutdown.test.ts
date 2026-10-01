@@ -66,7 +66,7 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
       const runId = `gateway-${mode}-execution`;
       const order: string[] = [];
       const foreign = registerChatAbortController({
-        chatAbortControllers: new Map(),
+        rpcSources: new Map(),
         runId,
         sessionId: "foreign-session",
         sessionKey: "agent:foreign:main",

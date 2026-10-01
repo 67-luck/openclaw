@@ -11,10 +11,10 @@ import {
   type SessionsPatchManyResult,
 } from "../../packages/gateway-protocol/src/index.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../agents/embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../agents/embedded-agent-runner/runs.test-support.js";
 import { getRegistryWorktree } from "../agents/worktrees/registry.js";
 import { acquireWorktreeRunLease } from "../agents/worktrees/run-lease.js";
 import {

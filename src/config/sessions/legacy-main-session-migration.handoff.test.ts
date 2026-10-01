@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
   closeOpenClawAgentDatabaseByPath,
@@ -105,7 +105,7 @@ describe("legacy main session history handoff", () => {
     const entry = seedClaim({ ...source, events: [{ kind: "repeat" }, { kind: "repeat" }] });
     const sourceBefore = readClaim(source);
     const siblingBefore = readClaim(sibling);
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: storePath,
       identities: [source.key, entry.sessionId],
       assertAllowed: () => {},

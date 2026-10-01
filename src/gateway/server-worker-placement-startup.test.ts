@@ -12,10 +12,10 @@ import {
   resetGatewayWorkAdmission,
 } from "../process/gateway-work-admission.js";
 import {
-  beginSessionWorkAdmission,
-  runExclusiveSessionLifecycleMutation,
-  startSessionWorkAdmissionInterruption,
-} from "../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  runSessionMutation,
+  startSessionControllerInterruption,
+} from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   createGatewaySchedulerClock,
@@ -666,7 +666,7 @@ describe("worker placement startup recovery authority", () => {
       scope: "/tmp/openclaw-worker-placement-session.sqlite",
       identities: [request.sessionKey, request.sessionId],
     };
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       ...identity,
       assertAllowed: () => {},
       onInterrupt: (reason) => controller.abort(reason),
@@ -688,7 +688,7 @@ describe("worker placement startup recovery authority", () => {
       )
       .finally(() => admission.release());
     await vi.waitFor(() => expect(events).toEqual(["recovery:/gateway/workspace"]));
-    const contender = runExclusiveSessionLifecycleMutation({
+    const contender = runSessionMutation({
       scope: "/tmp/openclaw-worker-placement-session.sqlite",
       identities: [
         request.sessionKey,
@@ -700,7 +700,7 @@ describe("worker placement startup recovery authority", () => {
         events.push("contender");
       },
     });
-    const interruption = startSessionWorkAdmissionInterruption(identity);
+    const interruption = startSessionControllerInterruption(identity);
     const admissionReleased = vi.fn();
     void interruption.released.then(admissionReleased);
     try {

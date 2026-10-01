@@ -1,3 +1,4 @@
+import { requestRpcSourceCancellation } from "../../sessions/session-controller.rpc-sources.js";
 // Keep shared fixture mock registration before the production imports.
 // oxfmt-ignore
 import {
@@ -362,8 +363,8 @@ describe("Gateway followup owner final effect", () => {
           expect(authorityReleased).toBe(false);
           expect(effectStarted).toBe(false);
           if (outcome === "cancel before dispatch") {
-            for (const entry of context.chatAbortControllers.values()) {
-              entry.controller.abort();
+            for (const entry of context.rpcSources.values()) {
+              requestRpcSourceCancellation(entry);
             }
           }
           await vi.runOnlyPendingTimersAsync();

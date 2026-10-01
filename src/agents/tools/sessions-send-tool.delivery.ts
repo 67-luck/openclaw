@@ -6,6 +6,7 @@ import type { GatewaySessionStoreTarget } from "../../gateway/session-utils-stor
 import { formatErrorMessage } from "../../infra/errors.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
+import { resolveActiveSessionRunId as resolveActiveEmbeddedRunSessionId } from "../../sessions/session-controller.queries.js";
 import { isCronRunSessionKey, parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import {
   buildRunUserTurnIdempotencyKey,
@@ -13,7 +14,6 @@ import {
 } from "../../sessions/user-turn-transcript.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
-import { resolveActiveEmbeddedRunSessionId } from "../embedded-agent-runner/active-run-projections.js";
 import {
   type EmbeddedAgentQueueMessageOptions,
   type EmbeddedAgentQueueMessageOutcome,

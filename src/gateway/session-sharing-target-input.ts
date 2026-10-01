@@ -235,9 +235,14 @@ export function resolveSessionMutationTargets(params: {
   if (params.method !== "sessions.abort") {
     return undefined;
   }
-  const runId = readSessionSharingStringParam(params.requestParams, "runId");
-  const run = runId ? params.context.chatAbortControllers.get(runId) : undefined;
+  const runId = asOptionalRecord(params.requestParams)?.runId;
+  const run = typeof runId === "string" ? params.context.rpcSources.get(runId) : undefined;
   return run
-    ? [{ sessionKey: run.sessionKey, ...(run.agentId ? { agentId: run.agentId } : {}) }]
+    ? [
+        {
+          sessionKey: run.adapter.sessionKey,
+          ...(run.adapter.agentId ? { agentId: run.adapter.agentId } : {}),
+        },
+      ]
     : undefined;
 }

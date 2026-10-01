@@ -6,10 +6,10 @@ import {
 } from "../../agents/admitted-run-context.js";
 import type { EmbeddedAgentQueueHandle } from "../../agents/embedded-agent-runner/run-state.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { withPreparedEmbeddedRunToolAuthority } from "../../agents/harness/tool-authority.runtime.js";
 import { prepareOperatorModelPolicy } from "../../agents/operator-model-policy.js";
 import {
@@ -20,11 +20,11 @@ import type { AgentRuntimeIdentity } from "../../gateway/agent-runtime-identity-
 import type { GatewayClient } from "../../gateway/server-methods/types.js";
 import type { GatewayUiCommandTarget } from "../../gateway/ui-command-target.types.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
-import { createQueueTestRun } from "./queue.test-helpers.js";
 import type {
   ReplyBackendQueueMessageOptions,
   ReplyMessageInjectionOutcome,
-} from "./reply-run-registry.contracts.js";
+} from "../../sessions/session-controller.contracts.js";
+import { createQueueTestRun } from "./queue.test-helpers.js";
 import {
   createTestReplyOperation,
   queueCurrentReplyRunMessage,

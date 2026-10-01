@@ -4,7 +4,7 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { clearAgentRunContext } from "../infra/agent-run-registry.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
@@ -72,7 +72,7 @@ function fixture(name: string, state: "active" | "failed" | "local" | "reclaimed
   });
   const run = vi.fn(async () => ({ ...placement, state: "reclaimed" as const }) as never);
   const admit = (onInterrupt?: () => void) =>
-    beginSessionWorkAdmission({
+    beginSessionEffect({
       scope: target.storePath,
       identities: [request.sessionKey, request.sessionId],
       assertAllowed: () => {},

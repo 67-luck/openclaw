@@ -1,8 +1,12 @@
 import { expect, vi } from "vitest";
 import { buildProjectedAgentRunIndex } from "../infra/agent-run-registry.js";
+import { tryClaimSessionControllerTask } from "../sessions/session-controller.mailbox.js";
+import { createReplyOperation } from "../sessions/session-controller.operation.js";
+import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import type { SessionMessageSubscriberRegistry } from "./server-chat-state.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
+import { createRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 const sessionRow = vi.hoisted(() => ({
   key: "agent:main:main",
@@ -149,15 +153,26 @@ function createActiveRun(
   projectSessionActive: boolean,
   executionStarted = true,
 ): ChatAbortControllerEntry {
-  return {
-    controller: new AbortController(),
+  const ref = createRpcSourceForTest({
     sessionId: "sess-main",
     sessionKey: "agent:main:main",
-    startedAtMs: Date.now(),
-    executionStarted,
-    expiresAtMs: Date.now() + 60_000,
     projectSessionActive,
-  };
+  });
+  if (executionStarted) {
+    const claim = tryClaimSessionControllerTask(ref.input);
+    if (!claim) {
+      throw new Error("Fixture could not acquire its isolated turn");
+    }
+    const operation = createReplyOperation({
+      sessionId: ref.adapter.sessionId,
+      sessionKey: ref.adapter.sessionKey,
+      resetTriggered: false,
+      mailboxClaim: claim,
+      target: ref.input.mailbox.owner.target,
+    });
+    markReplyOperationExecutionStarted(operation);
+  }
+  return ref;
 }
 
 function storedMessage(messageId: string, seq = 1) {
@@ -190,7 +205,7 @@ function createHandler(
     broadcastToConnIds,
     sessionEventSubscribers: { getAll: () => new Set(["conn-1"]) },
     sessionMessageSubscribers: { get: getSessionMessageSubscribers },
-    chatAbortControllers: new Map([
+    rpcSources: new Map([
       ["run-before-finalize", createActiveRun(projectSessionActive, executionStarted)],
     ]),
   });

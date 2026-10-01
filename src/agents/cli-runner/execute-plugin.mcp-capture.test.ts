@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.operation.js";
 import {
   activateMcpLoopbackClientGrantCapture,
   deactivateMcpLoopbackClientGrantCapture,
@@ -10,6 +9,7 @@ import {
   transferMcpLoopbackClientGrant,
 } from "../../gateway/mcp-grant-store.js";
 import type { CliBackendLiveSessionHandle } from "../../plugins/cli-backend.types.js";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import { getAdmittedRunDelegatedAuthority } from "../admitted-run-context.js";
 import {
   closePluginTestAdmissions,

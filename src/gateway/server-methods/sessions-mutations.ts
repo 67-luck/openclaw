@@ -20,7 +20,10 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { patchPluginSessionExtension } from "../../plugins/host-hook-state.js";
 import { isPluginJsonValue } from "../../plugins/host-hooks.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import {
+  captureSessionTarget,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
@@ -380,9 +383,15 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
       return;
     }
     const owner = { type: projectedOwner.type, id: projectedOwner.id };
-    const assignment = await runExclusiveSessionLifecycleMutation({
-      scope: target.storePath,
-      identities: [target.storeKey, target.entry.sessionId],
+    const assignment = await runSessionMutation({
+      target: captureSessionTarget({
+        storeScope: target.storePath,
+        sessionKey: target.canonicalKey,
+        aliases: [target.storeKey],
+        incarnation: target.entry.sessionId,
+        agentId: target.agentId,
+      }),
+      policy: "allow-live",
       run: async () =>
         assignSessionOwner(
           {

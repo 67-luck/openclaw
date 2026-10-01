@@ -255,7 +255,7 @@ export type RelaySession = {
   getToolAuthorityOverlay?: (
     authority?: TalkAgentConsultAuthority,
     source?: "reply" | "attempt",
-  ) => import("../../../auto-reply/reply/reply-run-registry.contracts.js").ReplyToolAuthorityOverlay;
+  ) => import("../../../sessions/session-controller.contracts.js").ReplyToolAuthorityOverlay;
   id: string;
   connId: string;
   context: GatewayRequestContext;

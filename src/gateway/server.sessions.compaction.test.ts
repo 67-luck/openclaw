@@ -11,6 +11,7 @@ import type { CompactEmbeddedAgentSessionParams } from "../agents/embedded-agent
 import { acceptCompactionSuccessor } from "../agents/embedded-agent-runner/compaction-successor.js";
 import { resolveEmbeddedSessionLane } from "../agents/embedded-agent-runner/lanes.js";
 import { enqueueFollowupRun, type FollowupRun } from "../auto-reply/reply/queue.js";
+import { createQueueTestRun } from "../auto-reply/reply/queue.test-helpers.js";
 import {
   clearFollowupQueue,
   getExistingFollowupQueue,
@@ -32,10 +33,20 @@ import {
   setCommandLaneConcurrency,
 } from "../process/command-queue.js";
 import {
-  beginSessionWorkAdmission,
-  isSessionWorkAdmissionActive,
-} from "../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  isSessionControllerWorkActive,
+} from "../sessions/session-controller.lifecycle.js";
+import {
+  claimSessionControllerInput,
+  releaseSessionControllerClaim,
+} from "../sessions/session-controller.mailbox.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
+import {
+  seedSessionEntry,
+  loadSessionEntry,
+  seedTranscriptRows,
+  loadTranscriptRows,
+} from "./server.sessions.compaction-fixtures.test-support.js";
 import { embeddedRunMock, onceMessage, agentDiscoveryMock, rpcReq } from "./test-helpers.js";
 import { getTestPluginRegistry } from "./test-helpers.plugin-registry.js";
 import { testConfigRoot } from "./test-helpers.runtime-state.js";
@@ -72,94 +83,12 @@ function expectMainCompactionResult(
   expect(compacted.payload?.compacted, JSON.stringify(compacted)).toBe(expectedCompacted);
 }
 
-async function seedSessionEntry(params: {
-  agentId?: string;
-  entry: ReturnType<typeof sessionStoreEntry>;
-  sessionKey: string;
-  storePath: string;
-}): Promise<void> {
-  await upsertSessionEntryCore(
-    {
-      ...(params.agentId ? { agentId: params.agentId } : {}),
-      sessionKey: params.sessionKey,
-      storePath: params.storePath,
-    },
-    params.entry,
-  );
-}
-
-function loadSessionEntry(params: {
-  agentId?: string;
-  sessionKey: string;
-  storePath: string;
-}): ReturnType<typeof loadAccessorSessionEntry> {
-  return loadAccessorSessionEntry({
-    ...(params.agentId ? { agentId: params.agentId } : {}),
-    readConsistency: "latest",
-    sessionKey: params.sessionKey,
-    storePath: params.storePath,
-  });
-}
-
-async function seedTranscriptRows(params: {
-  agentId?: string;
-  sessionId: string;
-  sessionKey: string;
-  storePath: string;
-  totalLines: number;
-}): Promise<void> {
-  const scope = {
-    ...(params.agentId ? { agentId: params.agentId } : {}),
-    sessionId: params.sessionId,
-    sessionKey: params.sessionKey,
-    storePath: params.storePath,
-  };
-  if (params.totalLines <= 0) {
-    return;
-  }
-  await appendTranscriptEvent(scope, {
-    type: "session",
-    version: 3,
-    id: params.sessionId,
-    timestamp: "2026-06-19T12:00:00.000Z",
-    cwd: "/tmp",
-  });
-  for (let index = 0; index < params.totalLines - 1; index += 1) {
-    await appendTranscriptMessage(scope, {
-      cwd: "/tmp",
-      message: {
-        role: "user",
-        content: `line-${index}`,
-        timestamp: index,
-      },
-      now: Date.parse(`2026-06-19T12:00:${String(index % 60).padStart(2, "0")}.000Z`),
-    });
-  }
-}
-
 async function createCompactionSession(sessionId: string, { totalLines = 3 } = {}) {
   const sessionKey = "agent:main:main";
   const { dir, storePath } = await createSessionStoreDir();
   await seedSessionEntry({ entry: sessionStoreEntry(sessionId), sessionKey, storePath });
   await seedTranscriptRows({ sessionId, sessionKey, storePath, totalLines });
   return { dir, storePath, sessionId, sessionKey };
-}
-
-async function loadTranscriptRows(params: {
-  agentId?: string;
-  sessionId: string;
-  sessionKey: string;
-  storePath: string;
-}): Promise<Array<Record<string, unknown>>> {
-  const rows = await loadTranscriptEvents({
-    ...(params.agentId ? { agentId: params.agentId } : {}),
-    sessionId: params.sessionId,
-    sessionKey: params.sessionKey,
-    storePath: params.storePath,
-  });
-  return rows.map((row) =>
-    row && typeof row === "object" && !Array.isArray(row) ? (row as Record<string, unknown>) : {},
-  );
 }
 
 test("sessions.compact without maxLines runs embedded manual compaction without checkpoint metadata", async () => {
@@ -746,12 +675,12 @@ test("sessions.compact blocks new work admission through terminal persistence", 
 
   const { ws } = await openClient();
   const compactResult = rpcReq(ws, "sessions.compact", { key: "main" });
-  let pendingAdmission: ReturnType<typeof beginSessionWorkAdmission> | undefined;
+  let pendingAdmission: ReturnType<typeof beginSessionEffect> | undefined;
   try {
     await compaction.waitForEntry(compactResult);
 
     let admitted = false;
-    pendingAdmission = beginSessionWorkAdmission({
+    pendingAdmission = beginSessionEffect({
       scope: storePath,
       identities: ["agent:main:main", sessionId],
       assertAllowed: () => {},
@@ -784,7 +713,7 @@ test("sessions.compact returns a no-op without interrupting an active admission"
   });
 
   let interrupted = false;
-  const admission = await beginSessionWorkAdmission({
+  const admission = await beginSessionEffect({
     scope: storePath,
     identities: ["main", "agent:main:main", sessionId],
     assertAllowed: () => {},
@@ -808,7 +737,7 @@ test("sessions.compact returns a no-op without interrupting an active admission"
       reason: "Nothing to compact (session too small)",
     });
     expect(interrupted).toBe(false);
-    expect(isSessionWorkAdmissionActive(storePath, [sessionId])).toBe(true);
+    expect(isSessionControllerWorkActive(storePath, [sessionId])).toBe(true);
     expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
     expectNoSessionQueueCleanup();
   } finally {
@@ -831,7 +760,7 @@ test("sessions.compact refuses real compaction without interrupting an active ad
   });
 
   let interrupted = false;
-  const admission = await beginSessionWorkAdmission({
+  const admission = await beginSessionEffect({
     scope: storePath,
     identities: ["main", "agent:main:main", sessionId],
     assertAllowed: () => {},
@@ -850,7 +779,7 @@ test("sessions.compact refuses real compaction without interrupting an active ad
       message: expect.stringContaining("has an active run"),
     });
     expect(interrupted).toBe(false);
-    expect(isSessionWorkAdmissionActive(storePath, [sessionId])).toBe(true);
+    expect(isSessionControllerWorkActive(storePath, [sessionId])).toBe(true);
     expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
     expectNoSessionQueueCleanup();
   } finally {
@@ -899,15 +828,22 @@ test.each([
   { name: "follow-up-backed", withFollowup: true },
   { name: "lane-only", withFollowup: false },
 ])("sessions.compact preserves accepted $name command-lane work", async ({ withFollowup }) => {
-  const { sessionKey } = await createCompactionSession("sess-compact-command-queue");
+  const { sessionKey, sessionId, storePath } = await createCompactionSession(
+    "sess-compact-command-queue",
+  );
   const lane = resolveEmbeddedSessionLane(sessionKey);
-  const queuedRun = {
-    prompt: "please also update the changelog",
-    enqueuedAt: Date.now(),
-    run: {},
-  } as unknown as FollowupRun;
+  const queuedRun = createQueueTestRun({ prompt: "please also update the changelog" });
+  queuedRun.run = {
+    ...queuedRun.run,
+    sessionKey,
+    sessionId,
+    agentId: "main",
+    config: { session: { store: storePath } },
+  };
+  let followupClaim: Awaited<ReturnType<typeof claimSessionControllerInput>> | undefined;
   if (withFollowup) {
-    getFollowupQueue(sessionKey, { mode: "collect" }).inFlight.add(queuedRun);
+    enqueueFollowupRun(sessionKey, queuedRun, { mode: "collect" }, "none", undefined, false);
+    followupClaim = await claimSessionControllerInput(queuedRun);
   }
   setCommandLaneConcurrency(lane, 0);
   let commandRan = false;
@@ -937,6 +873,10 @@ test.each([
     expect(embeddedRunMock.compactEmbeddedAgentSession).not.toHaveBeenCalled();
     expectNoSessionQueueCleanup();
   } finally {
+    if (followupClaim) {
+      releaseSessionControllerClaim(followupClaim);
+      await followupClaim.settlement.promise;
+    }
     clearFollowupQueue(sessionKey);
     setCommandLaneConcurrency(lane, 1);
     await queuedCommand;
@@ -959,7 +899,7 @@ test("sessions.compact preserves summary-elided queued follow-up work", async ()
     count: 1,
     sources: [elidedRun],
     summaryLines: ["elided summary"],
-    sourceRefs: new WeakMap(),
+    sourceRefs: new Map(),
   });
 
   const { ws } = await openClient();

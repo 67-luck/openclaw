@@ -18,25 +18,29 @@ import {
   startDiagnosticRunActivityTracking,
   type DiagnosticEmbeddedRunOwner,
 } from "../../logging/diagnostic-run-activity.js";
-import { withGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
+import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import {
-  listActiveEmbeddedRunSessionIds,
-  listActiveEmbeddedRunSessionKeys,
-} from "./active-run-projections.js";
+  listActiveSessionRunIds as listActiveEmbeddedRunSessionIds,
+  listActiveSessionRunKeys as listActiveEmbeddedRunSessionKeys,
+} from "../../sessions/session-controller.queries.js";
+import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
+import { withGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
 import {
   setActiveEmbeddedRunLifecycleGeneration,
   type EmbeddedAgentQueueHandle,
 } from "./run-state.js";
 import {
-  clearActiveEmbeddedRun,
   isEmbeddedAgentRunAbortableForRunId,
   prepareEmbeddedAgentRunCompletionClaim,
   queueEmbeddedAgentMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunHandleSessionId,
-  resolveActiveEmbeddedRunHandleSessionIdBySessionFile,
-  setActiveEmbeddedRun,
+  resolveActiveEmbeddedRunSessionIdBySessionFile as resolveActiveEmbeddedRunHandleSessionIdBySessionFile,
 } from "./runs.js";
-import { testing } from "./runs.test-support.js";
+import {
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  testing,
+} from "./runs.test-support.js";
 
 const lifecycleMock = vi.hoisted(() => {
   let generationSequence = 0;
@@ -185,19 +189,21 @@ describe("embedded run registry lifecycle generations", () => {
 
   it("aborts a rootless compacting run when its gateway lifecycle rotates", () => {
     const abort = vi.fn();
-    setActiveEmbeddedRun(
-      "rootless-session",
-      createRunHandle({
-        abort,
-        compacting: true,
-        queueMessage: vi.fn(async () => {}),
-        runId: "rootless-run",
-      }),
-    );
-
-    rotateAgentEventLifecycleGeneration();
-
-    expect(abort).toHaveBeenCalledWith("restart");
+    const handle = createRunHandle({
+      abort,
+      compacting: true,
+      queueMessage: vi.fn(async () => {}),
+      runId: "rootless-run",
+    });
+    const operation = setActiveEmbeddedRun("rootless-session", handle);
+    try {
+      rotateAgentEventLifecycleGeneration();
+      expect(abort).toHaveBeenCalledExactlyOnceWith("restart");
+      expect(listActiveEmbeddedRunSessionIds()).toContain("rootless-session");
+    } finally {
+      clearActiveEmbeddedRun("rootless-session", handle);
+      operation.complete();
+    }
     expect(listActiveEmbeddedRunSessionIds()).not.toContain("rootless-session");
   });
 
@@ -325,7 +331,7 @@ describe("embedded run registry lifecycle generations", () => {
       queueMessage: staleQueueMessage,
       runId: "stale-run",
     });
-    setActiveEmbeddedRun(
+    const staleOperation = setActiveEmbeddedRun(
       "shared-session",
       staleHandle,
       "agent:main:stale",
@@ -333,6 +339,9 @@ describe("embedded run registry lifecycle generations", () => {
     );
 
     rotateAgentEventLifecycleGeneration();
+    expect(listActiveEmbeddedRunSessionIds()).toContain("shared-session");
+    clearActiveEmbeddedRun("shared-session", staleHandle, "agent:main:stale");
+    staleOperation.complete();
     const currentQueueMessage = vi.fn(async () => {});
     const currentAbort = vi.fn();
     setActiveEmbeddedRun(
@@ -372,6 +381,9 @@ describe("embedded run registry lifecycle generations", () => {
       runId: "current-run",
     });
     const staleAbort = vi.fn(() => {
+      // This fixture producer returns synchronously before publishing its successor.
+      clearActiveEmbeddedRun("shared-session", staleHandle, "agent:main:stale");
+      staleOperation.complete();
       setActiveEmbeddedRun(
         "shared-session",
         currentHandle,
@@ -384,7 +396,7 @@ describe("embedded run registry lifecycle generations", () => {
       queueMessage: vi.fn(async () => {}),
       runId: "stale-run",
     });
-    setActiveEmbeddedRun(
+    const staleOperation = setActiveEmbeddedRun(
       "shared-session",
       staleHandle,
       "agent:main:stale",
@@ -443,20 +455,37 @@ describe("embedded run registry lifecycle generations", () => {
     const ref = { sessionId: "rotation-replacement", sessionKey: "agent:main:replacement" };
     const runId = "reused-rotation-run";
     const staleOwner = createDiagnosticEmbeddedRunOwner({ ...ref, runId });
-    const currentOwner = createDiagnosticEmbeddedRunOwner({ ...ref, runId });
-    const currentHandle = createRunHandle({
-      diagnosticOwner: currentOwner,
-      queueMessage: vi.fn(async () => {}),
-      runId,
-    });
+    let currentOperation: ReturnType<typeof createReplyOperation> | undefined;
     const staleHandle = createRunHandle({
-      abort: () => setActiveEmbeddedRun(ref.sessionId, currentHandle, ref.sessionKey),
+      abort: () => {
+        clearActiveEmbeddedRun(ref.sessionId, staleHandle, ref.sessionKey);
+        staleOperation.complete();
+        const successor = createReplyOperation({
+          sessionKey: ref.sessionKey,
+          sessionId: ref.sessionId,
+          resetTriggered: false,
+        });
+        currentOperation = successor;
+        const currentOwner = createDiagnosticEmbeddedRunOwner({
+          ...ref,
+          runId,
+          watchdogAttempt: successor.watchdog.attachAttempt({
+            assertCurrent: () => assertSessionControllerOperation(successor),
+          }),
+        });
+        const currentHandle = createRunHandle({
+          diagnosticOwner: currentOwner,
+          queueMessage: vi.fn(async () => {}),
+          runId,
+        });
+        setActiveEmbeddedRun(ref.sessionId, currentHandle, ref.sessionKey);
+      },
       diagnosticOwner: staleOwner,
       queueMessage: vi.fn(async () => {}),
       runId,
     });
     startDiagnosticRunActivityTracking();
-    setActiveEmbeddedRun(ref.sessionId, staleHandle, ref.sessionKey);
+    const staleOperation = setActiveEmbeddedRun(ref.sessionId, staleHandle, ref.sessionKey);
     emitCoreModelRequestStartedDiagnosticEvent(
       {
         ...ref,
@@ -472,17 +501,21 @@ describe("embedded run registry lifecycle generations", () => {
 
     rotateAgentEventLifecycleGeneration();
 
-    expect(getDiagnosticSessionActivitySnapshot(ref)).toMatchObject({
-      activeWorkKind: "embedded_run",
-      hasActiveEmbeddedRun: true,
-      activeModelCallRequestTimeoutMs: undefined,
-    });
+    try {
+      expect(getDiagnosticSessionActivitySnapshot(ref)).toMatchObject({
+        activeWorkKind: "embedded_run",
+        hasActiveEmbeddedRun: true,
+        activeModelCallRequestTimeoutMs: undefined,
+      });
+    } finally {
+      currentOperation?.complete();
+    }
   });
 
   it("evicts reply operations created by a prior hot-loaded module instance", async () => {
     const replyRunsA = await importFreshModule<
-      typeof import("../../auto-reply/reply/reply-run-registry.js")
-    >(import.meta.url, "../../auto-reply/reply/reply-run-registry.js?scope=generation-a");
+      typeof import("../../sessions/session-controller.js")
+    >(import.meta.url, "../../sessions/session-controller.js?scope=generation-a");
     const operation = replyRunsA.createReplyOperation({
       sessionKey: "agent:main:hot-loaded",
       sessionId: "hot-loaded-session",
@@ -497,11 +530,13 @@ describe("embedded run registry lifecycle generations", () => {
     });
 
     const replyRunsB = await importFreshModule<
-      typeof import("../../auto-reply/reply/reply-run-registry.js")
-    >(import.meta.url, "../../auto-reply/reply/reply-run-registry.js?scope=generation-b");
+      typeof import("../../sessions/session-controller.js")
+    >(import.meta.url, "../../sessions/session-controller.js?scope=generation-b");
     rotateAgentEventLifecycleGeneration();
 
-    expect(cancel).toHaveBeenCalledWith("restart");
+    expect(cancel).toHaveBeenCalledExactlyOnceWith("restart");
+    expect(replyRunsB.isReplyRunActiveForSessionId("hot-loaded-session")).toBe(true);
+    operation.complete();
     expect(replyRunsB.isReplyRunActiveForSessionId("hot-loaded-session")).toBe(false);
   });
 });

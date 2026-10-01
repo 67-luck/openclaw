@@ -15,7 +15,7 @@ import {
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
 import * as gatewayTool from "../../tools/in-process-gateway.js";
 import { createProgressCardTool } from "../../tools/progress-card-tool.js";
-import { clearActiveEmbeddedRun } from "../runs.js";
+import { clearTestEmbeddedRun as clearActiveEmbeddedRun } from "../runs.test-support.js";
 import { prepareCatalogExecutor } from "./attempt-stream-prepare.test-support.js";
 import { buildEmbeddedRunPayloads } from "./payloads.js";
 import { mergeAttemptToolMediaPayloads } from "./tool-media-payloads.js";

@@ -20,18 +20,22 @@ import {
   getGatewayLocalUserIngress,
   prepareGatewayLocalUserIngress,
 } from "../../gateway/local-user-ingress.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
 import { prepareChannelRunAdmission } from "./channel-run-admission.js";
 import type { FollowupRun, QueueSettings } from "./queue.js";
-import { enqueueFollowupRun, FollowupRunDeferredError, scheduleFollowupDrain } from "./queue.js";
-import { createQueueTestRun, installQueueRuntimeErrorSilencer } from "./queue.test-helpers.js";
+import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
+import {
+  createQueueTestRun,
+  installQueueRuntimeErrorSilencer,
+  rejectQueuePreparation,
+} from "./queue.test-helpers.js";
 import {
   createOverflowSummaryRetrySource,
   resolveFollowupDeliveryContextKey,
 } from "./queue/delivery-context.js";
 import { clearFollowupQueue } from "./queue/state.js";
-import { createReplyOperation } from "./reply-run-registry.js";
 import { createMockTypingController } from "./test-helpers.js";
 import { createTypingSignaler } from "./typing-mode.js";
 
@@ -215,7 +219,7 @@ describe("followup prompt metadata carrier", () => {
       resolveFollowupDeliveryContextKey(runs[1]!),
     );
   });
-  it("keeps collected prompt bytes and ordered facts stable across deferred admission", async () => {
+  it("keeps collected prompt bytes and ordered facts stable through claimed admission", async () => {
     const audit = createChannelAdmissionAudit({ enabled: true });
     evidenceCleanups.add(() => audit.close());
     const key = `prompt-media-collect-${Date.now()}`;
@@ -259,9 +263,6 @@ describe("followup prompt metadata carrier", () => {
 
     scheduleFollowupDrain(key, async (run) => {
       calls.push(run);
-      if (calls.length === 1) {
-        throw new FollowupRunDeferredError();
-      }
       done.resolve();
     });
     await done.promise;
@@ -271,12 +272,8 @@ describe("followup prompt metadata carrier", () => {
       "---\nQueued #1\n[media attached: /tmp/a.png (image/png)]\nfirst",
       "---\nQueued #2\n[media attached: /tmp/b.pdf (application/pdf)]\nsecond",
     ].join("\n\n");
-    expect(calls.map((run) => run.prompt)).toEqual([expectedPrompt, expectedPrompt]);
+    expect(calls.map((run) => run.prompt)).toEqual([expectedPrompt]);
     expect(calls.map((run) => run.media)).toEqual([
-      [
-        { path: "/tmp/a.png", contentType: "image/png" },
-        { path: "/tmp/b.pdf", contentType: "application/pdf" },
-      ],
       [
         { path: "/tmp/a.png", contentType: "image/png" },
         { path: "/tmp/b.pdf", contentType: "application/pdf" },
@@ -287,31 +284,21 @@ describe("followup prompt metadata carrier", () => {
         { type: "image", data: "/tmp/a.png", mimeType: "image/png" },
         { type: "image", data: "/tmp/b.pdf", mimeType: "application/pdf" },
       ],
-      [
-        { type: "image", data: "/tmp/a.png", mimeType: "image/png" },
-        { type: "image", data: "/tmp/b.pdf", mimeType: "application/pdf" },
-      ],
     ]);
-    expect(calls.map((run) => run.imageOrder)).toEqual([
-      ["inline", "inline"],
-      ["inline", "inline"],
-    ]);
+    expect(calls.map((run) => run.imageOrder)).toEqual([["inline", "inline"]]);
     const expectedSkills = [
       { name: "a", path: "/tmp/skills/a/SKILL.md" },
       { name: "shared-last", path: "/tmp/skills/shared/SKILL.md" },
       { name: "b", path: "/tmp/skills/b/SKILL.md" },
     ];
-    expect(calls.map((run) => run.explicitSkillSelections)).toEqual([
-      expectedSkills,
-      expectedSkills,
-    ]);
+    expect(calls.map((run) => run.explicitSkillSelections)).toEqual([expectedSkills]);
     for (const call of calls) {
       expectCombinedCarrierFacts(call);
     }
     expect(
       compareChannelAdmissionParticipants(calls.map((run) => run.channelAdmissionEvidence)),
     ).toBe("same");
-    expect(consumeChannelAdmissionEvidence(calls[1]?.channelAdmissionEvidence)).toMatchObject({
+    expect(consumeChannelAdmissionEvidence(calls[0]?.channelAdmissionEvidence)).toMatchObject({
       ingressState: "present",
       invoker: { state: "present", kind: "person" },
     });
@@ -595,7 +582,7 @@ describe("queued Gateway attach evidence", () => {
       attempts += 1;
       if (attempts === 1) {
         attachGatewayLocalUserIngress(client, prepareIngress("replacement-person"));
-        throw new Error("Synthetic pre-admission delivery failure");
+        rejectQueuePreparation(run, new Error("Synthetic pre-admission preparation failure"));
       }
       await admit(run);
     });

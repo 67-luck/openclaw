@@ -9,7 +9,7 @@ import type {
 } from "../../agents/prepared-model-runtime.js";
 import type { TrustedSubagentCompletionHandoff } from "../../agents/subagents/announce/subagent-announce-handoff.js";
 import type { FollowupCompletionOwner } from "../../agents/subagents/completion/session-followup-completion.types.js";
-import type { SessionWorkAdmissionLease } from "../../sessions/session-lifecycle-admission.js";
+import type { SessionEffectRef } from "../../sessions/session-controller.lifecycle.js";
 import type { registerChatAbortController } from "../chat-abort.js";
 import type { OffloadedRef } from "../chat-attachments.js";
 import type { GatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
@@ -19,7 +19,7 @@ import type { PreparedAgentRunUserTurn, prepareAgentRunUserTurn } from "./agent-
 import type { AgentTurnIo } from "./types.js";
 
 export type PreparedAgentRunDispatch = {
-  activeGatewayWorkAdmission: SessionWorkAdmissionLease;
+  activeGatewayWorkAdmission: SessionEffectRef | undefined;
   activeRunAbort: ReturnType<typeof registerChatAbortController>;
   cronCreatorAuthority?: GatewayCronCreatorAuthorityAdmission;
   releaseCallerAuthority?: () => void;
@@ -31,7 +31,7 @@ export type PreparedAgentRunDispatch = {
   effectiveAllowModelOverride: boolean;
   trustedInternalHandoff?: TrustedSubagentCompletionHandoff;
   restoredCronContinuationLifecycleRevision?: string;
-  lifecycleStorePath: string;
+  lifecycleStorePath?: string;
   resolvedThreadId?: string | number;
   reactivateSubagent: boolean;
   followupCompletion?: FollowupCompletionOwner;
@@ -51,10 +51,10 @@ export type PrepareAgentRunDispatchParams = Omit<
   | "assertCompletionCurrent"
   | "abortSignal"
   | "getAbortStopReason"
-  | "deferTimeoutCompletion"
   | "admittedSessionId"
   | "resolvedThreadId"
 > & {
+  sourceWork: Promise<void>;
   assertAdmissionCurrent?: () => void;
   hasCurrentClientAuthority?: () => boolean;
   promptedAt: number;
@@ -85,7 +85,7 @@ export type PrepareAgentRunDispatchParams = Omit<
   hasGatewayAdmissionOutcome: () => boolean;
   respondToGatewayAdmissionOutcome: () => boolean;
   admissionAgentId: () => string | undefined;
-  getGatewayWorkAdmission: () => SessionWorkAdmissionLease | undefined;
+  getGatewayWorkAdmission: () => SessionEffectRef | undefined;
   setAdmittedRunAbort: (value: ReturnType<typeof registerChatAbortController>) => void;
   getAdmittedRunAbort: () => ReturnType<typeof registerChatAbortController> | undefined;
   markAgentRunAccepted: (accepted: boolean) => void;

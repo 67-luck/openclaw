@@ -11,17 +11,17 @@ import type { InternalSessionEntry as SessionEntry } from "../../config/sessions
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import { createReplyOperation, replyRunRegistry } from "../../sessions/session-controller.js";
 import {
-  beginSessionWorkAdmission,
-  consumeSessionWorkAdmissionHandoff,
-  getSessionWorkAdmissionOwnerRelease,
-  getSessionWorkAdmissionRelease,
-  isCompetingSessionWorkAdmissionActive,
-  runExclusiveSessionLifecycleMutation,
-  type SessionWorkAdmissionLease,
-} from "../../sessions/session-lifecycle-admission.js";
-import * as sessionLifecycle from "../../sessions/session-lifecycle-admission.js";
-import { createReplyOperation, replyRunRegistry } from "./reply-run-registry.js";
+  beginSessionEffect,
+  consumeSessionEffectHandoff,
+  captureSessionEffectOwnerSettlement,
+  captureSessionControllerSettlement,
+  isCompetingSessionControllerWorkActive,
+  runSessionMutation,
+  type SessionEffectRef,
+} from "../../sessions/session-controller.lifecycle.js";
+import * as sessionLifecycle from "../../sessions/session-controller.lifecycle.js";
 import { testing } from "./reply-run-registry.test-support.js";
 import {
   admitTestReplyTurn,
@@ -137,7 +137,7 @@ describe("reply turn recovery admission", () => {
       accessorSpy.mockRestore();
       expect(admitted.status).toBe("owned");
       if (admitted.status === "owned") {
-        const released = getSessionWorkAdmissionRelease({
+        const released = captureSessionControllerSettlement({
           scope: storePath,
           identities: [sessionKey, sessionId],
         });
@@ -278,13 +278,13 @@ describe("reply turn recovery admission", () => {
     const storePath = createSessionStore({ [sessionKey]: entry });
     const context = createRecoveryGatewayContext();
     const resolveGatewayContext = () => ({ ...context });
-    const root = await beginSessionWorkAdmission({
+    const root = await beginSessionEffect({
       scope: storePath,
       identities: [sessionKey, sessionId],
       resolveGatewayContext,
       assertAllowed: () => {},
     });
-    let recoveryLease: SessionWorkAdmissionLease | undefined;
+    let recoveryLease: SessionEffectRef | undefined;
     const retry = vi
       .spyOn(restartRecovery, "retryRestartAbortedMainSessionRecovery")
       .mockImplementationOnce(async (request) => {
@@ -296,24 +296,24 @@ describe("reply turn recovery admission", () => {
         });
         expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
         expect(root.isActive()).toBe(true);
-        const owner = await beginSessionWorkAdmission({
+        const owner = await beginSessionEffect({
           scope: storePath,
           identities: [sessionKey, sessionId],
           owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
           resolveGatewayContext,
           assertAllowed: () => {},
         });
-        recoveryLease = consumeSessionWorkAdmissionHandoff({
+        recoveryLease = consumeSessionEffectHandoff({
           handoffId: owner.createHandoff(),
           scope: storePath,
           identities: [sessionKey, sessionId],
         });
         expect(recoveryLease).toBe(owner);
         await owner.run(() => {
-          expect(isCompetingSessionWorkAdmissionActive(storePath, [sessionKey, sessionId])).toBe(
+          expect(isCompetingSessionControllerWorkActive(storePath, [sessionKey, sessionId])).toBe(
             false,
           );
-          return runExclusiveSessionLifecycleMutation({
+          return runSessionMutation({
             scope: storePath,
             identities: [sessionKey, sessionId],
             run: () =>
@@ -364,7 +364,7 @@ describe("reply turn recovery admission", () => {
         loadSessionEntry({ storePath, sessionKey })?.mainRestartRecovery?.foregroundClaims,
       ).toBeUndefined();
       expect(
-        getSessionWorkAdmissionOwnerRelease({
+        captureSessionEffectOwnerSettlement({
           scope: storePath,
           identities: [sessionKey, sessionId],
           owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
@@ -521,7 +521,7 @@ describe("reply turn recovery admission", () => {
         abortedLastRun: true,
       };
       const storePath = createSessionStore({ [sessionKey]: entry });
-      const owner = await beginSessionWorkAdmission({
+      const owner = await beginSessionEffect({
         scope: storePath,
         identities: [sessionKey, sessionId],
         owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
@@ -593,21 +593,21 @@ describe("reply turn recovery admission", () => {
     const sessionKey = "agent:main:queued-recovery-owner";
     const sessionId = "queued-recovery-owner";
     const storePath = createSessionStoreFor(sessionKey, sessionId);
-    const owner = await beginSessionWorkAdmission({
+    const owner = await beginSessionEffect({
       scope: storePath,
       identities: [sessionKey, sessionId],
       owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
       assertAllowed: () => {},
     });
     const waitEntered = createDeferred();
-    const readOwnerRelease = sessionLifecycle.getSessionWorkAdmissionOwnerRelease;
+    const readOwnerRelease = sessionLifecycle.captureSessionEffectOwnerSettlement;
     const waitSpy = vi
-      .spyOn(sessionLifecycle, "getSessionWorkAdmissionOwnerRelease")
+      .spyOn(sessionLifecycle, "captureSessionEffectOwnerSettlement")
       .mockImplementation((params) => {
         const release = readOwnerRelease(params);
         if (
           release &&
-          params.scope === storePath &&
+          ("target" in params ? params.target.storeScope : params.scope) === storePath &&
           params.owner === MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER
         ) {
           waitEntered.resolve();

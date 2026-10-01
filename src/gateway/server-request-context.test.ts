@@ -107,7 +107,7 @@ describe("createGatewayRequestContext", () => {
         toolEventRecipients: chatRunState.toolEventRecipients,
         sessionEventSubscribers: subscribers,
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-        chatAbortControllers: new Map(),
+        rpcSources: new Map(),
         restartRecoveryCandidates: new Map(),
         refreshConnectedUserProfiles: () => context.refreshConnectedUserProfile?.(),
       });

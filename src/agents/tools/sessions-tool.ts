@@ -13,7 +13,7 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { isTransientNetworkError } from "../../infra/unhandled-rejections.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
-import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
+import { captureSessionControllerSettlement } from "../../sessions/session-controller.lifecycle.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import type { AnyAgentTool } from "./common.js";
 import {
@@ -499,7 +499,7 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
         if (key !== resolveAgentMainSessionKey({ cfg, agentId })) {
           const storePath = resolveSessionStorePathCore(cfg.session?.store, { agentId });
           const currentEntry = loadSessionEntry({ agentId, sessionKey: key, storePath });
-          const released = getSessionWorkAdmissionRelease({
+          const released = captureSessionControllerSettlement({
             scope: storePath,
             identities: [key, currentEntry?.sessionId],
           });
@@ -557,7 +557,7 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
                     return;
                   }
 
-                  const competingRelease = getSessionWorkAdmissionRelease({
+                  const competingRelease = captureSessionControllerSettlement({
                     scope: storePath,
                     identities: archiveIdentities,
                   });
@@ -588,7 +588,7 @@ export function createSessionsTool(opts: SessionsToolOptions = {}): AnyAgentTool
                       throw error;
                     }
                     log.warn(`retrying deferred self-archive for ${key}: ${message}`);
-                    const retryAfterRelease = getSessionWorkAdmissionRelease({
+                    const retryAfterRelease = captureSessionControllerSettlement({
                       scope: storePath,
                       identities: archiveIdentities,
                     });

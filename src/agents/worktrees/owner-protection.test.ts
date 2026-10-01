@@ -6,8 +6,8 @@ const mocks = vi.hoisted(() => ({
   resolveSessionEntryAccessTarget: vi.fn(),
   getMany: vi.fn(),
   listForReconcile: vi.fn(),
-  isSessionWorkAdmissionActive: vi.fn(),
-  isSessionLifecycleMutationActive: vi.fn(),
+  isSessionControllerWorkActive: vi.fn(),
+  isSessionMutationActive: vi.fn(),
 }));
 
 vi.mock("../../gateway/session-worker-placement-context.js", () => ({
@@ -18,16 +18,16 @@ vi.mock("../../gateway/session-worker-placement-context.js", () => ({
     },
   }),
 }));
-vi.mock("../../sessions/session-lifecycle-admission.js", () => ({
-  isSessionWorkAdmissionActive: mocks.isSessionWorkAdmissionActive,
-  isSessionLifecycleMutationActive: mocks.isSessionLifecycleMutationActive,
+vi.mock("../../sessions/session-controller.lifecycle.js", () => ({
+  isSessionControllerWorkActive: mocks.isSessionControllerWorkActive,
+  isSessionMutationActive: mocks.isSessionMutationActive,
 }));
 
 beforeEach(() => {
   mocks.getMany.mockReturnValue(new Map());
   mocks.listForReconcile.mockReturnValue([]);
-  mocks.isSessionWorkAdmissionActive.mockReturnValue(false);
-  mocks.isSessionLifecycleMutationActive.mockReturnValue(false);
+  mocks.isSessionControllerWorkActive.mockReturnValue(false);
+  mocks.isSessionMutationActive.mockReturnValue(false);
 });
 
 vi.mock("../../config/sessions/session-accessor.js", () => ({
@@ -108,10 +108,10 @@ describe("createManagedWorktreeOwnerPolicy", () => {
         entry: { sessionId: "session-one", archivedAt: 1 },
       });
       if (kind === "admission") {
-        mocks.isSessionWorkAdmissionActive.mockReturnValue(true);
+        mocks.isSessionControllerWorkActive.mockReturnValue(true);
       }
       if (kind === "lifecycle") {
-        mocks.isSessionLifecycleMutationActive.mockReturnValue(true);
+        mocks.isSessionMutationActive.mockReturnValue(true);
       }
       if (kind === "unknown-placement") {
         mocks.getMany.mockImplementation(() => {

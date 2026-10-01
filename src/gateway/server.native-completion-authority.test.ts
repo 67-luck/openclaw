@@ -30,6 +30,8 @@ import {
 } from "../plugin-sdk/agent-harness-completion.js";
 import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { tryBeginGatewayRootWorkAdmission } from "../process/gateway-work-admission.js";
+import { withSessionTurn } from "../sessions/session-controller.admission.js";
+import * as sessionQueries from "../sessions/session-controller.queries.js";
 import * as userTurnTranscript from "../sessions/user-turn-transcript.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
@@ -272,14 +274,12 @@ describe("native completion final-effect authority", () => {
       await prepareGatewayReplyRuntimeForTest();
       const context = kernel.gatewayRequestContext;
       using completion = await createCompletion(context);
-      const actualRuns = await vi.importActual<typeof embeddedRuns>(
-        "../agents/embedded-agent-runner/runs.js",
+      const actualRuns = await vi.importActual<typeof sessionQueries>(
+        "../sessions/session-controller.queries.js",
       );
       // importActual can share this namespace; capture the function before spyOn replaces it.
-      const isEmbeddedAgentRunActive = actualRuns.isEmbeddedAgentRunActive;
-      vi.spyOn(embeddedRuns, "isEmbeddedAgentRunActive").mockImplementation(
-        isEmbeddedAgentRunActive,
-      );
+      const isEmbeddedAgentRunActive = actualRuns.isSessionRunActive;
+      vi.spyOn(sessionQueries, "isSessionRunActive").mockImplementation(isEmbeddedAgentRunActive);
       const entered = createDeferred();
       const resume = createDeferred();
       const compacting = createDeferred();
@@ -353,108 +353,116 @@ describe("native completion final-effect authority", () => {
         modelEntered.resolve();
         return stream;
       });
-      const activeRunId = `active-${randomUUID()}`;
-      const prepared = prepareCatalogExecutor([], {
-        activeSession: session,
-        sessionKey: completion.sessionScope.sessionKey,
-        attempt: {
-          runId: activeRunId,
-          sessionId: completion.sessionScope.sessionId,
-          config: context.getRuntimeConfig(),
-          deferTerminalLifecycle: true,
-          onDeferredLifecycleOwner: () => {},
-        },
-      });
-      expect(prepared.queueHandle.messageInjectionV2?.version).toBe(2);
-      const inject = vi.spyOn(session.agent, "steer");
-      const steer = session.steer.bind(session);
-      let steering: ReturnType<typeof session.steer> | undefined;
-      vi.spyOn(session, "steer").mockImplementation((...args) => (steering = steer(...args)));
-      const unsubscribe = session.subscribe((event) => {
-        if (event.type === "queue_update" && session.pendingMessageCount > 0) {
-          queued.resolve();
-        }
-      });
-      let prompt: Promise<unknown> | undefined;
-      let delivery: ReturnType<typeof completion.deliver> | undefined;
-      const createRecorder = userTurnTranscript.createUserTurnTranscriptRecorder;
-      vi.spyOn(userTurnTranscript, "createUserTurnTranscriptRecorder").mockImplementation(
-        (params) => {
-          const recorder = createRecorder(params);
-          if (params.input?.idempotencyKey === `${completion.idempotencyKey}:active-wake`) {
-            const resolve = recorder.resolveMessage.bind(recorder);
-            recorder.resolveMessage = async (...args) => {
-              entered.resolve();
-              await resume.promise;
-              return await resolve(...args);
-            };
+      await withSessionTurn(
+        { ...completion.sessionScope, abortSignal: signal },
+        async (operation) => {
+          const activeRunId = `active-${randomUUID()}`;
+          const prepared = prepareCatalogExecutor([], {
+            replyOperation: expectDefined(operation, "Native completion requires an admitted turn"),
+            activeSession: session,
+            sessionKey: completion.sessionScope.sessionKey,
+            attempt: {
+              runId: activeRunId,
+              sessionId: completion.sessionScope.sessionId,
+              config: context.getRuntimeConfig(),
+              deferTerminalLifecycle: true,
+              onDeferredLifecycleOwner: () => {},
+            },
+          });
+          expect(prepared.queueHandle.messageInjectionV2?.version).toBe(2);
+          const inject = vi.spyOn(session.agent, "steer");
+          const steer = session.steer.bind(session);
+          let steering: ReturnType<typeof session.steer> | undefined;
+          vi.spyOn(session, "steer").mockImplementation((...args) => (steering = steer(...args)));
+          const unsubscribe = session.subscribe((event) => {
+            if (event.type === "queue_update" && session.pendingMessageCount > 0) {
+              queued.resolve();
+            }
+          });
+          let prompt: Promise<unknown> | undefined;
+          let delivery: ReturnType<typeof completion.deliver> | undefined;
+          const createRecorder = userTurnTranscript.createUserTurnTranscriptRecorder;
+          vi.spyOn(userTurnTranscript, "createUserTurnTranscriptRecorder").mockImplementation(
+            (params) => {
+              const recorder = createRecorder(params);
+              if (params.input?.idempotencyKey === `${completion.idempotencyKey}:active-wake`) {
+                const resolve = recorder.resolveMessage.bind(recorder);
+                recorder.resolveMessage = async (...args) => {
+                  entered.resolve();
+                  await resume.promise;
+                  return await resolve(...args);
+                };
+              }
+              return recorder;
+            },
+          );
+          try {
+            prompt = session.prompt("Wait for the native child");
+            await reachBoundary(modelEntered.promise, prompt);
+            if (boundary === "automatic compaction") {
+              finishModel?.();
+              await reachBoundary(compacting.promise, prompt);
+              expect(prepared.subscription.isCompacting()).toBe(true);
+            }
+            const before = sessionAccessor.loadTranscriptEventsSync(completion.sessionScope);
+            delivery = completion.deliver();
+            await reachBoundary(entered.promise, delivery);
+            expect(inject).not.toHaveBeenCalled();
+            await completion.changeOwner(change);
+            resume.resolve();
+            if (change === "live") {
+              await reachBoundary(queued.promise, delivery);
+              expect(inject).toHaveBeenCalledOnce();
+              resumeCompaction.resolve();
+              if (boundary === "recorder") {
+                finishModel?.();
+              }
+              await prompt;
+              expect(await delivery).toMatchObject({ delivered: true, path: "steered" });
+              expect(sessionManager.getEntries()).toContainEqual(
+                expect.objectContaining({
+                  type: "message",
+                  message: expect.objectContaining({
+                    role: "user",
+                    idempotencyKey: `${completion.idempotencyKey}:active-wake`,
+                  }),
+                }),
+              );
+            } else {
+              expect((await delivery).delivered).toBe(false);
+              await Promise.allSettled([steering]);
+              resumeCompaction.resolve();
+              if (boundary === "automatic compaction") {
+                await prompt;
+              }
+              expect(inject).not.toHaveBeenCalled();
+              expect(session.getSteeringMessages()).toEqual([]);
+              expect(sessionAccessor.loadTranscriptEventsSync(completion.sessionScope)).toEqual(
+                before,
+              );
+              expect(listSessionPendingInputs(completion.sessionScope).total).toBe(0);
+            }
+            if (boundary === "automatic compaction") {
+              expect(prepared.subscription.isCompacting()).toBe(false);
+            }
+            expect(agentCommandMock).not.toHaveBeenCalled();
+            expect(context.dedupe.has(`agent:${completion.idempotencyKey}`)).toBe(false);
+          } finally {
+            release();
+            await session.abort();
+            await Promise.allSettled([delivery, steering, prompt]);
+            unsubscribe();
+            prepared.deferredLifecycleOwner?.discard();
+            prepared.subscription.unsubscribe();
+            embeddedRuns.clearActiveEmbeddedRun(
+              completion.sessionScope.sessionId,
+              prepared.queueHandle,
+              completion.sessionScope.sessionKey,
+            );
+            signal.removeEventListener("abort", release);
           }
-          return recorder;
         },
       );
-      try {
-        prompt = session.prompt("Wait for the native child");
-        await reachBoundary(modelEntered.promise, prompt);
-        if (boundary === "automatic compaction") {
-          finishModel?.();
-          await reachBoundary(compacting.promise, prompt);
-          expect(prepared.subscription.isCompacting()).toBe(true);
-        }
-        const before = sessionAccessor.loadTranscriptEventsSync(completion.sessionScope);
-        delivery = completion.deliver();
-        await reachBoundary(entered.promise, delivery);
-        expect(inject).not.toHaveBeenCalled();
-        await completion.changeOwner(change);
-        resume.resolve();
-        if (change === "live") {
-          await reachBoundary(queued.promise, delivery);
-          expect(inject).toHaveBeenCalledOnce();
-          resumeCompaction.resolve();
-          if (boundary === "recorder") {
-            finishModel?.();
-          }
-          await prompt;
-          expect(await delivery).toMatchObject({ delivered: true, path: "steered" });
-          expect(sessionManager.getEntries()).toContainEqual(
-            expect.objectContaining({
-              type: "message",
-              message: expect.objectContaining({
-                role: "user",
-                idempotencyKey: `${completion.idempotencyKey}:active-wake`,
-              }),
-            }),
-          );
-        } else {
-          expect((await delivery).delivered).toBe(false);
-          await Promise.allSettled([steering]);
-          resumeCompaction.resolve();
-          if (boundary === "automatic compaction") {
-            await prompt;
-          }
-          expect(inject).not.toHaveBeenCalled();
-          expect(session.getSteeringMessages()).toEqual([]);
-          expect(sessionAccessor.loadTranscriptEventsSync(completion.sessionScope)).toEqual(before);
-          expect(listSessionPendingInputs(completion.sessionScope).total).toBe(0);
-        }
-        if (boundary === "automatic compaction") {
-          expect(prepared.subscription.isCompacting()).toBe(false);
-        }
-        expect(agentCommandMock).not.toHaveBeenCalled();
-        expect(context.dedupe.has(`agent:${completion.idempotencyKey}`)).toBe(false);
-      } finally {
-        release();
-        await session.abort();
-        await Promise.allSettled([delivery, steering, prompt]);
-        unsubscribe();
-        prepared.deferredLifecycleOwner?.discard();
-        prepared.subscription.unsubscribe();
-        embeddedRuns.clearActiveEmbeddedRun(
-          completion.sessionScope.sessionId,
-          prepared.queueHandle,
-          completion.sessionScope.sessionKey,
-        );
-        signal.removeEventListener("abort", release);
-      }
     },
   );
 });

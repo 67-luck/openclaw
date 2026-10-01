@@ -24,6 +24,7 @@ import { NON_ENV_SECRETREF_MARKER } from "../../secrets/provider-credential-valu
 import { resolveProviderAuthLookupMaps } from "../../secrets/provider-env-vars.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { createChatRunState } from "../server-chat-state.js";
+import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 type BuildAuthHealthSummary = typeof import("../../agents/auth-health.js").buildAuthHealthSummary;
@@ -178,16 +179,13 @@ const orderHandler = expectDefined(
 );
 
 function createActiveRun(providerId: string, authProviderId?: string, agentId = "main") {
-  return {
-    controller: new AbortController(),
+  return createRpcSourceForTest({
     sessionId: `session-${providerId}`,
     sessionKey: `agent:${agentId}:${providerId}`,
     agentId,
-    startedAtMs: 1,
-    expiresAtMs: 60_000,
     providerId,
     authProviderId,
-  };
+  });
 }
 
 function createApiKeyProfile(provider: string) {
@@ -253,7 +251,7 @@ function createLogoutOptions(
   const respond = vi.fn();
   const context = {
     getRuntimeConfig: mocks.getRuntimeConfig,
-    chatAbortControllers: new Map(),
+    rpcSources: new Map(),
     chatRunState: createChatRunState(),
     removeChatRun: vi.fn(),
     agentRunSeq: new Map(),
@@ -408,8 +406,8 @@ function expectLogoutFailurePreservesRun(params: {
   run: ReturnType<typeof createActiveRun>;
   message: string;
 }): void {
-  expect(params.run.controller.signal.aborted).toBe(false);
-  expect(params.opts.context.chatAbortControllers.has(params.runId)).toBe(true);
+  expect(params.run.input.abortSignal.aborted).toBe(false);
+  expect(params.opts.context.rpcSources.has(params.runId)).toBe(true);
   const [ok, payload, error] = firstRespondCall(params.opts) ?? [];
   expect(ok).toBe(false);
   expect(payload).toBeUndefined();
@@ -423,7 +421,7 @@ async function expectLogoutFailureDoesNotAbortRun(params: {
   params.arrangeFailure();
   const opts = createLogoutOptions({ provider: "openrouter" });
   const activeRun = createActiveRun("openrouter");
-  opts.context.chatAbortControllers.set("run-openrouter", activeRun);
+  opts.context.rpcSources.set("run-openrouter", activeRun);
 
   await logoutHandler(opts);
 
@@ -2539,12 +2537,12 @@ describe("models.authLogout", () => {
       profileIds: ["openrouter:external"],
     });
     const activeRun = createActiveRun("openrouter");
-    opts.context.chatAbortControllers.set("run-openrouter", activeRun);
+    opts.context.rpcSources.set("run-openrouter", activeRun);
 
     await logoutHandler(opts);
 
     expect(mocks.removeModelAuthCredentials).not.toHaveBeenCalled();
-    expect(activeRun.controller.signal.aborted).toBe(false);
+    expect(activeRun.input.abortSignal.aborted).toBe(false);
     const [ok, , error] = firstRespondCall(opts) ?? [];
     expect(ok).toBe(false);
     expect(error?.message).toContain("unavailable auth profiles");
@@ -2601,7 +2599,7 @@ describe("models.authLogout", () => {
     ]);
     const opts = createLogoutOptions({ provider: "openrouter", credentialType: "api_key" });
     const run = createActiveRun("openrouter");
-    opts.context.chatAbortControllers.set("run-openrouter", run);
+    opts.context.rpcSources.set("run-openrouter", run);
 
     await logoutHandler(opts);
 
@@ -2611,8 +2609,8 @@ describe("models.authLogout", () => {
       profileIds: ["openrouter:key"],
       apiKeyProvider: "openrouter",
     });
-    expect(run.controller.signal.aborted).toBe(false);
-    expect(opts.context.chatAbortControllers.has("run-openrouter")).toBe(true);
+    expect(run.input.abortSignal.aborted).toBe(false);
+    expect(opts.context.rpcSources.has("run-openrouter")).toBe(true);
     expect(firstRespondCall(opts)).toEqual([
       true,
       { provider: "openrouter", removedProfiles: ["openrouter:key"], abortedRunIds: [] },
@@ -2624,19 +2622,19 @@ describe("models.authLogout", () => {
     const opts = createLogoutOptions({ provider: "openrouter" });
     const openrouterRun = createActiveRun("openrouter");
     const openaiRun = createActiveRun("openai");
-    opts.context.chatAbortControllers.set("run-openrouter", openrouterRun);
-    opts.context.chatAbortControllers.set("run-openai", openaiRun);
+    opts.context.rpcSources.set("run-openrouter", openrouterRun);
+    opts.context.rpcSources.set("run-openai", openaiRun);
 
     await logoutHandler(opts);
 
-    expect(openrouterRun.controller.signal.aborted).toBe(true);
-    expect(openaiRun.controller.signal.aborted).toBe(false);
-    expect(opts.context.chatAbortControllers.has("run-openrouter")).toBe(false);
-    expect(opts.context.chatAbortControllers.has("run-openai")).toBe(true);
+    expect(openrouterRun.input.abortSignal.aborted).toBe(true);
+    expect(openaiRun.input.abortSignal.aborted).toBe(false);
+    expect(opts.context.rpcSources.has("run-openrouter")).toBe(false);
+    expect(opts.context.rpcSources.has("run-openai")).toBe(true);
     expect(opts.context.removeChatRun).toHaveBeenCalledWith(
       "run-openrouter",
       "run-openrouter",
-      openrouterRun.sessionKey,
+      openrouterRun.adapter.sessionKey,
     );
     expect(opts.context.broadcast).toHaveBeenCalledWith(
       "chat",
@@ -2645,7 +2643,7 @@ describe("models.authLogout", () => {
         state: "aborted",
         stopReason: "auth-revoked",
       }),
-      { sessionKeys: [openrouterRun.sessionKey] },
+      { sessionKeys: [openrouterRun.adapter.sessionKey] },
     );
     const [, payload] = firstRespondCall(opts) ?? [];
     expect((payload as ModelAuthLogoutResult).abortedRunIds).toEqual(["run-openrouter"]);
@@ -2658,15 +2656,15 @@ describe("models.authLogout", () => {
     const opts = createLogoutOptions({ provider: "openrouter", agentId: "writer" });
     const mainRun = createActiveRun("openrouter", undefined, "main");
     const writerRun = createActiveRun("openrouter", undefined, "writer");
-    opts.context.chatAbortControllers.set("run-main", mainRun);
-    opts.context.chatAbortControllers.set("run-writer", writerRun);
+    opts.context.rpcSources.set("run-main", mainRun);
+    opts.context.rpcSources.set("run-writer", writerRun);
 
     await logoutHandler(opts);
 
-    expect(mainRun.controller.signal.aborted).toBe(false);
-    expect(writerRun.controller.signal.aborted).toBe(true);
-    expect(opts.context.chatAbortControllers.has("run-main")).toBe(true);
-    expect(opts.context.chatAbortControllers.has("run-writer")).toBe(false);
+    expect(mainRun.input.abortSignal.aborted).toBe(false);
+    expect(writerRun.input.abortSignal.aborted).toBe(true);
+    expect(opts.context.rpcSources.has("run-main")).toBe(true);
+    expect(opts.context.rpcSources.has("run-writer")).toBe(false);
     const [, payload] = firstRespondCall(opts) ?? [];
     expect((payload as ModelAuthLogoutResult).abortedRunIds).toEqual(["run-writer"]);
   });
@@ -2690,11 +2688,11 @@ describe("models.authLogout", () => {
     mocks.listProfilesForProvider.mockReturnValue([]);
     const opts = createLogoutOptions({ provider: "openrouter" });
     const activeRun = createActiveRun("openrouter");
-    opts.context.chatAbortControllers.set("run-openrouter", activeRun);
+    opts.context.rpcSources.set("run-openrouter", activeRun);
 
     await logoutHandler(opts);
 
-    expect(activeRun.controller.signal.aborted).toBe(true);
+    expect(activeRun.input.abortSignal.aborted).toBe(true);
     const [ok, payload] = firstRespondCall(opts) ?? [];
     expect(ok).toBe(true);
     expect((payload as ModelAuthLogoutResult).removedProfiles).toEqual([]);
@@ -2717,13 +2715,13 @@ describe("models.authLogout", () => {
     mocks.listProfilesForProvider.mockReturnValue([profileId]);
     const opts = createLogoutOptions({ provider: "openrouter", profileIds: [profileId] });
     const activeRun = createActiveRun("openrouter");
-    opts.context.chatAbortControllers.set("run-openrouter", activeRun);
+    opts.context.rpcSources.set("run-openrouter", activeRun);
 
     await logoutHandler(opts);
 
     // Targeted logout removes one credential but must not terminate runs that
     // may be using other preserved credentials for the same provider.
-    expect(activeRun.controller.signal.aborted).toBe(false);
+    expect(activeRun.input.abortSignal.aborted).toBe(false);
     const [ok, payload] = firstRespondCall(opts) ?? [];
     expect(ok).toBe(true);
     expect((payload as ModelAuthLogoutResult).abortedRunIds).toEqual([]);
@@ -2732,11 +2730,11 @@ describe("models.authLogout", () => {
   it("aborts active runs that share a provider auth alias", async () => {
     const opts = createLogoutOptions({ provider: "byteplus" });
     const aliasedRun = createActiveRun("byteplus-plan", "byteplus");
-    opts.context.chatAbortControllers.set("run-byteplus-plan", aliasedRun);
+    opts.context.rpcSources.set("run-byteplus-plan", aliasedRun);
 
     await logoutHandler(opts);
 
-    expect(aliasedRun.controller.signal.aborted).toBe(true);
+    expect(aliasedRun.input.abortSignal.aborted).toBe(true);
     const [, payload] = firstRespondCall(opts) ?? [];
     expect((payload as ModelAuthLogoutResult).abortedRunIds).toEqual(["run-byteplus-plan"]);
   });
@@ -2764,26 +2762,26 @@ describe("models.authLogout", () => {
       const revokedRun = createActiveRun("openrouter", undefined, "writer");
       const otherAgentRun = createActiveRun("openrouter", undefined, "main");
       const otherProviderRun = createActiveRun("openai", undefined, "writer");
-      opts.context.chatAbortControllers.set("revoked", revokedRun);
-      opts.context.chatAbortControllers.set("other-agent", otherAgentRun);
-      opts.context.chatAbortControllers.set("other-provider", otherProviderRun);
+      opts.context.rpcSources.set("revoked", revokedRun);
+      opts.context.rpcSources.set("other-agent", otherAgentRun);
+      opts.context.rpcSources.set("other-provider", otherProviderRun);
       let revokedAtRefresh = false;
       refresh.mockImplementationOnce(async () => {
-        revokedAtRefresh = revokedRun.controller.signal.aborted;
+        revokedAtRefresh = revokedRun.input.abortSignal.aborted;
         throw new Error("refresh failed");
       });
 
       await logoutHandler(opts);
 
       expect(revokedAtRefresh).toBe(true);
-      expect(revokedRun.controller.signal.aborted).toBe(true);
-      expect(otherAgentRun.controller.signal.aborted).toBe(false);
-      expect(otherProviderRun.controller.signal.aborted).toBe(false);
-      expect(opts.context.chatAbortControllers.has("revoked")).toBe(false);
+      expect(revokedRun.input.abortSignal.aborted).toBe(true);
+      expect(otherAgentRun.input.abortSignal.aborted).toBe(false);
+      expect(otherProviderRun.input.abortSignal.aborted).toBe(false);
+      expect(opts.context.rpcSources.has("revoked")).toBe(false);
       expect(opts.context.broadcast).toHaveBeenCalledWith(
         "chat",
         expect.objectContaining({ runId: "revoked", state: "aborted", stopReason: "auth-revoked" }),
-        { sessionKeys: [revokedRun.sessionKey] },
+        { sessionKeys: [revokedRun.adapter.sessionKey] },
       );
       const [ok, payload, error] = firstRespondCall(opts) ?? [];
       expect(ok).toBe(true);

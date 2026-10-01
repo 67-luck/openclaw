@@ -10,6 +10,7 @@ import {
   type AgentRunAttemptTerminal,
 } from "../../agent-run-terminal-outcome.js";
 import { agentSessionSetContextReplacementHook } from "../../sessions/agent-session-compaction.js";
+import { getGatewayToolCallerIdentity } from "../../tools/gateway-caller-context.js";
 import { log } from "../logger.js";
 import type { EmbeddedAgentQueueHandle } from "../runs.js";
 import { flushPendingToolResultsAfterIdle } from "../wait-for-idle-before-flush.js";
@@ -51,6 +52,7 @@ export async function runEmbeddedAttemptExecutionPhase(
     sessionId: attempt.sessionId,
     sessionKey: attempt.sessionKey,
     runId: attempt.runId,
+    watchdogAttempt: getGatewayToolCallerIdentity()?.watchdogAttempt,
   });
   const mergeTerminal = (incoming: AgentRunAttemptTerminal) => {
     state.terminal = mergeAgentRunAttemptTerminal(state.terminal, incoming);

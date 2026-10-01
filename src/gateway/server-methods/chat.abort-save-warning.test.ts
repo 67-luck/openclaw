@@ -88,7 +88,7 @@ it.each([false, true])(
     const context = createChatAbortContext({
       getRuntimeConfig,
       workerEnvironmentService: service,
-      chatAbortControllers: new Map([["worker-run", active]]),
+      rpcSources: new Map([["worker-run", active]]),
     });
     const kill = vi
       .spyOn(subagentKill, "killSubagentRunAdmin")
@@ -116,7 +116,7 @@ it.each([false, true])(
       } else {
         await expect(pending).rejects.toBe(workerFailure);
       }
-      expect(active.controller.signal.aborted).toBe(true);
+      expect(active.input.abortSignal.aborted).toBe(true);
       expect(kill).toHaveBeenCalledOnce();
       expect(respond).not.toHaveBeenCalled();
     } finally {
@@ -155,7 +155,7 @@ it.each([
     details: { reason: "fixture-revocation" },
   });
   const assertCurrent = () => {
-    if (active.controller.signal.aborted) {
+    if (active.input.abortSignal.aborted) {
       if (route === "stop-revoked") {
         throw refusal;
       }
@@ -167,8 +167,8 @@ it.each([
   const terminalFailure = route === "terminal" || route === "revoked";
   if (terminalFailure) {
     const error = route === "revoked" ? refusal : new Error("terminal write failed");
-    active.projectSessionTerminalPersistence = Promise.reject(error);
-    void active.projectSessionTerminalPersistence.catch(() => {});
+    active.adapter.projectSessionTerminalPersistence = Promise.reject(error);
+    void active.adapter.projectSessionTerminalPersistence.catch(() => {});
   }
   if (route === "queued") {
     enqueueSwarmRun({
@@ -197,7 +197,7 @@ it.each([
   const context = createChatAbortContext({
     getRuntimeConfig,
     getSessionEventSubscriberConnIds: () => new Set(),
-    chatAbortControllers: new Map([[runId, active]]),
+    rpcSources: new Map([[runId, active]]),
     chatRunState: createAbortTestRunState([[runId, { buffer: "Already streamed reply" }]]),
   });
   const pending = invokeChatAbortHandler({
@@ -247,7 +247,7 @@ it.each([
       warning: expect.stringContaining("could not be saved to history"),
     });
   }
-  expect(active.controller.signal.aborted).toBe(true);
+  expect(active.input.abortSignal.aborted).toBe(true);
   expect(await loadTranscriptEvents(scope)).not.toContainEqual(
     expect.objectContaining({
       message: expect.objectContaining({ idempotencyKey: "run-save-failure:assistant" }),

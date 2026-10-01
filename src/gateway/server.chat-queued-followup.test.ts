@@ -250,7 +250,7 @@ describe("queued WebChat follow-up delivery", () => {
           await rpcReq(ws, "health", {});
         } finally {
           ws.off("message", recordFollowup);
-          options?.turnAdoptionLifecycle?.onSettled?.();
+          await options?.turnAdoptionLifecycle?.onSettled?.();
         }
         expect(completed.payload?.state).toBe(state);
         if (name === "timeout") {

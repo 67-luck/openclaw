@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { replyRunRegistry } from "../auto-reply/reply/reply-run-registry.js";
 import { resolveSessionWorkStartError } from "../config/sessions/lifecycle.js";
 import {
   appendTranscriptMessage,
@@ -14,6 +13,7 @@ import {
   deleteSessionEntryLifecycle,
   resetSessionEntryLifecycle,
 } from "../config/sessions/session-accessor.sqlite-lifecycle.js";
+import { replyRunRegistry } from "../sessions/session-controller.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db-lifecycle.js";
 import {
@@ -368,7 +368,7 @@ it.each(["provided", "legacy"] as const)(
         }),
       );
       expect(await loadTranscriptEvents(scope)).toEqual([]);
-      expect(context.chatAbortControllers.size).toBe(0);
+      expect(context.rpcSources.size).toBe(0);
       await time.advanceBy(60_000);
       await expect(deleted.promise).resolves.toMatchObject({ ok: true, result: { deleted: true } });
       expect(deletes).toHaveBeenCalledTimes(2);

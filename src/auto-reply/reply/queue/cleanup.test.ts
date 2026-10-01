@@ -1,36 +1,30 @@
-// Tests normalized session queue cleanup through the canonical lane resolver.
-import { afterEach, describe, expect, it, vi } from "vitest";
+// Queue cleanup preserves independent command lanes and normalized source accounting.
+import { expect, it, vi } from "vitest";
+import {
+  enqueueCommandInLane,
+  getQueueSize,
+  setCommandLaneConcurrency,
+} from "../../../process/command-queue.js";
+import { captureSessionControllerSourceSettlement } from "../../../sessions/session-controller.mailbox.js";
+import { createQueueSettings, createQueueTestRun } from "../queue.test-helpers.js";
 import { clearSessionQueues } from "./cleanup.js";
+import { enqueueFollowupRun } from "./enqueue.js";
+import { getExistingFollowupQueue } from "./state.js";
 
-const followupQueueMocks = vi.hoisted(() => ({
-  clearFollowupDrainCallback: vi.fn(),
-  clearFollowupQueue: vi.fn(() => 2),
-}));
-
-const commandQueueMocks = vi.hoisted(() => ({
-  clearCommandLane: vi.fn(() => 3),
-}));
-
-vi.mock("./drain.js", () => ({
-  clearFollowupDrainCallback: followupQueueMocks.clearFollowupDrainCallback,
-}));
-
-vi.mock("./state.js", () => ({
-  clearFollowupQueue: followupQueueMocks.clearFollowupQueue,
-}));
-
-vi.mock("../../../process/command-queue.js", () => ({
-  clearCommandLane: commandQueueMocks.clearCommandLane,
-}));
-
-describe("clearSessionQueues", () => {
-  afterEach(() => {
-    followupQueueMocks.clearFollowupDrainCallback.mockReset();
-    followupQueueMocks.clearFollowupQueue.mockReset().mockReturnValue(2);
-    commandQueueMocks.clearCommandLane.mockReset().mockReturnValue(3);
-  });
-
-  it("clears each normalized key once using canonical session lanes", () => {
+it("clears each normalized mailbox without clearing independent command lanes", async () => {
+  // The former adapter derived this command lane from the cleared logical key.
+  const lane = "session:alpha";
+  setCommandLaneConcurrency(lane, 0);
+  const execute = vi.fn(async () => "independent work");
+  const pending = enqueueCommandInLane(lane, execute);
+  try {
+    const sources = ["alpha", "session:beta"].flatMap((key) =>
+      ["first", "second"].map((prompt) => {
+        const run = createQueueTestRun({ prompt });
+        enqueueFollowupRun(key, run, createQueueSettings(), "none", undefined, false);
+        return run;
+      }),
+    );
     const result = clearSessionQueues([
       " alpha ",
       undefined,
@@ -40,20 +34,19 @@ describe("clearSessionQueues", () => {
       " session:beta ",
       "session:beta",
     ]);
-
-    expect(result).toEqual({
-      followupCleared: 4,
-      laneCleared: 6,
-      keys: ["alpha", "session:beta"],
-    });
-    expect(followupQueueMocks.clearFollowupQueue.mock.calls).toEqual([["alpha"], ["session:beta"]]);
-    expect(followupQueueMocks.clearFollowupDrainCallback.mock.calls).toEqual([
-      ["alpha"],
-      ["session:beta"],
-    ]);
-    expect(commandQueueMocks.clearCommandLane.mock.calls).toEqual([
-      ["session:alpha"],
-      ["session:beta"],
-    ]);
-  });
+    expect(result).toEqual({ followupCleared: 4, laneCleared: 0, keys: ["alpha", "session:beta"] });
+    await Promise.all(
+      sources.map((run) => captureSessionControllerSourceSettlement(run.controllerInput!)),
+    );
+    expect(getExistingFollowupQueue("alpha")).toBeUndefined();
+    expect(getExistingFollowupQueue("session:beta")).toBeUndefined();
+    expect(getQueueSize(lane)).toBe(1);
+    expect(execute).not.toHaveBeenCalled();
+    setCommandLaneConcurrency(lane, 1);
+    await expect(pending).resolves.toBe("independent work");
+    expect(execute).toHaveBeenCalledOnce();
+  } finally {
+    setCommandLaneConcurrency(lane, 1);
+    await pending;
+  }
 });

@@ -1,12 +1,9 @@
 // Covers heartbeat skipping while session lanes or cron jobs are busy.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { preemptAndDrainEmbeddedHeartbeatRun } from "../agents/embedded-agent-runner/runs.js";
 import {
-  clearActiveEmbeddedRun,
-  isEmbeddedAgentRunActive,
-  preemptAndDrainEmbeddedHeartbeatRun,
-  setActiveEmbeddedRun,
-} from "../agents/embedded-agent-runner/runs.js";
-import {
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
   createEmbeddedRunHandle,
   testing as embeddedRunTesting,
 } from "../agents/embedded-agent-runner/runs.test-support.js";
@@ -17,10 +14,6 @@ import {
 } from "../auto-reply/reply/agent-runner.test-fixtures.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import { resolveReplyOperationRunState } from "../auto-reply/reply/reply-operation-run-state.js";
-import {
-  createReplyOperation,
-  waitForReplyRunSuccessorAdmission,
-} from "../auto-reply/reply/reply-run-registry.js";
 import { testing as replyRunRegistryTesting } from "../auto-reply/reply/reply-run-registry.test-support.js";
 import { createMockTypingController } from "../auto-reply/reply/test-helpers.js";
 import type { OpenClawConfig } from "../config/config.js";
@@ -32,6 +25,11 @@ import {
 } from "../cron/active-jobs.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import { CommandLane } from "../process/lanes.js";
+import {
+  createReplyOperation,
+  waitForReplyRunSuccessorAdmission,
+} from "../sessions/session-controller.js";
+import { isSessionRunActive as isEmbeddedAgentRunActive } from "../sessions/session-controller.queries.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
 import { getAgentEventLifecycleGeneration } from "./agent-events.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";

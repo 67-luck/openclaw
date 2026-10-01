@@ -2,7 +2,7 @@ import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
-import { isSessionLifecycleMutationActive } from "../../sessions/session-lifecycle-admission.js";
+import { isSessionMutationActive } from "../../sessions/session-controller.lifecycle.js";
 import {
   isSessionStoreTopologyChange,
   sessionChanges,
@@ -262,7 +262,7 @@ export async function prepareSessionDeliveryGeneration(input: SessionDeliveryGen
         assertActive();
         if (
           [...paths].some((scope) =>
-            isSessionLifecycleMutationActive(scope, [generation.sessionKey, generation.sessionId]),
+            isSessionMutationActive(scope, [generation.sessionKey, generation.sessionId]),
           )
         ) {
           throw new SessionDeliveryGenerationUnavailableError();

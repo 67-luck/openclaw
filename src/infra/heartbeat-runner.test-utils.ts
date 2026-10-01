@@ -5,7 +5,6 @@ import path from "node:path";
 import { vi } from "vitest";
 import { heartbeatRunnerTelegramPlugin } from "../../test/helpers/infra/heartbeat-runner-channel-plugins.js";
 import { resolveReplyOperationRunState } from "../auto-reply/reply/reply-operation-run-state.js";
-import { createReplyOperation } from "../auto-reply/reply/reply-run-registry.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import { resolveMainSessionKey } from "../config/sessions.js";
 import {
@@ -21,6 +20,7 @@ import { resolveCronJobsStorePath, saveCronJobsStoreWithRevisionNative } from ".
 import { cronStoreKey } from "../cron/store/key.js";
 import { loadCronStoreFromDatabase } from "../cron/store/load.kernel.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
+import { createReplyOperation } from "../sessions/session-controller.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
 import {
   closeOpenClawStateDatabaseAsync,

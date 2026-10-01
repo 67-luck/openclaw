@@ -4,14 +4,16 @@
 import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
 import { expect, it, vi } from "vitest";
 import {
-  clearActiveEmbeddedRun,
   clearEmbeddedAgentRunAbortabilityForRunId,
   isEmbeddedAgentRunAbortableForRunId,
   resolveActiveEmbeddedRunOwnerByRunId,
   retainEmbeddedAgentRunAbortabilityForRunId,
-  setActiveEmbeddedRun,
 } from "../../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
+import {
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { resolveAgentRunAbortLifecycleFields } from "../../agents/run-termination.js";
 import { registerSubagentRun } from "../../agents/subagents/registry/subagent-registry.js";
 import { writeSubagentSessionEntry } from "../../agents/subagents/registry/subagent-registry.persistence.test-support.js";
@@ -90,8 +92,8 @@ it.each(["matched", "old-incarnation", "foreign-key", "missing-row"] as const)(
         });
       } else {
         expect(context.dedupe.size).toBe(0);
-        expect(context.chatQueuedTurns.size).toBe(0);
-        expect(context.chatAbortControllers.size).toBe(0);
+        expect(context.rpcSources.size).toBe(0);
+        expect(context.rpcSources.size).toBe(0);
       }
     } finally {
       clearActiveEmbeddedRun(selectedId, handle, selectedKey);
@@ -123,14 +125,15 @@ it.each([false, true])(
     );
     const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
     const queued = createActiveRun(parentKey, {
+      queued: true,
       sessionId: parentId,
       agentId: "main",
       owner: { connId: client.connId },
     });
-    context.chatQueuedTurns.set("original-queued", queued);
+    context.rpcSources.set("original-queued", queued);
     const abort = vi.fn();
     const successor = createEmbeddedRunHandle({ runId: "late-successor", abort });
-    queued.controller.signal.addEventListener(
+    queued.input.abortSignal.addEventListener(
       "abort",
       () => setActiveEmbeddedRun(parentId, successor, parentKey),
       { once: true },
@@ -150,7 +153,7 @@ it.each([false, true])(
         isWebchatConnect: () => false,
         extraHandlers: { "sessions.abort": sessionAbortHandlers["sessions.abort"]! },
       });
-      expect(queued.controller.signal.aborted).toBe(true);
+      expect(queued.input.abortSignal.aborted).toBe(true);
       expect(abort).toHaveBeenCalledTimes(broad ? 1 : 0);
       expect(respond).toHaveBeenCalledOnce();
       expect(respond.mock.calls[0]?.[1]).toEqual({
@@ -169,7 +172,7 @@ async function stopParent(runId = "parent") {
     getRuntimeConfig,
     getSessionEventSubscriberConnIds: () => new Set(),
   });
-  expect(context.chatAbortControllers.size).toBe(0);
+  expect(context.rpcSources.size).toBe(0);
   const respond = vi.fn();
   await sessionAbortHandlers["sessions.abort"]!({
     req: { type: "req", id: "stop", method: "sessions.abort" },
@@ -399,7 +402,7 @@ it.each([
     // controller-removal cleanup; an absent native handle alone permits abort.
     expect(isEmbeddedAgentRunAbortableForRunId("parent")).toBe(true);
     const registration = registerChatAbortController({
-      chatAbortControllers: context.chatAbortControllers,
+      rpcSources: context.rpcSources,
       runId: "parent",
       sessionId: parentId,
       sessionKey: parentKey,
@@ -438,7 +441,7 @@ it.each([
         expect(resolveActiveEmbeddedRunOwnerByRunId("parent")).toBeDefined();
       }
       expect(isEmbeddedAgentRunAbortableForRunId("parent")).toBe(!finalizing);
-      expect(context.chatAbortControllers.get("parent")).toBe(registration.entry);
+      expect(context.rpcSources.get("parent")).toBe(registration.entry);
       const respond = vi.fn();
       const handler =
         method === "chat.abort" ? handleChatAbortRequest : sessionAbortHandlers[method]!;

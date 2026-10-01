@@ -605,7 +605,7 @@ describe("task suggestion gateway methods", () => {
 
       const accepted = await call("taskSuggestions.accept", { taskId, mode: "session" }, vi.fn(), {
         client,
-        context: { chatAbortControllers: new Map() },
+        context: { rpcSources: new Map() },
       });
       const replay = await call("taskSuggestions.accept", { taskId, mode: "session" });
 
@@ -636,7 +636,7 @@ describe("task suggestion gateway methods", () => {
 
       const accepted = await call("taskSuggestions.accept", { taskId, mode: "session" }, vi.fn(), {
         client: operatorClient(),
-        context: { chatAbortControllers: new Map() },
+        context: { rpcSources: new Map() },
       });
       const listed = await call("taskSuggestions.list", {});
 
@@ -664,7 +664,7 @@ describe("task suggestion gateway methods", () => {
 
       const accepted = await call("taskSuggestions.accept", { taskId, mode: "session" }, vi.fn(), {
         client: operatorClient(),
-        context: { chatAbortControllers: new Map() },
+        context: { rpcSources: new Map() },
       });
       const listed = await call("taskSuggestions.list", {});
 

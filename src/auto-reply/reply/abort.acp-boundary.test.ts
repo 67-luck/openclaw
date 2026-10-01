@@ -7,6 +7,7 @@ import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { testing as acpTesting, getAcpSessionManager } from "../../acp/control-plane/manager.js";
 import { disposeAcpSessionManagerInstance } from "../../acp/control-plane/manager.lifecycle.js";
+import { getAcpSessionResetControls } from "../../acp/control-plane/manager.reset-controls.js";
 import {
   registerAcpRuntimeBackend,
   unregisterAcpRuntimeBackend,
@@ -17,10 +18,10 @@ import {
   prepareAgentRunAdmission,
 } from "../../agents/admitted-run-context.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { registerSubagentRun } from "../../agents/subagents/registry/subagent-registry.js";
 import { writeSubagentSessionEntry } from "../../agents/subagents/registry/subagent-registry.persistence.test-support.js";
 import { getSubagentRunByChildSessionKey } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
@@ -34,17 +35,17 @@ import {
   restoreActivePluginRegistrySnapshot,
   setActivePluginRegistry,
 } from "../../plugins/runtime.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import {
-  beginSessionWorkAdmission,
-  isSessionWorkAdmissionActive,
-  type SessionWorkAdmissionLease,
-} from "../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  isSessionControllerWorkActive,
+  type SessionEffectRef,
+} from "../../sessions/session-controller.lifecycle.js";
 import {
   createChannelTestPluginBase,
   createTestRegistry,
 } from "../../test-utils/channel-plugins.js";
 import { tryFastAbortFromMessage } from "./abort.js";
-import { createReplyOperation } from "./reply-run-registry.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 const fixture = useChatAbortRegistryFixture();
@@ -153,19 +154,22 @@ it.each(
       kind: "embedded",
       isStreaming: () => true,
       cancel: () => {
+        queueMicrotask(() => native.complete());
         releaseSwarmRun("capacity");
         if (nativeFailure) {
           throw nativeError;
         }
       },
     });
-    const runningAbort = vi.fn();
+    const runningAbort = vi.fn(() => {
+      queueMicrotask(() => clearActiveEmbeddedRun("running-session", handle, runningKey));
+    });
     const handle = createEmbeddedRunHandle({ runId: "running", abort: runningAbort });
     setActiveEmbeddedRun("running-session", handle, runningKey);
     const selectedDispatch = vi.fn(async () => {});
     const survivorDispatch = vi.fn(async () => {});
     let pending: ReturnType<typeof tryFastAbortFromMessage> | undefined;
-    let childAdmission: SessionWorkAdmissionLease | undefined;
+    let childAdmission: SessionEffectRef | undefined;
     const preparedAdmission = prepareAgentRunAdmission({
       cfg,
       operationalRunInstance: createOperationalRunInstanceRef("acp-steer"),
@@ -208,7 +212,7 @@ it.each(
         ]);
         expect(acpSignal.aborted).toBe(false);
         expect(manager.getObservabilitySnapshot().turns.active).toBe(1);
-        childAdmission = await beginSessionWorkAdmission({
+        childAdmission = await beginSessionEffect({
           scope: storePath,
           identities: [runningKey, "running-session"],
           assertAllowed: () => {},
@@ -287,7 +291,9 @@ it.each(
       if (active) {
         await nativeInterrupted.promise;
         expect(native.abortSignal.aborted).toBe(true);
-        expect(isSessionWorkAdmissionActive(storePath, [runningKey, "running-session"])).toBe(true);
+        expect(isSessionControllerWorkActive(storePath, [runningKey, "running-session"])).toBe(
+          true,
+        );
         await vi.waitFor(() => expect(acpSignal?.aborted).toBe(true));
         expect(cancel).toHaveBeenCalledOnce();
         expect(stopSettled).toBe(false);
@@ -314,9 +320,6 @@ it.each(
       await vi.waitFor(() => expect(runningAbort).toHaveBeenCalledOnce());
       await vi.waitFor(() => expect(survivorDispatch).toHaveBeenCalledOnce());
       expect(selectedDispatch).not.toHaveBeenCalled();
-      for (const key of [runningKey, queuedKey]) {
-        expect(getSubagentRunByChildSessionKey(key)?.endedReason).toBe("subagent-killed");
-      }
       await vi.waitFor(() =>
         expect(loadExactSessionEntryReadOnly({ sessionKey: sourceKey })?.entry).toMatchObject({
           abortedLastRun: true,
@@ -339,6 +342,9 @@ it.each(
         stoppedSubagents: 2,
         failedSubagents: 0,
       });
+      for (const key of [runningKey, queuedKey]) {
+        expect(getSubagentRunByChildSessionKey(key)?.endedReason).toBe("subagent-killed");
+      }
       expect(cancel).toHaveBeenCalledExactlyOnceWith({
         handle: expect.objectContaining({ sessionKey: acpKey }),
         reason: "fast-abort",
@@ -366,6 +372,295 @@ it.each(
         bindingId: binding.bindingId,
         reason: "test-cleanup",
       });
+      restoreActivePluginRegistrySnapshot(registry);
+    }
+  },
+);
+
+it.each(["accepted", "replaced", "idle-replaced", "idle-rotated", "idle-cold", "revoked"] as const)(
+  "delayed binding Stop retains its original ACP owners (%s)",
+  async (scenario) => {
+    const sourceKey = "agent:main:stop-test:direct:delayed";
+    const acpKey = "agent:main:acp:delayed-stop";
+    for (const [sessionKey, sessionId] of [
+      [sourceKey, "source-session"],
+      [acpKey, "acp-session"],
+    ] as const) {
+      await writeSubagentSessionEntry({
+        stateDir: fixture.stateDir,
+        agentId: "main",
+        sessionKey,
+        defaultSessionId: sessionId,
+      });
+    }
+    const cfg = getRuntimeConfig();
+    const registry = captureActivePluginRegistrySnapshot();
+    setActivePluginRegistry(
+      createTestRegistry([
+        {
+          pluginId: "stop-test",
+          source: "test",
+          plugin: {
+            ...createChannelTestPluginBase({ id: "stop-test" }),
+            conversationBindings: { supportsCurrentConversationBinding: true },
+          },
+        },
+      ]),
+    );
+    const service = getSessionBindingService();
+    const binding = await service.bind({
+      targetSessionKey: acpKey,
+      targetKind: "session",
+      conversation: { channel: "stop-test", accountId: "default", conversationId: "delayed" },
+      placement: "current",
+    });
+    const lookupEntered = createDeferred();
+    const releaseLookup = createDeferred();
+    const resolveBinding = service.resolveByConversationAsync.bind(service);
+    const lookup = vi
+      .spyOn(service, "resolveByConversationAsync")
+      .mockImplementationOnce(async (ref) => {
+        lookupEntered.resolve();
+        await releaseLookup.promise;
+        return await resolveBinding(ref);
+      });
+    const startedTexts: string[] = [];
+    const firstStarted = createDeferred<AbortSignal>();
+    const secondStarted = createDeferred<AbortSignal>();
+    const finishFirst = createDeferred();
+    const finishSecond = createDeferred();
+    const cancelled = createDeferred();
+    const nativeCancelled = createDeferred();
+    const cancel = vi.fn<AcpRuntime["cancel"]>(async () => {
+      cancelled.resolve();
+    });
+    registerAcpRuntimeBackend({
+      id: "stop-test",
+      runtime: {
+        ensureSession: async ({ sessionKey }) => ({
+          sessionKey,
+          backend: "stop-test",
+          runtimeSessionName: "delayed-runtime",
+        }),
+        async *runTurn({ signal, text }) {
+          if (!signal) {
+            throw new Error("Missing ACP signal");
+          }
+          startedTexts.push(text);
+          (text === "first" ? firstStarted : secondStarted).resolve(signal);
+          await (text === "first" ? finishFirst : finishSecond).promise;
+          yield { type: "done", status: signal.aborted ? "cancelled" : "completed" };
+        },
+        cancel,
+        close: async () => {},
+      },
+    });
+    acpTesting.resetAcpSessionManagerForTests();
+    let manager = getAcpSessionManager();
+    const admissions: ReturnType<typeof prepareAgentRunAdmission>[] = [];
+    const turns: Promise<void>[] = [];
+    const start = async (text: string) => {
+      const admission = prepareAgentRunAdmission({
+        cfg,
+        operationalRunInstance: createOperationalRunInstanceRef("same-request"),
+        facts: {
+          runId: "same-request",
+          agentId: "main",
+          ingress: { kind: "acp", boundary: "acp.command.steer", state: "absent" },
+        },
+      });
+      admissions.push(admission);
+      const admittedRunContext = await admission.admit("acp");
+      const turn = manager
+        .runTurn({
+          cfg,
+          admittedRunContext,
+          sessionKey: acpKey,
+          requestId: "same-request",
+          mode: "steer",
+          provenance: "agent",
+          text,
+        })
+        .finally(() => admission.close());
+      turns.push(turn);
+    };
+    const source = createReplyOperation({
+      sessionKey: sourceKey,
+      sessionId: "source-session",
+      resetTriggered: false,
+    });
+    source.attachBackend({
+      kind: "embedded",
+      isStreaming: () => true,
+      cancel: () => {
+        nativeCancelled.resolve();
+        queueMicrotask(() => source.complete());
+      },
+    });
+    const original = createReplyOperation({
+      sessionKey: acpKey,
+      sessionId: "acp-session",
+      resetTriggered: false,
+    });
+    original.attachBackend({
+      kind: "embedded",
+      isStreaming: () => true,
+      cancel: () => queueMicrotask(() => original.complete()),
+    });
+    let replacement: ReturnType<typeof createReplyOperation> | undefined;
+    let pending: ReturnType<typeof tryFastAbortFromMessage> | undefined;
+    let current = true;
+    let stopSettled = false;
+    try {
+      await manager.initializeSession({
+        cfg,
+        sessionKey: acpKey,
+        agent: "main",
+        mode: "persistent",
+        backendId: "stop-test",
+      });
+      const initiallyActive =
+        scenario === "accepted" || scenario === "replaced" || scenario === "revoked";
+      if (initiallyActive) {
+        await start("first");
+        await firstStarted.promise;
+      }
+      if (scenario === "accepted") {
+        await start("queued-original");
+      }
+      if (scenario === "idle-cold") {
+        await disposeAcpSessionManagerInstance(manager, "simulate-process-retirement");
+        acpTesting.resetAcpSessionManagerForTests();
+        manager = getAcpSessionManager();
+      }
+      pending = tryFastAbortFromMessage({
+        cfg,
+        isCommandTargetCurrent: () => current,
+        ctx: buildTestCtx({
+          SessionKey: sourceKey,
+          CommandBody: "/stop",
+          RawBody: "/stop",
+          CommandAuthorized: true,
+          Provider: "stop-test",
+          Surface: "stop-test",
+          From: "stop-test:delayed",
+          To: "stop-test:delayed",
+        }),
+      }).finally(() => {
+        stopSettled = true;
+      });
+      const outcome = pending.then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
+      );
+      await lookupEntered.promise;
+      let successorSignal: AbortSignal | undefined;
+      if (scenario === "replaced" || scenario === "idle-replaced" || scenario === "idle-rotated") {
+        if (initiallyActive) {
+          finishFirst.resolve();
+          await turns[0];
+        }
+        original.complete();
+        replacement = createReplyOperation({
+          sessionKey: acpKey,
+          sessionId: "acp-session",
+          resetTriggered: false,
+        });
+        replacement.attachBackend({
+          kind: "embedded",
+          isStreaming: () => true,
+          cancel: () => queueMicrotask(() => replacement?.complete()),
+        });
+        if (scenario === "idle-rotated") {
+          await getAcpSessionResetControls(manager).forceDiscardSessionRuntime({
+            cfg,
+            sessionKey: acpKey,
+            reason: "replace-idle-owner",
+          });
+          await manager.initializeSession({
+            cfg,
+            sessionKey: acpKey,
+            agent: "main",
+            mode: "persistent",
+            backendId: "stop-test",
+          });
+        } else {
+          await start("second");
+          successorSignal = await secondStarted.promise;
+        }
+      } else if (scenario === "accepted") {
+        // Same public run ID, distinct admitted instance, queued behind the captured turn.
+        await start("second");
+      } else if (scenario === "revoked") {
+        current = false;
+      }
+      releaseLookup.resolve();
+      if (scenario === "accepted" || scenario === "idle-cold") {
+        await Promise.race([
+          cancelled.promise,
+          outcome.then(() => {
+            throw new Error("Stop missed original ACP owner");
+          }),
+        ]);
+        expect(original.abortSignal.aborted).toBe(true);
+        if (scenario === "accepted") {
+          expect((await firstStarted.promise).aborted).toBe(true);
+          expect(stopSettled).toBe(false);
+          const queuedOriginal = turns[1];
+          const successor = turns[2];
+          if (!queuedOriginal || !successor) {
+            throw new Error("Missing admitted queued turns");
+          }
+          await queuedOriginal;
+          expect(startedTexts).toEqual(["first"]);
+          finishFirst.resolve();
+          successorSignal = await Promise.race([
+            secondStarted.promise,
+            successor.then(() => {
+              throw new Error("Stop cancelled the later queued instance");
+            }),
+          ]);
+          expect(successorSignal.aborted).toBe(false);
+        }
+        expect(await pending).toMatchObject({ handled: true, aborted: true });
+        expect(cancel).toHaveBeenCalledOnce();
+      } else if (scenario === "revoked") {
+        expect(await outcome).toMatchObject({ error: expect.any(Error) });
+        expect((await firstStarted.promise).aborted).toBe(false);
+        expect(source.abortSignal.aborted).toBe(false);
+        expect(cancel).not.toHaveBeenCalled();
+      } else {
+        await nativeCancelled.promise;
+        await Promise.race([
+          pending,
+          cancelled.promise.then(() => {
+            throw new Error("Stop cancelled the replacement ACP runtime");
+          }),
+        ]);
+        expect(replacement?.abortSignal.aborted).toBe(false);
+        if (scenario !== "idle-rotated") {
+          expect(successorSignal?.aborted).toBe(false);
+        }
+        expect(cancel).not.toHaveBeenCalled();
+        expect(await pending).toMatchObject({ handled: true, aborted: true });
+      }
+    } finally {
+      releaseLookup.resolve();
+      finishFirst.resolve();
+      finishSecond.resolve();
+      original.complete();
+      replacement?.complete();
+      source.complete();
+      await pending?.catch(() => undefined);
+      await Promise.allSettled(turns);
+      for (const admission of admissions) {
+        admission.close();
+      }
+      lookup.mockRestore();
+      await disposeAcpSessionManagerInstance(manager, "test-cleanup");
+      acpTesting.resetAcpSessionManagerForTests();
+      unregisterAcpRuntimeBackend("stop-test");
+      await service.unbind({ bindingId: binding.bindingId, reason: "test-cleanup" });
       restoreActivePluginRegistrySnapshot(registry);
     }
   },

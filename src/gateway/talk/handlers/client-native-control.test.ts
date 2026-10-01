@@ -1,12 +1,12 @@
 import { setImmediate as nextEventLoopTurn, setTimeout as delay } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
-import { ACTIVE_EMBEDDED_RUNS } from "../../../agents/embedded-agent-runner/run-state.js";
+import { getActiveNativeAttempt } from "../../../agents/embedded-agent-runner/run-state.js";
 import type { RunEmbeddedAgentParams } from "../../../agents/embedded-agent-runner/run/params.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../../../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../../../agents/embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../../../agents/embedded-agent-runner/runs.test-support.js";
 import * as workspace from "../../../agents/workspace.js";
 import { readSessionTranscriptMessageEvents } from "../../../config/sessions/session-accessor.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
@@ -41,7 +41,7 @@ describe("native Talk through the public OpenAI plugin registration", () => {
     expect(preparation).toHaveBeenCalledOnce();
     expect(upstream.runEmbeddedAgent).not.toHaveBeenCalled();
     expect(assertions).not.toHaveBeenCalled();
-    expect(ACTIVE_EMBEDDED_RUNS.has(SESSION_ID)).toBe(false);
+    expect(Boolean(getActiveNativeAttempt(SESSION_ID))).toBe(false);
     expect(
       upstream.sockets.every((socket) => socket.readyState === upstream.NativeSocket.CLOSED),
     ).toBe(true);
@@ -82,7 +82,7 @@ describe("native Talk through the public OpenAI plugin registration", () => {
     }
     expect(await outcome).toEqual({ error: undefined });
     expect(assertions).toHaveBeenCalledOnce();
-    expect(ACTIVE_EMBEDDED_RUNS.has(SESSION_ID)).toBe(false);
+    expect(Boolean(getActiveNativeAttempt(SESSION_ID))).toBe(false);
   });
 
   it("negotiates Gateway control and persists native sideband speech without client control", async () => {
@@ -125,9 +125,9 @@ describe("native Talk through the public OpenAI plugin registration", () => {
     "handles native %s without a duplicate consult with %s provider events",
     async (text, eventOrder) => {
       await withParkedNativeTask(
-        async ({ create, offer, result, socket, activeRun, abortOwned, chatAbortControllers }) => {
+        async ({ create, offer, result, socket, activeRun, abortOwned, rpcSources }) => {
           const { runId, abortSignal } = activeRun;
-          expect(chatAbortControllers.get(runId)).toMatchObject({
+          expect(rpcSources.get(runId)?.adapter).toMatchObject({
             agentId: AGENT_ID,
             sessionKey: SESSION_KEY,
             sessionId: SESSION_ID,
@@ -192,7 +192,7 @@ describe("native Talk through the public OpenAI plugin registration", () => {
           );
           if (text === "Status?") {
             expect(abortOwned).not.toHaveBeenCalled();
-            expect(chatAbortControllers.has(runId)).toBe(true);
+            expect(rpcSources.has(runId)).toBe(true);
           } else {
             expect(abortOwned).toHaveBeenCalledOnce();
           }
@@ -275,7 +275,7 @@ describe("native Talk through the public OpenAI plugin registration", () => {
         await nextEventLoopTurn();
       };
 
-      await withNativePlugin(async ({ create, offer, broadcast, chatAbortControllers }) => {
+      await withNativePlugin(async ({ create, offer, broadcast, rpcSources }) => {
         try {
           const { socket } = await connectNativeSession({ create, offer });
           const sentFrames = () => socket.sent.map((frame): unknown => JSON.parse(frame));
@@ -287,7 +287,7 @@ describe("native Talk through the public OpenAI plugin registration", () => {
             throw new Error("Native delegation did not reach the model backend");
           }
           const { runId, abortSignal } = activeRun;
-          expect(chatAbortControllers.get(runId)).toMatchObject({
+          expect(rpcSources.get(runId)?.adapter).toMatchObject({
             agentId: AGENT_ID,
             sessionKey: SESSION_KEY,
             sessionId: SESSION_ID,

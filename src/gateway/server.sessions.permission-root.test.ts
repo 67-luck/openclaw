@@ -3,7 +3,7 @@
 import { expect, test } from "vitest";
 import { getRuntimeConfig } from "../config/io.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import { rpcReq, writeSessionStore } from "./test-helpers.js";
 import {
   sessionStoreEntry,
@@ -82,7 +82,7 @@ test("sessions.reset applies a rootless permission mode and interrupts admitted 
   const { storePath } = await seedActiveMainSession();
   let interrupted = false;
   let releaseAdmission = () => {};
-  const admissionLease = await beginSessionWorkAdmission({
+  const admissionLease = await beginSessionEffect({
     scope: storePath,
     identities: ["agent:main:main", "sess-main"],
     assertAllowed: () => {},

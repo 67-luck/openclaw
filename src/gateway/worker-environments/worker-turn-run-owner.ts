@@ -21,6 +21,8 @@ import {
   markDiagnosticRunProgress,
 } from "../../logging/diagnostic-run-activity.js";
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
+import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
+import type { SessionWatchdogWait } from "../../sessions/session-controller.watchdog.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
 import { sameWorkerSessionTurnClaim } from "./placement-record.js";
 import type { WorkerSessionPlacementStore, WorkerSessionTurnClaim } from "./placement-store.js";
@@ -34,6 +36,11 @@ export type ActiveWorkerTurn = {
 };
 
 export type WorkerTurnLiveEventOwner = {
+  /** Host approval managers supply their accepted record expiry and live pending assertion. */
+  beginApprovalWait: (
+    deadlineAtMs: number,
+    isPending: () => boolean,
+  ) => SessionWatchdogWait | undefined;
   record: (event: WorkerLiveEventParams["event"]) => void;
   isCancelled: () => boolean;
 };
@@ -58,12 +65,24 @@ export function createWorkerTurnRunOwner(params: {
   let closed = false;
   const lifecycleGeneration = turn.lifecycleGeneration ?? getAgentEventLifecycleGeneration();
   const startedAtMs = Date.now();
-  const deadlineAtMs = startedAtMs + turn.timeoutMs;
+  const executionDeadlineAtMs = startedAtMs + turn.timeoutMs;
+  const operation = turn.replyOperation;
   const diagnosticOwner = createDiagnosticEmbeddedRunOwner({
     sessionId: claim.sessionId,
     sessionKey,
     runId: claim.runId,
+    watchdogAttempt: operation
+      ? operation.watchdog.attachAttempt({
+          assertCurrent: () => {
+            if (closed || signal.aborted || !params.placements.validateTurnClaim(claim)) {
+              throw new Error("Worker attempt retired");
+            }
+            assertSessionControllerOperation(operation);
+          },
+        })
+      : undefined,
   });
+  diagnosticOwner.watchdogAttempt?.setExecutionDeadline(executionDeadlineAtMs);
   const cancel = (reason?: "user_abort" | "restart" | "superseded") => {
     controller.abort(
       reason === "restart"
@@ -86,6 +105,12 @@ export function createWorkerTurnRunOwner(params: {
     params.placements.validateTurnClaim(claim);
   const owner: WorkerRunOwner = {
     claim,
+    beginApprovalWait: (deadlineAtMs, isPending) =>
+      diagnosticOwner.watchdogAttempt?.beginWait({
+        kind: "approval",
+        deadlineAtMs,
+        isCurrent: () => !closed && !signal.aborted && isCurrent() && isPending(),
+      }),
     isCancelled: () => signal.aborted && isCurrent(),
     record: (event) => {
       if (signal.aborted || !isCurrent()) {
@@ -98,9 +123,13 @@ export function createWorkerTurnRunOwner(params: {
           phase: event.payload.phase === "start" ? "start" : "end",
           // The host owns this already-enforced run budget. A remote tool cannot
           // choose an exemption or extend its parent while provisioning a child.
-          deadlineAtMs,
+          deadlineAtMs: executionDeadlineAtMs,
         });
       } else {
+        diagnosticOwner.watchdogAttempt?.progress(
+          event.kind === "assistant" ? "semantic" : "transport",
+          `worker:${event.kind}`,
+        );
         markDiagnosticRunProgress({
           sessionId: claim.sessionId,
           sessionKey,
@@ -138,7 +167,14 @@ export function createWorkerTurnRunOwner(params: {
   } satisfies EmbeddedAgentQueueHandle;
   setActiveEmbeddedRunLifecycleGeneration(handle, lifecycleGeneration);
   turn.replyOperation?.attachBackend(handle);
-  setActiveEmbeddedRun(claim.sessionId, handle, sessionKey, turn.sessionFile, turn.agentId);
+  setActiveEmbeddedRun(
+    claim.sessionId,
+    handle,
+    sessionKey,
+    turn.sessionFile,
+    turn.agentId,
+    turn.replyOperation,
+  );
   if (!signal.aborted) {
     activeOwners.set(claim.sessionId, owner);
   }
@@ -156,7 +192,7 @@ export function createWorkerTurnRunOwner(params: {
 // Capture before buffering or notifying listeners: neither a reused run ID nor
 // a replacement owner may receive an earlier turn's delayed live event.
 export function captureWorkerTurnLiveEventOwner(
-  identity: WorkerConnectionIdentity,
+  identity: Pick<WorkerConnectionIdentity, "sessionId" | "turnClaim">,
 ): WorkerTurnLiveEventOwner | undefined {
   const owner = identity.sessionId ? activeOwners.get(identity.sessionId) : undefined;
   return owner &&

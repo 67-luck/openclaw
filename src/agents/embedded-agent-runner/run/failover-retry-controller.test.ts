@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { projectProviderError } from "../../../../packages/ai/src/utils/provider-error.js";
-import { createReplyOperation } from "../../../auto-reply/reply/reply-run-registry.js";
-import { isReplyRunEvidenceStale } from "../../../auto-reply/reply/reply-run-registry.state.js";
 import * as diagnosticsTimeline from "../../../infra/diagnostics-timeline.js";
 import {
   closeDiagnosticEmbeddedRunOwner,
@@ -10,6 +8,8 @@ import {
   markDiagnosticEmbeddedRunStarted,
   resolveRunStaleThresholdMs,
 } from "../../../logging/diagnostic-run-activity.js";
+import { createReplyOperation } from "../../../sessions/session-controller.js";
+import { isReplyRunEvidenceStale } from "../../../sessions/session-controller.state.js";
 import { FailoverError } from "../../failover-error.js";
 import { resolveRetryAfterMs } from "../../failover/retry-evidence.js";
 import {

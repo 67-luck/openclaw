@@ -24,6 +24,7 @@ import {
 import { createDiagnosticMessageLifecycle } from "../../logging/message-lifecycle.js";
 import { stripLegacyMediaContextFields } from "../../media/media-facts.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { replyRunRegistry } from "../../sessions/session-controller.js";
 import { resolveSessionDispatchKind } from "../../sessions/session-key-utils.js";
 import { prepareChannelParticipantObservation } from "../../sessions/session-participant-input.js";
 import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
@@ -59,7 +60,7 @@ import {
   resolveReplyOperationRunState,
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
-import { replyRunRegistry } from "./reply-run-registry.js";
+import { readReplySourceInput } from "./reply-source-binding.js";
 import { isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import { stageRemoteInboundMediaIfNeeded } from "./stage-remote-inbound-media.js";
@@ -300,9 +301,12 @@ export async function gatherDispatchRequest(
           cfg,
         )
       : initialSessionStoreEntry;
-  const initialDispatchReplyOperation = dispatchOperationSessionKey
-    ? replyRunRegistry.get(dispatchOperationSessionKey)
-    : undefined;
+  const sourceInput = readReplySourceInput(normalizedParams.replyOptions);
+  const initialDispatchReplyOperation = sourceInput
+    ? sourceInput.mailbox.owner.active
+    : dispatchOperationSessionKey
+      ? replyRunRegistry.get(dispatchOperationSessionKey)
+      : undefined;
   if (
     params.replyOptions?.isHeartbeat === true &&
     dispatchOperationSessionKey &&

@@ -238,7 +238,6 @@ describe("worker turn launcher reclaimed placement", () => {
   it("reclaims a rotated foreground run before an actual remote worker starts", async () => {
     await seedActivePlacement();
     const runId = "run-rotated-worker";
-    const sessionLane = `session:${runId}`;
     const globalLane = `global:${runId}`;
     const registeredAt = Date.now();
     const admissionAt = registeredAt + 30 * 60 * 1000 + 1;
@@ -274,7 +273,6 @@ describe("worker turn launcher reclaimed placement", () => {
       getParams: () => params,
       globalLane,
       initialQueuedLifecycleGeneration: lifecycleGeneration,
-      sessionLane,
       setLifecycleGeneration: (generation) => {
         lifecycleGeneration = generation;
       },
@@ -361,7 +359,6 @@ describe("worker turn launcher reclaimed placement", () => {
       getParams: () => params,
       globalLane: `global:${runId}`,
       initialQueuedLifecycleGeneration: lifecycleGeneration,
-      sessionLane: `session:${runId}`,
       setLifecycleGeneration: (generation) => {
         lifecycleGeneration = generation;
       },

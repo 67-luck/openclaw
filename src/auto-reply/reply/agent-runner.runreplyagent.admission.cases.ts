@@ -8,7 +8,13 @@ import {
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
-import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
+import {
+  createReplyOperation,
+  replyRunRegistry,
+  type ReplyOperation,
+} from "../../sessions/session-controller.js";
+import { captureSessionControllerSettlement } from "../../sessions/session-controller.lifecycle.js";
+import * as controllerMailbox from "../../sessions/session-controller.mailbox.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -20,11 +26,6 @@ import {
   REPLY_OPERATION_RUN_STATE,
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
-import {
-  createReplyOperation,
-  replyRunRegistry,
-  type ReplyOperation,
-} from "./reply-run-registry.js";
 import * as turnAdmission from "./reply-turn-admission.js";
 
 type AdmissionFixture = {
@@ -49,12 +50,15 @@ type AdmissionFixture = {
 
 function observePredecessorWait() {
   const entered = createDeferred();
-  const waitForIdle = replyRunRegistry.waitForIdle.bind(replyRunRegistry);
-  const spy = vi.spyOn(replyRunRegistry, "waitForIdle").mockImplementation((...args) => {
-    const pending = waitForIdle(...args);
-    entered.resolve();
-    return pending;
-  });
+  const claimInput = controllerMailbox.claimSessionControllerInput;
+  const spy = vi
+    .spyOn(controllerMailbox, "claimSessionControllerInput")
+    .mockImplementation((source) => {
+      const pending = claimInput(source);
+      expect(source.controllerInput?.phase).toBe("waiting");
+      entered.resolve();
+      return pending;
+    });
   return {
     async wait(pending: Promise<unknown>) {
       await Promise.race([
@@ -82,7 +86,7 @@ export function registerReplyAdmissionCases({
       });
       let operation: ReplyOperation | undefined;
       const retire = () => {
-        expect(loadSessionEntry({ storePath, sessionKey: "main" })).toMatchObject({
+        expect(loadSessionEntry({ agentId: "main", storePath, sessionKey: "main" })).toMatchObject({
           restartRecoveryDeliveryRunId: "msg",
         });
         operation = replyRunRegistry.get("main");
@@ -121,7 +125,7 @@ export function registerReplyAdmissionCases({
         });
         expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(stage === "backend" ? 1 : 0);
         expect(scheduleFollowupDrain).toHaveBeenCalledOnce();
-        expect(loadSessionEntry({ storePath, sessionKey: "main" })).toMatchObject({
+        expect(loadSessionEntry({ agentId: "main", storePath, sessionKey: "main" })).toMatchObject({
           restartRecoveryDeliveryRunId: "msg",
         });
       } finally {
@@ -159,7 +163,7 @@ export function registerReplyAdmissionCases({
         updatedAt: 2,
       };
       active.complete();
-      await pending;
+      await expect(pending).resolves.toMatchObject({ text: "final" });
       expect(runEmbeddedAgentMock).toHaveBeenCalledOnce();
     } finally {
       active.complete();
@@ -358,7 +362,7 @@ export function registerReplyAdmissionCases({
         try {
           await settleClaimedFixture();
         } finally {
-          const released = getSessionWorkAdmissionRelease({
+          const released = captureSessionControllerSettlement({
             scope: storePath,
             identities: [sessionKey],
           });

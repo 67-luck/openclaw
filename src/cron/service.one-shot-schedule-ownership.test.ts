@@ -1,10 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import {
-  clearCommandLane,
-  enqueueCommandInLane,
-  setCommandLaneConcurrency,
-} from "../process/command-queue.js";
+import { enqueueCommandInLane, setCommandLaneConcurrency } from "../process/command-queue.js";
 import { CommandLane } from "../process/lanes.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import {
@@ -57,7 +53,6 @@ function createCron(params: {
 async function blockCronLane() {
   const started = createDeferred();
   const release = createDeferred();
-  clearCommandLane(CommandLane.Cron);
   setCommandLaneConcurrency(CommandLane.Cron, 1);
   const blocker = enqueueCommandInLane(CommandLane.Cron, async () => {
     started.resolve();
@@ -149,6 +144,7 @@ describe("cron one-shot schedule ownership", () => {
         },
       });
 
+      let directRun: ReturnType<CronService["run"]> | undefined;
       try {
         await cron.start();
         const atMs = clock.clock.now() + 60 * 60_000;
@@ -159,7 +155,7 @@ describe("cron one-shot schedule ownership", () => {
           atMs,
           deleteAfterRun,
         });
-        const directRun = mode === "direct" ? cron.run(original.id, "force") : undefined;
+        directRun = mode === "direct" ? cron.run(original.id, "force") : undefined;
         if (mode === "queued") {
           await expect(cron.enqueueRun(original.id, "force")).resolves.toMatchObject({
             ok: true,
@@ -244,8 +240,10 @@ describe("cron one-shot schedule ownership", () => {
           }),
         ]);
       } finally {
-        release.resolve({ status: "ok", summary: "original run finished" });
         cron.stop();
+        release.resolve({ status: "ok", summary: "original run finished" });
+        await directRun;
+        await enqueueCommandInLane(CommandLane.Cron, async () => {});
       }
     },
   );
@@ -377,10 +375,10 @@ describe("cron one-shot schedule ownership", () => {
           expect((await loadCronStore(storePath)).jobs).toHaveLength(editSchedule ? 1 : 0);
         }
       } finally {
+        cron.stop();
         releaseBlocker.resolve();
         await blocker;
-        cron.stop();
-        clearCommandLane(CommandLane.Cron);
+        await enqueueCommandInLane(CommandLane.Cron, async () => {});
       }
     },
   );
@@ -468,12 +466,11 @@ describe("cron one-shot schedule ownership", () => {
         expect(runIsolatedAgentJob).toHaveBeenCalledTimes(editSchedule ? 1 : 2);
         expect((await loadCronStore(storePath)).jobs).toHaveLength(editSchedule ? 1 : 0);
       } finally {
+        cron.stop();
         releaseBlocker.resolve();
         releasePayload.resolve();
         await blocker;
         await enqueueCommandInLane(CommandLane.Cron, async () => {});
-        cron.stop();
-        clearCommandLane(CommandLane.Cron);
       }
     },
   );

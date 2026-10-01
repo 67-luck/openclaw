@@ -5,16 +5,13 @@ import * as dispatch from "../../auto-reply/dispatch.js";
 import * as dispatchRuntimeLoaders from "../../auto-reply/reply/dispatch-from-config.runtime-loaders.js";
 import type { InternalGetReplyFromConfig } from "../../auto-reply/reply/get-reply.types.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
-import {
-  replyRunRegistry,
-  type ReplyOperation,
-} from "../../auto-reply/reply/reply-run-registry.js";
 import { admitReplyTurn } from "../../auto-reply/reply/reply-turn-admission.js";
 import { initSessionState } from "../../auto-reply/reply/session.js";
 import {
   loadTranscriptEvents,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
+import { replyRunRegistry, type ReplyOperation } from "../../sessions/session-controller.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createGatewayRequestContext } from "../server-request-context.js";
@@ -137,7 +134,7 @@ it.each([
           sessionId: initialized.sessionId,
           storePath: initialized.storePath,
         });
-        expect(context.chatAbortControllers.get(runId)).toBe(originalRegistration);
+        expect(context.rpcSources.get(runId)?.adapter).toBe(originalRegistration);
         expect(originalRegistration.sessionId).toBe(finalSessionId);
         await options.userTurnTranscriptRecorder?.persistApproved();
         return { text: "Continued in the compacted conversation." };
@@ -232,7 +229,7 @@ it.each([
           releaseRuntimePlugins.resolve();
         }
         await sharedDispatchSettled.promise;
-        await vi.waitFor(() => expect(context.chatAbortControllers.has(runId)).toBe(false));
+        await vi.waitFor(() => expect(context.rpcSources.has(runId)).toBe(false));
 
         if (
           scenario === "compaction" ||
@@ -271,7 +268,7 @@ it.each([
         releaseRuntimePlugins.resolve();
         if (owned) {
           await sharedDispatchSettled.promise;
-          await vi.waitFor(() => expect(context.chatAbortControllers.has(runId)).toBe(false));
+          await vi.waitFor(() => expect(context.rpcSources.has(runId)).toBe(false));
           owned.admission.cleanupAdmittedRun();
         }
         holdPreparation.mockRestore();

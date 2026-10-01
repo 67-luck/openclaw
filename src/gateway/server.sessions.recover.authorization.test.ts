@@ -294,7 +294,7 @@ test("sessions.recover retains source revocation for its accepted own successor"
   if (typeof runId !== "string") {
     throw new Error("recovery did not return its admitted run");
   }
-  const acceptedRun = context.chatAbortControllers.get(runId);
+  const acceptedRun = context.rpcSources.get(runId);
   if (!acceptedRun) {
     throw new Error("recovery did not register its active run");
   }
@@ -309,7 +309,7 @@ test("sessions.recover retains source revocation for its accepted own successor"
     return await operation;
   };
   let providerCancellationObserved = false;
-  acceptedRun.controller.signal.addEventListener(
+  acceptedRun.input.abortSignal.addEventListener(
     "abort",
     () => {
       providerCancellationObserved = true;
@@ -319,11 +319,11 @@ test("sessions.recover retains source revocation for its accepted own successor"
   retainedRun.armCancellation();
   requestAuthority.release();
   expect(requestAuthority.isCurrent()).toBe(true);
-  expect(acceptedRun.controller.signal.aborted).toBe(false);
+  expect(acceptedRun.input.abortSignal.aborted).toBe(false);
   invalidateGatewayDeviceRevocation(context, "narrow-recovery-device", "operator");
   await Promise.allSettled(cancellationWork);
   expect(requestAuthority.isCurrent()).toBe(false);
-  expect(acceptedRun.controller.signal.aborted).toBe(true);
+  expect(acceptedRun.input.abortSignal.aborted).toBe(true);
   expect(providerCancellationObserved).toBe(true);
   expect(context.removeChatRun).toHaveBeenCalled();
   retainedRun.release();

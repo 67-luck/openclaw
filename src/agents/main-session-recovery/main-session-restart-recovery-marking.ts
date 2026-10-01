@@ -19,7 +19,7 @@ import {
   isAgentEventLifecycleGenerationCurrent,
 } from "../../infra/agent-events.js";
 import { hasLiveAgentRunContext, listAgentRunsForSession } from "../../infra/agent-run-registry.js";
-import { captureGatewaySessionWorkAdmissions } from "../../sessions/session-lifecycle-admission.js";
+import { captureGatewaySessionControllerWork } from "../../sessions/session-controller.lifecycle.js";
 import { createCurrentProcessOwnerLookup } from "./main-session-recovery-live-owners.js";
 import {
   isMainRestartRecoveryAggregateTerminalOnly,
@@ -138,7 +138,7 @@ export async function markRestartAbortedMainSessions(params: {
   const result = { marked: 0, skipped: 0 };
   // Channel work can outlive its chat-run registration. The admission owner
   // retains the authoritative store and session identities until the turn releases.
-  const activeAdmissions = captureGatewaySessionWorkAdmissions(params.resolveGatewayContext);
+  const activeAdmissions = captureGatewaySessionControllerWork(params.resolveGatewayContext);
   if (activeRuns.length === 0 && activeAdmissions.targets.size === 0) {
     return result;
   }

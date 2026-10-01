@@ -3,12 +3,12 @@
 import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
 import { writeFile } from "node:fs/promises";
 import { expect, it, vi } from "vitest";
+import { resolveActiveEmbeddedRunOwner } from "../../agents/embedded-agent-runner/runs.js";
 import {
-  clearActiveEmbeddedRun,
-  resolveActiveEmbeddedRunOwner,
-  setActiveEmbeddedRun,
-} from "../../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { markStartupOrphanedMainSessionsForRecovery } from "../../agents/main-session-recovery/main-session-restart-recovery-marking.js";
 import { resolveAgentRunAbortLifecycleFields } from "../../agents/run-termination.js";
 import {
@@ -149,7 +149,7 @@ it.each(["unchanged", "new turn", "reset incarnation", "partial cancellation"] a
       getRuntimeConfig,
       getSessionEventSubscriberConnIds: () => new Set(),
     });
-    expect(context.chatAbortControllers.size).toBe(0);
+    expect(context.rpcSources.size).toBe(0);
     expect(resolveActiveEmbeddedRunOwner(parentId)).toBeUndefined();
     const captured = loadSessionEntry({ agentId: "main", sessionKey: parentKey });
     if (!captured) {

@@ -4,7 +4,7 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import { rotateAgentRunRegistryLifecycleGeneration } from "../../infra/agent-run-registry.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { createContext } from "../server-methods/sessions.abort-agent-scope.test-support.js";
@@ -89,7 +89,7 @@ function createFixture() {
       resolveGatewayContext?: GatewayContextResolver;
     } = {},
   ) => {
-    const lease = await beginSessionWorkAdmission({
+    const lease = await beginSessionEffect({
       scope: options.scope ?? resolveSessionStorePathForScope(placement, config),
       identities: options.identities ?? [placement.sessionKey, placement.sessionId],
       resolveGatewayContext: options.resolveGatewayContext ?? resolveGatewayContext,

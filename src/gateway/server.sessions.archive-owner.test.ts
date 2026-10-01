@@ -28,9 +28,9 @@ test("archiving a non-default agent ignores the compatibility owner's ownerless 
     storePath,
   });
 
-  const chatAbortControllers = new Map();
+  const rpcSources = new Map();
   const compatibilityRun = registerChatAbortController({
-    chatAbortControllers,
+    rpcSources,
     runId: "run-ops-ownerless",
     sessionId,
     sessionKey: "legacy-unscoped",
@@ -45,7 +45,7 @@ test("archiving a non-default agent ignores the compatibility owner's ownerless 
         agentRunSeq: new Map(),
         broadcast: vi.fn(),
         cancelRunBoundApprovals: vi.fn(),
-        chatAbortControllers,
+        rpcSources,
         chatRunState: createChatRunState(),
         getRuntimeConfig: () => cfg,
         nodeSendToSession: vi.fn(),

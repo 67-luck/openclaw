@@ -28,7 +28,7 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import { initializeGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import type { PluginHookBeforeMessageWriteEvent } from "../../plugins/types.js";
-import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
+import { captureSessionControllerSettlement } from "../../sessions/session-controller.lifecycle.js";
 import { retainUserProfileCatalog } from "../../state/user-profile-list.js";
 import { ensureProfileForEmail, linkEmail, syncGitHubIdentity } from "../../state/user-profiles.js";
 import { createGatewayMethodRegistry } from "../methods/registry.js";
@@ -306,7 +306,7 @@ async function createHostedChildFixture(
     const drains = childKeys.map((key) => {
       const row = loadSessionEntry({ sessionKey: key, storePath });
       return row
-        ? getSessionWorkAdmissionRelease({ scope: storePath, identities: [key, row.sessionId] })
+        ? captureSessionControllerSettlement({ scope: storePath, identities: [key, row.sessionId] })
         : undefined;
     });
     releaseDispatch.resolve();
@@ -530,7 +530,7 @@ describe("hosted creation transfers accepted child input", () => {
         expect(fixture.provider).toHaveBeenCalledOnce();
         expect(userMessages(scope)).toHaveLength(1);
         expect(listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
-        expect(fixture.context.chatAbortControllers.has(accepted.runId)).toBe(false);
+        expect(fixture.context.rpcSources.has(accepted.runId)).toBe(false);
       } finally {
         await fixture.cleanup();
       }
@@ -580,7 +580,7 @@ describe("hosted creation transfers accepted child input", () => {
         expect(fixture.provider).toHaveBeenCalledOnce();
         expect(userMessages(scope)).toHaveLength(1);
         expect(listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
-        expect(fixture.context.chatAbortControllers.has(accepted.runId)).toBe(false);
+        expect(fixture.context.rpcSources.has(accepted.runId)).toBe(false);
       } finally {
         await fixture.cleanup();
       }

@@ -35,7 +35,7 @@ import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createRuntimeAgent } from "../../plugins/runtime/runtime-agent.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
-import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import * as storeWriterQueue from "../../shared/store-writer-queue.js";
 import {
@@ -178,7 +178,7 @@ async function seedMessageCutSource(
 function context(): GatewayRequestContext {
   return {
     broadcastToConnIds: vi.fn(),
-    chatAbortControllers: new Map(),
+    rpcSources: new Map(),
     getRuntimeConfig: () => cfg,
     getSessionEventSubscriberConnIds: () => new Set(),
   } as unknown as GatewayRequestContext;
@@ -388,7 +388,7 @@ async function revokeWithPublicLifecyclePredecessor(
   const storePath = resolveSessionStorePathCore(undefined, { agentId: scope.agentId });
   const entered = createDeferredCore();
   const release = createDeferredCore();
-  const heldLifecycle = runExclusiveSessionLifecycleMutation({
+  const heldLifecycle = runSessionMutation({
     scope: storePath,
     identities: [scope.sessionId],
     run: async () => {
@@ -402,7 +402,7 @@ async function revokeWithPublicLifecyclePredecessor(
   const queue = vi.spyOn(storeWriterQueue, "runQueuedStoreWrite").mockImplementation((params) => {
     const pending = enqueue(params);
     if (
-      params.label === "runExclusiveSessionLifecycleMutation" &&
+      params.label === "runSessionMutation" &&
       params.storePath === JSON.stringify([storePath, scope.sessionKey])
     ) {
       queuedMutations += 1;

@@ -3,7 +3,7 @@ import {
   createReplyOperation,
   replyRunRegistry,
   resolveActiveReplyOperationForSessionId,
-} from "./reply-run-registry.js";
+} from "../../sessions/session-controller.js";
 
 export function createTestReplyOperation(
   overrides: Partial<Parameters<typeof createReplyOperation>[0]> = {},

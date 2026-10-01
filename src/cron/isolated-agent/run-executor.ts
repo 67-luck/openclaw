@@ -1,5 +1,4 @@
 /** Executes isolated cron prompts with model fallbacks and interim-ack retries. */
-import { createHash } from "node:crypto";
 import { resolveGroupToolPolicy } from "../../agents/agent-tools.policy.js";
 import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
 import {
@@ -35,6 +34,7 @@ import type { VerboseLevel } from "../../auto-reply/thinking.js";
 import type { CliSessionBinding } from "../../config/sessions.js";
 import { buildGenericCliContextEngineHostSupport } from "../../context-engine/host-compat.js";
 import { registerCronRunExecSource } from "../../infra/cron-run-exec-source.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import {
   createUserTurnTranscriptRecorder,
   type UserTurnTranscriptRecorder,
@@ -44,7 +44,7 @@ import { resolveCronJobConfigRevision } from "../config-revision.js";
 import { assertCronExecutionRootRuntime } from "../execution-root-runtime.js";
 import { resolveCronScheduledToolPolicy } from "../scheduled-tool-policy.js";
 import { resolveCronAuthenticatedChannelRequester } from "../tools-allow-provenance.js";
-import type { CronAgentExecutionPhaseUpdate, CronJob } from "../types.js";
+import type { CronAgentExecutionPhaseUpdate } from "../types.js";
 import {
   resolveCronChannelOutputPolicy,
   resolveCurrentChannelTarget,
@@ -69,6 +69,7 @@ import {
 } from "./run-execution.runtime.js";
 import type { CronRunExecutionParams } from "./run-execution.types.js";
 import { resolveCronFallbacksOverride } from "./run-fallback-policy.js";
+import { resolveIsolatedCronPromptCacheKey } from "./run-prompt-cache-key.js";
 import {
   setCronSessionAgentHarnessId,
   setCronSessionRuntimeModel,
@@ -98,31 +99,6 @@ function hasCliSessionReuseMetadata(binding: CliSessionBinding): boolean {
 
 const COMMAND_STYLE_CRON_PREFIX =
   /^(?:(?:[A-Z_][A-Z0-9_]*=\S+\s+)+)?(?:cd\s+\S+|(?:\.{1,2}|~)?\/\S+|[A-Za-z]:[\\/]\S+|(?:bash|bun|cargo|deno|docker|gh|git|go|make|node|npm|npx|pnpm|python|python3|ruby|sh|tsx|uv|zsh)\b)/u;
-
-function resolveIsolatedCronPromptCacheKey(params: {
-  job: CronJob;
-  agentId: string;
-  agentSessionKey: string;
-  provider: string;
-  model: string;
-}): string | undefined {
-  if (params.job.sessionTarget !== "isolated") {
-    return undefined;
-  }
-  const material = JSON.stringify({
-    version: 1,
-    kind: "isolated-cron",
-    jobId: params.job.id,
-    agentId: params.agentId,
-    agentSessionKey: params.agentSessionKey,
-    provider: params.provider,
-    model: params.model,
-  });
-  const digest = createHash("sha256").update(material).digest("hex").slice(0, 32);
-  // Isolated cron rotates transcript/session ids per run; keep cache affinity
-  // on stable job identity without sending raw local session labels upstream.
-  return `openclaw-cron-${digest}`;
-}
 
 /** Detects single-line cron prompts that look like shell commands or command invocations. */
 function isCommandStyleCronMessage(message: string): boolean {
@@ -715,6 +691,20 @@ function createCronPromptExecutor(
 
 /** Executes an isolated cron prompt, including live model-switch and interim-ack retries. */
 export async function executeCronRun(params: CronRunExecutionParams): Promise<CronExecutionResult> {
+  return await withSessionTurn(
+    {
+      sessionKey: params.runSessionKey,
+      sessionId: params.cronSession.sessionEntry.sessionId,
+      agentId: params.agentId,
+      storePath: params.cronSession.storePath,
+      abortSignal: params.abortSignal,
+    },
+    (operation) =>
+      executeCronRunOwned(operation ? { ...params, abortSignal: operation.abortSignal } : params),
+  );
+}
+
+async function executeCronRunOwned(params: CronRunExecutionParams): Promise<CronExecutionResult> {
   const resolvedVerboseLevel: VerboseLevel =
     normalizeVerboseLevel(params.cronSession.sessionEntry.verboseLevel) ??
     normalizeVerboseLevel(params.agentVerboseDefault) ??

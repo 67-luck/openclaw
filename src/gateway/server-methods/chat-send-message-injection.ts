@@ -13,13 +13,6 @@ import { hasInboundAudio } from "../../auto-reply/reply/inbound-media.js";
 import { buildInboundUserContextPrefix } from "../../auto-reply/reply/inbound-meta.js";
 import { emitMessageReceivedHooks } from "../../auto-reply/reply/message-received-hooks.js";
 import { resolveQueueSettings } from "../../auto-reply/reply/queue/settings-runtime.js";
-import {
-  beginReplyMessageInjectionTarget,
-  finalizeReplyMessageInjectionAttempt,
-  type ReplyBackendQueueMessageOptions,
-  type ReplyMessageInjectionAttempt,
-  type ReplyMessageInjectionTarget,
-} from "../../auto-reply/reply/reply-run-registry.js";
 import { resolveInboundReplyToolAuthorityOverlay } from "../../auto-reply/reply/reply-tool-authority.js";
 import type { RuntimeMsgContext } from "../../auto-reply/templating.js";
 import type { SessionEntry } from "../../config/sessions.js";
@@ -30,9 +23,20 @@ import { logMessageProcessed, logMessageReceived } from "../../logging/diagnosti
 import type { InboundDocumentContext } from "../../media-understanding/file-context.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
+import {
+  beginReplyMessageInjectionTarget,
+  finalizeReplyMessageInjectionAttempt,
+  type ReplyBackendQueueMessageOptions,
+  type ReplyMessageInjectionAttempt,
+  type ReplyMessageInjectionTarget,
+} from "../../sessions/session-controller.js";
+import { beginSessionControllerSourceInjection } from "../../sessions/session-controller.mailbox.js";
+import type {
+  RpcSourceAdapter,
+  RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { recordAcceptedSessionParticipantInput } from "../../sessions/session-participant-input-recording.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import type { ChatImageContent } from "../chat-attachments.js";
 import { broadcastChatError, broadcastChatFinal } from "./chat-broadcast.js";
 import { buildChatSendReplyInjectionText } from "./chat-send-reply-context.js";
@@ -44,6 +48,7 @@ import type { GatewayRequestContext } from "./types.js";
 /** Captures the prepared request data used by both pre-ACK and detached injection attempts. */
 export function createChatSendMessageInjectionStarter(params: {
   target: ReplyMessageInjectionTarget | undefined;
+  sourceRef: RpcSourceRef;
   abortSignal: AbortSignal;
   request: Pick<NormalizedChatSendRequest, "p" | "rawMessage" | "supportsTaskSuggestions">;
   session: Pick<
@@ -74,7 +79,7 @@ export function createChatSendMessageInjectionStarter(params: {
           params.operatorAuthority?.assertCurrent();
         }
       : undefined;
-  return (): ReplyMessageInjectionAttempt | undefined => {
+  return async (): Promise<ReplyMessageInjectionAttempt | undefined> => {
     if (!params.target || isInternalTextSlashCommandTurn) {
       return undefined;
     }
@@ -173,49 +178,97 @@ export function createChatSendMessageInjectionStarter(params: {
       cfg,
       commandAuthorized: ctx.CommandAuthorized === true,
     });
-    const attempt = beginReplyMessageInjectionTarget(
-      params.target,
-      p.replyToId
-        ? buildChatSendReplyInjectionText({ body: text, cfg, ctx, sessionEntry: entry })
-        : text,
-      {
-        // Reply-target injection already includes this prefix in its text.
-        currentInboundContext: p.replyToId
-          ? undefined
-          : {
-              text: buildInboundUserContextPrefix(ctx, resolveEnvelopeFormatOptions(cfg), entry),
+    const injection = beginSessionControllerSourceInjection(params.sourceRef.input);
+    if (!(await injection.admit())) {
+      return undefined;
+    }
+    let attempt: ReplyMessageInjectionAttempt;
+    try {
+      assertCurrent?.();
+      params.abortSignal.throwIfAborted();
+      attempt = beginReplyMessageInjectionTarget(
+        params.target,
+        p.replyToId
+          ? buildChatSendReplyInjectionText({ body: text, cfg, ctx, sessionEntry: entry })
+          : text,
+        {
+          // Reply-target injection already includes this prefix in its text.
+          currentInboundContext: p.replyToId
+            ? undefined
+            : {
+                text: buildInboundUserContextPrefix(ctx, resolveEnvelopeFormatOptions(cfg), entry),
+              },
+          assertCurrent,
+          inboundAudio: hasInboundAudio(ctx),
+          steeringMode: "all",
+          isInboundUserMessage: true,
+          ...(isProgressCardRefreshInputProvenance(ctx.InputProvenance)
+            ? { allowPendingUserInputAnswer: false as const, debounceMs: 0 }
+            : {}),
+          toolAuthorityOverlay: resolveInboundReplyToolAuthorityOverlay({
+            ctx,
+            sessionEntry: {
+              spawnedBy: entry?.spawnedBy,
+              permissionMode: params.admittedSessionSettings?.permissionMode,
+              toolOverrides: params.admittedSessionSettings?.toolOverrides,
             },
-        assertCurrent,
-        inboundAudio: hasInboundAudio(ctx),
-        steeringMode: "all",
-        isInboundUserMessage: true,
-        ...(isProgressCardRefreshInputProvenance(ctx.InputProvenance)
-          ? { allowPendingUserInputAnswer: false as const, debounceMs: 0 }
-          : {}),
-        toolAuthorityOverlay: resolveInboundReplyToolAuthorityOverlay({
-          ctx,
-          sessionEntry: {
-            spawnedBy: entry?.spawnedBy,
-            permissionMode: params.admittedSessionSettings?.permissionMode,
-            toolOverrides: params.admittedSessionSettings?.toolOverrides,
-          },
-          senderIsOwner: authorization.senderIsOwner,
-          operatorAuthority: params.operatorAuthority,
-          disableTools: false,
-        }),
-        ...(injectionImages?.length ? { images: injectionImages } : {}),
-        ...(params.imageOrder?.length ? { imageOrder: params.imageOrder } : {}),
-        ...(replyOptionMedia?.length ? { media: replyOptionMedia } : {}),
-        waitForTranscriptCommit: true,
-        abortSignal: params.abortSignal,
-        ...(!isProgressCardRefreshInputProvenance(ctx.InputProvenance) && debounceMs !== undefined
-          ? { debounceMs }
-          : {}),
-        taskSuggestionDeliveryMode: supportsTaskSuggestions ? "gateway" : undefined,
-        userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
+            senderIsOwner: authorization.senderIsOwner,
+            operatorAuthority: params.operatorAuthority,
+            disableTools: false,
+          }),
+          ...(injectionImages?.length ? { images: injectionImages } : {}),
+          ...(params.imageOrder?.length ? { imageOrder: params.imageOrder } : {}),
+          ...(replyOptionMedia?.length ? { media: replyOptionMedia } : {}),
+          waitForTranscriptCommit: true,
+          abortSignal: params.abortSignal,
+          ...(!isProgressCardRefreshInputProvenance(ctx.InputProvenance) && debounceMs !== undefined
+            ? { debounceMs }
+            : {}),
+          taskSuggestionDeliveryMode: supportsTaskSuggestions ? "gateway" : undefined,
+          userTurnTranscriptRecorder: params.userTurnTranscriptRecorder,
+        },
+      );
+    } catch (error) {
+      injection.finish(false);
+      throw error;
+    }
+    const acceptance = attempt.acceptance.then(
+      (accepted) => {
+        injection.accepted(accepted);
+        return accepted;
+      },
+      (error: unknown) => {
+        // Failed acknowledgement does not settle accepted native work.
+        throw error;
       },
     );
-    return attempt;
+    void acceptance.catch(() => {});
+    const outcome = attempt.outcome.then(
+      async (nativeOutcome) => {
+        // Native ownership and an indeterminate commit are never replayable.
+        let accepted: boolean;
+        try {
+          accepted = await acceptance;
+        } catch (error) {
+          // The native outcome has now settled; an unknown ACK never permits replay.
+          injection.finish(true);
+          throw error;
+        }
+        injection.finish(
+          accepted ||
+            nativeOutcome.status === "accepted" ||
+            nativeOutcome.status === "indeterminate",
+        );
+        return nativeOutcome;
+      },
+      (error: unknown) => {
+        // An exceptional result after handoff cannot prove that input was rejected.
+        injection.finish(true);
+        throw error;
+      },
+    );
+    void outcome.catch(() => {});
+    return { ...attempt, acceptance, outcome };
   };
 }
 
@@ -253,7 +306,7 @@ export async function settleChatSendPreAckMessageInjection(params: {
 export async function finalizeAcceptedChatSendMessageInjection(params: {
   attempt: ReplyMessageInjectionAttempt;
   sessionBinding?: Readonly<
-    Pick<ChatAbortControllerEntry, "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration">
+    Pick<RpcSourceAdapter, "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration">
   >;
   context: GatewayRequestContext;
   ctx: RuntimeMsgContext;

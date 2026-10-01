@@ -114,7 +114,7 @@ it("coalesces machine metadata bursts off thread and selects only correlated pro
     });
     const context = {
       broadcastToConnIds: vi.fn(),
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
       getRuntimeConfig: () => ({}),
       getSessionEventSubscriberConnIds: () => new Set<string>(),
     };
@@ -171,7 +171,7 @@ it.each(["cached", "fresh"] as const)(
         placements: store,
         getSessionChangeContext: () => ({
           broadcastToConnIds: vi.fn(),
-          chatAbortControllers: new Map(),
+          rpcSources: new Map(),
           getRuntimeConfig: () => ({}),
           getSessionEventSubscriberConnIds: () => new Set(),
         }),
@@ -249,7 +249,7 @@ it("reports committed placement changes inside an inspection snapshot", async ()
     const warn = vi.fn();
     const context = {
       broadcastToConnIds,
-      chatAbortControllers: new Map(),
+      rpcSources: new Map(),
       getRuntimeConfig: () => ({}),
       getSessionEventSubscriberConnIds: () => new Set(["synthetic-client"]),
     };

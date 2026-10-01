@@ -50,9 +50,6 @@ const publications: Record<string, string | symbol> = {
   "src/agents/worktrees/run-lease.ts": Symbol.for("openclaw.worktreeRunLeaseTestApi"),
   "src/auto-reply/reply/commands-login.ts": Symbol.for("openclaw.commandsLoginTestApi"),
   "src/auto-reply/reply/queue/enqueue.ts": Symbol.for("openclaw.queueEnqueueTestApi"),
-  "src/auto-reply/reply/reply-run-registry.registry.ts": Symbol.for(
-    "openclaw.replyRunRegistryTestApi",
-  ),
   "src/auto-reply/usage-bar/template.ts": Symbol.for("openclaw.usageBarTemplateTestApi"),
   "src/cli/gateway-cli/run.ts": Symbol.for("openclaw.gatewayRunTestApi"),
   "src/commands/doctor-auth-migration-receipts.ts": Symbol.for(
@@ -83,9 +80,7 @@ const publications: Record<string, string | symbol> = {
   "src/model-catalog/remote-overlay.ts": Symbol.for("openclaw.remoteModelCatalogOverlayTestApi"),
   "src/node-host/plugin-node-host.ts": Symbol.for("openclaw.nodeHostPluginTestApi"),
   "src/plugins/memory-runtime.ts": Symbol.for("openclaw.memoryRuntimeTestApi"),
-  "src/sessions/session-lifecycle-admission.ts": Symbol.for(
-    "openclaw.sessionLifecycleAdmissionTestApi",
-  ),
+  "src/sessions/session-controller.registry.ts": Symbol.for("openclaw.replyRunRegistryTestApi"),
   "src/sessions/session-upstream-monitor.ts": Symbol.for("openclaw.sessionUpstreamMonitorTestApi"),
   "src/sessions/user-turn-transcript.ts": Symbol.for("openclaw.userTurnTranscriptTestApi"),
   "src/skills/lifecycle/upload-store.ts": Symbol.for("openclaw.skillUploadStoreTestApi"),

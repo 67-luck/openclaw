@@ -9,18 +9,19 @@ import {
   type SessionPlacementTurnParams,
 } from "../../agents/session-placement-admission.js";
 import { resolveSessionPlacementTurnSettlementAssertion } from "../../agents/session-placement-forced-terminal-settlement.js";
+import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import {
   createReplyOperation,
-  forceClearReplyOperation,
   waitForReplyRunSuccessorAdmission,
-} from "../../auto-reply/reply/reply-run-registry.js";
-import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+} from "../../sessions/session-controller.js";
 import {
   SESSION_ID,
   SESSION_KEY,
   cleanupWorkerTurnLauncherTest,
   createWorkerSessionTurnPlacementProvider,
   placements,
+  sessionTarget,
   setupWorkerTurnLauncherTest,
   turn,
   unusedEnvironments,
@@ -40,7 +41,6 @@ function createLane(initialParams: SessionPlacementTurnParams) {
     },
     initialQueuedLifecycleGeneration: generation,
     globalLane: "claim-recovery-global",
-    sessionLane: `claim-recovery-session:${params.sessionId}`,
   });
 }
 
@@ -158,19 +158,24 @@ describe("local claim recovery before backend registration", () => {
   );
 
   it.each(["preflight", "attempt admission", "terminal result"])(
-    "releases a force-cleared reply before backend registration and fences its late %s",
+    "retains cancelled pre-backend work until raw return and fences its late %s",
     async (stage) => {
       const provider = createWorkerSessionTurnPlacementProvider({
         environments: unusedEnvironments(),
         placements,
       });
       const uninstall = installSessionPlacementAdmissionProvider(provider);
+      const clock = vi.spyOn(Date, "now");
       const operation = createReplyOperation({
         sessionKey: SESSION_KEY,
         sessionId: SESSION_ID,
         resetTriggered: false,
       });
-      const params = { ...turn("run-preflight"), replyOperation: operation };
+      const params = {
+        ...turn("run-preflight"),
+        replyOperation: operation,
+        abortSignal: operation.abortSignal,
+      };
       const lane = createLane(params);
       const started = createDeferred();
       const resume = createDeferred();
@@ -180,18 +185,20 @@ describe("local claim recovery before backend registration", () => {
       let oldRun: Promise<unknown> | undefined;
       let replacement: Promise<unknown> | undefined;
       try {
-        oldRun = lane.enqueueGlobal(async () => {
-          const admittedRunContext = await params.preparedRunAdmission.admit("embedded");
-          started.resolve();
-          await resume.promise;
-          if (stage === "preflight") {
-            lane.throwIfAborted();
-          } else if (stage === "attempt admission") {
-            lane.createAttemptControls({ admittedRunContext }).close();
-          }
-          modelStart();
-          return { meta: { durationMs: 1 } };
-        });
+        oldRun = lane.enqueueSession(() =>
+          lane.enqueueGlobal(async () => {
+            const admittedRunContext = await params.preparedRunAdmission.admit("embedded");
+            started.resolve();
+            await resume.promise;
+            if (stage === "preflight") {
+              lane.throwIfAborted();
+            } else if (stage === "attempt admission") {
+              lane.createAttemptControls({ admittedRunContext }).close();
+            }
+            modelStart();
+            return { meta: { durationMs: 1 } };
+          }),
+        );
         // Observe rejection immediately so a failing assertion still cleans up the old turn.
         const oldOutcome = oldRun.then(
           () => undefined,
@@ -199,37 +206,64 @@ describe("local claim recovery before backend registration", () => {
         );
         await started.promise;
         expect(placements.get(SESSION_ID)?.turnClaim).not.toBeNull();
-        await expect(
-          abortAndDrainEmbeddedAgentRun({
-            sessionId: SESSION_ID,
+        clock.mockReturnValue(Date.now() + 6 * 60_000);
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        const recovery = abortAndDrainEmbeddedAgentRun({
+          sessionId: SESSION_ID,
+          sessionKey: SESSION_KEY,
+          settleMs: 100,
+          forceClear: true,
+          reason: "stuck_recovery",
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await expect(recovery).resolves.toMatchObject({
+          aborted: true,
+          drained: false,
+          forceCleared: false,
+        });
+        vi.useRealTimers();
+        clock.mockRestore();
+        expect(placements.get(SESSION_ID)?.turnClaim ?? null).toBeNull();
+        let ownerSettled = false;
+        void operation.ownerSettlement.then(() => {
+          ownerSettled = true;
+        });
+        replacement = withSessionTurn(
+          {
             sessionKey: SESSION_KEY,
-            settleMs: 100,
-            forceClear: true,
-            reason: "stuck_recovery",
-          }),
-        ).resolves.toMatchObject({ forceCleared: true });
+            sessionId: SESSION_ID,
+            agentId: "main",
+            storePath: sessionTarget.storePath,
+          },
+          () =>
+            provider.executeLocalTurn({ ...params, runId: "replacement" }, async () => {
+              replacementStarted.resolve();
+              await finishReplacement.promise;
+            }),
+        );
+        await Promise.resolve();
+        expect(ownerSettled).toBe(false);
+        expect(placements.get(SESSION_ID)?.turnClaim ?? null).toBeNull();
+        resume.resolve();
+        expect(await oldOutcome).toBeInstanceOf(Error);
+        expect(modelStart).toHaveBeenCalledTimes(stage === "terminal result" ? 1 : 0);
+        operation.complete();
+        await operation.ownerSettlement;
+        await replacementStarted.promise;
+        const replacementClaim = placements.get(SESSION_ID)?.turnClaim?.claimId;
+        expect(replacementClaim).toBeTruthy();
         await expect(waitForReplyRunSuccessorAdmission(SESSION_KEY, null)).resolves.toMatchObject({
           settled: true,
         });
-        expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
-
-        replacement = provider.executeLocalTurn({ ...params, runId: "replacement" }, async () => {
-          replacementStarted.resolve();
-          await finishReplacement.promise;
-        });
-        await replacementStarted.promise;
-        const replacementClaim = placements.get(SESSION_ID)?.turnClaim?.claimId;
-        resume.resolve();
-        expect(await oldOutcome).toMatchObject({
-          message: "session placement turn settlement is closed",
-        });
-        expect(modelStart).toHaveBeenCalledTimes(stage === "terminal result" ? 1 : 0);
         expect(placements.get(SESSION_ID)?.turnClaim?.claimId).toBe(replacementClaim);
       } finally {
+        vi.useRealTimers();
+        clock.mockRestore();
         resume.resolve();
         finishReplacement.resolve();
-        await Promise.allSettled([oldRun, replacement]);
+        await Promise.allSettled([oldRun]);
         operation.complete();
+        await Promise.allSettled([replacement]);
         params.preparedRunAdmission.close();
         uninstall();
       }
@@ -237,7 +271,7 @@ describe("local claim recovery before backend registration", () => {
   );
 
   it.each(["before", "during"])(
-    "does not start local work for a reply cleared %s admission",
+    "does not start local work for a reply cancelled %s admission",
     async (timing) => {
       const provider = createWorkerSessionTurnPlacementProvider({
         environments: unusedEnvironments(),
@@ -249,21 +283,25 @@ describe("local claim recovery before backend registration", () => {
         sessionId: SESSION_ID,
         resetTriggered: false,
       });
-      const params = { ...turn("run-cleared-before-admission"), replyOperation: operation };
+      const params = {
+        ...turn("run-cleared-before-admission"),
+        replyOperation: operation,
+        abortSignal: operation.abortSignal,
+      };
       const run = vi.fn(async () => ({ meta: { durationMs: 1 } }));
       try {
         if (timing === "before") {
-          forceClearReplyOperation(operation);
+          operation.abortByUser();
         }
         await expect(
           withSessionPlacementTurnAdmission(params, params, run, () => {
             if (timing === "during") {
-              forceClearReplyOperation(operation);
+              operation.abortByUser();
             }
           }),
-        ).rejects.toThrow("settlement is closed");
+        ).rejects.toThrow();
         expect(run).not.toHaveBeenCalled();
-        expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
+        expect(placements.get(SESSION_ID)?.turnClaim ?? null).toBeNull();
       } finally {
         operation.complete();
         uninstall();

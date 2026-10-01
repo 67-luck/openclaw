@@ -36,7 +36,7 @@ import {
 import { resolveSqliteTargetFromSessionStorePath } from "../../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -328,11 +328,11 @@ test("same-turn reset keeps its active continuation unsuppressed", async () => {
   const activeId = "active-continuation";
   await registerCollector(activeId);
   const interrupt = vi.fn();
-  let admission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+  let admission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
   try {
     emitCollectorStart(activeId);
     await settleSubagentRegistryPersistenceWork();
-    admission = await beginSessionWorkAdmission({
+    admission = await beginSessionEffect({
       scope: resolveSessionStorePathCore(undefined, { agentId: "main" }),
       identities: [key, "reset-cleanup-session"],
       assertAllowed: () => {},

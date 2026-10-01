@@ -35,6 +35,7 @@ import {
   rotateAgentRunRegistryLifecycleGeneration,
 } from "../../../infra/agent-run-registry.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
+import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
 import {
   createOperationalRunInstanceRef,
   getAdmittedRunDelegatedAuthority,
@@ -393,7 +394,13 @@ describe("pending spawn preparation authority", () => {
             const childSessionKey = params.sessionKey as string;
             const child = loadSessionEntry({ storePath, sessionKey: childSessionKey })!;
             childController = registerChatAbortController({
-              chatAbortControllers: context.chatAbortControllers,
+              rpcSources: context.rpcSources,
+              target: captureSessionTarget({
+                storeScope: storePath,
+                sessionKey: childSessionKey,
+                incarnation: child.sessionId,
+                agentId: "main",
+              }),
               runId: params.idempotencyKey as string,
               sessionKey: childSessionKey,
               sessionId: child.sessionId,

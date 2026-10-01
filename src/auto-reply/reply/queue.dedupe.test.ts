@@ -2,6 +2,7 @@
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { captureSessionControllerSourceSettlement } from "../../sessions/session-controller.mailbox.js";
 import type { FollowupRun, QueueSettings } from "./queue.js";
 import {
   admitFollowupRunLifecycle,
@@ -48,6 +49,54 @@ function createFollowupCollector(expectedCalls = 1): {
 describe("followup queue deduplication", () => {
   beforeEach(() => {
     resetRecentQueuedMessageIdDedupe();
+  });
+
+  it("deduplicates settled redeliveries within their physical store, not across stores", async () => {
+    const key = "agent:main:physical-dedupe";
+    const makeRun = (store: string) => {
+      const run = createRun({
+        prompt: store,
+        messageId: "same-id",
+        originatingChannel: "discord",
+        originatingTo: "channel:physical",
+      });
+      run.run.sessionKey = key;
+      run.run.config = { session: { store } };
+      return run;
+    };
+    const originals = [
+      makeRun("/synthetic/store-a/sessions.json"),
+      makeRun("/synthetic/store-b/sessions.json"),
+    ];
+    const { calls, done, runFollowup } = createFollowupCollector(2);
+    try {
+      for (const run of originals) {
+        expect(enqueueFollowupRun(key, run, collectSettings, "message-id", runFollowup)).toBe(true);
+      }
+      await done.promise;
+      await Promise.all(
+        originals.map((run) => {
+          if (!run.controllerInput) {
+            throw new Error("Expected the canonical source input");
+          }
+          return captureSessionControllerSourceSettlement(run.controllerInput);
+        }),
+      );
+      for (const run of originals) {
+        expect(
+          enqueueFollowupRun(key, makeRun(run.prompt), collectSettings, "message-id", runFollowup),
+        ).toBe(false);
+      }
+      expect(calls).toHaveLength(2);
+    } finally {
+      await Promise.all(
+        originals.flatMap((run) =>
+          run.controllerInput
+            ? [captureSessionControllerSourceSettlement(run.controllerInput)]
+            : [],
+        ),
+      );
+    }
   });
 
   it("deduplicates messages with same Discord message_id", async () => {
@@ -427,6 +476,7 @@ describe("followup queue deduplication", () => {
           enqueueFollowupRun(key, retry, collectSettings, "message-id", runFollowup, false),
         ).toBe(true);
         expect(onAbandoned).toHaveBeenCalledOnce();
+        await first.controllerInput!.settlement.promise;
         expect(onSettled).toHaveBeenCalledOnce();
         await Promise.resolve();
         expect(runFollowup.mock.calls.map(([run]) => run.messageId)).toEqual(

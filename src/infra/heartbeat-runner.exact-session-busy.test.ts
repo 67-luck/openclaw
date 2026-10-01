@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY } from "../agents/embedded-agent-runner/run-state.js";
 import {
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../agents/embedded-agent-runner/runs.test-support.js";
-import { createReplyOperation } from "../auto-reply/reply/reply-run-registry.js";
-import { replyRunState } from "../auto-reply/reply/reply-run-registry.state.js";
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
+  registerTestEmbeddedRun as setActiveEmbeddedRun,
+  createEmbeddedRunHandle,
+} from "../agents/embedded-agent-runner/runs.test-support.js";
 import { loadExactSessionEntry } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createReplyOperation } from "../sessions/session-controller.js";
+import {
+  sessionControllers,
+  getSessionControllerOperation,
+} from "../sessions/session-controller.state.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
 import {
   prepareHeartbeatRunStage,
@@ -66,34 +68,32 @@ function registerRun(kind: (typeof runKinds)[number], key: string, sessionId: st
 
 function countListedRunKeys() {
   let visits = 0;
-  const restore = [ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY, replyRunState.activeSessionIdsByKey].map(
-    (map) => {
-      const descriptor = Object.getOwnPropertyDescriptor(map, "keys");
-      const originalKeys = map.keys.bind(map);
-      Object.defineProperty(map, "keys", {
-        configurable: true,
-        value: () => {
-          const iterator = originalKeys();
-          const originalNext = iterator.next.bind(iterator);
-          iterator.next = () => {
-            const result = originalNext();
-            if (!result.done) {
-              visits += 1;
-            }
-            return result;
-          };
-          return iterator;
-        },
-      });
-      return () => {
-        if (descriptor) {
-          Object.defineProperty(map, "keys", descriptor);
-        } else {
-          Reflect.deleteProperty(map, "keys");
-        }
-      };
-    },
-  );
+  const restore = [sessionControllers].map((map) => {
+    const descriptor = Object.getOwnPropertyDescriptor(map, "values");
+    const originalKeys = map.values.bind(map);
+    Object.defineProperty(map, "values", {
+      configurable: true,
+      value: () => {
+        const iterator = originalKeys();
+        const originalNext = iterator.next.bind(iterator);
+        iterator.next = () => {
+          const result = originalNext();
+          if (!result.done) {
+            visits += 1;
+          }
+          return result;
+        };
+        return iterator;
+      },
+    });
+    return () => {
+      if (descriptor) {
+        Object.defineProperty(map, "values", descriptor);
+      } else {
+        Reflect.deleteProperty(map, "values");
+      }
+    };
+  });
   return {
     visits: () => visits,
     restore: () => {
@@ -111,8 +111,7 @@ describe("heartbeat exact-session busy checks", () => {
     "does not enumerate 1000 active runs for isolatedSession=%s",
     async (isolatedSession) => {
       await withHeartbeatFixture(isolatedSession, async (opts, storePath) => {
-        const embeddedBefore = new Map(ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY);
-        const replyBefore = new Map(replyRunState.activeSessionIdsByKey);
+        const controllersBefore = new Map(sessionControllers);
         const scope = { agentId: "main", storePath, sessionKey };
         const entryBefore = loadExactSessionEntry(scope)?.entry;
         expect(entryBefore).toMatchObject({
@@ -168,26 +167,20 @@ describe("heartbeat exact-session busy checks", () => {
           } else {
             expect(isolatedEntry).toBeUndefined();
           }
-          expect(ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY.size).toBe(embeddedBefore.size + 500);
-          expect(replyRunState.activeSessionIdsByKey.size).toBe(replyBefore.size + 500);
-          for (let index = 0; index < 500; index += 1) {
-            expect(
-              ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY.get(`agent:other:embedded-${index}`),
-            ).toBe(`embedded-session-${index}`);
-            expect(replyRunState.activeSessionIdsByKey.get(`agent:other:reply-${index}`)).toBe(
-              `reply-session-${index}`,
-            );
-            expect(replyRunState.activeRunsByKey.get(`agent:other:reply-${index}`)?.phase).toBe(
-              "running",
-            );
+          expect(sessionControllers.size).toBe(controllersBefore.size + 1000);
+          for (const kind of runKinds) {
+            for (let index = 0; index < 500; index += 1) {
+              const operation = getSessionControllerOperation("agent:other:" + kind + "-" + index);
+              expect(operation?.sessionId).toBe(kind + "-session-" + index);
+              expect(operation?.phase).toBe("running");
+            }
           }
         } finally {
           for (const close of cleanup.toReversed()) {
             close();
           }
         }
-        expect(ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY).toEqual(embeddedBefore);
-        expect(replyRunState.activeSessionIdsByKey).toEqual(replyBefore);
+        expect(sessionControllers).toEqual(controllersBefore);
         expect(visits).toBe(0);
       });
     },

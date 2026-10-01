@@ -1,18 +1,51 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { captureSessionControllerSourceSettlement } from "../../../sessions/session-controller.mailbox.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
+import { createQueueTestRun } from "../queue.test-helpers.js";
+import { enqueueFollowupRun } from "./enqueue.js";
 import {
   admitFollowupRunLifecycle,
   completeFollowupRunLifecycle,
   markFollowupRunEnqueued,
 } from "./lifecycle.js";
+import { clearFollowupQueue } from "./state.js";
 
 afterEach(() => vi.useRealTimers());
 
 describe("followup lifecycle heartbeat", () => {
-  it("preserves a steer error while joining the already-started admission before settlement", async () => {
+  it("retains message-ID-deduped source custody until abandonment actually settles", async () => {
+    const key = "agent:main:dedupe-abandonment";
     const entered = createDeferredCore();
     const release = createDeferredCore();
-    const failure = new Error("steer notification failed");
+    const onSettled = vi.fn();
+    const run = createQueueTestRun({ prompt: "queued", messageId: "source-1" });
+    run.run.agentId = "main";
+    run.run.sessionKey = key;
+    run.turnAdoptionLifecycle = {
+      onAdopted: () => {},
+      onAbandoned: async () => {
+        entered.resolve();
+        await release.promise;
+      },
+      onSettled,
+    };
+    enqueueFollowupRun(key, run, { mode: "followup" }, "message-id");
+    const input = run.controllerInput!;
+    try {
+      clearFollowupQueue(key, input.mailbox);
+      await entered.promise;
+      expect(onSettled).not.toHaveBeenCalled();
+      release.resolve();
+      await captureSessionControllerSourceSettlement(input);
+      expect(onSettled).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+      await captureSessionControllerSourceSettlement(input);
+    }
+  });
+  it("joins already-started admission before settling source custody", async () => {
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
     const lifecycle = {
       onAdopted: async () => {
         entered.resolve();
@@ -22,22 +55,17 @@ describe("followup lifecycle heartbeat", () => {
       onSettled: vi.fn(),
     };
     const run = {
+      ...createQueueTestRun({ prompt: "custody race" }),
       turnAdoptionLifecycle: lifecycle,
-      steerPending: {
-        phase: "waiting" as const,
-        predecessor: Promise.resolve(true),
-        settle: () => {
-          throw failure;
-        },
-      },
     };
     const admission = admitFollowupRunLifecycle(run);
     try {
       await entered.promise;
-      expect(() => completeFollowupRunLifecycle(run)).toThrow(failure);
+      completeFollowupRunLifecycle(run);
       expect(lifecycle.onSettled).not.toHaveBeenCalled();
       release.resolve();
       await admission;
+      await captureSessionControllerSourceSettlement(run.controllerInput!);
       expect(lifecycle.onSettled).toHaveBeenCalledOnce();
       expect(lifecycle.onAbandoned).not.toHaveBeenCalled();
     } finally {
@@ -60,7 +88,10 @@ describe("followup lifecycle heartbeat", () => {
         deferredHeartbeatIntervalMs: 100,
         onAbandoned: vi.fn(),
       };
-      const run = { turnAdoptionLifecycle: lifecycle };
+      const run = {
+        ...createQueueTestRun({ prompt: "heartbeat" }),
+        turnAdoptionLifecycle: lifecycle,
+      };
       if (state === "admitted") {
         await admitFollowupRunLifecycle(run);
       } else if (state === "completed") {

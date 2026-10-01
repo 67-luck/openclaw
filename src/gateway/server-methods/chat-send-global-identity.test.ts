@@ -3,7 +3,6 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import * as dispatch from "../../auto-reply/dispatch.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import { getRuntimeConfig, setRuntimeConfigSnapshot } from "../../config/config.js";
 import {
   appendTranscriptMessage,
@@ -15,7 +14,11 @@ import {
 import * as sessionAccessor from "../../config/sessions/session-accessor.js";
 import { readSessionPendingInputByKey } from "../../config/sessions/session-accessor.sqlite-pending-inputs.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
+import {
+  captureSessionTarget,
+  captureSessionControllerSettlement,
+} from "../../sessions/session-controller.lifecycle.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   closeOpenClawAgentDatabaseByPath,
@@ -277,6 +280,13 @@ it.each<{
     const interrupted = vi.fn();
     const activeRun = scenario.writeDuringProfilePreparation
       ? createReplyOperation({
+          target: captureSessionTarget({
+            storeScope: storePath,
+            sessionKey: "global",
+            aliases: ["agent:research:global"],
+            incarnation: "raw-session",
+            agentId: "research",
+          }),
           agentId: "research",
           sessionKey: "agent:research:global",
           sessionId: "raw-session",
@@ -452,10 +462,9 @@ it.each<{
         expect(observeDispatch).not.toHaveBeenCalled();
         expect(holdDispatch).not.toHaveBeenCalled();
         expect(context.addChatRun).not.toHaveBeenCalled();
-        expect(context.chatAbortControllers.size).toBe(0);
-        expect(context.chatQueuedTurns.size).toBe(0);
+        expect(context.rpcSources.size).toBe(0);
         expect(
-          getSessionWorkAdmissionRelease({
+          captureSessionControllerSettlement({
             scope: storePath,
             identities: [scenario.key, "raw-session", "literal-session"],
           }),
@@ -541,14 +550,14 @@ it.each<{
           if (scenario.pendingReplacement) {
             expect(readPending(source.path)).toEqual(pendingBefore);
             expect(readPending(originalPath)).toEqual(pendingBefore);
-            const settled = getSessionWorkAdmissionRelease({
+            const settled = captureSessionControllerSettlement({
               scope: owned.session.storePath,
               identities: [owned.session.sessionKey, selected.sessionId],
             });
             expect(settled).toBeDefined();
             release.resolve();
             await settled;
-            expect(context.chatAbortControllers.has(runId)).toBe(false);
+            expect(context.rpcSources.has(runId)).toBe(false);
             expect(readPending(source.path)).toEqual(pendingBefore);
             expect(readPending(originalPath)).toEqual(pendingBefore);
           }
@@ -614,7 +623,7 @@ it.each<{
         }
       }
       if (scenario.replayAfterCollision) {
-        const settled = getSessionWorkAdmissionRelease({
+        const settled = captureSessionControllerSettlement({
           scope: owned.session.storePath,
           identities: [owned.session.sessionKey, selected.sessionId],
         });
@@ -647,7 +656,7 @@ it.each<{
       await Promise.allSettled(sending ? [sending] : []);
       const owned = observeDispatch.mock.calls.at(-1)?.[0];
       const settled = owned
-        ? getSessionWorkAdmissionRelease({
+        ? captureSessionControllerSettlement({
             scope: owned.session.storePath,
             identities: [owned.session.sessionKey, owned.session.entry?.sessionId],
           })

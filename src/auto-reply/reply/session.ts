@@ -89,12 +89,13 @@ import {
   MODEL_SELECTION_LOCKED_RESET_MESSAGE,
   ModelSelectionLockedError,
 } from "../../sessions/model-overrides.js";
-import { recordSessionCreated } from "../../sessions/session-created.js";
+import { replyRunRegistry } from "../../sessions/session-controller.js";
 import {
-  SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-  interruptSessionWorkAdmissions,
-  runExclusiveSessionLifecycleMutation,
-} from "../../sessions/session-lifecycle-admission.js";
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+  interruptSessionControllerEffects,
+  runSessionMutation,
+} from "../../sessions/session-controller.lifecycle.js";
+import { recordSessionCreated } from "../../sessions/session-created.js";
 import { recordAcceptedSessionParticipantInput } from "../../sessions/session-participant-input-recording.js";
 import { prepareChannelParticipantObservation } from "../../sessions/session-participant-input.js";
 import {
@@ -118,7 +119,6 @@ import { resolveEffectiveResetTargetSessionKey } from "./acp-reset-target.js";
 import { readBeforeResetMessages } from "./commands-reset-hooks.js";
 import { shouldBypassAcpDispatchForCommand } from "./dispatch-acp-command-bypass.js";
 import { normalizeInboundTextNewlines } from "./inbound-text.js";
-import { replyRunRegistry } from "./reply-run-registry.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
 import {
   resolveSessionDefaultAccountId,
@@ -432,7 +432,7 @@ async function initSessionStateAttempt(
     let preparedOutcome: InitSessionStateAttemptOutcome | undefined;
     // Drain foreign owners before the rollover takes the writer lane. Holding
     // that lane while waiting would deadlock owners that release after a write.
-    const outcome = await runExclusiveSessionLifecycleMutation({
+    const outcome = await runSessionMutation({
       scope: attemptContext.storePath,
       identities,
       signal: params.signal,
@@ -459,10 +459,10 @@ async function initSessionStateAttempt(
         if (!(await revalidate())) {
           return;
         }
-        const drained = await interruptSessionWorkAdmissions({
+        const drained = await interruptSessionControllerEffects({
           scope: attemptContext.storePath,
           identities,
-          timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+          timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
         });
         if (!drained) {
           throw new Error(

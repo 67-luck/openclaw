@@ -83,7 +83,7 @@ const cancelBrowserSession = vi.fn(async () => undefined);
 const context = {
   getRuntimeConfig: () => config,
   getClientConnIds: () => new Set([client.connId]),
-  chatAbortControllers: new Map(),
+  rpcSources: new Map(),
   logGateway: { warn: vi.fn() },
   broadcastToConnIds: vi.fn(),
 } as unknown as GatewayRequestContext;

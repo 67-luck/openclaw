@@ -644,6 +644,7 @@ export function activateCodexAttemptTurn(
         params.sessionKey,
         params.sessionFile,
         sessionAgentId,
+        params.replyOperation,
       );
       if (
         !runAbortController.signal.aborted &&

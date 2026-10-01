@@ -63,8 +63,8 @@ it.each([
         agentRunSeq: new Map(),
         broadcast: vi.fn(),
         broadcastToConnIds: vi.fn(),
-        chatAbortControllers: new Map(),
-        chatQueuedTurns: new Map(),
+        rpcSources: new Map(),
+
         chatRunState: createChatRunState(),
         dedupe: new Map(),
         deps: {},

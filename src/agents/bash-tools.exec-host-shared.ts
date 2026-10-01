@@ -340,6 +340,7 @@ export async function createExecApprovalRequestRoute<TTimeoutContext = undefined
 export async function resolveExecApprovalWaitOutcome<TTimeoutContext = undefined>(
   params: Omit<ExecApprovalDecisionParams<TTimeoutContext>, "decision"> & {
     approvalId: string;
+    expiresAtMs?: number;
     preResolvedDecision: string | null | undefined;
     signal?: AbortSignal;
   },
@@ -356,6 +357,7 @@ export async function resolveExecApprovalWaitOutcome<TTimeoutContext = undefined
   try {
     decision = await resolveRegisteredExecApprovalDecision({
       approvalId: params.approvalId,
+      expiresAtMs: params.expiresAtMs,
       preResolvedDecision: params.preResolvedDecision,
     });
   } catch (error) {

@@ -1,13 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveSessionAuthSelection } from "../../agents/auth-profiles/session-override.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { resolveAdmittedRunSessionFile } from "./agent-runner-core.js";
 import { prepareReplyRunAdmission } from "./get-reply-run-admission.js";
 import type { PreparedReplyRunContext } from "./get-reply-run-context.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
 import { enqueueFollowupRun } from "./queue/enqueue.js";
 import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
-import { createReplyOperation } from "./reply-run-registry.js";
 import { resolveFollowupRunToolAuthorityFingerprint } from "./reply-tool-authority.js";
 
 vi.mock("../../agents/auth-profiles/session-override.js", () => ({

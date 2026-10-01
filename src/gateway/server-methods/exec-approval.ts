@@ -47,6 +47,7 @@ import { handlePendingApprovalRequestWithDelivery } from "./approval-request-del
 import {
   handleApprovalWaitDecision,
   bindApprovalRequesterMetadata,
+  captureApprovalWorkerOwner,
   bindApprovalReviewerDeviceIds,
   handleApprovalResolve,
   listVisiblePendingApprovalRequests,
@@ -187,6 +188,7 @@ export function createExecApprovalHandlers(
         );
         return;
       }
+      const workerOwner = captureApprovalWorkerOwner(trustedAgentRuntime);
       const approvalContext = resolveSystemRunApprovalRequestContext({
         host,
         command: p.command,
@@ -442,6 +444,7 @@ export function createExecApprovalHandlers(
         timeoutMs,
         respond,
         context,
+        workerOwner,
       });
       if (!registration) {
         return;
