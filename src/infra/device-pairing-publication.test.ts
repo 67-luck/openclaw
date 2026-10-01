@@ -200,6 +200,7 @@ test.each(["worker commit", "external commit", "observation commit"] as const)(
   "does not republish a pairing read delayed past a newer %s",
   async (commit) => {
     await listDevicePairing(baseDir);
+    const before = await getPairedDevice("node", baseDir);
     const previousBinding = getPublishedPairedDeviceBinding("node", baseDir);
     expect(previousBinding).not.toBeNull();
     const releaseRead = createDeferredCore();
@@ -270,8 +271,11 @@ test.each(["worker commit", "external commit", "observation commit"] as const)(
           expect(getPublishedPairedDeviceBinding("node", baseDir)).toEqual(expectedBinding);
           releaseRead.resolve();
           const settled = await delayed;
-          // An obsolete read may refuse or reread; it must never return the old authority.
-          if ("device" in settled) {
+          // Observation-only commits preserve the admitted snapshot. Authority
+          // changes may refuse or reread, but never return superseded grants.
+          if (commit === "observation commit") {
+            expect(settled).toEqual({ device: before });
+          } else if ("device" in settled) {
             expect(settled.device).toEqual(expected);
           }
           expect(getPublishedPairedDeviceBinding("node", baseDir)).toEqual(expectedBinding);

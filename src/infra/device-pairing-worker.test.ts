@@ -8,7 +8,6 @@ import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import * as stateWorker from "../state/openclaw-state-worker-store.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { approveBootstrapDevicePairing, approveDevicePairing } from "./device-pairing-approval.js";
-import * as pairingLock from "./device-pairing-lock.js";
 import {
   isNodePairingGenerationCurrent,
   resolveCurrentPairedDeviceNodeBinding,
@@ -522,7 +521,13 @@ test("does not overwrite a same-key platform reapproval with delayed metadata", 
   expect(await getPairedDevice(before.deviceId, baseDir)).toEqual(approved.device);
 });
 
-test.each(["metadata", "presence", "removal", "committed metadata"] as const)(
+test.each([
+  "metadata",
+  "presence",
+  "removal",
+  "committed metadata",
+  "intermediate metadata",
+] as const)(
   "keeps committed pairing reads available only during non-auth %s work",
   async (kind) => {
     const before = await getPairedDevice("paired-rich", baseDir);
@@ -537,17 +542,6 @@ test.each(["metadata", "presence", "removal", "committed metadata"] as const)(
     const releaseReply = createDeferred();
     const readCompleted = createDeferred();
     const releaseRead = createDeferred();
-    const refreshRoute = createDeferred<"reader" | "writer">();
-    let refreshing = false;
-    const withLock = pairingLock.withDevicePairingLock;
-    const observedLock = vi
-      .spyOn(pairingLock, "withDevicePairingLock")
-      .mockImplementation((operation) => {
-        if (refreshing) {
-          refreshRoute.resolve("writer");
-        }
-        return withLock(operation);
-      });
     const runOperation = stateWorker.runOpenClawStateWorkerOperation;
     const heldWriter = vi
       .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
@@ -571,16 +565,21 @@ test.each(["metadata", "presence", "removal", "committed metadata"] as const)(
         ),
       );
     const executeRead = stateReads.executeExistingOpenClawStateRead;
+    let capturedRead = false;
     const observedRead = vi
       .spyOn(stateReads, "executeExistingOpenClawStateRead")
       .mockImplementation(async (...args) => {
-        if (refreshing) {
-          refreshRoute.resolve("reader");
+        const capture = args[1].type === "devicePairing.lookup" && !capturedRead;
+        if (capture) {
+          capturedRead = true;
+          if (kind === "intermediate metadata") {
+            await writerCommitted.promise;
+          }
         }
         const result = await executeRead(...args);
-        if (args[1].type === "devicePairing.lookup") {
+        if (capture) {
           readCompleted.resolve();
-          if (kind === "committed metadata") {
+          if (kind === "committed metadata" || kind === "intermediate metadata") {
             await releaseRead.promise;
           }
         }
@@ -588,7 +587,7 @@ test.each(["metadata", "presence", "removal", "committed metadata"] as const)(
       });
     const patch = { lastSeenAtMs: 10, lastSeenReason: "connect" };
     const mutation =
-      kind === "metadata" || kind === "committed metadata"
+      kind === "metadata" || kind === "committed metadata" || kind === "intermediate metadata"
         ? updatePairedDeviceMetadata("paired-rich", patch, baseDir)
         : kind === "presence"
           ? updatePairedDevicePresence("paired-rich", patch, generation, baseDir)
@@ -607,11 +606,13 @@ test.each(["metadata", "presence", "removal", "committed metadata"] as const)(
       releaseReply.resolve();
       releaseRead.resolve();
       await Promise.allSettled([mutation, reader, authority]);
-      observedLock.mockRestore();
       observedRead.mockRestore();
       heldWriter.mockRestore();
     });
     await writerStarted.promise;
+    if (kind === "intermediate metadata") {
+      releaseWriter.resolve();
+    }
     await readCompleted.promise;
     if (kind === "removal") {
       expect(() => getPublishedPairedDeviceBinding("paired-rich", baseDir)).toThrow(
@@ -622,11 +623,18 @@ test.each(["metadata", "presence", "removal", "committed metadata"] as const)(
     } else if (kind === "committed metadata") {
       releaseWriter.resolve();
       await writerCommitted.promise;
-      refreshing = true;
       releaseRead.resolve();
-      expect(await refreshRoute.promise).toBe("reader");
-      expect(await reader).toEqual({ ...before, ...patch });
+      // The read completed before this observation committed. Consuming its
+      // snapshot must preserve newer authority without waiting for the delayed reply.
+      expect(await reader).toEqual(before);
       releaseReply.resolve();
+    } else if (kind === "intermediate metadata") {
+      await mutation;
+      await authority;
+      const latest = { ...patch, lastSeenAtMs: 20 };
+      await updatePairedDeviceMetadata("paired-rich", latest, baseDir);
+      releaseRead.resolve();
+      expect(await reader).toEqual({ ...before, ...latest });
     } else {
       expect(() => getPublishedPairedDeviceBinding("paired-rich", baseDir)).toThrow(
         "requires a current worker publication",

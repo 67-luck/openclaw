@@ -13,7 +13,8 @@ async function readPairing(command: DevicePairingReadCommand, baseDir?: string, 
   const context = captureOpenClawStateWorkerContext(options);
   const selected = { path: context.admission.databasePath, env: context.environment };
   const snapshot = current ? undefined : getActiveOpenClawStateDatabaseReadSnapshot(selected);
-  const read = async (publication = captureDevicePairingPublication(context.admission)) => {
+  const read = async () => {
+    const publication = captureDevicePairingPublication(context.admission);
     let reply;
     try {
       reply = await executeExistingOpenClawStateRead(
@@ -33,29 +34,30 @@ async function readPairing(command: DevicePairingReadCommand, baseDir?: string, 
     if (snapshot) {
       return { reply };
     }
-    const published =
+    const accepted =
       reply?.ok && "bindings" in reply
-        ? publication.publish(reply.revision, reply.bindings, reply.type === "devicePairing.list")
+        ? publication.publish(
+            reply.revision,
+            reply.bindings,
+            reply.type === "devicePairing.list",
+          ) || publication.canUseSnapshot(reply.revision)
         : !reply
           ? publication.publish("missing", [], true)
           : publication.isCurrent();
-    return published ? { reply } : undefined;
+    return accepted ? { reply } : undefined;
   };
-  const publication = captureDevicePairingPublication(context.admission);
-  const observed = await read(publication);
+  const observed = await read();
   if (observed) {
     return observed.reply;
   }
-  const refresh = async () => {
+  // Authority supersession requires one fresh read under pairing admission.
+  return withDevicePairingLock(async () => {
     const refreshed = await read();
     if (!refreshed) {
       throw new Error("Device pairing read publication was replaced");
     }
     return refreshed.reply;
-  };
-  // A committed observation only invalidates the old snapshot; its delayed
-  // worker reply must not hold the fresh read behind the writer queue.
-  return publication.requiresWriterAdmission() ? withDevicePairingLock(refresh) : refresh();
+  });
 }
 
 /** Readers never create, migrate, or synchronously open the shared database. */

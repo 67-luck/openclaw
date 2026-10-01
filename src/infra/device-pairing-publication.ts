@@ -84,10 +84,9 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
   publications.set(identity.canonicalPath, publication);
   publications.set(identity.key, publication);
   const captured = publication;
-  const epoch = captured.epoch;
-  // The single refresh must retain FIFO after authority changes, even when
-  // their live fence has settled; only observation-only supersession may bypass it.
-  const authorityEpoch = captured.authorityEpoch;
+  // Observation-only reads may retain their snapshot without rewinding authority.
+  // Only admission/current revisions are known; other content hashes are unordered.
+  const { epoch, authorityEpoch, revision: readRevision } = captured;
   const admittedBehindFence = captured.blocked || Boolean(captured.mutation?.blocksReads);
   const install = (rows: readonly DevicePairingBindingFact[]) => {
     for (const row of rows) {
@@ -104,8 +103,13 @@ export function captureDevicePairingPublication(admission: OpenClawStateDatabase
     !blocksReads() && publications.get(path) === captured && captured.epoch === epoch;
   return {
     isCurrent,
-    requiresWriterAdmission: () =>
-      blocksReads() || admittedBehindFence || captured.authorityEpoch !== authorityEpoch,
+    canUseSnapshot: (revision: string) =>
+      !blocksReads() &&
+      !captured.blocked &&
+      !admittedBehindFence &&
+      publications.get(path) === captured &&
+      captured.authorityEpoch === authorityEpoch &&
+      (revision === readRevision || revision === captured.revision),
     completeRevision: () =>
       !captured.blocked && captured.complete ? captured.revision : undefined,
     fail() {
