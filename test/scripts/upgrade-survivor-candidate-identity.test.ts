@@ -14,13 +14,22 @@ type Change =
   | "valid"
   | "stale"
   | "tarball-changed"
+  | "tarball-missing"
+  | "entrypoint-missing"
   | "wrong-source"
   | "baseline-corrupt"
+  | "missing-baseline"
   | "same-source"
   | "historical-baseline";
+type Scenario = "base" | "sqlite-volume" | "projects-doctor" | "workshop-doctor-recovery";
 
-function runCandidateFlow(scenario: "base" | "sqlite-volume", change: Change) {
-  const baselineVersion = change === "historical-baseline" ? "2026.6.1" : version;
+function runCandidateFlow(scenario: Scenario, change: Change) {
+  const audited = scenario === "projects-doctor" || scenario === "workshop-doctor-recovery";
+  const baselineVersion = audited
+    ? "2026.9.4"
+    : change === "historical-baseline"
+      ? "2026.6.1"
+      : version;
   const root = tempDirs.make("upgrade-survivor-candidate-identity-");
   const candidate = path.join(root, "candidate", "package");
   const baseline = path.join(root, "baseline", "package");
@@ -90,13 +99,37 @@ globalThis.fetch = async (url) => {
   );
 
   const source = readFileSync("scripts/e2e/lib/upgrade-survivor/run.sh", "utf8");
-  const start = source.indexOf("phase install-baseline install_baseline\n");
-  const following = "run_missing_load_path_fixture post-update\n";
+  const baselineStart = source.indexOf("phase install-baseline install_baseline\n");
+  const baselineEnd = source.indexOf("phase initialize-state initialize_state\n", baselineStart);
+  const start = audited
+    ? source.indexOf(
+        scenario === "projects-doctor"
+          ? "  phase worker-candidate-identity prepare_worker_cell_package\n"
+          : "  phase capture-workshop-candidate-package ",
+      )
+    : baselineStart;
+  const following =
+    scenario === "projects-doctor"
+      ? "  phase update-worker-candidate "
+      : scenario === "workshop-doctor-recovery"
+        ? "  phase seed-physical-baseline-index "
+        : "run_missing_load_path_fixture post-update\n";
   const end = source.indexOf(following, start);
-  if (start < 0 || end < start) {
+  const helperStart = source.indexOf("prepare_worker_cell_package() {\n");
+  const helperEnd = source.indexOf("\nassert_worker_cell_update() {", helperStart);
+  if (
+    baselineStart < 0 ||
+    baselineEnd < baselineStart ||
+    start < 0 ||
+    end < start ||
+    helperStart < 0 ||
+    helperEnd < helperStart
+  ) {
     throw new Error("Survivor candidate flow boundaries are unavailable");
   }
-  const flow = source.slice(start, end + following.length);
+  const flow = audited
+    ? source.slice(baselineStart, baselineEnd) + source.slice(start, end)
+    : source.slice(start, end + following.length);
   // Execute the registered scenario flow and real identity CLI; only installation
   // and unrelated fixture phases are replaced by this small package fixture.
   const result = spawnSync(
@@ -113,11 +146,13 @@ candidate_version=${version}
 candidate_install_mode=updater
 baseline_version=${baselineVersion}
 baseline_spec=openclaw@${baselineVersion}
-WORKER_CELL=0
+WORKER_CELL=${scenario === "projects-doctor" ? "1" : "0"}
 native_assignment_enabled=0
 UPDATE_RESTART_MODE=manual
 export OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT="$ARTIFACT_ROOT"
 export OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT="$RUNTIME_ROOT"
+node() { "$UNIT_NODE" --import "$UNIT_ROOT/registry.mjs" "$@"; }
+${source.slice(helperStart, helperEnd)}
 package_root() { printf '%s\\n' "$UNIT_ROOT/installed"; }
 companion_survivor_scenario() { return 1; }
 run_plugin_fixture_phase() { :; }
@@ -134,6 +169,12 @@ update_candidate_for_install_mode() {
   if [ "$UNIT_CHANGE" = tarball-changed ]; then
     printf '\\n' >> "$CANDIDATE_SPEC"
   fi
+  if [ "$UNIT_CHANGE" = tarball-missing ]; then
+    rm "$CANDIDATE_SPEC"
+  fi
+  if [ "$UNIT_CHANGE" = entrypoint-missing ]; then
+    rm "$UNIT_ROOT/installed/openclaw.mjs"
+  fi
 }
 phase() {
   shift
@@ -145,8 +186,11 @@ phase() {
         if [ "$1" = scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs ] && [ "$2" = baseline ] && [ "$UNIT_CHANGE" = historical-baseline ]; then
           "$UNIT_NODE" --import "$UNIT_ROOT/registry.mjs" "$@"
         fi
+        if [ "$2" = baseline ] && [ "$UNIT_CHANGE" = missing-baseline ]; then
+          rm "$ARTIFACT_ROOT/baseline-package-identity.json"
+        fi
       fi ;;
-    update_candidate_for_install_mode) "$@" ;;
+    update_candidate_for_install_mode|prepare_worker_cell_package) "$@" ;;
     *) : ;;
   esac
 }
@@ -217,6 +261,12 @@ describe.skipIf(process.platform === "win32")(
         events: [],
       },
       { change: "tarball-changed", error: "Candidate tarball changed", events: ["updater"] },
+      { change: "tarball-missing", error: "Candidate tarball changed", events: ["updater"] },
+      {
+        change: "entrypoint-missing",
+        error: "Installed application payload differs from the frozen tarball",
+        events: ["updater"],
+      },
       { change: "baseline-corrupt", error: "Published baseline integrity mismatch", events: [] },
       { change: "same-source", error: "Candidate still contains published bytes", events: [] },
     ] as const)("refuses $change at the actual candidate boundary", ({ change, error, events }) => {
@@ -228,5 +278,29 @@ describe.skipIf(process.platform === "win32")(
         false,
       );
     });
+
+    it.each(["projects-doctor", "workshop-doctor-recovery"] as const)(
+      "%s requires the produced baseline and refuses published candidate bytes",
+      (scenario) => {
+        const valid = runCandidateFlow(scenario, "valid");
+        expect(valid.result.status, valid.result.stdout + valid.result.stderr).toBe(0);
+        expect(existsSync(path.join(valid.artifacts, "candidate-package-identity.json"))).toBe(
+          true,
+        );
+
+        for (const [change, error] of [
+          ["same-source", "Candidate still contains published bytes"],
+          ["missing-baseline", "ENOENT"],
+        ] as const) {
+          const refused = runCandidateFlow(scenario, change);
+          expect(refused.result.status).not.toBe(0);
+          expect(refused.result.stderr).toContain(error);
+          expect(refused.events).toEqual([]);
+          expect(existsSync(path.join(refused.artifacts, "candidate-package-identity.json"))).toBe(
+            false,
+          );
+        }
+      },
+    );
   },
 );
