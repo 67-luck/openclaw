@@ -41,7 +41,7 @@ enum OpenClawWidgetCache {
             guard zip(identifiers, limits).allSatisfy({ !$0.0.isEmpty && $0.0.utf8.count <= $0.1 }) else {
                 throw Failure.invalidSelection
             }
-            // Arrays delimit exact UTF-8 identifiers without persisting route URLs.
+            // Arrays delimit exact UTF-8 identifiers, including canonical Gateway IDs.
             // These digests select rows; they confer no connection authority.
             return try (
                 Self.digest(identifiers + [self.run == nil ? "conversation" : "run"]),
@@ -52,6 +52,16 @@ enum OpenClawWidgetCache {
             guard !owner.gatewayID.isEmpty, owner.gatewayID.utf8.count <= 4096,
                   !owner.profileID.isEmpty, owner.profileID.utf8.count <= 512
             else { throw Failure.invalidSelection }
+            // Captured canonical owners only. URL-shaped fallback IDs must not
+            // persist userinfo/query/fragment; opaque IDs retain their exact bytes.
+            if let colon = owner.gatewayID.firstIndex(of: ":"),
+               ["ws", "wss", "http", "https"].contains(owner.gatewayID[..<colon].lowercased())
+            {
+                guard let url = URLComponents(string: owner.gatewayID, encodingInvalidCharacters: false),
+                      url.url != nil, let host = url.host, !host.isEmpty,
+                      url.user == nil, url.password == nil, url.query == nil, url.fragment == nil
+                else { throw Failure.invalidSelection }
+            }
             return try self.digest([owner.gatewayID, owner.profileID])
         }
 
@@ -83,19 +93,98 @@ enum OpenClawWidgetCache {
             do {
                 let keys = try selection.keys()
                 let time = try OpenClawWidgetCache.milliseconds(now)
-                try OpenClawWidgetContainer.validateDatabasePath(self.databaseURL)
-                let database = try OpenClawSQLiteConnection(databaseURL: self.databaseURL, access: .readOnly)
-                try OpenClawWidgetCache.validateHeader(database)
-                try OpenClawWidgetCache.validate(database)
-                guard let row = try OpenClawWidgetCache.row(database, key: keys.selection),
-                      row.owner == keys.owner, time >= row.admittedAt, time < row.expiresAt
-                else { return .unavailable }
-                let wire = try Wire.decode(row.json)
-                let snapshot = try wire.snapshot(selection: selection, nowMS: time)
-                return .snapshot(snapshot)
+                return try self.withDatabase { database in
+                    guard let row = try OpenClawWidgetCache.row(database, key: keys.selection),
+                          row.owner == keys.owner, time >= row.admittedAt, time < row.expiresAt
+                    else { return .unavailable }
+                    return try .snapshot(row.wire.snapshot(nowMS: time))
+                }
             } catch {
                 // Storage/decoder diagnostics can contain paths or private identifiers.
                 return .unavailable
+            }
+        }
+
+        fileprivate func snapshots(now: Date) throws -> [OpenClawWidgetSnapshot] {
+            do {
+                let time = try OpenClawWidgetCache.milliseconds(now)
+                return try self.withDatabase { database in
+                    let keys = try database.prepare("""
+                    SELECT selection_key FROM widget_snapshots
+                    WHERE admitted_at_ms <= ? AND expires_at_ms > ? ORDER BY selection_key LIMIT 64
+                    """)
+                    try keys.bindInt64(time, at: 1)
+                    try keys.bindInt64(time, at: 2)
+                    var snapshots: [OpenClawWidgetSnapshot] = []
+                    while try keys.step() == .row {
+                        let key = try keys.requiredText(at: 0, field: "selection")
+                        guard let row = try OpenClawWidgetCache.row(database, key: key) else {
+                            throw Failure.invalidSnapshot
+                        }
+                        try snapshots.append(row.wire.snapshot(nowMS: time))
+                    }
+                    return snapshots
+                }
+            } catch {
+                throw Failure.unavailable
+            }
+        }
+
+        private func withDatabase<T>(_ body: (OpenClawSQLiteConnection) throws -> T) throws -> T {
+            try OpenClawWidgetContainer.validateDatabasePath(self.databaseURL)
+            let database = try OpenClawSQLiteConnection(databaseURL: self.databaseURL, access: .readOnly)
+            try OpenClawWidgetCache.validateHeader(database)
+            // Pin quota validation and all rows to one read snapshot during app writes.
+            try database.execute("BEGIN")
+            defer { try? database.execute("ROLLBACK") }
+            try OpenClawWidgetCache.validate(database)
+            return try body(database)
+        }
+    }
+
+    /// Cached eligibility only, never authentication or an action host.
+    @MainActor
+    struct Catalog: OpenClawNativeActionCatalog {
+        let reader: Reader
+        private let now: () -> Date
+
+        init(reader: Reader, now: @escaping () -> Date = Date.init) {
+            self.reader = reader
+            self.now = now
+        }
+
+        func sessions(matching query: String?) async throws -> [OpenClawNativeSessionChoice] {
+            try self.choices(matching: query).compactMap { snapshot in
+                guard case let .session(session, _, _) = snapshot.subject else { return nil }
+                return OpenClawNativeSessionChoice(
+                    session: session, title: snapshot.label, gatewayName: session.owner.gatewayID)
+            }
+        }
+
+        func runs(matching query: String?) async throws -> [OpenClawNativeRunRef] {
+            try self.choices(matching: query).compactMap { snapshot in
+                guard case let .run(run, _, _) = snapshot.subject else { return nil }
+                return run
+            }
+        }
+
+        private func choices(matching query: String?) throws -> [OpenClawWidgetSnapshot] {
+            let snapshots = try self.reader.snapshots(now: self.now())
+            var generations: [OpenClawNativeSessionRef: Set<Data>] = [:]
+            for snapshot in snapshots {
+                let selection = Selection(subject: snapshot.subject)
+                generations[selection.session, default: []].insert(Data(selection.generation.utf8))
+            }
+            let search = query.map { String($0.prefix(200)) } ?? ""
+            return snapshots.filter { snapshot in
+                let selection = Selection(subject: snapshot.subject)
+                // A entity IDs omit generation. Never pick a generation by ordering
+                // or search text; saved-ID lookup and action binding remain app-owned.
+                guard generations[selection.session]?.count == 1 else { return false }
+                return search.isEmpty || [
+                    snapshot.label, selection.session.owner.gatewayID, selection.session.owner.profileID,
+                    selection.session.agentID, selection.session.sessionKey, selection.run?.runID ?? "",
+                ].contains { $0.localizedCaseInsensitiveContains(search) }
             }
         }
     }
@@ -103,7 +192,7 @@ enum OpenClawWidgetCache {
     struct Row {
         let owner: String
         let admission: String
-        let json: String
+        let wire: Wire
         let admittedAt: Int64
         let expiresAt: Int64
         let ticket: Int64
@@ -115,6 +204,8 @@ enum OpenClawWidgetCache {
         }
 
         let kind: String
+        let gatewayID: String
+        let profileID: String
         let agentID: String
         let sessionKey: String
         let generation: String
@@ -128,6 +219,8 @@ enum OpenClawWidgetCache {
             let selection = Selection(subject: snapshot.subject)
             _ = try selection.keys()
             self.kind = selection.run == nil ? "conversation" : "run"
+            self.gatewayID = selection.session.owner.gatewayID
+            self.profileID = selection.session.owner.profileID
             self.agentID = selection.session.agentID
             self.sessionKey = selection.session.sessionKey
             self.generation = selection.generation
@@ -170,8 +263,8 @@ enum OpenClawWidgetCache {
             guard data.count <= OpenClawWidgetCache.maximumBytes,
                   let fields = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   Set(fields.keys).isSubset(of: [
-                      "kind", "agentID", "sessionKey", "generation", "runID", "label", "state", "factAtMS",
-                      "observedAtMS",
+                      "kind", "gatewayID", "profileID", "agentID", "sessionKey", "generation", "runID", "label",
+                      "state", "factAtMS", "observedAtMS",
                   ]),
                   fields.values.allSatisfy({ !($0 is NSNull) })
             else { throw Failure.invalidSnapshot }
@@ -180,13 +273,22 @@ enum OpenClawWidgetCache {
             return wire
         }
 
-        func snapshot(selection: Selection, nowMS: Int64) throws -> OpenClawWidgetSnapshot {
-            guard self.agentID.utf8.elementsEqual(selection.session.agentID.utf8),
-                  self.sessionKey.utf8.elementsEqual(selection.session.sessionKey.utf8),
-                  self.generation.utf8.elementsEqual(selection.generation.utf8),
-                  self.observedAtMS >= 0, self.observedAtMS <= nowMS,
+        func snapshot(nowMS: Int64) throws -> OpenClawWidgetSnapshot {
+            guard self.observedAtMS >= 0, self.observedAtMS <= nowMS,
                   self.factAtMS.map({ $0 >= 0 && $0 <= nowMS && nowMS - $0 < OpenClawWidgetCache.lifetimeMS }) ?? true
             else { throw Failure.invalidSnapshot }
+            return try OpenClawWidgetSnapshot(
+                subject: self.subject(),
+                label: self.label,
+                sourceRecordedAt: self.factAtMS.map { Date(timeIntervalSince1970: Double($0) / 1000) },
+                queryObservedAt: Date(timeIntervalSince1970: Double(self.observedAtMS) / 1000))
+        }
+
+        func subject() throws -> OpenClawWidgetSnapshot.Subject {
+            let session = OpenClawNativeSessionRef(
+                owner: .init(gatewayID: self.gatewayID, profileID: self.profileID),
+                agentID: self.agentID,
+                sessionKey: self.sessionKey)
             let outcome: OpenClawWidgetSnapshot.TerminalOutcome? = switch self.state {
             case .completed: .completed
             case .failed: .failed
@@ -194,12 +296,10 @@ enum OpenClawWidgetCache {
             case .timedOut: .timedOut
             default: nil
             }
-            let subject: OpenClawWidgetSnapshot.Subject
-            if let run = selection.run {
-                guard self.kind == "run", self.runID?.utf8.elementsEqual(run.runID.utf8) == true,
-                      self.state == .unknown || outcome != nil
+            if self.kind == "run" {
+                guard let runID = self.runID, self.state == .unknown || outcome != nil
                 else { throw Failure.invalidSnapshot }
-                subject = .run(run, sessionID: selection.generation, outcome: outcome)
+                return .run(.init(session: session, runID: runID), sessionID: self.generation, outcome: outcome)
             } else {
                 guard self.kind == "conversation", self.runID == nil else { throw Failure.invalidSnapshot }
                 let state: OpenClawWidgetSnapshot.SessionState = if let outcome {
@@ -211,13 +311,8 @@ enum OpenClawWidgetCache {
                     default: .unknown
                     }
                 }
-                subject = .session(selection.session, sessionID: selection.generation, state: state)
+                return .session(session, sessionID: self.generation, state: state)
             }
-            return OpenClawWidgetSnapshot(
-                subject: subject,
-                label: self.label,
-                sourceRecordedAt: self.factAtMS.map { Date(timeIntervalSince1970: Double($0) / 1000) },
-                queryObservedAt: Date(timeIntervalSince1970: Double(self.observedAtMS) / 1000))
         }
     }
 
@@ -274,6 +369,10 @@ enum OpenClawWidgetCache {
         // Cache JSON escapes NUL. Reject truncation without changing canonical
         // native-state text semantics or accepting a valid prefix of corrupt data.
         guard json.utf8.count == statement.int64(at: 6) else { throw Failure.invalidSnapshot }
+        let wire = try Wire.decode(json)
+        let keys = try Selection(subject: wire.subject()).keys()
+        let owner = try statement.requiredText(at: 0, field: "owner")
+        guard keys.selection == key, keys.owner == owner else { throw Failure.invalidSelection }
         let admittedAt = statement.int64(at: 3)
         let expiresAt = statement.int64(at: 4)
         // Validate ordering before subtraction so corrupt deadlines cannot overflow or renew admission.
@@ -281,9 +380,9 @@ enum OpenClawWidgetCache {
             throw Failure.invalidSnapshot
         }
         return try Row(
-            owner: statement.requiredText(at: 0, field: "owner"),
+            owner: owner,
             admission: statement.requiredText(at: 1, field: "admission"),
-            json: json,
+            wire: wire,
             admittedAt: admittedAt,
             expiresAt: expiresAt,
             ticket: statement.int64(at: 5))

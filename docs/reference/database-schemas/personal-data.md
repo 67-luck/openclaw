@@ -110,8 +110,9 @@ the schema, migration, ownership, retention and validation boundaries.
 The widget cache is a separate, reconstructible SQLite projection. Its storage
 design was accepted on September 10, 2026 in
 [the widget work](https://github.com/openclaw/openclaw/pull/142976).
-This increment provides storage APIs only: no status population, lifecycle
-call sites, widget provider, or control registration uses them yet.
+The cache provides storage APIs and a read-only native-action catalog. No status
+population, lifecycle call sites, widget provider, or control registration uses
+them yet.
 
 The app is the sole writer. The extension's reader opens an existing database
 read-only, without creating directories, changing permissions, taking the
@@ -145,12 +146,35 @@ Cache format 1 uses application ID `0x4F435743` and two STRICT tables:
 Selection keys hash the exact UTF-8 Gateway/profile/agent/session/generation/run
 tuple; hashes are lookup indexes, not authentication. Identifier byte limits
 are 4096/512/64/2048/512/1024 respectively. JSON preserves escaped identifiers
-without relying on SQLite C-string identity semantics. The payload contains
-only agent/session/generation/run identity, a label bounded to 96 characters and
-384 UTF-8 bytes, kind, state, source fact time and separate observation time.
-No credentials, transcripts, message bodies, endpoint URLs or error details are
-stored. Consumers must still authenticate the exact owner before publishing or
-opening a native action.
+without relying on SQLite C-string identity semantics. The payload requires exact
+Gateway/profile IDs alongside agent/session/generation/run identity, a label
+bounded to 96 characters and 384 UTF-8 bytes, kind, state, source fact time and
+separate observation time. Both owner and selection digests are recomputed from
+the decoded selectors before a row is accepted. Owner-less older payloads are
+unavailable; only explicit app-owned invalidation and readmission replaces them.
+There is no automatic upgrade or change to the tables or format version.
+
+Owner-ID persistence was approved on October 1, 2026. The intended producer is
+the app's captured canonical owner, not arbitrary decoded input: native selector
+types alone do not establish provenance or guarantee credential-free content.
+There is no separate endpoint/config object, credential, transcript, message-body
+or error-detail field. A canonical Gateway ID may itself contain endpoint
+information. IDs with a `ws`, `wss`, `http` or `https` scheme are parsed with
+Foundation: malformed absolute URLs, userinfo, passwords, queries and fragments
+are rejected before persistence and on decode. Accepted IDs are never stripped,
+normalized or reserialized; manual, Bonjour and other opaque IDs remain unchanged.
+This structural check is not a general secret detector. Consumers must still
+capture noncredential canonical selectors and authenticate the exact owner before
+publishing or opening a native action.
+
+Catalog queries share the reader's admission checks and use one read transaction
+for quota validation and deterministic enumeration of at most 64 eligible rows.
+They reconstruct the existing native session/run references without network or
+action-host access. Multiple eligible UTF-8 generations for a logical session
+suppress both its session and associated run choices, before search filtering.
+This is cached eligibility only: native entity IDs omit generation, and saved-ID
+lookup bypasses the catalog. App-owned generation binding remains required before
+widget or control registration; catalog results are not action authorization.
 
 All admitted rows, including unknown status, count toward 64 rows and 128 KiB
 of actual encoded payload plus stored key bytes. Writes enforce both limits in

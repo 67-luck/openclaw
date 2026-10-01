@@ -146,8 +146,7 @@ final class OpenClawWidgetCacheWriter {
             // Neither a fresh observation nor a transition from unknown extends admission.
             let expiry = min(row.expiresAt, wire.factAtMS.map { $0 + Cache.lifetimeMS } ?? row.expiresAt)
             guard time >= row.admittedAt, time < expiry else { throw Cache.Failure.expired }
-            let old = try Cache.Wire.decode(row.json)
-            if let oldFact = old.factAtMS, let newFact = wire.factAtMS, newFact < oldFact {
+            if let oldFact = row.wire.factAtMS, let newFact = wire.factAtMS, newFact < oldFact {
                 throw Cache.Failure.invalidSnapshot
             }
             let bytes = Int64(json.utf8.count + keys.selection.utf8.count + keys.owner.utf8.count + row.admission.utf8
