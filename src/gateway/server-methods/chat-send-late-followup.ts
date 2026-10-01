@@ -98,7 +98,9 @@ export function createChatSendLateFollowupDisposition(params: {
         ownsCompletion: (originatingChannel: string | undefined) =>
           terminal === "deliver" && isInternalMessageChannel(originatingChannel),
         createSourceRetry: () => {
-          if (terminal !== "deliver" && terminal !== "drop") {
+          // A still-pending source hands its unanswered request to a queued
+          // recovery run; only an owner that already delivered refuses.
+          if (terminal === "delivering" || terminal === "settled") {
             throw new Error("Queued source reply no longer owns recovery delivery");
           }
           const retry = createChatSendLateFollowupDisposition(params);

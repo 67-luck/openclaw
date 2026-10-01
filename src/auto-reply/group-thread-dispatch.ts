@@ -124,8 +124,11 @@ function prepareParticipant(
   if (!turn) {
     return params;
   }
-  const original = params.replyOptions;
-  const signals = [original?.abortSignal, original?.turnAdoptionLifecycle?.abortSignal].filter(
+  // The root admission's queued reply owner is not the participant's. Omit it, so
+  // participant follow-ups use their own session's channel route rather than drop.
+  const { onQueuedFollowupReplyBatch: _rootReplyOwner, ...original } = params.replyOptions ?? {};
+  void _rootReplyOwner;
+  const signals = [original.abortSignal, original.turnAdoptionLifecycle?.abortSignal].filter(
     (signal): signal is AbortSignal => signal !== undefined,
   );
   const ctx = finalizeInboundContext({
@@ -196,14 +199,13 @@ function prepareParticipant(
         onAgentRunStart: (...args) => {
           runState.runId = args[0];
           runState.executionIdentityToken = args[1];
-          return original?.onAgentRunStart?.(...args);
+          return original.onAgentRunStart?.(...args);
         },
         promptCacheKey: undefined,
         onSessionPrepared: undefined,
         replyOperation: undefined,
         [REPLY_OPERATION_RUN_STATE]: undefined,
         [REPLY_ADMISSION_TICKET]: undefined,
-        onQueuedFollowupReplyBatch: undefined,
         onQueuedFollowupAdmitted: undefined,
         onQueuedFollowupSettled: undefined,
         queuedDeliveryCorrelations: undefined,

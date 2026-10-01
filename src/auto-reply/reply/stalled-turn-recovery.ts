@@ -26,6 +26,7 @@ export function isReplyOperationStalledBeforeOutput(
 
 /** Builds the one recovery run that answers a stalled turn over its persisted transcript. */
 export function buildStalledTurnRecoveryRun(base: FollowupRun): FollowupRun {
+  const source = base.queuedFollowupReplyDisposition;
   return {
     ...base,
     prompt: formatSystemTurnPrompt(STALLED_TURN_GUIDANCE),
@@ -47,6 +48,17 @@ export function buildStalledTurnRecoveryRun(base: FollowupRun): FollowupRun {
     turnAdoptionLifecycle: undefined,
     replyOperationRunStates: undefined,
     onQueueDisposition: undefined,
-    run: { ...base.run, suppressNextUserMessagePersistence: true },
+    // Delivers through the source's queued reply owner, like any follow-up it queued.
+    queuedFollowupReplyDisposition:
+      source?.kind === "deliver"
+        ? { kind: "deliver", deliver: source.deliver.createSourceRetry?.() ?? source.deliver }
+        : source,
+    // Personal skill authoring is bound to the stalled run's admission and
+    // refuses a replacement run; the recovery answers without it.
+    run: {
+      ...base.run,
+      suppressNextUserMessagePersistence: true,
+      skillLibraryAuthoring: undefined,
+    },
   };
 }
