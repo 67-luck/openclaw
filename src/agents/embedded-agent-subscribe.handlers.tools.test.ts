@@ -46,16 +46,6 @@ import { resetPendingAskUserQuestionsForTest } from "./tools/ask-user-tool.test-
 import { createSecretsTool } from "./tools/secrets-tool.js";
 import { markCoreTtsToolResult } from "./tools/tts-tool-result-provenance.js";
 
-// Prompt readiness has a default dispatcher separate from each executor fixture.
-vi.mock("./harness/gateway-question-dispatch.runtime.js", () => ({
-  callGatewayTool: async (method: string) => {
-    if (method !== "question.list") {
-      throw new Error(`Unexpected question readiness RPC: ${method}`);
-    }
-    return { questions: [] };
-  },
-}));
-
 type ToolExecutionStartEvent = Omit<Extract<AgentEvent, { type: "tool_execution_start" }>, "type">;
 type ToolExecutionUpdateEvent = {
   toolName: string;
