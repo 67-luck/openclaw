@@ -275,12 +275,36 @@ export async function withCiCheckoutFixture<T>(
     })();
     return publicationClose;
   };
+  try {
+    return await finishCiCheckoutFixture(
+      supervisor,
+      root,
+      closed,
+      publicationFailure.promise,
+      inspect,
+      () => stderr,
+      closePublication,
+    );
+  } finally {
+    await closePublication();
+  }
+}
+
+async function finishCiCheckoutFixture<T>(
+  supervisor: ChildProcess,
+  root: string,
+  closed: Promise<CloseResult>,
+  publicationFailure: Promise<never>,
+  inspect: (report: Report, result: CloseResult, stderr: string, root: string) => T | Promise<T>,
+  readStderr: () => string,
+  closePublication: () => Promise<void>,
+): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   let report: Report | undefined;
   try {
     const completed = await Promise.race([
       closed,
-      publicationFailure.promise,
+      publicationFailure,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error("Checkout supervisor did not close within 50000ms")),
@@ -289,6 +313,7 @@ export async function withCiCheckoutFixture<T>(
       }),
     ]);
     clearTimeout(timer);
+    const stderr = readStderr();
     let contents: string;
     try {
       contents = readFileSync(path.join(root, "report.json"), "utf8");
@@ -302,43 +327,40 @@ export async function withCiCheckoutFixture<T>(
     return await inspect(report, completed, stderr, root);
   } finally {
     clearTimeout(timer);
-    try {
-      if (report) {
-        await closePublication();
-        // A consumer assertion failure does not revoke the producer's release receipt.
-        rmSync(root, { recursive: true, force: true });
-      } else {
-        const deadline = Date.now() + 4_000;
-        // Keep IPC attached through termination: explicit disconnect can suppress Node's close.
-        // Let lease-bound Git descendants stop even if the supervisor cannot run cleanup.
-        rmSync(path.join(root, "lease"), { force: true });
-        const termination = terminateManagedChild(supervisor, "SIGKILL", {
-          taskkillTimeoutMs: 2_000,
-          processGroupFallback: "never",
-        });
-        const groupDead = () =>
-          !supervisor.pid ||
-          (process.platform === "win32"
-            ? termination?.processTreeState === "terminated"
-            : inspectManagedProcessGroup(supervisor, { errorPolicy: "indeterminate" }) === "dead");
-        // SIGKILL retires this direct child; retain its native close rather than
-        // abandoning the join when a loaded host delays event delivery.
-        await closed;
-        while (!groupDead()) {
-          const remaining = deadline - Date.now();
-          if (remaining <= 0) {
-            break;
-          }
-          await delay(Math.min(10, remaining));
-        }
-        console.error(
-          `Checkout fixture retained at ${root}; no completed report. ` +
-            `Supervisor close: true; group extinction: ${groupDead()}. ` +
-            `Inspect workflow.log and stop remaining owned writers before removing this exact directory.\n${stderr}`,
-        );
-      }
-    } finally {
+    if (report) {
       await closePublication();
+      // A consumer assertion failure does not revoke the producer's release receipt.
+      rmSync(root, { recursive: true, force: true });
+    } else {
+      const deadline = Date.now() + 4_000;
+      // Keep IPC attached through termination: explicit disconnect can suppress Node's close.
+      // Let lease-bound Git descendants stop even if the supervisor cannot run cleanup.
+      rmSync(path.join(root, "lease"), { force: true });
+      const termination = terminateManagedChild(supervisor, "SIGKILL", {
+        taskkillTimeoutMs: 2_000,
+        processGroupFallback: "never",
+      });
+      const groupDead = () =>
+        !supervisor.pid ||
+        (process.platform === "win32"
+          ? termination?.processTreeState === "terminated"
+          : inspectManagedProcessGroup(supervisor, { errorPolicy: "indeterminate" }) === "dead");
+      // SIGKILL retires this direct child; retain its native close rather than
+      // abandoning the join when a loaded host delays event delivery.
+      await closed;
+      while (!groupDead()) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          break;
+        }
+        await delay(Math.min(10, remaining));
+      }
+      const stderr = readStderr();
+      console.error(
+        `Checkout fixture retained at ${root}; no completed report. ` +
+          `Supervisor close: true; group extinction: ${groupDead()}. ` +
+          `Inspect workflow.log and stop remaining owned writers before removing this exact directory.\n${stderr}`,
+      );
     }
   }
 }
