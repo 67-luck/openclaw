@@ -17,6 +17,15 @@ export function normalizeDatabasePath(location: string): string {
   return process.platform === "win32" && !path.win32.isAbsolute(normalized) ? location : normalized;
 }
 
+// The physical host policy stays fixed across every admission in this process.
+const useDatabaseBirthtime = process.platform !== "linux";
+
+export function readDatabaseIdentityBirthtime(file: BigIntStats): string {
+  // Node does not expose Linux STATX_BTIME availability and can substitute ctime.
+  // Keep the unknown creation-time value stable across ordinary database writes.
+  return useDatabaseBirthtime ? file.birthtimeNs.toString() : "0";
+}
+
 function existingIdentity(
   file: BigIntStats,
   canonicalFile: BigIntStats,
@@ -28,14 +37,14 @@ function existingIdentity(
   if (
     file.dev !== canonicalFile.dev ||
     file.ino !== canonicalFile.ino ||
-    file.birthtimeNs !== canonicalFile.birthtimeNs
+    readDatabaseIdentityBirthtime(file) !== readDatabaseIdentityBirthtime(canonicalFile)
   ) {
     throw new Error("SQLite database pathname changed during admission");
   }
   return {
     key: `file:${file.dev}:${file.ino}`,
     canonicalPath: normalizeDatabasePath(canonicalPath),
-    birthtime: file.birthtimeNs.toString(),
+    birthtime: readDatabaseIdentityBirthtime(file),
   };
 }
 
