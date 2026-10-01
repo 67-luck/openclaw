@@ -49,20 +49,56 @@ def build_helper(repo, root):
     return command
 
 
-def build_variant(repo, root, scripts, base, variant):
+def copy_from_ref(repo, ref, paths, destination, prefix="."):
+    names = git(repo, "ls-tree", "-r", "--name-only", ref, "--", *paths)
+    for name in names.decode().splitlines():
+        target = destination / Path(name).relative_to(prefix)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(git(repo, "show", ref + ":" + name))
+
+
+def prepare_protocol(repo, root, sources, ref, variant):
+    models = sources / "OpenClawProtocol/GatewayModels.swift"
+    # Historical comparisons retain their checked-in protocol; newer revisions
+    # must run their own generator so baseline schemas never come from HEAD.
+    if models.is_file():
+        return {"sourceCommit": ref, "owner": "tracked", "outputSHA256": digest(models)}
+    manifest_path = "scripts/native-protocol-inputs.json"
+    manifest = json.loads(git(repo, "show", ref + ":" + manifest_path))
+    source = root / (variant + "-protocol-source")
+    copy_from_ref(repo, ref, manifest["directories"] + manifest["files"], source)
+    inputs = {
+        str(path.relative_to(source)): digest(path)
+        for path in sorted(source.rglob("*")) if path.is_file()
+    }
+    # Reuse the frozen checkout's dependencies, as the canonical generator's
+    # own source-fixture test does; generated inputs remain variant-specific.
+    (source / "node_modules").symlink_to(repo / "node_modules", target_is_directory=True)
+    output = root / (variant + "-protocol-generated")
+    command = [
+        "node", str(source / "scripts/prepare-native-protocol.mjs"),
+        "--language", "swift", "--out", str(output),
+    ]
+    subprocess.run(command, cwd=source, check=True)
+    shutil.copy2(output / "GatewayModels.swift", models)
+    return {
+        "sourceCommit": ref,
+        "owner": "prepare-native-protocol",
+        "inputs": inputs,
+        "command": command,
+        "dependencyRoot": str(repo / "node_modules"),
+        "outputSHA256": digest(models),
+    }
+
+
+def build_variant(repo, root, scripts, base, variant, protocol):
     package = root / (variant + "-build")
     sources = package / "Sources"
     sources.mkdir(parents=True)
-    for module in MODULES:
-        relative = "apps/shared/OpenClawKit/Sources/" + module
-        if variant == "candidate":
-            shutil.copytree(repo / relative, sources / module)
-        else:
-            paths = git(repo, "ls-tree", "-r", "--name-only", base, "--", relative)
-            for name in paths.decode().splitlines():
-                target = sources / Path(name).relative_to("apps/shared/OpenClawKit/Sources")
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(git(repo, "show", base + ":" + name))
+    ref = base if variant == "baseline" else git(repo, "rev-parse", "HEAD").decode().strip()
+    prefix = "apps/shared/OpenClawKit/Sources"
+    copy_from_ref(repo, ref, [prefix + "/" + module for module in MODULES], sources, prefix)
+    protocol[variant] = prepare_protocol(repo, root, sources, ref, variant)
 
     targets = [
         '.target(name:"OpenClawProtocol")',
@@ -160,9 +196,12 @@ def main():
         ).strip(),
         "os": subprocess.check_output(["sw_vers"], text=True).strip(),
         "sources": {},
+        "protocol": {},
     }
     for variant in ["baseline", "candidate"]:
-        metadata["sources"][variant] = build_variant(repo, root, scripts, args.base, variant)
+        metadata["sources"][variant] = build_variant(
+            repo, root, scripts, args.base, variant, metadata["protocol"]
+        )
     source = (repo / "crates/openclaw-gateway-client/tests/tls_policy.rs").read_text()
     for name, destination in [("CERTIFICATE", "localhost.der"), ("KEY", "localhost-key.der")]:
         match = re.search(r"const " + name + r": &\[u8\] = &\[(.*?)\];", source, re.S)
