@@ -743,7 +743,7 @@ export class PluginInstance {
         await this.invoke(cleanup, this.lease({ cleanup: true }));
       } catch (error) {
         failures.push(error);
-        terminalFailures.add(error);
+        terminalFailures.addResourceError(error);
       }
     }
     this.cleanups.clear();
