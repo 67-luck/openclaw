@@ -5,7 +5,6 @@ import { stylePromptTitle } from "../../packages/terminal-core/src/prompt-style.
 import { measureGatewayBootstrapStep } from "../cli/startup-trace.js";
 import type { BackupSqliteSnapshotFact } from "../commands/backup-resource-inventory.js";
 import type { DoctorDatabasePreflight } from "../commands/doctor-database-preflight.js";
-import type { ExternallyManagedDoctorRepairReport } from "../commands/doctor-externally-managed-repair.js";
 import type { DoctorOptions } from "../commands/doctor-prompter.js";
 import {
   isDoctorUpdateRepairMode,
@@ -13,14 +12,12 @@ import {
 } from "../commands/doctor-repair-mode.js";
 import { isUpdateDoctorLintPass } from "../commands/doctor/shared/update-phase.js";
 import { ConfigWritePostCommitError } from "../config/io.write-errors.js";
-import { resolveConfigPath, resolveStateDir } from "../config/paths.js";
+import { resolveStateDir } from "../config/paths.js";
 import { formatUpdateDoctorConfigChange } from "../infra/update-doctor-config.js";
 import {
-  captureUpdateDoctorConfigWrites,
   DoctorMaintenanceRefusalError,
   normalizeUpdatePostInstallDoctorWarnings,
   UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
-  UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
   writeUpdatePostInstallDoctorResult,
   UpdateDoctorError,
   type UpdateDoctorWriteAuthority,
@@ -30,22 +27,18 @@ import {
 import { formatUpdateFailureFact } from "../infra/update-failure-facts-format.js";
 import { createUpdateFailureFact } from "../infra/update-failure-facts.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { withPluginLoadDiagnostics } from "../plugins/load-diagnostics.js";
 import type { PluginDiagnostic } from "../plugins/manifest-types.js";
-import { withDeferredDebugProxyCapture } from "../proxy-capture/runtime-deferral.js";
 import { createNonExitingRuntime, type RuntimeEnv } from "../runtime.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { UpdateSchemaRefusalError } from "../state/openclaw-update-schema-refusal.js";
 import type { DoctorHealthFlowContext } from "./doctor-health-contributions.js";
+import { runDoctorHealthEntry, type DoctorHealthFlowResult } from "./doctor-health-entry.js";
 
 // Interactive doctor entrypoint; lazy imports keep normal CLI startup light.
 const intro = (message: string) => clackIntro(stylePromptTitle(message) ?? message);
 const outro = (message: string) => clackOutro(stylePromptTitle(message) ?? message);
 
 const loadConfigModule = createLazyRuntimeModule(() => import("../config/config.js"));
-
-type DoctorHealthFlowResult<TOptions extends DoctorOptions> =
-  TOptions["externallyManaged"] extends true ? ExternallyManagedDoctorRepairReport : void;
 
 function stateDirectoryExistsAtDoctorStart(): boolean {
   try {
@@ -62,78 +55,23 @@ export async function runDoctorHealthFlow<TOptions extends DoctorOptions = Docto
   writeAuthority?: UpdateDoctorWriteAuthority,
   databasePreflight?: DoctorDatabasePreflight,
 ): Promise<DoctorHealthFlowResult<TOptions>> {
-  const doctorOptions: DoctorOptions = options ?? {};
-  const externallyManagedRepair = doctorOptions.externallyManaged
-    ? (
-        await import("../commands/doctor-externally-managed-repair.js")
-      ).createExternallyManagedDoctorRepairEvidence()
-    : undefined;
-  try {
-    await withDeferredDebugProxyCapture(async (resumeCapture) => {
-      let preparedPreflight = databasePreflight;
-      if (
-        process.env.OPENCLAW_UPDATE_IN_PROGRESS === "1" &&
-        !writeAuthority?.postCoreSchemaRepair
-      ) {
-        const { guardUpdateDoctorSchemaUpgrade, rehearseDeferredUpdateDoctorSchema } =
-          await import("../commands/doctor-update-schema-guard.js");
-        preparedPreflight =
-          (await guardUpdateDoctorSchemaUpgrade({
-            schemas: preparedPreflight,
-            runtime,
-            json: doctorOptions.json,
-          })) ?? preparedPreflight;
-        if (preparedPreflight?.updateSchemaRehearsal) {
-          await rehearseDeferredUpdateDoctorSchema(preparedPreflight, runtime);
-          return;
-        }
-      }
-      const resultPath = process.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]?.trim();
-      return withPluginLoadDiagnostics((diagnostics) =>
-        resultPath
-          ? captureUpdateDoctorConfigWrites(
-              resolveConfigPath(),
-              (capture) =>
-                runDoctorHealthFlowWithResult(
-                  runtime,
-                  doctorOptions,
-                  preparedPreflight,
-                  diagnostics,
-                  { resultPath, capture },
-                  writeAuthority,
-                  resumeCapture,
-                  externallyManagedRepair?.sink,
-                ),
-              writeAuthority,
-            )
-          : runDoctorHealthFlowWithResult(
-              runtime,
-              doctorOptions,
-              preparedPreflight,
-              diagnostics,
-              undefined,
-              writeAuthority,
-              resumeCapture,
-              externallyManagedRepair?.sink,
-            ),
-      );
-    });
-  } catch (error) {
-    if (!externallyManagedRepair) {
-      throw error;
-    }
-    if (error instanceof UpdateSchemaRefusalError) {
-      throw error;
-    }
-    const { DoctorStateMigrationRefusalError } =
-      await import("../infra/state-migrations.messages.js");
-    if (error instanceof DoctorStateMigrationRefusalError) {
-      externallyManagedRepair.sink.receipts(error.stepReceipts);
-    } else {
-      externallyManagedRepair.fail(error);
-    }
-  }
-  return externallyManagedRepair?.finish() as DoctorHealthFlowResult<TOptions>; // SAFETY: true mode always creates the repair sink; every other mode returns void.
+  return runDoctorHealthEntry({
+    runtime,
+    options,
+    writeAuthority,
+    databasePreflight,
+    run: (params) =>
+      runDoctorHealthFlowWithResult(
+        params.runtime,
+        params.options,
+        params.databasePreflight,
+        params.diagnostics,
+        params.updateResult,
+        params.writeAuthority,
+        params.resumeCapture,
+        params.repairEvidence,
+      ),
+  });
 }
 
 async function runDoctorHealthFlowWithResult(

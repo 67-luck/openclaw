@@ -139,6 +139,7 @@ async function runStructuredDoctorHealthContribution(params: {
       ...result.changes,
     ];
   } else {
+    params.ctx.repairEvidence?.applied(params.contributionId, result.changes);
     for (const change of result.changes) {
       params.ctx.runtime.log(change);
     }
