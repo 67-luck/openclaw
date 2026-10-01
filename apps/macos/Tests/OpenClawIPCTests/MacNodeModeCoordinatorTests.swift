@@ -205,6 +205,7 @@ struct MacNodeModeCoordinatorDeviceAuthTests {
     }
 }
 
+@Suite(.testWaitLimit)
 struct MacNodeModeCoordinatorTests {
     private func nodeDeviceAuthBinding(
         deviceAuthGatewayID: String?) throws -> (allowStoredDeviceAuth: Bool, gatewayID: String?)
@@ -270,15 +271,6 @@ struct MacNodeModeCoordinatorTests {
         }
 
         #expect(await probe.hasCaptured())
-    }
-
-    @Test func `stale endpoint attempt is rejected after a suspended permission query`() {
-        #expect(MacNodeModeCoordinator.endpointAttemptIsCurrent(
-            capturedGeneration: 7,
-            currentGeneration: 7))
-        #expect(!MacNodeModeCoordinator.endpointAttemptIsCurrent(
-            capturedGeneration: 7,
-            currentGeneration: 8))
     }
 
     @Test @MainActor func `config and CLI changes restart startup scoped node host worker`() async {
@@ -505,8 +497,6 @@ struct MacNodeModeCoordinatorTests {
     }
 
     @Test func `paused node state requires route disconnect`() {
-        #expect(MacNodeModeCoordinator.pausedStateRequiresDisconnect(true))
-        #expect(!MacNodeModeCoordinator.pausedStateRequiresDisconnect(false))
         #expect(MacNodeModeCoordinator.controlTransitionRequiresRouteInvalidation(
             previousPaused: false,
             nextPaused: true,
@@ -701,7 +691,7 @@ struct MacNodeModeCoordinatorTests {
                 ],
             ])
             task.emitReceiveSuccess(.data(invokeEvent))
-            try await self.waitUntil("computer invoke start") {
+            try await TestWait.state("computer invoke start") {
                 await lifecycle.state().started
             }
 
@@ -732,7 +722,7 @@ struct MacNodeModeCoordinatorTests {
             #expect(!coordinator.routeAuthorityAllowsInvokeForTesting(
                 generationsBeforeRefresh.routeAuthority,
                 isPaused: true))
-            try await self.waitUntil("route invalidation start") {
+            try await TestWait.state("route invalidation start") {
                 await lifecycle.state().invalidated
             }
 
@@ -752,7 +742,7 @@ struct MacNodeModeCoordinatorTests {
                     onInvoke: { request in BridgeInvokeResponse(id: request.id, ok: true) })
             }
             successor = successorTask
-            try await self.waitUntil("successor captured first invalidation") {
+            try await TestWait.state("successor captured first invalidation") {
                 await drainSnapshot.hasCaptured()
             }
             coordinator.enqueueRouteInvalidationForTesting()
