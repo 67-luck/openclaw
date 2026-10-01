@@ -192,7 +192,12 @@ export async function doctorCommand(
       }
     : outputRuntime;
   const runRepair = () =>
-    doctorHealth.runDoctorHealthFlow(repairRuntime, options, undefined, databasePreflight);
+    doctorHealth.runDoctorHealthFlow(
+      repairRuntime,
+      { ...options, externallyManaged: true },
+      undefined,
+      databasePreflight,
+    );
   const report = options.json
     ? await (
         await import("../../packages/terminal-core/src/note.js")

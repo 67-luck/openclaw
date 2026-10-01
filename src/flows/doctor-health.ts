@@ -4,6 +4,7 @@ import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error
 import { stylePromptTitle } from "../../packages/terminal-core/src/prompt-style.js";
 import type { BackupSqliteSnapshotFact } from "../commands/backup-resource-inventory.js";
 import type { DoctorDatabasePreflight } from "../commands/doctor-database-preflight.js";
+import type { ExternallyManagedDoctorRepairReport } from "../commands/doctor-externally-managed-repair.js";
 import type { DoctorOptions } from "../commands/doctor-prompter.js";
 import {
   isDoctorUpdateRepairMode,
@@ -42,6 +43,9 @@ const outro = (message: string) => clackOutro(stylePromptTitle(message) ?? messa
 
 const loadConfigModule = createLazyRuntimeModule(() => import("../config/config.js"));
 
+type DoctorHealthFlowResult<TOptions extends DoctorOptions> =
+  TOptions["externallyManaged"] extends true ? ExternallyManagedDoctorRepairReport : void;
+
 function stateDirectoryExistsAtDoctorStart(): boolean {
   try {
     return fs.statSync(resolveStateDir()).isDirectory();
@@ -51,13 +55,14 @@ function stateDirectoryExistsAtDoctorStart(): boolean {
 }
 
 /** Runs the full interactive doctor flow against the provided or default runtime. */
-export async function runDoctorHealthFlow(
+export async function runDoctorHealthFlow<TOptions extends DoctorOptions = DoctorOptions>(
   runtime?: RuntimeEnv,
-  options: DoctorOptions = {},
+  options?: TOptions,
   writeAuthority?: UpdateDoctorWriteAuthority,
   databasePreflight?: DoctorDatabasePreflight,
-) {
-  const externallyManagedRepair = options.externallyManaged
+): Promise<DoctorHealthFlowResult<TOptions>> {
+  const doctorOptions: DoctorOptions = options ?? {};
+  const externallyManagedRepair = doctorOptions.externallyManaged
     ? (
         await import("../commands/doctor-externally-managed-repair.js")
       ).createExternallyManagedDoctorRepairEvidence()
@@ -75,7 +80,7 @@ export async function runDoctorHealthFlow(
           (await guardUpdateDoctorSchemaUpgrade({
             schemas: preparedPreflight,
             runtime,
-            json: options.json,
+            json: doctorOptions.json,
           })) ?? preparedPreflight;
         if (preparedPreflight?.updateSchemaRehearsal) {
           await rehearseDeferredUpdateDoctorSchema(preparedPreflight, runtime);
@@ -90,7 +95,7 @@ export async function runDoctorHealthFlow(
               (capture) =>
                 runDoctorHealthFlowWithResult(
                   runtime,
-                  options,
+                  doctorOptions,
                   preparedPreflight,
                   diagnostics,
                   { resultPath, capture },
@@ -102,7 +107,7 @@ export async function runDoctorHealthFlow(
             )
           : runDoctorHealthFlowWithResult(
               runtime,
-              options,
+              doctorOptions,
               preparedPreflight,
               diagnostics,
               undefined,
@@ -127,7 +132,7 @@ export async function runDoctorHealthFlow(
       externallyManagedRepair.fail(error);
     }
   }
-  return externallyManagedRepair?.finish();
+  return externallyManagedRepair?.finish() as DoctorHealthFlowResult<TOptions>;
 }
 
 async function runDoctorHealthFlowWithResult(
