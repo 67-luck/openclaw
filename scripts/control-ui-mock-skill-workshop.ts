@@ -24,7 +24,13 @@ type SkillWorkshopMockSeed = {
 function buildSkillWorkshopMocks(baseTime: number): SkillWorkshopMockSeed {
   const hour = 60 * 60 * 1000;
   const day = 24 * hour;
-  const skill = (name: string, description: string, steps: string[], updatedAtMs: number) => {
+  const skill = (
+    name: string,
+    description: string,
+    steps: string[],
+    updatedAtMs: number,
+    useCount = 3,
+  ) => {
     const content = [
       "---",
       `name: ${name}`,
@@ -41,7 +47,7 @@ function buildSkillWorkshopMocks(baseTime: number): SkillWorkshopMockSeed {
         updatedAtMs,
         sizeBytes: content.length,
         files: ["SKILL.md"],
-        useCount: 3,
+        useCount,
         lastUsedAtMs: updatedAtMs + hour,
       },
       content,
@@ -57,6 +63,18 @@ function buildSkillWorkshopMocks(baseTime: number): SkillWorkshopMockSeed {
         "Link each entry to its PR once.",
       ],
       baseTime - 2 * hour,
+      12,
+    ),
+    skill(
+      "flaky-test-triage",
+      "Use when a CI test fails intermittently; rerun in isolation before blaming the change.",
+      [
+        "Rerun the failing test alone three times before reading the diff.",
+        "Compare timing and ordering between passing and failing runs.",
+        "Quarantine only with a linked issue.",
+      ],
+      baseTime - 5 * hour,
+      0,
     ),
     skill(
       "budget-reconciliation",
@@ -81,13 +99,32 @@ function buildSkillWorkshopMocks(baseTime: number): SkillWorkshopMockSeed {
       createdAtMs: baseTime - 2 * hour,
     },
     {
+      id: "change-flaky-test-triage-create",
+      agentId: "main",
+      skillName: "flaky-test-triage",
+      action: "create",
+      actor: "review",
+      summary: "learned from a CI flake hunt",
+      createdAtMs: baseTime - 5 * hour,
+    },
+    {
       id: "change-budget-create",
       agentId: "main",
       skillName: "budget-reconciliation",
       action: "create",
       actor: "agent",
-      summary: "created: monthly budget reconciliation",
+      summary: "monthly budget reconciliation",
       createdAtMs: baseTime - day,
+    },
+    {
+      id: "change-standup-archive",
+      agentId: "main",
+      skillName: "standup-summary",
+      action: "archive",
+      actor: "user",
+      summary: "no longer posting standups",
+      versionId: "20251229T000000000Z-archive",
+      createdAtMs: baseTime - 3 * day,
     },
   ];
   // The review's patch saved the pre-change copy, so its Undo has something to restore.
@@ -104,6 +141,19 @@ function buildSkillWorkshopMocks(baseTime: number): SkillWorkshopMockSeed {
         action: "patch" as const,
         createdAtMs: baseTime - 2 * hour,
         skill: releaseNotesBeforePatch,
+      },
+    ],
+    "standup-summary": [
+      {
+        id: "20251229T000000000Z-archive",
+        action: "archive" as const,
+        createdAtMs: baseTime - 3 * day,
+        skill: skill(
+          "standup-summary",
+          "Use when summarizing yesterday's work for the team standup.",
+          ["Collect merged PRs and closed issues from the last day.", "Keep it to three bullets."],
+          baseTime - 9 * day,
+        ),
       },
     ],
   };

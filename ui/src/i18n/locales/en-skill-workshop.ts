@@ -44,6 +44,7 @@ const enSkillWorkshop = {
       },
     },
     viewer: {
+      title: "Details",
       pick: "Select a skill to view its files and versions.",
       file: "File",
       version: "Version",
@@ -55,7 +56,7 @@ const enSkillWorkshop = {
       loading: "Loading…",
     },
     learning: {
-      start: "Learn from past conversations",
+      action: "Start",
       starting: "Opening learning session\u2026",
       title: "Learn from past conversations",
       description: "Open a session where the agent looks for lessons worth saving as skills.",
