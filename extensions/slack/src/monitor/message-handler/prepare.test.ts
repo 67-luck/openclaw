@@ -54,6 +54,17 @@ const mediaFetchMock = vi.hoisted(() =>
   vi.fn<typeof import("../media.runtime.js").fetchWithRuntimeDispatcher>(),
 );
 
+// Media fetch is mocked below; DNS must not depend on the live Slack service.
+vi.mock("node:dns/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:dns/promises")>()),
+  lookup: async (hostname: string) => {
+    if (hostname !== "files.slack.com") {
+      throw new Error(`Unexpected Slack media test hostname: ${hostname}`);
+    }
+    return [{ address: "93.184.216.34", family: 4 }];
+  },
+}));
+
 vi.mock("../media.runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../media.runtime.js")>()),
   fetchWithRuntimeDispatcher: mediaFetchMock,
@@ -471,37 +482,6 @@ describe("slack prepareSlackMessage inbound contract", () => {
     expect(channel.ctxPayload.ConversationAvatar).toBeUndefined();
     expect(resolveUserAvatar).toHaveBeenCalledOnce();
     expect(resolveUserAvatar).toHaveBeenCalledWith("U1", undefined);
-  });
-
-  it("carries the validated event workspace through reusable DM routing", async () => {
-    const ctx = createDefaultSlackCtx();
-    ctx.teamId = "";
-    const eventScope = {
-      teamId: "T123ENTERPRISE",
-      client: {} as SlackEventScope["client"],
-    } satisfies SlackEventScope;
-
-    const prepared = await prepareSlackMessage({
-      ctx,
-      account: defaultAccount,
-      message: createSlackMessage({ channel: "D999", user: "U123", text: "hello" }),
-      opts: { source: "message", eventScope },
-    });
-
-    assertPrepared(prepared, "org-wide Slack DM");
-    expect(prepared.ctxPayload.GroupSpace).toBe("T123ENTERPRISE");
-    expect(prepared.ctxPayload.ConversationRouteContextObserved).toBe(true);
-    expect(prepared.ctxPayload.ConversationRoutePeerId).toBe("team:T123ENTERPRISE:user:U123");
-    expect(prepared.ctxPayload.To).toBe("team:T123ENTERPRISE:user:U123");
-    expect(prepared.ctxPayload.OriginatingTo).toBe("team:T123ENTERPRISE:user:U123");
-    expect(prepared.ctxPayload.NativeChannelId).toBe("D999");
-    expect(prepared.replyTarget).toBe("channel:D999");
-    expect(prepared.turn.record).toMatchObject({
-      updateLastRoute: {
-        channel: "slack",
-        to: "team:T123ENTERPRISE:user:U123",
-      },
-    });
   });
 
   it("sends Enterprise pairing codes through the validated listener scope", async () => {

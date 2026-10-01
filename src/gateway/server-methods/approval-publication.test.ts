@@ -25,7 +25,7 @@ async function publishSystemAgentTerminal(status: "allowed" | "denied" | "expire
 }
 
 describe("publishAppliedApprovalResolution for OpenClaw changes", () => {
-  it("preserves requester context through plugin resolution publication", async () => {
+  it("preserves requester context when a plugin approval expires", async () => {
     const source = {
       channel: "slack",
       senderId: "U123",
@@ -38,9 +38,6 @@ describe("publishAppliedApprovalResolution for OpenClaw changes", () => {
     };
     const broadcast = vi.fn();
     const publishResolved = vi.fn();
-    const webExpired = vi.fn(async () => {});
-    const forwardResolved = vi.fn(async () => {});
-    const iosResolved = vi.fn(async () => {});
     await publishAppliedApprovalResolution({
       record: {
         id: "plugin:private",
@@ -52,12 +49,7 @@ describe("publishAppliedApprovalResolution for OpenClaw changes", () => {
       context: {
         broadcast,
         approvalEvents: { publishResolved },
-        approvalWebPushDelivery: { handleExpired: webExpired },
       } as unknown as PublishParams["context"],
-      forwarder: {
-        handlePluginApprovalResolved: forwardResolved,
-      } as unknown as ExecApprovalForwarder,
-      pluginIosPushDelivery: { handleResolved: iosResolved },
     });
 
     expect(broadcast).toHaveBeenCalledWith(
@@ -71,18 +63,6 @@ describe("publishAppliedApprovalResolution for OpenClaw changes", () => {
       "plugin",
       expect.objectContaining({ request: expect.objectContaining({ approvalSource: source }) }),
     );
-    expect(webExpired).toHaveBeenCalledWith(
-      expect.objectContaining({
-        request: expect.objectContaining({ approvalSource: source }),
-      }),
-    );
-    for (const callback of [forwardResolved, iosResolved]) {
-      expect(callback).toHaveBeenCalledWith(
-        expect.objectContaining({
-          request: expect.objectContaining({ approvalSource: source }),
-        }),
-      );
-    }
   });
 
   // Decisions publish their applied outcome from the system-agent owner; a

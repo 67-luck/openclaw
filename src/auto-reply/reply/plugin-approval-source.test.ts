@@ -35,12 +35,10 @@ describe("plugin approval source snapshot", () => {
       ...authorizedSlackMessage,
       context: {
         ...authorizedSlackMessage.context,
-        RawBody: `${"x".repeat(290)} ${secret} after`,
+        RawBody: `${"x".repeat(300)} ${secret} ${"y".repeat(40)}`,
       },
     });
-    expect(source?.userMessageExcerpt?.length).toBeLessThanOrEqual(320);
-    expect(source?.userMessageExcerpt).not.toContain(secret);
-    expect(source?.senderName).toBe("Lightning McQueen");
+    expect(source?.userMessageExcerpt).toBe(`${"x".repeat(300)} ghp_aa…aaaa ${"y".repeat(6)}…`);
   });
 
   it("captures the admitted message excerpt for other channels", () => {
@@ -90,6 +88,7 @@ describe("plugin approval source snapshot", () => {
     ) =>
       capturePluginApprovalSource({
         ...authorizedSlackMessage,
+        channel: patch.channel ?? authorizedSlackMessage.channel,
         context: {
           ...authorizedSlackMessage.context,
           ApprovalSource: { ...authorizedSlackMessage.context.ApprovalSource, ...patch },

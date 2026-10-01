@@ -109,7 +109,7 @@ describe("resolveInboundSupplementalSenderAllowed", () => {
 });
 
 describe("buildChannelInboundEventContext", () => {
-  it("captures admitted human sender facts for later approval notices", () => {
+  it("captures admitted human sender facts for approval context", () => {
     const human = buildTestInboundEventContext({
       sender: { id: "u1", name: "User One" },
       conversation: { kind: "direct", id: "dm-1" },

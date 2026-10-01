@@ -4695,30 +4695,24 @@ describe("runPreparedReply media-only handling", () => {
     expect(call?.followupRun.originatingReplyToId).toBe("reply-24680");
   });
 
-  it("captures the prepared reply policy for queued Slack runs", async () => {
+  it("captures prepared reply policy and requester context for queued Slack runs", async () => {
+    const defaults = baseParams();
+    const requesterMessage = "Please review this image";
     await runPrepared({
-      cfg: {
-        session: {},
-        channels: { slack: { replyToMode: "all" } },
-        agents: { defaults: {} },
-      },
+      cfg: { ...defaults.cfg, channels: { slack: { replyToMode: "all" } } },
       ctx: {
-        ...createInboundBody(""),
-        ThreadHistoryBody: "Earlier message in this thread",
+        ...defaults.ctx,
         Provider: "slack",
         OriginatingChannel: undefined,
-        OriginatingTo: "C123",
-        ChatType: "group",
         ReplyToMode: "off",
       },
       sessionCtx: {
-        ...createSessionBody(""),
-        ThreadHistoryBody: "Earlier message in this thread",
-        media: [{ path: "/tmp/input.png" }],
-        Provider: "slack",
-        ChatType: "group",
-        OriginatingChannel: "slack",
-        OriginatingTo: "C123",
+        ...defaults.sessionCtx,
+        RawBody: requesterMessage,
+        rawText: requesterMessage,
+        commandText: requesterMessage,
+        InboundAccessAuthorized: true,
+        ApprovalSource: { channel: "slack", senderId: "U123", conversationKind: "channel" },
         ReplyToId: "101.001",
         ReplyToMode: "off",
       },
@@ -4727,6 +4721,12 @@ describe("runPreparedReply media-only handling", () => {
     const call = requireRunReplyAgentCall();
     expect(call?.followupRun.originatingReplyToId).toBe("101.001");
     expect(call?.followupRun.originatingReplyToMode).toBe("off");
+    expect(call.followupRun.approvalSource).toEqual({
+      channel: "slack",
+      senderId: "U123",
+      conversationKind: "channel",
+      userMessageExcerpt: requesterMessage,
+    });
   });
 
   it("captures queued reply policy from hydrated system-event session context", async () => {

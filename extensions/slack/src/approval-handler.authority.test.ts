@@ -68,8 +68,8 @@ describe("Slack approval reviewer delivery authority", () => {
       vi.stubEnv("NO_PROXY", "*");
       const lookupStarted = createDeferred<void>();
       const releaseLookup = createDeferred<void>();
-      const posts: string[] = [];
-      const updates: string[] = [];
+      const posts: Record<string, string>[] = [];
+      const updates: Record<string, string>[] = [];
       const registration = registerSlackInstallationState("default", installation);
       try {
         await withServer(
@@ -83,12 +83,12 @@ describe("Slack approval reviewer delivery authority", () => {
                 return;
               }
               if (request.url === "/api/chat.postMessage") {
-                posts.push(new URLSearchParams(body).get("text") ?? body);
+                posts.push(Object.fromEntries(new URLSearchParams(body)));
                 sendResponse(response, { ok: true, ts: "1712345678.999999", channel: "D11111111" });
                 return;
               }
               if (request.url === "/api/chat.update") {
-                updates.push(new URLSearchParams(body).get("text") ?? body);
+                updates.push(Object.fromEntries(new URLSearchParams(body)));
                 sendResponse(response, { ok: true, ts: "1712345678.999999", channel: "D11111111" });
                 return;
               }
@@ -193,7 +193,12 @@ describe("Slack approval reviewer delivery authority", () => {
             if (shouldPost) {
               const entry = await delivery;
               expect(entry).toMatchObject({ channelId: "D11111111" });
-              expect(posts).toEqual([expect.stringContaining(EXCERPT)]);
+              expect(posts).toMatchObject([
+                {
+                  channel: installation === "enterprise" ? "D11111111" : REVIEWER,
+                  text: expect.stringContaining(EXCERPT),
+                },
+              ]);
               if (!entry) {
                 throw new Error("Expected delivered Slack approval entry");
               }
@@ -224,7 +229,13 @@ describe("Slack approval reviewer delivery authority", () => {
                   phase: "resolved",
                 });
               await update();
-              expect(updates).toEqual([expect.stringContaining(EXCERPT)]);
+              expect(updates).toMatchObject([
+                {
+                  channel: "D11111111",
+                  ts: "1712345678.999999",
+                  text: expect.stringContaining(EXCERPT),
+                },
+              ]);
               setRuntimeConfigSnapshot(approvalConfig(OTHER));
               await expect(update()).rejects.toThrow(
                 "Slack approval delivery is no longer authorized",

@@ -19,6 +19,7 @@ describe("embedded Gateway tool caller source", () => {
       channel: "slack",
       senderId: "U123",
       conversationKind: "direct" as const,
+      userMessageExcerpt: "Please review this image",
     };
     const admission = prepareAgentRunAdmission({
       cfg: {},
@@ -31,7 +32,7 @@ describe("embedded Gateway tool caller source", () => {
     });
     try {
       const admittedRunContext = await admission.admit("embedded");
-      await withPreparedEmbeddedGatewayTools(
+      const caller = await withPreparedEmbeddedGatewayTools(
         {
           admittedRunContext,
           agentId: "main",
@@ -45,13 +46,9 @@ describe("embedded Gateway tool caller source", () => {
           disableTools: true,
         },
         () => true,
-        async () => {
-          const caller = getGatewayToolCallerIdentity();
-          expect(caller).toBeDefined();
-          expect(caller?.turnSourceThreadId).toBe(currentThreadTs);
-          expect(caller?.approvalSource).toEqual(approvalSource);
-        },
+        async () => getGatewayToolCallerIdentity(),
       );
+      expect(caller).toMatchObject({ turnSourceThreadId: currentThreadTs, approvalSource });
     } finally {
       admission.close();
     }

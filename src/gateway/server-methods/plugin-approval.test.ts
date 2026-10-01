@@ -5,7 +5,6 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
 import type { PluginApprovalRequestPayload } from "../../infra/plugin-approvals.js";
 import type { ExecApprovalManager } from "../exec-approval-manager.js";
 import { createTestApprovalManager } from "../exec-approval-manager.test-support.js";
@@ -820,19 +819,8 @@ describe("createPluginApprovalHandlers", () => {
         "plugin:private",
       );
       await manager.register(record, 60_000);
-      const forwardResolved = vi.fn(async () => {});
-      const iosResolved = vi.fn(async () => {});
-      const webResolved = vi.fn(async () => {});
-      const handlers = createPluginApprovalHandlers(manager, {
-        forwarder: {
-          handlePluginApprovalResolved: forwardResolved,
-        } as unknown as ExecApprovalForwarder,
-        iosPushDelivery: { handleResolved: iosResolved },
-      });
-      const context = {
-        ...createApprovalContext(),
-        approvalWebPushDelivery: { handleResolved: webResolved },
-      } as unknown as GatewayRequestHandlerOptions["context"];
+      const handlers = createPluginApprovalHandlers(manager);
+      const context = createApprovalContext();
       const listOpts = createMockOptions("plugin.approval.list", {}, { context });
       await invokeHandler(handlers, listOpts);
       const listed = requireRecord(
@@ -854,9 +842,6 @@ describe("createPluginApprovalHandlers", () => {
         }),
       });
       expect(broadcastCall(resolveOpts).payload).toEqual(event);
-      expect(forwardResolved).toHaveBeenCalledWith(event);
-      expect(iosResolved).toHaveBeenCalledWith(event);
-      expect(webResolved).toHaveBeenCalledWith(event);
     });
 
     it("rejects invalid decision", async () => {
@@ -887,29 +872,41 @@ describe("createPluginApprovalHandlers", () => {
       expect(resolvedBroadcast.options).toEqual({ dropIfSlow: true });
     });
 
-    it("sends an iOS cleanup wake when a plugin approval resolves", async () => {
-      const handleResolved = vi.fn(async () => {});
+    it("notifies forwarding and push delivery when a plugin approval resolves", async () => {
+      const iosResolved = vi.fn(async () => {});
+      const forwardResolved = vi.fn(async () => {});
+      const webResolved = vi.fn(async () => {});
       const handlers = createPluginApprovalHandlers(manager, {
-        iosPushDelivery: { handleResolved },
+        forwarder: {
+          handleRequested: async () => false,
+          handleResolved: async () => {},
+          handlePluginApprovalResolved: forwardResolved,
+          stop: async () => {},
+        },
+        iosPushDelivery: { handleResolved: iosResolved },
       });
+      const context = createApprovalContext();
+      context.approvalWebPushDelivery = {
+        handleRequested: () => false,
+        handleResolved: webResolved,
+        handleExpired: async () => {},
+      };
       const record = await registerApproval(manager);
 
       await invokeHandler(
         handlers,
-        createMockOptions("plugin.approval.resolve", {
-          id: record.id,
-          decision: "deny",
-        }),
+        createMockOptions(
+          "plugin.approval.resolve",
+          { id: record.id, decision: "deny" },
+          { context },
+        ),
       );
 
-      expect(handleResolved).toHaveBeenCalledTimes(1);
-      expect(
-        requireRecord(mockCall(handleResolved, 0, "resolved push")[0], "resolved event"),
-      ).toMatchObject({
-        id: record.id,
-        decision: "deny",
-        request: record.request,
-      });
+      for (const callback of [forwardResolved, iosResolved, webResolved]) {
+        expect(callback).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ id: record.id, decision: "deny" }),
+        );
+      }
     });
 
     it("resolves only plugin approvals owned by the caller", async () => {

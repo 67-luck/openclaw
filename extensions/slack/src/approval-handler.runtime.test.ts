@@ -572,7 +572,7 @@ describe("slackApprovalNativeRuntime", () => {
     );
     expect(payload.text).not.toContain("<@U0C5KQJEE56>");
     expect(payload.text).toContain("*Source:* Slack DM in T123ABC45");
-    expect(payload.text).not.toContain(excerpt);
+    expect(payload.text).not.toContain("Please render");
 
     const view: PluginApprovalPendingView = {
       ...SCREEN_SHARE_APPROVAL,
@@ -646,8 +646,8 @@ describe("slackApprovalNativeRuntime", () => {
       senderId: "987654",
       userMessageExcerpt: excerpt,
     });
-    expect(origin.payload.text).not.toContain(excerpt);
-    expect(JSON.stringify(origin.payload.blocks)).not.toContain(excerpt);
+    expect(origin.payload.text).not.toContain("Please render");
+    expect(JSON.stringify(origin.payload.blocks)).not.toContain("Please render");
     expect(JSON.stringify(otherSource.payload.blocks)).toContain(excerpt);
     expect(otherSource.payload.text).toContain("*Source:* telegram");
     expect(reviewer.payload.text).toContain(

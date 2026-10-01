@@ -134,7 +134,7 @@ const ambientRows = [
 ] as const;
 
 describe("Telegram prompt composition", () => {
-  it("binds an admitted human message to its approval source without sharing its text", async () => {
+  it("binds an admitted human message to its approval source", async () => {
     const context = await buildTelegramMessageContextForTest({
       cfg: config(),
       sessionRuntime: null,
