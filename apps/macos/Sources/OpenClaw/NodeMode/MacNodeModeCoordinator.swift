@@ -542,20 +542,18 @@ final class MacNodeModeCoordinator: NSObject {
             let claudeSessionCatalogEnabled = MacNodeClaudeSessionCatalog.shouldAdvertise()
 
             var attemptedEndpoint: GatewayConnection.EndpointSnapshot?
+            let endpointAttemptGeneration = self.endpointAttemptGeneration
             do {
-                let endpointAttemptGeneration = self.endpointAttemptGeneration
                 defer { self.retirePendingStartup(ifGeneration: endpointAttemptGeneration) }
                 let routeAuthorityGeneration = self.routeAuthorityGeneration
                 let endpoint = try await GatewayEndpointStore.shared.requireEndpoint()
                 self.pendingEndpoint = endpoint
-                guard Self.endpointAttemptIsCurrent(
-                    capturedGeneration: endpointAttemptGeneration,
-                    currentGeneration: self.endpointAttemptGeneration),
-                    Self.routeAuthorityAllowsInvoke(
-                        capturedRouteAuthorityGeneration: routeAuthorityGeneration,
-                        currentRouteAuthorityGeneration: self.routeAuthorityGeneration,
-                        completedRouteAuthorityGeneration: self.completedRouteAuthorityGeneration,
-                        isPaused: false)
+                guard endpointAttemptGeneration == self.endpointAttemptGeneration,
+                      Self.routeAuthorityAllowsInvoke(
+                          capturedRouteAuthorityGeneration: routeAuthorityGeneration,
+                          currentRouteAuthorityGeneration: self.routeAuthorityGeneration,
+                          completedRouteAuthorityGeneration: self.completedRouteAuthorityGeneration,
+                          isPaused: false)
                 else { continue }
                 attemptedEndpoint = endpoint
                 guard let attempt = try await self.prepareConnectionAttempt(
@@ -576,6 +574,9 @@ final class MacNodeModeCoordinator: NSObject {
                 // actually change instead of rereading config and TCC state every second.
                 guard await refreshIterator.next() != nil else { return }
             } catch {
+                // Retired attempts must not publish failure or delay their successor.
+                guard !Task.isCancelled,
+                      endpointAttemptGeneration == self.endpointAttemptGeneration else { continue }
                 if error is MacNodeHostWorkerRetryPolicy.RetryBackoffPending {
                     // The lifecycle-owned delayed wake is the only event allowed
                     // to admit this same worker input after an unexpected exit.
@@ -584,16 +585,18 @@ final class MacNodeModeCoordinator: NSObject {
                     guard await refreshIterator.next() != nil else { return }
                     continue
                 }
-                if let tlsError = error as? GatewayTLSValidationError,
-                   let attemptedEndpoint,
-                   await GatewayTLSRepairCoordinator.shared.repair(
-                       route: attemptedEndpoint.tls,
-                       url: attemptedEndpoint.config.url,
-                       failure: tlsError.failure)
-                {
-                    await self.session.disconnect()
-                    retryDelay = 1_000_000_000
-                    continue
+                if let tlsError = error as? GatewayTLSValidationError, let attemptedEndpoint {
+                    let repaired = await GatewayTLSRepairCoordinator.shared.repair(
+                        route: attemptedEndpoint.tls,
+                        url: attemptedEndpoint.config.url,
+                        failure: tlsError.failure)
+                    guard !Task.isCancelled,
+                          endpointAttemptGeneration == self.endpointAttemptGeneration else { continue }
+                    if repaired {
+                        await self.session.disconnect()
+                        retryDelay = 1_000_000_000
+                        continue
+                    }
                 }
                 self.logger.error("mac node gateway connect failed: \(error.localizedDescription, privacy: .public)")
                 let failure = Self.nodeGatewayConnectionFailure(error)
