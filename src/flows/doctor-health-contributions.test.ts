@@ -2992,6 +2992,7 @@ describe("doctor health contributions", () => {
         configPath: "/tmp/fake-openclaw.json",
       }),
       {
+        allowConfigMutation: true,
         checks: contribution.healthChecks,
         dryRun: false,
       },
@@ -3035,6 +3036,7 @@ describe("doctor health contributions", () => {
       expect.any(Function),
     );
     expect(mocks.runDoctorHealthRepairs).toHaveBeenCalledWith(expect.objectContaining({ cwd }), {
+      allowConfigMutation: true,
       checks: contribution.healthChecks,
       dryRun: false,
     });
@@ -3161,7 +3163,10 @@ describe("doctor health contributions", () => {
 
     expect(mocks.runDoctorHealthRepairs).toHaveBeenCalledWith(
       expect.objectContaining({ env: { OPENCLAW_UPDATE_POST_CORE: "1" } }),
-      { checks: [getHealthCheck("plugin/example/regular")] },
+      {
+        allowConfigMutation: true,
+        checks: [getHealthCheck("plugin/example/regular")],
+      },
     );
   });
 
