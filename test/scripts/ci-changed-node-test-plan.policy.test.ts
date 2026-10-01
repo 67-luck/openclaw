@@ -422,6 +422,7 @@ describe("CI changed Node test plan", () => {
       [["docs/.i18n/zh-CN.tm.jsonl"], "file", true],
       [["ui/src/i18n/locales/de.ts"], "file", true],
       [["ui/src/i18n/.i18n/de.json"], "file", true],
+      [["ui/src/i18n/.i18n/de.tm.jsonl.gz"], "file", true],
       [["apps/.i18n/native/de.json"], "file", true],
       [["docs/reference/templates/AGENTS.md"], "file", false],
       [["docs/reference/templates/AGENTS.md"], "missing", false],

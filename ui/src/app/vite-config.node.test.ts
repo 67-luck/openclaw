@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { brotliDecompressSync, gunzipSync } from "node:zlib";
+import { brotliDecompressSync, gunzipSync, gzipSync } from "node:zlib";
 import type { Alias } from "vite";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -700,7 +700,7 @@ describe("Control UI Vite config", () => {
       addWatchFile,
     );
     const catalog = await executeControlUiLocaleModule("fr", baseSource, configHintsSource);
-    const memoryPath = path.join(repoRoot, "ui/src/i18n/.i18n/fr.tm.jsonl");
+    const memoryPath = path.join(repoRoot, "ui/src/i18n/.i18n/fr.tm.jsonl.gz");
     const healthText = flattenTranslations(en).get("common.health");
     if (typeof healthText !== "string") {
       throw new Error("Expected English health source");
@@ -757,10 +757,12 @@ describe("Control UI Vite config", () => {
   it.each([
     {
       name: "empty",
-      memory: "",
+      memory: gzipSync(""),
       expected: "Control UI fr translation memory is missing or empty",
     },
-    { name: "malformed", memory: "{", expected: SyntaxError },
+    { name: "malformed JSON", memory: gzipSync("{"), expected: SyntaxError },
+    { name: "truncated gzip", memory: gzipSync("{}").subarray(0, -1), expected: "unexpected end" },
+    { name: "invalid gzip", memory: Buffer.from("{}"), expected: "incorrect header" },
   ])("rejects $name locale memory", async ({ memory, expected }) => {
     const { load } = controlUiLocaleModuleHooks();
     await fsMocks.readFileSync.withImplementation(
@@ -839,6 +841,80 @@ describe("Control UI Vite config", () => {
         });
       },
     );
+  });
+
+  it("reloads both locale partitions after a compressed memory replacement", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "control-ui-memory-watch-"));
+    const fixture = path.join(root, "fr.tm.jsonl.gz");
+    const memoryPath = path.join(repoRoot, "ui/src/i18n/.i18n/fr.tm.jsonl.gz");
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    const catalog = { common: { health: "Health" }, configHints: { fixture: { label: "Label" } } };
+    const replaceMemory = (translation: string) =>
+      writeFile(
+        fixture,
+        gzipSync(
+          [
+            {
+              cache_key: "health",
+              segment_id: "common.health",
+              text_hash: hashControlUiTranslationText("Health"),
+              translated: translation,
+            },
+            {
+              cache_key: "label",
+              segment_id: "configHints.fixture.label",
+              text_hash: hashControlUiTranslationText("Label"),
+              translated: translation,
+            },
+          ]
+            .map((entry) => JSON.stringify(entry))
+            .join("\n"),
+        ),
+      );
+    try {
+      await replaceMemory("first");
+      await fsMocks.readFileSync.withImplementation(
+        (file, options) =>
+          file === memoryPath
+            ? actualFs.readFileSync(fixture)
+            : actualFs.readFileSync(file, options),
+        async () => {
+          await viteMocks.runnerImport.withImplementation(
+            async () => ({
+              module: { loadControlUiSourceCatalog: () => catalog },
+              dependencies: [],
+            }),
+            async () => {
+              const { load, watchChange } = controlUiLocaleModuleHooks();
+              const readCatalog = async () =>
+                executeControlUiLocaleModule(
+                  "fr",
+                  await loadControlUiLocaleModuleSource(
+                    load,
+                    "\0virtual:openclaw-control-ui-locale/fr",
+                  ),
+                  await loadControlUiLocaleModuleSource(
+                    load,
+                    "\0virtual:openclaw-control-ui-locale-config-hints/fr",
+                  ),
+                );
+              expect(await readCatalog()).toEqual({
+                common: { health: "first" },
+                configHints: { fixture: { label: "first" } },
+              });
+              await replaceMemory("second");
+              await watchChange.call({} as never, memoryPath, {} as never);
+              expect(await readCatalog()).toEqual({
+                common: { health: "second" },
+                configHints: { fixture: { label: "second" } },
+              });
+            },
+          );
+        },
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("reloads configured source aliases instead of installed package outputs", async () => {
@@ -994,7 +1070,7 @@ describe("Control UI Vite config", () => {
       () => true,
       async () => {
         await fsMocks.readFileSync.withImplementation(
-          () => memory,
+          () => gzipSync(memory),
           async () => {
             const baseSource = await loadControlUiLocaleModuleSource(
               load,

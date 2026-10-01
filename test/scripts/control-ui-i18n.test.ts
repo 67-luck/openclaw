@@ -26,6 +26,7 @@ import {
   translateNativeEntries,
 } from "../../scripts/control-ui-i18n.ts";
 import { loadControlUiSourceCatalog } from "../../scripts/lib/control-ui-i18n-catalog.ts";
+import { CONTROL_UI_LOCALE_ENTRIES } from "../../scripts/lib/control-ui-i18n-config.ts";
 import { collectControlUiRawCopyFromSource } from "../../scripts/lib/control-ui-i18n-raw-copy.ts";
 import { flattenTranslations } from "../../scripts/lib/control-ui-i18n-sync-plan.ts";
 import { createNativeTypeScriptParser } from "../../scripts/lib/native-typescript.mts";
@@ -370,7 +371,7 @@ describe("control-ui-i18n generated ownership", () => {
       assertControlUiGeneratedArtifactsIsolated([
         "ui/src/i18n/.i18n/catalog-fallbacks.json",
         "ui/src/i18n/.i18n/de.meta.json",
-        "ui/src/i18n/.i18n/de.tm.jsonl",
+        "ui/src/i18n/.i18n/de.tm.jsonl.gz",
       ]),
     ).not.toThrow();
 
@@ -410,35 +411,30 @@ describe("control-ui-i18n generated ownership", () => {
 
     expect(shouldStrictControlUiI18n(["ui/src/i18n/locales/de.ts"])).toBe(false);
     expect(shouldStrictControlUiI18n(["ui/src/i18n/.i18n/de.tm.jsonl"])).toBe(true);
+    expect(shouldStrictControlUiI18n(["ui/src/i18n/.i18n/de.tm.jsonl.gz"])).toBe(true);
     expect(shouldStrictControlUiI18n(["ui/src/i18n/locales/en.ts"])).toBe(false);
     expect(shouldStrictControlUiI18n(null)).toBe(true);
   });
 
-  it("allows only a complete canonical translation-memory ownership migration", () => {
-    const locales = readdirSync(path.resolve("ui/src/i18n/.i18n"))
-      .filter((fileName) => fileName.endsWith(".tm.jsonl"))
-      .map((fileName) => fileName.slice(0, -".tm.jsonl".length));
+  it("allows only the complete translation-memory compression cutover", () => {
+    const locales = CONTROL_UI_LOCALE_ENTRIES.map(({ locale }) => locale);
     const owners = [
       ".gitattributes",
+      ".github/workflows/control-ui-locale-refresh.yml",
       "scripts/ci-changed-scope.mjs",
       "scripts/control-ui-i18n.ts",
       "scripts/control-ui-i18n-verify.ts",
-      "scripts/lib/control-ui-i18n-catalog.ts",
+      "scripts/control-ui-i18n-memory.ts",
       "scripts/lib/control-ui-i18n-catalog-values.ts",
-      "scripts/lib/control-ui-i18n-sync-plan.ts",
+      "scripts/lib/control-ui-i18n-memory.ts",
       "ui/AGENTS.md",
       "ui/config/control-ui-locales.ts",
-      "ui/vite.config.ts",
     ];
-    const adapters = locales.map((locale) => `ui/src/i18n/locales/${locale}.ts`);
-    const generated = [
-      "ui/src/i18n/.i18n/catalog-fallbacks.json",
-      ...locales.flatMap((locale) => [
-        `ui/src/i18n/.i18n/${locale}.tm.jsonl`,
-        `ui/src/i18n/.i18n/${locale}.meta.json`,
-      ]),
-    ];
-    const migration = [...owners, ...adapters, ...generated];
+    const generated = locales.flatMap((locale) => [
+      `ui/src/i18n/.i18n/${locale}.tm.jsonl`,
+      `ui/src/i18n/.i18n/${locale}.tm.jsonl.gz`,
+    ]);
+    const migration = [...owners, ...generated];
 
     expect(() => assertControlUiGeneratedArtifactsIsolated(migration)).not.toThrow();
     expect(() => assertControlUiGeneratedArtifactsIsolated(migration.slice(1))).toThrow(
@@ -452,6 +448,15 @@ describe("control-ui-i18n generated ownership", () => {
     expect(() =>
       assertControlUiGeneratedArtifactsIsolated([...migration, "ui/src/i18n/.i18n/other.tm.jsonl"]),
     ).toThrow("Control UI generated locale artifacts must be isolated");
+    for (const unrelated of [
+      "ui/src/i18n/locales/en.ts",
+      "ui/src/i18n/.i18n/de.meta.json",
+      "src/index.ts",
+    ]) {
+      expect(() => assertControlUiGeneratedArtifactsIsolated([...migration, unrelated])).toThrow(
+        "Control UI generated locale artifacts must be isolated",
+      );
+    }
   });
 
   it("allows generated release output on trusted release and main runs only", () => {

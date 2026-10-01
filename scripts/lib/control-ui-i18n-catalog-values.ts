@@ -1,5 +1,6 @@
 import { hash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { readControlUiTranslationMemoryText } from "./control-ui-i18n-memory.ts";
 import type { TranslationMap, TranslationMemoryEntry } from "./control-ui-i18n-sync-plan.ts";
 
 export function hashControlUiTranslationText(text: string): string {
@@ -35,7 +36,7 @@ export function loadControlUiTranslationMemory(
   if (!existsSync(filePath)) {
     return entries;
   }
-  for (const line of readFileSync(filePath, "utf8").split("\n")) {
+  for (const line of readControlUiTranslationMemoryText(filePath).split("\n")) {
     if (!line.trim()) {
       continue;
     }

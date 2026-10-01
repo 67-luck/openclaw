@@ -9,6 +9,7 @@ import {
   NATIVE_HARD_GENERATED_I18N_RE,
   NATIVE_CANONICAL_V2_MIGRATION_GENERATED_RE,
 } from "./lib/ci-native-generated-scope.mjs";
+import controlUiLocaleEntries from "./lib/control-ui-i18n-config.json" with { type: "json" };
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
 import { resolveMergeHeadDiffBase } from "./lib/merge-head-diff-base.mjs";
 
@@ -43,7 +44,7 @@ export function isCiDocumentationPath(changedPath) {
 export function isNodeTestDataOnlyPath(changedPath) {
   return (
     isCiDocumentationPath(changedPath) ||
-    /^(?:ui\/src\/i18n\/(?:locales\/[^/]+\.ts|\.i18n\/[^/]+\.(?:json|jsonl))$|src\/wizard\/i18n\/locales\/[^/]+\.ts$|apps\/\.i18n\/native\/[^/]+\.json$)/u.test(
+    /^(?:ui\/src\/i18n\/(?:locales\/[^/]+\.ts|\.i18n\/[^/]+\.(?:json|jsonl(?:\.gz)?))$|src\/wizard\/i18n\/locales\/[^/]+\.ts$|apps\/\.i18n\/native\/[^/]+\.json$)/u.test(
       changedPath,
     )
   );
@@ -155,11 +156,11 @@ const WINDOWS_WORKER_BUNDLE_SCOPE_RE =
 const WINDOWS_WORKER_WORKSPACE_SCOPE_RE =
   /^src\/(?:infra\/git-exec(?:\.test)?|agents\/worktrees\/(?:git|base-ref)(?:\.test)?|node-host\/node-worker-transfer-client(?:\.test)?|gateway\/worker-environments\/(?:node-worker-tunnel(?:\.test)?|workspace-result-(?:git(?:\.test)?|staging|ref-mutation\.test)|session-repository-checkpoints(?:\.test)?|workspace-sync-(?:scripts|manifest\.test)))\.ts$/;
 const CONTROL_UI_I18N_SCOPE_RE =
-  /^(ui\/src\/i18n\/|ui\/config\/control-ui-locales\.ts$|scripts\/(?:control-ui-i18n(?:-verify)?\.ts|lib\/control-ui-i18n-(?:(?:catalog(?:-values)?|config|raw-copy|sync-plan)\.ts|config\.json))$|\.github\/workflows\/control-ui-locale-refresh\.yml$)/;
+  /^(ui\/src\/i18n\/|ui\/config\/control-ui-locales\.ts$|scripts\/(?:control-ui-i18n(?:-verify|-memory)?\.ts|lib\/control-ui-i18n-(?:(?:catalog(?:-values)?|config|memory|raw-copy|sync-plan)\.ts|config\.json))$|\.github\/workflows\/control-ui-locale-refresh\.yml$)/;
 const CONTROL_UI_I18N_PRODUCTION_SOURCE_RE =
   /^(?:ui\/src\/(?:app|components|lib|pages)\/.*\.tsx?|src\/config\/(?:schema[^/]*|zod-schema[^/]*|media-audio-field-metadata|talk-defaults|channel-config-keys)\.ts)$/;
 const CONTROL_UI_HARD_GENERATED_I18N_RE =
-  /^ui\/src\/i18n\/\.i18n\/(?:catalog-fallbacks\.json|[^/]+\.(?:meta\.json|tm\.jsonl))$/;
+  /^ui\/src\/i18n\/\.i18n\/(?:catalog-fallbacks\.json|[^/]+\.(?:meta\.json|tm\.jsonl(?:\.gz)?))$/;
 const RELEASE_BRANCH_RE = /^release\/\d{4}\.\d+\.\d+$/;
 
 class ControlUiGeneratedArtifactsMixedError extends Error {}
@@ -406,7 +407,7 @@ export function assertControlUiGeneratedArtifactsIsolated(changedPaths, branchNa
   if (sourcePaths.length === 0) {
     return;
   }
-  if (isControlUiCanonicalMemoryMigration(changedPaths, generatedPaths)) {
+  if (isControlUiCompressedMemoryMigration(changedPaths, generatedPaths)) {
     return;
   }
   throw new ControlUiGeneratedArtifactsMixedError(
@@ -424,34 +425,40 @@ export function assertControlUiGeneratedArtifactsIsolated(changedPaths, branchNa
  * @param {string[]} generatedPaths
  * @returns {boolean}
  */
-function isControlUiCanonicalMemoryMigration(changedPaths, generatedPaths) {
+function isControlUiCompressedMemoryMigration(changedPaths, generatedPaths) {
   const requiredOwners = [
     ".gitattributes",
+    ".github/workflows/control-ui-locale-refresh.yml",
     "scripts/ci-changed-scope.mjs",
     "scripts/control-ui-i18n.ts",
     "scripts/control-ui-i18n-verify.ts",
-    "scripts/lib/control-ui-i18n-catalog.ts",
+    "scripts/control-ui-i18n-memory.ts",
     "scripts/lib/control-ui-i18n-catalog-values.ts",
-    "scripts/lib/control-ui-i18n-sync-plan.ts",
+    "scripts/lib/control-ui-i18n-memory.ts",
     "ui/AGENTS.md",
     "ui/config/control-ui-locales.ts",
-    "ui/vite.config.ts",
   ];
   if (!requiredOwners.every((owner) => changedPaths.includes(owner))) {
     return false;
   }
 
   const assetsDir = new URL("../ui/src/i18n/.i18n/", import.meta.url);
-  const locales = readdirSync(assetsDir)
-    .filter((fileName) => fileName.endsWith(".tm.jsonl"))
-    .map((fileName) => fileName.slice(0, -".tm.jsonl".length));
-  const requiredGeneratedPaths = [
-    "ui/src/i18n/.i18n/catalog-fallbacks.json",
-    ...locales.flatMap((locale) => [
-      `ui/src/i18n/.i18n/${locale}.tm.jsonl`,
-      `ui/src/i18n/.i18n/${locale}.meta.json`,
-    ]),
-  ];
+  const memoryFiles = readdirSync(assetsDir).filter((fileName) =>
+    /\.tm\.jsonl(?:\.gz)?$/.test(fileName),
+  );
+  const locales = controlUiLocaleEntries.map(({ locale }) => locale);
+  if (
+    locales.length === 0 ||
+    memoryFiles.length !== locales.length ||
+    !locales.every((locale) => memoryFiles.includes(`${locale}.tm.jsonl.gz`))
+  ) {
+    return false;
+  }
+  // Only the complete raw-to-gzip cutover may pair generated data with its owners.
+  const requiredGeneratedPaths = locales.flatMap((locale) => [
+    `ui/src/i18n/.i18n/${locale}.tm.jsonl`,
+    `ui/src/i18n/.i18n/${locale}.tm.jsonl.gz`,
+  ]);
   if (
     generatedPaths.length !== requiredGeneratedPaths.length ||
     !requiredGeneratedPaths.every((filePath) => generatedPaths.includes(filePath))
@@ -459,23 +466,18 @@ function isControlUiCanonicalMemoryMigration(changedPaths, generatedPaths) {
     return false;
   }
 
-  return locales.every((locale) => {
-    const adapterPath = `ui/src/i18n/locales/${locale}.ts`;
-    if (!changedPaths.includes(adapterPath)) {
-      return false;
-    }
-    let source;
-    try {
-      source = readFileSync(new URL(`../${adapterPath}`, import.meta.url), "utf8").trim();
-    } catch {
-      return false;
-    }
-    const exportName = locale.replaceAll("-", "_");
-    return (
-      source ===
-      `export { default as ${exportName} } from "virtual:openclaw-control-ui-locale/${locale}";`
-    );
-  });
+  const allowedPaths = new Set([
+    ...requiredOwners,
+    ...requiredGeneratedPaths,
+    "scripts/README.md",
+    "test/scripts/control-ui-i18n.test.ts",
+    "test/scripts/control-ui-i18n-memory.test.ts",
+    "test/scripts/control-ui-i18n-verify.test.ts",
+    "test/scripts/ci-changed-node-test-plan.policy.test.ts",
+    "test/scripts/ci-platform-checkout.test.ts",
+    "ui/src/app/vite-config.node.test.ts",
+  ]);
+  return changedPaths.every((filePath) => allowedPaths.has(filePath));
 }
 
 /**

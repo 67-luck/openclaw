@@ -2,6 +2,7 @@
 CLAUDE.md -text
 src/gateway/server-methods/CLAUDE.md -text
 ui/src/i18n/.i18n/* linguist-generated
+ui/src/i18n/.i18n/*.tm.jsonl.gz -text
 apps/.i18n/** linguist-generated
 apps/android/app/src/main/res/values-*/strings.xml linguist-generated
 apps/android/app/src/main/res/values-*/assistant.xml linguist-generated

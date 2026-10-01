@@ -63,6 +63,55 @@ new directory taxonomy.
   package surfaces, and build artifact support.
 - `lib/`: shared helpers imported by script entry points.
 
+## Control UI Translation Memory
+
+Control UI translation memory is stored per locale as `.tm.jsonl.gz` under
+`ui/src/i18n/.i18n/`. Only host-side generation, verification, and Vite decode it;
+the browser receives the same generated JavaScript catalogs. The codec uses
+Node's built-in gzip at level 6 with no extra dependency. Encoding is repeatable
+under the same Node/zlib toolchain; compressed bytes are not a cross-version
+contract. Decoded JSONL bytes are the contract.
+
+Ordinary contributions still edit English source, not generated memory. For
+review, run from the repository root with the repository's supported Node:
+
+```sh
+node scripts/control-ui-i18n-memory.ts diff HEAD
+node scripts/control-ui-i18n-memory.ts diff <base-ref> <head-ref>
+```
+
+The first form compares a commit with the working tree, including unstaged
+memory. The second compares two commits. Both accept historical raw JSONL and
+current gzip, suppress compression-only changes, and print decoded textual
+diffs. Exit status is 0 for identical decoded bytes, 1 for differences, or 2 for
+an error. GitHub displays gzip as binary; run this command to review content.
+
+Offline inspection or an explicitly approved generated-output repair:
+
+```sh
+node scripts/control-ui-i18n-memory.ts decode ui/src/i18n/.i18n/fr.tm.jsonl.gz fr.review.jsonl
+# Inspect or repair fr.review.jsonl before encoding to a new destination.
+node scripts/control-ui-i18n-memory.ts encode fr.review.jsonl fr.review.jsonl.gz
+```
+
+Neither command overwrites an existing output. Decode validates the entire gzip
+stream before creating the destination. Encoding preserves input bytes, including
+line endings, ordering, duplicates, and unknown fields; it does not normalize or
+validate JSONL. After a repair, replace the canonical gzip file with the reviewed
+output and remove the untracked inspection files. Run `pnpm ui:i18n:verify` and
+the decoded diff before staging.
+
+Do not use Git clean/smudge filters or automatic binary merge drivers. For a
+same-locale conflict, extract stages 1, 2, and 3 with `git show :1:<path>` (and
+`:2:` / `:3:`), decode each to a separate file, then use normal text merge tools.
+Review the merged JSONL before encoding and replacing the conflicted file. A
+corrupt file must fail, not fall back to an old raw sibling or English.
+
+To roll back the storage format, decode the **current** files first, then restore
+the raw-file reader, writer, watcher, CI routing, and refresh-workflow paths in
+the same change. Do not restore the migration's old data snapshot: that would
+discard translations generated since migration. Keep only one tracked format.
+
 ## Maintenance Rules
 
 - Read `scripts/AGENTS.md` before changing scripts.

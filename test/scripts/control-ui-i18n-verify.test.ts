@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { syncControlUiCatalogFallbackBaseline } from "../../scripts/control-ui-i18n-verify.ts";
 import type {
@@ -49,12 +50,12 @@ vi.mock("node:fs", async (importOriginal) => {
       file: Parameters<typeof actual.readFileSync>[0],
       options?: Parameters<typeof actual.readFileSync>[1] | BufferEncoding | null,
     ) => {
-      if (typeof file === "string" && fixture.paths.has(file) && options === "utf8") {
+      if (typeof file === "string" && fixture.paths.has(file)) {
         const content = fixture.files.get(file);
         if (content === undefined) {
           throw new Error("Missing in-memory catalog fixture");
         }
-        return content;
+        return file.endsWith(".tm.jsonl.gz") ? gzipSync(content) : content;
       }
       if (typeof options === "string") {
         return actual.readFileSync(file, options);
@@ -108,7 +109,7 @@ const assetsDir = path.resolve(
   "../../ui/src/i18n/.i18n",
 );
 const baselinePath = path.join(assetsDir, "catalog-fallbacks.json");
-const memoryPath = (locale: string) => path.join(assetsDir, `${locale}.tm.jsonl`);
+const memoryPath = (locale: string) => path.join(assetsDir, `${locale}.tm.jsonl.gz`);
 const abcHash = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
 const emptyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const writeOptions = { checkOnly: false, write: true };
@@ -238,7 +239,7 @@ describe("syncControlUiCatalogFallbackBaseline", () => {
       fixture.files.set(memoryPath("de"), "{");
       await expect(
         syncControlUiCatalogFallbackBaseline({ ...writeOptions, allowCatalogDrift }),
-      ).rejects.toThrow("ui/src/i18n/.i18n/fr.tm.jsonl does not contain fr translations");
+      ).rejects.toThrow("ui/src/i18n/.i18n/fr.tm.jsonl.gz does not contain fr translations");
 
       fixture.files.set(memoryPath("fr"), "{");
       fixture.files.delete(memoryPath("de"));

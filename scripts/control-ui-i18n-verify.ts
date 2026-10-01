@@ -209,7 +209,7 @@ async function buildCatalogFallbackBaseline(
   {
     let prepared: PreparedControlUiCatalogSource | undefined;
     for (const [index, entry] of CONTROL_UI_LOCALE_ENTRIES.entries()) {
-      const memoryPath = path.join(I18N_ASSETS_DIR, `${entry.locale}.tm.jsonl`);
+      const memoryPath = path.join(I18N_ASSETS_DIR, `${entry.locale}.tm.jsonl.gz`);
       if (!existsSync(memoryPath)) {
         throw new Error(`${toRepoPath(memoryPath)} does not contain ${entry.locale} translations`);
       }

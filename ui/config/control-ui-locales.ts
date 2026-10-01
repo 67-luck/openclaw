@@ -118,7 +118,7 @@ export function controlUiLocaleModulesPlugin(): Plugin {
       if (!request) {
         return null;
       }
-      const memoryPath = path.join(i18nAssetsDir, `${request.locale}.tm.jsonl`);
+      const memoryPath = path.join(i18nAssetsDir, `${request.locale}.tm.jsonl.gz`);
       while (true) {
         const activeCache = catalogCache;
         activeCache.sourceCatalogLoad ??= loadCurrentSourceCatalog(sourceAliases).catch(

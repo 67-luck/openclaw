@@ -17,6 +17,10 @@ import {
 } from "./lib/control-ui-i18n-catalog-values.ts";
 import { CONTROL_UI_LOCALE_ENTRIES, controlUiLanguageLabel } from "./lib/control-ui-i18n-config.ts";
 import {
+  encodeControlUiTranslationMemory,
+  readControlUiTranslationMemoryText,
+} from "./lib/control-ui-i18n-memory.ts";
+import {
   compareStringArrays,
   createControlUiLocaleSyncPlan,
   extractTranslationPlaceholders,
@@ -224,7 +228,7 @@ function metaPath(entry: LocaleEntry): string {
 }
 
 function tmPath(entry: LocaleEntry): string {
-  return path.join(I18N_ASSETS_DIR, `${entry.locale}.tm.jsonl`);
+  return path.join(I18N_ASSETS_DIR, `${entry.locale}.tm.jsonl.gz`);
 }
 
 type PlaceholderMismatch = {
@@ -973,7 +977,9 @@ async function syncLocale(
   const currentGlossary = existsSync(glossaryFilePath)
     ? await readFile(glossaryFilePath, "utf8")
     : "";
-  const currentTm = existsSync(tmPath(entry)) ? await readFile(tmPath(entry), "utf8") : "";
+  const currentTm = existsSync(tmPath(entry))
+    ? readControlUiTranslationMemoryText(tmPath(entry))
+    : "";
 
   const changed =
     currentMeta !== expectedMeta ||
@@ -1002,10 +1008,9 @@ async function syncLocale(
     await mkdir(I18N_ASSETS_DIR, { recursive: true });
     await writeFile(metaPath(entry), expectedMeta, "utf8");
     await writeFile(glossaryFilePath, expectedGlossary, "utf8");
-    if (expectedTm) {
-      await writeFile(tmPath(entry), expectedTm, "utf8");
-    } else if (existsSync(tmPath(entry))) {
-      await writeFile(tmPath(entry), "", "utf8");
+    // Preserve compressed bytes on metadata-only refreshes, including across Node upgrades.
+    if (currentTm !== expectedTm) {
+      await writeFile(tmPath(entry), encodeControlUiTranslationMemory(expectedTm));
     }
   }
 
