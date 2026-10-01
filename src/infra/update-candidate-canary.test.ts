@@ -8,6 +8,7 @@ import { formatCliFailureLines, formatCliJsonFailure } from "../cli/failure-outp
 import { createInvalidConfigError } from "../config/io.invalid-config.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
+import { withEnvAsync } from "../test-utils/env.js";
 import * as diskSpace from "./disk-space.js";
 import {
   registerCanaryProgressWorkerTests,
@@ -398,7 +399,11 @@ describe("update candidate canary", () => {
           if (!resultPath) {
             throw new Error("Missing candidate Doctor receipt");
           }
-          void writeUpdatePostInstallDoctorResult({ resultPath, result: receipt }).then(
+          const { TMPDIR, TMP, TEMP } = options.env;
+          // The real writer runs in the child's temporary-directory namespace.
+          void withEnvAsync({ TMPDIR, TMP, TEMP }, () =>
+            writeUpdatePostInstallDoctorResult({ resultPath, result: receipt }),
+          ).then(
             () => child.emit("close", exitCode),
             (error: unknown) => child.emit("error", error),
           );
