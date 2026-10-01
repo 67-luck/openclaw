@@ -28,6 +28,7 @@ export type NodeEventContext = Pick<
     params: Omit<NodePresenceActivityUpdate, "observedAtMs">,
   ) => { lastActiveAtMs: number; presenceUpdatedAtMs: number } | null;
   clearNodePresenceActivity?: NodeRegistry["clearPresenceActivity"];
+  updateNodeCommandFeatures?: NodeRegistry["updateCommandFeatures"];
   updateNodeHostStats?: (
     params: Omit<Parameters<NodeRegistry["updateHostStats"]>[0], "observedAtMs">,
   ) => ReturnType<NodeRegistry["updateHostStats"]>;
@@ -39,4 +40,11 @@ export type NodeEventContext = Pick<
 export type NodeEvent = {
   event: string;
   payloadJSON?: string | null;
+};
+
+export type NodeEventHandleResult = {
+  ok: true;
+  event: string;
+  handled: boolean;
+  reason?: string;
 };

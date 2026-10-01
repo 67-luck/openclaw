@@ -11,7 +11,6 @@ import {
 // the public plugin-sdk dts (check-plugin-sdk-exports guards this).
 import type { DesktopAvailability } from "../../packages/gateway-protocol/src/schema/environments.js";
 import type {
-  NodeHostStatsPayload,
   NodePluginToolDescriptor,
   NodeSkillDescriptor,
 } from "../../packages/gateway-protocol/src/schema/nodes.js";
@@ -79,6 +78,12 @@ import {
   selectActiveNodesByProfile,
   type NodePresenceActivityUpdate,
 } from "./node-registry.presence.js";
+import {
+  updateNodeCommandFeatures,
+  updateNodeHostStats,
+  type NodeCommandFeaturesUpdate,
+  type NodeHostStatsUpdate,
+} from "./node-registry.publications.js";
 import { isNodeWorkerHostClientId } from "./node-runner-inventory-runtime.js";
 import type { NodeSession } from "./node-session.types.js";
 import { normalizeNodeSkillDescriptors } from "./node-skill-descriptors.js";
@@ -797,21 +802,18 @@ export class NodeRegistry {
     return true;
   }
 
+  /** Feature metadata belongs to this exact connection and cannot widen its approved surface. */
+  updateCommandFeatures(params: NodeCommandFeaturesUpdate): Record<string, string[]> | null {
+    return updateNodeCommandFeatures(this.getRegisteredSession(params.nodeId), params);
+  }
+
   /** Stores the latest resource snapshot for the exact authenticated node connection. */
-  updateHostStats(params: {
-    nodeId: string;
-    connId?: string;
-    stats: NodeHostStatsPayload;
-    observedAtMs?: number;
-  }): NodeHostStats | null {
-    const node = this.getRegisteredSession(params.nodeId);
-    if (!node || node.connId !== params.connId) {
-      return null;
+  updateHostStats(params: NodeHostStatsUpdate): NodeHostStats | null {
+    const stats = updateNodeHostStats(this.getRegisteredSession(params.nodeId), params);
+    if (stats) {
+      invalidateNodeCatalog(this);
     }
-    // Resource snapshots are operator-facing; publishing active-node context would churn prompts.
-    node.hostStats = { ...params.stats, updatedAtMs: params.observedAtMs ?? Date.now() };
-    invalidateNodeCatalog(this);
-    return node.hostStats;
+    return stats;
   }
 
   /** Updates recent input activity for the exact authenticated node connection. */
