@@ -431,17 +431,19 @@ describe("runReplyAgent stalled turn continuation", () => {
     );
   });
 
-  it.each([
-    { defaultTarget: "personal", disableTools: true },
-    { defaultTarget: "workspace", disableTools: undefined },
-  ] as const)(
-    "keeps a $defaultTarget-target recovery inside its Workshop namespace",
-    async ({ defaultTarget, disableTools }) => {
+  it.each(["personal", "workspace"] as const)(
+    "keeps a %s-target recovery's tools inside its Workshop namespace",
+    async (defaultTarget) => {
       const stalled = createStalledRun({
         skillLibraryAuthoring: {
           target: "personal",
           defaultTarget,
-        } as FollowupRun["run"]["skillLibraryAuthoring"],
+          multipleProfiles: true,
+          bind: () => {
+            throw new Error("Personal authoring cannot move to a replacement run.");
+          },
+          invoke: vi.fn(),
+        },
       });
       await stallBeforeOutput(stalled);
 
@@ -449,8 +451,19 @@ describe("runReplyAgent stalled turn continuation", () => {
       await settleStalledOwner(stalled);
       await vi.waitFor(() => expect(drainedRuns).toHaveBeenCalledOnce());
       const recovery = drainedRuns.mock.calls[0]?.[0];
-      expect(recovery?.run.skillLibraryAuthoring).toBeUndefined();
-      expect(recovery?.disableTools).toBe(disableTools);
+      expect(recovery?.disableTools).toBeUndefined();
+      const authoring = recovery?.run.skillLibraryAuthoring;
+      if (defaultTarget === "workspace") {
+        // The agent's own Workshop is the workspace-target grant's wrapped tool.
+        expect(authoring).toBeUndefined();
+        return;
+      }
+      // Personal-only stays personal (no Workshop fallback) and holds no authority.
+      expect(authoring?.defaultTarget).toBe("personal");
+      expect(() => authoring?.bind({} as never)).not.toThrow();
+      await expect(authoring?.invoke({ action: "list" })).rejects.toMatchObject({
+        code: "AUTHORITY_EXPIRED",
+      });
     },
   );
 
