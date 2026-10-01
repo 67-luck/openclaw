@@ -184,6 +184,15 @@ const runtimeConsumers = [
     dir: "",
   },
   {
+    file: "src/gateway/server-methods/models-list.remote-catalog.integration.test.ts",
+    configs: [
+      "test/vitest/vitest.gateway-database-workers.config.ts",
+      "test/vitest/vitest.gateway.config.ts",
+    ],
+    mode: "runtime",
+    dir: "",
+  },
+  {
     file: "src/gateway/server-methods/models-list.worker-recovery.integration.test.ts",
     configs: [
       "test/vitest/vitest.gateway-database-workers.config.ts",
@@ -515,11 +524,14 @@ export async function prepareVitestRuntime(
   }
   options.signal?.throwIfAborted();
   const cwd = path.resolve(import.meta.dirname, "../..");
-  if (!options.runtimePrepared) {
+  if (!options.runtimePrepared || controlUi) {
     console.error(`[test] preparing ${mode} runtime before Vitest workers`);
     const code = await runManagedCommand({
       bin: process.execPath,
-      args: ["scripts/prepare-vitest-runtime.mjs"],
+      args: [
+        "scripts/prepare-vitest-runtime.mjs",
+        ...(controlUi ? ["--require-current-head"] : []),
+      ],
       cwd,
       env: { ...env, ...(mode === "private-qa" ? { OPENCLAW_BUILD_PRIVATE_QA: "1" } : {}) },
       signal: options.signal,

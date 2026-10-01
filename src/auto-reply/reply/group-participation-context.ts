@@ -4,6 +4,7 @@ import type { AgentMessage } from "../../../packages/agent-core/src/types.js";
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.types.js";
 import { isIndexedSessionEntry } from "../../config/sessions/session-entry-codec.js";
 import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-transcript-read-worker-runtime.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { normalizeInputProvenance } from "../../sessions/input-provenance.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
@@ -62,8 +63,7 @@ function projectMessage(entryId: string, message: AgentMessage) {
   return { message: projected, confirmed };
 }
 
-/** Keep source conversation separate from model output whose delivery is unknown. */
-export async function readGroupParticipationEvidence(params: {
+type GroupParticipationEvidenceParams = {
   agentId: string;
   agentName?: string;
   target: SessionTranscriptRuntimeTarget;
@@ -73,9 +73,43 @@ export async function readGroupParticipationEvidence(params: {
   acceptedInputs?: readonly GroupParticipationInput[];
   adoptedRecorders?: ReadonlySet<UserTurnTranscriptRecorder>;
   signal: AbortSignal;
-}): Promise<GroupParticipationEvidence | undefined> {
+  timeoutMs: number;
+};
+
+/** Bound read-only evidence acquisition without cancelling the ordinary reply owner. */
+export async function readGroupParticipationEvidence(
+  params: GroupParticipationEvidenceParams,
+): Promise<GroupParticipationEvidence | undefined> {
+  params.signal.throwIfAborted();
+  if (params.timeoutMs <= 0) {
+    return undefined;
+  }
+  const deadline = new AbortController();
+  const signal = AbortSignal.any([params.signal, deadline.signal]);
+  const timer = setTimeout(() => deadline.abort(), params.timeoutMs);
+  try {
+    return await racePromiseWithAbortSignal(
+      collectGroupParticipationEvidence({ ...params, signal }),
+      signal,
+    );
+  } catch (error) {
+    params.signal.throwIfAborted();
+    if (deadline.signal.aborted) {
+      return undefined;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Keep source conversation separate from model output whose delivery is unknown.
+async function collectGroupParticipationEvidence(
+  params: GroupParticipationEvidenceParams,
+): Promise<GroupParticipationEvidence | undefined> {
   const current =
     params.recorder.getPersistedMessage?.() ?? (await params.recorder.resolveMessage());
+  params.signal.throwIfAborted();
   if (!current) {
     throw new Error("Group participation requires its source message");
   }
@@ -112,6 +146,7 @@ export async function readGroupParticipationEvidence(params: {
   for (const [index, input] of sources.entries()) {
     const message =
       input.recorder.getPersistedMessage?.() ?? (await input.recorder.resolveMessage());
+    params.signal.throwIfAborted();
     if (!message) {
       if (params.adoptedRecorders?.has(input.recorder)) {
         return undefined;

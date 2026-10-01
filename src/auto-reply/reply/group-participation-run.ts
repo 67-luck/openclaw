@@ -133,6 +133,10 @@ function createGroupParticipationRun(params: {
         return undefined;
       }
       const inputs = readGroupParticipationInputs(operation);
+      if (inputs.requiresOrdinaryBehavior) {
+        await useOrdinaryBehavior();
+        return undefined;
+      }
       const evidence = await readGroupParticipationEvidence({
         agentId: target.agentId,
         agentName: run.groupParticipation?.agentName,
@@ -143,6 +147,7 @@ function createGroupParticipationRun(params: {
         acceptedInputs: inputs.sources,
         adoptedRecorders: inputs.adoptedRecorders,
         signal: operation.abortSignal,
+        timeoutMs: deadline - performance.now(),
       });
       assertCurrent();
       if (selection !== currentSelection()) {

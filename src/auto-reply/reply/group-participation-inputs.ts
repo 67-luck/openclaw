@@ -15,6 +15,7 @@ export type GroupParticipationContext = {
 
 type AcceptedGroupInputs = {
   revision: number;
+  requiresOrdinaryBehavior?: boolean;
   identities: Set<string | object>;
   adoptedRecorders: Set<UserTurnTranscriptRecorder>;
   sources: GroupParticipationInput[];
@@ -45,6 +46,12 @@ export function recordGroupParticipationInput(
     }
     accepted = { revision: 0, identities: new Set(), adoptedRecorders: new Set(), sources: [] };
     acceptedInputs.set(operation, accepted);
+  }
+  // An adopted mention or command must retain its ordinary reply obligation.
+  // Queued sources keep their own future operation until actually adopted.
+  if (admission !== "queued" && !run.groupParticipation && !accepted.requiresOrdinaryBehavior) {
+    accepted.requiresOrdinaryBehavior = true;
+    accepted.revision++;
   }
   const sources = run.groupParticipation?.sources ?? [
     {
@@ -83,6 +90,7 @@ export function readGroupParticipationInputs(operation: ReplyOperation) {
   const accepted = acceptedInputs.get(operation);
   return {
     revision: accepted?.revision ?? 0,
+    requiresOrdinaryBehavior: accepted?.requiresOrdinaryBehavior === true,
     sources: accepted?.sources.slice() ?? [],
     adoptedRecorders: new Set(accepted?.adoptedRecorders),
   };

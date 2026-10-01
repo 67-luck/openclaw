@@ -10,7 +10,10 @@ import { createGroupReplyFixture } from "./group-participation.reply.test-suppor
 const decision = vi.hoisted(() =>
   vi.fn<typeof import("../../decisions/runtime.js").evaluateDecision>(),
 );
-vi.mock("../../decisions/runtime.js", () => ({ evaluateDecision: decision }));
+vi.mock("../../decisions/runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../decisions/runtime.js")>()),
+  evaluateDecision: decision,
+}));
 
 const answer = (content: string) => ({ delta: { role: "assistant", content } });
 const unavailable: DecisionOutcome = { status: "unavailable", reason: "overloaded" };

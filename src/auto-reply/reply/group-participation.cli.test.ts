@@ -23,7 +23,10 @@ vi.mock("../../agents/embedded-agent.js", async (importOriginal) => ({
   runEmbeddedAgent: models.embedded,
 }));
 vi.mock("../../agents/cli-runner.js", () => ({ runCliAgent: models.cli }));
-vi.mock("../../decisions/runtime.js", () => ({ evaluateDecision: models.decision }));
+vi.mock("../../decisions/runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../decisions/runtime.js")>()),
+  evaluateDecision: models.decision,
+}));
 
 let fixture: Awaited<ReturnType<typeof createGroupReplyFixture>>;
 beforeAll(async () => {
@@ -364,6 +367,7 @@ it("does not classify a textless source as a negative attention judgment", async
       },
       recorder,
       signal: new AbortController().signal,
+      timeoutMs: 30_000,
     }),
   ).toBeUndefined();
 });
@@ -393,6 +397,7 @@ it("uses ordinary generation when newly adopted media cannot be assessed", async
         {
           userTurnTranscriptRecorder: recorder,
           messageId: "adopted-media",
+          groupParticipation: {},
           run: { messageProvider: "telegram" },
         },
         "steer",
@@ -406,3 +411,84 @@ it("uses ordinary generation when newly adopted media cannot be assessed", async
   expect(models.embedded).toHaveBeenCalledTimes(1);
   expect(models.embedded.mock.calls[0]?.[0].terminalReplyExpectation).toBe("required");
 });
+
+it("restores an ordinary required reply for an adopted participation-bypass source", async () => {
+  fixture.config.agents!.defaults!.model = { primary: "test-provider/test-model" };
+  const groupId = "-10116";
+  models.decision.mockImplementation(async (batch) => {
+    const operation = replyRunRegistry.get("agent:main:telegram:group:" + groupId);
+    if (!operation) {
+      throw new Error("The reply owner is missing");
+    }
+    const source = readGroupParticipationInputs(operation).sources[0];
+    if (!source) {
+      throw new Error("The source is missing");
+    }
+    recordGroupParticipationInput(
+      operation,
+      {
+        userTurnTranscriptRecorder: source.recorder,
+        messageId: "mentioned-followup",
+        run: { messageProvider: "telegram" },
+      },
+      "steer",
+    );
+    return judgment(batch, { attention: "none" });
+  });
+  models.embedded.mockResolvedValue({
+    payloads: [{ text: "Required followup reply." }],
+    meta: { durationMs: 1 },
+  });
+  const reply = await fixture.reply("Chatter", "before-mention", groupId);
+  expect(Array.isArray(reply) ? reply : [reply]).toEqual(
+    expect.arrayContaining([expect.objectContaining({ text: "Required followup reply." })]),
+  );
+  expect(models.decision).toHaveBeenCalledTimes(1);
+  expect(models.embedded).toHaveBeenCalledTimes(1);
+  expect(models.embedded.mock.calls[0]?.[0].terminalReplyExpectation).toBe("required");
+});
+
+it.each(["deadline", "cancel"] as const)(
+  "bounds pending evidence acquisition on %s",
+  async (kind) => {
+    const recorder = createUserTurnTranscriptRecorder({ input: {}, target: () => undefined });
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(recorder, "resolveMessage").mockImplementation(async () => {
+      await blocked;
+      return undefined;
+    });
+    const controller = new AbortController();
+    vi.useFakeTimers();
+    try {
+      const pending = readGroupParticipationEvidence({
+        agentId: "main",
+        target: {
+          agentId: "main",
+          sessionId: "blocked-source",
+          sessionKey: "agent:main:telegram:group:-10117",
+          storePath: fixture.storePath,
+        },
+        recorder,
+        signal: controller.signal,
+        timeoutMs: 30_000,
+      });
+      if (kind === "cancel") {
+        const failure = new Error("Turn cancelled");
+        const assertion = expect(pending).rejects.toBe(failure);
+        controller.abort(failure);
+        await assertion;
+      } else {
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(await pending).toBeUndefined();
+        expect(controller.signal.aborted).toBe(false);
+      }
+    } finally {
+      release();
+      await blocked;
+      vi.useRealTimers();
+    }
+  },
+);
