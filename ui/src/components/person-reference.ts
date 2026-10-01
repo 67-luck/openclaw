@@ -1,13 +1,12 @@
 import { ContextConsumer } from "@lit/context";
 import { html, nothing, render, type PropertyValues } from "lit";
 import { property } from "lit/decorators.js";
-import type { UserProfile } from "../../../packages/gateway-protocol/src/schema/users.js";
 import { buildControlUiUserAvatarPath } from "../../../src/gateway/control-ui-user-avatar-route.js";
 import { pathForRoute } from "../app-route-paths.ts";
 import { selectApplicationSession } from "../app/agent-selection.ts";
 import { applicationContext } from "../app/context.ts";
 import { t } from "../i18n/index.ts";
-import { readPersonProfile } from "../lib/person-profile.ts";
+import { observePersonProfile } from "../lib/person-profile.ts";
 import {
   presenceMatchesProfile,
   projectPresencePayload,
@@ -58,8 +57,23 @@ class PersonReference extends OpenClawLightDomContentsElement {
   private readonly portal = new PortaledHovercardController(() => this.close());
   private stopRoute: (() => void) | undefined;
   private stopGateway: (() => void) | undefined;
-  private person: PresenceViewer | null | undefined;
-  private profile: UserProfile | undefined;
+  private profileRead: ReturnType<typeof observePersonProfile> | undefined;
+  private get person(): PresenceViewer | null | undefined {
+    const profile = this.profileRead?.profile;
+    if (!profile) {
+      return profile;
+    }
+    return {
+      id: profile.id,
+      identity: { type: "profile", id: profile.id },
+      name:
+        profile.displayName?.trim() || profile.githubIdentity?.login || t("presence.card.person"),
+      avatarUrl: profile.hasAvatar
+        ? buildControlUiUserAvatarPath(profile.id, profile.updatedAt)
+        : undefined,
+      watchedSessions: [],
+    };
+  }
   private activity: ReturnType<typeof observePersonActivityData> | undefined;
   private readonly activityExpiry = createPresenceActivityController(
     this,
@@ -118,8 +132,8 @@ class PersonReference extends OpenClawLightDomContentsElement {
     document.removeEventListener("focusin", this.outside, true);
     document.removeEventListener("keydown", this.escape, true);
     this.portal.reset();
-    this.person = undefined;
-    this.profile = undefined;
+    this.profileRead?.dispose();
+    this.profileRead = undefined;
     this.trigger?.setAttribute("aria-expanded", "false");
     this.trigger?.setAttribute("aria-haspopup", "dialog");
   };
@@ -183,55 +197,11 @@ class PersonReference extends OpenClawLightDomContentsElement {
       });
       this.activity = observePersonActivityData(context, () => this.renderCard());
     }
-    this.person = this.connection.capture() ? undefined : null;
-    this.renderCard();
-    void this.loadPerson(card);
-  }
-
-  private async loadPerson(card: HTMLDivElement) {
-    const scope = this.connection.capture();
-    const context = this.context.value;
-    const profileId = this.profileId;
-    if (!scope || !context) {
-      return;
+    if (context) {
+      this.profileRead = observePersonProfile(context.gateway, this.profileId, () =>
+        this.renderCard(),
+      );
     }
-    let person: PresenceViewer | null = null;
-    try {
-      const profile = await readPersonProfile(context.gateway, profileId);
-      if (profile && !profile.mergedInto) {
-        if (
-          this.portal.card === card &&
-          this.profileId === profileId &&
-          this.context.value === context &&
-          this.connection.isCurrent(scope)
-        ) {
-          this.profile = profile;
-        }
-        person = {
-          id: profile.id,
-          identity: { type: "profile", id: profile.id },
-          name:
-            profile.displayName?.trim() ||
-            profile.githubIdentity?.login ||
-            t("presence.card.person"),
-          avatarUrl: profile.hasAvatar
-            ? buildControlUiUserAvatarPath(profile.id, profile.updatedAt)
-            : undefined,
-          watchedSessions: [],
-        };
-      }
-    } catch {
-      // An unavailable or unauthorized profile remains an explicit, unresolved reference.
-    }
-    if (
-      this.portal.card !== card ||
-      this.profileId !== profileId ||
-      this.context.value !== context ||
-      !this.connection.isCurrent(scope)
-    ) {
-      return;
-    }
-    this.person = person;
     this.renderCard();
   }
 
@@ -269,7 +239,7 @@ class PersonReference extends OpenClawLightDomContentsElement {
           ? renderPersonActivityCard({
               user,
               gateway: context.gateway,
-              profile: this.profile,
+              profileRead: this.profileRead,
               profileChanged: () => this.renderCard(),
               openPermissions: (profileId) => {
                 this.close();

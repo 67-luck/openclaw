@@ -1,3 +1,4 @@
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import type {
   UserProfile,
   UsersListResult,
@@ -20,7 +21,10 @@ export function canonicalPersonProfile(
   return profile && !profile.mergedInto ? profile : null;
 }
 
-export function canReadPersonProfile(gateway: ApplicationGateway, profileId: string): boolean {
+export function canReadPersonProfile(
+  gateway: Pick<ApplicationGateway, "snapshot">,
+  profileId: string,
+): boolean {
   const snapshot = gateway.snapshot;
   const self = snapshot.selfUser?.identity;
   return (
@@ -33,7 +37,7 @@ export function canReadPersonProfile(gateway: ApplicationGateway, profileId: str
 
 /** Self reads stay with the connection owner; other people require broad directory access. */
 export async function readPersonProfile(
-  gateway: ApplicationGateway,
+  gateway: Pick<ApplicationGateway, "snapshot" | "loadSelfProfile">,
   profileId: string,
 ): Promise<UserProfile | null> {
   if (!canReadPersonProfile(gateway, profileId)) {
@@ -51,4 +55,68 @@ export async function readPersonProfile(
   }
   const result = await snapshot.client.request<UsersListResult>("users.list", {});
   return canonicalPersonProfile(result.profiles, profileId);
+}
+
+/** Owns canonical person facts, their profile-change invalidation, and transport-scoped reads. */
+export function observePersonProfile(
+  gateway: Pick<
+    ApplicationGateway,
+    "snapshot" | "loadSelfProfile" | "subscribeEvents" | "connectionRevision"
+  >,
+  profileId: string,
+  changed: () => void,
+) {
+  const { client, hello } = gateway.snapshot;
+  const revision = gateway.connectionRevision;
+  const selfId = gateway.snapshot.selfUser?.identity?.id;
+  let disposed = false;
+  let generation = 0;
+  const isCurrent = () =>
+    !disposed &&
+    client === gateway.snapshot.client &&
+    hello === gateway.snapshot.hello &&
+    revision === gateway.connectionRevision &&
+    selfId === gateway.snapshot.selfUser?.identity?.id &&
+    canReadPersonProfile(gateway, profileId);
+  let profile: UserProfile | null | undefined = isCurrent() ? undefined : null;
+  const refresh = async (notifyLoading = true) => {
+    if (!isCurrent()) {
+      return;
+    }
+    const request = ++generation;
+    profile = undefined;
+    if (notifyLoading) {
+      changed();
+    }
+    const result = await readPersonProfile(gateway, profileId).catch(() => null);
+    if (request !== generation || !isCurrent()) {
+      return;
+    }
+    profile = result;
+    changed();
+  };
+  const stop = gateway.subscribeEvents((event) => {
+    if (
+      event.event === "sessions.changed" &&
+      asOptionalRecord(event.payload)?.reason === "profile-identity"
+    ) {
+      void refresh();
+    }
+  });
+  if (profile === undefined) {
+    void refresh(false);
+  }
+  return {
+    gateway,
+    profileId,
+    get profile() {
+      return isCurrent() ? profile : null;
+    },
+    isCurrent,
+    dispose() {
+      disposed = true;
+      generation += 1;
+      stop();
+    },
+  };
 }

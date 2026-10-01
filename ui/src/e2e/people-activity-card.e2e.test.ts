@@ -138,6 +138,26 @@ async function capturePeopleCard(page: Page, filename: string) {
 }
 
 suite.define(() => {
+  it("refreshes an open person's assigned role after canonical profile invalidation", async () => {
+    await suite.withPage({ viewport: { width: 1280, height: 900 } }, async ({ page }) => {
+      const data = scenario();
+      const gateway = await installMockGateway(page, data);
+      await page.goto(controlUiSessionUrl(suite.server.baseUrl, selected));
+      await page.locator('[data-online-user-id="alice"]').hover();
+      const card = page.getByRole("dialog", { name: "Activity for Alice" });
+      await card.getByText("Assigned role: guest", { exact: true }).waitFor();
+      await gateway.setMethodResponse("users.list", {
+        profiles: data.methodResponses["users.list"].profiles.map((person) =>
+          Object.assign({}, person, { role: "maintainer" }),
+        ),
+      });
+      await gateway.emitGatewayEvent("sessions.changed", { reason: "profile-identity" });
+      await card.getByText("Assigned role: maintainer", { exact: true }).waitFor();
+      expect(await card.getByText("Assigned role: guest", { exact: true }).count()).toBe(0);
+      expect(await gateway.getRequests("users.list")).toHaveLength(2);
+    });
+  });
+
   it("opens read-only permissions below activity without treating a role as live grants", async () => {
     await suite.withPage(
       { viewport: { width: 1280, height: 900 }, colorScheme: "dark" },

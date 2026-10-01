@@ -3,7 +3,6 @@ import { AsyncDirective } from "lit/async-directive.js";
 import { directive } from "lit/directive.js";
 import { keyed } from "lit/directives/keyed.js";
 import { repeat } from "lit/directives/repeat.js";
-import type { UserProfile } from "../../../packages/gateway-protocol/src/schema/users.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import type { GatewaySessionRow } from "../api/types.ts";
 import { pathForRoute } from "../app-route-paths.ts";
@@ -12,7 +11,7 @@ import { i18n, t } from "../i18n/index.ts";
 import { gatewayClientKind } from "../lib/gateway-client-kind.ts";
 import { renderHoverMarquee } from "../lib/hover-marquee.ts";
 import { shouldHandleNavigationClick } from "../lib/navigation-click.ts";
-import { canReadPersonProfile, readPersonProfile } from "../lib/person-profile.ts";
+import { canReadPersonProfile, observePersonProfile } from "../lib/person-profile.ts";
 import { describePlatform } from "../lib/platform-label.ts";
 import {
   presenceMatchesProfile,
@@ -41,7 +40,7 @@ type ScopedSession = { row: GatewaySessionRow; agentId: string };
 type PersonCardInput = {
   user: PresenceViewer;
   gateway?: ApplicationGateway;
-  profile?: UserProfile;
+  profileRead?: ReturnType<typeof observePersonProfile>;
   profileChanged?: () => void;
   openPermissions?: (profileId: string) => void;
   sessionData: PersonActivityData | undefined;
@@ -223,75 +222,55 @@ function renderSessions(
 // Lit discards this state with the card root; callers need no selection cache or reset path.
 class PersonActivityCard extends AsyncDirective {
   recentSessionKeys?: string[];
-  profile: UserProfile | null | undefined;
   private input?: PersonCardInput;
-  private readOwner?: {
-    gateway: ApplicationGateway;
-    client: ApplicationGateway["snapshot"]["client"];
-    hello: ApplicationGateway["snapshot"]["hello"];
-    revision: number;
-    profileId: string;
-  };
-  private generation = 0;
+  private profileRead?: ReturnType<typeof observePersonProfile>;
+
+  get profile() {
+    const input = this.input;
+    const gateway = input?.gateway;
+    const profileId = input?.user.identity?.type === "profile" ? input.user.identity.id : undefined;
+    const read = input?.profileRead ?? this.profileRead;
+    if (
+      !gateway ||
+      !profileId ||
+      read?.gateway !== gateway ||
+      !canReadPersonProfile(gateway, profileId)
+    ) {
+      return null;
+    }
+    const profile = read.profile;
+    return profile && profile.id !== profileId ? null : profile;
+  }
 
   render(input: PersonCardInput) {
     this.input = input;
     const gateway = input.gateway;
     const profileId = input.user.identity?.type === "profile" ? input.user.identity.id : undefined;
-    const allowed = Boolean(gateway && profileId && canReadPersonProfile(gateway, profileId));
-    const owner = this.readOwner;
-    if (!gateway || !profileId || !allowed) {
-      this.generation += 1;
-      this.readOwner = undefined;
-      this.profile = null;
-    } else if (input.profile) {
-      this.profile = input.profile;
+    if (input.profileRead || !gateway || !profileId || !canReadPersonProfile(gateway, profileId)) {
+      this.profileRead?.dispose();
+      this.profileRead = undefined;
     } else if (
-      !owner ||
-      owner.gateway !== gateway ||
-      owner.client !== gateway.snapshot.client ||
-      owner.hello !== gateway.snapshot.hello ||
-      owner.revision !== gateway.connectionRevision ||
-      owner.profileId !== profileId
+      !this.profileRead ||
+      this.profileRead.gateway !== gateway ||
+      this.profileRead.profileId !== profileId ||
+      !this.profileRead.isCurrent()
     ) {
-      const generation = ++this.generation;
-      this.readOwner = {
-        gateway,
-        client: gateway.snapshot.client,
-        hello: gateway.snapshot.hello,
-        revision: gateway.connectionRevision,
-        profileId,
-      };
-      this.profile = undefined;
-      void readPersonProfile(gateway, profileId)
-        .catch(() => null)
-        .then((profile) => {
-          const current = this.readOwner;
-          if (
-            !this.isConnected ||
-            generation !== this.generation ||
-            !current ||
-            current.client !== gateway.snapshot.client ||
-            current.hello !== gateway.snapshot.hello ||
-            current.revision !== gateway.connectionRevision ||
-            !canReadPersonProfile(gateway, profileId)
-          ) {
-            return;
-          }
-          this.profile = profile;
-          if (this.input) {
-            this.setValue(renderCard(this.input, this));
-            this.input.profileChanged?.();
-          }
-        });
+      this.profileRead?.dispose();
+      const read = observePersonProfile(gateway, profileId, () => {
+        if (!this.isConnected || this.profileRead !== read || !this.input) {
+          return;
+        }
+        this.setValue(renderCard(this.input, this));
+        this.input.profileChanged?.();
+      });
+      this.profileRead = read;
     }
     return renderCard(input, this);
   }
 
   protected override disconnected() {
-    this.generation += 1;
-    this.readOwner = undefined;
-    this.profile = null;
+    this.profileRead?.dispose();
+    this.profileRead = undefined;
   }
 
   protected override reconnected() {
