@@ -320,7 +320,9 @@ it.each(["agent:main:helper", "legacy-session", undefined])(
       "Waiting for a turn. Human messages may take priority.",
     );
     expect(indicator.textContent?.trim()).toBe("");
-    expect(indicator.querySelector("svg")).not.toBeNull();
+    expect(indicator.querySelector(".session-run-spinner")?.getAttribute("aria-hidden")).toBe(
+      "true",
+    );
     if (sessionKey === "agent:main:helper") {
       const titler = new SessionLinkTitler(container);
       titler.client = new GatewayBrowserClient({ url: "ws://localhost" });
@@ -333,7 +335,7 @@ it.each(["agent:main:helper", "legacy-session", undefined])(
       await titler.decorate(indicator, true);
       expect(indicator.getAttribute("href")).toContain("/chat/");
       render(template(), container);
-      expect(indicator.querySelector("svg")).not.toBeNull();
+      expect(indicator.querySelector(".session-run-spinner")).not.toBeNull();
       expect(indicator.getAttribute("aria-label")).toBe("Forwarded from Verification helper");
       expect(indicator.title).toContain("Human messages may take priority");
       expect(indicator.getAttribute("aria-description")).toContain(

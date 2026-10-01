@@ -24,6 +24,10 @@
   text-decoration: none;
 }
 
+.chat-forwarded-indicator__spinner {
+  --accent: var(--muted);
+}
+
 .chat-forwarded-indicator:focus-visible {
   border-radius: var(--radius-sm);
   outline: 2px solid var(--ring);

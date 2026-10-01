@@ -724,7 +724,9 @@ it.each([
     const indicator = agentRow.querySelector(".chat-queue__leading .chat-forwarded-indicator");
     expect(indicator?.getAttribute("aria-label")).toContain("Verification helper");
     expect(indicator?.getAttribute("title")).toContain("Verification helper");
-    expect(indicator?.querySelector("svg")).not.toBeNull();
+    expect(indicator?.querySelector(".session-run-spinner")?.getAttribute("aria-hidden")).toBe(
+      "true",
+    );
     expect(agentRow.textContent).not.toContain("reconnect");
     expect(agentRow.querySelector('a[data-session-key="agent:main:helper"]')).not.toBeNull();
     expect(
