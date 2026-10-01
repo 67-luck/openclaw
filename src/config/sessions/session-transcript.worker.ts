@@ -500,15 +500,9 @@ serveOwnedWorkerTasks(
             };
           }
           if (request.kind === "session-title-fields") {
-            const { readSessionTitleFieldsFromTranscript } =
-              await import("../../gateway/session-transcript-title-reader.js");
-            return {
-              kind: "session-title-fields" as const,
-              fields: readSessionTitleFieldsFromTranscript(request.scope, {
-                includeInterSession: request.includeInterSession,
-                readOnly: true,
-              }),
-            };
+            const { readSessionTranscriptTitleInWorker } =
+              await import("./session-transcript-title.worker.js");
+            return readSessionTranscriptTitleInWorker(request);
           }
           if (request.kind === "session-preview") {
             const { readSessionPreviewItemsReadOnly } =

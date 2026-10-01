@@ -12,6 +12,7 @@ import {
 } from "../../infra/runtime-worker-url.js";
 import { runWithSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
 import { storageProcessTestEntrypoints } from "../../infra/storage-process-runtime.test-support.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {
   closeOpenClawAgentDatabasesAsync,
@@ -62,7 +63,18 @@ it("rechecks same-binding metadata updates and clear through fresh joins without
       updatedAt: 100,
       spawnedBy: "agent:main:parent",
     });
-    await upsertAcpSessionMeta({ ...scope, mutate: () => meta });
+    const publications: string[] = [];
+    const unsubscribe = sessionChanges.subscribeFacts((change) => {
+      if ("sessionKey" in change && change.sessionKey === scope.sessionKey) {
+        publications.push(change.scope ?? "metadata");
+      }
+    });
+    try {
+      await upsertAcpSessionMeta({ ...scope, mutate: () => meta });
+      expect(publications).toEqual(["session-entry", "metadata"]);
+    } finally {
+      unsubscribe();
+    }
     const observe = observeHostDataSql();
     let prepared: Awaited<ReturnType<typeof prepareAcpSessionControlRead>> | undefined;
     try {

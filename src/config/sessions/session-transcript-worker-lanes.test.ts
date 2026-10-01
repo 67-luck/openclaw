@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { channel } from "node:diagnostics_channel";
 import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
+import { findSourceImportBackedges } from "../../../test/helpers/source-import-closure.js";
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../../infra/sqlite-handle-lifecycle.js";
 import type { WorkerTaskOptions } from "../../infra/worker-task-pool.types.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -112,6 +113,15 @@ afterAll(() => {
   vi.useRealTimers();
   observed.setTimeout.mockRestore();
   observed.clearTimeout.mockRestore();
+});
+
+it("keeps title reads behind the admitted history-worker operation", () => {
+  expect(
+    findSourceImportBackedges("src/config/sessions/session-transcript.worker.ts", [
+      "src/gateway/session-transcript-title-reader.ts",
+      "src/config/sessions/session-transcript-title.worker.ts",
+    ]),
+  ).toEqual([]);
 });
 
 it("dedupes prewarm through history custody without extending idle retirement", async () => {

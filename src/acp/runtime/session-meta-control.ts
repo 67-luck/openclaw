@@ -1,5 +1,7 @@
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { SessionMutationFactsUnavailableError } from "../../gateway/session-mutation-authorization-error.js";
+import { prepareSessionMutationFacts } from "../../gateway/session-sharing-preparation.js";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
@@ -45,11 +47,6 @@ export async function prepareAcpSessionControlRead(params: {
   const databasePath = resolveOpenClawStateSqlitePath(captured.env);
   const incognito = isIncognitoSessionKey(target.storeSessionKey);
   const shared = captureOpenClawStateReadContext(databasePath);
-  const [{ prepareSessionMutationFacts }, { SessionMutationFactsUnavailableError }] =
-    await Promise.all([
-      import("../../gateway/session-sharing-preparation.js"),
-      import("../../gateway/session-mutation-authorization-error.js"),
-    ]);
   captured.assertCurrent();
   shared.maintenanceScope?.assertAdmission();
   shared.admission.assertCurrent();

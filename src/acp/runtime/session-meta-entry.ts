@@ -92,12 +92,13 @@ export async function updateAcpSessionStoreEntry(params: {
           }
           const unknown = admitted.admission.settlement?.kind !== "completed" || !result;
           const published = publication?.settle(result?.publication, unknown);
-          if (published) {
+          published?.publish();
+          if (published?.identity) {
             publishCommittedSessionIdentity(
               scope.agentId,
               identity.physicalIdentity,
-              published.previous,
-              published.current,
+              published.identity.previous,
+              published.identity.current,
             );
           }
           if (unknown) {
