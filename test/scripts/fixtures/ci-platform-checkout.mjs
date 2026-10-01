@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   createWindowsProcessCensus,
   requestWindowsProcessCensus,
@@ -25,6 +25,8 @@ const recordsDir = path.join(root, "pids");
 const eventsFile = path.join(root, "events.jsonl");
 const commandsFile = path.join(root, "commands.jsonl");
 const optionsFile = path.join(root, "fixture-options.json");
+const receiptClientFile = path.join(root, "publication-receipts.mjs");
+let publicationReceiptSender;
 const options = fs.existsSync(optionsFile) ? JSON.parse(fs.readFileSync(optionsFile, "utf8")) : {};
 const localGit = options.localGit ?? options.performance;
 // Preload identity support before the cleanup handshake; its TypeScript graph
@@ -139,7 +141,11 @@ function notifyPublication() {
     // The owner can close IPC during cleanup. Its exit and existing watchdog
     // still bound readiness; a closed channel must not crash an orphan actor.
     process.send("fixture-publication", () => {});
+    return;
   }
+  // Readiness publishers stay alive through their release/cleanup handshake;
+  // an unref'd client does not promise delivery for immediately exiting actors.
+  publicationReceiptSender?.(root, "fixture-publication");
 }
 
 function publish(name, value) {
@@ -332,15 +338,14 @@ async function waitForReady(predicate, child, stopped = () => !fs.existsSync(lea
   // Readiness belongs to the owned child's lifetime. The supervisor's existing
   // watchdog bounds startup; an independent short timer can preempt legal Git work.
   return new Promise((resolve, reject) => {
-    const watchers = [];
+    const publisher = child.channel ? child : process;
     let finished = false;
     const finish = (ready, error) => {
       if (finished) return;
       finished = true;
-      for (const watcher of watchers) watcher.close();
       child.off("exit", check);
       child.off("error", fail);
-      child.off("message", published);
+      publisher.off("message", published);
       if (error) reject(error);
       else resolve(ready);
     };
@@ -360,19 +365,9 @@ async function waitForReady(predicate, child, stopped = () => !fs.existsSync(lea
       }
     };
     try {
-      // Owned Node actors signal after publishing. Directory notifications can
-      // be coalesced before the final rename, leaving a true predicate unwoken.
-      // Subscribe before the initial read so publication cannot fall between them.
-      if (child.channel) {
-        child.on("message", published);
-      } else {
-        // Bash cleanup/backoff waits retain their filesystem notification path.
-        for (const directory of [root, recordsDir]) {
-          const watcher = fs.watch(directory, check);
-          watchers.push(watcher);
-          watcher.on("error", fail);
-        }
-      }
+      // Direct children use IPC; cross-shell publishers reach this supervisor through
+      // its outer receipt owner. Subscribe before rereading the authoritative marker.
+      publisher.on("message", published);
       child.once("exit", check);
       child.once("error", fail);
       check();
@@ -464,6 +459,12 @@ function writeConsumer(target, tool) {
 
 async function command() {
   operationDeadline = holdLease();
+  if (!process.connected && fs.existsSync(receiptClientFile)) {
+    ({ sendReceipt: publicationReceiptSender } = await import(
+      pathToFileURL(receiptClientFile).href
+    ));
+    assertActorLease();
+  }
   const descendant = mode === "child" || mode === "grandchild";
   // Descendants publish their actual attempt below. Replacing a provisional PID
   // record can race a Windows reader and fail before readiness with EPERM.
@@ -1507,15 +1508,7 @@ source "$2"`,
     }
     if (options.cancelDuringBackoff) {
       try {
-        await until(
-          () =>
-            Boolean(stopping) ||
-            shell.exitCode !== null ||
-            shell.signalCode !== null ||
-            fs.existsSync(path.join(root, "backoff-ready.json")),
-          "owned backoff readiness",
-          operationDeadline,
-        );
+        await ready("backoff-ready.json");
         if (!stopping && shell.exitCode === null && shell.signalCode === null) {
           await boundary("backoff-cancel");
           shell.kill("SIGTERM");

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fork, type ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,11 @@ import {
   inspectManagedProcessGroup,
   terminateManagedChild,
 } from "../../scripts/lib/managed-child-process.mts";
+import { createDeferredCore as createDeferred } from "../../src/shared/deferred.ts";
+import {
+  fixtureReceiptClientSource,
+  openFixtureReceiptChannel,
+} from "../helpers/fixture-receipts.ts";
 
 type Step = { name?: string; run?: string; env?: Record<string, string | number> };
 const processRecord = z.object({
@@ -174,10 +179,18 @@ export async function withCiCheckoutFixture<T>(
   const artifacts = fileURLToPath(new URL("../../.artifacts/ci-checkout/", import.meta.url));
   mkdirSync(artifacts, { recursive: true });
   const root = realpathSync(mkdtempSync(path.join(artifacts, "checkout ")));
+  const receipts = await openFixtureReceiptChannel().catch((error: unknown) => {
+    rmSync(root, { recursive: true, force: true });
+    throw error;
+  });
   let supervisor: ChildProcess;
   try {
     mkdirSync(path.join(root, "workspace"));
     const env = { ...process.env, ...prepare(root) };
+    writeFileSync(
+      path.join(root, "publication-receipts.mjs"),
+      fixtureReceiptClientSource(receipts.endpoint) + "\nexport { sendReceipt };\n",
+    );
     supervisor = fork(ciCheckoutFixture, ["supervise", root, scenario], {
       detached: true,
       execArgv: [],
@@ -185,6 +198,17 @@ export async function withCiCheckoutFixture<T>(
       env,
     });
   } catch (error) {
+    try {
+      await receipts.close();
+    } catch (closeError) {
+      throw new AggregateError(
+        [error, closeError],
+        "Fixture setup and publication cleanup failed",
+        {
+          cause: closeError,
+        },
+      );
+    }
     rmSync(root, { recursive: true, force: true });
     throw error;
   }
@@ -197,11 +221,66 @@ export async function withCiCheckoutFixture<T>(
   });
   supervisor.stderr?.on("data", (data) => (stderr += String(data)));
   supervisor.on("error", (error) => (stderr += `${error}\n`));
+  const publicationFailure = createDeferred<never>();
+  let publicationClosing = false;
+  let publicationError: unknown;
+  // Receipts only wake this retained supervisor; it still owns the marker,
+  // child-lifetime and lease checks before cancellation can proceed.
+  const relay = (async () => {
+    for (let count = 1; ; count += 1) {
+      if (publicationClosing) {
+        return;
+      }
+      await receipts.waitFor(root, "fixture-publication", count);
+      if (
+        publicationClosing ||
+        !supervisor.connected ||
+        supervisor.exitCode !== null ||
+        supervisor.signalCode !== null
+      ) {
+        return;
+      }
+      await new Promise<void>((resolve, reject) => {
+        supervisor.send("fixture-publication", (error: Error | null) => {
+          if (error && supervisor.exitCode === null && supervisor.signalCode === null) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      });
+    }
+  })().catch((error: unknown) => {
+    if (!publicationClosing) {
+      publicationError = error;
+      publicationFailure.reject(error);
+    }
+  });
+  let publicationClose: Promise<void> | undefined;
+  // The outer owner survives forced supervisor exit and joins both the relay
+  // and its receiver before a completed report can release the namespace.
+  const closePublication = () => {
+    publicationClosing = true;
+    publicationClose ??= (async () => {
+      const results = await Promise.allSettled([receipts.close(), relay]);
+      const errors = results.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (publicationError) {
+        errors.unshift(publicationError);
+      }
+      if (errors.length) {
+        throw new AggregateError(errors, "Fixture publication cleanup failed");
+      }
+    })();
+    return publicationClose;
+  };
   let timer: NodeJS.Timeout | undefined;
   let report: Report | undefined;
   try {
     const completed = await Promise.race([
       closed,
+      publicationFailure.promise,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error("Checkout supervisor did not close within 50000ms")),
@@ -223,43 +302,43 @@ export async function withCiCheckoutFixture<T>(
     return await inspect(report, completed, stderr, root);
   } finally {
     clearTimeout(timer);
-    if (report) {
-      // A consumer assertion failure does not revoke the producer's release receipt.
-      rmSync(root, { recursive: true, force: true });
-    } else {
-      const deadline = Date.now() + 4_000;
-      // Keep IPC attached through termination: explicit disconnect can suppress Node's close.
-      // Let lease-bound Git descendants stop even if the supervisor cannot run cleanup.
-      rmSync(path.join(root, "lease"), { force: true });
-      const termination = terminateManagedChild(supervisor, "SIGKILL", {
-        taskkillTimeoutMs: 2_000,
-        processGroupFallback: "never",
-      });
-      const groupDead = () =>
-        !supervisor.pid ||
-        (process.platform === "win32"
-          ? termination?.processTreeState === "terminated"
-          : inspectManagedProcessGroup(supervisor, { errorPolicy: "indeterminate" }) === "dead");
-      // Join actual close before checking extinction, sharing the original cleanup budget.
-      const didClose = await Promise.race([
-        closed.then(() => true),
-        new Promise<boolean>((resolve) => {
-          timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now()));
-        }),
-      ]);
-      clearTimeout(timer);
-      while (!groupDead()) {
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) {
-          break;
+    try {
+      if (report) {
+        await closePublication();
+        // A consumer assertion failure does not revoke the producer's release receipt.
+        rmSync(root, { recursive: true, force: true });
+      } else {
+        const deadline = Date.now() + 4_000;
+        // Keep IPC attached through termination: explicit disconnect can suppress Node's close.
+        // Let lease-bound Git descendants stop even if the supervisor cannot run cleanup.
+        rmSync(path.join(root, "lease"), { force: true });
+        const termination = terminateManagedChild(supervisor, "SIGKILL", {
+          taskkillTimeoutMs: 2_000,
+          processGroupFallback: "never",
+        });
+        const groupDead = () =>
+          !supervisor.pid ||
+          (process.platform === "win32"
+            ? termination?.processTreeState === "terminated"
+            : inspectManagedProcessGroup(supervisor, { errorPolicy: "indeterminate" }) === "dead");
+        // SIGKILL retires this direct child; retain its native close rather than
+        // abandoning the join when a loaded host delays event delivery.
+        await closed;
+        while (!groupDead()) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) {
+            break;
+          }
+          await delay(Math.min(10, remaining));
         }
-        await delay(Math.min(10, remaining));
+        console.error(
+          `Checkout fixture retained at ${root}; no completed report. ` +
+            `Supervisor close: true; group extinction: ${groupDead()}. ` +
+            `Inspect workflow.log and stop remaining owned writers before removing this exact directory.\n${stderr}`,
+        );
       }
-      console.error(
-        `Checkout fixture retained at ${root}; no completed report. ` +
-          `Supervisor close: ${didClose}; group extinction: ${groupDead()}. ` +
-          `Inspect workflow.log and stop remaining owned writers before removing this exact directory.\n${stderr}`,
-      );
+    } finally {
+      await closePublication();
     }
   }
 }

@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeAll, expect, it, vi } from "vitest";
 import { spawnOwnedVitestProcess } from "../../scripts/lib/vitest-process.mts";
-import { isProcessAlive, waitForDead } from "../helpers/process-wait.js";
+import { isProcessAlive } from "../helpers/process-wait.js";
 import {
   ciCheckoutFixture,
   expectCiCheckoutCleanup,
@@ -157,10 +157,6 @@ if (process.argv[2] === "supervise") {
   };
 }
 if (process.argv[2] === "sentinel") {
-  // Retirement must reread the lease even when filesystem notifications are lost.
-  const watch = fs.watch;
-  fs.watch = (filename, ...args) => watch(filename, ...args.map(arg =>
-    filename === root && typeof arg === "function" ? () => {} : arg));
   const read = fs.readFileSync;
   fs.readFileSync = (filename, ...args) => {
     try {
@@ -173,6 +169,9 @@ if (process.argv[2] === "sentinel") {
       throw error;
     }
   };
+  // Loaded macOS hosts can drop FSEvents directory notifications entirely.
+  const watch = fs.watch;
+  fs.watch = (target, ...args) => (target === root ? { close() {} } : watch(target, ...args));
 }
 syncFixtureBuiltinExports();
 `
@@ -961,7 +960,8 @@ process.exitCode = 1;
         expect(readFileSync(path.join(evidence.root, "report.json"), "utf8")).toBe("null");
       }
     } finally {
-      await Promise.all(evidence.pids.map((pid) => waitForDead(pid, 4_000)));
+      // Completion already joined the outer group; the fixture joined its detached owners.
+      expect(evidence.pids.every((pid) => !isProcessAlive(pid))).toBe(true);
       rmSync(evidence.root, { recursive: true, force: true });
     }
   },
