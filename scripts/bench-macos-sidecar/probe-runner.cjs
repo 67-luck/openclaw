@@ -69,7 +69,7 @@ async function run(pinMode) {
   }
   const port = (httpServer || server).address().port;
   server.on("connection", (ws) => {
-    if (kind === "framing" || kind === "startup") {
+    if (kind === "framing" || kind === "startup" || kind === "writer-overflow") {
       connectCount++;
       ws.on("message", (raw, binary) => {
         framingBytes.push({ binary, hex: raw.toString("hex") });
@@ -182,7 +182,7 @@ async function run(pinMode) {
         ? "framing-probe"
         : kind === "tls"
           ? "tls-probe"
-          : kind === "backpressure"
+          : kind === "backpressure" || kind === "writer-overflow"
             ? "backpressure-probe"
             : mode === "baseline"
               ? "auxiliary-baseline"
@@ -200,7 +200,10 @@ async function run(pinMode) {
       root + "/sandbox.sb",
       root + "/bin/" + name,
       url,
-      kind === "framing" || kind === "startup" ? root + "/bin/framing-helper-" + pinMode : mode,
+      kind === "framing" || kind === "startup" || kind === "writer-overflow"
+        ? root + "/bin/framing-helper-" + pinMode
+        : mode,
+      ...(kind === "writer-overflow" ? ["writer-overflow"] : []),
       ...(pin ? [pin, ...(process.env.RFC54_EMPTY_MANIFEST === "1" ? ["empty"] : [])] : []),
       ...(process.env.RFC54_CAPACITY_ONLY === "1"
         ? ["capacity", process.env.RFC54_CAPACITY_BATCHES || "10"]
@@ -224,7 +227,8 @@ async function run(pinMode) {
   let connectionsBeforeActivation = 0;
   const observeStartup = () => {
     if (
-      kind !== "startup" ||
+      (kind !== "startup" && kind !== "writer-overflow") ||
+      (kind === "writer-overflow" && connectCount !== 1) ||
       startupChildPIDs.length !== 0 ||
       (!stdout.includes('"prepared":true') && !stdout.includes('"preparing":true'))
     ) {
@@ -304,6 +308,26 @@ async function run(pinMode) {
           "startup ownership failed: " +
             JSON.stringify({ result, startupChildPIDs, connectCount, framingBytes }),
         );
+      }
+    }
+    if (kind === "writer-overflow") {
+      const expectedBytes = [{ binary: true, hex: Buffer.from("trigger").toString("hex") }];
+      if (
+        ended[0] !== 0 ||
+        ended[1] !== null ||
+        !result.passed ||
+        !result.writerRetiredBeforeEightSeconds ||
+        !result.authenticatedFreshChildRecovered ||
+        result.sendErrors?.length !== 6 ||
+        !result.sendErrors.every((code) => code === -1103) ||
+        result.helperPIDs?.length !== 2 ||
+        new Set(result.helperPIDs).size !== 2 ||
+        startupChildPIDs.length !== 1 ||
+        result.helperPIDs[0] !== startupChildPIDs[0] ||
+        connectCount !== 2 ||
+        JSON.stringify(framingBytes) !== JSON.stringify(expectedBytes)
+      ) {
+        throw new Error("authenticated writer overflow/recovery failed: " + JSON.stringify(result));
       }
     }
     if (kind === "framing") {
@@ -451,8 +475,12 @@ async function run(pinMode) {
       admittedNeverRequestsByBatch: Object.fromEntries(batchCounts),
       echoedBatches,
       nativeCapacity,
-      ...(kind === "framing" || kind === "startup" ? { framingBytes } : {}),
-      ...(kind === "startup" ? { startupChildPIDs, connectionsBeforeActivation } : {}),
+      ...(kind === "framing" || kind === "startup" || kind === "writer-overflow"
+        ? { framingBytes }
+        : {}),
+      ...(kind === "startup" || kind === "writer-overflow"
+        ? { startupChildPIDs, connectionsBeforeActivation }
+        : {}),
       cleanup: { observedPIDs: [...owned], forcedPIDs: forced, remainingPIDs: remaining },
       stderr,
     };

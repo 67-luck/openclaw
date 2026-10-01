@@ -51,6 +51,19 @@ import Foundation
               let openValue = try JSONSerialization.jsonObject(with: open.1) as? [String: Any],
               openValue["type"] as? String == "open"
         else { throw URLError(.cannotParseResponse) }
+        if scenario == "writer-overflow" {
+            guard let url = openValue["url"] as? String,
+                  let path = URL(string: url)?.path, ["/writer-stalled", "/writer-recovered"].contains(path)
+            else { throw URLError(.cannotParseResponse) }
+            try self.emit(["type": "frame", "frame": [
+                "writerReady": true, "helperPID": ProcessInfo.processInfo.processIdentifier,
+            ]])
+            if path == "/writer-stalled" {
+                // As in startup-stalled, only the fixture withholds pipe reads; product limits stay unchanged.
+                Thread.sleep(forTimeInterval: 30)
+                return
+            }
+        }
         if scenario.hasPrefix("startup-") {
             guard let url = openValue["url"] as? String, URL(string: url)?.path == "/startup-final",
                   openValue["privateCommands"] as? [String] == ["fixture.private"]
@@ -71,7 +84,7 @@ import Foundation
             Thread.sleep(forTimeInterval: interval)
             try FileHandle.standardOutput.write(contentsOf: packet.dropFirst(40))
         } else if scenario == "idle-after-control" || scenario == "startup-delayed" || scenario == "startup-claimed" ||
-            scenario == "startup-reconnect"
+            scenario == "startup-reconnect" || scenario == "writer-overflow"
         {
             try FileHandle.standardOutput.write(contentsOf: packet)
         } else { throw URLError(.unsupportedURL) }

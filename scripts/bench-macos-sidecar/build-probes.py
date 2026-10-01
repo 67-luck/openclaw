@@ -153,6 +153,7 @@ def build_variant(repo, root, scripts, base, variant, protocol):
         if target == "FramingHelper":
             for scenario in [
                 "idle-after-control", "within-budget", "partial-prefix", "combined-budget",
+                "writer-overflow",
                 "startup-delayed", "startup-claimed", "startup-cancelled", "startup-exit", "startup-stalled", "startup-discarded", "startup-reconnect",
             ]:
                 (root / "bin" / (binary + "-" + scenario)).symlink_to(binary)
