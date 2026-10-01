@@ -122,13 +122,17 @@ enum RemoteGatewayAuthIssue: Equatable {
     var statusResource: LocalizedStringResource {
         switch self {
         case .tokenRequired:
-            LocalizedStringResource("This gateway requires an auth token. Run openclaw gateway auth-token --show on the gateway host.")
+            LocalizedStringResource(
+                "This gateway requires an auth token. Run openclaw gateway auth-token --show on the gateway host.")
         case .tokenMismatch:
-            LocalizedStringResource("Gateway token mismatch. Run openclaw gateway auth-token --show on the gateway host.")
+            LocalizedStringResource(
+                "Gateway token mismatch. Run openclaw gateway auth-token --show on the gateway host.")
         case .gatewayTokenNotConfigured:
-            LocalizedStringResource("This gateway has token auth enabled, but no gateway.auth.token is configured on the host.")
+            LocalizedStringResource(
+                "This gateway has token auth enabled, but no gateway.auth.token is configured on the host.")
         case .setupCodeExpired:
-            LocalizedStringResource("Setup code no longer valid. Get a fresh code from the Gateway owner and use Change connection.")
+            LocalizedStringResource(
+                "Setup code no longer valid. Get a fresh code from the Gateway owner and use Change connection.")
         case .passwordRequired:
             LocalizedStringResource("""
             Click Change connection and enter the gateway password in the Gateway password field. \
@@ -170,7 +174,8 @@ struct RemoteGatewayProbeSuccess: Equatable {
     var detail: LocalizedStringResource? {
         switch self.authSource {
         case .some(.deviceToken):
-            LocalizedStringResource("This app used a stored device token. New or unpaired devices may still need the gateway token.")
+            LocalizedStringResource(
+                "This app used a stored device token. New or unpaired devices may still need the gateway token.")
         case .some(.bootstrapToken):
             LocalizedStringResource("""
             This app is still using the temporary setup code. \

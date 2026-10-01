@@ -426,7 +426,8 @@ struct OnboardingAISetupView: View {
             if self.model.authOptions.isEmpty {
                 OnboardingErrorCard(
                     title: "No key-based providers are available",
-                    message: .localized("Enable or install a text-inference provider plugin on this Gateway, then check again."),
+                    message: .localized(
+                        "Enable or install a text-inference provider plugin on this Gateway, then check again."),
                     docsSlug: "concepts/model-providers",
                     retryTitle: "Check again")
                 {
