@@ -1,8 +1,17 @@
+import {
+  ClawHubSourceError,
+  readMatchingCachedClawHubSource,
+  withResolvedClawHubSource,
+} from "../claws/clawhub-source.js";
 import { readClawStatus } from "../claws/lifecycle-state.js";
 import { withAuthoredAgentRoster } from "../claws/migrate-validation.js";
 import { preflightClawPackage } from "../claws/packages.js";
 import { readClawManifestFile } from "../claws/reader.js";
-import { CLAW_OUTPUT_STABILITY } from "../claws/types.js";
+import {
+  CLAW_OUTPUT_STABILITY,
+  type ClawReadResult,
+  type ClawSourceIdentity,
+} from "../claws/types.js";
 import {
   applyClawUpdatePlan,
   CLAW_UPDATE_RESULT_SCHEMA_VERSION,
@@ -67,6 +76,7 @@ export async function runClawsUpdateCommand(
     listedMcpServers.sourceConfigBeforeMigrations,
   );
   let source = opts.from;
+  let recordedSource: ClawSourceIdentity | undefined;
   if (!source) {
     const database = await openExistingOpenClawStateDatabaseReadOnly();
     let status: Awaited<ReturnType<typeof readClawStatus>> | { records: never[] } = {
@@ -113,12 +123,43 @@ export async function runClawsUpdateCommand(
       return;
     }
     const recorded = status.records[0]!.install.claw;
+    recordedSource = recorded;
     source = recorded.kind === "package" ? recorded.packageRoot : recorded.manifestPath;
   }
 
-  const loaded = await readClawManifestFile(source, {
-    allowLegacyDynamicToolProfile: !opts.from,
-  });
+  let loaded: ClawReadResult;
+  if (!opts.from && recordedSource?.integrityKind === "artifact") {
+    try {
+      const recorded = recordedSource;
+      const resolved = await withResolvedClawHubSource({
+        coordinate: { packageName: recorded.name, version: recorded.version },
+        mode: opts.dryRun ? "preview" : "apply",
+        ...(!opts.dryRun && opts.acknowledgeClawHubRisk ? { acknowledgeClawHubRisk: true } : {}),
+        run: async (verified, trust) =>
+          await readMatchingCachedClawHubSource({ recorded, verified, trust }),
+      });
+      loaded = resolved.value;
+    } catch (error) {
+      const code = error instanceof ClawHubSourceError ? error.code : "clawhub_source_unavailable";
+      const message = error instanceof Error ? error.message : String(error);
+      const diagnostics = [
+        { level: "error" as const, code, phase: "plan" as const, path: "$", message },
+      ];
+      emitClawFailure(runtime, opts.json, formatClawDiagnostics(diagnostics), {
+        schemaVersion: CLAW_UPDATE_PLAN_SCHEMA_VERSION,
+        stability: CLAW_OUTPUT_STABILITY,
+        dryRun: true,
+        mutationAllowed: false,
+        valid: false,
+        diagnostics,
+      });
+      return;
+    }
+  } else {
+    loaded = await readClawManifestFile(source, {
+      allowLegacyDynamicToolProfile: !opts.from,
+    });
+  }
   if (!loaded.ok) {
     const diagnostics = opts.from
       ? loaded.diagnostics

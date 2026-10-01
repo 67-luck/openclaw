@@ -178,6 +178,7 @@ export async function applyClawUpdatePlan(
     targetClawMarkdownBody: params.targetClawMarkdownBody,
     targetOpenClawProfile: params.targetOpenClawProfile,
     targetSource: params.targetSource,
+    diagnostics: plan.diagnostics,
     config: options.config,
     sourceMcpServers: options.sourceMcpServers,
     ...(inventory ? { inventory, exactAgentId: true } : {}),
