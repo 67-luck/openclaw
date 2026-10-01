@@ -16,9 +16,10 @@ import * as updateLedger from "../../infra/update-run-ledger.js";
 import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { runUtf8CommandWithTimeout } from "../../process/exec.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { closeStateDatabaseForTest } from "../../test-utils/database-cleanup.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import { createUpdateCommandExecutionGuards } from "./update-command-execution-guards.js";
 import type { MigratedUpdateFinalizationInput } from "./update-command-migrated-types.js";
 import { continueMigratedUpdateInFreshProcess } from "./update-command-migrated.js";
 import {
@@ -87,8 +88,8 @@ beforeEach(() => {
     }
   });
 });
-afterEach(() => {
-  closeOpenClawStateDatabaseForTest();
+afterEach(async () => {
+  await closeStateDatabaseForTest();
   vi.restoreAllMocks();
 });
 
@@ -126,6 +127,7 @@ it.each([
       const runId = createUpdateRun({ trigger: "cli" }).runId;
       const activationTimeoutMs = 3_600_000;
       const run = { runId, env: { ...process.env }, activationTimeoutMs };
+      const { recordPhase } = createUpdateCommandExecutionGuards({ run }, root);
       let running = true;
       let programArguments = [process.execPath, path.join(root, "openclaw.mjs"), "gateway"];
       mocks.service.mockReturnValue(
@@ -149,6 +151,7 @@ it.each([
         shouldRestart: true,
         jsonMode: true,
         updateRun: run,
+        recordPhase,
       });
       expect(stopped.serviceMutationSkipMessage).toBeUndefined();
       expect(stopped).toMatchObject({ stopped: true, inspected: true });
@@ -161,7 +164,7 @@ it.each([
       expect(running).toBe(false);
       expect(mocks.enabled).toBe(false);
       // Candidate Doctor publishes a schema the retained updater cannot open.
-      closeOpenClawStateDatabaseForTest();
+      await closeStateDatabaseForTest();
       const database = new DatabaseSync(resolveOpenClawStateSqlitePath());
       database.exec(`PRAGMA user_version = ${OPENCLAW_STATE_SCHEMA_VERSION + 1}`);
       database.close();

@@ -188,6 +188,7 @@ it.each<{
   windows?: boolean;
   handback?: boolean;
   completion?: "success" | "failure";
+  recovered?: boolean;
 }>([
   { pending: true, status: "skipped", windows: true },
   { pending: false, status: "error", windows: true },
@@ -199,8 +200,16 @@ it.each<{
   { pending: false, status: "error", candidateStartAttempted: false, backup: true, windows: true },
   { pending: false, status: "ok", completion: "success" },
   { pending: false, status: "ok", completion: "failure" },
+  {
+    pending: false,
+    status: "error",
+    candidateStartAttempted: true,
+    backup: true,
+    windows: true,
+    recovered: true,
+  },
 ])(
-  "retains the backup across migrated finalization (pending=$pending, status=$status, start=$candidateStartAttempted, backup=$backup, windows=$windows, completion=$completion)",
+  "retains the backup across migrated finalization (pending=$pending, status=$status, start=$candidateStartAttempted, backup=$backup, windows=$windows, completion=$completion, recovered=$recovered)",
   async ({
     pending,
     status,
@@ -209,6 +218,7 @@ it.each<{
     windows = false,
     handback = false,
     completion,
+    recovered = false,
   }) => {
     const exitCode = status === "error" ? 1 : 0;
     const reason =
@@ -233,6 +243,12 @@ it.each<{
     vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
     const stdout = vi.spyOn(process.stdout, "write").mockReturnValue(true);
     const onResult = vi.fn();
+    if (recovered) {
+      windowsRecovery.complete.mockImplementationOnce(async () => {
+        expect(stdout).not.toHaveBeenCalled();
+        expect(onResult).not.toHaveBeenCalled();
+      });
+    }
     let stdoutAtCompletion: number | undefined;
     let observedAtCompletion: number | undefined;
     let candidateRow: unknown;
@@ -271,6 +287,9 @@ it.each<{
           status,
           reason,
           runId: run.runId,
+          ...(recovered
+            ? { recovery: { serviceRestartSafe: true, version: "2.0.0", service: "healthy" } }
+            : {}),
           steps: pending
             ? [
                 {
@@ -427,8 +446,10 @@ it.each<{
     expect(outcome.databaseRollbackAvailable).toBe(handback ? true : undefined);
     if (handback) {
       expect(stdout).not.toHaveBeenCalled();
+      expect(onResult).not.toHaveBeenCalled();
     } else {
-      expect(stdout).toHaveBeenCalledWith("candidate finalization result\n");
+      expect(stdout).toHaveBeenCalledExactlyOnceWith("candidate finalization result\n");
+      expect(onResult).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ status }));
     }
     if (pending || handback) {
       expect(complete).not.toHaveBeenCalled();
@@ -440,8 +461,8 @@ it.each<{
     }
     expect(rollback).not.toHaveBeenCalled();
     if (windows) {
-      expect(windowsRecovery.complete).toHaveBeenCalledWith(pending);
-      expect(windowsRecovery.complete).not.toHaveBeenCalledWith(!pending);
+      expect(windowsRecovery.complete).toHaveBeenCalledWith(pending || recovered);
+      expect(windowsRecovery.complete).not.toHaveBeenCalledWith(!(pending || recovered));
     } else {
       expect(windowsRecovery.complete).not.toHaveBeenCalled();
     }
