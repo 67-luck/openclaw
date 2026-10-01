@@ -39,6 +39,8 @@ export type SystemRunEventAuthorization = {
   invocationSessionKey?: string;
   event?: "exec.started" | "exec.finished" | "exec.denied";
   turnSourceAccountId?: string;
+  /** Immutable source retained by the dispatch owner, never terminal-selected. */
+  invocationDeliveryContext?: DeliveryContext;
   onTelegramRouteMismatch?: (message: string) => void;
 };
 
@@ -49,6 +51,9 @@ export class NodeSystemRunEventAuthority {
     this.prune();
     this.events.set(this.key(event), {
       ...event,
+      ...(event.invocationDeliveryContext
+        ? { invocationDeliveryContext: { ...event.invocationDeliveryContext } }
+        : {}),
       expiresAtMs: this.expiresAt(event.timeoutMs),
       invokeResultReceived: false,
     });
@@ -113,6 +118,9 @@ export class NodeSystemRunEventAuthority {
     }
     return {
       invokeResultReceived: authorized.invokeResultReceived,
+      ...(authorized.invocationDeliveryContext
+        ? { invocationDeliveryContext: { ...authorized.invocationDeliveryContext } }
+        : {}),
       ...(authorized.sessionKey ? { invocationSessionKey: authorized.sessionKey } : {}),
       ...(authorized.turnSourceAccountId
         ? { turnSourceAccountId: authorized.turnSourceAccountId }
@@ -188,21 +196,27 @@ export function shouldSuppressRun(
 ): boolean {
   const eventAuthorization = asOptionalRecord(authorization);
   const invokeResultReceived = eventAuthorization?.invokeResultReceived === true;
+  const capturedContext = readInvocationDeliveryContext(eventAuthorization);
   const turnSourceAccountId =
-    typeof eventAuthorization?.turnSourceAccountId === "string"
+    capturedContext?.accountId ??
+    (typeof eventAuthorization?.turnSourceAccountId === "string"
       ? eventAuthorization.turnSourceAccountId
-      : undefined;
+      : undefined);
   const invocationSessionKey =
     typeof eventAuthorization?.invocationSessionKey === "string"
       ? eventAuthorization.invocationSessionKey
       : undefined;
-  const telegramRouteMismatch = invocationSessionKey
-    ? resolveTelegramRouteMismatch(invocationSessionKey, deliveryContext, {
-        turnSourceAccountId,
-        requireAccount:
-          payload.suppressNotifyOnExit === true && payload.invokeResultSentFirst === true,
-      })
-    : null;
+  const effectiveContext = capturedContext ?? deliveryContext;
+  // With a host-captured route, the session key is correlation only (including
+  // shared group sessions). Saved-history verification remains the legacy fallback.
+  const telegramRouteMismatch =
+    !capturedContext && invocationSessionKey
+      ? resolveTelegramRouteMismatch(invocationSessionKey, effectiveContext, {
+          turnSourceAccountId,
+          requireAccount:
+            payload.suppressNotifyOnExit === true && payload.invokeResultSentFirst === true,
+        })
+      : null;
   if (globallyEnabled === false || payload.notifyOnExit === false) {
     return true;
   }
@@ -220,9 +234,26 @@ export function shouldSuppressRun(
     payload.suppressNotifyOnExit === true &&
     (payload.invokeResultSentFirst !== true ||
       invokeResultReceived ||
-      !deliveryContext ||
-      telegramRouteMismatch === null)
+      !effectiveContext ||
+      (telegramRouteMismatch === null && !capturedContext))
   );
+}
+
+function readInvocationDeliveryContext(
+  authorization: Record<string, unknown> | undefined,
+): DeliveryContext | undefined {
+  const context = asOptionalRecord(authorization?.invocationDeliveryContext);
+  if (typeof context?.channel !== "string" || typeof context.to !== "string") {
+    return undefined;
+  }
+  return {
+    channel: context.channel,
+    to: context.to,
+    ...(typeof context.accountId === "string" ? { accountId: context.accountId } : {}),
+    ...(typeof context.threadId === "string" || typeof context.threadId === "number"
+      ? { threadId: context.threadId }
+      : {}),
+  };
 }
 
 const TELEGRAM_TOPIC_SUFFIX = /^(.*):(direct-topic|topic):(\d+)$/i;
@@ -351,7 +382,7 @@ function resolveTelegramRouteMismatch(
 
 /** Undefined retains legacy notice routing; null rejects a verified route that cannot be normalized. */
 export function resolveNodeSystemRunEventDeliveryContext(
-  deliveryContext: DeliveryContext | undefined,
+  savedDeliveryContext: DeliveryContext | undefined,
   authorization: unknown,
 ): DeliveryContext | null | undefined {
   const eventAuthorization = asOptionalRecord(authorization);
@@ -363,20 +394,24 @@ export function resolveNodeSystemRunEventDeliveryContext(
     return undefined;
   }
   const origin = parseSessionDeliveryRoute(sessionKey);
+  const capturedContext = readInvocationDeliveryContext(eventAuthorization);
   const turnSourceAccountId =
-    typeof eventAuthorization?.turnSourceAccountId === "string"
+    capturedContext?.accountId ??
+    (typeof eventAuthorization?.turnSourceAccountId === "string"
       ? eventAuthorization.turnSourceAccountId
-      : undefined;
-  // Other transports/shared bindings have no complete invocation-route verifier
-  // here. Keep their ordinary route-less notice instead of promoting later history.
+      : undefined);
+  const deliveryContext = capturedContext ?? savedDeliveryContext;
+  // Without a host-captured source, only an account-bound Telegram session can
+  // verify saved history. A shared model-session alias is never a delivery address.
   if (
     !deliveryContext ||
-    origin?.channel !== "telegram" ||
-    !(turnSourceAccountId || origin.accountId)
+    (!capturedContext &&
+      (origin?.channel !== "telegram" || !(turnSourceAccountId || origin.accountId)))
   ) {
     return undefined;
   }
   if (
+    !capturedContext &&
     resolveTelegramRouteMismatch(sessionKey, deliveryContext, {
       turnSourceAccountId,
       requireAccount: false,
@@ -388,8 +423,11 @@ export function resolveNodeSystemRunEventDeliveryContext(
     ...deliveryContext,
     accountId:
       normalizeOptionalAccountId(turnSourceAccountId) ??
-      normalizeOptionalAccountId(origin.accountId),
+      normalizeOptionalAccountId(origin?.accountId),
   };
+  if (capturedContext && !verifiedContext.accountId) {
+    return null;
+  }
   const explicitConversation =
     deliveryContext.threadId == null
       ? null
@@ -407,15 +445,51 @@ export function resolveNodeSystemRunEventDeliveryContext(
         ),
       })
     : null;
+  if (capturedContext) {
+    // Even a shared session needs plugin-owned normalization and agreement between
+    // embedded and explicit topics; it cannot rely on a session-key verifier.
+    const explicitThread =
+      explicitConversation?.threadId ??
+      (deliveryContext.threadId == null ? undefined : String(deliveryContext.threadId));
+    const targetThread = targetConversation?.threadId;
+    const nativeExplicit = explicitThread?.replace(/^direct-topic:/, "");
+    const nativeTarget = targetThread?.replace(/^direct-topic:/, "");
+    if (
+      (explicitConversation?.threadId &&
+        explicitConversation.id !==
+          (targetConversation?.id ??
+            stripOutboundTargetKindPrefix(
+              stripTargetProviderPrefix(deliveryContext.to ?? "", "telegram", "tg"),
+            ))) ||
+      (nativeExplicit && nativeTarget && nativeExplicit !== nativeTarget) ||
+      (explicitConversation?.threadId &&
+        targetThread &&
+        explicitThread?.startsWith("direct-topic:") !== targetThread.startsWith("direct-topic:"))
+    ) {
+      if (
+        eventAuthorization?.event === "exec.finished" &&
+        typeof eventAuthorization.onTelegramRouteMismatch === "function"
+      ) {
+        eventAuthorization.onTelegramRouteMismatch(TELEGRAM_ROUTE_MISMATCH_WARNING);
+      }
+      return null;
+    }
+  }
   const scopedConversation = explicitConversation?.threadId
     ? explicitConversation
     : targetConversation;
-  if (scopedConversation?.threadId) {
+  if (capturedContext || scopedConversation?.threadId) {
     const canonicalTarget = serializeSessionConversationTarget({
       channel: "telegram",
       kind: "group",
-      id: scopedConversation.id,
-      threadId: scopedConversation.threadId,
+      id:
+        scopedConversation?.id ??
+        stripOutboundTargetKindPrefix(
+          stripTargetProviderPrefix(deliveryContext.to ?? "", "telegram", "tg"),
+        ),
+      threadId:
+        scopedConversation?.threadId ??
+        (deliveryContext.threadId == null ? undefined : String(deliveryContext.threadId)),
     });
     if (!canonicalTarget) {
       if (
@@ -424,6 +498,37 @@ export function resolveNodeSystemRunEventDeliveryContext(
       ) {
         eventAuthorization.onTelegramRouteMismatch(
           "node exec completion withheld: Telegram route normalization is unavailable; check the active channel plugin",
+        );
+      }
+      return null;
+    }
+    const canonicalConversation = resolveSessionConversation({
+      channel: "telegram",
+      kind: "group",
+      rawId: stripOutboundTargetKindPrefix(
+        stripTargetProviderPrefix(canonicalTarget, "telegram", "tg"),
+      ),
+    });
+    const sourceId =
+      scopedConversation?.id ??
+      stripOutboundTargetKindPrefix(
+        stripTargetProviderPrefix(deliveryContext.to ?? "", "telegram", "tg"),
+      );
+    const sourceThread =
+      scopedConversation?.threadId ??
+      (deliveryContext.threadId == null ? undefined : String(deliveryContext.threadId));
+    // Check the original tuple before publishing normalization: later fences
+    // must not take a serializer-selected recipient as their source baseline.
+    if (
+      canonicalConversation?.id !== sourceId ||
+      canonicalConversation?.threadId !== sourceThread
+    ) {
+      if (
+        eventAuthorization?.event === "exec.finished" &&
+        typeof eventAuthorization.onTelegramRouteMismatch === "function"
+      ) {
+        eventAuthorization.onTelegramRouteMismatch(
+          "node exec completion withheld: Telegram serialization changed the captured route; check the active channel plugin",
         );
       }
       return null;

@@ -551,7 +551,8 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     return delivery;
   }
   let routeResolvedTarget: ResolvedMessagingTarget | undefined;
-  // Target normalization failure should not suppress an otherwise deliverable heartbeat.
+  // Ordinary monitors retain normalization fallback; captured exec output cannot
+  // be admitted after a declared target validator fails.
   const targetResolution = await resolveChannelTarget({
     cfg: params.cfg,
     channel: delivery.channel as ChannelId,
@@ -564,6 +565,9 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     routeResolvedTarget = targetResolution.target;
   } else if (targetResolution && isReservedTargetLiteralError(targetResolution.error)) {
     return rejectDelivery(ownerRouteMustBeDirect ? "no-route" : "no-target");
+  }
+  if (execRouteKey !== undefined && !targetResolution?.ok) {
+    return rejectDelivery("exec-route-conflict");
   }
   if (
     execRouteKey !== undefined &&
@@ -598,7 +602,12 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     resolvedTarget: routeResolvedTarget,
     currentSessionKey: params.currentSessionKey,
     threadId: delivery.threadId,
-  }).catch(() => null);
+  }).catch(() => undefined);
+  // A null result declines optional session refinement; a thrown resolver did
+  // not validate its result and cannot grant captured exec delivery.
+  if (execRouteKey !== undefined && route === undefined) {
+    return rejectDelivery("exec-route-conflict");
+  }
   if (!route) {
     return delivery;
   }

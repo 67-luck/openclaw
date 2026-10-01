@@ -169,6 +169,7 @@ function pickSystemRunParams(raw: Record<string, unknown>): Record<string, unkno
     "sessionKey",
     "runId",
     "suppressNotifyOnExit",
+    "notifyOnExit",
   ]) {
     if (key in raw) {
       next[key] = raw[key];

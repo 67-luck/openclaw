@@ -154,3 +154,41 @@ it.each([
     });
   },
 );
+
+it.each(["target throws", "target rejects", "session throws", "session declines"] as const)(
+  "ordinary heartbeat retains configured delivery when %s",
+  async (failure) => {
+    const messaging: NonNullable<ChannelPlugin["messaging"]> = { ...telegramPlugin.messaging };
+    const plugin: ChannelPlugin = { ...telegramPlugin, messaging };
+    if (failure === "target throws") {
+      messaging.targetResolver = {
+        looksLikeId: () => {
+          throw new Error("target failed");
+        },
+      };
+    } else if (failure === "target rejects") {
+      messaging.targetResolver = { looksLikeId: () => false };
+      plugin.directory = {
+        listGroups: async () => [
+          { kind: "group", id: "-1003774691294:topic:47", name: "first" },
+          { kind: "group", id: "-1003774691294:topic:47", name: "second" },
+        ],
+      };
+    } else {
+      messaging.resolveOutboundSessionRoute = async () => {
+        if (failure === "session throws") {
+          throw new Error("session failed");
+        }
+        return null;
+      };
+    }
+    setActivePluginRegistry(createTestRegistry([{ pluginId: "telegram", plugin, source: "test" }]));
+    const result = await resolveHeartbeatDeliveryTargetWithSessionRoute({
+      cfg,
+      agentId: "main",
+      heartbeat: { target: "telegram", to: "telegram:-1003774691294:topic:47", accountId: "work" },
+    });
+    expect(result).toMatchObject({ channel: "telegram", accountId: "work" });
+    expect(result.to).toBe("telegram:-1003774691294:topic:47");
+  },
+);
