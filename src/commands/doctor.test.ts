@@ -249,6 +249,34 @@ describe("doctorCommand", () => {
     expect(runtime.error).not.toHaveBeenCalled();
   });
 
+  it("exits nonzero when externally managed repair reports remaining maintenance work", async () => {
+    const warning = "SQLite NOCOW repair was skipped.";
+    const report = {
+      schemaVersion: 1,
+      mode: "externally-managed",
+      ok: false,
+      config: { path: "/managed/openclaw.json", status: "unchanged", sha256: "abc123" },
+      service: { status: "externally-managed" },
+      applied: [],
+      skipped: [],
+      remaining: [{ stepId: "maintenance", message: warning }],
+    };
+    mocks.runDoctorHealthFlow.mockResolvedValueOnce(report);
+    const runtime = createDoctorRuntime();
+
+    await expect(
+      doctorCommand(runtime, {
+        externallyManaged: true,
+        json: true,
+        nonInteractive: true,
+        repair: true,
+      }),
+    ).rejects.toThrow("exit:1");
+
+    expect(runtime.writeJson).toHaveBeenCalledWith({ ...report, diagnostics: [] }, 2);
+    expect(runtime.exit).toHaveBeenCalledWith(1);
+  });
+
   it.each(["stable", "beta", "extended-stable", undefined])(
     "passes only configured update channel %s to post-upgrade probes",
     async (channel) => {

@@ -226,6 +226,31 @@ describe("Doctor refused-migration maintenance outcome", () => {
     }
   });
 
+  it("does not claim convergence when maintenance completes with a skipped NOCOW repair", async () => {
+    const warning = "SQLite NOCOW repair refused: GNU mv does not support --exchange or --no-copy.";
+    const warnings: string[] = [];
+    vi.mocked(doctorMaintenance.beginDoctorMaintenance).mockResolvedValueOnce({
+      ...maintenance,
+      warnings,
+      repairSqliteNoCow: vi.fn(async () => {
+        // Maintenance can complete normally while the required filesystem rewrite remains undone.
+        warnings.push(warning);
+      }),
+    });
+    vi.spyOn(nocow, "inspectDoctorSqliteNoCow").mockReturnValue({
+      paths: ["/synthetic/store.sqlite"],
+      notes: [],
+    });
+
+    const report = await runDoctorHealthFlow(
+      { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+      { repair: true, externallyManaged: true, nonInteractive: true, json: true },
+    );
+
+    expect(report?.ok).toBe(false);
+    expect(report?.remaining).toContainEqual({ stepId: "maintenance", message: warning });
+  });
+
   it.each(["success", "validation", "conflict", "missing-receipt"] as const)(
     "uses the latest receipt for maintenance-time token recovery (%s)",
     async (outcome) => {

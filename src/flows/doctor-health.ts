@@ -520,6 +520,8 @@ async function runDoctorHealthFlowWithResult(
     if (!ctx || recordConfigWriteRefusal(ctx)) {
       return;
     }
+    const maintenanceWarnings = maintenance?.warnings ?? [];
+    repairEvidence?.remaining("maintenance", maintenanceWarnings);
     repairEvidence?.complete();
     const pluginWarnings: string[] = [];
     if (diagnostics.length > 0) {
@@ -533,7 +535,7 @@ async function runDoctorHealthFlowWithResult(
     const warnings = normalizeUpdatePostInstallDoctorWarnings([
       ...pluginWarnings,
       ...(ctx.configResult.warnings ?? []),
-      ...(maintenance?.warnings ?? []),
+      ...maintenanceWarnings,
       ...(ctx.configResult.stateMigrationStepReceipts ?? []).flatMap((receipt) =>
         receipt.outcome === "warning" ||
         receipt.outcome === "skipped" ||
