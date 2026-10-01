@@ -17,8 +17,8 @@ import {
 import { sameWorkerProtocolFeatures } from "../worker/worker-build-identity.js";
 import type { NodeInvokeParams, NodeInvokeResult } from "./node-invoke.types.js";
 import { NODE_INVOKE_PAIRING_CHANGED_ABORT } from "./node-registry-private-token.js";
-import type { NodeInvokeStreamController, PendingInvoke } from "./node-registry.invoke-stream.js";
-import { invokeNodeRegistryCore } from "./node-registry.invoke.js";
+import type { PendingInvoke } from "./node-registry.invoke-stream.js";
+import { invokeNodeRegistryCore, type NodeRegistryInvokeState } from "./node-registry.invoke.js";
 import {
   createNodeRunnerStatePublisher,
   waitForNodeRunnerAvailability,
@@ -39,12 +39,6 @@ export type {
   NodeRunnerStateChange,
   NodeWorkerSupervisorNodeProof,
 } from "./node-runner-inventory-runtime.js";
-
-type PairingBoundNodeSession = NodeRunnerRegistrySession & { pairingIdentity: string };
-export type PairingLeaseResolution =
-  | { status: "current"; session: PairingBoundNodeSession }
-  | { status: "stale"; presenceInvalidated: boolean }
-  | { status: "unavailable" };
 
 type NodeWorkerPrivateCommand = (typeof NODE_WORKER_PRIVATE_COMMANDS)[number];
 
@@ -78,29 +72,10 @@ export type NodeWorkerSupervisorTransport = {
   }): Promise<NodeInvokeResult>;
 };
 
-type NodeRegistryPrivateContext = {
-  getNode: (nodeId: string) => PairingBoundNodeSession | undefined;
-  isCommandAllowed: (nodeId: string, command: string) => boolean;
+type NodeRegistryPrivateContext = NodeRegistryInvokeState["context"] & {
   listCurrentConnected: () => Promise<NodeRunnerRegistrySession[]>;
   getCurrentConnected: (nodeId: string) => Promise<NodeRunnerRegistrySession | undefined>;
-  hasCurrentPairingStateResolver: boolean;
-  preparePairingLease: (node: PairingBoundNodeSession) => () => Promise<PairingLeaseResolution>;
-  pendingInvokes: Map<string, PendingInvoke>;
-  invokeStreams: NodeInvokeStreamController;
-  sendEventToSession: (node: NodeRunnerRegistrySession, event: string, payload: unknown) => boolean;
-  rememberAuthorizedSystemRunEvent: (event: {
-    nodeId: string;
-    connId: string;
-    runId: string;
-    sessionKey?: string;
-    timeoutMs?: number | null;
-  }) => void;
   publishActiveNodeContext: () => void;
-};
-
-type GenerationBoundPendingInvoke = {
-  expectedGeneration: string;
-  controller: AbortController;
 };
 
 type NodeRunnerInventoryUpdateResult = {
@@ -112,14 +87,9 @@ type NodeRegistryPrivateState = {
   runnerInventoryByConn: Map<string, NodeRunnerInventoryRecord>;
   bundleStatusByConn: Map<string, NodeWorkerBundleStatusObservation>;
   runnerState: NodeRunnerStatePublisher;
-  generationBoundInvokes: WeakMap<PendingInvoke, GenerationBoundPendingInvoke>;
+  generationBoundInvokes: NodeRegistryInvokeState["generationBoundInvokes"];
   workerSupervisorTransport: NodeWorkerSupervisorTransport;
 };
-
-export type NodeRegistryInvokeState = Pick<
-  NodeRegistryPrivateState,
-  "context" | "generationBoundInvokes"
->;
 
 const NODE_REGISTRY_PRIVATE_STATES = new WeakMap<object, NodeRegistryPrivateState>();
 

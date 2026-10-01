@@ -10,13 +10,46 @@ import {
 import { awaitWithinDeadline } from "../utils/absolute-deadline.js";
 import { buildNodeInvokeRequest, serializeNodeEvent } from "./node-invoke-request.js";
 import type { NodeInvokeParams, NodeInvokeResult } from "./node-invoke.types.js";
-import type { NodeRegistryInvokeState, PairingLeaseResolution } from "./node-registry-private.js";
-import type { PendingInvoke } from "./node-registry.invoke-stream.js";
+import type { NodeInvokeStreamController, PendingInvoke } from "./node-registry.invoke-stream.js";
 import {
   normalizeSystemRunInvokeParams,
   resolvePendingSystemRunEvent,
 } from "./node-registry.system-run.js";
+import type { NodeRunnerRegistrySession } from "./node-runner-inventory-runtime.js";
 import { MAX_PAYLOAD_BYTES } from "./server-constants.js";
+
+type PairingBoundNodeSession = NodeRunnerRegistrySession & { pairingIdentity: string };
+type PairingLeaseResolution =
+  | { status: "current"; session: PairingBoundNodeSession }
+  | { status: "stale"; presenceInvalidated: boolean }
+  | { status: "unavailable" };
+
+export type NodeRegistryInvokeState = {
+  context: {
+    getNode: (nodeId: string) => PairingBoundNodeSession | undefined;
+    isCommandAllowed: (nodeId: string, command: string) => boolean;
+    hasCurrentPairingStateResolver: boolean;
+    preparePairingLease: (node: PairingBoundNodeSession) => () => Promise<PairingLeaseResolution>;
+    pendingInvokes: Map<string, PendingInvoke>;
+    invokeStreams: NodeInvokeStreamController;
+    sendEventToSession: (
+      node: NodeRunnerRegistrySession,
+      event: string,
+      payload: unknown,
+    ) => boolean;
+    rememberAuthorizedSystemRunEvent: (event: {
+      nodeId: string;
+      connId: string;
+      runId: string;
+      sessionKey?: string;
+      timeoutMs?: number | null;
+    }) => void;
+  };
+  generationBoundInvokes: WeakMap<
+    PendingInvoke,
+    { expectedGeneration: string; controller: AbortController }
+  >;
+};
 
 export async function invokeNodeRegistryCore(
   state: NodeRegistryInvokeState,
