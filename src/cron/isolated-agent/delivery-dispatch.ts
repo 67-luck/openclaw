@@ -1,4 +1,3 @@
-/** Dispatches isolated cron output to direct delivery, mirrors, and follow-up queues. */
 import type { NormalizeReplySkipReason } from "../../auto-reply/reply/normalize-reply-skip-reason.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import { resolveControlUiSessionUrl } from "../../config/control-ui-link-base.js";
@@ -72,7 +71,6 @@ const subagentFollowupRuntimeLoader = createLazyImportLoader(
   () => import("./subagent-followup.runtime.js"),
 );
 export { queueCronMessageToolDeliveryAwareness };
-/** Dispatches cron run output through verified message-tool or direct delivery paths. */
 export async function dispatchCronDelivery(
   params: DispatchCronDeliveryParams,
 ): Promise<DispatchCronDeliveryState> {
@@ -269,22 +267,17 @@ export async function dispatchCronDelivery(
       deliveryAttempted = true;
       // Custom session targets retain their caller-selected identity.
       const { sessionKey: deliverySessionKey, route: directCronOutboundRoute } =
-        await (async () => {
-          if (
-            typeof params.job.sessionTarget === "string" &&
-            params.job.sessionTarget.startsWith("session:")
-          ) {
-            return { sessionKey: params.agentSessionKey, route: null };
-          }
-          return await resolveCronDeliveryRouteSessionKey({
-            cfg: params.cfgWithAgentDefaults,
-            job: params.job,
-            agentId: params.agentId,
-            agentSessionKey: params.agentSessionKey,
-            delivery,
-            warningContext: "direct delivery mirror",
-          });
-        })();
+        typeof params.job.sessionTarget === "string" &&
+        params.job.sessionTarget.startsWith("session:")
+          ? { sessionKey: params.agentSessionKey, route: null }
+          : await resolveCronDeliveryRouteSessionKey({
+              cfg: params.cfgWithAgentDefaults,
+              job: params.job,
+              agentId: params.agentId,
+              agentSessionKey: params.agentSessionKey,
+              delivery,
+              warningContext: "direct delivery mirror",
+            });
       const deliverySession = buildOutboundSessionContext({
         cfg: params.cfgWithAgentDefaults,
         agentId: params.agentId,
@@ -444,8 +437,6 @@ export async function dispatchCronDelivery(
       }
       // Partial platform evidence remains unknown; never mint a full receipt.
       const deliveryAwarenessText = resolveCronAwarenessText({
-        outputText,
-        synthesizedText,
         deliveryPayloads: linkedPayloadsForDelivery,
         outboundPayloads: attemptedPayloadsForMirror,
       });
