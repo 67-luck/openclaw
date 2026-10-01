@@ -53,8 +53,11 @@ func onboardingResource(
     bundle: Bundle,
     locale: String = "de") -> LocalizedStringResource
 {
-    var resource = value
-    resource.bundle = .atURL(bundle.bundleURL)
-    resource.locale = Locale(identifier: locale)
+    let resource = LocalizedStringResource(
+        value.defaultValue,
+        table: value.table,
+        locale: Locale(identifier: locale),
+        bundle: .atURL(bundle.bundleURL))
+    #expect(resource.key == value.key)
     return resource
 }
