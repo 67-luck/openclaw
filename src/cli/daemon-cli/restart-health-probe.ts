@@ -206,13 +206,44 @@ function readActivatedPluginErrors(health: unknown): PluginHealthErrorSummary[] 
 
 function readChannelProbeErrors(health: unknown): Array<{ id: string; error: string }> {
   const channels = asOptionalRecord(asOptionalRecord(health)?.channels);
-  return Object.entries(channels ?? {}).flatMap(([id, summary]) => {
-    const probe = asOptionalRecord(asOptionalRecord(summary)?.probe);
-    if (probe?.ok !== false) {
-      return [];
-    }
-    const error = probe.error;
-    return [{ id, error: typeof error === "string" && error.trim() ? error : "probe failed" }];
+  return Object.entries(channels ?? {}).flatMap(([channelId, value]) => {
+    const summary = asOptionalRecord(value);
+    const accounts = asOptionalRecord(summary?.accounts);
+    // Account projections are authoritative when present; the channel summary mirrors only
+    // its preferred account and can hide a failed secondary account or duplicate its error.
+    const entries =
+      accounts && Object.keys(accounts).length > 0
+        ? Object.entries(accounts).map(
+            ([accountId, account]) => [`${channelId}/${accountId}`, account] as const,
+          )
+        : [[channelId, summary] as const];
+    return entries.flatMap(([id, value]) => {
+      const account = asOptionalRecord(value);
+      if (
+        account?.enabled === false ||
+        account?.configured === false ||
+        account?.linked === false
+      ) {
+        return [];
+      }
+      const lastError = typeof account?.lastError === "string" ? account.lastError.trim() : "";
+      const healthState = typeof account?.healthState === "string" ? account.healthState : "";
+      // A successful credential probe does not prove that the channel process is running.
+      // Keep an intentionally stopped account without a recorded failure non-blocking.
+      if (
+        healthState &&
+        healthState !== "healthy" &&
+        (healthState !== "not-running" || lastError || account?.restartPending === true)
+      ) {
+        return [{ id, error: lastError || healthState }];
+      }
+      const probe = asOptionalRecord(account?.probe);
+      if (probe?.ok !== false) {
+        return [];
+      }
+      const error = probe.error;
+      return [{ id, error: typeof error === "string" && error.trim() ? error : "probe failed" }];
+    });
   });
 }
 
