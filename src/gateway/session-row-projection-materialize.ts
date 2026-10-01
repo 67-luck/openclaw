@@ -26,6 +26,45 @@ import {
   resolveGatewaySessionStoreTargetWithStore,
 } from "./session-utils-store-lookup.js";
 
+/** Exact descriptions use the projection's custody and materialization owners in one frame. */
+export function createSessionRowDescriptionReader(owner: {
+  runInOwner: <T>(consume: () => T) => T;
+  prepare: () => boolean;
+  lookup: (query: records.Lookup) => records.Row | undefined;
+  dirty: ReadonlySet<string>;
+  refresh: (ids: string[]) => void;
+  describeArchived: (row: records.Row | undefined) => records.Row | undefined;
+  isCurrent: (row: records.Row) => boolean;
+  materializePrivate: (row: records.Row) => void;
+  preparePresentation: (row: records.MaterializedRow) => void;
+}) {
+  return (query: records.Lookup, captured?: records.Row) =>
+    owner.runInOwner(() => {
+      if (!owner.prepare()) {
+        return undefined;
+      }
+      let row = owner.lookup(query);
+      if (row && isIncognitoSessionKey(row.key)) {
+        owner.materializePrivate(row);
+      } else {
+        if (row && owner.dirty.has(records.identity(row))) {
+          // Keyed reads refresh only their owner; unrelated bulk work never gates a response.
+          owner.refresh([records.identity(row)]);
+          row = owner.lookup(query);
+        }
+        row = owner.describeArchived(row);
+      }
+      if (captured && !owner.isCurrent(captured)) {
+        return undefined;
+      }
+      if (!records.ready(row)) {
+        return undefined;
+      }
+      owner.preparePresentation(row);
+      return row;
+    });
+}
+
 /** One synchronous refresh slice shares agent policy; each later slice starts fresh. */
 function createSessionRowMaterializationBatch(): typeof readResidentSessionRow {
   const activitySummaryEnabledByAgent = new Map<string, boolean>();

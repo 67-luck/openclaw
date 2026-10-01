@@ -41,6 +41,7 @@ import { createSessionRowProjectionContext } from "./session-row-projection-cont
 import { createSessionRowGenerationObservations } from "./session-row-projection-generation.js";
 import { createSessionRowCreatorIndex } from "./session-row-projection-identities.js";
 import {
+  createSessionRowDescriptionReader,
   lookupSessionRow,
   findSessionRowById,
   readResidentSessionRow,
@@ -523,33 +524,20 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     metadata.prepare(epoch, cfg, matching, put, referenced);
     return true;
   }
-  const describe = (query: records.Lookup, captured?: records.Row) =>
-    inOwnerContext(() => {
-      if (disposed || !prepareRead()) {
-        return undefined;
-      }
-      let row = lookup(query);
-      if (row && isIncognitoSessionKey(row.key)) {
-        materialize(row);
-      } else {
-        if (row && dirty.has(records.identity(row))) {
-          // Keyed reads refresh only their owner; unrelated bulk work never gates a response.
-          const id = records.identity(row);
-          refresh([id]);
-          row = lookup(query);
-        }
-        row = archive.describe(row);
-      }
-      if (captured && !isCurrent(captured)) {
-        return undefined;
-      }
-      if (!records.ready(row)) {
-        return undefined;
-      }
+  const describe = createSessionRowDescriptionReader({
+    runInOwner: inOwnerContext,
+    prepare: () => !disposed && prepareRead(),
+    lookup,
+    dirty,
+    refresh,
+    describeArchived: (row) => archive.describe(row),
+    isCurrent,
+    materializePrivate: (row) => materialize(row),
+    preparePresentation(row) {
       row.materialized.source.cfg = cfg;
       metadata.preparePresentation(row, readChildLinks);
-      return row;
-    });
+    },
+  });
   function dispose() {
     revisions.invalidate(true);
     disposed = true;
