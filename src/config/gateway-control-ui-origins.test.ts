@@ -131,4 +131,11 @@ describe("runtime published-port origins", () => {
   it.each([0, 65536, Number.NaN, 25432.5])("rejects invalid launch port %s", (port) => {
     expect(() => resolveControlUiAllowedOrigins({}, port)).toThrow("Published Gateway port");
   });
+
+  it("canonicalizes the default HTTP port to browser origin form", () => {
+    expect(resolveControlUiAllowedOrigins({}, 80)).toEqual([
+      "http://localhost",
+      "http://127.0.0.1",
+    ]);
+  });
 });

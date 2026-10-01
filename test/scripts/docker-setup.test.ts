@@ -139,6 +139,7 @@ describe("scripts/docker/setup.sh", () => {
     expect(extraCompose).toContain("volumes:");
     expect(extraCompose).toContain("openclaw-home:");
     const log = await readDockerLog(activeSandbox);
+    expect(log).toContain("create --pull=never --network none --entrypoint sh");
     expect(log).toContain("--build-arg OPENCLAW_IMAGE_APT_PACKAGES=curl wget");
     expect(log).toContain(
       "--build-arg OPENCLAW_DOCKER_BUILD_NODE_OPTIONS=--max-old-space-size=8192",

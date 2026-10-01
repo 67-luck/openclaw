@@ -222,7 +222,7 @@ export async function createDockerSetupSandbox(): Promise<DockerSetupSandbox> {
   await mkdir(join(rootDir, "dist"));
   await writeFile(
     join(rootDir, "dist", "index.js"),
-    'console.log(process.env.DOCKER_STUB_OLD_GATEWAY === "1" ? "--port <port>" : "--published-port <port>");',
+    'console.log(process.env.DOCKER_STUB_OLD_GATEWAY === "1" ? "--port <port>" : "--port <port>\\n--published-port <port>");',
   );
   await chmod(scriptPath, 0o755);
   await writeFile(dockerfilePath, "FROM scratch\n");

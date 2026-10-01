@@ -25,6 +25,8 @@ field from your configuration; setting it to `[]` disables those defaults.
 Setup checks that the selected image supports `gateway --published-port` before
 changing saved configuration or replacing the Gateway. If the image is too old,
 select a compatible image or build this checkout from source, then retry.
+Compatible custom images must provide `sh` and `node`; the startup compatibility
+check uses the shell before replacing the running Gateway.
 The check does not upgrade your selected image automatically. Docker setup
 keeps the selected image name in `.env` and uses the checked image ID for that
 invocation. Running `docker compose up` directly keeps the original Gateway

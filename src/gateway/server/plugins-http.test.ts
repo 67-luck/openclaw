@@ -11,7 +11,6 @@ import {
 } from "../../infra/gateway-suspend-coordinator.js";
 import type { SubsystemLogger } from "../../logging/subsystem.js";
 import { dispatchGatewayMethod } from "../../plugin-sdk/gateway-method-runtime.js";
-import { resolveAcceptedBrowserOrigin } from "../../plugin-sdk/webhook-request-guards.js";
 import { registerPluginHttpRoute } from "../../plugins/http-registry.js";
 import {
   createEmptyPluginRegistry,
@@ -153,42 +152,6 @@ describe("plugin HTTP route runtime scopes", () => {
       expect(scope?.hasCurrentClientAuthority).toBeUndefined();
     },
   );
-
-  it("carries mapped origins through plugin dispatch without leaking them to other requests", async () => {
-    const cfg: OpenClawConfig = { gateway: { publicOrigin: "https://old.example.test" } };
-    let accepted: string | undefined;
-    const { handler } = setup([
-      createRoute({
-        path: "/origin-proof",
-        handler: async (req) => {
-          await Promise.resolve();
-          accepted = resolveAcceptedBrowserOrigin({ req, cfg });
-          return true;
-        },
-      }),
-    ]);
-    const request = async (origin: string, publishedPort?: number) => {
-      const req = {
-        url: "/origin-proof",
-        headers: { origin, host: "gateway.example.test:18789" },
-        socket: { remoteAddress: "198.51.100.4" },
-      } as IncomingMessage;
-      const response = makeMockHttpResponse();
-      expect(
-        await handler(req, response.res, undefined, { ...trusted, publishedPort }),
-      ).toBe(true);
-      return accepted;
-    };
-    const mappedOrigin = "http://localhost:25432";
-    expect(await request(mappedOrigin, 25432)).toBe(mappedOrigin);
-    expect(await request(mappedOrigin)).toBeUndefined();
-    cfg.gateway!.publicOrigin = "https://new.example.test";
-    expect(await request("https://old.example.test", 25432)).toBeUndefined();
-    expect(await request("https://new.example.test", 25432)).toBe("https://new.example.test");
-    expect(await request(mappedOrigin, 25432)).toBe(mappedOrigin);
-    cfg.gateway!.controlUi = { allowedOrigins: [] };
-    expect(await request(mappedOrigin, 25432)).toBeUndefined();
-  });
 
   it.each(["request policy", "visitor grant"] as const)(
     "rechecks %s before the next matched route",

@@ -49,9 +49,13 @@ export async function prepareFleetGatewayImage(
     ],
     { allowFailure: true },
   );
-  if (help.code !== 0 || !/^\s*--published-port(?:\s|=)/mu.test(help.stdout)) {
+  if (
+    help.code !== 0 ||
+    !/^\s*--port(?:\s|=)/mu.test(help.stdout) ||
+    !/^\s*--published-port(?:\s|=)/mu.test(help.stdout)
+  ) {
     throw new Error(
-      `Image ${image} does not support gateway --published-port. Build or select a compatible OpenClaw image before changing this cell.`,
+      `Image ${image} does not support the required gateway --port and --published-port options. Build or select a compatible OpenClaw image before changing this cell.`,
     );
   }
   return imageId;

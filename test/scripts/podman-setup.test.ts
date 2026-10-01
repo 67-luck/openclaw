@@ -21,7 +21,7 @@ describe.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
       for (const [name, body] of Object.entries({
         podman: `
 case "$1" in
-  create) touch "$PODMAN_STUB_ARGS-volume"; printf '%s' "\${@:$#}" > "$PODMAN_STUB_ARGS-probe.cjs"; printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';;
+  create) touch "$PODMAN_STUB_ARGS-volume"; printf '%s\\n' "$@" > "$PODMAN_STUB_ARGS-create"; printf '%s' "\${@:$#}" > "$PODMAN_STUB_ARGS-probe.cjs"; printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';;
   inspect) printf '%s\\n' 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';;
   start) (cd "$HOME" && node "$PODMAN_STUB_ARGS-probe.cjs");;
   rm) printf "%s\\n" "$@" > "$PODMAN_STUB_ARGS"; if [[ " $* " == *" -v "* ]]; then rm -f "$PODMAN_STUB_ARGS-volume"; fi;;
@@ -34,7 +34,10 @@ esac`,
         writeFileSync(join(bin, name), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
       }
       mkdirSync(join(home, "dist"));
-      writeFileSync(join(home, "dist", "index.js"), 'console.log("--published-port <port>");');
+      writeFileSync(
+        join(home, "dist", "index.js"),
+        'console.log("--port <port>\\n--published-port <port>");',
+      );
       const file = join(config, "openclaw.json");
       writeFileSync(
         file,
@@ -43,10 +46,16 @@ esac`,
         }),
         { mode: 0o600 },
       );
-      writeFileSync(join(config, ".env"), "OPENCLAW_GATEWAY_TOKEN=fixture-token\n", {
+      writeFileSync(join(config, ".env"), "OPENCLAW_GATEWAY_TOKEN=test-token-placeholder\n", {
         mode: 0o600,
       });
-      function run(script: string, args: string[], port = "19123", expectedStatus = 0) {
+      function run(
+        script: string,
+        args: string[],
+        port = "19123",
+        expectedStatus = 0,
+        extraEnv: Record<string, string> = {},
+      ) {
         const result = spawnSync("/bin/bash", [join(repoRoot, script), ...args], {
           cwd: repoRoot,
           encoding: "utf8",
@@ -59,6 +68,7 @@ esac`,
             OPENCLAW_PODMAN_IMAGE: "fixture:test",
             OPENCLAW_PODMAN_GATEWAY_HOST_PORT: port,
             PODMAN_STUB_ARGS: log,
+            ...extraEnv,
           },
         });
         expect(result.status, result.stderr || result.stdout).toBe(expectedStatus);
@@ -77,6 +87,7 @@ esac`,
         const sandbox = fixture(allowedOrigins);
         sandbox.run("scripts/podman/setup.sh", ["--container"]);
         expect(existsSync(`${sandbox.log}-volume`)).toBe(false);
+        expect(readFileSync(`${sandbox.log}-create`, "utf8")).toContain("--entrypoint\nsh\n");
         const config = JSON.parse(readFileSync(sandbox.file, "utf8"));
         expect(config.gateway).toEqual({
           mode: "local",
@@ -100,6 +111,16 @@ esac`,
       },
     );
 
+    it("does not grant loopback origins for a specific non-loopback publish host", () => {
+      const sandbox = fixture();
+      sandbox.run("scripts/run-openclaw-podman.sh", ["launch"], "19123", 0, {
+        OPENCLAW_PODMAN_PUBLISH_HOST: "192.0.2.10",
+      });
+      const args = readFileSync(sandbox.log, "utf8").split("\n");
+      expect(args).toContain("192.0.2.10:19123:18789");
+      expect(args).not.toContain("--published-port");
+    });
+
     it.each(["scripts/podman/setup.sh", "scripts/run-openclaw-podman.sh"])(
       "rejects an older selected image without replacing the service or saved config (%s)",
       (script) => {
@@ -118,6 +139,44 @@ esac`,
         expect(existsSync(`${sandbox.log}-volume`)).toBe(false);
         expect(readFileSync(sandbox.file, "utf8")).toBe(before);
         expect(readFileSync(envPath, "utf8")).toBe(envBefore);
+        expect(readFileSync(sandbox.log, "utf8")).not.toContain("--replace");
+      },
+    );
+
+    it.each(["scripts/podman/setup.sh", "scripts/run-openclaw-podman.sh"])(
+      "rejects a selected image missing the required gateway port option (%s)",
+      (script) => {
+        const sandbox = fixture();
+        writeFileSync(
+          join(sandbox.home, "dist", "index.js"),
+          'console.log("--published-port <port>");',
+        );
+        const result = sandbox.run(
+          script,
+          script.includes("setup.sh") ? ["--quadlet"] : ["launch"],
+          "19123",
+          1,
+        );
+        expect(result.stderr).toContain("--port and --published-port options");
+        expect(readFileSync(sandbox.log, "utf8")).not.toContain("--replace");
+      },
+    );
+
+    it.each(["scripts/podman/setup.sh", "scripts/run-openclaw-podman.sh"])(
+      "rejects a prose-only capability mention without replacing the service (%s)",
+      (script) => {
+        const sandbox = fixture();
+        writeFileSync(
+          join(sandbox.home, "dist", "index.js"),
+          'console.log("Description mentions --published-port but has no option");',
+        );
+        const result = sandbox.run(
+          script,
+          script.includes("setup.sh") ? ["--quadlet"] : ["launch"],
+          "19123",
+          1,
+        );
+        expect(result.stderr).toContain("Select a compatible image or build this checkout");
         expect(readFileSync(sandbox.log, "utf8")).not.toContain("--replace");
       },
     );

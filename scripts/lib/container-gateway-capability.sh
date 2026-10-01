@@ -7,13 +7,14 @@ openclaw_prepare_gateway_image() (
   local runtime="$1" image="$2" pull_policy="$3" probe="" created="" image_id=""
   trap 'if [[ -n "$probe" ]]; then "$runtime" rm -f -v "$probe" >/dev/null 2>&1 || true; fi' EXIT
   created="$(openclaw_host_timeout_cmd 600s "$runtime" create --pull="$pull_policy" \
-    --network none --entrypoint node "$image" -e '
+    --network none --entrypoint sh "$image" -c 'exec node -e "$1"' openclaw-capability-probe '
 const { spawnSync } = require("node:child_process");
 const result = spawnSync(process.execPath, ["dist/index.js", "gateway", "--help"], {
   encoding: "utf8", timeout: 30000, killSignal: "SIGKILL", maxBuffer: 1048576,
 });
-if (result.status !== 0 || !/(?:^|\s)--published-port(?:\s|=)/m.test(result.stdout ?? "")) {
-  console.error("Selected image does not support gateway --published-port. Select a compatible image or build this checkout from source before retrying; the running Gateway has not been replaced.");
+const help = result.stdout ?? "";
+if (result.status !== 0 || !/^\s*--port(?:\s|=)/m.test(help) || !/^\s*--published-port(?:\s|=)/m.test(help)) {
+  console.error("Selected image does not support the required gateway --port and --published-port options. Select a compatible image or build this checkout from source before retrying; the running Gateway has not been replaced.");
   process.exit(1);
 }
 ')" || return 1

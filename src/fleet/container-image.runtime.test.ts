@@ -9,7 +9,11 @@ describe("Fleet image capability preflight", () => {
     "probes immutable %s image without state or secrets",
     async (runtime) => {
       const execute = vi.fn(async (_runtime: string, args: string[]) =>
-        result(args[0] === "image" ? imageId : "  --published-port <port>  Mapped port\n"),
+        result(
+          args[0] === "image"
+            ? imageId
+            : "  --port <port>  Gateway port\n  --published-port <port>  Mapped port\n",
+        ),
       );
       await expect(
         prepareFleetGatewayImage(execute, runtime, "example/openclaw:latest"),
@@ -35,6 +39,7 @@ describe("Fleet image capability preflight", () => {
 
   it.each([
     "Usage: gateway\n",
+    "  --published-port <port>\n",
     "  --published-port-other <port>\n",
     "Description mentions --published-port but has no option\n",
   ])("refuses unsupported help %j", async (help) => {
@@ -42,7 +47,7 @@ describe("Fleet image capability preflight", () => {
       result(args[0] === "image" ? imageId : help),
     );
     await expect(prepareFleetGatewayImage(execute, "docker", "old:image")).rejects.toThrow(
-      "does not support gateway --published-port",
+      "does not support the required gateway --port and --published-port options",
     );
   });
 });

@@ -272,7 +272,7 @@ describe("fleet container arguments", () => {
 
   it("replays the inspected command when rolling back an older image", () => {
     const command = ["node", "dist/index.js", "gateway", "--port", "18789"];
-    const args = buildCellRunArgs(makeProfile({ command }), {
+    const args = buildCellContainerArgs("run", makeProfile({ command }), {
       environmentFile: TEST_ENVIRONMENT_FILE,
     });
     expect(args.slice(-command.length)).toEqual(command);

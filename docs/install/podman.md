@@ -148,6 +148,9 @@ The launch script and Quadlet bind-mount host state into the container: `OPENCLA
 Container launch supplies the published Gateway port automatically. When
 `gateway.controlUi.allowedOrigins` is omitted, the Gateway allows `localhost`
 and `127.0.0.1` on that port alongside the current `gateway.publicOrigin`.
+The manual launcher supplies those loopback defaults only when the publish host
+is `127.0.0.1` or the IPv4 wildcard `0.0.0.0`. For a specific non-loopback
+`OPENCLAW_PODMAN_PUBLISH_HOST`, configure the browser origin explicitly.
 Changing the public origin updates the inherited origin without saving a copy
 in the allowlist. An explicit list, including `[]`, remains authoritative and
 is not changed by setup or launch; include any desired browser origins yourself.
@@ -161,6 +164,8 @@ field from your configuration; setting it to `[]` disables those defaults.
 Setup checks that the selected image supports `gateway --published-port` before
 changing saved configuration or replacing the Gateway. If the image is too old,
 select a compatible image or build this checkout from source, then retry.
+Compatible custom images must provide `sh` and `node`; the startup compatibility
+check uses the shell before replacing the running Gateway.
 The check does not upgrade your selected image automatically. Manual launch
 uses the checked image ID for that invocation. Quadlet retains the selected image
 name so pulling or rebuilding that image and restarting the service selects the

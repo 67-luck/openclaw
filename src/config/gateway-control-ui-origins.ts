@@ -69,13 +69,12 @@ export function buildDefaultControlUiAllowedOrigins(params: {
   bind: unknown;
   customBindHost?: string;
 }): string[] {
-  const origins = new Set<string>([
-    `http://localhost:${params.port}`,
-    `http://127.0.0.1:${params.port}`,
-  ]);
+  const formatOrigin = (host: string) =>
+    params.port === 80 ? `http://${host}` : `http://${host}:${params.port}`;
+  const origins = new Set<string>([formatOrigin("localhost"), formatOrigin("127.0.0.1")]);
   const customBindHost = params.customBindHost?.trim();
   if (params.bind === "custom" && customBindHost) {
-    origins.add(`http://${customBindHost}:${params.port}`);
+    origins.add(formatOrigin(customBindHost));
   }
   return [...origins];
 }

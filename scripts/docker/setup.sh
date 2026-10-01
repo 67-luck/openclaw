@@ -689,7 +689,7 @@ elif [[ "$IMAGE_NAME" == "openclaw:local" ]]; then
   if [[ "$BUILD_GIT_COMMIT" =~ ^[0-9a-fA-F]{40}$ ]]; then
     PROVENANCE_BUILD_ARGS+=(--build-arg "GIT_COMMIT=${BUILD_GIT_COMMIT}")
   fi
-  run_docker_build \
+  docker_build_exec \
     "${PROVENANCE_BUILD_ARGS[@]}" \
     --build-arg "OPENCLAW_IMAGE_APT_PACKAGES=${OPENCLAW_IMAGE_APT_PACKAGES}" \
     --build-arg "OPENCLAW_IMAGE_PIP_PACKAGES=${OPENCLAW_IMAGE_PIP_PACKAGES}" \

@@ -468,14 +468,6 @@ describe("gateway run option collisions", () => {
     };
   }
 
-  it("rejects invalid gateway ports before startup", async () => {
-    await expect(
-      runGatewayCli(["gateway", "--port", "0", "--token", "test-token"]),
-    ).rejects.toThrow("__exit__:1");
-
-    expect(startGatewayServer).not.toHaveBeenCalled();
-    expect(runtimeErrors.join("\n")).toContain("Invalid --port. Use a port number from 1 to 65535");
-  });
   registerGatewayPortOptionTests({ runGatewayCli, startGatewayServer, runtimeErrors });
 
   it("suppresses ambient channel triggers by default in dev mode", async () => {

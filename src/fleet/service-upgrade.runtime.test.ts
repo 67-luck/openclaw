@@ -308,7 +308,7 @@ describe("fleet service upgrade and restore", () => {
   it("refuses an incompatible image before stopping the existing cell", async () => {
     const containers = createContainerMock();
     const service = createFleetService({ env, containers: containers.runtime, now: () => 1000 });
-    await service.create({ tenant: "acme", gatewayToken: "old-token" });
+    await service.create({ tenant: "acme", gatewayToken: "test-token-placeholder" });
     containers.inspect.mockResolvedValue(runningInspection());
     containers.run.mockClear();
     containers.prepareGatewayImage.mockRejectedValueOnce(new Error("missing --published-port"));
@@ -321,7 +321,7 @@ describe("fleet service upgrade and restore", () => {
   it("refuses upgrade without an inspected rollback command", async () => {
     const containers = createContainerMock();
     const service = createFleetService({ env, containers: containers.runtime, now: () => 1000 });
-    await service.create({ tenant: "acme", gatewayToken: "old-token" });
+    await service.create({ tenant: "acme", gatewayToken: "test-token-placeholder" });
     containers.inspect.mockResolvedValue(runningInspection({ command: [] }));
     await expect(service.upgrade("acme")).rejects.toThrow("valid inspected command");
     expect(containers.pull).not.toHaveBeenCalled();
