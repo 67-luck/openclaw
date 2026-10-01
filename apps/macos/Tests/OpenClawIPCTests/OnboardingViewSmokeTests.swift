@@ -246,7 +246,7 @@ struct OnboardingViewSmokeTests {
         #expect(short < preferred)
     }
 
-    @Test(arguments: ["localized", "verbatim-key", "verbatim-diagnostic"])
+    @Test(.testWaitLimit, arguments: ["localized", "verbatim-key", "verbatim-diagnostic"])
     func `error card renders localized copy without interpreting diagnostics`(_ kind: String) async throws {
         let root = try makeTempDirForTests()
         defer { try? FileManager.default.removeItem(at: root) }
