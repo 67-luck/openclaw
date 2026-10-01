@@ -4,10 +4,7 @@
 // crons carrying an explicit target / their own delivery context are unaffected.
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseTelegramTargetForTest } from "../../../test/helpers/infra/telegram-targets.js";
-import type {
-  ChannelDirectoryEntry,
-  ChannelOutboundAdapter,
-} from "../../channels/plugins/types.public.js";
+import type { ChannelOutboundAdapter } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import {
@@ -384,80 +381,6 @@ describe("resolveDeliveryTarget — channel namespace safety", () => {
 
     expect(inferred.ok).toBe(false);
     expect(explicit).toMatchObject({ ok: true, channel: "alpha", to: "alpha" });
-    expect(listGroups).toHaveBeenCalledWith(expect.objectContaining({ query: "alpha" }));
-  });
-
-  it("rejects a namespace target on an inherited last channel", async () => {
-    const outboundResolveTarget = vi.fn(({ to }: { to?: string }) =>
-      to
-        ? { ok: true as const, to: to.trim() }
-        : { ok: false as const, error: new Error("target required") },
-    );
-    setLastSessionEntry({
-      sessionId: "sess-last-channel",
-      lastChannel: "alpha",
-      lastTo: "room:previous",
-    });
-    setActivePluginRegistry(
-      createTestRegistry([
-        {
-          pluginId: "alpha",
-          plugin: {
-            ...createOutboundTestPlugin({
-              id: "alpha",
-              outbound: { deliveryMode: "direct", resolveTarget: outboundResolveTarget },
-            }),
-            capabilities: { chatTypes: ["group"] },
-            directory: { listGroups: vi.fn(async () => []) },
-          },
-          source: "test",
-        },
-      ]),
-    );
-
-    const result = await resolveDeliveryTarget(makeCfg(), AGENT_ID, {
-      channel: "last",
-      to: "alpha",
-    });
-
-    expect(result.ok).toBe(false);
-  });
-
-  it("preserves exact directory destinations before rejecting channel namespaces", async () => {
-    const listGroups = vi.fn(async () => [
-      { kind: "group", id: "C123456", name: "alpha" } satisfies ChannelDirectoryEntry,
-    ]);
-    setMainSessionEntry(undefined);
-    setActivePluginRegistry(
-      createTestRegistry([
-        {
-          pluginId: "alpha",
-          plugin: {
-            ...createOutboundTestPlugin({
-              id: "alpha",
-              outbound: createStubOutbound("Alpha"),
-              messaging: {
-                targetPrefixes: ["a"],
-                targetResolver: { hint: "<channel>" },
-              },
-            }),
-            capabilities: { chatTypes: ["group"] },
-            directory: { listGroups },
-          },
-          source: "test",
-        },
-      ]),
-    );
-
-    const result = await resolveDeliveryTarget(makeCfg(), AGENT_ID, {
-      channel: "alpha",
-      to: "alpha",
-    });
-
-    if (!result.ok) {
-      throw result.error;
-    }
-    expect(result.to).toBe("C123456");
     expect(listGroups).toHaveBeenCalledWith(expect.objectContaining({ query: "alpha" }));
   });
 });

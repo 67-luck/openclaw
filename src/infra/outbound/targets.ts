@@ -559,7 +559,9 @@ export async function resolveHeartbeatDeliveryTarget(params: {
     routeResolvedTarget = targetResolution.target;
   } else if (
     targetResolution &&
-    (channelNamespace || isReservedTargetLiteralError(targetResolution.error))
+    (targetResolution.policyRejected ||
+      channelNamespace ||
+      isReservedTargetLiteralError(targetResolution.error))
   ) {
     return rejectDelivery(ownerRouteMustBeDirect ? "no-route" : "no-target");
   }
