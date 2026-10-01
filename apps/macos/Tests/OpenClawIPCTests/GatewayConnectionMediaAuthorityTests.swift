@@ -22,8 +22,10 @@ struct GatewayConnectionMediaAuthorityTests {
             received.notify()
             // Cancellation must interrupt a live request; the allow case must return
             // with nine body bytes still outstanding, before the fixture's 5s cleanup.
+            // Declare the media type so URLSession delivers these headers before the full body.
             let reply = scenario == "cancel" ? "" :
-                "HTTP/1.1 200 OK\r\nX-Proof: header-only\r\nContent-Length: 10\r\n\r\nx"
+                "HTTP/1.1 200 OK\r\nX-Proof: header-only\r\nContent-Type: text/html; charset=utf-8\r\n" +
+                "Content-Length: 10\r\n\r\nx"
             return .init(data: Data(reply.utf8), keepConnectionOpen: true)
         })
         defer { server.stop() }
@@ -47,12 +49,18 @@ struct GatewayConnectionMediaAuthorityTests {
             let result: Result<URLResponse, Error>
             do {
                 if scenario == "cancel" {
-                    try await AsyncTimeout.withTimeout(seconds: 3, onTimeout: { URLError(.timedOut) }) { @MainActor in
+                    try await AsyncTimeout.withTimeout(seconds: 3, onTimeout: {
+                        URLError(
+                            .timedOut,
+                            userInfo: [NSLocalizedDescriptionKey: "header-only request receipt timeout"])
+                    }) { @MainActor in
                         try await received.wait("authenticated header-only request") { !requests.isEmpty }
                     }
                     pending.cancel()
                 }
-                result = try await AsyncTimeout.withTimeout(seconds: 3, onTimeout: { URLError(.timedOut) }) {
+                result = try await AsyncTimeout.withTimeout(seconds: 3, onTimeout: {
+                    URLError(.timedOut, userInfo: [NSLocalizedDescriptionKey: "header-only response result timeout"])
+                }) {
                     await pending.result
                 }
             } catch {
@@ -92,7 +100,9 @@ struct GatewayConnectionMediaAuthorityTests {
         try await requestRound()
         // Drop the entire request/task scope before checking the public wrapper's
         // lifetime; explicit invalidation would conceal the delegate retain cycle.
-        try await AsyncTimeout.withTimeout(seconds: 3, onTimeout: { URLError(.timedOut) }) { @MainActor in
+        try await AsyncTimeout.withTimeout(seconds: 3, onTimeout: {
+            URLError(.timedOut, userInfo: [NSLocalizedDescriptionKey: "header-only release or socket timeout"])
+        }) { @MainActor in
             try await TestWait.state("header-only TLS factory release") { retired == nil }
             try await server.waitUntilIdle("header-only HTTPS socket cleanup")
         }
