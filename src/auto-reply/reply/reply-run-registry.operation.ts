@@ -18,6 +18,7 @@ import {
   ReplyRunFollowupAdmissionBlockedError,
   ReplyRunSuccessorAdmissionBlockedError,
   type ReplyBackendCancelReason,
+  type ReplyBackendHandle,
   type ReplyOperation,
   type ReplyOperationPhase,
   type ReplyTurnKind,
@@ -105,6 +106,13 @@ export function createReplyOperation(params: {
     ownsRunSlot: () => replyRunState.activeRunsByKey.get(currentSessionKey) === operation,
   });
   const ownerSettlement = createDeferredCore();
+  let backendReady = createDeferredCore<ReplyBackendHandle | undefined>();
+  const publishBackendReadiness = () => {
+    const backend = getAttachedBackend(operation);
+    if (phase === "running" && backend && !result && !stateCleared) {
+      backendReady.resolve(backend);
+    }
+  };
   const producerCompletion = createDeferredCore();
   let ownerCompletionBarrier: Promise<void> | undefined;
   const settleOwner = (): void => {
@@ -135,6 +143,7 @@ export function createReplyOperation(params: {
   };
   const setResult = (next: ReplyOperationResult) => {
     result = next;
+    backendReady.resolve(undefined);
     toolAuthority.close();
     recordActivity();
   };
@@ -154,6 +163,7 @@ export function createReplyOperation(params: {
       return;
     }
     stateCleared = true;
+    backendReady.resolve(undefined);
     toolAuthority.close();
     terminalSettleTimer.clear();
     finalizationLease.clear();
@@ -270,6 +280,9 @@ export function createReplyOperation(params: {
     get phase() {
       return phase;
     },
+    get backendReady() {
+      return backendReady.promise;
+    },
     get result() {
       return result;
     },
@@ -294,6 +307,7 @@ export function createReplyOperation(params: {
       }
       recordActivity();
       phase = next;
+      publishBackendReadiness();
     },
     markWaitingForDeferredMaintenance() {
       if (result || phase !== "queued") {
@@ -326,6 +340,7 @@ export function createReplyOperation(params: {
       phase = phaseBeforeGlobalLaneWait ?? "queued";
       phaseBeforeGlobalLaneWait = undefined;
       markProgress("global_lane:wait_ended");
+      publishBackendReadiness();
     },
     markTerminalRecovery() {
       terminalRecovery = true;
@@ -374,6 +389,8 @@ export function createReplyOperation(params: {
       if (update.sessionKey === currentSessionKey) {
         return;
       }
+      backendReady.resolve(undefined);
+      backendReady = createDeferredCore<ReplyBackendHandle | undefined>();
       const previousKey = currentSessionKey;
       replyRunState.activeRunsByKey.delete(previousKey);
       replyRunState.activeSessionIdsByKey.delete(previousKey);
@@ -411,6 +428,7 @@ export function createReplyOperation(params: {
       if (controller.signal.aborted) {
         handle.cancel("superseded");
       }
+      publishBackendReadiness();
     },
     detachBackend(handle) {
       if (getAttachedBackend(operation) === handle) {
