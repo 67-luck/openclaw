@@ -1,12 +1,10 @@
 import Foundation
 import OpenClawKit
 
-/// Bounds admitted payload bytes separately from the original messages held by waiting callers.
-/// Ordinary RPCs, native progress, and one-way deliveries each retain at most 64 writer slots.
-/// RPC leases outlive their writes until the ordered cancellation drains; controls cannot be
-/// multiplied by repeatedly filling the pipe while the helper is stalled.
-/// The 192 waiting/admitted callers can retain about 4.69 GiB at 25 MiB each, in addition
-/// to prepared/transport copies. The 64 MiB admitted budget is not a process memory cap.
+/// Bounds original waiting/admitted payloads as well as active writes. Relay messages and
+/// controls retain separate capacity so application pressure cannot starve transport receipts.
+/// RPC leases outlive writes until ordered cancellation drains. These queue budgets do not
+/// bound payloads retained by callers or the native network transport.
 final class SidecarWriteQueue: @unchecked Sendable {
     enum Lane: Sendable {
         case application, progress, delivery, transport, cancellation, admission, keepalive, receipt, pong
@@ -105,7 +103,15 @@ final class SidecarWriteQueue: @unchecked Sendable {
             self.lock.lock()
             let count = self.requests.values.filter { $0.lane == lane }.count
             let byteLimit = lane.isControl ? 64 * 1024 : 64 * 1024 * 1024
-            guard self.failure == nil, count < lane.countLimit, request.chargedBytes <= byteLimit else {
+            // Originals wait under a shared byte budget before admission, including cancelled
+            // admitted work until it drains. The acknowledged relay keeps its two reserved slots.
+            let retainedBytes = self.requests.values.reduce(0) { bytes, queued in
+                bytes + (queued.lane != .transport && queued.lane.isControl == lane.isControl ? queued.chargedBytes : 0)
+            }
+            let retainedLimit = lane.isControl ? byteLimit : 2 * byteLimit
+            guard self.failure == nil, count < lane.countLimit, request.chargedBytes <= byteLimit,
+                  lane == .transport || retainedBytes + request.chargedBytes <= retainedLimit
+            else {
                 let error = self.failure ?? URLError(.dataLengthExceedsMaximum)
                 self.lock.unlock()
                 request.continuation?.resume(throwing: error)
