@@ -10,7 +10,6 @@ import subprocess
 from pathlib import Path
 
 
-BASE_COMMIT = "f2a6cd8bf3b31e0fc7fcc92ae8bdf1f522a1a293"
 MODULES = ["OpenClawKit", "OpenClawProtocol", "OpenClawNativeState"]
 
 
@@ -132,7 +131,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--base", default=BASE_COMMIT)
+    parser.add_argument("--base", default="HEAD")
     args = parser.parse_args()
     repo = args.repo.resolve()
     root = args.output.resolve()
@@ -147,6 +146,9 @@ def main():
         (root / name).mkdir()
     shutil.copy2(scripts / "sandbox.sb", root / "sandbox.sb")
     ensure_clean_repo(repo)
+    args.base = git(
+        repo, "rev-parse", "--verify", "--end-of-options", args.base + "^{commit}"
+    ).decode().strip()
     helper_command = build_helper(repo, root)
     metadata = {
         "baseline": args.base,

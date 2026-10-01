@@ -24,7 +24,7 @@ node probe-runner.cjs backpressure "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-side
 node probe-runner.cjs framing
 RFC54_CHECK_RETIREMENT=helper node functional-smoke.cjs "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" helper-retirement
 RFC54_CHECK_RETIREMENT=gateway node functional-smoke.cjs "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" gateway-retirement
-# Both original Swift and candidate auxiliary RPC lifetime/cancellation owners.
+# Both Swift-control and sidecar auxiliary RPC lifetime/cancellation owners.
 node probe-runner.cjs aux baseline auxiliary-baseline
 node probe-runner.cjs aux "$RFC54_BENCH_ROOT/bin/openclaw-mac-node-sidecar" auxiliary-candidate
 # A targeted 100-batch saturation/cancellation regression.
@@ -58,7 +58,7 @@ python3 run-paired.py
 
 Before execution, validate the included sandbox with `sandbox-probe`: it must deny operator file access, Keychain, preference, TCC, and WindowServer services. The validator supplies `BENCH_ROOT=<resolved output path>` and `BENCH_ENDPOINT=localhost:<fixture port>` through `sandbox-exec -D`. The selected listener must work and a different live loopback listener must fail with `EPERM`. The profile does not grant general loopback access, home-directory access, or TOFU/pin persistence. The runner supplies a fresh environment to every native process. TLS uses source-defined test certificates and explicit fingerprints.
 
-The baseline is extracted from `f2a6cd8bf3b31e0fc7fcc92ae8bdf1f522a1a293`, the current macOS app before switching its default node transport to the sidecar. Candidate sources and the helper binary come from the selected clean checkout. Build metadata records the exact candidate head, helper build command, source hashes, and executable SHA-256 hashes.
+By default, the Swift control uses the same clean checkout (`HEAD`) as the sidecar candidate, with `URLSession` instead of the Rust transport. Use `--base <commit>` for an intentional historical Swift comparison; that commit must already exist locally. The builder resolves the baseline to an immutable commit before compiling. Candidate sources and the helper binary come from the selected clean checkout. Build metadata records the exact baseline and candidate commits, helper build command, source hashes, and executable SHA-256 hashes.
 
 ## Measurements
 
