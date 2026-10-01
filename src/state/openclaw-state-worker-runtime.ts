@@ -148,6 +148,7 @@ import {
 import { isOnboardingRecommendationWriteCommand } from "./onboarding-recommendations.contract.js";
 import { executeOnboardingRecommendationCommand } from "./onboarding-recommendations.kernel.js";
 import type { OpenClawStateDatabase } from "./openclaw-state-db-contract.js";
+import type { ExistingOpenClawStateWriter } from "./openclaw-state-db-existing-write.js";
 import { assertOpenClawStateDatabaseOwner } from "./openclaw-state-db-maintenance.js";
 import {
   withOpenClawStateDatabaseReadOnly,
@@ -170,6 +171,8 @@ import { executeUserProfileCommand, isUserProfileCommand } from "./user-profiles
 
 const log = createSubsystemLogger("state/worker");
 
+export { openUpdateRunWriter } from "../infra/update-run-mutation.worker.js";
+
 const loadPluginIndexWriter = createLazyRuntimeModule(
   () => import("../plugins/installed-plugin-index-store-write.js"),
 );
@@ -188,6 +191,7 @@ export function executeSharedStateCommand(
   command: OpenClawStateWorkerRuntimeCommand,
   context: { databasePath: string },
   open: () => OpenClawStateDatabase,
+  updateRunWriter: () => ExistingOpenClawStateWriter,
 ): ReturnType<OpenClawStateWorkerBackend["execute"]> {
   // Dispatch preparation has loaded this module; do not open or observe token state.
   if (command.type === "deviceAuth.prepare") {
@@ -338,8 +342,11 @@ export function executeSharedStateCommand(
     );
   }
   if (command.type === "updateRuns.recordStep" || command.type === "updateRuns.recordPhase") {
-    return recordUpdateRunMutationInWorker(command, stateOptions(), (stage) =>
-      requestSqliteWorkerOperationAdmission({ stage, facts: undefined }),
+    return recordUpdateRunMutationInWorker(
+      command,
+      stateOptions(),
+      (stage) => requestSqliteWorkerOperationAdmission({ stage, facts: undefined }),
+      updateRunWriter(),
     );
   }
   if (command.type === "updateRuns.reconcile") {
