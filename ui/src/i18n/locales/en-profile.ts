@@ -7,6 +7,29 @@ const enProfile = {
   profilePage: {
     people: {
       directory: "People",
+      viewBy: "View access by",
+      viewsHint: "Two views of the same saved assignments and configured limits.",
+      peopleView: "People",
+      rolesView: "Roles",
+      roles: "Configured roles",
+      rolesProvenance:
+        "Named profile roles come from Gateway configuration. Operator and node are built-in connection types, not a fixed list of profile roles.",
+      configuredRole: "Configured role definition",
+      defaultRole: "Configured default role",
+      roleCeilingHint:
+        "Configured maxima, not members' live connection grants. Authentication, access-policy approval, and individual sessions can restrict access further.",
+      assignedPeople: "Assigned people",
+      defaultPeople: "Default-fallback people",
+      outsideRoles: "Outside configured roles",
+      retiredAssignment: "Saved assignment {role} is retired; the configured default applies.",
+      noRoleMembers: "No people were returned for this group.",
+      membersUnavailable:
+        "The people directory is unavailable with your current access. Membership is unknown, not empty.",
+      membersLoading: "Loading authorized people…",
+      rolesUnavailable:
+        "Configured roles are unavailable with your current access. Your own connection permissions remain available in People.",
+      roleUnavailable: "This configured role is unavailable. Choose a reported definition.",
+      noRoles: "No configured role definitions were reported.",
       person: "Person",
       assignedRole: "Assigned role",
       unassigned: "No assigned role",

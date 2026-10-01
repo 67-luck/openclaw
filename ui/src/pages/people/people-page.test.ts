@@ -177,6 +177,16 @@ it.each(["owner", "roles-off", "missing-runtime", "empty"])(
   },
 );
 
+it("preserves the owner bypass explanation when named roles are off", async () => {
+  const h = setup(["operator.read"], [{ ...guest, id: GATEWAY_OWNER_PROFILE_ID }]);
+  h.page.personId = GATEWAY_OWNER_PROFILE_ID;
+  h.context.runtimeConfig.state.configSnapshot = { runtimeConfig: {} };
+  await h.page.updateComplete;
+  await h.finish();
+  expect(h.page.textContent).toContain("outside the named-role boundary");
+  expect(h.page.textContent).not.toContain("Named operator roles are not configured");
+});
+
 it("retires late directory responses on a same-client downgrade and reconnect", async () => {
   const h = setup();
   h.page.personId = guest.id;
@@ -201,4 +211,104 @@ it("does not publish a late read after unmounting", async () => {
   h.page.remove();
   await h.finish();
   expect(h.page.textContent).not.toContain("example-access");
+});
+
+it("shows role definitions with explicit assignments and default fallbacks from one directory", async () => {
+  const people: UserProfile[] = [
+    { ...guest, id: "alex", displayName: "Alex", role: "guest" },
+    { ...guest, id: "morgan", displayName: "Morgan", role: undefined },
+    { ...guest, id: "jamie", displayName: "Jamie", role: "retired-role" },
+    { ...guest, id: "staff-person", displayName: "Steve", role: "staff" },
+    { ...guest, id: GATEWAY_OWNER_PROFILE_ID, displayName: "Shared owner", role: undefined },
+    { ...guest, id: "old-alias", displayName: "Old alias", mergedInto: "alex" },
+  ];
+  const h = setup(["operator.read"], people);
+  h.context.runtimeConfig.state.configSnapshot = {
+    runtimeConfig: {
+      gateway: {
+        roles: {
+          default: "guest",
+          definitions: {
+            guest: policy,
+            staff: { sessions: { others: "write" }, agents: "*", scopes: ["operator.admin"] },
+          },
+        },
+      },
+    },
+  };
+  h.page.view = "roles";
+  h.page.roleName = "guest";
+  await h.page.updateComplete;
+  expect(h.page.textContent).toContain("Loading authorized people…");
+  await h.finish();
+  expect(h.page.textContent).toContain("Configured roles");
+  expect(h.page.textContent).toContain("Configured default role");
+  expect(h.page.textContent).toContain("Assigned people");
+  expect(h.page.textContent).toContain("Default-fallback people");
+  expect(h.page.textContent).toContain("Alex");
+  expect(h.page.textContent).toContain("Morgan");
+  expect(h.page.textContent).toContain("Jamie");
+  expect(h.page.textContent).toContain("Saved assignment retired-role is retired");
+  expect(h.page.textContent).toContain("Shared owner");
+  expect(h.page.textContent).not.toContain("Steve");
+  expect(h.page.textContent).not.toContain("Old alias");
+  expect(h.page.textContent).toContain("not members' live connection grants");
+  expect(h.request.mock.calls.filter(([method]) => method === "users.list")).toHaveLength(1);
+});
+
+it("keeps role membership unavailable distinct from an empty authorized directory", async () => {
+  const h = setup(["operator.read"]);
+  h.page.view = "roles";
+  h.emitHello(gatewayHelloForMethods(["config.get", "users.self"], ["operator.read"]));
+  await h.finish();
+  expect(h.page.textContent).toContain("Membership is unknown, not empty.");
+  expect(h.page.textContent).not.toContain("No people were returned for this group.");
+});
+
+it("keeps the Roles route self-only for a session-scoped guest", async () => {
+  const h = setup(["operator.sessions.read", "operator.sessions.write"]);
+  h.page.view = "roles";
+  await h.page.updateComplete;
+  expect(h.page.textContent).toContain(
+    "Configured roles are unavailable with your current access.",
+  );
+  expect(h.page.textContent).not.toContain("example-access");
+  expect(h.ensure).not.toHaveBeenCalled();
+  expect(h.request.mock.calls.every(([method]) => method === "users.self")).toBe(true);
+});
+
+it("does not assign unresolved profiles to a role when the configured default is missing", async () => {
+  const h = setup(
+    ["operator.read"],
+    [{ ...guest, displayName: "Unassigned person", role: undefined }],
+  );
+  h.page.view = "roles";
+  h.context.runtimeConfig.state.configSnapshot = {
+    runtimeConfig: { gateway: { roles: { definitions: { guest: policy } } } },
+  };
+  await h.page.updateComplete;
+  await h.finish();
+  expect(h.page.textContent).toContain("Outside configured roles");
+  expect(h.page.textContent).toContain("No usable configured role policy");
+  expect(h.page.textContent).not.toContain("No role is assigned; the configured default applies.");
+});
+
+it.each(["off", "unknown-role", "empty"])("reports Roles %s without guessing", async (state) => {
+  const h = setup(["operator.read"], state === "empty" ? [] : [guest]);
+  h.page.view = "roles";
+  if (state === "off") {
+    h.context.runtimeConfig.state.configSnapshot = { runtimeConfig: {} };
+  }
+  if (state === "unknown-role") {
+    h.page.roleName = "not-a-definition";
+  }
+  await h.page.updateComplete;
+  await h.finish();
+  expect(h.page.textContent).toContain(
+    state === "off"
+      ? "Named operator roles are not configured"
+      : state === "unknown-role"
+        ? "This configured role is unavailable"
+        : "No people were returned for this group.",
+  );
 });

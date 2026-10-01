@@ -18,6 +18,7 @@ import {
   renderSettingsPage,
   renderSettingsPageHeader,
   renderSettingsRow,
+  renderSettingsSegmented,
   renderSettingsSection,
   renderSettingsValue,
 } from "../../components/settings-ui.ts";
@@ -29,17 +30,19 @@ import { canonicalPersonProfile, canReadPersonProfile } from "../../lib/person-p
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
+import { profileRoleChoice, renderConfiguredRolePolicy, type RoleCatalog } from "./role-policy.ts";
 
 registerProfileEnglish();
 const copy = (key: string) => t(`profilePage.people.${key}`);
-const stringList = (value: unknown): string[] | null =>
-  Array.isArray(value) && value.every((entry): entry is string => typeof entry === "string")
-    ? value
-    : null;
+type RolePolicyState =
+  | { kind: "loading" | "unavailable" | "off" }
+  | { kind: "ready"; catalog: RoleCatalog };
 
 export class PeoplePage extends OpenClawLightDomElement {
   @consume({ context: applicationContext, subscribe: true }) private context!: ApplicationContext;
   @property() personId = "";
+  @property() view: "people" | "roles" = "people";
+  @property() roleName = "";
   @state() private profiles: UserProfile[] | null = null;
   @state() private selfProfile: UserProfile | null = null;
   @state() private loading = false;
@@ -169,95 +172,188 @@ export class PeoplePage extends OpenClawLightDomElement {
     });
   }
 
-  private policy(profile: UserProfile) {
+  private rolePolicyState(): RolePolicyState {
     const config = this.context.runtimeConfig.state;
-    const snapshot = config.configSnapshot;
-    // Only applied runtime facts describe policy. Saved drafts can differ from live access.
-    const runtime =
-      this.canReadConfig() &&
-      config.connected &&
-      config.client === this.context.gateway.snapshot.client
-        ? snapshot?.runtimeConfig
-        : undefined;
-    if (!runtime || config.configLoading || config.lastError) {
-      return renderSettingsSection(
-        { title: copy("policy") },
-        renderSettingsEmpty(copy(config.configLoading ? "policyLoading" : "policyUnavailable")),
-      );
+    if (
+      !this.canReadConfig() ||
+      !config.connected ||
+      config.client !== this.context.gateway.snapshot.client
+    ) {
+      return { kind: "unavailable" };
     }
-    const roles = asOptionalRecord(asOptionalRecord(runtime.gateway)?.roles);
-    if (profile.id === GATEWAY_OWNER_PROFILE_ID || !roles) {
+    if (config.configLoading) {
+      return { kind: "loading" };
+    }
+    const runtime = config.configSnapshot?.runtimeConfig;
+    if (!runtime || config.lastError) {
+      return { kind: "unavailable" };
+    }
+    const value = asOptionalRecord(runtime.gateway)?.roles;
+    if (value === undefined) {
+      return { kind: "off" };
+    }
+    const roles = asOptionalRecord(value);
+    const definitions = asOptionalRecord(roles?.definitions);
+    if (!roles || !definitions) {
+      return { kind: "unavailable" };
+    }
+    return {
+      kind: "ready",
+      catalog: {
+        definitions,
+        defaultName: typeof roles.default === "string" ? roles.default : null,
+      },
+    };
+  }
+
+  private policy(profile: UserProfile) {
+    const policyState = this.rolePolicyState();
+    if (policyState.kind !== "ready") {
       return renderSettingsSection(
         { title: copy("policy") },
         renderSettingsEmpty(
-          copy(profile.id === GATEWAY_OWNER_PROFILE_ID ? "ownerPolicy" : "rolesOff"),
+          copy(
+            policyState.kind === "off"
+              ? profile.id === GATEWAY_OWNER_PROFILE_ID
+                ? "ownerPolicy"
+                : "rolesOff"
+              : policyState.kind === "loading"
+                ? "policyLoading"
+                : "policyUnavailable",
+          ),
         ),
       );
     }
-    const definitions = asOptionalRecord(roles.definitions);
-    const assigned = profile.role;
-    const assignedKnown = Boolean(assigned && definitions && Object.hasOwn(definitions, assigned));
-    const roleName = assignedKnown
-      ? assigned
-      : typeof roles.default === "string"
-        ? roles.default
-        : null;
-    const policy =
-      roleName && definitions && Object.hasOwn(definitions, roleName)
-        ? asOptionalRecord(definitions[roleName])
-        : undefined;
-    if (!policy) {
+    const choice = profileRoleChoice(profile, policyState.catalog);
+    if (choice.kind !== "role") {
       return renderSettingsSection(
         { title: copy("policy") },
-        renderSettingsEmpty(copy("noPolicy")),
+        renderSettingsEmpty(copy(choice.kind === "owner" ? "ownerPolicy" : "noPolicy")),
       );
     }
-    const sessions = asOptionalRecord(policy.sessions);
-    const model = asOptionalRecord(policy.modelPolicy);
-    const agents = policy.agents === "*" ? copy("allAgents") : stringList(policy.agents);
-    const scopes = stringList(policy.scopes);
-    const allow = model ? stringList(model.allow) : null;
-    const deny = model ? stringList(model.deny) : null;
-    return renderSettingsSection(
-      { title: copy("policy"), description: copy("ceilingHint") },
-      html`
-        ${this.fact(
-          copy("policySource"),
-          roleName,
-          copy(assignedKnown ? "assignedPolicy" : assigned ? "retiredPolicy" : "defaultPolicy"),
-        )}
-        ${this.fact(
-          copy("agents"),
-          typeof agents === "string"
-            ? agents
-            : agents === null
-              ? copy("unknown")
-              : agents.length
-                ? agents.join(", ")
-                : copy("noneAgents"),
-        )}
-        ${this.fact(
-          copy("otherSessions"),
-          typeof sessions?.others === "string"
-            ? copy(`others.${sessions.others}`)
-            : copy("unknown"),
-          copy("sessionHint"),
-        )}
-        ${this.fact(copy("sandbox"), copy(policy.sandbox === "required" ? "sandboxRequired" : "sandboxInherit"), copy("sandboxHint"))}
-        ${this.fact(copy("scopes"), scopes === null ? copy("unknown") : scopes.length ? scopes.join(", ") : copy("noScopes"), copy("scopeHint"))}
-        ${this.fact(copy("models"), model ? copy("modelsRestricted") : copy("modelsInherited"), copy("modelHint"))}
-        ${
-          model
-            ? html`
-                ${this.fact(copy("modelSource"), typeof model.sourceAgent === "string" ? model.sourceAgent : copy("defaultSource"))}
-                ${this.fact(copy("modelAllow"), allow === null ? copy("sourceModels") : allow.length ? allow.join(", ") : copy("noModels"))}
-                ${this.fact(copy("modelDeny"), deny?.length ? deny.join(", ") : copy("none"))}
-              `
-            : nothing
-        }
-        ${this.fact(copy("accessPolicy"), typeof policy.accessPolicyPlugin === "string" ? policy.accessPolicyPlugin : copy("none"), copy("eligibilityHint"))}
-      `,
+    return renderConfiguredRolePolicy(
+      choice.name,
+      choice.definition,
+      copy(
+        choice.source === "assigned"
+          ? "assignedPolicy"
+          : choice.source === "retired"
+            ? "retiredPolicy"
+            : "defaultPolicy",
+      ),
     );
+  }
+
+  private selectView(view: "people" | "roles", roleName?: string) {
+    const search = new URLSearchParams();
+    if (view === "roles") {
+      search.set("view", "roles");
+      if (roleName) {
+        search.set("role", roleName);
+      }
+    } else if (this.personId) {
+      search.set("person", this.personId);
+    }
+    this.context.navigate("people", {
+      pathname: pathForRoute("people", this.context.basePath),
+      search: search.size ? `?${search}` : "",
+    });
+  }
+
+  private renderRoles() {
+    const policyState = this.rolePolicyState();
+    if (policyState.kind !== "ready") {
+      return renderSettingsSection(
+        { title: copy("roles") },
+        html`
+          ${renderSettingsEmpty(copy(policyState.kind === "off" ? "rolesOff" : policyState.kind === "loading" ? "policyLoading" : "rolesUnavailable"))}
+          ${renderSettingsNavRow({ title: copy("peopleView"), onClick: () => this.selectView("people") })}
+        `,
+      );
+    }
+    const catalog = policyState.catalog;
+    const names = Object.keys(catalog.definitions).toSorted((a, b) => a.localeCompare(b));
+    const selected =
+      this.roleName ||
+      (catalog.defaultName && names.includes(catalog.defaultName) ? catalog.defaultName : names[0]);
+    const definition =
+      selected && Object.hasOwn(catalog.definitions, selected)
+        ? asOptionalRecord(catalog.definitions[selected])
+        : undefined;
+    const directory =
+      this.canList() && !this.loading && !this.failed && this.profiles
+        ? this.profiles.filter((person) => !person.mergedInto)
+        : null;
+    const choices = directory?.map((person) => ({
+      person,
+      choice: profileRoleChoice(person, catalog),
+    }));
+    const assigned = choices?.filter(
+      ({ choice }) =>
+        choice.kind === "role" && choice.name === selected && choice.source === "assigned",
+    );
+    const fallback = choices?.filter(
+      ({ choice }) =>
+        choice.kind === "role" && choice.name === selected && choice.source !== "assigned",
+    );
+    const outside = choices?.filter(({ choice }) => choice.kind !== "role");
+    const members = (title: string, entries: typeof choices) =>
+      renderSettingsSection(
+        { title, count: entries?.length },
+        entries === undefined
+          ? renderSettingsEmpty(copy(this.loading ? "membersLoading" : "membersUnavailable"))
+          : !entries.length
+            ? renderSettingsEmpty(copy("noRoleMembers"))
+            : entries.map(({ person, choice }) =>
+                renderSettingsNavRow({
+                  title:
+                    person.displayName?.trim() || person.githubIdentity?.login || copy("person"),
+                  description:
+                    choice.kind === "owner"
+                      ? copy("owner")
+                      : choice.kind === "unresolved"
+                        ? copy("noPolicy")
+                        : choice.source === "assigned"
+                          ? copy("assignedPolicy")
+                          : choice.source === "retired"
+                            ? t("profilePage.people.retiredAssignment", { role: person.role ?? "" })
+                            : copy("defaultPolicy"),
+                  onClick: () => this.selectPerson(person.id),
+                }),
+              ),
+      );
+    return html`<div class="settings-directory-detail">
+      <div class="settings-stack">
+        ${renderSettingsSection(
+          { title: copy("roles"), count: names.length, description: copy("rolesProvenance") },
+          names.length
+            ? names.map((name) =>
+                renderSettingsNavRow({
+                  title: name,
+                  description: copy(
+                    name === catalog.defaultName ? "defaultRole" : "configuredRole",
+                  ),
+                  onClick: () => this.selectView("roles", name),
+                }),
+              )
+            : renderSettingsEmpty(copy("noRoles")),
+        )}
+      </div>
+      <div class="settings-stack">
+        ${
+          selected && definition
+            ? renderConfiguredRolePolicy(
+                selected,
+                definition,
+                copy(selected === catalog.defaultName ? "defaultRole" : "configuredRole"),
+                copy("roleCeilingHint"),
+              )
+            : renderSettingsEmpty(copy("roleUnavailable"))
+        }
+        ${selected && definition ? html`${members(copy("assignedPeople"), assigned)}${members(copy("defaultPeople"), fallback)}` : nothing}
+        ${outside?.length ? members(copy("outsideRoles"), outside) : nothing}
+      </div>
+    </div>`;
   }
 
   override render() {
@@ -269,7 +365,8 @@ export class PeoplePage extends OpenClawLightDomElement {
       : this.selfProfile?.id === requestedId
         ? this.selfProfile
         : null;
-    const showSelf = !this.personId || Boolean(selfId && profile?.id === selfId);
+    const showSelf =
+      this.view === "people" && (!this.personId || Boolean(selfId && profile?.id === selfId));
     const directory = this.profiles
       ?.filter((person) => !person.mergedInto)
       .toSorted((a, b) => (a.displayName ?? a.id).localeCompare(b.displayName ?? b.id));
@@ -290,6 +387,20 @@ export class PeoplePage extends OpenClawLightDomElement {
           !connected
             ? renderSettingsEmpty(copy("offline"))
             : html`
+                ${renderSettingsRow({
+                  title: copy("viewBy"),
+                  description: copy("viewsHint"),
+                  control: renderSettingsSegmented({
+                    mode: "buttons",
+                    value: this.view,
+                    options: [
+                      { value: "people", label: copy("peopleView") },
+                      { value: "roles", label: copy("rolesView") },
+                    ],
+                    ariaLabel: copy("viewBy"),
+                    onChange: (view) => this.selectView(view),
+                  }),
+                })}
                 ${
                   showSelf
                     ? html`
@@ -312,65 +423,69 @@ export class PeoplePage extends OpenClawLightDomElement {
                       `
                     : nothing
                 }
-                <div class="settings-directory-detail">
-                  <div class="settings-stack">
-                    ${renderSettingsSection(
-                      { title: copy("directory") },
-                      this.loading
-                        ? renderSettingsLoadingSkeleton({ rows: 3 })
-                        : this.failed
-                          ? renderSettingsEmpty(copy("unavailable"))
-                          : !this.canList()
-                            ? html` ${renderSettingsEmpty(copy("directoryDenied"))}
-                              ${renderSettingsNavRow({
-                                title: copy("thisConnection"),
-                                onClick: () =>
-                                  this.context.navigate("people", {
-                                    pathname: pathForRoute("people", this.context.basePath),
-                                    search: "",
-                                  }),
-                              })}`
-                            : !directory?.length
-                              ? renderSettingsEmpty(copy("empty"))
-                              : directory.map((person) =>
-                                  renderSettingsNavRow({
-                                    title:
-                                      person.displayName?.trim() ||
-                                      person.githubIdentity?.login ||
-                                      copy("person"),
-                                    description:
-                                      person.id === GATEWAY_OWNER_PROFILE_ID
+                ${
+                  this.view === "roles"
+                    ? this.renderRoles()
+                    : html`<div class="settings-directory-detail">
+                        <div class="settings-stack">
+                          ${renderSettingsSection(
+                            { title: copy("directory") },
+                            this.loading
+                              ? renderSettingsLoadingSkeleton({ rows: 3 })
+                              : this.failed
+                                ? renderSettingsEmpty(copy("unavailable"))
+                                : !this.canList()
+                                  ? html` ${renderSettingsEmpty(copy("directoryDenied"))}
+                                    ${renderSettingsNavRow({
+                                      title: copy("thisConnection"),
+                                      onClick: () =>
+                                        this.context.navigate("people", {
+                                          pathname: pathForRoute("people", this.context.basePath),
+                                          search: "",
+                                        }),
+                                    })}`
+                                  : !directory?.length
+                                    ? renderSettingsEmpty(copy("empty"))
+                                    : directory.map((person) =>
+                                        renderSettingsNavRow({
+                                          title:
+                                            person.displayName?.trim() ||
+                                            person.githubIdentity?.login ||
+                                            copy("person"),
+                                          description:
+                                            person.id === GATEWAY_OWNER_PROFILE_ID
+                                              ? copy("owner")
+                                              : (person.role ?? copy("unassigned")),
+                                          onClick: () => this.selectPerson(person.id),
+                                        }),
+                                      ),
+                          )}
+                        </div>
+                        <div class="settings-stack">
+                          ${
+                            profile
+                              ? html`
+                                  ${renderSettingsSection(
+                                    { title: profile.displayName?.trim() || copy("person") },
+                                    this.fact(
+                                      copy("assignedRole"),
+                                      profile.id === GATEWAY_OWNER_PROFILE_ID
                                         ? copy("owner")
-                                        : (person.role ?? copy("unassigned")),
-                                    onClick: () => this.selectPerson(person.id),
-                                  }),
-                                ),
-                    )}
-                  </div>
-                  <div class="settings-stack">
-                    ${
-                      profile
-                        ? html`
-                            ${renderSettingsSection(
-                              { title: profile.displayName?.trim() || copy("person") },
-                              this.fact(
-                                copy("assignedRole"),
-                                profile.id === GATEWAY_OWNER_PROFILE_ID
-                                  ? copy("owner")
-                                  : (profile.role ?? copy("unassigned")),
-                                copy("assignmentHint"),
-                              ),
-                            )}
-                            ${this.policy(profile)}
-                          `
-                        : this.loading
-                          ? renderSettingsLoadingSkeleton({ rows: 4 })
-                          : renderSettingsEmpty(
-                              copy(requestedId ? "personUnavailable" : "choosePerson"),
-                            )
-                    }
-                  </div>
-                </div>
+                                        : (profile.role ?? copy("unassigned")),
+                                      copy("assignmentHint"),
+                                    ),
+                                  )}
+                                  ${this.policy(profile)}
+                                `
+                              : this.loading
+                                ? renderSettingsLoadingSkeleton({ rows: 4 })
+                                : renderSettingsEmpty(
+                                    copy(requestedId ? "personUnavailable" : "choosePerson"),
+                                  )
+                          }
+                        </div>
+                      </div>`
+                }
               `,
           { wide: true },
         ),
