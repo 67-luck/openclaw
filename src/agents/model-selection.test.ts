@@ -672,6 +672,36 @@ it("resolves provider-qualified aliases without cross-provider collisions", () =
   ).toEqual({ ref: { provider: "lmstudio-dense", model: "qwen3.6-27b" }, alias: "Local" });
 });
 
+it.each(["openai", "anthropic"])(
+  "keeps explicit openai refs authoritative with default provider %s",
+  (defaultProvider) => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          models: { "openrouter/openai/gpt-4o-mini": { alias: "openai/gpt-4o-mini" } },
+        },
+      },
+    };
+    const aliasIndex = buildModelAliasIndex({ cfg, defaultProvider });
+    expect(
+      resolveModelRefFromString({ cfg, raw: "openai/gpt-4o-mini", defaultProvider, aliasIndex })
+        ?.ref,
+    ).toEqual({ provider: "openai", model: "gpt-4o-mini" });
+  },
+);
+
+it("keeps an explicit profile-qualified primary on its named provider", () => {
+  const cfg: OpenClawConfig = {
+    agents: {
+      defaults: {
+        model: "openai/gpt-4o-mini@work",
+        models: { "openrouter/openai/gpt-4o-mini": { alias: "openai/gpt-4o-mini" } },
+      },
+    },
+  };
+  expect(resolveConfiguredRefForTest(cfg)).toEqual({ provider: "openai", model: "gpt-4o-mini" });
+});
+
 it("strips profile suffix before alias resolution", () => {
   const index = {
     byAlias: new Map([

@@ -1,4 +1,5 @@
 import { assert, beforeEach, describe, expect, it, vi } from "vitest";
+import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
 import { GatewayDrainingError } from "../process/gateway-work-admission.js";
 import {
   AgentRunTerminalOutcomeError,
@@ -79,6 +80,14 @@ it("does not replay an unscoped preflight subclass on another model", async () =
       cause: new FailoverError("529 overloaded", { reason: "overloaded", status: 529 }),
     }),
   );
+});
+
+it("preserves SQLite admission failures without replaying another provider", async () => {
+  providerHook.mockReturnValue(undefined);
+  const error = new Error("agent admission failed", {
+    cause: new SqliteWorkerError("SQLite worker store capacity reached", "overloaded"),
+  });
+  await expectTerminalStop(error);
 });
 
 it.each([

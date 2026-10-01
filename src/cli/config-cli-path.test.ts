@@ -1,6 +1,6 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it } from "vitest";
-import { mergeAtPath, parseConfigSetValue } from "./config-cli-path.js";
+import { mergeAtPath, parseConfigSetValue, setAtPath } from "./config-cli-path.js";
 
 function nestedRecord(depth: number, leaf: Record<string, unknown>): Record<string, unknown> {
   let value = leaf;
@@ -11,6 +11,15 @@ function nestedRecord(depth: number, leaf: Record<string, unknown>): Record<stri
 }
 
 describe("parseConfigSetValue", () => {
+  it("preserves a shorthand primary when CLI adds agent model fallbacks", () => {
+    const root = { agents: { entries: { worker: { model: "openai/gpt-4o-mini" } } } };
+    setAtPath(root, ["agents", "entries", "worker", "model", "fallbacks"], ["openai/gpt-4o"]);
+    expect(root.agents.entries.worker.model).toEqual({
+      primary: "openai/gpt-4o-mini",
+      fallbacks: ["openai/gpt-4o"],
+    });
+  });
+
   it.each([
     { raw: "42", expected: 42 },
     { raw: "true", expected: true },

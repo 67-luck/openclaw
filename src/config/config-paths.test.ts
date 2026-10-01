@@ -45,6 +45,15 @@ describe("concrete config path readers and mutation guards", () => {
 });
 
 describe("config path own-property traversal", () => {
+  it("preserves a shorthand primary when chat adds model fallbacks", () => {
+    const root = { agents: { defaults: { model: "openai/gpt-4o-mini" } } };
+    setConfigValueAtPath(root, ["agents", "defaults", "model", "fallbacks"], ["openai/gpt-4o"]);
+    expect(root.agents.defaults.model).toEqual({
+      primary: "openai/gpt-4o-mini",
+      fallbacks: ["openai/gpt-4o"],
+    });
+  });
+
   it("does not treat an inherited prototype leaf as config", () => {
     const key = "toString";
     const parent: Record<string, unknown> = {};
