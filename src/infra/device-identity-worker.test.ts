@@ -35,6 +35,12 @@ describe("device identity shared worker", () => {
     await withIdentityWorkerState(async (options, stateDir) => {
       const identity = await loadOrCreateDeviceIdentityAsync(options);
       expect(await loadOAuthHostPublicKey(options.env)).toBe(identity.publicKeyPem);
+      vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+      try {
+        expect(await loadOAuthHostPublicKey()).toBe(identity.publicKeyPem);
+      } finally {
+        vi.unstubAllEnvs();
+      }
       await closeOpenClawStateDatabaseByPathAsync(options.path);
       expect((await loadDeviceIdentityIfPresentAsync(options))?.publicKeyPem).toBe(
         identity.publicKeyPem,
