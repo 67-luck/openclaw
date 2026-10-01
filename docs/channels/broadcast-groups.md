@@ -484,7 +484,6 @@ type BroadcastConfig = {
 3. **Rate limits:** participants share the channel account’s transport limits; one turn can produce several platform messages.
 4. **Recovery:** round and turn-budget state is in memory and cannot resume after a Gateway restart.
 5. **Control UI:** a dedicated team-thread session is not yet available. Each participant keeps its own session.
-6. **Queued participant replies:** when a participant's session is busy, its turn is queued and runs after the thread ends. That reply, and a participant's recovery reply after its turn stalls, goes to the group on the participant's own session route without the participant name label.
 
 ## Related
 

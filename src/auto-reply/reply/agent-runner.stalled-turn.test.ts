@@ -94,6 +94,7 @@ function createStalledRun(
     operatorAuthority?: AdmittedRunOperatorAuthority;
     queuedFollowupReplyDisposition?: FollowupRun["queuedFollowupReplyDisposition"];
     originatingChannel?: string;
+    skillLibraryAuthoring?: FollowupRun["run"]["skillLibraryAuthoring"];
   } = {},
 ): StalledRun {
   const followupRun = createTestFollowupRun({
@@ -106,6 +107,7 @@ function createStalledRun(
   followupRun.originatingTo = options.originatingChannel ? undefined : "12345";
   followupRun.operatorAuthority = options.operatorAuthority;
   followupRun.queuedFollowupReplyDisposition = options.queuedFollowupReplyDisposition;
+  followupRun.run.skillLibraryAuthoring = options.skillLibraryAuthoring;
   followupRun.images = [{ type: "image", data: "aW1n", mimeType: "image/png" }];
   followupRun.transcriptPrompt = "what is good at the hotel restaurant?";
   const transcriptTarget = createSqliteTranscriptTarget({
@@ -427,6 +429,32 @@ describe("runReplyAgent stalled turn continuation", () => {
         ],
       }),
     );
+  });
+
+  it("recovers a personal-authoring turn without tools instead of widening Workshop access", async () => {
+    const stalled = createStalledRun({
+      skillLibraryAuthoring: { target: "personal" } as FollowupRun["run"]["skillLibraryAuthoring"],
+    });
+    await stallBeforeOutput(stalled);
+
+    expect(stalled.runState.continueStalledTurn?.()).toBe(true);
+    await settleStalledOwner(stalled);
+    await vi.waitFor(() => expect(drainedRuns).toHaveBeenCalledOnce());
+    const recovery = drainedRuns.mock.calls[0]?.[0];
+    expect(recovery?.run.skillLibraryAuthoring).toBeUndefined();
+    expect(recovery?.disableTools).toBe(true);
+  });
+
+  it("leaves the notice with a group-thread participant whose source declares no reply owner", async () => {
+    const stalled = createStalledRun({
+      queuedFollowupReplyDisposition: { kind: "drop", reason: "source-unavailable" },
+    });
+    await stallBeforeOutput(stalled);
+
+    expect(stalled.runState.continueStalledTurn?.()).toBe(false);
+    expect(getFollowupQueueDepth(queueKey)).toBe(0);
+    await settleStalledOwner(stalled);
+    expect(drainedRuns).not.toHaveBeenCalled();
   });
 
   it("does not arm a continuation for heartbeat turns", async () => {

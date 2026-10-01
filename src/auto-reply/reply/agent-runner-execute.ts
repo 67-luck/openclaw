@@ -68,6 +68,11 @@ export function continueStalledReplyTurn({
     );
     return true;
   }
+  // Group-thread participants declare no queued reply owner, so a recovery's
+  // answer would be dropped; leave the notice with the stalled turn's dispatch.
+  if (followupRun.queuedFollowupReplyDisposition?.kind === "drop") {
+    return false;
+  }
   const enqueued = enqueueFollowupRun(
     queueKey,
     buildStalledTurnRecoveryRun(followupRun),

@@ -54,7 +54,9 @@ export function buildStalledTurnRecoveryRun(base: FollowupRun): FollowupRun {
         ? { kind: "deliver", deliver: source.deliver.createSourceRetry?.() ?? source.deliver }
         : source,
     // Personal skill authoring is bound to the stalled run's admission and
-    // refuses a replacement run; the recovery answers without it.
+    // refuses a replacement run. Without the grant the Workshop tool would fall
+    // back to the wider shared namespace, so that recovery answers without tools.
+    ...(base.run.skillLibraryAuthoring ? { disableTools: true } : {}),
     run: {
       ...base.run,
       suppressNextUserMessagePersistence: true,
