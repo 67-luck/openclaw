@@ -10,6 +10,7 @@ import {
   withCommandSenderAuthority,
 } from "../../auto-reply/command-sender-authority.js";
 import { normalizeTalkSection } from "../../config/talk.js";
+import { operatorScopeSatisfied } from "../../shared/operator-scope-compat.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   buildRealtimeVoiceAgentConsultChatMessage,
@@ -63,9 +64,11 @@ export async function startTalkRealtimeAgentConsult(
     request.client?.connect?.scopes,
     request.client,
   );
+  const callerScopes = [...new Set(authority.replyCaller?.GatewayClientScopes ?? [])];
   // Scope provider IDs to the authenticated caller, not the shared voice record or
   // caller-supplied client name. Device/profile identity survives reconnect;
-  // different live grants must not adopt each other's accepted work.
+  // different effective grants must not adopt each other's accepted work.
+  // Drop implied grants only from this identity projection, never execution authority.
   // Chat still owns reservation, conflict detection and terminal replay.
   const idempotencyKey =
     "talk-" +
@@ -73,7 +76,15 @@ export async function startTalkRealtimeAgentConsult(
       JSON.stringify([
         gatewayClientSessionCreator(request.client)?.id ?? request.client?.authenticatedUserId,
         authority.replyCaller?.ApprovalReviewerDeviceId,
-        [...new Set(authority.replyCaller?.GatewayClientScopes ?? [])].toSorted(),
+        callerScopes
+          .filter(
+            (scope) =>
+              !operatorScopeSatisfied(
+                scope,
+                callerScopes.filter((other) => other !== scope),
+              ),
+          )
+          .toSorted(),
         params.sessionTarget.agentId,
         params.sessionTarget.canonicalKey,
         params.voiceSessionId,

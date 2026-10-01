@@ -71,18 +71,19 @@ export async function runTalkCallerReplay({
   };
   type Caller = keyof typeof identities;
   const sockets: Array<Awaited<ReturnType<typeof harness.openWs>>> = [];
-  const connect = async (who: Caller, reverseScopes = false) => {
+  const connect = async (who: Caller, requestedScopes?: string[]) => {
     const scopes =
-      who === "writer"
+      requestedScopes ??
+      (who === "writer"
         ? ["operator.read", "operator.write", "operator.talk", "operator.approvals"]
-        : ["operator.read", "operator.talk"];
+        : ["operator.read", "operator.talk"]);
     const socket = await harness.openWs({ origin });
     sockets.push(socket);
     expect(
       (
         await connectReq(socket, {
           client: { id: "openclaw-control-ui", mode: "webchat", version: "test", platform: "test" },
-          scopes: reverseScopes ? scopes.toReversed() : scopes,
+          scopes,
           caps: ["exec-approvals"],
           deviceIdentityPath: identities[who].identityPath,
           browserOrigin: origin,
@@ -368,25 +369,70 @@ export async function runTalkCallerReplay({
     const closed = once(peers.writer, "close");
     peers.writer.close();
     await closed;
-    peers.writer = await connect("writer", true);
+    peers.writer = await connect("writer", [
+      "operator.approvals",
+      "operator.talk",
+      "operator.write",
+      "operator.read",
+    ]);
     const replay = await consult("writer", "active-shared");
     await settled();
     expect(replay.ok).toBe(false);
     expect(replay.error?.message).toContain("completed before the tool result subscription");
     expect(attempts).toHaveLength(beforeReconnect);
     expect(await effects()).toBe("effect\n");
+    const equivalentClosed = once(peers.writer, "close");
+    peers.writer.close();
+    await equivalentClosed;
+    peers.writer = await connect("writer", ["operator.write", "operator.approvals"]);
+    const equivalentReplay = await consult("writer", "active-shared");
+    if (equivalentReplay.ok) {
+      await waitRun(equivalentReplay.payload?.runId);
+    }
+    await settled();
+    const equivalentCell = {
+      equivalentReconnectAcceptedAsNew: equivalentReplay.ok,
+      equivalentReconnectDispatches: attempts.length - beforeReconnect,
+      effects: await effects(),
+      approvals: approvals.length,
+    };
+    console.info("Equivalent-grant reconnect observed:", JSON.stringify(equivalentCell));
+    expect(equivalentCell).toEqual({
+      equivalentReconnectAcceptedAsNew: false,
+      equivalentReconnectDispatches: 0,
+      effects: "effect\n",
+      approvals: 0,
+    });
+    expect(equivalentReplay.error?.message).toContain(
+      "completed before the tool result subscription",
+    );
     const replayDispatches = attempts.length - beforeReconnect;
+    // Removing approvals changes effective authority even though full exec still permits this action.
+    const narrowedClosed = once(peers.writer, "close");
+    peers.writer.close();
+    await narrowedClosed;
+    peers.writer = await connect("writer", ["operator.write"]);
+    const narrowed = await consult("writer", "active-shared");
+    expect(narrowed.ok).toBe(true);
+    await waitRun(narrowed.payload?.runId);
+    const differentGrantDispatches = attempts.length - beforeReconnect;
+    expect(differentGrantDispatches).toBe(1);
+    expect(narrowed.payload?.runId).not.toBe(first.payload?.runId);
+    expect(await effects()).toBe("effect\neffect\n");
+    expect(clients.get("writer")?.connect.scopes).not.toContain("operator.approvals");
+    const beforeFresh = attempts.length;
     const fresh = await consult("writer", "genuinely-new-call");
     if (fresh.ok) {
       await waitRun(fresh.payload?.runId);
     }
     expect(fresh.ok).toBe(true);
     expect(fresh.payload?.runId).not.toBe(first.payload?.runId);
-    expect(attempts).toHaveLength(beforeReconnect + 1);
-    expect(await effects()).toBe("effect\neffect\n");
+    expect(attempts).toHaveLength(beforeFresh + 1);
+    expect(await effects()).toBe("effect\neffect\neffect\n");
     outcomes.push({
       reconnectReplayDispatches: replayDispatches,
-      newRequestDispatches: attempts.length - beforeReconnect - replayDispatches,
+      differentGrantDispatches,
+      newRequestDispatches: attempts.length - beforeFresh,
       effects: await effects(),
       approvals: approvals.length,
     });
