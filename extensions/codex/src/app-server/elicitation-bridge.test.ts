@@ -1,4 +1,3 @@
-import "./elicitation-bridge.test-support.js";
 import {
   embeddedAgentLog,
   type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,

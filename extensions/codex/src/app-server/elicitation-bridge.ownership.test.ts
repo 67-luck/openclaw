@@ -1,4 +1,3 @@
-import "./elicitation-bridge.test-support.js";
 import { describe, expect, it, vi } from "vitest";
 import { buildConnectorPluginApprovalElicitation } from "./codex-app-server.test-fixtures.js";
 import {
