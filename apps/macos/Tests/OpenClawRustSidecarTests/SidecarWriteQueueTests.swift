@@ -1,5 +1,6 @@
 import Foundation
 import OpenClawKit
+import Synchronization
 import Testing
 @testable import OpenClawRustSidecar
 
@@ -20,8 +21,9 @@ struct SidecarWriteQueueTests {
         var iterator = events.makeAsyncIterator()
         #expect(await iterator.next() == 1)
         let waiting = Data(repeating: 2, count: 40 * 1024 * 1024)
-        for _ in 0..<63 {
-            queue.enqueue(SidecarPayload(waiting), lane: .application, write: { _ in received.yield(2) }, failed: { _ in
+        for index in 0..<63 {
+            let data = index == 0 ? waiting : Data([2])
+            queue.enqueue(SidecarPayload(data), lane: .application, write: { _ in received.yield(2) }, failed: { _ in
                 received.yield(-1)
             })
         }
@@ -42,6 +44,132 @@ struct SidecarWriteQueueTests {
             received.yield(-1)
         })
         #expect(await iterator.next() == 5)
+    }
+
+    @Test(arguments: [false, true])
+    func `waiting payload bytes share a bound across application progress and delivery`(utf8: Bool) async {
+        let owner = SidecarWriteQueue()
+        let gate = DispatchSemaphore(value: 0)
+        let failures = Mutex<[URLError.Code]>([])
+        let (events, output) = AsyncStream<Int>.makeStream()
+        defer { owner.close(URLError(.cancelled))
+            gate.signal()
+            owner.queue.sync {}
+            output.finish()
+        }
+        owner.enqueue(SidecarPayload(Data(repeating: 1, count: 48 * 1024 * 1024)), lane: .application, write: { _ in
+            output.yield(1)
+            gate.wait()
+        }, failed: { error in failures.withLock { $0.append((error as? URLError)?.code ?? .unknown) } })
+        var received = events.makeAsyncIterator()
+        #expect(await received.next() == 1)
+        for (id, lane) in [(2, SidecarWriteQueue.Lane.progress), (3, .delivery)] {
+            let payload = utf8
+                ? SidecarPayload(body: .utf8(String(repeating: id == 2 ? "😀" : "🦞", count: 10 * 1024 * 1024)))
+                : SidecarPayload(Data(repeating: UInt8(id), count: 40 * 1024 * 1024))
+            owner.enqueue(payload, lane: lane, write: { _ in output.yield(id) }, failed: { error in
+                failures.withLock { $0.append((error as? URLError)?.code ?? .unknown) }
+            })
+        }
+        for (id, lane) in [(5, SidecarWriteQueue.Lane.transport), (6, .pong)] {
+            owner.enqueue(
+                SidecarPayload(Data([UInt8(id)])),
+                lane: lane,
+                write: { _ in output.yield(id) },
+                failed: { error in
+                    failures.withLock { $0.append((error as? URLError)?.code ?? .unknown) }
+                })
+        }
+        #expect(failures.withLock { $0 }.isEmpty)
+        owner.enqueue(SidecarPayload(Data([4])), lane: .application, write: { _ in output.yield(4) }, failed: { error in
+            failures.withLock { $0.append((error as? URLError)?.code ?? .unknown) }
+        })
+        // Rejection is observable before the held writer can return any byte credit.
+        #expect(failures.withLock { $0 } == [.dataLengthExceedsMaximum])
+        gate.signal()
+        var delivered = Set<Int>()
+        for _ in 0..<4 {
+            if let id = await received.next() { delivered.insert(id) }
+        }
+        #expect(delivered == [2, 3, 5, 6])
+    }
+
+    @Test(arguments: [false, true])
+    func `cancelled payload credit remains charged only while an admitted closure retains it`(admitted: Bool) async {
+        let owner = SidecarWriteQueue()
+        let gate = DispatchSemaphore(value: 0)
+        let failures = Mutex<[URLError.Code]>([])
+        let (events, output) = AsyncStream<Void>.makeStream()
+        defer { owner.close(URLError(.cancelled))
+            gate.signal()
+            owner.queue.sync {}
+            output.finish()
+        }
+        owner.enqueue(SidecarPayload(Data(repeating: 1, count: 32 * 1024 * 1024)), lane: .application, write: { _ in
+            output.yield(())
+            gate.wait()
+        }, failed: { _ in })
+        var received = events.makeAsyncIterator()
+        _ = await received.next()
+        let lifetime = WebSocketRequestLifetime()
+        owner.enqueue(
+            SidecarPayload(Data(repeating: 2, count: (admitted ? 32 : 64) * 1024 * 1024)),
+            lane: .progress, lifetime: lifetime, prepare: { ($0, Data([2])) }, write: { _ in }, failed: { error in
+                failures.withLock { $0.append((error as? URLError)?.code ?? .unknown) }
+            })
+        owner.enqueue(
+            SidecarPayload(Data(repeating: 3, count: (admitted ? 64 : 32) * 1024 * 1024)),
+            lane: .delivery, write: { _ in }, failed: { error in
+                failures.withLock { $0.append((error as? URLError)?.code ?? .unknown) }
+            })
+        lifetime.finish()
+        owner.enqueue(
+            SidecarPayload(Data(repeating: 4, count: admitted ? 1 : 64 * 1024 * 1024)),
+            lane: .application, write: { _ in }, failed: { error in
+                failures.withLock { $0.append((error as? URLError)?.code ?? .unknown) }
+            })
+        #expect(failures.withLock { $0 } == (admitted ? [.dataLengthExceedsMaximum] : []))
+    }
+
+    @Test func `control retention is byte bounded while empty acknowledgements retain their count bounds`() async {
+        let owner = SidecarWriteQueue()
+        let gate = DispatchSemaphore(value: 0)
+        let failures = Mutex<[URLError.Code]>([])
+        let (events, output) = AsyncStream<Void>.makeStream()
+        defer { owner.close(URLError(.cancelled))
+            gate.signal()
+            owner.queue.sync {}
+            output.finish()
+        }
+        owner.enqueue(SidecarPayload(Data(repeating: 1, count: 32 * 1024)), lane: .keepalive, write: { _ in
+            output.yield(())
+            gate.wait()
+        }, failed: { _ in })
+        var received = events.makeAsyncIterator()
+        _ = await received.next()
+        owner.enqueue(
+            SidecarPayload(Data(repeating: 2, count: 32 * 1024)),
+            lane: .admission,
+            write: { _ in },
+            failed: { error in
+                failures.withLock { $0.append((error as? URLError)?.code ?? .unknown) }
+            })
+        for lane in [SidecarWriteQueue.Lane.receipt, .pong] {
+            for _ in 0..<2 {
+                owner.enqueue(SidecarPayload(Data()), lane: lane, write: { _ in }, failed: { error in
+                    failures.withLock { $0.append((error as? URLError)?.code ?? .unknown) }
+                })
+            }
+        }
+        #expect(failures.withLock { $0 }.isEmpty)
+        owner.enqueue(SidecarPayload(Data([3])), lane: .cancellation, write: { _ in }, failed: { error in
+            failures.withLock { $0.append((error as? URLError)?.code ?? .unknown) }
+        })
+        #expect(failures.withLock { $0 } == [.dataLengthExceedsMaximum])
+        owner.enqueue(SidecarPayload(Data()), lane: .receipt, write: { _ in }, failed: { error in
+            failures.withLock { $0.append((error as? URLError)?.code ?? .unknown) }
+        })
+        #expect(failures.withLock { $0 } == [.dataLengthExceedsMaximum, .dataLengthExceedsMaximum])
     }
 
     @Test(arguments: [SidecarWriteQueue.Lane.transport, .application])
