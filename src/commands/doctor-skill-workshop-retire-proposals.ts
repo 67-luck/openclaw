@@ -184,9 +184,14 @@ function readDatabaseProposals(
     }
     try {
       const record: unknown = JSON.parse(String(row.record_json));
+      // A removed or renamed owner has no live archive; keep its draft rather than strand it.
+      const rowOwner =
+        typeof row.owner_agent_id === "string" ? normalizeAgentId(row.owner_agent_id) : undefined;
       const ownerAgentId =
-        typeof row.owner_agent_id === "string"
-          ? row.owner_agent_id
+        rowOwner !== undefined
+          ? listAgentIds(config).includes(rowOwner)
+            ? rowOwner
+            : undefined
           : isRecord(record)
             ? inferOwnerAgentId(record, config, env)
             : undefined;

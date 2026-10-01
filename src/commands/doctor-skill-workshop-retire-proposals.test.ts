@@ -194,7 +194,10 @@ it("keeps legacy bundles without a provable owner, record, or draft until every 
   expect(fs.existsSync(proposalsDir)).toBe(false);
 });
 
-it("keeps a proposal with a NULL owner and no provable agent out of every archive", async () => {
+it.each([
+  { case: "a NULL owner and no provable agent", owner: "NULL" },
+  { case: "an owner that is no longer configured", owner: "'removed'" },
+])("keeps a proposal with $case out of every archive", async ({ owner }) => {
   const root = tempDirs.make("openclaw-retire-unowned-proposal-");
   const stateDir = path.join(root, "state");
   const env = { HOME: root, OPENCLAW_STATE_DIR: stateDir };
@@ -211,7 +214,7 @@ it("keeps a proposal with a NULL owner and no provable agent out of every archiv
   openOpenClawStateDatabase({ env }).db.exec(`
     ${RETIRED_TABLES}
     INSERT INTO skill_workshop_proposals VALUES
-      ('unowned-procedure-1', '{"draftFile":"PROPOSAL.md"}', NULL, 'pending');
+      ('unowned-procedure-1', '{"draftFile":"PROPOSAL.md"}', ${owner}, 'pending');
   `);
   write(path.join(proposalDir, "PROPOSAL.md"), "# Unowned\n");
 

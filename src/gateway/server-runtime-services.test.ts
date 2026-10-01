@@ -115,21 +115,10 @@ describe("server-runtime-services", () => {
   it("does not warn about disabled cron when heartbeat cadence is disabled", () => {
     const warn = activateCronOff({
       agents: { defaults: { heartbeat: { every: "0m" } } },
-      skills: { workshop: { autonomous: { mode: "off" } } },
-    });
-
-    expect(warn).not.toHaveBeenCalled();
-  });
-
-  it("reports cron-disabled automatic skill collection reviews", () => {
-    const warn = activateCronOff({
-      agents: { defaults: { heartbeat: { every: "0m" } } },
       skills: { workshop: { autonomous: { mode: "auto" } } },
     });
 
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("scheduled skill collection reviews are disabled"),
-    );
+    expect(warn).not.toHaveBeenCalled();
   });
 
   registerGatewayCronStartupTests(startGatewayCronWithLogging);

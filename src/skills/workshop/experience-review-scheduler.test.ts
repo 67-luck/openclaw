@@ -31,13 +31,16 @@ function createHarness() {
   });
   const turn = (
     modelIterations: number,
-    overrides: Partial<SkillExperienceReviewParams> & { compacted?: boolean } = {},
+    {
+      sessionKey = source.sessionKey,
+      ...overrides
+    }: Partial<SkillExperienceReviewParams> & { compacted?: boolean; sessionKey?: string } = {},
   ) =>
     scheduler.schedule({
       event: { messages: [], success: true },
       ctx: {
         runId: `run-${modelIterations}`,
-        sessionKey: source.sessionKey,
+        sessionKey,
         workspaceDir: "/workspace",
         modelProviderId: "openai",
         modelId: "gpt-test",
@@ -143,6 +146,13 @@ describe("skill experience review scheduler", () => {
     turn(20, { event: { messages: [], success: false, error: "provider 500" } });
     turn(20, { config: { skills: { workshop: { autonomous: { mode: "off" } } } } });
     turn(8);
+    expect(timers).toHaveLength(0);
+  });
+
+  it("never reviews ACP child sessions", () => {
+    const { turn, timers } = createHarness();
+
+    turn(20, { sessionKey: "agent:main:acp:child-1" });
     expect(timers).toHaveLength(0);
   });
 });

@@ -23,7 +23,7 @@ const EXPERIENCE_REVIEW_RETRY_IDLE_MS = 30_000;
 const EXPERIENCE_REVIEW_MAX_PENDING = 32;
 const EXPERIENCE_REVIEW_MAX_COUNTERS = 1024;
 const EXPERIENCE_REVIEW_BLOCKED_TRIGGERS = new Set(["cron", "heartbeat", "memory", "overflow"]);
-const EXPERIENCE_REVIEW_BLOCKED_SESSION_SEGMENTS = new Set(["cron", "hook", "subagent"]);
+const EXPERIENCE_REVIEW_BLOCKED_SESSION_SEGMENTS = new Set(["acp", "cron", "hook", "subagent"]);
 
 const log = createSubsystemLogger("skills/workshop");
 

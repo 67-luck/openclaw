@@ -352,7 +352,7 @@ function migrateRetiredSkillCuratorTablesV11(db: DatabaseSync, previousVersion: 
     // the operator sees; say so rather than silently widening the collection.
     if (archivedCount > 0) {
       stateDbLog.info(
-        `${archivedCount} previously archived workshop skills return to the active collection; the weekly collection review will judge them`,
+        `${archivedCount} previously archived workshop skills are live again; archive any you no longer want`,
       );
     }
   }

@@ -88,8 +88,9 @@ Doctor runs the normal import and archival against the operator's state.
 Skill Workshop proposals were removed. Doctor exports each pending or
 quarantined proposal draft, with its support files, to
 `<state-dir>/agents/<agentId>/agent/workshop-skills/.archive/.retired-proposals/<proposal-id>/`,
-then drops the proposal tables. Exported drafts are not live skills; copy one
-into a skill directory yourself if you still want it.
+then drops the proposal tables. Exported drafts are not live skills; to keep
+one, ask the agent to save it with `/learn` so it goes through the normal
+validated, versioned Workshop write.
 
 Plugin migrations with declared files outside the copied state are deferred as
 one plugin operation. Doctor leaves their files and pending markers intact and

@@ -164,6 +164,22 @@ describe("workshop library", () => {
     expect(await listWorkshopArchive({}, "main")).toEqual([]);
   });
 
+  it("never lists or reads a symlinked saved version", async () => {
+    await createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "step 1") });
+    const outside = path.join(state.root, "outside");
+    await fs.mkdir(outside, { recursive: true });
+    await fs.writeFile(path.join(outside, "SKILL.md"), "secret host file\n");
+    const versionsDir = path.join(resolveWorkshopSkillsDir({}, "main"), ".archive", "deploy");
+    await fs.mkdir(versionsDir, { recursive: true });
+    const id = "20260101T000000000Z-patch";
+    await fs.symlink(outside, path.join(versionsDir, id));
+
+    expect(await listWorkshopArchive({}, "main")).toEqual([]);
+    await expect(viewWorkshopSkill({}, "main", "deploy", undefined, id)).rejects.toThrow(
+      /has no version/,
+    );
+  });
+
   it("refuses to restore a tampered saved version and leaves the live skill untouched", async () => {
     await createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "step 1") });
     const { versionId = "" } = await patchWorkshopSkill(ctx, {

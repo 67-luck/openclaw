@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { hasErrnoCode } from "../../infra/errors.js";
@@ -28,11 +29,14 @@ const VERSION_ID_PATTERN = new RegExp(
   `^(\\d{4})(\\d{2})(\\d{2})T(\\d{2})(\\d{2})(\\d{2})(\\d{3})Z-(${WORKSHOP_CHANGE_ACTIONS.join("|")})$`,
 );
 
-/** Newest first. */
+/** Newest first. Only real directories count; a symlinked version is never listed or read. */
 export async function listVersions(versionsDir: string): Promise<SkillVersion[]> {
-  let names: string[];
+  let entries: Dirent[];
   try {
-    names = await fs.readdir(versionsDir);
+    if ((await fs.lstat(versionsDir)).isSymbolicLink()) {
+      return [];
+    }
+    entries = await fs.readdir(versionsDir, { withFileTypes: true });
   } catch (error) {
     if (hasErrnoCode(error, "ENOENT")) {
       return [];
@@ -40,10 +44,11 @@ export async function listVersions(versionsDir: string): Promise<SkillVersion[]>
     throw error;
   }
   const versions: SkillVersion[] = [];
-  for (const id of names) {
+  for (const entry of entries) {
+    const id = entry.name;
     const match = VERSION_ID_PATTERN.exec(id);
     const action = match?.[8];
-    if (!match || !action || !isWorkshopChangeAction(action)) {
+    if (!entry.isDirectory() || !match || !action || !isWorkshopChangeAction(action)) {
       continue;
     }
     const [, year, month, day, hour, minute, second, ms] = match;
