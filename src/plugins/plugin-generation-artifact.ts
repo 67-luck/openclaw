@@ -693,6 +693,7 @@ export function capturePluginGenerationArtifact(
           return target;
         }).value;
       },
+      isReleased: sourceCapture.isReleased,
       dispose: () => {
         sourceCapture.dispose();
         clearCaptures();
