@@ -8,6 +8,14 @@ import { recordDoctorHealthWarnings } from "./doctor-health-contribution.js";
 const loadDoctorStateIntegrityModule = async () =>
   await import("../commands/doctor-state-integrity.js");
 
+function recordSessionStateWarnings(
+  ctx: DoctorHealthFlowContext,
+  warnings: readonly string[],
+): void {
+  ctx.repairEvidence?.remaining("session-state", warnings);
+  recordDoctorHealthWarnings(ctx, [], warnings);
+}
+
 export async function runLegacyPluginManifestHealth(ctx: DoctorHealthFlowContext): Promise<void> {
   const { maybeRepairLegacyPluginManifestContracts } =
     await import("../commands/doctor-plugin-manifests.js");
@@ -167,10 +175,7 @@ export async function runSessionTranscriptsHealth(ctx: DoctorHealthFlowContext):
     env: ctx.env ?? process.env,
     shouldRepair: ctx.prompter.shouldRepair,
     onChanges: (changes) => ctx.repairEvidence?.applied("session-state", changes),
-    onWarnings: (warnings) => {
-      ctx.repairEvidence?.remaining("session-state", warnings);
-      recordDoctorHealthWarnings(ctx, [], warnings);
-    },
+    onWarnings: (warnings) => recordSessionStateWarnings(ctx, warnings),
     ...(ctx.configResult.postSessionPluginMigration
       ? { postSessionPluginMigration: ctx.configResult.postSessionPluginMigration }
       : {}),
@@ -194,6 +199,8 @@ export async function runSessionTranscriptHeadersHealth(
     cfg: ctx.cfg,
     env: ctx.env ?? process.env,
     shouldRepair: ctx.prompter.shouldRepair,
+    onChanges: (changes) => ctx.repairEvidence?.applied("session-state", changes),
+    onWarnings: (warnings) => recordSessionStateWarnings(ctx, warnings),
   });
 }
 
@@ -206,6 +213,8 @@ export async function runSessionTranscriptLabelsHealth(
     cfg: ctx.cfg,
     env: ctx.env ?? process.env,
     shouldRepair: ctx.prompter.shouldRepair,
+    onChanges: (changes) => ctx.repairEvidence?.applied("session-state", changes),
+    onWarnings: (warnings) => recordSessionStateWarnings(ctx, warnings),
   });
 }
 
