@@ -46,7 +46,9 @@ async function scheduledScope(
       workflow_runs: options.skipFirst ? [{ ...proof, id: 99 }, proof] : [proof],
     },
   });
-  if (options.unavailable) list.mockRejectedValue(new Error("unavailable"));
+  if (options.unavailable) {
+    list.mockRejectedValue(new Error("unavailable"));
+  }
   const paginate = vi
     .fn()
     .mockImplementation((_method, args) =>
@@ -144,7 +146,9 @@ describe("bounded scheduled proof reuse", () => {
         expect(output, filename).toHaveBeenCalledExactlyOnceWith("changed", true);
       }
       for (const [id, job] of Object.entries(workflow.jobs) as [string, { if: string }][]) {
-        if (id === "scope") continue;
+        if (id === "scope") {
+          continue;
+        }
         const evaluate = (event: string, changed: string) =>
           runInNewContext(job.if.slice(3, -2), {
             github: {
@@ -182,11 +186,17 @@ describe("workflow cost admission", () => {
         "scripts/lib/fs-safe-prebuild.mjs",
         "scripts/lib/pnpm-lockfile-documents.mjs",
         "scripts/prepare-git-hooks.mjs",
+        "scripts/prepare.mjs",
+        "scripts/generate-kysely-types.mts",
+        "scripts/lib/direct-run.mjs",
+        "src/state/openclaw-agent-schema.sql",
+        "src/state/openclaw-state-schema.sql",
         "scripts/ci-hydrate-testbox-env.sh",
         ".npmrc",
         "packages/fs-safe/package.json",
-      ])
+      ]) {
         expect(accepts(path), path).toBe(true);
+      }
       expect(workflow.on.workflow_dispatch).toBeDefined();
     },
   );

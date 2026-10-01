@@ -1936,7 +1936,7 @@
     "pnpm:devPreinstall": "node scripts/check-install-dependency-ownership.mjs",
     "preinstall": "node scripts/preinstall-package-manager-warning.mjs",
     "prepack": "node --import ./scripts/tsx.mjs scripts/openclaw-prepack.ts",
-    "prepare": "node scripts/prepare-git-hooks.mjs",
+    "prepare": "node scripts/prepare.mjs",
     "prepush:ci": "bash scripts/prepush-ci.sh",
     "probe:anthropic:prompt": "node --import ./scripts/tsx.mjs scripts/anthropic-prompt-probe.ts",
     "prompt:snapshots:check": "node --import ./scripts/tsx.mjs scripts/generate-prompt-snapshots.ts --check",

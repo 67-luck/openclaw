@@ -24,7 +24,7 @@ it("fingerprints dependency install inputs without ordinary script churn", () =>
     "pnpm:devPreinstall": "node scripts/check-install-dependency-ownership.mjs",
     postinstall: "node scripts/postinstall-bundled-plugins.mjs",
     preinstall: "node scripts/preinstall-package-manager-warning.mjs",
-    prepare: "node scripts/prepare-git-hooks.mjs",
+    prepare: "node scripts/prepare.mjs",
   };
   const manifest = {
     name: "fixture",
@@ -125,6 +125,11 @@ it("fingerprints dependency install inputs without ordinary script churn", () =>
     ".github/actions/setup-node-env/install-dependencies.sh",
     "scripts/check-install-dependency-ownership.mjs",
     "scripts/prepare-git-hooks.mjs",
+    "scripts/prepare.mjs",
+    "scripts/generate-kysely-types.mts",
+    "scripts/lib/direct-run.mjs",
+    "src/state/openclaw-agent-schema.sql",
+    "src/state/openclaw-state-schema.sql",
     "scripts/lib/fs-safe-prebuild.mjs",
     "scripts/windows-cmd-helpers.mjs",
     "scripts/lib/package-lifecycle-marker.mjs",
@@ -144,7 +149,7 @@ it("fingerprints dependency install inputs without ordinary script churn", () =>
     devDependencies: { vitest: "1.0.0" },
     scripts: {
       test: "vitest run --reporter=dot",
-      prepare: "node scripts/prepare-git-hooks.mjs",
+      prepare: "node scripts/prepare.mjs",
       "pnpm:devPreinstall": "node scripts/check-install-dependency-ownership.mjs",
       postinstall: "node scripts/postinstall-bundled-plugins.mjs",
       preinstall: "node scripts/preinstall-package-manager-warning.mjs",

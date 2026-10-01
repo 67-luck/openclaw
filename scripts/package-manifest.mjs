@@ -17,6 +17,11 @@ function preparedPackageManifest(content) {
   const packageJson = JSON.parse(content);
   let changed = false;
 
+  if (packageJson.scripts?.prepare === "node scripts/prepare.mjs") {
+    packageJson.scripts.prepare = "node scripts/prepare-git-hooks.mjs";
+    changed = true;
+  }
+
   for (const [name, command] of Object.entries(packageJson.scripts ?? {})) {
     if (
       typeof command === "string" &&

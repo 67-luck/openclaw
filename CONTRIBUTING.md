@@ -57,6 +57,8 @@ The generated files live in ignored `.artifacts/kysely/`; build, typecheck, and
 test entrypoints refresh them automatically, including after an install with
 `--ignore-scripts`. Unchanged inputs reuse the declarations without rewriting
 them. `pnpm db:kysely:check` checks schema projection and generator contracts.
+Source preparation stays in the unshipped `scripts/prepare.mjs`; packing selects
+the hooks-only prepare command so published lifecycle scripts do not import source tooling.
 
 Give each source checkout its own physical dependency installation. Tooling does
 not automatically link a missing `node_modules` to another checkout. Existing

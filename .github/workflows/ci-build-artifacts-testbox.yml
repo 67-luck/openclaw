@@ -38,6 +38,11 @@ on:
       - "scripts/windows-cmd-helpers.mjs"
       - "scripts/preinstall-package-manager-warning.mjs"
       - "scripts/prepare-git-hooks.mjs"
+      - "scripts/prepare.mjs"
+      - "scripts/generate-kysely-types.mts"
+      - "scripts/lib/direct-run.mjs"
+      - "src/state/openclaw-agent-schema.sql"
+      - "src/state/openclaw-state-schema.sql"
       # The build wrappers invoke other scripts and shared helpers.
       - "scripts/**"
       - "ui/scripts/**"

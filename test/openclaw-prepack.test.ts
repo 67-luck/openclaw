@@ -644,9 +644,11 @@ describe("collectSourcePackWorkspaceDependencyErrors", () => {
         name: "openclaw-direct-pack-manifest",
         packageManager: rootPackageManager,
         version: "2099.1.2-test.0",
+        files: ["scripts/prepare-git-hooks.mjs"],
         scripts: {
           prepack: "node scripts/package-manifest.mjs prepare",
           postpack: "node scripts/package-manifest.mjs restore",
+          prepare: "node scripts/prepare.mjs",
           "crabbox:run": "node scripts/crabbox-wrapper.mjs run",
         },
         devDependencies: {
@@ -665,6 +667,9 @@ describe("collectSourcePackWorkspaceDependencyErrors", () => {
       path.join(process.cwd(), "scripts", "package-manifest.mjs"),
       path.join(scriptsDir, "package-manifest.mjs"),
     );
+    for (const script of ["prepare.mjs", "prepare-git-hooks.mjs"]) {
+      copyFileSync(path.join(process.cwd(), "scripts", script), path.join(scriptsDir, script));
+    }
 
     const packed = spawnSync("pnpm", ["pack", "--silent", "--pack-destination", packDir], {
       cwd: rootDir,
@@ -684,6 +689,9 @@ describe("collectSourcePackWorkspaceDependencyErrors", () => {
       readFileSync(path.join(extractDir, "package", "package.json"), "utf8"),
     ) as { devDependencies?: Record<string, string>; scripts?: Record<string, string> };
     expect(packedPackageJson.devDependencies).toEqual({ vitest: "4.1.10" });
+    // pnpm strips publish lifecycle commands after executing the source prepare.
+    expect(packedPackageJson.scripts?.prepare).toBeUndefined();
+    expect(existsSync(path.join(extractDir, "package/scripts/prepare.mjs"))).toBe(false);
     expect(packedPackageJson.scripts?.["crabbox:run"]).toBe("node dist/crabbox-wrapper.js run");
     expect(readFileSync(path.join(rootDir, "package.json"), "utf8")).toBe(originalPackageJson);
     expect(

@@ -16,6 +16,11 @@ type PolicyTestWatch = {
 // this inventory covers the remaining tests that changed targeting cannot
 // discover from imports alone.
 const policyTestWatches: readonly PolicyTestWatch[] = [
+  {
+    testFile: "test/scripts/package-source-import-closure.test.ts",
+    watchGlobs: ["package.json", "*.{cjs,js,mjs}", "scripts/**"],
+    sourceOnly: true,
+  },
   // Browser-served route owners are not imports of the Playwright entry point.
   ...UI_E2E_OWNER_WATCHES.map(({ testFile, watchGlobs }): PolicyTestWatch => ({
     testFile,

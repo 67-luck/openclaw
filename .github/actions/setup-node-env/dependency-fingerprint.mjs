@@ -28,7 +28,7 @@ const FILTERED_SCRIPT_CONTRACTS = new Map([
       "pnpm:devPreinstall": "node scripts/check-install-dependency-ownership.mjs",
       postinstall: "node scripts/postinstall-bundled-plugins.mjs",
       preinstall: "node scripts/preinstall-package-manager-warning.mjs",
-      prepare: "node scripts/prepare-git-hooks.mjs",
+      prepare: "node scripts/prepare.mjs",
     },
   ],
 ]);
@@ -53,6 +53,11 @@ const INSTALL_INPUT_FILES = [
   "scripts/lib/package-lifecycle-marker.mjs",
   "scripts/preinstall-package-manager-warning.mjs",
   "scripts/prepare-git-hooks.mjs",
+  "scripts/prepare.mjs",
+  "scripts/generate-kysely-types.mts",
+  "scripts/lib/direct-run.mjs",
+  "src/state/openclaw-agent-schema.sql",
+  "src/state/openclaw-state-schema.sql",
 ];
 
 function canonicalize(value) {
@@ -175,14 +180,14 @@ function frozenInstallManifests(workspace, manifests) {
     if (!line.trim() || line.trimStart().startsWith("#")) {
       continue;
     }
-    if (/^  \S/u.test(line)) {
-      const match = /^  ([a-zA-Z0-9_./-]+):(?: \{\})?$/u.exec(line);
+    if (/^ {2}\S/u.test(line)) {
+      const match = /^ {2}([a-zA-Z0-9_./-]+):(?: \{\})?$/u.exec(line);
       if (!match) {
         return manifests;
       }
       importer = match[1];
       selected.add(path.posix.join(importer, "package.json"));
-    } else if (!/^    /u.test(line)) {
+    } else if (!line.startsWith("    ")) {
       return manifests;
     }
     const link = /^ +version: link:([a-zA-Z0-9_./-]+)$/u.exec(line);
