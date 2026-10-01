@@ -337,7 +337,7 @@ public actor GatewayChannelActor {
         if let disconnectError { throw disconnectError }
         self.task?.cancel(with: .goingAway, reason: nil)
         // Native route retirement cannot await this actor. Order it against the whole
-        // synchronous socket admission, including resume; keep transport cleanup outside.
+        // synchronous task admission; preparation and transport cleanup stay outside.
         let (connectTask, attemptID, connectionGeneration) = try self.socketAdmission.withLock { allowed in
             guard allowed else { throw CancellationError() }
             self.connectionGeneration &+= 1
@@ -345,7 +345,6 @@ public actor GatewayChannelActor {
             let connectTask = self.session.makeWebSocketTask(request: request)
             self.activeConnectAttemptID = attemptID
             self.task = connectTask
-            connectTask.resume()
             return (connectTask, attemptID, self.connectionGeneration)
         }
         let connectHello: HelloOk
@@ -445,6 +444,15 @@ public actor GatewayChannelActor {
         defer { self.testConnectAttemptFinishedHandler?(attemptID) }
         try self.ensureCurrentConnectAttempt(attemptID, task: task)
         try self.requireCurrentConnection(connectionGeneration)
+        // Process verification owns its deadline inside the overall connect budget.
+        // Start the challenge budget only after preparation, then fence the final resume.
+        try await task.prepare()
+        try self.ensureCurrentConnectAttempt(attemptID, task: task)
+        try self.requireCurrentConnection(connectionGeneration)
+        try self.socketAdmission.withLock { allowed in
+            guard allowed else { throw CancellationError() }
+            task.resume()
+        }
         let platform = InstanceIdentity.platformString
         let primaryLocale = Locale.preferredLanguages.first ?? Locale.current.identifier
         let options = self.connectOptions ?? GatewayConnectOptions(

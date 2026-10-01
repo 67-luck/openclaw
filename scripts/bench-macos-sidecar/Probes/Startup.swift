@@ -61,6 +61,8 @@ import OpenClawRustSidecar
             return
         }
         try await preparation.value
+        // The channel prepares again when claiming this already-authenticated first child.
+        try await startup.prepare()
         try self.record(["prepared": true])
         // The controller captures the exact parked child before allowing any activation.
         try await self.awaitController()

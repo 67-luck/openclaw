@@ -2,12 +2,19 @@ import Foundation
 
 public protocol WebSocketTasking: AnyObject {
     var state: URLSessionTask.State { get }
+    /// Finish transport-owned setup before resume; repeat preparation reuses the same live task.
+    func prepare() async throws
     func resume()
     func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?)
     func send(_ message: URLSessionWebSocketTask.Message) async throws
     func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void)
     func receive() async throws -> URLSessionWebSocketTask.Message
     func receive(completionHandler: @escaping @Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void)
+}
+
+extension WebSocketTasking {
+    /// Native sockets have no process bootstrap; process transports finish it before handshake timing.
+    public func prepare() async throws {}
 }
 
 extension URLSessionWebSocketTask: WebSocketTasking {}
@@ -87,6 +94,10 @@ public struct WebSocketTaskBox: @unchecked Sendable {
 
     public var state: URLSessionTask.State {
         self.task.state
+    }
+
+    public func prepare() async throws {
+        try await self.task.prepare()
     }
 
     public func resume() {

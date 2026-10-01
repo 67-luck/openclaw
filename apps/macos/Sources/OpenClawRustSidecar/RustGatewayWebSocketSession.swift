@@ -224,14 +224,19 @@ private final class RustGatewayWebSocketTask: WebSocketRequestSending, @unchecke
     func prepare() async throws {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
-                let accepted = self.lock.withLock {
-                    guard self.phase == .suspended else { return false }
+                let needsPreparation: Bool? = self.lock.withLock {
+                    if self.phase == .prepared, self.process?.isRunning == true { return false }
+                    guard self.phase == .suspended else { return nil }
                     self.phase = .preparing
                     self.preparation = continuation
                     return true
                 }
-                guard accepted else {
+                guard let needsPreparation else {
                     continuation.resume(throwing: self.lock.withLock { self.failure } ?? URLError(.cancelled))
+                    return
+                }
+                guard needsPreparation else {
+                    continuation.resume()
                     return
                 }
                 self.reader.async { [self] in
