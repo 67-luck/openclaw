@@ -231,7 +231,7 @@ export async function runTalkCallerReplay({
       }
       return {
         payloads: [
-          { text: execTool ? "Writer effect completed." : "Reader has no exec capability." },
+          { text: execTool ? "Writer effect completed." : "Caller has no exec capability." },
         ],
         meta: { durationMs: 0 },
       };
@@ -241,8 +241,8 @@ export async function runTalkCallerReplay({
   });
   try {
     const peers = { writer: await connect("writer"), reader: await connect("reader") };
-    const consult = (who: Caller, callId: string) =>
-      rpcReq<{ runId: string }>(peers[who], "talk.client.toolCall", {
+    const consult = (who: Caller, callId: string, socket = peers[who]) =>
+      rpcReq<{ runId: string }>(socket, "talk.client.toolCall", {
         sessionKey,
         voiceSessionId,
         callId,
@@ -251,8 +251,8 @@ export async function runTalkCallerReplay({
       });
     // agent.wait requires write scope; the writer observes this shared session.
     // It does not execute or confer authority on the reader's admitted run.
-    const waitRun = async (runId: string | undefined) => {
-      const result = await rpcReq(peers.writer, "agent.wait", {
+    const waitRun = async (runId: string | undefined, observer = peers.writer) => {
+      const result = await rpcReq(observer, "agent.wait", {
         runId: expectDefined(runId, "accepted run"),
         timeoutMs: 10000,
       });
@@ -292,7 +292,7 @@ export async function runTalkCallerReplay({
         expect(attempts[before + 1]?.runId).toBe(second.payload?.runId);
         for (const attempt of attempts.slice(before)) {
           expect(replies.get(attempt.runId)).toMatchObject({
-            text: attempt.exec ? "Writer effect completed." : "Reader has no exec capability.",
+            text: attempt.exec ? "Writer effect completed." : "Caller has no exec capability.",
           });
         }
       }
@@ -324,6 +324,15 @@ export async function runTalkCallerReplay({
       text: "status",
       mode: "status",
     });
+    // A lower-grant socket of the same signed device may observe its existing
+    // intent, but must not acquire the original connection's control custody.
+    const narrowedActivePeer = await connect("writer", ["operator.read", "operator.talk"]);
+    const narrowedActive = await consult("writer", "active-shared", narrowedActivePeer);
+    const narrowedControl = await rpcReq(narrowedActivePeer, "talk.client.steer", {
+      sessionKey,
+      text: "status",
+      mode: "status",
+    });
     const pendingOther = consult("reader", "active-shared");
     const ownControl = await rpcReq(peers.writer, "talk.client.steer", {
       sessionKey,
@@ -340,6 +349,8 @@ export async function runTalkCallerReplay({
     }
     const active = {
       sameCallerSameRun: first.payload?.runId === retransmit.payload?.runId,
+      narrowedSameCallerSameRun: narrowedActive.payload?.runId === first.payload?.runId,
+      narrowedSameCallerControl: narrowedControl.ok,
       differentCallerDifferentRun: Boolean(
         other.payload?.runId && other.payload.runId !== first.payload?.runId,
       ),
@@ -356,6 +367,8 @@ export async function runTalkCallerReplay({
     expect.soft(active).toEqual({
       sameCallerSameRun: true,
       differentCallerDifferentRun: true,
+      narrowedSameCallerSameRun: true,
+      narrowedSameCallerControl: false,
       foreignControl: false,
       ownControl: true,
       effectsBeforeRelease: "",
@@ -407,18 +420,30 @@ export async function runTalkCallerReplay({
       "completed before the tool result subscription",
     );
     const replayDispatches = attempts.length - beforeReconnect;
-    // Removing approvals changes effective authority even though full exec still permits this action.
+    // A changed grant is not a new logical request from the same signed caller.
     const narrowedClosed = once(peers.writer, "close");
     peers.writer.close();
     await narrowedClosed;
     peers.writer = await connect("writer", ["operator.write"]);
     const narrowed = await consult("writer", "active-shared");
-    expect(narrowed.ok).toBe(true);
-    await waitRun(narrowed.payload?.runId);
-    const differentGrantDispatches = attempts.length - beforeReconnect;
-    expect(differentGrantDispatches).toBe(1);
-    expect(narrowed.payload?.runId).not.toBe(first.payload?.runId);
-    expect(await effects()).toBe("effect\neffect\n");
+    if (narrowed.ok) {
+      await waitRun(narrowed.payload?.runId);
+    }
+    await settled();
+    const narrowedCell = {
+      narrowedRetryAcceptedAsNew: narrowed.ok,
+      narrowedRetryDispatches: attempts.length - beforeReconnect,
+      effects: await effects(),
+      approvals: approvals.length,
+    };
+    console.info("Narrowed-grant retry observed:", JSON.stringify(narrowedCell));
+    expect(narrowedCell).toEqual({
+      narrowedRetryAcceptedAsNew: false,
+      narrowedRetryDispatches: 0,
+      effects: "effect\n",
+      approvals: 0,
+    });
+    expect(narrowed.error?.message).toContain("completed before the tool result subscription");
     expect(clients.get("writer")?.connect.scopes).not.toContain("operator.approvals");
     const beforeFresh = attempts.length;
     const fresh = await consult("writer", "genuinely-new-call");
@@ -428,13 +453,55 @@ export async function runTalkCallerReplay({
     expect(fresh.ok).toBe(true);
     expect(fresh.payload?.runId).not.toBe(first.payload?.runId);
     expect(attempts).toHaveLength(beforeFresh + 1);
-    expect(await effects()).toBe("effect\neffect\neffect\n");
+    expect(await effects()).toBe("effect\neffect\n");
     outcomes.push({
       reconnectReplayDispatches: replayDispatches,
-      differentGrantDispatches,
+      narrowedRetryDispatches: narrowedCell.narrowedRetryDispatches,
       newRequestDispatches: attempts.length - beforeFresh,
       effects: await effects(),
       approvals: approvals.length,
+    });
+    // Keep a separate, genuinely write-authorized observer solely for agent.wait.
+    // The read-only action below is still admitted from its own signed socket.
+    const runObserver = peers.writer;
+    peers.writer = await connect("writer", ["operator.read", "operator.talk"]);
+    const beforeReadOnly = attempts.length;
+    const beforeReadOnlyEffects = await effects();
+    const readOnlyRetry = await consult("writer", "active-shared");
+    expect(readOnlyRetry.ok).toBe(false);
+    expect(readOnlyRetry.error?.message).toContain("completed before the tool result subscription");
+    expect(attempts).toHaveLength(beforeReadOnly);
+    const readOnlyFresh = await consult("writer", "new-read-only-call");
+    expect(readOnlyFresh.ok).toBe(true);
+    await waitRun(readOnlyFresh.payload?.runId, runObserver);
+    expect(attempts).toHaveLength(beforeReadOnly + 1);
+    expect(attempts.at(-1)).toMatchObject({
+      caller: "writer",
+      exec: false,
+      runId: readOnlyFresh.payload?.runId,
+    });
+    expect(replies.get(String(readOnlyFresh.payload?.runId))).toMatchObject({
+      text: "Caller has no exec capability.",
+    });
+    expect(await effects()).toBe(beforeReadOnlyEffects);
+    const readOnlyClosed = once(peers.writer, "close");
+    peers.writer.close();
+    await readOnlyClosed;
+    peers.writer = await connect("writer", ["operator.read"]);
+    const deniedRetry = await consult("writer", "active-shared");
+    const deniedFresh = await consult("writer", "new-without-talk");
+    for (const result of [deniedRetry, deniedFresh]) {
+      expect(result.ok).toBe(false);
+      expect(result.error?.message).toContain("missing scope: operator.talk");
+    }
+    expect(attempts).toHaveLength(beforeReadOnly + 1);
+    expect(await effects()).toBe(beforeReadOnlyEffects);
+    outcomes.push({
+      readOnlyRetryDispatches: attempts.length - beforeReadOnly - 1,
+      freshReadOnlyExec: attempts.at(-1)?.exec,
+      methodDeniedRetry: !deniedRetry.ok,
+      methodDeniedFresh: !deniedFresh.ok,
+      effectsUnchanged: (await effects()) === beforeReadOnlyEffects,
     });
     expect(clients.size).toBe(2);
     expect(clients.get("writer")?.connect.client.id).toBe(clients.get("reader")?.connect.client.id);
@@ -444,7 +511,7 @@ export async function runTalkCallerReplay({
     expect(clients.get("writer")?.authenticatedUserProfile?.profileId).toBe(
       clients.get("reader")?.authenticatedUserProfile?.profileId,
     );
-    expect(clients.get("writer")?.connect.scopes).toContain("operator.write");
+    expect(clients.get("writer")?.connect.scopes).not.toContain("operator.write");
     expect(clients.get("reader")?.connect.scopes).not.toContain("operator.write");
     expect(approvals).toHaveLength(0);
     console.info("Authenticated caller replay observed:", JSON.stringify(outcomes));

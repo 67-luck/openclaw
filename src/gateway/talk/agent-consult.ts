@@ -10,7 +10,6 @@ import {
   withCommandSenderAuthority,
 } from "../../auto-reply/command-sender-authority.js";
 import { normalizeTalkSection } from "../../config/talk.js";
-import { operatorScopeSatisfied } from "../../shared/operator-scope-compat.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   buildRealtimeVoiceAgentConsultChatMessage,
@@ -64,27 +63,15 @@ export async function startTalkRealtimeAgentConsult(
     request.client?.connect?.scopes,
     request.client,
   );
-  const callerScopes = [...new Set(authority.replyCaller?.GatewayClientScopes ?? [])];
-  // Scope provider IDs to the authenticated caller, not the shared voice record or
-  // caller-supplied client name. Device/profile identity survives reconnect;
-  // different effective grants must not adopt each other's accepted work.
-  // Drop implied grants only from this identity projection, never execution authority.
-  // Chat still owns reservation, conflict detection and terminal replay.
+  // Stable caller identity survives reconnect and permission changes. Grants
+  // authorize current access; they cannot mint fresh intent for the same call.
+  // Ingress/admission keep current authorization; chat owns reservation and replay.
   const idempotencyKey =
     "talk-" +
     sha256Hex(
       JSON.stringify([
         gatewayClientSessionCreator(request.client)?.id ?? request.client?.authenticatedUserId,
         authority.replyCaller?.ApprovalReviewerDeviceId,
-        callerScopes
-          .filter(
-            (scope) =>
-              !operatorScopeSatisfied(
-                scope,
-                callerScopes.filter((other) => other !== scope),
-              ),
-          )
-          .toSorted(),
         params.sessionTarget.agentId,
         params.sessionTarget.canonicalKey,
         params.voiceSessionId,
