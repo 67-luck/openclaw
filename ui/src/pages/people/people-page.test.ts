@@ -1,4 +1,5 @@
 /* @vitest-environment jsdom */
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../../../packages/gateway-protocol/src/schema/users.js";
 import type {
@@ -87,10 +88,8 @@ it.each(["operator.read", "operator.admin"])(
     await h.page.updateComplete;
     expect(h.page.querySelector('[aria-busy="true"]')).not.toBeNull();
     await h.finish();
-    expect(h.page.textContent).toContain("Role policy · maximum permissions");
-    expect(h.page.textContent).toContain(
-      "Configured ceilings, not this person's live connection permissions.",
-    );
+    expect(h.page.textContent).toContain("Configured role limits");
+    expect(h.page.textContent).toContain("Maximums, not live permissions.");
     expect(h.page.textContent).toContain("Required");
     expect(h.page.textContent).toContain("No models");
     expect(h.page.textContent).toContain("example-access");
@@ -242,17 +241,17 @@ it("shows role definitions with explicit assignments and default fallbacks from 
   expect(h.page.textContent).toContain("Loading authorized people…");
   await h.finish();
   expect(h.page.textContent).toContain("Configured roles");
-  expect(h.page.textContent).toContain("Configured default role");
+  expect(h.page.textContent).toContain("Default role");
   expect(h.page.textContent).toContain("Assigned people");
-  expect(h.page.textContent).toContain("Default-fallback people");
+  expect(h.page.textContent).toContain("Using the default role");
   expect(h.page.textContent).toContain("Alex");
   expect(h.page.textContent).toContain("Morgan");
   expect(h.page.textContent).toContain("Jamie");
-  expect(h.page.textContent).toContain("Saved assignment retired-role is retired");
+  expect(h.page.textContent).toContain("Retired assignment: retired-role");
   expect(h.page.textContent).toContain("Shared owner");
   expect(h.page.textContent).not.toContain("Steve");
   expect(h.page.textContent).not.toContain("Old alias");
-  expect(h.page.textContent).toContain("not members' live connection grants");
+  expect(h.page.textContent).toContain("not members' live permissions");
   expect(h.request.mock.calls.filter(([method]) => method === "users.list")).toHaveLength(1);
 });
 
@@ -311,4 +310,51 @@ it.each(["off", "unknown-role", "empty"])("reports Roles %s without guessing", a
         ? "This configured role is unavailable"
         : "No people were returned for this group.",
   );
+});
+
+it("filters only authorized directory rows without replacing the selected person or reading again", async () => {
+  const h = setup(
+    ["operator.read"],
+    [guest, { ...guest, id: "bob", displayName: "Bob", role: "maintainer" }],
+  );
+  h.page.personId = guest.id;
+  await h.finish();
+  expect(h.page.querySelector("[aria-current=true]")?.textContent).toContain("Ada");
+  const input = expectDefined(
+    h.page.querySelector<HTMLInputElement>('input[aria-label="Search people"]'),
+    "people search",
+  );
+  input.value = "bob";
+  input.dispatchEvent(new Event("input"));
+  await h.page.updateComplete;
+  expect(
+    h.page.querySelector(".settings-directory-detail .settings-stack")?.textContent,
+  ).not.toContain("Ada");
+  expect(h.page.textContent).toContain("Assigned role");
+  expect(h.page.personId).toBe(guest.id);
+  input.value = "unmatched";
+  input.dispatchEvent(new Event("input"));
+  await h.page.updateComplete;
+  expect(h.page.textContent).toContain("No matches. Try another search.");
+  expect(h.request).toHaveBeenCalledExactlyOnceWith("users.list", {});
+});
+
+it("keeps policy details collapsed by default and preserves the chosen disclosure state", async () => {
+  const h = setup();
+  h.page.personId = guest.id;
+  await h.finish();
+  const details = expectDefined(
+    h.page.querySelector<HTMLDetailsElement>(".settings-directory-detail details"),
+    "role policy details",
+  );
+  expect(details.open).toBe(false);
+  expect(details.textContent).toContain("operator.sessions.write");
+  details.open = true;
+  h.page.requestUpdate();
+  await h.page.updateComplete;
+  expect(details.open).toBe(true);
+  details.open = false;
+  h.page.requestUpdate();
+  await h.page.updateComplete;
+  expect(details.open).toBe(false);
 });

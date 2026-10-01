@@ -229,13 +229,14 @@ suite.define(() => {
           });
         }
         await gateway.resolveDeferred("users.list", directory);
-        await policy.getByText("Role policy · maximum permissions", { exact: true }).waitFor();
+        await policy.getByText("Configured role limits", { exact: true }).waitFor();
         await policy.getByText("Required", { exact: true }).waitFor();
         expect(page.url()).toContain("/settings/people?person=alice");
-        expect(await policy.textContent()).toContain(
-          "Configured ceilings, not this person's live connection permissions.",
+        expect(await policy.textContent()).toContain("Maximums, not live permissions.");
+        expect(await policy.getByRole("searchbox", { name: "Search people" }).count()).toBe(1);
+        expect(await policy.locator('input:not([type="search"]), select, textarea').count()).toBe(
+          0,
         );
-        expect(await policy.locator("input, select, textarea").count()).toBe(0);
         expect(await gateway.getRequests("users.setRole")).toHaveLength(0);
         if (captureUiProofEnabled) {
           await page.screenshot({

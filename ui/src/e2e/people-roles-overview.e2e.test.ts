@@ -61,6 +61,8 @@ suite.define(() => {
         await page.goto(suite.server.baseUrl + "settings/people?person=alice");
         const view = page.locator("openclaw-people-page");
         await view.getByText("Required", { exact: true }).waitFor();
+        expect(await view.locator("[aria-current=true]").textContent()).toContain("Alice");
+        expect(await view.locator("details").getAttribute("open")).toBeNull();
         const listReads = await gateway.getRequests("users.list");
         const configReads = await gateway.getRequests("config.get");
         if (proof) {
@@ -75,11 +77,10 @@ suite.define(() => {
           .click();
         await view.getByRole("heading", { name: /^Configured roles/ }).waitFor();
         await view.getByRole("heading", { name: /^Assigned people/ }).waitFor();
-        await view.getByRole("heading", { name: /^Default-fallback people/ }).waitFor();
-        expect(await view.textContent()).toContain(
-          "Named profile roles come from Gateway configuration.",
-        );
-        expect(await view.textContent()).toContain("not members' live connection grants");
+        await view.getByRole("heading", { name: /^Using the default role/ }).waitFor();
+        expect(await view.locator("details").getAttribute("open")).toBeNull();
+        expect(await view.locator("[aria-current=true]").textContent()).toContain("guest");
+        expect(await view.textContent()).toContain("not members' live permissions");
         expect(await view.getByRole("button", { name: /^Alice/ }).count()).toBe(1);
         expect(await view.getByRole("button", { name: /^Charlie/ }).count()).toBe(1);
         expect(await view.getByRole("button", { name: /^Bob/ }).count()).toBe(0);
@@ -91,11 +92,18 @@ suite.define(() => {
             animations: "disabled",
           });
         }
+        await view.getByRole("searchbox", { name: "Search roles" }).fill("maint");
+        expect(await view.getByRole("button", { name: /^guest/ }).count()).toBe(0);
         await view.getByRole("button", { name: /^maintainer/ }).click();
         await view.getByRole("button", { name: /^Bob/ }).waitFor();
         expect(await view.getByRole("button", { name: /^Alice/ }).count()).toBe(0);
         await view.getByRole("button", { name: /^Bob/ }).click();
         await view.getByText("Assigned role", { exact: true }).waitFor();
+        await view.getByRole("searchbox", { name: "Search people" }).fill("charlie");
+        expect(await view.getByRole("button", { name: /^Alice/ }).count()).toBe(0);
+        await view.getByRole("searchbox", { name: "Search people" }).fill("absent");
+        await view.getByText("No matches. Try another search.").waitFor();
+        await view.getByRole("searchbox", { name: "Search people" }).fill("");
         expect(page.url()).toContain("person=bob");
         expect(
           await view
@@ -109,6 +117,7 @@ suite.define(() => {
           .getByRole("button", { name: "Roles", exact: true })
           .click();
         await view.getByRole("heading", { name: /^Assigned people/ }).waitFor();
+        await view.getByRole("searchbox", { name: "Search roles" }).fill("");
         expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
           390,
         );
@@ -156,5 +165,83 @@ suite.define(() => {
         .waitFor();
       expect(await gateway.getRequests("config.get")).toHaveLength(0);
     });
+  });
+  it("keeps crowded directories, long labels and expanded details usable across themes and widths", async () => {
+    const roleName = "reviewers-with-a-long-configured-role-name-for-layout-coverage";
+    const crowded = Array.from({ length: 24 }, (_, i) => ({
+      ...baseProfile,
+      id: `person-${i}`,
+      displayName: `Person ${i.toString().padStart(2, "0")} · Alexandra Montgomery-Wellington and the Infrastructure Review Team`,
+      role: roleName,
+    }));
+    const policy = {
+      ...roles.definitions.guest,
+      agents: Array.from({ length: 12 }, (_, i) => `long-agent-name-${i}`),
+      modelPolicy: {
+        allow: ["example-provider/long-model-family-*"],
+        deny: ["example-provider/private-*"],
+      },
+    };
+    const definitions = { ...roles.definitions, [roleName]: policy };
+    await suite.withPage(
+      { viewport: { width: 1280, height: 1100 }, colorScheme: "dark" },
+      async ({ page }) => {
+        const gateway = await installMockGateway(page, {
+          methodResponses: {
+            "users.list": { profiles: crowded },
+            "config.get": {
+              ...responses["config.get"],
+              runtimeConfig: { gateway: { roles: { default: roleName, definitions } } },
+            },
+          },
+        });
+        const proof = captureUiProofEnabled
+          ? createControlUiE2eArtifactDir("people-permissions-stress")
+          : undefined;
+        await page.goto(suite.server.baseUrl + "settings/people?view=roles&role=" + roleName);
+        const view = page.locator("openclaw-people-page");
+        await view.getByRole("heading", { name: /^Assigned people/ }).waitFor();
+        expect(await view.locator(".settings-row--nav[aria-current=true]").textContent()).toContain(
+          roleName,
+        );
+        for (const theme of ["dark", "light"] as const) {
+          await page.emulateMedia({ colorScheme: theme });
+          for (const width of [1280, 390]) {
+            await page.setViewportSize({ width, height: width === 1280 ? 1100 : 844 });
+            expect(
+              await page.evaluate(() => document.documentElement.scrollWidth),
+            ).toBeLessThanOrEqual(width);
+            if (proof) {
+              await page.screenshot({
+                path: path.join(proof, `roles-${theme}-${width}.png`),
+                animations: "disabled",
+              });
+            }
+          }
+        }
+        await view.getByRole("button", { name: /^Person 00/ }).click();
+        await view.getByText("Assigned role", { exact: true }).waitFor();
+        await view.getByRole("searchbox", { name: "Search people" }).fill("person 23");
+        expect(await view.getByRole("button", { name: /^Person 23/ }).count()).toBe(1);
+        expect(page.url()).toContain("person=person-0");
+        const details = view.locator("details");
+        await details.locator("summary").click();
+        await details.getByText("Operator scope ceiling", { exact: true }).waitFor();
+        expect(await details.getAttribute("open")).not.toBeNull();
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+          390,
+        );
+        if (proof) {
+          await page.screenshot({
+            path: path.join(proof, "people-light-phone-details.png"),
+            animations: "disabled",
+          });
+        }
+        await view.getByRole("searchbox", { name: "Search people" }).fill("no such person");
+        expect(await details.getAttribute("open")).not.toBeNull();
+        expect(await gateway.getRequests("users.list")).toHaveLength(1);
+        expect(await gateway.getRequests("users.setRole")).toHaveLength(0);
+      },
+    );
   });
 });

@@ -30,6 +30,7 @@ import { canonicalPersonProfile, canReadPersonProfile } from "../../lib/person-p
 import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
+import { personName, renderDirectorySearch, renderRoleMembers } from "./directory.ts";
 import { profileRoleChoice, renderConfiguredRolePolicy, type RoleCatalog } from "./role-policy.ts";
 
 registerProfileEnglish();
@@ -43,6 +44,8 @@ export class PeoplePage extends OpenClawLightDomElement {
   @property() personId = "";
   @property() view: "people" | "roles" = "people";
   @property() roleName = "";
+  @state() private peopleQuery = "";
+  @state() private rolesQuery = "";
   @state() private profiles: UserProfile[] | null = null;
   @state() private selfProfile: UserProfile | null = null;
   @state() private loading = false;
@@ -234,13 +237,9 @@ export class PeoplePage extends OpenClawLightDomElement {
     return renderConfiguredRolePolicy(
       choice.name,
       choice.definition,
-      copy(
-        choice.source === "assigned"
-          ? "assignedPolicy"
-          : choice.source === "retired"
-            ? "retiredPolicy"
-            : "defaultPolicy",
-      ),
+      choice.source === "assigned"
+        ? undefined
+        : copy(choice.source === "retired" ? "retiredPolicy" : "defaultPolicy"),
     );
   }
 
@@ -273,6 +272,9 @@ export class PeoplePage extends OpenClawLightDomElement {
     }
     const catalog = policyState.catalog;
     const names = Object.keys(catalog.definitions).toSorted((a, b) => a.localeCompare(b));
+    const matching = names.filter((name) =>
+      name.toLowerCase().includes(this.rolesQuery.trim().toLowerCase()),
+    );
     const selected =
       this.roleName ||
       (catalog.defaultName && names.includes(catalog.defaultName) ? catalog.defaultName : names[0]);
@@ -298,44 +300,25 @@ export class PeoplePage extends OpenClawLightDomElement {
     );
     const outside = choices?.filter(({ choice }) => choice.kind !== "role");
     const members = (title: string, entries: typeof choices) =>
-      renderSettingsSection(
-        { title, count: entries?.length },
-        entries === undefined
-          ? renderSettingsEmpty(copy(this.loading ? "membersLoading" : "membersUnavailable"))
-          : !entries.length
-            ? renderSettingsEmpty(copy("noRoleMembers"))
-            : entries.map(({ person, choice }) =>
-                renderSettingsNavRow({
-                  title:
-                    person.displayName?.trim() || person.githubIdentity?.login || copy("person"),
-                  description:
-                    choice.kind === "owner"
-                      ? copy("owner")
-                      : choice.kind === "unresolved"
-                        ? copy("noPolicy")
-                        : choice.source === "assigned"
-                          ? copy("assignedPolicy")
-                          : choice.source === "retired"
-                            ? t("profilePage.people.retiredAssignment", { role: person.role ?? "" })
-                            : copy("defaultPolicy"),
-                  onClick: () => this.selectPerson(person.id),
-                }),
-              ),
-      );
+      renderRoleMembers(title, entries, this.loading, (id) => this.selectPerson(id));
     return html`<div class="settings-directory-detail">
       <div class="settings-stack">
+        ${renderDirectorySearch(this.rolesQuery, copy("searchRoles"), (query) => {
+          this.rolesQuery = query;
+        })}
         ${renderSettingsSection(
-          { title: copy("roles"), count: names.length, description: copy("rolesProvenance") },
+          { title: copy("roles"), count: names.length },
           names.length
-            ? names.map((name) =>
-                renderSettingsNavRow({
-                  title: name,
-                  description: copy(
-                    name === catalog.defaultName ? "defaultRole" : "configuredRole",
-                  ),
-                  onClick: () => this.selectView("roles", name),
-                }),
-              )
+            ? matching.length
+              ? matching.map((name) =>
+                  renderSettingsNavRow({
+                    title: name,
+                    description: name === catalog.defaultName ? copy("defaultRole") : undefined,
+                    selected: name === selected,
+                    onClick: () => this.selectView("roles", name),
+                  }),
+                )
+              : renderSettingsEmpty(copy("noMatches"))
             : renderSettingsEmpty(copy("noRoles")),
         )}
       </div>
@@ -370,37 +353,37 @@ export class PeoplePage extends OpenClawLightDomElement {
     const directory = this.profiles
       ?.filter((person) => !person.mergedInto)
       .toSorted((a, b) => (a.displayName ?? a.id).localeCompare(b.displayName ?? b.id));
+    const matches = directory?.filter((person) =>
+      `${personName(person)} ${person.role ?? ""}`
+        .toLowerCase()
+        .includes(this.peopleQuery.trim().toLowerCase()),
+    );
     return html`
       ${renderSettingsPageHeader({
         title: titleForRoute("people"),
         subtitle: subtitleForRoute("people"),
-        actions: html`<button
-          class="btn"
-          ?disabled=${!connected || this.loading}
-          @click=${() => void this.load(true)}
-        >
-          ${t("common.refresh")}
-        </button>`,
+        actions: html`${renderSettingsSegmented({
+            mode: "buttons",
+            value: this.view,
+            options: [
+              { value: "people", label: copy("peopleView") },
+              { value: "roles", label: copy("rolesView") },
+            ],
+            ariaLabel: copy("viewBy"),
+            onChange: (view) => this.selectView(view),
+          })}<button
+            class="btn"
+            ?disabled=${!connected || this.loading}
+            @click=${() => void this.load(true)}
+          >
+            ${t("common.refresh")}
+          </button>`,
       })}
       ${renderSettingsWorkspace(
         renderSettingsPage(
           !connected
             ? renderSettingsEmpty(copy("offline"))
             : html`
-                ${renderSettingsRow({
-                  title: copy("viewBy"),
-                  description: copy("viewsHint"),
-                  control: renderSettingsSegmented({
-                    mode: "buttons",
-                    value: this.view,
-                    options: [
-                      { value: "people", label: copy("peopleView") },
-                      { value: "roles", label: copy("rolesView") },
-                    ],
-                    ariaLabel: copy("viewBy"),
-                    onChange: (view) => this.selectView(view),
-                  }),
-                })}
                 ${
                   showSelf
                     ? html`
@@ -428,6 +411,17 @@ export class PeoplePage extends OpenClawLightDomElement {
                     ? this.renderRoles()
                     : html`<div class="settings-directory-detail">
                         <div class="settings-stack">
+                          ${
+                            this.canList()
+                              ? renderDirectorySearch(
+                                  this.peopleQuery,
+                                  copy("searchPeople"),
+                                  (query) => {
+                                    this.peopleQuery = query;
+                                  },
+                                )
+                              : nothing
+                          }
                           ${renderSettingsSection(
                             { title: copy("directory") },
                             this.loading
@@ -446,19 +440,19 @@ export class PeoplePage extends OpenClawLightDomElement {
                                     })}`
                                   : !directory?.length
                                     ? renderSettingsEmpty(copy("empty"))
-                                    : directory.map((person) =>
-                                        renderSettingsNavRow({
-                                          title:
-                                            person.displayName?.trim() ||
-                                            person.githubIdentity?.login ||
-                                            copy("person"),
-                                          description:
-                                            person.id === GATEWAY_OWNER_PROFILE_ID
-                                              ? copy("owner")
-                                              : (person.role ?? copy("unassigned")),
-                                          onClick: () => this.selectPerson(person.id),
-                                        }),
-                                      ),
+                                    : !matches?.length
+                                      ? renderSettingsEmpty(copy("noMatches"))
+                                      : matches.map((person) =>
+                                          renderSettingsNavRow({
+                                            title: personName(person),
+                                            description:
+                                              person.id === GATEWAY_OWNER_PROFILE_ID
+                                                ? copy("owner")
+                                                : (person.role ?? copy("unassigned")),
+                                            selected: profile?.id === person.id,
+                                            onClick: () => this.selectPerson(person.id),
+                                          }),
+                                        ),
                           )}
                         </div>
                         <div class="settings-stack">
@@ -472,7 +466,6 @@ export class PeoplePage extends OpenClawLightDomElement {
                                       profile.id === GATEWAY_OWNER_PROFILE_ID
                                         ? copy("owner")
                                         : (profile.role ?? copy("unassigned")),
-                                      copy("assignmentHint"),
                                     ),
                                   )}
                                   ${this.policy(profile)}

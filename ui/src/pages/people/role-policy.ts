@@ -61,7 +61,7 @@ function fact(title: string, value: unknown, description?: string) {
 export function renderConfiguredRolePolicy(
   roleName: string,
   policy: Record<string, unknown>,
-  sourceDescription: string,
+  sourceDescription: string | undefined,
   ceilingDescription = copy("ceilingHint"),
 ) {
   const sessions = asOptionalRecord(policy.sessions);
@@ -87,21 +87,26 @@ export function renderConfiguredRolePolicy(
       ${fact(
         copy("otherSessions"),
         typeof sessions?.others === "string" ? copy(`others.${sessions.others}`) : copy("unknown"),
-        copy("sessionHint"),
       )}
-      ${fact(copy("sandbox"), copy(policy.sandbox === "required" ? "sandboxRequired" : "sandboxInherit"), copy("sandboxHint"))}
-      ${fact(copy("scopes"), scopes === null ? copy("unknown") : scopes.length ? scopes.join(", ") : copy("noScopes"), copy("scopeHint"))}
-      ${fact(copy("models"), model ? copy("modelsRestricted") : copy("modelsInherited"), copy("modelHint"))}
-      ${
-        model
-          ? html`
-              ${fact(copy("modelSource"), typeof model.sourceAgent === "string" ? model.sourceAgent : copy("defaultSource"))}
-              ${fact(copy("modelAllow"), allow === null ? copy("sourceModels") : allow.length ? allow.join(", ") : copy("noModels"))}
-              ${fact(copy("modelDeny"), deny?.length ? deny.join(", ") : copy("none"))}
-            `
-          : nothing
-      }
-      ${fact(copy("accessPolicy"), typeof policy.accessPolicyPlugin === "string" ? policy.accessPolicyPlugin : copy("none"), copy("eligibilityHint"))}
+      ${fact(copy("sandbox"), copy(policy.sandbox === "required" ? "sandboxRequired" : "sandboxInherit"))}
+      ${fact(copy("models"), model ? copy("modelsRestricted") : copy("modelsInherited"))}
+      <details class="settings-row settings-row--stacked">
+        <summary>${copy("details")}</summary>
+        ${fact(copy("scopes"), scopes === null ? copy("unknown") : scopes.length ? scopes.join(", ") : copy("noScopes"), copy("scopeHint"))}
+        ${
+          model
+            ? html`
+                ${fact(copy("modelSource"), typeof model.sourceAgent === "string" ? model.sourceAgent : copy("defaultSource"))}
+                ${fact(copy("modelAllow"), allow === null ? copy("sourceModels") : allow.length ? allow.join(", ") : copy("noModels"))}
+                ${fact(copy("modelDeny"), deny?.length ? deny.join(", ") : copy("none"))}
+              `
+            : nothing
+        }
+        ${fact(copy("accessPolicy"), typeof policy.accessPolicyPlugin === "string" ? policy.accessPolicyPlugin : copy("none"), copy("eligibilityHint"))}
+        ${fact(copy("sandbox"), copy("sandboxHint"))}
+        ${fact(copy("otherSessions"), copy("sessionHint"))}
+        ${fact(copy("models"), copy("modelHint"))} ${fact(copy("roles"), copy("rolesProvenance"))}
+      </details>
     `,
   );
 }
