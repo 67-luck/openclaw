@@ -10,7 +10,27 @@ import type {
   SessionEffectRef,
   SessionEffectInterrupt,
 } from "./session-controller.lifecycle.types.js";
-import { targetFrom, type TargetInput } from "./session-controller.target.js";
+import { targetFrom, type TargetInput, type SessionTarget } from "./session-controller.target.js";
+
+/** Start work only after all retiring source cleanup has settled. */
+export async function runAfterRetiringSessionSources<T>(
+  targets: readonly SessionTarget[],
+  requiredSessionId: string | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  // Waiting inputs stay queued; only retiring inputs must settle before activation.
+  for (;;) {
+    const retiring = targets.flatMap((target) =>
+      sourceSettlements(target, requiredSessionId, "retiring"),
+    );
+    if (!retiring.length) {
+      // Invoke in this frame so a withdrawal cannot slip between the check and activation.
+      return await run();
+    }
+    await Promise.all(retiring);
+  }
+}
+
 export async function waitForSessionControllerSettlement(
   released: Promise<void>,
   timeoutMs?: number,

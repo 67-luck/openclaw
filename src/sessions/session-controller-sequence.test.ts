@@ -8,6 +8,7 @@ import {
   setActiveEmbeddedRun,
 } from "../agents/embedded-agent-runner/runs.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
+import { pilotRandom } from "./session-controller-model.test-support.js";
 import { withSessionTurn } from "./session-controller.admission.js";
 import type { ReplyBackendHandle, ReplyOperation } from "./session-controller.contracts.js";
 import {
@@ -267,12 +268,11 @@ function sequence(seed: number): Event[] {
   for (const event of prefix) {
     add(event);
   }
-  let random = seed;
+  const random = pilotRandom(seed);
   for (let step = 0; step < 24; step++) {
-    random = (Math.imul(random, 1664525) + 1013904223) >>> 0;
     const choices: Event[] = [];
     if (model.mail.length < 10) {
-      choices.push({ type: "reserve", id: model.mail.length, interrupt: (random & 1) === 0 });
+      choices.push({ type: "reserve", id: model.mail.length, interrupt: random(2) === 0 });
       choices.push({ type: "native", id: model.mail.length });
     }
     for (const entry of model.mail.filter((candidate) => !candidate.done)) {
@@ -310,7 +310,7 @@ function sequence(seed: number): Event[] {
       choices.push({ type: "mutation" });
     }
     if (choices.length) {
-      add(required(choices[random % choices.length]));
+      add(required(choices[random(choices.length)]));
     }
   }
   // Drain by model progress, not by consulting implementation state. A selector
@@ -370,7 +370,7 @@ type Fixture = {
   source: Deferred;
 };
 
-async function replay(seed: number) {
+async function replay(seed: number, events = sequence(seed)) {
   const key = "agent:main:controller-sequence-" + seed;
   const sessionId = "sequence-incarnation-" + seed;
   const target = captureSessionTarget({
@@ -431,7 +431,7 @@ async function replay(seed: number) {
     );
   };
   try {
-    for (const event of sequence(seed)) {
+    for (const event of events) {
       observedPrefix.push(event);
       const expected = advance(model, event);
       let actual: boolean | undefined;
@@ -599,6 +599,33 @@ async function replay(seed: number) {
 }
 
 describe("real controller selector sequences", () => {
+  it("waits for sources withdrawn after a mutation captured its cleanup receipts", async () => {
+    vi.useFakeTimers();
+    try {
+      await replay(3, [
+        ...prefix,
+        { type: "hold", id: 6 },
+        { type: "owner-settled", id: 6 },
+        { type: "owner-settled", id: 4 },
+        { type: "mutation" },
+        { type: "finish", id: 4 },
+        { type: "withdraw", id: 6 },
+        { type: "source-settled", id: 4 },
+        { type: "reserve", id: 8, interrupt: false },
+        { type: "native", id: 9 },
+        { type: "hold", id: 8 },
+        { type: "withdraw", id: 8 },
+        { type: "source-settled", id: 6 },
+        { type: "source-settled", id: 8 },
+        { type: "mutation-settled" },
+        { type: "finish", id: 9 },
+        { type: "owner-settled", id: 9 },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("matches bounded mixed-producer sequences through raw owner, source and mutation fences", async () => {
     vi.useFakeTimers();
     try {

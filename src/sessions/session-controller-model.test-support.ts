@@ -173,7 +173,7 @@ export function stepPilotMailbox(
 }
 
 /** Seed is printed with the complete event prefix on failure; no external property-test dependency. */
-function pilotRandom(seed: number): (bound: number) => number {
+export function pilotRandom(seed: number): (bound: number) => number {
   let value = (seed ^ 0x9e3779b9) >>> 0;
   return (bound) => {
     // Mix all bits; low-bit LCG sampling otherwise alternates binary choices.

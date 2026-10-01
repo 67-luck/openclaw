@@ -14,7 +14,10 @@ import {
 import { createDeferredCore } from "../shared/deferred.js";
 import { ownerContext, sourceSettlements } from "./session-controller.context.js";
 import type { ReplyOperation } from "./session-controller.contracts.js";
-import { waitForSessionControllerSettlement } from "./session-controller.lifecycle-observation.js";
+import {
+  runAfterRetiringSessionSources,
+  waitForSessionControllerSettlement,
+} from "./session-controller.lifecycle-observation.js";
 import {
   matchingEntries,
   effectMatchesSessionId,
@@ -381,13 +384,6 @@ export async function runSessionMutation<T>(
           ...competitors.map((operation) => operation.ownerSettlement),
           ...claims.map((claim) => claim.settlement.promise),
         ]);
-        // Retired, never-claimed sources can still own asynchronous cleanup.
-        // Do not await future turns: unretired waiting inputs remain queued behind this mutation.
-        await Promise.all(
-          targets.flatMap((target) =>
-            sourceSettlements(target, params.requiredSessionId, "retiring"),
-          ),
-        );
       }
       // Only effects that actually started can write. Pending validators remain owned
       // through their real return, even if their signal was cancelled while awaiting.
@@ -411,6 +407,9 @@ export async function runSessionMutation<T>(
             : effect.validated.promise,
         ),
       );
+      if (params.policy === "wait" || params.policy === "preempt") {
+        return await runAfterRetiringSessionSources(targets, params.requiredSessionId, params.run);
+      }
       return await params.run();
     } finally {
       try {
