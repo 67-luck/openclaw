@@ -199,9 +199,9 @@ enum OpenClawWidgetProofFixtures {
     }
 
     // Synthetic facts at 2026-09-09 16:00:00 UTC; polling never advances this clock.
-    static let now = Date(timeIntervalSince1970: 1_788_969_600)
-    static let locale = Locale(identifier: "en_US")
-    static let timeZone = TimeZone.gmt
+    nonisolated static let now = Date(timeIntervalSince1970: 1_788_969_600)
+    nonisolated static let locale = Locale(identifier: "en_US")
+    nonisolated static let timeZone = TimeZone.gmt
 
     static let all: [Fixture] = {
         var fixtures: [Fixture] = []
