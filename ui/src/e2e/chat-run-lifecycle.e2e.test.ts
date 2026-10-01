@@ -722,9 +722,13 @@ suite.define(() => {
     await pauseVirtualClock(currentPage);
     await currentPage.getByRole("button", { name: "Send message" }).click();
     await gateway.waitForRequest("chat.send");
+    // Playwright's paused RAF clock uses 16ms frames. Include the first pane
+    // commit in the elapsed budget before observing the working indicator.
+    const initialFrameMs = 16;
+    await currentPage.clock.runFor(initialFrameMs);
     await currentPage.locator(".chat-working-indicator").waitFor();
 
-    await currentPage.clock.fastForward(177_000);
+    await currentPage.clock.fastForward(177_000 - initialFrameMs);
 
     await expect
       .poll(() => currentPage.locator(".chat-working-indicator__elapsed").textContent())

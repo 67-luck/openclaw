@@ -917,55 +917,45 @@ describe("gateway/node-registry", () => {
     });
   });
 
-  it.each(["promotion"])(
-    "does not invalidate a session after $0 while persistent generation is loading",
-    async (change) => {
-      let resolveLookup: ((value: { identity: string; generation: string }) => void) | undefined;
-      const resolveCurrentPairingState = vi.fn(
-        () =>
-          new Promise<{ identity: string; generation: string }>((resolve) => {
-            resolveLookup = resolve;
-          }),
-      );
-      const onPairingInvalidated = vi.fn();
-      const registry = createNodeRegistry({
-        resolveCurrentPairingState,
-        onPairingInvalidated,
-      });
-      const client = makeClient("conn-generation", "node-generation");
-      registerNodeSession(registry, client, pairingA);
+  it("does not invalidate a session after promotion while persistent generation is loading", async () => {
+    const lookup = createDeferred<{ identity: string; generation: string }>();
+    const lookupEntered = createDeferred();
+    const resolveCurrentPairingState = vi.fn(() => {
+      lookupEntered.resolve();
+      return lookup.promise;
+    });
+    const onPairingInvalidated = vi.fn();
+    const registry = createNodeRegistry({ resolveCurrentPairingState, onPairingInvalidated });
+    const client = makeClient("conn-generation", "node-generation");
+    registerNodeSession(registry, client, pairingA);
 
-      const connected = registry.getCurrentConnected("node-generation");
+    const connected = registry.getCurrentConnected("node-generation");
+    try {
+      await lookupEntered.promise;
       expect(resolveCurrentPairingState).toHaveBeenCalledWith("node-generation");
-      let retainedClient = client;
-      if (change === "promotion") {
-        expect(
-          registry.updateSurface(
-            "node-generation",
-            { commands: [] },
-            {
-              expectedConnId: "conn-generation",
-              expectedPairingIdentity: "identity-a",
-              expectedPairingGeneration: "generation-a",
-              nextPairingGeneration: "generation-b",
-            },
-          ),
-        ).not.toBeNull();
-      } else {
-        retainedClient = makeClient("conn-replacement", "node-generation");
-        registerNodeSession(registry, retainedClient, {
-          pairingIdentity: "identity-a",
-          pairingGeneration: "generation-b",
-        });
-      }
-      resolveLookup?.({ identity: "identity-a", generation: "generation-a" });
+      expect(
+        registry.updateSurface(
+          "node-generation",
+          { commands: [] },
+          {
+            expectedConnId: "conn-generation",
+            expectedPairingIdentity: "identity-a",
+            expectedPairingGeneration: "generation-a",
+            nextPairingGeneration: "generation-b",
+          },
+        ),
+      ).not.toBeNull();
+      lookup.resolve({ identity: "identity-a", generation: "generation-a" });
 
       await expect(connected).resolves.toBeUndefined();
       expect(registry.get("node-generation")?.pairingGeneration).toBe("generation-b");
-      expect(retainedClient.invalidated).not.toBe(true);
+      expect(client.invalidated).not.toBe(true);
       expect(onPairingInvalidated).not.toHaveBeenCalled();
-    },
-  );
+    } finally {
+      lookup.resolve({ identity: "identity-a", generation: "generation-a" });
+      await connected;
+    }
+  });
 
   it("revalidates the active node at the prompt projection boundary", () => {
     let currentPairingGeneration = "generation-a";

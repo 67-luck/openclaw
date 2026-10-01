@@ -17,7 +17,7 @@ import {
 import {
   createOnlineReadOnlyBackup,
   prepareSqliteReadOnlyLocationInProcess,
-  prepareSqliteReadOnlyLocationSyncInProcess,
+  prepareSqliteReadOnlyCopyInProcess,
   SqliteSourceChangedError,
 } from "./sqlite-readonly-location.js";
 import type { PreparedSqliteReadOnlyLocation } from "./sqlite-readonly-location.types.js";
@@ -143,11 +143,7 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
     } else {
       prepared =
         mode === "sync" || mode === "sync-versioned"
-          ? prepareSqliteReadOnlyLocationSyncInProcess(
-              pathname,
-              stagingRoot,
-              expectedSourceIdentity,
-            )
+          ? await prepareSqliteReadOnlyCopyInProcess(pathname, stagingRoot, expectedSourceIdentity)
           : await prepareSqliteReadOnlyLocationInProcess(pathname, stagingRoot);
     }
     // Observe fresh source bytes while the private copy still has child custody.

@@ -247,8 +247,11 @@ export class ChatPageRetainedSessions {
     }
   };
 
-  findPane(paneId: string, sessionKey: string): ChatPaneElement | undefined {
-    return [...this.host.querySelectorAll<ChatPaneElement>("openclaw-chat-pane")].find(
+  findPane(
+    paneId: string,
+    sessionKey: string,
+  ): HTMLElementTagNameMap["openclaw-chat-pane"] | undefined {
+    return [...this.host.querySelectorAll("openclaw-chat-pane")].find(
       (pane) =>
         pane.paneId === paneId && areUiSessionKeysEquivalent(pane.sessionKey ?? "", sessionKey),
     );

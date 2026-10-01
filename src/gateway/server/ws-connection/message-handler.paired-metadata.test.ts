@@ -8,7 +8,7 @@ import {
   BACKEND_CONNECT_PARAMS,
   createGatewayHarnessGate,
   createPairedGatewayConnectDevice,
-  createTrustedProxyUserConnector,
+  connectTrustedProxyUser,
   withGatewayTestState,
 } from "./message-handler.post-connect-health.test-support.js";
 
@@ -62,8 +62,6 @@ beforeEach(() => {
     },
   });
 });
-
-const connectTrustedProxyUser = createTrustedProxyUserConnector(loadConfigMock);
 
 describe("paired reconnect metadata", () => {
   it.each(["first pairing", "role upgrade", "scope reapproval"] as const)(
@@ -137,6 +135,7 @@ describe("paired reconnect metadata", () => {
             return true;
           });
         const harness = connectTrustedProxyUser(
+          loadConfigMock,
           connId,
           { displayName: "Current desktop" },
           scopes,
@@ -235,7 +234,7 @@ describe("paired reconnect metadata", () => {
           });
         }
         const harness = trustedProxy
-          ? connectTrustedProxyUser(connId, {}, [], undefined, device)
+          ? connectTrustedProxyUser(loadConfigMock, connId, {}, [], undefined, device)
           : attachGatewayHarness({ connId, connectNonce: `nonce-${connId}` });
         if (!trustedProxy) {
           harness.sendConnect(`connect-${connId}`, { ...BACKEND_CONNECT_PARAMS, device });

@@ -141,60 +141,71 @@ test("keeps inspection snapshot bytes without republishing revoked node authorit
   );
 });
 
-test("rechecks node authority after yielding to a queued pairing mutation", async () => {
-  await withEnvAsync({ OPENCLAW_STATE_DIR: baseDir }, async () => {
-    const generation = await captureNodePairingGeneration("node");
-    expect(generation).not.toBeNull();
-    const readReady = createDeferredCore();
-    const releaseRead = createDeferredCore();
-    const writerReady = createDeferredCore();
-    const releaseWriter = createDeferredCore();
-    const executeRead = stateReads.executeExistingOpenClawStateRead;
-    const reader = vi
-      .spyOn(stateReads, "executeExistingOpenClawStateRead")
-      .mockImplementationOnce(async (...args) => {
-        const result = await executeRead(...args);
-        readReady.resolve();
-        await releaseRead.promise;
-        return result;
-      });
-    const runOperation = stateWorker.runOpenClawStateWorkerOperation;
-    const writer = vi
-      .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
-      .mockImplementationOnce(async (...args) => {
-        writerReady.resolve();
-        await releaseWriter.promise;
-        return runOperation(...args);
-      });
-    const checked = isNodePairingGenerationCurrent(generation!).then(
-      (value) => ({ value }),
-      (error: unknown) => ({ error }),
-    );
-    let mutation: ReturnType<typeof removePairedDevice> | undefined;
-    const cleanup = async () => {
-      releaseRead.resolve();
-      releaseWriter.resolve();
-      await Promise.allSettled([checked, mutation]);
-      reader.mockRestore();
-      writer.mockRestore();
-    };
-    onTestFinished(cleanup);
-    try {
-      await readReady.promise;
-      mutation = removePairedDevice("node", baseDir);
-      releaseRead.resolve();
-      await writerReady.promise;
-      expect(await checked).toEqual({
-        error: expect.objectContaining({
-          message: "Device pairing authority requires a current worker publication",
-        }),
-      });
-    } finally {
-      await cleanup();
-    }
-    await expect(isNodePairingGenerationCurrent(generation!)).resolves.toBe(false);
-  });
-});
+test.each(["metadata observation", "pairing removal"] as const)(
+  "keeps an admitted generation observation before a queued %s while final effects stay fenced",
+  async (change) => {
+    await withEnvAsync({ OPENCLAW_STATE_DIR: baseDir }, async () => {
+      const generation = await captureNodePairingGeneration("node");
+      expect(generation).not.toBeNull();
+      const readReady = createDeferredCore();
+      const releaseRead = createDeferredCore();
+      const writerReady = createDeferredCore();
+      const releaseWriter = createDeferredCore();
+      const executeRead = stateReads.executeExistingOpenClawStateRead;
+      const reader = vi
+        .spyOn(stateReads, "executeExistingOpenClawStateRead")
+        .mockImplementationOnce(async (...args) => {
+          const result = await executeRead(...args);
+          readReady.resolve();
+          await releaseRead.promise;
+          return result;
+        });
+      const runOperation = stateWorker.runOpenClawStateWorkerOperation;
+      const writer = vi
+        .spyOn(stateWorker, "runOpenClawStateWorkerOperation")
+        .mockImplementationOnce(async (...args) => {
+          writerReady.resolve();
+          await releaseWriter.promise;
+          return runOperation(...args);
+        });
+      const checked = isNodePairingGenerationCurrent(generation!).then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      let mutation: Promise<unknown> | undefined;
+      const cleanup = async () => {
+        releaseRead.resolve();
+        releaseWriter.resolve();
+        await Promise.allSettled([checked, mutation]);
+        reader.mockRestore();
+        writer.mockRestore();
+      };
+      onTestFinished(cleanup);
+      try {
+        await readReady.promise;
+        mutation =
+          change === "metadata observation"
+            ? updatePairedDeviceMetadata("node", { displayName: "Still connected" }, baseDir)
+            : removePairedDevice("node", baseDir);
+        releaseRead.resolve();
+        await writerReady.promise;
+        // The read was admitted first; a later write still fences synchronous effect authority.
+        expect(() => getPublishedPairedDeviceBinding("node", baseDir)).toThrow(
+          "Device pairing authority requires a current worker publication",
+        );
+        expect(await checked).toEqual({ value: true });
+      } finally {
+        await cleanup();
+      }
+      await expect(isNodePairingGenerationCurrent(generation!)).resolves.toBe(
+        change === "metadata observation",
+      );
+      if (change === "metadata observation") {
+        expect((await getPairedDevice("node", baseDir))?.displayName).toBe("Still connected");
+      }
+    });
+  },
+);
 
 test.each(["worker commit", "external commit", "observation commit"] as const)(
   "does not republish a pairing read delayed past a newer %s",

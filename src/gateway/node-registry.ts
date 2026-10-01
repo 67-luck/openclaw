@@ -274,19 +274,12 @@ export class NodeRegistry {
       listCurrentConnected: () => this.listCurrentConnected(),
       getCurrentConnected: (nodeId) => this.getCurrentConnected(nodeId),
       hasCurrentPairingStateResolver: Boolean(this.options.resolveCurrentPairingState),
-      resolvePairingLease: async (node) => {
+      preparePairingLease: (node) => {
         const current = this.nodesById.get(node.nodeId);
-        if (
-          !current ||
-          current.connId !== node.connId ||
-          current.pairingIdentity !== node.pairingIdentity ||
-          current.pairingGeneration !== node.pairingGeneration
-        ) {
-          return { status: "stale", presenceInvalidated: false };
-        }
-        return await this.resolvePairingLease(this.capturePairingLease(current), {
-          invalidateStale: false,
-        });
+        const lease = current && this.capturePairingLease(current);
+        return current === node && lease && this.currentSessionForLease(lease)
+          ? () => this.resolvePairingLease(lease, { invalidateStale: false })
+          : async () => ({ status: "stale", presenceInvalidated: false });
       },
       pendingInvokes: this.pendingInvokes,
       invokeStreams: this.invokeStreams,
@@ -345,32 +338,38 @@ export class NodeRegistry {
     return { status: "stale", presenceInvalidated };
   }
 
-  private async resolvePairingLease(
+  private resolvePairingLease(
     lease: PairingBoundNodeSessionLease,
     options: { invalidateStale: boolean },
   ): Promise<PairingLeaseResolution> {
-    const resolveCurrentPairingState = this.options.resolveCurrentPairingState;
-    if (!resolveCurrentPairingState) {
-      const current = this.currentSessionForLease(lease);
-      return current
-        ? { status: "current", session: current }
-        : { status: "stale", presenceInvalidated: false };
-    }
-    let currentPairingState: PairedDeviceNodeBinding | undefined;
-    try {
-      currentPairingState = await resolveCurrentPairingState(lease.nodeId);
-    } catch {
-      return { status: "unavailable" };
-    }
-    let isCurrent = pairingStateMatchesBinding(lease.binding, currentPairingState);
-    try {
-      if (isCurrent && this.options.isPairingStateCurrent) {
-        isCurrent = this.options.isPairingStateCurrent(lease.nodeId, lease.binding);
+    return withDevicePairingLock(async () => {
+      const resolveCurrentPairingState = this.options.resolveCurrentPairingState;
+      if (!resolveCurrentPairingState) {
+        const current = this.currentSessionForLease(lease);
+        return current
+          ? { status: "current", session: current }
+          : { status: "stale", presenceInvalidated: false };
       }
-    } catch {
-      return { status: "unavailable" };
-    }
-    return this.settlePairingLease({ lease, isCurrent, invalidateStale: options.invalidateStale });
+      let currentPairingState: PairedDeviceNodeBinding | undefined;
+      try {
+        currentPairingState = await resolveCurrentPairingState(lease.nodeId);
+      } catch {
+        return { status: "unavailable" };
+      }
+      let isCurrent = pairingStateMatchesBinding(lease.binding, currentPairingState);
+      try {
+        if (isCurrent && this.options.isPairingStateCurrent) {
+          isCurrent = this.options.isPairingStateCurrent(lease.nodeId, lease.binding);
+        }
+      } catch {
+        return { status: "unavailable" };
+      }
+      return this.settlePairingLease({
+        lease,
+        isCurrent,
+        invalidateStale: options.invalidateStale,
+      });
+    });
   }
 
   private refreshSessionPolicy(node: NodeSession): void {

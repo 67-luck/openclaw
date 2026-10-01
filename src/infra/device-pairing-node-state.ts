@@ -99,8 +99,6 @@ export async function captureAuthenticatedNodePairingState(params: {
 export async function isNodePairingGenerationCurrent(
   generation: NodePairingGeneration,
 ): Promise<boolean> {
-  await resolveCurrentPairedDeviceNodeBinding(generation.nodeId);
-  // Releasing the read's lock may admit its successor before this continuation.
-  const current = getPublishedPairedDeviceBinding(generation.nodeId);
+  const current = await resolveCurrentPairedDeviceNodeBinding(generation.nodeId);
   return current?.generation === generation.key;
 }

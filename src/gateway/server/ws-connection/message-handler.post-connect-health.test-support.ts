@@ -10,7 +10,7 @@ import { publicKeyRawBase64UrlFromPem, signDevicePayload } from "../../../infra/
 import type { PairedDevice } from "../../../infra/device-pairing.types.js";
 import {
   onInternalDiagnosticEvent,
-  type DiagnosticSecurityEvent,
+  type DiagnosticEventPayload,
 } from "../../../infra/diagnostic-events.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { mintAgentRuntimeIdentityToken } from "../../agent-runtime-identity-token.js";
@@ -53,10 +53,10 @@ export const BACKEND_CONNECT_PARAMS = {
 } as const satisfies Record<string, unknown>;
 
 export function captureSecurityEvents(): {
-  events: DiagnosticSecurityEvent[];
+  events: Extract<DiagnosticEventPayload, { type: "security.event" }>[];
   stop: () => void;
 } {
-  const events: DiagnosticSecurityEvent[] = [];
+  const events: Extract<DiagnosticEventPayload, { type: "security.event" }>[] = [];
   const stop = onInternalDiagnosticEvent((event, metadata) => {
     if (metadata.trusted && event.type === "security.event") {
       events.push(event);
@@ -100,6 +100,74 @@ export function createSetCloseCauseMock() {
   return vi.fn<SetCloseCause>();
 }
 
+export function connectTrustedProxyUser(
+  loadConfigMock: Pick<Mock, "mockImplementation">,
+  connId: string,
+  clientOverrides: Record<string, unknown> = {},
+  scopes: string[] = [],
+  handoffAuthenticatedReceive?: () => void,
+  device?: ConnectParams["device"],
+) {
+  loadConfigMock.mockImplementation(() => ({
+    gateway: {
+      auth: {
+        mode: "trusted-proxy",
+        identityScopes: { "alice@example.com": scopes },
+        trustedProxy: {
+          userHeader: "x-forwarded-user",
+          requiredHeaders: ["x-forwarded-proto"],
+        },
+      },
+      trustedProxies: ["10.0.0.1"],
+      controlUi: {
+        allowedOrigins: ["http://127.0.0.1:19001"],
+      },
+    },
+  }));
+  const harness = attachGatewayHarness({
+    connId,
+    handoffAuthenticatedReceive,
+    connectNonce: `nonce-${connId}`,
+    requestHost: "gateway.example.com:18789",
+    requestOrigin: "http://127.0.0.1:19001",
+    remoteAddr: "10.0.0.1",
+    resolvedAuth: {
+      mode: "trusted-proxy",
+      allowTailscale: false,
+      trustedProxy: {
+        userHeader: "x-forwarded-user",
+        requiredHeaders: ["x-forwarded-proto"],
+      },
+    },
+    headers: {
+      "x-forwarded-for": "203.0.113.10",
+      "x-forwarded-user": "alice@example.com",
+      "x-forwarded-proto": "https",
+    },
+    ingressAttribution: {
+      kind: "trusted-proxy",
+      clientIp: "203.0.113.10",
+      rateLimit: { subject: { key: "203.0.113.10" }, resetOnSuccess: true },
+    },
+  });
+  harness.sendConnect(`connect-${connId}`, {
+    minProtocol: PROTOCOL_VERSION,
+    maxProtocol: PROTOCOL_VERSION,
+    client: {
+      id: "openclaw-control-ui",
+      version: "dev",
+      platform: "test",
+      mode: "ui",
+      ...clientOverrides,
+    },
+    role: "operator",
+    scopes,
+    caps: [],
+    ...(device ? { device } : {}),
+  });
+  return harness;
+}
+
 export function localUserIngressFor(client: unknown) {
   return typeof client === "object" && client !== null
     ? getGatewayLocalUserIngress(client)
@@ -114,79 +182,6 @@ export function useGatewayTestConfig<T>(mock: Mock<() => T>, implementation: () 
     }
   });
   mock.mockImplementation(implementation);
-}
-
-export function createTrustedProxyUserConnector(
-  loadConfig: Mock<
-    () => {
-      gateway: { auth: { mode: string }; controlUi: { allowedOrigins: string[] } };
-    }
-  >,
-) {
-  return (
-    connId: string,
-    clientOverrides: Record<string, unknown> = {},
-    scopes: string[] = [],
-    handoffAuthenticatedReceive?: () => void,
-    device?: ConnectParams["device"],
-  ) => {
-    loadConfig.mockImplementation(() => ({
-      gateway: {
-        auth: {
-          mode: "trusted-proxy",
-          identityScopes: { "alice@example.com": scopes },
-          trustedProxy: {
-            userHeader: "x-forwarded-user",
-            requiredHeaders: ["x-forwarded-proto"],
-          },
-        },
-        trustedProxies: ["10.0.0.1"],
-        controlUi: { allowedOrigins: ["http://127.0.0.1:19001"] },
-      },
-    }));
-    const harness = attachGatewayHarness({
-      connId,
-      handoffAuthenticatedReceive,
-      connectNonce: `nonce-${connId}`,
-      requestHost: "gateway.example.com:18789",
-      requestOrigin: "http://127.0.0.1:19001",
-      remoteAddr: "10.0.0.1",
-      resolvedAuth: {
-        mode: "trusted-proxy",
-        allowTailscale: false,
-        trustedProxy: {
-          userHeader: "x-forwarded-user",
-          requiredHeaders: ["x-forwarded-proto"],
-        },
-      },
-      headers: {
-        "x-forwarded-for": "203.0.113.10",
-        "x-forwarded-user": "alice@example.com",
-        "x-forwarded-proto": "https",
-      },
-      ingressAttribution: {
-        kind: "trusted-proxy",
-        clientIp: "203.0.113.10",
-        rateLimit: { subject: { key: "203.0.113.10" }, resetOnSuccess: true },
-      },
-    });
-    harness.sendConnect(`connect-${connId}`, {
-      minProtocol: PROTOCOL_VERSION,
-      maxProtocol: PROTOCOL_VERSION,
-      client: {
-        id: "openclaw-control-ui",
-        version: "dev",
-        platform: "test",
-        mode: "ui",
-        ...clientOverrides,
-      },
-      role: "operator",
-      scopes,
-      caps: [],
-      ...(device ? { device } : {}),
-    });
-    return harness;
-  };
 }
 
 export function createPairedGatewayConnectDevice(
