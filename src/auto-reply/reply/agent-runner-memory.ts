@@ -82,6 +82,7 @@ import {
   truncateMemoryFlushErrorMessage,
 } from "./memory-flush-errors.js";
 import {
+  estimatePromptTokensForMemoryFlush,
   hasAlreadyFlushedForCurrentCompaction,
   resolveMaxActiveTranscriptBytes,
   resolveCompactionThreshold,
@@ -136,16 +137,6 @@ function hasMatchingTranscriptByteCompactionLatch(
     activeBytes >= maxBytes &&
     activeBytes - latch.activeBytes < maxBytes
   );
-}
-
-function estimatePromptTokensForMemoryFlush(prompt?: string): number | undefined {
-  const trimmed = normalizeOptionalString(prompt);
-  if (!trimmed) {
-    return undefined;
-  }
-  const message: AgentMessage = { role: "user", content: trimmed, timestamp: Date.now() };
-  const tokens = asPositiveFiniteNumber(estimateMessagesTokens([message]));
-  return tokens === undefined ? undefined : Math.ceil(tokens);
 }
 
 function resolveMemoryFlushModelFallbackOptions(
@@ -1471,6 +1462,8 @@ export async function runMemoryFlushIfNeeded(params: {
       phase: "memory_flushing",
     });
   }
+  const { turnAdoptionLifecycle } = params.followupRun;
+  const stopHeartbeat = startFollowupRunPreAdoptionHeartbeat(turnAdoptionLifecycle, abortSignal);
   // Only runnable maintenance owns a run context. The matching finally is
   // the sole cleanup path so setup, execution, and persistence exits cannot orphan it.
   try {
@@ -1627,6 +1620,7 @@ export async function runMemoryFlushIfNeeded(params: {
   } catch (error) {
     return await recordFailure(error);
   } finally {
+    stopHeartbeat?.();
     if (parentRunId && !abortSignal?.aborted) {
       emitAgentRunStatusEvent({
         runId: parentRunId,
