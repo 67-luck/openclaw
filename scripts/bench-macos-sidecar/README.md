@@ -45,9 +45,8 @@ RFC54_BENCH_EXTRA_ARGS='["<output>/bin/absent-helper"]' \
 # bundle execution, replacement with predecessor-shaped/malformed bundles,
 # missing/incompatible helper rejection, valid/tampered signature behavior,
 # and replacement recovery. This does not exercise a production updater.
-OPENCLAW_SKIP_MLX_TTS=1 \
-  ALLOW_ADHOC_SIGNING=1 SIGN_IDENTITY=- SKIP_TEAM_ID_CHECK=1 \
-  BUILD_CONFIG=debug BUILD_ARCHS="$(uname -m)" \
+ALLOW_ADHOC_SIGNING=1 SIGN_IDENTITY=- SKIP_TEAM_ID_CHECK=1 \
+  BUILD_CONFIG=release BUILD_ARCHS="$(uname -m)" \
   ../../scripts/package-mac-app.sh
 RFC54_BENCH_ROOT=<output> \
   ./package-lifecycle.sh ../../dist/OpenClaw.app
