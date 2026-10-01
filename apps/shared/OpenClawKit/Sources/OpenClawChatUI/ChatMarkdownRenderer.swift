@@ -386,7 +386,7 @@ struct ChatMarkdownProse {
             : AttributedString()
         let plainText = preparesReveal ? String(attributed.characters) : ""
         let wordRanges = preparesReveal
-            ? Array(chatStreamingWordRanges(in: plainText).suffix(24))
+            ? chatStreamingRevealWordRanges(in: plainText)
             : []
         let tailStart = wordRanges.first?.lowerBound ?? plainText.count
 
