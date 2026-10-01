@@ -402,7 +402,7 @@ export function createDispatchReplyOperationCoordinator(params: {
     }
     // Fast control events run before this gate. Ordinary pre-dispatch preparation
     // may proceed while occupied, but only the canonical selector grants a turn.
-    let mailboxClaim = input ? tryClaimSessionControllerTask(input) : undefined;
+    let mailboxClaim = input ? tryClaimSessionControllerTask(input, replyTurnKind) : undefined;
     if (input && !mailboxClaim) {
       if (input.abortSignal.aborted || input.retirementRequested) {
         return { status: "aborted" };
@@ -415,7 +415,7 @@ export function createDispatchReplyOperationCoordinator(params: {
         // Persisted terminal state is not proof that raw producer work settled.
         // Recovery acts only on this captured owner, never a by-ID successor.
         await predecessor.watchdog.tick();
-        mailboxClaim = tryClaimSessionControllerTask(input);
+        mailboxClaim = tryClaimSessionControllerTask(input, replyTurnKind);
       }
       if (
         !mailboxClaim &&
@@ -430,7 +430,7 @@ export function createDispatchReplyOperationCoordinator(params: {
         if (replyTurnKind === "heartbeat") {
           return { status: "busy" };
         }
-        const selected = claimSessionControllerTask(input, () => {});
+        const selected = claimSessionControllerTask(input, () => {}, replyTurnKind);
         params.replyOptions?.[REPLY_ADMISSION_TICKET]?.release();
         try {
           mailboxClaim = await selected;

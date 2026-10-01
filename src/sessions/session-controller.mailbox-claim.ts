@@ -149,6 +149,7 @@ export function releaseSessionControllerClaim(claim: SessionControllerMailboxCla
           // The completed claim request cannot receive a second selection.
           input.ready = undefined;
           input.task = undefined;
+          input.taskTurnKind = undefined;
           input.reject = undefined;
           input.claim = undefined;
           input.phase = "waiting";

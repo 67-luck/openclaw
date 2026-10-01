@@ -1,4 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
 import {
   ReplyRunAlreadyActiveError,
   ReplyRunFollowupAdmissionBlockedError,
@@ -9,7 +10,7 @@ import type { SessionControllerMailboxClaim } from "./session-controller.mailbox
 import {
   getSessionControllerEntry,
   bindSessionControllerEntryTarget,
-  assertSessionControllerAdmissionClaim,
+  sessionControllers,
 } from "./session-controller.state.js";
 import type { SessionTarget } from "./session-controller.target.js";
 
@@ -22,7 +23,6 @@ export type CreateReplyOperationParams = {
   routeThreadId?: string | number;
   originatingLeafEntryId?: string | null;
   upstreamAbortSignal?: AbortSignal;
-  respectFollowupAdmissionBarrier?: boolean;
   mailboxClaim?: SessionControllerMailboxClaim;
   target?: SessionTarget;
 };
@@ -41,16 +41,20 @@ export function prepareReplyOperationAdmission(params: CreateReplyOperationParam
   if (params.target) {
     bindSessionControllerEntryTarget(owner, params.target);
   }
-  if (params.respectFollowupAdmissionBarrier && owner.followupBarrier) {
-    throw new ReplyRunFollowupAdmissionBlockedError(sessionKey);
-  }
-  if (owner.active) {
+  const admission = evaluateTurnAdmission(owner, {
+    kind: params.turnKind ?? "visible",
+    sessionKey,
+    registeredEntry: sessionControllers.get(owner.id),
+    claim: params.mailboxClaim,
+  });
+  if (!admission.admitted) {
+    if (admission.reason === "followup-barrier") {
+      throw new ReplyRunFollowupAdmissionBlockedError(sessionKey);
+    }
+    if (admission.reason === "successor-barrier") {
+      throw new ReplyRunSuccessorAdmissionBlockedError(sessionKey);
+    }
     throw new ReplyRunAlreadyActiveError(sessionKey);
   }
-  if (owner.successorBarrier) {
-    throw new ReplyRunSuccessorAdmissionBlockedError(sessionKey);
-  }
-
-  assertSessionControllerAdmissionClaim(sessionKey, params.mailboxClaim, params.target);
   return { sessionKey, sessionId, owner };
 }

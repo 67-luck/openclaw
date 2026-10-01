@@ -11,8 +11,6 @@ import {
   isRestartRecoveryTombstone,
   SessionWorkStartChangedError,
   resolveSessionWorkStartError,
-  SESSION_RESTART_RECOVERY_TOMBSTONE_ERROR_CODE,
-  SessionRestartRecoveryTombstoneError,
 } from "../../config/sessions/lifecycle.js";
 import type { SessionAdmissionDatabaseClaim } from "../../config/sessions/session-accessor.sqlite-entry-admission.js";
 import { loadSessionEntryForAdmission } from "../../config/sessions/session-accessor.sqlite-entry.js";
@@ -29,6 +27,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { evaluateTurnAdmission } from "../../sessions/session-controller.admission-rule.js";
 import {
   createReplyOperation,
   isReplyRunSuccessorAdmissionBlocked,
@@ -57,7 +56,12 @@ import {
   expireVisibleStaleOperation,
   lifecycleAdmissionByOperation,
   resolveVisibleActiveWaitMs,
+  sessionControllers,
 } from "../../sessions/session-controller.state.js";
+import {
+  QueuedFollowupLifecycleInvalidatedError,
+  rejectLifecycleInvalidatedWork,
+} from "./reply-turn-admission-errors.js";
 import {
   bindReplyAdmissionRelease,
   releaseReplyRecoveryOwner,
@@ -83,32 +87,9 @@ type ReplyTurnAdmission =
       lifecycleAdmission?: SessionEffectRef;
     };
 
-class QueuedFollowupLifecycleInvalidatedError extends Error {}
 class ReplyOperationChangedDuringAdmissionError extends Error {}
 
 const log = createSubsystemLogger("auto-reply/reply-turn-admission");
-
-function rejectLifecycleInvalidatedWork(params: {
-  kind: ReplyTurnKind;
-  message: string;
-  restartRecoveryTombstone?: boolean;
-  transientSessionChange?: boolean;
-}): never {
-  if (params.kind === "queued_followup") {
-    const error = new QueuedFollowupLifecycleInvalidatedError(params.message);
-    if (params.restartRecoveryTombstone === true) {
-      Object.assign(error, { code: SESSION_RESTART_RECOVERY_TOMBSTONE_ERROR_CODE });
-    }
-    throw error;
-  }
-  if (params.restartRecoveryTombstone === true) {
-    throw new SessionRestartRecoveryTombstoneError(params.message);
-  }
-  if (params.kind === "visible" && params.transientSessionChange === true) {
-    throw new SessionWorkStartChangedError(params.message);
-  }
-  throw new Error(params.message);
-}
 
 function isAbortSignalAborted(signal: AbortSignal | undefined): boolean {
   return signal?.aborted === true;
@@ -281,7 +262,16 @@ export async function admitReplyTurn(
         rotations.recordBarrierSources(successorAdmission.sources);
         continue;
       }
-      if (controller.followupBarrier && params.kind === "queued_followup") {
+      const turnAdmission = evaluateTurnAdmission(controller, {
+        kind: params.kind,
+        sessionKey: params.sessionKey,
+        registeredEntry: sessionControllers.get(controller.id),
+        claim: params.mailboxClaim,
+      });
+      if (!turnAdmission.admitted && turnAdmission.reason === "followup-barrier") {
+        if (params.kind === "heartbeat") {
+          return { status: "skipped", reason: "active-run" };
+        }
         // Pin the physical database before waiting on retained delivery custody.
         // This is a read claim, not turn admission or permission to write.
         if (params.storePath && !admittedDatabaseClaim) {
@@ -592,8 +582,6 @@ export async function admitReplyTurn(
               routeThreadId: params.routeThreadId,
               originatingLeafEntryId: params.originatingLeafEntryId,
               upstreamAbortSignal: params.upstreamAbortSignal,
-              respectFollowupAdmissionBarrier:
-                params.kind === "queued_followup" || params.kind === "heartbeat",
             });
             bindGatewayContextResolver(operation, resolveGatewayContext);
           }
@@ -650,6 +638,13 @@ export async function admitReplyTurn(
           return { status: "skipped", reason: "lifecycle-invalidated" };
         }
         if (error instanceof ReplyOperationChangedDuringAdmissionError) {
+          if (!rotations.hasCurrentRotationEvidence()) {
+            rejectLifecycleInvalidatedWork({
+              kind: params.kind,
+              message: `Session "${params.sessionKey}" changed while starting work. Retry.`,
+              transientSessionChange: true,
+            });
+          }
           continue;
         }
         if (error instanceof ReplyRunSuccessorAdmissionBlockedError) {

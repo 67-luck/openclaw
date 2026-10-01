@@ -1,10 +1,22 @@
-import { expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { withSessionTurn } from "./session-controller.admission.js";
 import { captureSessionTarget } from "./session-controller.lifecycle.js";
 import {
+  releaseSessionControllerClaim,
   reserveSessionControllerSource,
   retireSessionControllerInput,
+  tryClaimSessionControllerTask,
 } from "./session-controller.mailbox.js";
+import { createReplyOperation } from "./session-controller.operation.js";
+import {
+  getSessionControllerEntry,
+  sessionControllers,
+  type SessionControllerEntry,
+} from "./session-controller.state.js";
+
+afterEach(() => {
+  sessionControllers.clear();
+});
 
 it.each([false, true])(
   "does not borrow an ambient owner for another reserved input (operation=%s)",
@@ -50,3 +62,50 @@ it.each([false, true])(
     }
   },
 );
+
+describe("turn admission parity", () => {
+  it.each(
+    (["visible", "heartbeat", "queued_followup", "direct"] as const).flatMap((kind) => [
+      { kind, blocked: false },
+      { kind, blocked: true },
+    ]),
+  )(
+    "makes the mailbox and direct creation agree for $kind (blocked=$blocked)",
+    async ({ kind, blocked }) => {
+      const sessionKey = `agent:main:admission-parity:${kind}:${blocked}`;
+      const entry = getSessionControllerEntry(sessionKey);
+      const input = reserveSessionControllerSource(sessionKey, { policy: { mode: "followup" } });
+      if (blocked) {
+        entry.followupBarrier = {} as NonNullable<SessionControllerEntry["followupBarrier"]>;
+      }
+
+      const claim = tryClaimSessionControllerTask(input, kind);
+      expect(Boolean(claim)).toBe(!blocked);
+      let operation: ReturnType<typeof createReplyOperation> | undefined;
+      const create = () => {
+        operation = createReplyOperation({
+          sessionKey,
+          sessionId: `session-${kind}`,
+          resetTriggered: false,
+          turnKind: kind,
+          mailboxClaim: claim,
+        });
+      };
+      if (blocked) {
+        expect(create).toThrow("Reply follow-up admission is blocked");
+      } else {
+        expect(create).not.toThrow();
+      }
+
+      operation?.complete();
+      if (claim) {
+        releaseSessionControllerClaim(claim);
+        await claim.settlement.promise;
+      } else {
+        entry.followupBarrier = undefined;
+        retireSessionControllerInput(input);
+        await input.settlement.promise;
+      }
+    },
+  );
+});

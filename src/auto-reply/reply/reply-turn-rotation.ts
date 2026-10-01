@@ -131,6 +131,9 @@ export function createReplyTurnRotationEvidence(params: {
         }),
       );
     },
+    hasCurrentRotationEvidence(): boolean {
+      return [...waitedRotations.values()].some(isCurrent);
+    },
     takeStorelessRotation(): { sessionId: string; sessionIds: ReadonlySet<string> } | undefined {
       const source = waitedRotations.get(undefined);
       waitedRotations.delete(undefined);

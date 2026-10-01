@@ -585,7 +585,7 @@ describe("reply run registry", () => {
           sessionKey: "agent:main:main",
           sessionId: "blocked-session",
           resetTriggered: false,
-          respectFollowupAdmissionBarrier: true,
+          turnKind: "queued_followup",
         }),
       ).toThrow("Reply follow-up admission is blocked");
 
@@ -596,7 +596,7 @@ describe("reply run registry", () => {
       });
       const next = createTestReplyOperation({
         sessionId: "next-session",
-        respectFollowupAdmissionBarrier: true,
+        turnKind: "queued_followup",
       });
       next.complete();
     });
@@ -625,7 +625,7 @@ describe("reply run registry", () => {
           sessionKey: "agent:main:mattermost:direct:user-1",
           sessionId: "queued-followup",
           resetTriggered: false,
-          respectFollowupAdmissionBarrier: true,
+          turnKind: "queued_followup",
         }),
       ).toThrow();
 
@@ -638,7 +638,7 @@ describe("reply run registry", () => {
       expect(() =>
         createTestReplyOperation({
           sessionKey: "agent:main:mattermost:direct:user-1",
-          respectFollowupAdmissionBarrier: true,
+          turnKind: "queued_followup",
         }),
       ).toThrow();
       delivery.resolve();
@@ -646,7 +646,7 @@ describe("reply run registry", () => {
       const followup = createTestReplyOperation({
         sessionKey: "agent:main:mattermost:direct:user-1",
         sessionId: "admitted-followup",
-        respectFollowupAdmissionBarrier: true,
+        turnKind: "queued_followup",
       });
       followup.complete();
     });
@@ -674,7 +674,7 @@ describe("reply run registry", () => {
         expect(() =>
           createTestReplyOperation({
             sessionId: "next-session",
-            respectFollowupAdmissionBarrier: true,
+            turnKind: "queued_followup",
           }),
         ).toThrow();
         expect(ownerSettled).not.toHaveBeenCalled();
@@ -690,7 +690,7 @@ describe("reply run registry", () => {
       expect(ownerSettled).toHaveBeenCalledOnce();
       createTestReplyOperation({
         sessionId: "next-session",
-        respectFollowupAdmissionBarrier: true,
+        turnKind: "queued_followup",
       }).complete();
     });
   });

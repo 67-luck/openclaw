@@ -538,7 +538,7 @@ export async function runReplyAgent(
       try {
         // Heartbeats never wait behind a claim, unbound source, or effect fence.
         const selected = isHeartbeat
-          ? tryClaimSessionControllerTask(controllerInput)
+          ? tryClaimSessionControllerTask(controllerInput, "heartbeat")
           : claimSessionControllerInput(followupRun);
         releaseAdmissionTicket();
         mailboxClaim = await selected;

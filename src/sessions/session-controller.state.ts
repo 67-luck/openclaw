@@ -4,9 +4,11 @@ import { isEmbeddedRunHandleCompacting } from "../agents/embedded-agent-runner/r
 import type { ReplyFollowupAdmissionBarrierTimeoutPolicy } from "../auto-reply/reply/reply-dispatcher.types.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
 import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   ReplyRunAlreadyActiveError,
+  ReplyRunFollowupAdmissionBlockedError,
   ReplyRunSuccessorAdmissionBlockedError,
   type ReplyBackendHandle,
   type ReplyOperation,
@@ -173,40 +175,6 @@ export function pruneSessionControllerEntry(entry: SessionControllerEntry): void
   }
 }
 
-/** A mailbox reservation may only be consumed by its exact selected input. */
-export function assertSessionControllerAdmissionClaim(
-  key: string,
-  claim?: SessionControllerMailboxClaim,
-  target?: SessionTarget,
-): void {
-  const entry = claim?.mailbox.owner ?? findSessionControllerEntry(key, target);
-  if (
-    claim &&
-    (!entry?.aliases.has(key) ||
-      controllerStorage.sessionControllers.get(entry.id) !== entry ||
-      claim.releaseRequested)
-  ) {
-    throw new ReplyRunAlreadyActiveError(key);
-  }
-  if (entry?.lifecycle?.blocksTurnAdmission) {
-    throw new ReplyRunAlreadyActiveError(key);
-  }
-  const mailbox = entry?.mailbox;
-  if (!mailbox) {
-    if (claim) {
-      throw new ReplyRunAlreadyActiveError(key);
-    }
-    return;
-  }
-  if (claim) {
-    if (claim.mailbox !== mailbox || mailbox.claim !== claim || claim.released || claim.operation) {
-      throw new ReplyRunAlreadyActiveError(key);
-    }
-  } else if (mailbox.claim || mailbox.entries.some((input) => input.phase !== "consumed")) {
-    throw new ReplyRunAlreadyActiveError(key);
-  }
-}
-
 export function getSessionControllerOperation(
   key: string,
   target?: SessionTarget,
@@ -276,13 +244,24 @@ export function prepareReplyRunKeyUpdate(
     : undefined;
   const targetOwner = getSessionControllerOperation(nextKey, target);
   if (targetOwner !== operation) {
-    assertSessionControllerAdmissionClaim(nextKey, mailboxClaim, target);
-  }
-  if (targetOwner && targetOwner !== operation) {
-    throw new ReplyRunAlreadyActiveError(nextKey);
-  }
-  if (findSessionControllerEntry(nextKey, target)?.successorBarrier) {
-    throw new ReplyRunSuccessorAdmissionBlockedError(nextKey);
+    const owner = mailboxClaim?.mailbox.owner ?? findSessionControllerEntry(nextKey, target);
+    if (owner) {
+      const admission = evaluateTurnAdmission(owner, {
+        kind: operation.turnKind,
+        sessionKey: nextKey,
+        registeredEntry: controllerStorage.sessionControllers.get(owner.id),
+        claim: mailboxClaim,
+      });
+      if (!admission.admitted) {
+        if (admission.reason === "followup-barrier") {
+          throw new ReplyRunFollowupAdmissionBlockedError(nextKey);
+        }
+        if (admission.reason === "successor-barrier") {
+          throw new ReplyRunSuccessorAdmissionBlockedError(nextKey);
+        }
+        throw new ReplyRunAlreadyActiveError(nextKey);
+      }
+    }
   }
   return { sessionKey: nextKey, agentId: nextAgentId };
 }

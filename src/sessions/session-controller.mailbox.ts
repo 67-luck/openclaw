@@ -13,6 +13,7 @@ import {
 } from "../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
 import { captureSessionTarget, type SessionTarget } from "./session-controller.lifecycle.js";
 import { releaseSessionControllerClaim } from "./session-controller.mailbox-claim.js";
 import {
@@ -306,24 +307,21 @@ function summaryCandidates(mailbox: SessionControllerMailbox): FollowupRun[] {
 
 /** The only successor selector. It claims synchronously; async work cannot select again. */
 function pumpSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
-  const owner = mailbox.owner;
-  if (
-    sessionControllers.get(owner.id) !== owner ||
-    owner.mailbox !== mailbox ||
-    mailbox.clearing ||
-    mailbox.entries.some((input) => input.phase === "consumed") ||
-    mailbox.claim ||
-    owner.active ||
-    owner.successorBarrier ||
-    owner.followupBarrier ||
-    owner.lifecycle?.blocksTurnAdmission
-  ) {
-    return;
-  }
-  const priority = mailbox.priority;
+  const { owner, priority } = mailbox;
   const summaries = summaryCandidates(mailbox);
   const eligible = mailbox.entries.filter((input) => input.phase !== "consumed");
   const first = priority ?? eligible[0];
+  const admission = evaluateTurnAdmission(owner, {
+    kind:
+      first?.taskTurnKind ??
+      (first ? (first.custody.enqueued ? "queued_followup" : "visible") : "direct"),
+    sessionKey: owner.key,
+    registeredEntry: sessionControllers.get(owner.id),
+    selectedInput: first ?? null,
+  });
+  if (!admission.admitted) {
+    return;
+  }
   if (!first) {
     disposeSessionControllerMailbox(mailbox);
     return;
@@ -451,6 +449,7 @@ export function submitSessionControllerTask(
 export function claimSessionControllerTask(
   input: SessionControllerInput,
   start: (claim: SessionControllerMailboxClaim) => void,
+  kind: NonNullable<SessionControllerInput["taskTurnKind"]> = "direct",
 ): Promise<SessionControllerMailboxClaim> {
   if (input.phase === "consumed" || input.retirementRequested || input.abortSignal.aborted) {
     return Promise.reject(toErrorObject(input.abortSignal.reason, "Source no longer available"));
@@ -471,6 +470,7 @@ export function claimSessionControllerTask(
   }
   const pending = createDeferredCore<SessionControllerMailboxClaim>();
   input.reject = pending.reject;
+  input.taskTurnKind = kind;
   input.task = (claim) => {
     try {
       input.abortSignal.throwIfAborted();
@@ -489,6 +489,7 @@ export function claimSessionControllerTask(
 /** Pre-dispatch may prepare a queued source, but cannot bypass the turn selector. */
 export function tryClaimSessionControllerTask(
   input: SessionControllerInput,
+  kind: NonNullable<SessionControllerInput["taskTurnKind"]> = "direct",
 ): SessionControllerMailboxClaim | undefined {
   if (input.claim && !input.claim.released) {
     return input.claim;
@@ -507,6 +508,7 @@ export function tryClaimSessionControllerTask(
   }
   const phase = input.phase;
   let selected: SessionControllerMailboxClaim | undefined;
+  input.taskTurnKind = kind;
   input.task = (claim) => {
     selected = claim;
   };
@@ -517,6 +519,7 @@ export function tryClaimSessionControllerTask(
   } finally {
     input.task = undefined;
     if (!selected && !input.retirementRequested) {
+      input.taskTurnKind = undefined;
       input.phase = phase;
     }
   }

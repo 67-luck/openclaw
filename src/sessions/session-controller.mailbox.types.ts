@@ -1,6 +1,6 @@
 import type { FollowupRun, QueueSettings } from "../auto-reply/reply/queue/types.js";
 import type { createDeferredCore } from "../shared/deferred.js";
-import type { ReplyOperation } from "./session-controller.contracts.js";
+import type { ReplyOperation, ReplyTurnKind } from "./session-controller.contracts.js";
 import type { inputCancellation } from "./session-controller.mailbox-source.js";
 import type { SessionControllerEntry } from "./session-controller.state.js";
 import type { SessionTarget } from "./session-controller.target.js";
@@ -45,6 +45,7 @@ export type SessionControllerInput = {
   ready?: (claim: SessionControllerMailboxClaim) => void;
   reject?: (error: unknown) => void;
   task?: (claim: SessionControllerMailboxClaim) => void;
+  taskTurnKind?: ReplyTurnKind;
   withdrawalHolds: number;
   retirementRequested?: boolean;
   cancelling?: boolean;
