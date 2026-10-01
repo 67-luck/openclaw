@@ -518,8 +518,6 @@ describe("Codex app-server binding store", () => {
         },
       },
       pluginAppIds: {},
-      mcpServers: {},
-      nativePlugins: {},
     };
 
     await store.mutate(identity, {
@@ -533,55 +531,6 @@ describe("Codex app-server binding store", () => {
       threadId: "thread-account",
       cwd: "/repo",
       updatedAt: "2026-01-01T00:00:00.000Z",
-      pluginAppPolicyContext,
-    });
-    expect(imported?.binding.pluginAppPolicyContext).toEqual(pluginAppPolicyContext);
-  });
-
-  it("round-trips repository marketplace app ownership through stored and imported bindings", async () => {
-    const { state } = createStateStore();
-    const store = createCodexAppServerBindingStore(state);
-    const identity = {
-      kind: "session" as const,
-      agentId: "main",
-      sessionId: "session-security-review",
-    };
-    const pluginAppPolicyContext = {
-      fingerprint: "repository-plugin-policy",
-      apps: {
-        github: {
-          configKey: "security-review@company-tools",
-          marketplaceName: "company-tools",
-          pluginName: "security-review",
-          allowDestructiveActions: true,
-          destructiveApprovalMode: "ask" as const,
-          mcpServerNames: ["github"],
-        },
-      },
-      pluginAppIds: { "security-review@company-tools": ["github"] },
-      mcpServers: { github: "native/security-review" },
-      nativePlugins: {
-        "native/security-review": {
-          configKey: "security-review@company-tools",
-          marketplaceName: "company-tools",
-          pluginName: "security-review",
-          allowDestructiveActions: true,
-          destructiveApprovalMode: "ask" as const,
-          mcpServerNames: ["github"],
-        },
-      },
-    };
-
-    await store.mutate(identity, {
-      kind: "set",
-      binding: { threadId: "thread-security-review", cwd: "/repo/company", pluginAppPolicyContext },
-    });
-    expect(store.read(identity)).toMatchObject({ pluginAppPolicyContext });
-
-    const imported = createStoredCodexAppServerBinding({
-      schemaVersion: 2,
-      threadId: "thread-security-review",
-      cwd: "/repo/company",
       pluginAppPolicyContext,
     });
     expect(imported?.binding.pluginAppPolicyContext).toEqual(pluginAppPolicyContext);

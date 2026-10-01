@@ -13,6 +13,7 @@ import {
   readCodexAppServerThreadBinding,
 } from "./session-binding.js";
 import { createCodexSqliteTestBindingStateStore } from "./session-binding.sqlite.test-helpers.js";
+import { createCodexTestBindingStateStore } from "./session-binding.test-helpers.js";
 
 function importBinding(fields: Record<string, unknown>) {
   return createStoredCodexAppServerBinding({
@@ -296,6 +297,45 @@ describe("Codex app-server binding codec", () => {
     expect(stored?.binding.pluginAppPolicyContext).toMatchObject(policyContext);
     expect(oldBinding?.pluginAppPolicyContext).toBeUndefined();
     expect(invalid?.binding.pluginAppPolicyContext).toBeUndefined();
+  });
+
+  it("round-trips repository marketplace app ownership through stored and imported bindings", async () => {
+    const state = createCodexTestBindingStateStore(new Map());
+    const store = createCodexAppServerBindingStore(state);
+    const identity = {
+      kind: "session" as const,
+      agentId: "main",
+      sessionId: "session-security-review",
+    };
+    const owner = {
+      configKey: "security-review@company-tools",
+      marketplaceName: "company-tools",
+      pluginName: "security-review",
+      allowDestructiveActions: true,
+      destructiveApprovalMode: "ask" as const,
+      mcpServerNames: ["github"],
+    };
+    const pluginAppPolicyContext = {
+      fingerprint: "repository-plugin-policy",
+      apps: { github: owner },
+      pluginAppIds: { "security-review@company-tools": ["github"] },
+      mcpServers: { github: "native/security-review" },
+      nativePlugins: { "native/security-review": owner },
+    };
+
+    await store.mutate(identity, {
+      kind: "set",
+      binding: { threadId: "thread-security-review", cwd: "/repo/company", pluginAppPolicyContext },
+    });
+    expect(store.read(identity)).toMatchObject({ pluginAppPolicyContext });
+
+    const imported = createStoredCodexAppServerBinding({
+      schemaVersion: 2,
+      threadId: "thread-security-review",
+      cwd: "/repo/company",
+      pluginAppPolicyContext,
+    });
+    expect(imported?.binding.pluginAppPolicyContext).toEqual(pluginAppPolicyContext);
   });
 
   it("round-trips workspace-directory plugin policy context", () => {

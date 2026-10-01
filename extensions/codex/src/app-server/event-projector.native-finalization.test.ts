@@ -111,7 +111,7 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
       server: "codex_apps",
       appContext: { connectorId: "connector_calendar", actionName: "lookup" },
     };
-    await projector.handleNotification(forCurrentTurn("item/started", { item: appItem }));
+    await notify(projector, "item/started", { item: appItem });
     expect(projector.getActiveMcpToolCall("codex_apps")).toBeUndefined();
     expect(projector.getActiveMcpToolCallAttribution("codex_apps")).toBeUndefined();
     expect(projector.getActiveMcpToolCall("codex_apps", "connector_calendar")).toMatchObject({
@@ -126,11 +126,11 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
       id: "other-app-item",
       appContext: { connectorId: "connector_other" },
     };
-    await projector.handleNotification(forCurrentTurn("item/started", { item: concurrent }));
+    await notify(projector, "item/started", { item: concurrent });
     expect(projector.getActiveMcpToolCall("codex_apps", "connector_calendar")?.id).toBe(appItem.id);
-    await projector.handleNotification(
-      forCurrentTurn("item/started", { item: { ...appItem, id: "ambiguous-calendar-item" } }),
-    );
+    await notify(projector, "item/started", {
+      item: { ...appItem, id: "ambiguous-calendar-item" },
+    });
     expect(projector.getActiveMcpToolCall("codex_apps", "connector_calendar")).toBeUndefined();
   });
 
@@ -153,15 +153,11 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
     expect(projector.getActiveMcpToolCall(mcpItem.server)).toBeUndefined();
 
     const configuredServerItem = { ...mcpItem, id: "configured-server-item" };
-    await projector.handleNotification(
-      forCurrentTurn("item/started", { item: configuredServerItem }),
-    );
+    await notify(projector, "item/started", { item: configuredServerItem });
     expect(projector.getActiveMcpToolCallAttribution(mcpItem.server)).toBeUndefined();
-    await projector.handleNotification(
-      forCurrentTurn("item/completed", {
-        item: { ...configuredServerItem, status: "completed" },
-      }),
-    );
+    await notify(projector, "item/completed", {
+      item: { ...configuredServerItem, status: "completed" },
+    });
     expect(projector.getActiveMcpToolCallAttribution(mcpItem.server)?.pluginId).toBe(
       pluginItem.pluginId,
     );
@@ -172,9 +168,7 @@ describe("CodexAppServerEventProjector native tool finalization", () => {
     { label: "blank", pluginId: " " },
   ])("does not attest an MCP item with a $label plugin ID", async ({ pluginId }) => {
     const projector = await createProjector();
-    await projector.handleNotification(
-      forCurrentTurn("item/started", { item: { ...mcpItem, pluginId } }),
-    );
+    await notify(projector, "item/started", { item: { ...mcpItem, pluginId } });
     expect(projector.getActiveMcpToolCallAttribution(mcpItem.server)).toBeUndefined();
   });
 

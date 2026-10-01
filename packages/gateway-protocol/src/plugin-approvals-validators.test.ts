@@ -38,17 +38,20 @@ describe("plugin approval protocol validators", () => {
     );
   });
 
-  it("accepts a server-qualified MCP policy subject and rejects an empty server", () => {
+  it.each([
+    ["hosted app", "appId", "app/docs"],
+    ["native MCP server", "mcpServer", "docs/main"],
+  ])("validates the selected %s policy subject", (_label, field, id) => {
     const request = {
       title: "Use plugin tool",
       description: "Run the selected tool",
-      policySubject: { pluginKey: "docs", mcpServer: "docs/main", tool: "run" },
+      policySubject: { pluginKey: "docs", tool: "run", [field]: id },
     };
     expect(validatePluginApprovalRequestParams(request)).toBe(true);
     expect(
       validatePluginApprovalRequestParams({
         ...request,
-        policySubject: { ...request.policySubject, mcpServer: "" },
+        policySubject: { ...request.policySubject, [field]: "" },
       }),
     ).toBe(false);
   });

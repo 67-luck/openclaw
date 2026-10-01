@@ -606,7 +606,9 @@ export function createAgentHarnessHostCapabilities(params: {
                     ...(request.mcpTool ? { mcpTool: request.mcpTool } : {}),
                     timeoutMs: request.timeoutMs,
                     twoPhase: true,
-                    ...(request.allowedDecisions && { allowedDecisions: request.allowedDecisions }),
+                    ...(request.allowedDecisions
+                      ? { allowedDecisions: request.allowedDecisions }
+                      : {}),
                   },
                   { expectFinal: false, requireAgentRuntimeIdentity: true, signal: request.signal },
                 ),

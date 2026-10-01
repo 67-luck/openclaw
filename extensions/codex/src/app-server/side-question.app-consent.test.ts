@@ -1,5 +1,5 @@
 import "./side-question.test-support.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   bindingStoreKey,
   createCodexAppServerBindingStore,
@@ -11,14 +11,17 @@ import { createCodexTestBindingStateStore } from "./session-binding.test-helpers
 
 const {
   createFakeClient,
+  handleClientRequestWhenReady,
+  TEST_HOST_CAPABILITIES,
+  agentDelta,
+  turnCompleted,
   getSharedCodexAppServerClientMock,
   readCodexAppServerBindingMock,
   runCodexAppServerSideQuestion,
+  runCodexAppServerSideQuestionImpl,
   sideParams,
   useSideQuestionTestSetup,
 } = await import("./side-question.test-support.js");
-const { runCodexAppServerSideQuestion: runSideQuestionWithBindingStore } =
-  await import("./side-question.js");
 
 describe("Codex side-question app consent", () => {
   useSideQuestionTestSetup();
@@ -95,7 +98,7 @@ describe("Codex side-question app consent", () => {
     });
 
     await expect(
-      runSideQuestionWithBindingStore(params, {
+      runCodexAppServerSideQuestionImpl(params, {
         bindingStore,
         pluginConfig: {
           appServer: { mode: "yolo" },
@@ -156,4 +159,103 @@ describe("Codex side-question app consent", () => {
       expect(client.request.mock.calls.map(([method]) => method)).not.toContain("thread/fork");
     },
   );
+  it("routes an MCP-only plugin approval on a yolo side question using Codex item ownership", async () => {
+    const client = createFakeClient({ completeTurn: false });
+    getSharedCodexAppServerClientMock.mockResolvedValue(client);
+    const requestApproval = vi.fn(async () => ({
+      id: "plugin:side-mcp",
+      status: "accepted" as const,
+    }));
+    const waitForApproval = vi.fn(async () => ({
+      decision: "allow-once" as const,
+      terminalReason: null,
+    }));
+    readCodexAppServerBindingMock.mockReturnValue({
+      ...readCodexAppServerBindingMock(),
+      pluginAppPolicyContext: {
+        fingerprint: "native-mcp-only-policy",
+        apps: {},
+        pluginAppIds: {},
+        nativePlugins: {
+          "docs@company-tools": {
+            configKey: "docs",
+            marketplaceName: "company-tools",
+            pluginName: "docs",
+            allowDestructiveActions: true,
+            destructiveApprovalMode: "auto",
+            mcpServerNames: ["docs"],
+          },
+        },
+        mcpServers: { docs: "docs@company-tools" },
+      },
+    });
+    const run = runCodexAppServerSideQuestion(
+      sideParams({
+        hostCapabilities: { ...TEST_HOST_CAPABILITIES, requestApproval, waitForApproval },
+      }),
+      {
+        pluginConfig: {
+          appServer: { mode: "yolo" },
+          codexPlugins: {
+            enabled: true,
+            allow_destructive_actions: "auto",
+            plugins: { docs: { marketplaceName: "company-tools", pluginName: "docs" } },
+          },
+        },
+      },
+    );
+    await vi.waitFor(() =>
+      expect(client.request.mock.calls.map(([method]) => method)).toContain("turn/start"),
+    );
+    const fork = client.request.mock.calls.find(([method]) => method === "thread/fork")?.[1];
+    client.emit({
+      method: "item/started",
+      params: {
+        threadId: "side-thread",
+        turnId: "turn-1",
+        item: {
+          type: "mcpToolCall",
+          id: "side-mcp",
+          server: "docs",
+          tool: "render.raw",
+          arguments: { format: "plain" },
+          status: "inProgress",
+          pluginId: "docs@company-tools",
+        },
+      },
+    });
+    try {
+      const response = await handleClientRequestWhenReady(client, {
+        id: "side-plugin-approval",
+        method: "mcpServer/elicitation/request",
+        params: {
+          threadId: "side-thread",
+          turnId: "turn-1",
+          serverName: "docs",
+          mode: "form",
+          message: "Approve docs action?",
+          _meta: { codex_approval_kind: "mcp_tool_call" },
+          requestedSchema: {
+            type: "object",
+            properties: { approve: { type: "boolean", title: "Approve this action" } },
+            required: ["approve"],
+          },
+        },
+      });
+      expect(fork).toMatchObject({ approvalPolicy: { granular: { mcp_elicitations: true } } });
+      expect(response).toEqual({ action: "accept", content: { approve: true }, _meta: null });
+      expect(requestApproval).toHaveBeenCalledWith(
+        expect.objectContaining({
+          policySubject: { pluginKey: "docs", mcpServer: "docs", tool: "render.raw" },
+        }),
+      );
+      expect(waitForApproval).toHaveBeenCalledWith(
+        expect.objectContaining({ approvalId: "plugin:side-mcp" }),
+      );
+    } finally {
+      client.emit(agentDelta("side-thread", "turn-1", "Side answer."));
+      client.emit(turnCompleted("side-thread", "turn-1", "Side answer."));
+      await expect(run).resolves.toEqual({ text: "Side answer." });
+    }
+  });
 });

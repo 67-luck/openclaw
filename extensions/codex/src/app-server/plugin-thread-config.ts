@@ -329,17 +329,17 @@ export async function buildCodexPluginThreadConfig(
     const mcpServerNames = [...new Set(record.detail?.mcpServers ?? [])]
       .filter((serverName) => Boolean(serverName.trim()))
       .toSorted();
+    const owner: PluginAppPolicyContextEntry = {
+      configKey: record.policy.configKey,
+      marketplaceName: record.policy.marketplaceName,
+      pluginName: record.policy.pluginName,
+      allowDestructiveActions: record.policy.allowDestructiveActions,
+      allowOpenWorld: true,
+      destructiveApprovalMode: record.policy.destructiveApprovalMode,
+      mcpServerNames,
+    };
     const nativePluginId = record.summary.id;
     if (nativePluginId.trim()) {
-      const owner: PluginAppPolicyContextEntry = {
-        configKey: record.policy.configKey,
-        marketplaceName: record.policy.marketplaceName,
-        pluginName: record.policy.pluginName,
-        allowDestructiveActions: record.policy.allowDestructiveActions,
-        allowOpenWorld: true,
-        destructiveApprovalMode: record.policy.destructiveApprovalMode,
-        mcpServerNames,
-      };
       nativePluginOwners.set(nativePluginId, nativePluginOwners.has(nativePluginId) ? null : owner);
     }
     for (const serverName of mcpServerNames) {
@@ -374,15 +374,7 @@ export async function buildCodexPluginThreadConfig(
           ? buildCodexAppApprovalOverrides(admissionConfig.config, app)
           : undefined,
       );
-      policyApps[app.id] = {
-        configKey: record.policy.configKey,
-        marketplaceName: record.policy.marketplaceName,
-        pluginName: record.policy.pluginName,
-        allowDestructiveActions: record.policy.allowDestructiveActions,
-        allowOpenWorld: true,
-        destructiveApprovalMode: record.policy.destructiveApprovalMode,
-        mcpServerNames,
-      };
+      policyApps[app.id] = owner;
     }
   }
 
@@ -426,12 +418,8 @@ export async function buildCodexPluginThreadConfig(
   const policyContext = buildPluginAppPolicyContext(
     policyApps,
     pluginAppIds,
-    Object.fromEntries(
-      [...mcpServerOwners].toSorted(([left], [right]) => left.localeCompare(right)),
-    ),
-    Object.fromEntries(
-      [...nativePluginOwners].toSorted(([left], [right]) => left.localeCompare(right)),
-    ),
+    Object.fromEntries(mcpServerOwners),
+    Object.fromEntries(nativePluginOwners),
   );
   return {
     enabled: true,
@@ -679,24 +667,18 @@ export function buildPluginAppPolicyContext(
   mcpServers: Record<string, string | null> = {},
   nativePlugins: Record<string, PluginAppPolicyContextEntry | null> = {},
 ): PluginAppPolicyContext {
-  const sortedMcpServers = Object.fromEntries(
-    Object.entries(mcpServers).toSorted(([left], [right]) => left.localeCompare(right)),
-  );
-  const sortedNativePlugins = Object.fromEntries(
-    Object.entries(nativePlugins).toSorted(([left], [right]) => left.localeCompare(right)),
-  );
   return {
     fingerprint: fingerprintCodexPolicy({
       version: 3,
       apps,
       pluginAppIds,
-      mcpServers: sortedMcpServers,
-      nativePlugins: sortedNativePlugins,
+      mcpServers,
+      nativePlugins,
     }),
     apps,
     pluginAppIds,
-    mcpServers: sortedMcpServers,
-    nativePlugins: sortedNativePlugins,
+    mcpServers,
+    nativePlugins,
   };
 }
 
