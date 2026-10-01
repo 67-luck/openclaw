@@ -110,11 +110,15 @@ function isEligibleContext(ctx: ExperienceReviewAgentContext): boolean {
     .some((segment) => EXPERIENCE_REVIEW_BLOCKED_SESSION_SEGMENTS.has(segment));
 }
 
-/** Provider-reported iterations win; otherwise count assistant messages after the last user message. */
+/**
+ * Provider-reported iterations win; otherwise count assistant messages after the last user
+ * message. A zero report is no report: Codex counts only raw response events, which resumed
+ * threads do not emit.
+ */
 function resolveTurnModelIterations(params: SkillExperienceReviewParams): number {
   const reported = params.ctx.modelIterations;
-  if (reported !== undefined) {
-    return Number.isSafeInteger(reported) && reported >= 0 ? reported : 0;
+  if (reported !== undefined && Number.isSafeInteger(reported) && reported > 0) {
+    return reported;
   }
   const { messages } = params.event;
   let count = 0;

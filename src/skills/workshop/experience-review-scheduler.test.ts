@@ -85,6 +85,27 @@ describe("skill experience review scheduler", () => {
     expect(timers).toHaveLength(0);
   });
 
+  it("counts the turn's assistant messages when the harness reports zero iterations", () => {
+    const { turn, timers } = createHarness();
+    const assistantTurn = (assistantMessages: number) => ({
+      event: {
+        messages: [
+          { role: "assistant" },
+          { role: "user" },
+          ...Array.from({ length: assistantMessages }, () => ({ role: "assistant" })),
+        ],
+        success: true,
+      },
+    });
+
+    // Only messages after the last user message belong to the turn: 6 + 3 stays below ten.
+    turn(0, assistantTurn(6));
+    turn(0, assistantTurn(3));
+    expect(timers).toHaveLength(0);
+    turn(0, assistantTurn(1));
+    expect(timers).toHaveLength(1);
+  });
+
   it("resets the counter when the foreground turn saved its own Workshop change", () => {
     const { turn, timers } = createHarness();
 
