@@ -21,6 +21,7 @@ import {
 } from "./doctor-config-preflight.state-migration.test-helpers.js";
 
 const {
+  autoMigrateLegacyStateDir,
   autoMigrateLegacyState,
   repairLegacyCronStoreWithoutPrompt,
   collectCronCodexRuntimePolicyTargetsReadOnly,
@@ -29,6 +30,8 @@ const {
   planStartupPluginConvergence,
   readConfigFileSnapshot,
   recordDeferredPluginMigrations,
+  pluginMigrationFingerprint,
+  runWithPluginMetadataSnapshot,
   note,
 } = preflightStateMigrationMocks;
 const { runDoctorConfigPreflight } = await import("./doctor-config-preflight.js");
