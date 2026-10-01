@@ -123,7 +123,9 @@ Proactive heartbeat behavior is opt-in:
   night-time pings in your configured local timezone (see
   [Timezone](/concepts/timezone)).
 
-Heartbeat can react to completion events from background execution. Queued events with different delivery routes run in separate turns, including different accounts or topics. Identical completion text does not suppress a different completion occurrence.
+Heartbeat can react to completion events from background execution. A completion carrying a captured delivery route returns to that account, conversation, and thread; the monitor's configured `target`, `to`, or `accountId` cannot redirect it. Intentional `target: "none"`, direct-message restrictions, notification opt-outs, and disabled heartbeat controls still apply. Plugin normalization that would change the captured route fails closed. Ordinary scheduled heartbeats retain their configured destinations.
+
+Queued events with different delivery routes run in separate turns, including different accounts or topics. Identical completion text does not suppress a different completion occurrence.
 
 If a completion send is unconfirmed, its occurrence stays queued but is held out of later model turns so unrelated wakes cannot regenerate and resend it. Other routes can continue. Once a send enters the durable delivery queue, that queue owns transport retries. Use `process poll` to collect an exec result, and verify whether a message arrived before manually resending an ambiguous delivery.
 

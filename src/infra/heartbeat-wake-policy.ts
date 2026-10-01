@@ -35,12 +35,13 @@ export function inferHeartbeatWakeSourceFromReason(
 export function resolveHeartbeatWakePayloadFlags(params: {
   source?: HeartbeatWakeSource;
   reason?: string;
+  cronPayload?: boolean;
 }): HeartbeatWakePayloadFlags {
   const source = params.source ?? inferHeartbeatWakeSourceFromReason(params.reason);
   const reason = (params.reason ?? "").trim();
   return {
     isExecEventWake: source === "exec-event",
-    isCronWake: source === "cron",
+    isCronWake: source === "cron" || params.cronPayload === true,
     isWakePayload:
       source === "hook" ||
       source === "notifications-event" ||

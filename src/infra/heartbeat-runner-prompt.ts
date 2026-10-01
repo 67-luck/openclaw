@@ -8,14 +8,15 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readCronScratchSnapshot } from "../cron/scratch-read.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import { channelRouteDedupeKey } from "../plugin-sdk/channel-route.js";
-import { SESSION_CREATED_NOTICE_CONTEXT_PREFIX } from "../sessions/session-state-event-kinds.js";
 import { formatErrorMessage } from "./errors.js";
 import type { HeartbeatConfig } from "./heartbeat-config.js";
 import {
   buildCronEventPrompt,
   buildExecEventPrompt,
   isCronSystemEvent,
+  isCronOwnedSystemEvent,
   isExecCompletionEvent,
+  isExecCompletionSystemEvent,
   isHeartbeatDeliveryAwarenessEvent,
   isRelayableExecCompletionEvent,
 } from "./heartbeat-events-filter.js";
@@ -70,19 +71,30 @@ function systemEventDeliveryRouteKey(event: SystemEvent): string | undefined {
   return key === EMPTY_DELIVERY_ROUTE_KEY ? undefined : key;
 }
 
-function selectSystemEventRouteGroup(events: readonly SystemEvent[]): {
+function selectSystemEventRouteGroup(
+  events: readonly SystemEvent[],
+  eligibility: { inspectsRunQueue: boolean; isCronWake: boolean },
+): {
   selected: SystemEvent[];
   deferred: SystemEvent[];
   routeKey?: string;
 } {
-  const firstExec = events.find((event) => isExecCompletionEvent(event.text));
+  const eligible = eligibility.inspectsRunQueue
+    ? events
+    : events.filter(
+        (event) =>
+          isExecCompletionSystemEvent(event) ||
+          isCronOwnedSystemEvent(event, eligibility.isCronWake),
+      );
+  const firstExec = eligible.find((event) => isExecCompletionSystemEvent(event));
   const routeKey = firstExec
     ? systemEventDeliveryRouteKey(firstExec)
-    : events.map(systemEventDeliveryRouteKey).find((key) => key !== undefined);
+    : eligible.map(systemEventDeliveryRouteKey).find((key) => key !== undefined);
   if (!firstExec && routeKey === undefined) {
-    return { selected: [...events], deferred: [] };
+    const selected = new Set(eligible);
+    return { selected: [...eligible], deferred: events.filter((event) => !selected.has(event)) };
   }
-  const selected = events.filter((event) => systemEventDeliveryRouteKey(event) === routeKey);
+  const selected = eligible.filter((event) => systemEventDeliveryRouteKey(event) === routeKey);
   const selectedIds = new Set(selected);
   return {
     selected,
@@ -119,6 +131,7 @@ export async function resolveHeartbeatPreflight(params: {
   sessionKey?: string;
   reason?: string;
   source?: HeartbeatWakeSource;
+  cronPayload?: boolean;
   scheduledEveryMs?: number;
   scheduledTasks?: readonly HeartbeatScheduledTask[];
 }): Promise<HeartbeatPreflight> {
@@ -134,6 +147,7 @@ export async function resolveHeartbeatPreflight(params: {
   const wakeFlags = resolveHeartbeatWakePayloadFlags({
     source: params.source,
     reason: params.reason,
+    cronPayload: params.cronPayload,
   });
   const session = resolveHeartbeatSessionSelection(
     params.cfg,
@@ -157,7 +171,10 @@ export async function resolveHeartbeatPreflight(params: {
   const eventRouteSelection =
     params.scheduledTasks?.length || !shouldInspectPendingEvents
       ? { selected: [], deferred: pendingEventEntries }
-      : selectSystemEventRouteGroup(pendingEventEntries);
+      : selectSystemEventRouteGroup(pendingEventEntries, {
+          inspectsRunQueue: session.inspectsRunQueue,
+          isCronWake: wakeFlags.isCronWake,
+        });
   // A queued exec completion owns its final route. Later generic events stay
   // pending and must not replace the route before outbound delivery.
   const turnSourceDeliveryContext = resolveSystemEventDeliveryContext(
@@ -206,7 +223,7 @@ export async function resolveHeartbeatPreflight(params: {
     !basePreflight.authoritativeScheduledTick &&
     !params.scheduledTasks?.length &&
     !hasTaggedCronEvents &&
-    pendingEventEntries.length === 0
+    eventRouteSelection.selected.length === 0
   ) {
     return {
       ...basePreflight,
@@ -276,14 +293,15 @@ export function resolveHeartbeatRunPrompt(params: {
   // Select once: admission owns generic text; completed delivery owns dedicated
   // prompts and filtered cron noise. Late arrivals retain their queue identities.
   for (const event of pendingEventEntries) {
-    if (event.contextKey?.startsWith(SESSION_CREATED_NOTICE_CONTEXT_PREFIX)) {
-      genericEvents.push(event);
-    } else if (isExecCompletionEvent(event.text)) {
+    if (isExecCompletionSystemEvent(event)) {
       if (params.preflight.shouldInspectPendingEvents) {
         execEvents.push(event);
       }
-    } else if (params.preflight.isCronWake || event.contextKey?.startsWith("cron:")) {
-      (isCronSystemEvent(event.text) ? cronEvents : cronNoise).push(event);
+    } else if (isCronOwnedSystemEvent(event, params.preflight.isCronWake)) {
+      (isCronSystemEvent(event.text) || isExecCompletionEvent(event.text)
+        ? cronEvents
+        : cronNoise
+      ).push(event);
     } else {
       genericEvents.push(event);
     }

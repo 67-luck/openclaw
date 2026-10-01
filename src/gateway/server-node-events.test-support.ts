@@ -2,10 +2,13 @@ import { vi } from "vitest";
 import { WebSocket } from "ws";
 import { PROTOCOL_VERSION } from "../../packages/gateway-protocol/src/version.js";
 import type { DurableMessageBatchSendResult } from "../channels/message/runtime.js";
+import type { CliDeps } from "../cli/deps.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { normalizeLegacySessionEntryDelivery } from "../infra/state-migrations.legacy-session-store.js";
 import { resolveAgentIdFromSessionKey } from "../routing/session-key.js";
+import type { HealthSummary } from "./health/types.js";
+import type { NodeEventContext } from "./server-node-events-types.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 import type { loadSessionEntry as loadSessionEntryType } from "./session-utils.js";
 
@@ -261,5 +264,39 @@ export function makeNodeClient(connId: string, nodeId: string): GatewayWsClient 
         nonce: "nonce",
       },
     } as GatewayWsClient["connect"],
+  };
+}
+
+export function buildExecRecoveryNodeEventContext(
+  authorizeNodeSystemRunEvent: NodeEventContext["authorizeNodeSystemRunEvent"],
+  logWarn: (message: string) => void = () => {},
+): NodeEventContext {
+  return {
+    deps: {} as CliDeps,
+    broadcast: () => {},
+    nodeSendToSession: () => {},
+    nodeSubscribe: () => {},
+    nodeUnsubscribe: () => {},
+    broadcastVoiceWakeChanged: () => {},
+    addChatRun: () => {},
+    removeChatRun: () => undefined,
+    chatAbortControllers: new Map(),
+    dedupe: new Map(),
+    agentRunSeq: new Map(),
+    getHealthCache: () => null,
+    refreshHealthSnapshot: async () => ({}) as HealthSummary,
+    loadGatewayModelCatalog: async () => [],
+    authorizeNodeSystemRunEvent: (params) => {
+      const authorization = authorizeNodeSystemRunEvent(params);
+      return authorization && typeof authorization === "object"
+        ? {
+            invocationSessionKey: params.sessionKey,
+            ...authorization,
+            event: params.event,
+            onTelegramRouteMismatch: logWarn,
+          }
+        : authorization;
+    },
+    logGateway: { warn: logWarn },
   };
 }

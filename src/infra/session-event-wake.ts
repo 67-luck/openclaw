@@ -9,6 +9,10 @@ import { runWithGatewayDetachedWorkAdmission } from "../process/gateway-work-adm
 import { parseAgentSessionKey } from "../routing/session-key.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { normalizeHeartbeatWakeReason } from "./heartbeat-reason.js";
+import {
+  mergeHeartbeatRouteContinuation,
+  normalizeRequestedHeartbeatDestination,
+} from "./heartbeat-route-continuation.js";
 import type { HeartbeatRunResult, HeartbeatWakeRequest } from "./heartbeat-wake-contracts.js";
 import {
   getSystemEventStorePath,
@@ -130,6 +134,7 @@ function merge(previous: PendingWake, next: PendingWake): PendingWake {
     readyAt: Math.min(previous.readyAt, next.readyAt),
     notBefore: bypass ? 0 : Math.max(previous.notBefore, next.notBefore),
     heartbeat: preferred.heartbeat ?? other.heartbeat,
+    routeContinuation: mergeHeartbeatRouteContinuation(preferred, other),
     scheduledEveryMs: preferred.scheduledEveryMs ?? other.scheduledEveryMs,
     tasks: tasks.size
       ? [...tasks.values()].toSorted((left, right) => left.jobId.localeCompare(right.jobId))
@@ -421,6 +426,7 @@ function createSessionEventWakeRuntime() {
                 ? {}
                 : { sessionStorePath: wake.sessionStorePath }),
               ...(wake.heartbeat ? { heartbeat: wake.heartbeat } : {}),
+              ...(wake.routeContinuation ? { routeContinuation: wake.routeContinuation } : {}),
               ...(wake.scheduledEveryMs !== undefined
                 ? { scheduledEveryMs: wake.scheduledEveryMs }
                 : {}),
@@ -581,6 +587,7 @@ function createSessionEventWakeRuntime() {
     const { coalesceMs, ...wake } = options;
     const normalized = {
       ...wake,
+      heartbeat: normalizeRequestedHeartbeatDestination(wake.source, wake.heartbeat),
       agentId: normalizeOptionalString(wake.agentId),
       sessionKey: normalizeOptionalString(wake.sessionKey),
       reason: normalizeHeartbeatWakeReason(wake.reason),

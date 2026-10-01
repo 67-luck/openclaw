@@ -435,7 +435,11 @@ describe("Heartbeat event routing", () => {
         expect(legacyRowRemovedAtReply).toBe(dedicated !== "exec");
       }
       if (queue === "base") {
-        expectTelegramSend(sendTelegram, { to: "-100155462274", text: "Restart complete" });
+        expectTelegramSend(sendTelegram, {
+          to: dedicated === "exec" ? "-100999999999" : "-100155462274",
+          text: "Restart complete",
+          ...(dedicated === "exec" ? { messageThreadId: 42 } : {}),
+        });
         expect(formatted ?? "").not.toContain(generic);
         expect(peekSystemEvents(queueKey)).toEqual(
           dedicated === "exec" ? [reminder, generic] : queuedBefore,

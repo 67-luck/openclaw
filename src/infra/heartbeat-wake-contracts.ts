@@ -1,3 +1,5 @@
+import type { AgentDefaultsConfig } from "../config/types.agent-defaults.js";
+
 export type HeartbeatRunResult =
   | { status: "ran"; durationMs: number }
   | { status: "skipped"; reason: string; retryAtMs?: number }
@@ -42,6 +44,8 @@ export type HeartbeatWakeRequest = {
   sessionKey?: string;
   sessionStorePath?: string | null;
   heartbeat?: HeartbeatWakeOverride;
+  /** Internal retained-route fallback; independently requested destinations stay authoritative. */
+  routeContinuation?: { heartbeat?: AgentDefaultsConfig["heartbeat"]; cronPayload?: boolean };
   /** Persisted cron monitor cadence carried with a scheduled heartbeat tick. */
   scheduledEveryMs?: number;
   tasks?: readonly HeartbeatScheduledTask[];

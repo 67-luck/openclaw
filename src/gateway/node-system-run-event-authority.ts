@@ -4,6 +4,14 @@ import {
   resolveExpiresAtMsFromDurationMs,
 } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  resolveSessionConversation,
+  serializeSessionConversationTarget,
+} from "../channels/plugins/session-conversation.js";
+import {
+  stripOutboundTargetKindPrefix,
+  stripTargetProviderPrefix,
+} from "../infra/outbound/channel-target-prefix.js";
 import { DEFAULT_ACCOUNT_ID, normalizeOptionalAccountId } from "../routing/account-id.js";
 import { parseSessionDeliveryRoute } from "../routing/session-key.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
@@ -27,6 +35,8 @@ type SystemRunEventIdentity = Omit<
 
 export type SystemRunEventAuthorization = {
   invokeResultReceived: boolean;
+  /** The session actually dispatched by the invocation owner, never the terminal payload. */
+  invocationSessionKey?: string;
   event?: "exec.started" | "exec.finished" | "exec.denied";
   turnSourceAccountId?: string;
   onTelegramRouteMismatch?: (message: string) => void;
@@ -103,6 +113,7 @@ export class NodeSystemRunEventAuthority {
     }
     return {
       invokeResultReceived: authorized.invokeResultReceived,
+      ...(authorized.sessionKey ? { invocationSessionKey: authorized.sessionKey } : {}),
       ...(authorized.turnSourceAccountId
         ? { turnSourceAccountId: authorized.turnSourceAccountId }
         : {}),
@@ -174,7 +185,6 @@ export function shouldSuppressRun(
   authorization: unknown,
   deliveryContext: DeliveryContext | undefined,
   globallyEnabled: boolean | undefined,
-  sessionKey: string,
 ): boolean {
   const eventAuthorization = asOptionalRecord(authorization);
   const invokeResultReceived = eventAuthorization?.invokeResultReceived === true;
@@ -182,10 +192,17 @@ export function shouldSuppressRun(
     typeof eventAuthorization?.turnSourceAccountId === "string"
       ? eventAuthorization.turnSourceAccountId
       : undefined;
-  const telegramRouteMismatch = resolveTelegramRouteMismatch(sessionKey, deliveryContext, {
-    turnSourceAccountId,
-    requireAccount: payload.suppressNotifyOnExit === true && payload.invokeResultSentFirst === true,
-  });
+  const invocationSessionKey =
+    typeof eventAuthorization?.invocationSessionKey === "string"
+      ? eventAuthorization.invocationSessionKey
+      : undefined;
+  const telegramRouteMismatch = invocationSessionKey
+    ? resolveTelegramRouteMismatch(invocationSessionKey, deliveryContext, {
+        turnSourceAccountId,
+        requireAccount:
+          payload.suppressNotifyOnExit === true && payload.invokeResultSentFirst === true,
+      })
+    : null;
   if (globallyEnabled === false || payload.notifyOnExit === false) {
     return true;
   }
@@ -209,7 +226,6 @@ export function shouldSuppressRun(
 }
 
 const TELEGRAM_TOPIC_SUFFIX = /^(.*):(direct-topic|topic):(\d+)$/i;
-const TELEGRAM_TARGET_THREAD_SUFFIX = /^(.*):(direct-topic|topic|thread):(\d+)$/i;
 
 function resolveTelegramRouteMismatch(
   sessionKey: string,
@@ -221,13 +237,31 @@ function resolveTelegramRouteMismatch(
     return null;
   }
   const originTopic = TELEGRAM_TOPIC_SUFFIX.exec(origin.peerId);
-  const originThread = origin.threadId ?? originTopic?.[3];
-  if (origin.threadId && originTopic?.[3] && origin.threadId !== originTopic[3]) {
+  const originChat = originTopic?.[1] ?? origin.peerId;
+  const canonicalThread = origin.threadId
+    ? resolveSessionConversation({ channel: "telegram", kind: "group", rawId: origin.threadId })
+    : null;
+  if (canonicalThread?.threadId && canonicalThread.id !== originChat) {
     return true;
   }
-  const originChat = originTopic?.[1] ?? origin.peerId;
+  const scopedThread = canonicalThread?.threadId;
+  const scopedDirect = scopedThread?.startsWith("direct-topic:") ?? false;
+  const nativeOriginThread = scopedDirect
+    ? scopedThread?.slice("direct-topic:".length)
+    : scopedThread;
+  const originThread = nativeOriginThread ?? origin.threadId ?? originTopic?.[3];
+  if (origin.threadId && originTopic?.[3] && originThread !== originTopic[3]) {
+    return true;
+  }
   const originScope =
-    originTopic?.[2]?.toLowerCase() === "direct-topic" ? "direct-topic" : "thread";
+    originTopic?.[2]?.toLowerCase() === "direct-topic" || scopedDirect ? "direct-topic" : "thread";
+  if (
+    originTopic &&
+    scopedThread &&
+    scopedDirect !== (originTopic[2]?.toLowerCase() === "direct-topic")
+  ) {
+    return true;
+  }
   if (!deliveryContext) {
     return null;
   }
@@ -249,7 +283,7 @@ function resolveTelegramRouteMismatch(
   if (invocationAccountId && sessionAccountId && invocationAccountId !== sessionAccountId) {
     return true;
   }
-  if (options.requireAccount && !invocationAccountId) {
+  if (options.requireAccount && !invocationAccountId && !sessionAccountId) {
     return null;
   }
   const expectedAccountId = invocationAccountId ?? sessionAccountId;
@@ -262,27 +296,144 @@ function resolveTelegramRouteMismatch(
       return true;
     }
   }
-  const rawTarget = deliveryContext.to?.trim().replace(/^telegram:/i, "");
+  const rawTarget = deliveryContext.to
+    ? stripOutboundTargetKindPrefix(stripTargetProviderPrefix(deliveryContext.to, "telegram", "tg"))
+    : undefined;
   if (!rawTarget) {
     return true;
   }
-  const targetThreadSuffix = TELEGRAM_TARGET_THREAD_SUFFIX.exec(rawTarget);
-  const targetChat = targetThreadSuffix?.[1] ?? rawTarget;
-  const explicitThread = String(deliveryContext.threadId ?? "").trim();
-  if (explicitThread && targetThreadSuffix?.[3] && explicitThread !== targetThreadSuffix[3]) {
+  const targetConversation = resolveSessionConversation({
+    channel: "telegram",
+    kind: "group",
+    rawId: rawTarget,
+  });
+  const parsedThread = targetConversation?.threadId;
+  const isDirectTopic = parsedThread?.startsWith("direct-topic:") ?? false;
+  const embeddedThread = isDirectTopic ? parsedThread?.slice("direct-topic:".length) : parsedThread;
+  const targetChat = targetConversation?.id ?? rawTarget;
+  const rawExplicitThread = String(deliveryContext.threadId ?? "").trim();
+  const scopedExplicitThread = rawExplicitThread
+    ? resolveSessionConversation({ channel: "telegram", kind: "group", rawId: rawExplicitThread })
+    : null;
+  if (scopedExplicitThread?.threadId && scopedExplicitThread.id !== targetChat) {
     return true;
   }
-  const targetThread = explicitThread || targetThreadSuffix?.[3];
-  const targetScope = targetThreadSuffix?.[2]
-    ? targetThreadSuffix[2].toLowerCase() === "direct-topic"
+  const explicitDirect = scopedExplicitThread?.threadId?.startsWith("direct-topic:") ?? false;
+  const explicitThread = scopedExplicitThread?.threadId
+    ? explicitDirect
+      ? scopedExplicitThread.threadId.slice("direct-topic:".length)
+      : scopedExplicitThread.threadId
+    : rawExplicitThread;
+  if (scopedExplicitThread?.threadId && parsedThread && explicitDirect !== isDirectTopic) {
+    return true;
+  }
+  if (explicitThread && embeddedThread && explicitThread !== embeddedThread) {
+    return true;
+  }
+  const targetThread = explicitThread || embeddedThread;
+  const targetScope = parsedThread
+    ? isDirectTopic
       ? "direct-topic"
       : "thread"
-    : originScope;
-  if (originScope === "direct-topic" && targetThreadSuffix?.[2]?.toLowerCase() !== "direct-topic") {
+    : scopedExplicitThread?.threadId
+      ? explicitDirect
+        ? "direct-topic"
+        : "thread"
+      : originScope;
+  if (originScope === "direct-topic" && !isDirectTopic && !explicitDirect) {
     return true;
   }
   if (!originThread) {
     return targetChat !== originChat || Boolean(targetThread);
   }
   return targetChat !== originChat || targetThread !== originThread || targetScope !== originScope;
+}
+
+/** Undefined retains legacy notice routing; null rejects a verified route that cannot be normalized. */
+export function resolveNodeSystemRunEventDeliveryContext(
+  deliveryContext: DeliveryContext | undefined,
+  authorization: unknown,
+): DeliveryContext | null | undefined {
+  const eventAuthorization = asOptionalRecord(authorization);
+  const sessionKey =
+    typeof eventAuthorization?.invocationSessionKey === "string"
+      ? eventAuthorization.invocationSessionKey
+      : undefined;
+  if (!sessionKey) {
+    return undefined;
+  }
+  const origin = parseSessionDeliveryRoute(sessionKey);
+  const turnSourceAccountId =
+    typeof eventAuthorization?.turnSourceAccountId === "string"
+      ? eventAuthorization.turnSourceAccountId
+      : undefined;
+  // Other transports/shared bindings have no complete invocation-route verifier
+  // here. Keep their ordinary route-less notice instead of promoting later history.
+  if (
+    !deliveryContext ||
+    origin?.channel !== "telegram" ||
+    !(turnSourceAccountId || origin.accountId)
+  ) {
+    return undefined;
+  }
+  if (
+    resolveTelegramRouteMismatch(sessionKey, deliveryContext, {
+      turnSourceAccountId,
+      requireAccount: false,
+    }) !== false
+  ) {
+    return undefined;
+  }
+  const verifiedContext: DeliveryContext = {
+    ...deliveryContext,
+    accountId:
+      normalizeOptionalAccountId(turnSourceAccountId) ??
+      normalizeOptionalAccountId(origin.accountId),
+  };
+  const explicitConversation =
+    deliveryContext.threadId == null
+      ? null
+      : resolveSessionConversation({
+          channel: "telegram",
+          kind: "group",
+          rawId: String(deliveryContext.threadId),
+        });
+  const targetConversation = deliveryContext.to
+    ? resolveSessionConversation({
+        channel: "telegram",
+        kind: "group",
+        rawId: stripOutboundTargetKindPrefix(
+          stripTargetProviderPrefix(deliveryContext.to, "telegram", "tg"),
+        ),
+      })
+    : null;
+  const scopedConversation = explicitConversation?.threadId
+    ? explicitConversation
+    : targetConversation;
+  if (scopedConversation?.threadId) {
+    const canonicalTarget = serializeSessionConversationTarget({
+      channel: "telegram",
+      kind: "group",
+      id: scopedConversation.id,
+      threadId: scopedConversation.threadId,
+    });
+    if (!canonicalTarget) {
+      if (
+        eventAuthorization?.event === "exec.finished" &&
+        typeof eventAuthorization.onTelegramRouteMismatch === "function"
+      ) {
+        eventAuthorization.onTelegramRouteMismatch(
+          "node exec completion withheld: Telegram route normalization is unavailable; check the active channel plugin",
+        );
+      }
+      return null;
+    }
+    verifiedContext.to = canonicalTarget;
+    if (explicitConversation?.threadId) {
+      verifiedContext.threadId = explicitConversation.threadId.startsWith("direct-topic:")
+        ? explicitConversation.threadId.slice("direct-topic:".length)
+        : explicitConversation.threadId;
+    }
+  }
+  return verifiedContext;
 }

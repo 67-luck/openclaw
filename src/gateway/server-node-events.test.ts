@@ -333,7 +333,7 @@ describe("node exec events", () => {
       nodeId: "node-2",
       connId: "conn-1",
       sessionKey: "agent:main:main",
-      terminal: true,
+      event: "exec.finished",
     });
     expect(enqueueSystemEventMock).toHaveBeenCalledWith(
       "Exec finished (node=node-2, code 0)\ndone",

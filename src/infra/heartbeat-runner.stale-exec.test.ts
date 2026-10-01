@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getReplySystemEventContext } from "../auto-reply/reply/system-event-session-key.js";
 import { resetConfigRuntimeState, type OpenClawConfig } from "../config/config.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
+import { SESSION_CREATED_NOTICE_CONTEXT_PREFIX } from "../sessions/session-state-event-kinds.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
 import { resetHeartbeatEventsForTest } from "./heartbeat-events.js";
@@ -190,6 +191,29 @@ describe("stale exec heartbeat wakes", () => {
       expect((await run()).status).toBe("ran");
       expect(replySpy).toHaveBeenCalledOnce();
     }),
+  );
+
+  it.each([
+    ["notice:excluded", false],
+    ["notice:excluded", true],
+    [SESSION_CREATED_NOTICE_CONTEXT_PREFIX + "excluded", false],
+    [SESSION_CREATED_NOTICE_CONTEXT_PREFIX + "excluded", true],
+  ] as const)(
+    "retires a stale exec wake with only excluded %s base content and busy=%s",
+    async (contextKey, busy) => {
+      await heartbeatCase(async ({ sessionKey, replySpy, run }) => {
+        const notice = "PRIVATE_EXCLUDED_STALE_NOTICE";
+        enqueueSystemEvent(notice, { sessionKey, contextKey });
+        expect(
+          await run({
+            heartbeat: { isolatedSession: true },
+            deps: { getReplyFromConfig: replySpy, getQueueSize: () => (busy ? 1 : 0) },
+          }),
+        ).toEqual(stale);
+        expect(replySpy).not.toHaveBeenCalled();
+        expect(peekSystemEvents(sessionKey)).toEqual([notice]);
+      })();
+    },
   );
 
   it(

@@ -35,7 +35,11 @@ describe("system.run result reconciliation", () => {
         sessionKey,
         terminal: true,
       }),
-    ).toEqual({ invokeResultReceived: true, turnSourceAccountId: "work" });
+    ).toEqual({
+      invokeResultReceived: true,
+      invocationSessionKey: sessionKey,
+      turnSourceAccountId: "work",
+    });
     registry.unregister("conn-1");
   });
 });

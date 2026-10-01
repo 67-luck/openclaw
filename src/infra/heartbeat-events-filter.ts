@@ -5,6 +5,7 @@ import {
   isHeartbeatAcknowledgementText,
 } from "../auto-reply/heartbeat.js";
 import { HEARTBEAT_TOKEN, SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
+import type { SystemEvent } from "./system-events.js";
 
 const MAX_EXEC_EVENT_PROMPT_CHARS = 8_000;
 export const HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX = "heartbeat-delivery:";
@@ -173,9 +174,49 @@ export function isHeartbeatDeliveryAwarenessEvent(event: { contextKey?: string |
   return event.contextKey?.startsWith(HEARTBEAT_DELIVERY_CONTEXT_KEY_PREFIX) ?? false;
 }
 
+/** Explicitly tagged cron/notices cannot acquire exec authority through their text. */
+export function isExecCompletionSystemEvent(event: {
+  text: string;
+  contextKey?: string | null;
+}): boolean {
+  const contextKey = event.contextKey;
+  return (
+    (!contextKey || contextKey === "exec" || contextKey.startsWith("exec:")) &&
+    isExecCompletionEvent(event.text)
+  );
+}
+
+/** Explicit generic provenance never becomes cron work just because the wake is cron-owned. */
+export function isCronOwnedSystemEvent(
+  event: { contextKey?: string | null },
+  isCronWake: boolean,
+): boolean {
+  return Boolean(event.contextKey?.startsWith("cron:")) || (isCronWake && !event.contextKey);
+}
+
 export function isCronSystemEvent(evt: string) {
   if (!evt.trim()) {
     return false;
   }
   return !isHeartbeatNoiseEvent(evt) && !isExecCompletionEvent(evt);
+}
+
+/** Excluded base notices do not participate in admitted/dedicated route settlement. */
+export function selectHeartbeatRouteProgressEvents(params: {
+  selectedEvents: readonly SystemEvent[];
+  genericEvents: readonly SystemEvent[];
+  deferredEvents: readonly SystemEvent[];
+  inspectsRunQueue: boolean;
+  isCronWake?: boolean;
+}): { progressEvents: SystemEvent[]; deferredEvents: SystemEvent[] } {
+  const excluded = new Set(params.inspectsRunQueue ? [] : params.genericEvents);
+  return {
+    progressEvents: params.selectedEvents.filter((event) => !excluded.has(event)),
+    deferredEvents: params.deferredEvents.filter(
+      (event) =>
+        params.inspectsRunQueue ||
+        isExecCompletionSystemEvent(event) ||
+        isCronOwnedSystemEvent(event, params.isCronWake === true),
+    ),
+  };
 }

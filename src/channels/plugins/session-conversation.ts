@@ -32,7 +32,10 @@ type SessionConversationHookResult = ReturnType<
   NonNullable<ChannelMessagingAdapter["resolveSessionConversation"]>
 >;
 
-type BundledSessionKeyModule = Pick<ChannelMessagingAdapter, "resolveSessionConversation">;
+type BundledSessionKeyModule = Pick<
+  ChannelMessagingAdapter,
+  "resolveSessionConversation" | "resolveSessionTarget"
+>;
 
 const SESSION_KEY_API_ARTIFACT_BASENAME = "session-key-api.js";
 type SessionConversationResolutionOptions = {
@@ -207,6 +210,31 @@ export function resolveSessionConversation(params: {
   resolved.baseConversationId =
     resolved.parentConversationCandidates.at(-1) ?? resolved.baseConversationId ?? resolved.id;
   return resolved;
+}
+
+/** Serialize only through the channel-owned grammar; missing serializers are not guessed. */
+export function serializeSessionConversationTarget(params: {
+  channel: string;
+  kind: "group" | "channel";
+  id: string;
+  threadId?: string | null;
+}): string | undefined {
+  const plugin = getLoadedSessionChannelPlugin(params.channel);
+  if (plugin) {
+    return normalizeOptionalString(plugin.messaging?.resolveSessionTarget?.(params));
+  }
+  if (isBundledSessionConversationFallbackDisabled(params.channel)) {
+    return undefined;
+  }
+  try {
+    const loaded = tryLoadActivatedBundledPluginPublicSurfaceModuleSync<BundledSessionKeyModule>({
+      dirName: normalizeResolvedChannel(params.channel),
+      artifactBasename: SESSION_KEY_API_ARTIFACT_BASENAME,
+    });
+    return normalizeOptionalString(loaded?.resolveSessionTarget?.(params));
+  } catch {
+    return undefined;
+  }
 }
 
 export function resolveSessionConversationRef(

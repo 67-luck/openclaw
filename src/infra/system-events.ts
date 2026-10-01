@@ -350,3 +350,11 @@ export function resolveSystemEventDeliveryContext(
 export function resetSystemEventsForTest() {
   queues.clear();
 }
+
+/** Read live settlement of a captured selection without changing queue custody. */
+export function hasUnsettledSystemEventSelection(
+  sessionKey: string,
+  selected: readonly SystemEvent[],
+): boolean {
+  return selectQueuedSystemEventEntries(sessionKey, selected).some((event) => !event.deliveryHeld);
+}

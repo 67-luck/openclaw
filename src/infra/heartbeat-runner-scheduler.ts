@@ -10,12 +10,14 @@ import { tryResolveAmbientHeartbeatAgentId } from "./heartbeat-agent-resolution.
 import {
   isHeartbeatOwnerUnresolved,
   resolveHeartbeatAgents,
+  resolveHeartbeatConfig,
   resolveHeartbeatForWake,
   resolveHeartbeatIntervalMs,
   type HeartbeatConfig,
 } from "./heartbeat-config.js";
 import { recordRunStart, shouldDeferWake, type DeferDecision } from "./heartbeat-cooldown.js";
 import { heartbeatLog as log } from "./heartbeat-log.js";
+import { resolveRequestedHeartbeatWithContinuation } from "./heartbeat-route-continuation.js";
 import type { runHeartbeatOnce } from "./heartbeat-runner-run.js";
 import { isConfiguredHeartbeatAgent, isTargetedUnscheduledWake } from "./heartbeat-wake-policy.js";
 import {
@@ -182,7 +184,6 @@ export function startHeartbeatRunner(opts: {
     const execEventWake = params.source === "exec-event";
     const requestedAgentId = params.agentId ? normalizeAgentId(params.agentId) : undefined;
     const requestedSessionKey = normalizeOptionalString(params.sessionKey);
-    const requestedHeartbeat = params.heartbeat;
     const scheduledEveryMs =
       typeof params.scheduledEveryMs === "number" &&
       Number.isSafeInteger(params.scheduledEveryMs) &&
@@ -209,6 +210,11 @@ export function startHeartbeatRunner(opts: {
       targeted = false,
     ): Promise<AgentWakeOutcome> => {
       const { agentId } = agent;
+      const requestedHeartbeat = resolveRequestedHeartbeatWithContinuation(
+        params.heartbeat,
+        params.routeContinuation,
+        resolveHeartbeatConfig(wakeConfig, agentId),
+      );
       if (agent.intervalMs !== undefined && scheduledEveryMs !== undefined) {
         agent.intervalMs = scheduledEveryMs;
         agent.heartbeat = { ...agent.heartbeat, every: `${scheduledEveryMs}ms` };
@@ -254,7 +260,9 @@ export function startHeartbeatRunner(opts: {
                 requestedHeartbeat,
                 source: params.source,
               }),
+          heartbeatOverride: useEnrolledHeartbeat ? undefined : requestedHeartbeat,
           source: params.source,
+          ...(params.routeContinuation ? { routeContinuation: params.routeContinuation } : {}),
           intent,
           reason,
           ...(scheduledEveryMs !== undefined ? { scheduledEveryMs } : {}),

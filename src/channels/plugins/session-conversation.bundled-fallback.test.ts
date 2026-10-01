@@ -11,6 +11,13 @@ import {
 const fallbackState = vi.hoisted(() => ({
   activeDirName: null as string | null,
   loadCalls: 0,
+  resolveSessionTarget: null as
+    | ((params: {
+        kind: "group" | "channel";
+        id: string;
+        threadId?: string | null;
+      }) => string | null)
+    | null,
   resolveSessionConversation: null as
     | ((params: { kind: "group" | "channel"; rawId: string }) => {
         id: string;
@@ -30,13 +37,20 @@ vi.mock("../../plugin-sdk/facade-runtime.js", async () => {
     tryLoadActivatedBundledPluginPublicSurfaceModuleSync: ({ dirName }: { dirName: string }) => {
       fallbackState.loadCalls += 1;
       return dirName === fallbackState.activeDirName && fallbackState.resolveSessionConversation
-        ? { resolveSessionConversation: fallbackState.resolveSessionConversation }
+        ? {
+            resolveSessionConversation: fallbackState.resolveSessionConversation,
+            resolveSessionTarget: fallbackState.resolveSessionTarget,
+          }
         : null;
     },
   };
 });
 
-import { resolveSessionConversationRef, resolveSessionThreadInfo } from "./session-conversation.js";
+import {
+  resolveSessionConversationRef,
+  resolveSessionThreadInfo,
+  serializeSessionConversationTarget,
+} from "./session-conversation.js";
 
 type ResolveSessionConversation = NonNullable<typeof fallbackState.resolveSessionConversation>;
 
@@ -75,6 +89,7 @@ describe("session conversation bundled fallback", () => {
     fallbackState.activeDirName = null;
     fallbackState.loadCalls = 0;
     fallbackState.resolveSessionConversation = null;
+    fallbackState.resolveSessionTarget = null;
     resetPluginRuntimeStateForTest();
   });
 
@@ -170,6 +185,75 @@ describe("session conversation bundled fallback", () => {
       baseConversationId: "room",
       parentConversationCandidates: ["room:topic:root", "room"],
     });
+  });
+
+  it("serializes pre-bootstrap targets only through the activated lightweight artifact", () => {
+    enableThreadedFallback();
+    fallbackState.resolveSessionTarget = ({ id, threadId }) => ` ${id}:topic:${threadId} `;
+    expect(
+      serializeSessionConversationTarget({
+        channel: "mock-threaded",
+        kind: "group",
+        id: "room",
+        threadId: "42",
+      }),
+    ).toBe("room:topic:42");
+    expect(fallbackState.loadCalls).toBe(1);
+    fallbackState.resolveSessionTarget = null;
+    expect(
+      serializeSessionConversationTarget({
+        channel: "mock-threaded",
+        kind: "group",
+        id: "room",
+        threadId: "42",
+      }),
+    ).toBeUndefined();
+  });
+
+  it.each([true, false])(
+    "leaves loaded-plugin serialization authoritative (hook=%s)",
+    (withHook) => {
+      enableThreadedFallback();
+      fallbackState.resolveSessionTarget = () => "bundled-wrong-route";
+      setActivePluginRegistry(
+        createTestRegistry([
+          {
+            pluginId: "mock-threaded",
+            source: "test",
+            plugin: {
+              ...createChannelTestPluginBase({ id: "mock-threaded" }),
+              messaging: withHook
+                ? { resolveSessionTarget: ({ id }: { id: string }) => `loaded:${id}` }
+                : {},
+            },
+          },
+        ]),
+      );
+      expect(
+        serializeSessionConversationTarget({
+          channel: "mock-threaded",
+          kind: "group",
+          id: "room",
+          threadId: "42",
+        }),
+      ).toBe(withHook ? "loaded:room" : undefined);
+      expect(fallbackState.loadCalls).toBe(0);
+    },
+  );
+
+  it("never serializes through a disabled bundled plugin", () => {
+    enableThreadedFallback();
+    fallbackState.resolveSessionTarget = () => "room:topic:42";
+    setRuntimeConfigSnapshot({ plugins: { entries: { "mock-threaded": { enabled: false } } } });
+    expect(
+      serializeSessionConversationTarget({
+        channel: "mock-threaded",
+        kind: "group",
+        id: "room",
+        threadId: "42",
+      }),
+    ).toBeUndefined();
+    expect(fallbackState.loadCalls).toBe(0);
   });
 
   it("delegates repeated fallback calls through the public-surface loader", () => {

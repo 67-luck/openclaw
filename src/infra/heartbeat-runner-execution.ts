@@ -33,14 +33,23 @@ import { CommandLane } from "../process/lanes.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
+import { isInternalMessageChannel } from "../utils/message-channel.js";
 import { getAgentEventLifecycleGeneration } from "./agent-events.js";
 import { formatErrorMessage } from "./errors.js";
 import { isWithinActiveHours } from "./heartbeat-active-hours.js";
 import { tryResolveAmbientHeartbeatAgentId } from "./heartbeat-agent-resolution.js";
-import { resolveHeartbeatForWake, type HeartbeatConfig } from "./heartbeat-config.js";
-import { isExecCompletionEvent } from "./heartbeat-events-filter.js";
+import {
+  resolveHeartbeatForWake,
+  resolveHeartbeatConfig,
+  type HeartbeatConfig,
+} from "./heartbeat-config.js";
+import { isExecCompletionSystemEvent } from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent } from "./heartbeat-events.js";
 import { heartbeatLog as log } from "./heartbeat-log.js";
+import {
+  normalizeRequestedHeartbeatDestination,
+  resolveRequestedHeartbeatWithContinuation,
+} from "./heartbeat-route-continuation.js";
 import { shouldUseHeartbeatResponseToolPrompt } from "./heartbeat-runner-config.js";
 import {
   resolveHeartbeatPreflight,
@@ -65,6 +74,7 @@ import {
   type HeartbeatScheduledTask,
   type HeartbeatWakeIntent,
   type HeartbeatWakeSource,
+  type HeartbeatWakeRequest,
 } from "./heartbeat-wake.js";
 import type { OutboundSendDeps } from "./outbound/deliver.js";
 import {
@@ -116,6 +126,9 @@ export type HeartbeatRunOptions = {
   agentId?: string;
   sessionKey?: string;
   heartbeat?: HeartbeatConfig;
+  /** Present on scheduler calls, even when undefined: configuration is not a request. */
+  heartbeatOverride?: HeartbeatConfig;
+  routeContinuation?: HeartbeatWakeRequest["routeContinuation"];
   source?: HeartbeatWakeSource;
   intent?: HeartbeatWakeIntent;
   reason?: string;
@@ -137,10 +150,21 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
   }
   const agentId = normalizeAgentId(resolvedAgentId);
   const wakeSource = opts.source ?? inferHeartbeatWakeSourceFromReason(opts.reason);
+  const continuationHeartbeat = resolveRequestedHeartbeatWithContinuation(
+    undefined,
+    opts.routeContinuation,
+    resolveHeartbeatConfig(cfg, agentId),
+  );
+  const heartbeatOverride = Object.hasOwn(opts, "heartbeatOverride")
+    ? opts.heartbeatOverride
+    : normalizeRequestedHeartbeatDestination(
+        wakeSource ?? "other",
+        opts.heartbeat ?? continuationHeartbeat,
+      );
   const heartbeat = resolveHeartbeatForWake({
     cfg,
     agentId,
-    requestedHeartbeat: opts.heartbeat,
+    requestedHeartbeat: opts.heartbeat ?? continuationHeartbeat,
     source: wakeSource,
   });
   const scheduledTasks = [...(opts.tasks ?? [])].toSorted((left, right) =>
@@ -183,6 +207,7 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
       agentId,
       heartbeat,
       source: wakeSource,
+      cronPayload: opts.routeContinuation?.cronPayload,
       scheduledTasks,
     });
   let preflight = shouldPreflightBeforeBusy ? await resolvePreflight() : undefined;
@@ -206,7 +231,7 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
     preflight?.isExecEventWake === true &&
     !preflight.authoritativeScheduledTick &&
     scheduledTasks.length === 0 &&
-    preflight.pendingEventEntries.some((event) => isExecCompletionEvent(event.text));
+    preflight.pendingEventEntries.some((event) => isExecCompletionSystemEvent(event));
   const getSize = opts.deps?.getQueueSize ?? getQueueSize;
   if (!isSessionExecCompletion && getSize(CommandLane.Main) > 0) {
     return skippedBusyStage(HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT);
@@ -343,6 +368,7 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
     agentId,
     wakeSource,
     heartbeat,
+    heartbeatOverride,
     scheduledTasks,
     startedAt,
     isEmbeddedRunActive,
@@ -366,7 +392,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   const projectionCandidate =
     scheduledTasks.length === 0 &&
     preflight.shouldInspectPendingEvents &&
-    preflight.pendingEventEntries.some((event) => isExecCompletionEvent(event.text)) &&
+    preflight.pendingEventEntries.some((event) => isExecCompletionSystemEvent(event)) &&
     !preflight.session.suppressOriginatingContext &&
     !isInternalSessionEffectsKey(projectionSessionKey) &&
     conversationEntry?.delivery?.kind === "internal" &&
@@ -387,23 +413,36 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   // a new session ID (empty transcript) each run, avoiding the cost of
   // sending the full conversation history (~100K tokens) to the LLM.
   // Delivery routing uses the selected conversation, not the fresh execution row.
+  const execOwnsRoute =
+    scheduledTasks.length === 0 &&
+    preflight.turnSourceDeliveryContext !== undefined &&
+    preflight.selectedEventEntries.some((event) => isExecCompletionSystemEvent(event));
   const delivery = await resolveHeartbeatDeliveryTargetWithSessionRoute({
     cfg,
     agentId,
     entry: conversationEntry,
     heartbeat,
     currentSessionKey: sessionKey,
-    // A base queue's route stays excluded; events on the actual isolated queue
-    // own their route, including exec completion after the base route moves.
-    turnSource: preflight.session.inspectsRunQueue
-      ? preflight.turnSourceDeliveryContext
-      : undefined,
+    // Dedicated exec output owns its captured route even when generic base-queue
+    // notices are excluded from isolated admission. Scheduled work keeps its own target.
+    turnSource:
+      execOwnsRoute || preflight.session.inspectsRunQueue
+        ? preflight.turnSourceDeliveryContext
+        : undefined,
+    ...(execOwnsRoute ? { turnSourceKind: "exec" as const } : {}),
   });
   // Operator-chosen suppression is the resolver's verdict, not a config string:
   // an explicit target that never resolves to a route also reports `target-none`.
   // Gate here so neither the relay prompt nor the session publication path can
   // see a projection target the resolver already declined to deliver to.
-  const internalProjection = delivery.reason === "target-none" ? undefined : projectionCandidate;
+  const rejectedExternalExecRoute =
+    execOwnsRoute &&
+    delivery.channel === "none" &&
+    !isInternalMessageChannel(preflight.turnSourceDeliveryContext?.channel);
+  const internalProjection =
+    delivery.reason === "target-none" || rejectedExternalExecRoute
+      ? undefined
+      : projectionCandidate;
   // Routeless ambient polls are pure model burn, but only they may skip:
   // triggered wakes (hook/manual/cron/exec), polls with queued events, and
   // scheduled-task wakes must still run to process their payloads even when
