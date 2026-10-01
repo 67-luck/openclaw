@@ -44,10 +44,13 @@ openclaw doctor --fix --externally-managed --non-interactive --json
 Stop the Gateway before running the command. Doctor acquires the normal state and
 database maintenance owners, backs up databases before schema changes, repairs
 supported legacy state and sessions, and verifies that the config bytes did not
-change. It never installs, stops, starts, or rewrites a Gateway service. The JSON
-report separates `applied`, `skipped`, and `remaining` work; a nonempty
-`remaining` list exits nonzero. Update the deployment config source for any
-remaining config finding, redeploy it, then rerun repair.
+change. It uses the same ordered repair flow as ordinary `doctor --fix`; this
+posture changes who owns config writes and service effects. Doctor reports config
+changes without writing them and never installs, stops, starts, or rewrites a
+Gateway service. The JSON report projects the same repair evidence into
+`applied`, `skipped`, and `remaining`; a nonempty `remaining` list exits nonzero.
+Update the deployment config source for any remaining config finding, redeploy it,
+then rerun repair.
 
 This posture requires `--fix` (or `--repair`) and `--non-interactive`. It rejects
 `--force`, `--yes`, and `--generate-gateway-token` because those options can

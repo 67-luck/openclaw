@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   promptYesNo: vi.fn(),
   readSourceConfigBestEffort: vi.fn(),
   reconcileGithubIssue: vi.fn(),
-  runExternallyManagedDoctorRepair: vi.fn(),
+  runDoctorHealthFlow: vi.fn(),
   runPostUpgradeProbes: vi.fn(),
   runDoctorStateSqliteCompact: vi.fn(),
   runDoctorSessionSqlite: vi.fn(),
@@ -28,8 +28,8 @@ vi.mock("./doctor-post-upgrade.js", () => ({
   runPostUpgradeProbes: mocks.runPostUpgradeProbes,
 }));
 
-vi.mock("./doctor-externally-managed-repair.js", () => ({
-  runExternallyManagedDoctorRepair: mocks.runExternallyManagedDoctorRepair,
+vi.mock("../flows/doctor-health.js", () => ({
+  runDoctorHealthFlow: mocks.runDoctorHealthFlow,
 }));
 
 vi.mock("./doctor-session-sqlite.js", () => ({
@@ -216,8 +216,8 @@ describe("doctorCommand", () => {
       skipped: [],
       remaining: [],
     };
-    mocks.runExternallyManagedDoctorRepair.mockImplementationOnce(
-      async ({ runtime: repairRuntime }: { runtime: ReturnType<typeof createDoctorRuntime> }) => {
+    mocks.runDoctorHealthFlow.mockImplementationOnce(
+      async (repairRuntime: ReturnType<typeof createDoctorRuntime>) => {
         repairRuntime.log("maintenance acquired");
         repairRuntime.error("recoverable detail");
         return report;

@@ -29,7 +29,6 @@ import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.
 import * as configFlow from "./doctor-config-flow.js";
 import * as configPreflight from "./doctor-config-preflight.js";
 import { withDoctorConfigPreflightHome } from "./doctor-config-preflight.test-support.js";
-import { runExternallyManagedDoctorRepair } from "./doctor-externally-managed-repair.js";
 import * as migrationBackup from "./doctor-migration-backup.js";
 import * as sessionTranscripts from "./doctor-session-transcripts.js";
 import { runStartupConfigPreflight } from "./startup-config-preflight.js";
@@ -37,7 +36,9 @@ import { runStartupConfigPreflight } from "./startup-config-preflight.js";
 const { mocks } = await import("../flows/doctor-health.test-support.js");
 beforeEach(async () => {
   mocks.packageRoot.mockReturnValue(undefined);
-  mocks.runContributions.mockReset().mockResolvedValue(undefined);
+  const { runSessionTranscriptsHealth } =
+    await import("../flows/doctor-health-contribution-runners.state.js");
+  mocks.runContributions.mockReset().mockImplementation(runSessionTranscriptsHealth);
   const actual =
     await vi.importActual<typeof import("./doctor-config-flow.js")>("./doctor-config-flow.js");
   vi.spyOn(configFlow, "loadAndMaybeMigrateDoctorConfig").mockImplementation((params) => {
@@ -56,14 +57,36 @@ async function repairContainerState() {
   expect(runtime.exit, runtime.error.mock.calls.flat().join("\n")).not.toHaveBeenCalled();
 }
 
-async function withContainerState(run: (stateDir: string, workspace: string) => Promise<void>) {
+async function repairExternallyManagedContainerState() {
+  const report = await runDoctorHealthFlow(
+    { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+    {
+      repair: true,
+      externallyManaged: true,
+      nonInteractive: true,
+      json: true,
+    },
+  );
+  if (!report) {
+    throw new Error("Externally managed Doctor repair did not return a report.");
+  }
+  return report;
+}
+
+async function withContainerState(
+  run: (stateDir: string, workspace: string) => Promise<void>,
+  options: { explicitRoster?: boolean } = {},
+) {
   await withDoctorConfigPreflightHome(async (home) => {
     const stateDir = path.join(home, ".openclaw");
     const workspace = path.join(stateDir, "workspace");
     await writeOpenClawConfig(home, {
       gateway: { mode: "local" },
       plugins: { enabled: false },
-      agents: { defaults: { workspace } },
+      agents: {
+        defaults: { workspace },
+        ...(options.explicitRoster === false ? {} : { entries: { main: {} } }),
+      },
     });
     fs.mkdirSync(workspace, { recursive: true });
     await withEnvAsync({ OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1" }, () => run(stateDir, workspace));
@@ -116,24 +139,37 @@ describe("container image replacement Doctor repair and startup readiness", () =
       const configBefore = fs.readFileSync(configPath);
       seedSchema19Agent(stateDir);
 
-      const report = await runExternallyManagedDoctorRepair({
-        options: {
-          repair: true,
-          externallyManaged: true,
-          nonInteractive: true,
-          json: true,
-        },
-        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-      });
+      const report = await repairExternallyManagedContainerState();
 
       expect(report.ok, report.remaining.map((entry) => entry.message).join("\n")).toBe(true);
       expect(report.mode).toBe("externally-managed");
       expect(report.config.status).toBe("unchanged");
       expect(report.service.status).toBe("externally-managed");
       expect(report.skipped.map((entry) => entry.scope)).toEqual(["config", "service"]);
+      expect(mocks.runContributions).toHaveBeenCalledOnce();
       expect(fs.readFileSync(configPath)).toEqual(configBefore);
       await runStartupConfigPreflight({ gateway: true });
     });
+  });
+
+  it("reports deployment-owned config repairs without changing config bytes", async () => {
+    await withContainerState(
+      async (stateDir) => {
+        const configPath = path.join(stateDir, "openclaw.json");
+        const configBefore = fs.readFileSync(configPath);
+
+        const report = await repairExternallyManagedContainerState();
+
+        expect(report.ok).toBe(false);
+        expect(report.remaining).toContainEqual({
+          stepId: "config",
+          message:
+            "Deployment-owned config requires changes. Update the deployment source, redeploy it, then rerun Doctor repair.",
+        });
+        expect(fs.readFileSync(configPath)).toEqual(configBefore);
+      },
+      { explicitRoster: false },
+    );
   });
 
   it("does not migrate a pending database when its backup fails", async () => {
@@ -144,15 +180,7 @@ describe("container image replacement Doctor repair and startup readiness", () =
         warnings: ["Could not verify the pre-migration backup."],
       });
 
-      const report = await runExternallyManagedDoctorRepair({
-        options: {
-          repair: true,
-          externallyManaged: true,
-          nonInteractive: true,
-          json: true,
-        },
-        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-      });
+      const report = await repairExternallyManagedContainerState();
 
       expect(report.ok).toBe(false);
       expect(report.remaining).toContainEqual({
@@ -179,15 +207,7 @@ describe("container image replacement Doctor repair and startup readiness", () =
         },
       );
 
-      const report = await runExternallyManagedDoctorRepair({
-        options: {
-          repair: true,
-          externallyManaged: true,
-          nonInteractive: true,
-          json: true,
-        },
-        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-      });
+      const report = await repairExternallyManagedContainerState();
 
       expect(report.ok).toBe(false);
       expect(report.applied).toContainEqual(
@@ -222,15 +242,7 @@ describe("container image replacement Doctor repair and startup readiness", () =
         },
       );
 
-      const report = await runExternallyManagedDoctorRepair({
-        options: {
-          repair: true,
-          externallyManaged: true,
-          nonInteractive: true,
-          json: true,
-        },
-        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-      });
+      const report = await repairExternallyManagedContainerState();
 
       expect(report.ok).toBe(false);
       expect(report.remaining).toContainEqual({
@@ -421,15 +433,7 @@ describe("container image replacement Doctor repair and startup readiness", () =
         });
       });
       expect(fs.readFileSync(databasePath)).toEqual(original);
-      const report = await runExternallyManagedDoctorRepair({
-        options: {
-          repair: true,
-          externallyManaged: true,
-          nonInteractive: true,
-          json: true,
-        },
-        runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
-      });
+      const report = await repairExternallyManagedContainerState();
       expect(report.ok).toBe(false);
       expect(report.remaining).toEqual(
         expect.arrayContaining([

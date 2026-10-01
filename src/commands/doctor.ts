@@ -51,63 +51,6 @@ export async function doctorCommand(
   databasePreflight?: DoctorDatabasePreflight,
 ): Promise<void> {
   const outputRuntime = runtime ?? defaultRuntime;
-  if (options?.externallyManaged) {
-    let preparedPreflight = databasePreflight;
-    if (process.env.OPENCLAW_UPDATE_IN_PROGRESS === "1") {
-      const { guardUpdateDoctorSchemaUpgrade, rehearseDeferredUpdateDoctorSchema } =
-        await import("./doctor-update-schema-guard.js");
-      preparedPreflight =
-        (await guardUpdateDoctorSchemaUpgrade({
-          schemas: preparedPreflight,
-          runtime: outputRuntime,
-          json: options.json,
-        })) ?? preparedPreflight;
-      if (preparedPreflight?.updateSchemaRehearsal) {
-        await rehearseDeferredUpdateDoctorSchema(preparedPreflight, outputRuntime);
-        return;
-      }
-    }
-    const { runExternallyManagedDoctorRepair } =
-      await import("./doctor-externally-managed-repair.js");
-    const diagnostics: Array<{ level: "info" | "error"; message: string }> = [];
-    const repairRuntime = options.json
-      ? {
-          log: (...args: unknown[]) => {
-            diagnostics.push({ level: "info", message: args.map(String).join(" ") });
-          },
-          error: (...args: unknown[]) => {
-            diagnostics.push({ level: "error", message: args.map(String).join(" ") });
-          },
-          exit: (code: number) => {
-            throw new Error(`Externally managed Doctor repair exited unexpectedly (${code}).`);
-          },
-        }
-      : outputRuntime;
-    const runRepair = () =>
-      runExternallyManagedDoctorRepair({
-        options,
-        runtime: repairRuntime,
-        databasePreflight: preparedPreflight,
-      });
-    const report = options.json
-      ? await (
-          await import("../../packages/terminal-core/src/note.js")
-        ).withSuppressedNotes(runRepair)
-      : await runRepair();
-    if (options.json) {
-      writeRuntimeJson(outputRuntime, { ...report, diagnostics });
-    } else {
-      outputRuntime.log(
-        report.ok
-          ? `Externally managed Doctor repair complete: ${report.applied.length} applied, ${report.remaining.length} remaining.`
-          : `Externally managed Doctor repair incomplete: ${report.applied.length} applied, ${report.remaining.length} remaining.`,
-      );
-      for (const item of report.remaining) {
-        outputRuntime.error(`[${item.stepId}] ${item.message}`);
-      }
-    }
-    exitCliAfterOutput(outputRuntime, report.ok ? 0 : 1);
-  }
   if (options?.stateSqlite) {
     const { runDoctorStateSqliteCompact } = await import("./doctor-state-sqlite-compact.js");
     const report = await runDoctorStateSqliteCompact();
@@ -230,7 +173,47 @@ export async function doctorCommand(
     exitCliAfterOutput(outputRuntime, hasError ? 1 : 0);
   }
   const doctorHealth = await import("../flows/doctor-health.js");
-  await doctorHealth.runDoctorHealthFlow(runtime, options, undefined, databasePreflight);
+  if (!options?.externallyManaged) {
+    await doctorHealth.runDoctorHealthFlow(runtime, options, undefined, databasePreflight);
+    return;
+  }
+  const diagnostics: Array<{ level: "info" | "error"; message: string }> = [];
+  const repairRuntime = options.json
+    ? {
+        log: (...args: unknown[]) => {
+          diagnostics.push({ level: "info", message: args.map(String).join(" ") });
+        },
+        error: (...args: unknown[]) => {
+          diagnostics.push({ level: "error", message: args.map(String).join(" ") });
+        },
+        exit: (code: number) => {
+          throw new Error(`Externally managed Doctor repair exited unexpectedly (${code}).`);
+        },
+      }
+    : outputRuntime;
+  const runRepair = () =>
+    doctorHealth.runDoctorHealthFlow(repairRuntime, options, undefined, databasePreflight);
+  const report = options.json
+    ? await (
+        await import("../../packages/terminal-core/src/note.js")
+      ).withSuppressedNotes(runRepair)
+    : await runRepair();
+  if (!report) {
+    throw new Error("Externally managed Doctor repair did not produce a convergence report.");
+  }
+  if (options.json) {
+    writeRuntimeJson(outputRuntime, { ...report, diagnostics });
+  } else {
+    outputRuntime.log(
+      report.ok
+        ? `Externally managed Doctor repair complete: ${report.applied.length} applied, ${report.remaining.length} remaining.`
+        : `Externally managed Doctor repair incomplete: ${report.applied.length} applied, ${report.remaining.length} remaining.`,
+    );
+    for (const item of report.remaining) {
+      outputRuntime.error(`[${item.stepId}] ${item.message}`);
+    }
+  }
+  exitCliAfterOutput(outputRuntime, report.ok ? 0 : 1);
 }
 
 async function maybeCreateSessionSqliteGithubIssue(

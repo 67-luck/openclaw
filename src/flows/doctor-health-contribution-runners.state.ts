@@ -166,7 +166,11 @@ export async function runSessionTranscriptsHealth(ctx: DoctorHealthFlowContext):
     cfg: ctx.cfg,
     env: ctx.env ?? process.env,
     shouldRepair: ctx.prompter.shouldRepair,
-    onWarnings: (warnings) => recordDoctorHealthWarnings(ctx, [], warnings),
+    onChanges: (changes) => ctx.repairEvidence?.applied("session-state", changes),
+    onWarnings: (warnings) => {
+      ctx.repairEvidence?.remaining("session-state", warnings);
+      recordDoctorHealthWarnings(ctx, [], warnings);
+    },
     ...(ctx.configResult.postSessionPluginMigration
       ? { postSessionPluginMigration: ctx.configResult.postSessionPluginMigration }
       : {}),
@@ -174,6 +178,7 @@ export async function runSessionTranscriptsHealth(ctx: DoctorHealthFlowContext):
       ? { postSessionPluginMigrationPlanBound: true }
       : {}),
     onStepReceipt: (receipt) => {
+      ctx.repairEvidence?.receipts([receipt]);
       ctx.configResult.stateMigrationStepReceipts ??= [];
       ctx.configResult.stateMigrationStepReceipts.push(receipt);
     },
