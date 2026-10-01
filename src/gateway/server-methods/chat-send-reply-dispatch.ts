@@ -142,6 +142,7 @@ export function createChatSendReplyDispatch(params: {
   isRunCurrent?: () => boolean;
   abortSignal?: AbortSignal;
   getReplyDispatchRun?: () => ReplyDispatchRun | undefined;
+  deliverContinuation?: (reply: DeliveredChatSendReply) => Promise<void>;
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
   logGateway: GatewayRequestContext["logGateway"];
   session: Pick<
@@ -603,6 +604,16 @@ export function createChatSendReplyDispatch(params: {
     switch (info.kind) {
       case "block":
       case "final":
+        if (
+          info.kind === "final" &&
+          payloadMetadata?.continuationStatus &&
+          params.deliverContinuation
+        ) {
+          // Queue settlement releases the requester only after host persistence and
+          // publication, not after capturing a payload for post-dispatch processing.
+          await params.deliverContinuation({ input, kind: info.kind });
+          break;
+        }
         deliveredReplies.push({ input, kind: info.kind });
         if (
           info.kind === "block" &&

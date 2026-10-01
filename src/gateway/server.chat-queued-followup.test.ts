@@ -13,6 +13,13 @@ import {
 } from "vitest";
 import type { WebSocket, RawData } from "ws";
 import { mergeChatStreamMessage } from "../../packages/gateway-client/src/chat-stream-message.js";
+import {
+  createSessionProjection,
+  projectLiveSessionMessage,
+  reconcileSessionProjectionSnapshot,
+  reduceSessionProjection,
+  reduceSessionProjectionRunEvent,
+} from "../../packages/gateway-client/src/session-projection.js";
 import type { ChatEvent } from "../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createSessionsYieldTool } from "../agents/tools/sessions-yield-tool.js";
@@ -27,12 +34,17 @@ import {
 } from "../process/gateway-work-admission.js";
 import { drainOpenClawAgentWriteQueuesForTest } from "../state/openclaw-agent-write-admission.test-support.js";
 import { observeGatewayRunExecution } from "./agent-command.test-helpers.js";
+import * as replyMedia from "./server-methods/chat-reply-media.js";
+import * as transcriptPersistence from "./server-methods/chat-transcript-persistence.js";
 import { flushPendingSessionsChangedEvents } from "./server-methods/session-change-event.js";
 import { createMainChatSessionStoreFixture } from "./server.chat-session-store.test-support.js";
 import * as lifecycleState from "./session-lifecycle-state.js";
 import {
   dispatchInboundMessageMock,
   installGatewayTestHooks,
+  gatewayReplyMock,
+  mockGetReplyFromConfigOnce,
+  prepareGatewayReplyRuntimeForTest,
   onceMessage,
   rpcReq,
 } from "./test-helpers.js";
@@ -58,6 +70,7 @@ describe("queued WebChat follow-up delivery", () => {
   let observedFollowupRunId: string | undefined;
   beforeEach(async () => {
     dispatchInboundMessageMock.mockReset();
+    gatewayReplyMock.mockReset().mockResolvedValue(undefined);
     requestExecution = await observeGatewayRunExecution();
     lifecycleWrites = [];
     observedFollowupRunId = undefined;
@@ -484,4 +497,259 @@ describe("queued WebChat follow-up delivery", () => {
       });
     },
   );
+
+  test.each(["direct fallback", "queued compaction"] as const)(
+    "projects one waiting reply beside %s in either event order",
+    async (lane) => {
+      await withMainSessionStore(async () => {
+        const sourceRunId = "mixed-source-" + lane;
+        const runId = lane === "direct fallback" ? sourceRunId : "mixed-followup-" + lane;
+        observedFollowupRunId = runId;
+        const acknowledgment = "Research continues; the result will follow.";
+        const payload = buildWaitingStatusPayload({
+          completion: { expectation: "required", outcome: "pending" },
+          yielded: true,
+          yieldAcknowledgment: acknowledgment,
+          hasVisibleMessageDelivery: false,
+        });
+        assert(payload);
+        const notice =
+          lane === "direct fallback"
+            ? { text: "Model fallback notice", isFallbackNotice: true }
+            : { text: "Context compacted", isCompactionNotice: true };
+        const privateReasoning = {
+          text: "Private resume context must not be published.",
+          isReasoning: true,
+        };
+        const frames: Array<Record<string, unknown>> = [];
+        const record = (raw: RawData) => {
+          const frame = JSON.parse(rawDataToString(raw));
+          if (frame.event === "chat" && frame.payload?.runId === runId) {
+            frames.push(frame.payload);
+          }
+        };
+        ws.on("message", record);
+        let options: InternalGetReplyOptions | undefined;
+        const dispatched = createDeferred();
+        if (lane === "direct fallback") {
+          await prepareGatewayReplyRuntimeForTest();
+          mockGetReplyFromConfigOnce(async (_ctx, opts) => {
+            opts?.onAgentRunStart?.(runId);
+            emitAgentEvent({ runId, stream: "lifecycle", data: { phase: "end", yielded: true } });
+            dispatched.resolve();
+            return [notice, privateReasoning, payload];
+          });
+        } else {
+          dispatchInboundMessageMock.mockImplementationOnce(async (args: unknown) => {
+            options = (args as { replyOptions: InternalGetReplyOptions }).replyOptions;
+            options.turnAdoptionLifecycle?.onDeferred?.();
+            dispatched.resolve();
+            return {};
+          });
+        }
+        try {
+          expect(
+            (
+              await rpcReq(ws, "chat.send", {
+                sessionKey: "main",
+                message: "Research this and report when ready.",
+                idempotencyKey: sourceRunId,
+              })
+            ).ok,
+          ).toBe(true);
+          await dispatched.promise;
+          await requestExecution.waitForCompletion();
+          if (lane === "queued compaction") {
+            registerAgentRunContext(runId, {
+              sessionKey: "main",
+              completionSource: "reply-dispatch",
+            });
+            await options?.onQueuedFollowupReplyBatch?.({
+              kind: "queued-followup",
+              runId,
+              originatingChannel: "webchat",
+              payloads: [notice, privateReasoning],
+              completion: { kind: "progress" },
+            });
+            await options?.onQueuedFollowupReplyBatch?.({
+              kind: "queued-followup",
+              runId,
+              originatingChannel: "webchat",
+              payloads: [payload],
+              completion: { kind: "completed" },
+            });
+            options?.turnAdoptionLifecycle?.onSettled?.();
+          }
+          const history = await rpcReq<{ messages: unknown[] }>(ws, "chat.history", {
+            sessionKey: "main",
+          });
+          expect(history.ok).toBe(true);
+          const messages = history.payload?.messages ?? [];
+          const acknowledgmentCount = (rows: readonly unknown[]) =>
+            rows.filter((row) => JSON.stringify(row).includes(acknowledgment)).length;
+          expect(acknowledgmentCount(messages)).toBe(1);
+          for (const order of ["history-first", "live-first"]) {
+            const scope = { sessionKey: "agent:main:main" };
+            let projection = createSessionProjection(scope);
+            const persist = () => {
+              for (const message of messages) {
+                projection = reduceSessionProjection(projection, {
+                  type: "messagePersisted",
+                  message,
+                });
+              }
+            };
+            if (order === "history-first") {
+              persist();
+            }
+            for (const frame of frames) {
+              projection =
+                reduceSessionProjectionRunEvent(projection, frame, scope)?.projection ?? projection;
+              if (frame.state === "final" && frame.message) {
+                projection = projectLiveSessionMessage(projection, frame.message, { runId });
+              }
+            }
+            if (order === "live-first") {
+              persist();
+            }
+            expect.soft(acknowledgmentCount(projection.messages), order).toBe(1);
+            projection = reconcileSessionProjectionSnapshot(projection, messages, scope);
+            expect.soft(acknowledgmentCount(projection.messages), order + " reload").toBe(1);
+            expect(JSON.stringify(projection.messages)).not.toContain("Private resume context");
+          }
+        } finally {
+          ws.off("message", record);
+          options?.turnAdoptionLifecycle?.onSettled?.();
+        }
+      });
+    },
+  );
+
+  test.each([
+    "committed",
+    "rejected",
+    "queued committed",
+    "queued rejected",
+    "source rejected",
+  ] as const)("settles a waiting reply only after host publication (%s)", async (outcome) => {
+    await withMainSessionStore(async () => {
+      await prepareGatewayReplyRuntimeForTest();
+      const runId = "deferred-waiting-" + outcome;
+      const source = outcome === "source rejected";
+      const queued = outcome.startsWith("queued");
+      const rejected = outcome.endsWith("rejected");
+      let options: InternalGetReplyOptions | undefined;
+      observedFollowupRunId = runId;
+      const acknowledgment = "Research started; the result will follow.";
+      const payload = buildWaitingStatusPayload({
+        completion: { expectation: "required", outcome: "pending" },
+        continuationPending: true,
+        yieldAcknowledgment: acknowledgment,
+        hasVisibleMessageDelivery: false,
+      });
+      assert(payload);
+      const appendEntered = createDeferred();
+      const releaseAppend = createDeferred();
+      const mediaSpy = source
+        ? vi.spyOn(replyMedia, "withPreparedWebchatReplyMedia").mockImplementationOnce(async () => {
+            appendEntered.resolve();
+            await releaseAppend.promise;
+            throw new Error("Synthetic waiting reply storage failure");
+          })
+        : undefined;
+      const append = transcriptPersistence.appendAssistantTranscriptMessage;
+      const appendSpy = vi
+        .spyOn(transcriptPersistence, "appendAssistantTranscriptMessage")
+        .mockImplementation(async (params) => {
+          if (params.idempotencyKey !== runId + ":continuation-status") {
+            return append(params);
+          }
+          appendEntered.resolve();
+          await releaseAppend.promise;
+          if (rejected) {
+            return { ok: false, error: "Synthetic waiting reply storage failure" };
+          }
+          return append(params);
+        });
+      const settle = vi.fn(async (_delivered: boolean) => {});
+      const frames: Array<Record<string, unknown>> = [];
+      const record = (raw: RawData) => {
+        const frame = JSON.parse(rawDataToString(raw));
+        if (frame.event === "chat" && frame.payload?.runId === runId) {
+          frames.push(frame.payload);
+        }
+      };
+      ws.on("message", record);
+      mockGetReplyFromConfigOnce(async (_ctx, opts) => {
+        options = opts;
+        if (queued) {
+          opts?.turnAdoptionLifecycle?.onDeferred?.();
+        } else {
+          opts?.onAgentRunStart?.(runId);
+          emitAgentEvent({ runId, stream: "lifecycle", data: { phase: "end", yielded: true } });
+        }
+        if (!source) {
+          opts?.onPendingContinuation?.({ settle });
+        }
+        return source ? { text: "Model fallback notice", isFallbackNotice: true } : payload;
+      });
+      try {
+        expect(
+          (
+            await rpcReq(ws, "chat.send", {
+              sessionKey: "main",
+              message: "Research this and report when ready.",
+              idempotencyKey: runId,
+            })
+          ).ok,
+        ).toBe(true);
+        await appendEntered.promise;
+        expect.soft(settle, "queue admission is not public delivery").not.toHaveBeenCalled();
+        releaseAppend.resolve();
+        await requestExecution.waitForCompletion();
+        const history = await rpcReq<{ messages: unknown[] }>(ws, "chat.history", {
+          sessionKey: "main",
+        });
+        expect(settle.mock.calls.map(([delivered]) => delivered)).toEqual(
+          source ? [] : [!rejected],
+        );
+        if (queued) {
+          expect(lifecycleWrites).toHaveLength(0);
+        }
+        if (rejected) {
+          expect.soft(frames).toContainEqual(
+            expect.objectContaining({
+              state: "error",
+              errorMessage: expect.stringContaining("Synthetic waiting reply storage failure"),
+            }),
+          );
+          expect(JSON.stringify(history.payload)).not.toContain(acknowledgment);
+          const replay = await rpcReq(ws, "chat.send", {
+            sessionKey: "main",
+            message: "Research this and report when ready.",
+            idempotencyKey: runId,
+          });
+          expect.soft(replay.ok).toBe(false);
+          expect.soft(replay.payload).toMatchObject({ runId, status: "error" });
+        } else {
+          expect(JSON.stringify(history.payload)).toContain(acknowledgment);
+          expect(frames).toContainEqual(
+            expect.objectContaining({
+              state: "final",
+              message: expect.objectContaining({
+                content: [{ type: "text", text: acknowledgment }],
+              }),
+            }),
+          );
+        }
+      } finally {
+        releaseAppend.resolve();
+        await requestExecution.waitForCompletion();
+        appendSpy.mockRestore();
+        mediaSpy?.mockRestore();
+        options?.turnAdoptionLifecycle?.onSettled?.();
+        ws.off("message", record);
+      }
+    });
+  });
 });
