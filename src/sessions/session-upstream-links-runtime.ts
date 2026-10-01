@@ -1,6 +1,9 @@
 import { assertSessionEntryCurrentAdmission } from "../config/sessions/session-entry-current-admission.js";
 import type { SessionEntryCurrentCheck } from "../config/sessions/session-entry-current.types.js";
-import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
+import {
+  createSqliteWorkerAdmissionFactory,
+  createSqliteWorkerOperationAdmission,
+} from "../infra/sqlite-worker-operation-admission.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import {
@@ -40,7 +43,7 @@ export function settleSessionUpstreamLink(
     (scope) => scope.execute({ type: "sessionUpstream.settle", input }),
     {
       assertCurrent,
-      createAdmission: () => ({
+      createAdmission: createSqliteWorkerAdmissionFactory(false, () => ({
         nativeLocations: [context.admission.databasePath],
         admission: createSqliteWorkerOperationAdmission((request, grant) => {
           if (request.stage !== "transaction" && request.stage !== "commit") {
@@ -51,7 +54,7 @@ export function settleSessionUpstreamLink(
           assertSessionEntryCurrentAdmission(request, sessionEntryCurrent);
           grant();
         }),
-      }),
+      })),
     },
   );
 }

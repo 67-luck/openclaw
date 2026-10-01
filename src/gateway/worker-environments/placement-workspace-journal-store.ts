@@ -1,6 +1,7 @@
 import { serialize } from "node:v8";
 import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
 import {
+  createSqliteWorkerAdmissionFactory,
   createSqliteWorkerOperationAdmission,
   type SqliteWorkerOperationAdmission,
 } from "../../infra/sqlite-worker-operation-admission.js";
@@ -86,7 +87,7 @@ export function createPlacementWorkspaceJournalWorkerOps(runtime: {
           ),
         {
           assertCurrent: check,
-          createAdmission: () => {
+          createAdmission: createSqliteWorkerAdmissionFactory(false, () => {
             admission = createSqliteWorkerOperationAdmission((request, grant) => {
               check();
               if (request.stage === "commit") {
@@ -111,7 +112,7 @@ export function createPlacementWorkspaceJournalWorkerOps(runtime: {
               granted ||= request.stage === "commit";
             });
             return { nativeLocations: [runtime.path], admission };
-          },
+          }),
         },
       );
     } catch (error) {

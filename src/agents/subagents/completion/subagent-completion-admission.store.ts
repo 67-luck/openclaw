@@ -5,6 +5,7 @@ import { scheduleSessionDelivery } from "../../../infra/session-delivery-queue-r
 import type { QueuedSessionDelivery } from "../../../infra/session-delivery-queue.records.js";
 import type { SessionDeliveryWorkerOperations } from "../../../infra/session-delivery-queue.worker.js";
 import {
+  createSqliteWorkerAdmissionFactory,
   createSqliteWorkerOperationAdmission,
   type SqliteWorkerOperationAdmission,
 } from "../../../infra/sqlite-worker-operation-admission.js";
@@ -204,7 +205,7 @@ async function executeCompletionCommand<T>(
       async (scope) => parse(await scope.execute(command)),
       {
         assertCurrent,
-        createAdmission: () => {
+        createAdmission: createSqliteWorkerAdmissionFactory(false, () => {
           let phase: "waiting" | "transaction" | "commit" = "waiting";
           admission = createSqliteWorkerOperationAdmission((request, grant) => {
             if (
@@ -229,7 +230,7 @@ async function executeCompletionCommand<T>(
               context.admission.identity.canonicalPath,
             ],
           };
-        },
+        }),
       },
     );
   } catch (error) {

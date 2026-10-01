@@ -144,6 +144,7 @@ export async function loadSessionEntryForAdmission(
             };
             const source: AgentDatabaseRequestExecutionSource = {
               assertCurrent: assertSourceCurrent,
+              requiresHostContinuation: false,
               onRegistryChange: owner.onRegistryChange,
               createAdmission(binding) {
                 return () => ({

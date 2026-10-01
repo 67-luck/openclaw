@@ -109,7 +109,7 @@ export class SessionManager extends SessionManagerBranching {
   }
 
   /** No buffered writes remain here; asynchronous metadata methods own their settlement. */
-  flushPendingPersistence(): void {}
+  override flushPendingPersistence(): void {}
 
   // Worker rollback instrumentation wraps the method on this public prototype.
   override appendMessage(

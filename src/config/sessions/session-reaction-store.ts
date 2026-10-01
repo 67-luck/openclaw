@@ -110,6 +110,7 @@ export async function setSessionReactionAsync(
           execution.runExisting(
             {
               assertCurrent: assertHeld,
+              requiresHostContinuation: false,
               createAdmission(binding) {
                 return () => ({
                   nativeLocations: binding.nativeLocations,

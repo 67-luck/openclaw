@@ -65,7 +65,8 @@ vi.mock("../../infra/worker-cpu.js", async (importOriginal) => {
     const prepare = DatabaseSync.prototype.prepare;
     DatabaseSync.prototype.prepare = function(sql, ...rest) {
       const statement = prepare.call(this, sql, ...rest);
-      if (sql.startsWith('select * from "session_nodes" where "session_key" = ')) {
+      if (sql.startsWith('select ') &&
+          sql.endsWith(' from "session_nodes" where "session_key" = ?')) {
         const get = statement.get;
         statement.get = function(...args) {
           if (args.includes("agent:main:dashboard:incognito-read") &&
@@ -545,8 +546,11 @@ it.each(["hit", "missing"] as const)(
         withSessionEntryReadOnlyInWorker(
           target,
           () => {},
-          async (read) => {
+          async (read, owner) => {
+            expect(owner.kind).toBe("native");
+            owner.assertCurrent();
             await Promise.resolve();
+            owner.assertCurrent();
             return read;
           },
         ),

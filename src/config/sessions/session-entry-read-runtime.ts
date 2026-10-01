@@ -131,7 +131,7 @@ export async function withSessionEntryReadOnlyInWorker<T>(
           reader.read({ kind: "resolve-result", projection: scope.projection }),
         );
         assertCurrent();
-        result = await consume(read);
+        result = await consume(read, { kind: "native", assertCurrent });
         assertCurrent();
       } finally {
         await reader.close();

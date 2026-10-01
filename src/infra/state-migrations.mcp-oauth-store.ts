@@ -1,7 +1,10 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { runOpenClawStateWorkerOperation } from "../state/openclaw-state-worker-store.js";
-import type { SqliteWorkerOperationAdmission } from "./sqlite-worker-operation-admission.js";
+import {
+  createSqliteWorkerAdmissionFactory,
+  type SqliteWorkerOperationAdmission,
+} from "./sqlite-worker-operation-admission.js";
 import type { RetainedWorkerTransactionAdmission } from "./sqlite-worker-operation-settlement.js";
 import { createSqliteWorkerWriteAdmission } from "./sqlite-worker-store.js";
 import type {
@@ -37,11 +40,14 @@ export async function importLegacyMcpOAuthStore(
       context,
       (scope) => scope.execute({ type: "legacyMcpOAuth.import", input }),
       {
-        createAdmission(operation) {
-          const created = createAdmission(operation);
-          retained = { operation, admission: created.admission };
-          return created;
-        },
+        createAdmission: createSqliteWorkerAdmissionFactory(
+          createAdmission.requiresHostContinuation,
+          (operation) => {
+            const created = createAdmission(operation);
+            retained = { operation, admission: created.admission };
+            return created;
+          },
+        ),
       },
     );
     return { ok: true, value };

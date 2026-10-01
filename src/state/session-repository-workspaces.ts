@@ -8,6 +8,7 @@ import type { SessionEntryCurrentCheck } from "../config/sessions/session-entry-
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import {
+  createSqliteWorkerAdmissionFactory,
   createSqliteWorkerOperationAdmission,
   type SqliteWorkerOperationAdmission,
 } from "../infra/sqlite-worker-operation-admission.js";
@@ -156,7 +157,7 @@ export function createSessionRepositoryWorkspaceStore(
         },
         {
           assertCurrent: check,
-          createAdmission: (operation) => {
+          createAdmission: createSqliteWorkerAdmissionFactory(false, (operation) => {
             let stage: "transaction" | "commit" | "complete" = "transaction";
             admission = createSqliteWorkerOperationAdmission((request, grant) => {
               check();
@@ -211,7 +212,7 @@ export function createSessionRepositoryWorkspaceStore(
             });
             void publicationSettled.catch(() => undefined);
             return { admission, nativeLocations: [databasePath] };
-          },
+          }),
         },
       );
     } catch (error) {

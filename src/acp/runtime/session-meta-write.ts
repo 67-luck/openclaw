@@ -9,6 +9,7 @@ import { captureMaintenanceConfigAsyncReader } from "../../config/sessions/store
 import { mergeSessionEntry, type SessionEntry } from "../../config/sessions/types.js";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import {
+  createSqliteWorkerAdmissionFactory,
   createSqliteWorkerOperationAdmission,
   type SqliteWorkerOperationAdmission,
 } from "../../infra/sqlite-worker-operation-admission.js";
@@ -200,7 +201,7 @@ async function mutateAcpSessionMeta(
             }),
           {
             assertCurrent,
-            createAdmission() {
+            createAdmission: createSqliteWorkerAdmissionFactory(false, () => {
               let phase: "transaction" | "commit" | "settled" = "transaction";
               const admission = createSqliteWorkerOperationAdmission((request, grant) => {
                 const facts = request.facts;
@@ -245,7 +246,7 @@ async function mutateAcpSessionMeta(
                 }
               });
               return { nativeLocations: [context.admission.databasePath, options.path], admission };
-            },
+            }),
           },
         );
         assertCurrent();
@@ -361,7 +362,7 @@ async function commitAcpSessionMutation(
       },
       {
         assertCurrent,
-        createAdmission(retained) {
+        createAdmission: createSqliteWorkerAdmissionFactory(false, (retained) => {
           let phase: "transaction" | "commit" | "settled" = "transaction";
           const admission = createSqliteWorkerOperationAdmission((request, grant) => {
             assertCurrent();
@@ -382,7 +383,7 @@ async function commitAcpSessionMutation(
             nativeLocations: [context.admission.databasePath, input.source.path],
             admission,
           };
-        },
+        }),
       },
     );
   } finally {
