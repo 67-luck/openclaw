@@ -4,6 +4,7 @@ import type { ChannelRuntimeSurface } from "openclaw/plugin-sdk/channel-contract
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createEmptyPluginRegistry,
   setActivePluginRegistry,
@@ -323,32 +324,44 @@ describe("monitorDiscordProvider", () => {
   });
 
   function runProvider(overrides: Partial<Parameters<typeof monitorDiscordProvider>[0]> = {}) {
-    return monitorDiscordProvider({ config: baseConfig(), runtime: baseRuntime(), ...overrides });
+    return monitorDiscordProvider({
+      scheduler: createTestPluginServiceScheduler(),
+      config: baseConfig(),
+      runtime: baseRuntime(),
+      ...overrides,
+    });
   }
 
-  it("awaits restored thread bindings before reconciliation and provider startup", async () => {
-    const ready = createDeferred<{ stop: ReturnType<typeof vi.fn> }>();
-    const entered = createDeferred<void>();
-    const manager = { stop: vi.fn() };
-    createThreadBindingManagerMock.mockImplementationOnce(() => {
-      entered.resolve();
-      return ready.promise;
-    });
-    const monitor = monitorDiscordProvider({ config: baseConfig(), runtime: baseRuntime() });
-    try {
-      await entered.promise;
-      expect(reconcileAcpThreadBindingsOnStartupMock).not.toHaveBeenCalled();
-      expect(monitorLifecycleMock).not.toHaveBeenCalled();
-    } finally {
-      ready.resolve(manager);
-      await monitor;
-    }
-    expect(monitorLifecycleMock).toHaveBeenCalledWith(
-      expect.objectContaining({ threadBindings: manager }),
-    );
-    expect(manager.stop).toHaveBeenCalledTimes(1);
-    expect(voiceRuntimeModuleLoadedMock).not.toHaveBeenCalled();
-  });
+  it.each([true, false])(
+    "awaits restored bindings with a supplied scheduler=%s",
+    async (suppliedScheduler) => {
+      const ready = createDeferred<{ stop: ReturnType<typeof vi.fn> }>();
+      const entered = createDeferred<void>();
+      const manager = { stop: vi.fn() };
+      createThreadBindingManagerMock.mockImplementationOnce(() => {
+        entered.resolve();
+        return ready.promise;
+      });
+      const monitor = monitorDiscordProvider({
+        ...(suppliedScheduler ? { scheduler: createTestPluginServiceScheduler() } : {}),
+        config: baseConfig(),
+        runtime: baseRuntime(),
+      });
+      try {
+        await entered.promise;
+        expect(reconcileAcpThreadBindingsOnStartupMock).not.toHaveBeenCalled();
+        expect(monitorLifecycleMock).not.toHaveBeenCalled();
+      } finally {
+        ready.resolve(manager);
+        await monitor;
+      }
+      expect(monitorLifecycleMock).toHaveBeenCalledWith(
+        expect.objectContaining({ threadBindings: manager }),
+      );
+      expect(manager.stop).toHaveBeenCalledTimes(1);
+      expect(voiceRuntimeModuleLoadedMock).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(["binding reconciliation", "interaction registration"] as const)(
     "stops thread bindings when %s fails before lifecycle begins",
@@ -366,6 +379,7 @@ describe("monitorDiscordProvider", () => {
 
       await expect(
         monitorDiscordProvider({
+          scheduler: createTestPluginServiceScheduler(),
           config: baseConfig(),
           runtime: baseRuntime(),
         }),
@@ -399,6 +413,7 @@ describe("monitorDiscordProvider", () => {
         });
       }
       const monitor = monitorDiscordProvider({
+        scheduler: createTestPluginServiceScheduler(),
         config: baseConfig(),
         runtime: baseRuntime(),
         abortSignal: controller.signal,
@@ -506,6 +521,7 @@ describe("monitorDiscordProvider", () => {
     });
 
     await monitorDiscordProvider({
+      scheduler: createTestPluginServiceScheduler(),
       config: cfg,
       runtime: baseRuntime(),
       channelRuntime,

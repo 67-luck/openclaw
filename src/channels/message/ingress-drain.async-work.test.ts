@@ -5,6 +5,7 @@ import {
   scheduleFollowupDrain,
 } from "../../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
+import { createTestPluginServiceScheduler } from "../../plugin-sdk/plugin-test-api.js";
 import { runDetachedWebhookWork } from "../../plugin-sdk/webhook-request-guards.js";
 import {
   getActiveGatewayRootWorkCount,
@@ -34,6 +35,7 @@ describe("channel ingress drain async work ownership", () => {
       const events: string[] = [];
       const followupKey = `ingress-async-work:${stateDir}`;
       const monitor = createChannelIngressMonitor<Payload, Payload, Payload>({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         inspect: (raw) => ({ eventId: raw.text, laneKey: "lane-a" }),
         payload: {

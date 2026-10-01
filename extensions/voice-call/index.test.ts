@@ -3,7 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Command } from "commander";
-import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import {
+  createTestPluginApi,
+  createTestPluginServiceScheduler,
+} from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawPluginApi } from "./api.js";
 import type { VoiceCallRuntime } from "./runtime-entry.js";
@@ -144,6 +147,7 @@ function createServiceContext(): Parameters<NonNullable<Registered["service"]>["
     config: {},
     stateDir: os.tmpdir(),
     logger: noopLogger,
+    scheduler: createTestPluginServiceScheduler(),
   } as Parameters<NonNullable<Registered["service"]>["start"]>[0];
 }
 
@@ -184,6 +188,15 @@ function setup(
   });
   plugin.register(api);
   return { methods, methodScopes, tools, service };
+}
+
+async function setupActive(
+  config: Record<string, unknown>,
+  toolContext: Record<string, unknown> = {},
+): Promise<Registered> {
+  const registered = setup(config, toolContext);
+  await registered.service?.start(createServiceContext());
+  return registered;
 }
 
 function envRef(id: string) {
@@ -261,6 +274,7 @@ async function runVoiceCallCli(
   args: string[],
   pluginConfig: Record<string, unknown> = { provider: "mock" },
 ): Promise<string> {
+  vi.stubEnv("OPENCLAW_CLI", "1");
   const program = new Command();
   const stdout = captureStdout();
   try {
@@ -452,7 +466,7 @@ describe("voice-call plugin", () => {
   });
 
   it("preserves mode on legacy voicecall.start", async () => {
-    const { methods } = setup({ provider: "mock" });
+    const { methods } = await setupActive({ provider: "mock" });
     const handler = methods.get("voicecall.start") as TestGatewayHandler | undefined;
     const respond = vi.fn();
     await handler?.({
@@ -473,7 +487,7 @@ describe("voice-call plugin", () => {
   });
 
   it("preserves explicit session keys on voicecall.start", async () => {
-    const { methods } = setup({ provider: "mock" });
+    const { methods } = await setupActive({ provider: "mock" });
     const handler = methods.get("voicecall.start") as TestGatewayHandler | undefined;
     const respond = vi.fn();
     await handler?.({
@@ -499,7 +513,7 @@ describe("voice-call plugin", () => {
   });
 
   it("accepts per-call agent routing only from plugin runtime", async () => {
-    const { methods } = setup({ provider: "mock" });
+    const { methods } = await setupActive({ provider: "mock" });
     const handler = methods.get("voicecall.start") as TestGatewayHandler | undefined;
     const respond = vi.fn();
 
@@ -531,7 +545,7 @@ describe("voice-call plugin", () => {
   it("returns redacted call status", async () => {
     const call = createPrivateCallRecord();
     runtimeStub.manager.getCall = vi.fn(() => call);
-    const { methods } = setup({ provider: "mock" });
+    const { methods } = await setupActive({ provider: "mock" });
     const handler = methods.get("voicecall.status") as TestGatewayHandler | undefined;
     const respond = vi.fn();
     await handler?.({ params: { callId: "call-1" }, respond });
@@ -544,7 +558,7 @@ describe("voice-call plugin", () => {
   it("returns redacted active call status list", async () => {
     const call = createPrivateCallRecord();
     runtimeStub.manager.getActiveCalls = vi.fn(() => [call]);
-    const { methods } = setup({ provider: "mock" });
+    const { methods } = await setupActive({ provider: "mock" });
     const handler = methods.get("voicecall.status") as TestGatewayHandler | undefined;
     const respond = vi.fn();
 
@@ -559,7 +573,7 @@ describe("voice-call plugin", () => {
   });
 
   it("sends DTMF via voicecall.dtmf", async () => {
-    const { methods } = setup({ provider: "mock" });
+    const { methods } = await setupActive({ provider: "mock" });
     const handler = methods.get("voicecall.dtmf") as TestGatewayHandler | undefined;
     const respond = vi.fn();
 
@@ -577,7 +591,7 @@ describe("voice-call plugin", () => {
         providerCallId: "CA123",
       }),
     );
-    const { methods } = setup({ provider: "mock" });
+    const { methods } = await setupActive({ provider: "mock" });
     const handler = methods.get("voicecall.speak") as TestGatewayHandler | undefined;
     const respond = vi.fn();
 
@@ -589,7 +603,7 @@ describe("voice-call plugin", () => {
 
   it("does not fall back to one-shot TwiML speak when realtime-only speech is requested", async () => {
     runtimeStub.config.realtime.enabled = true;
-    const { methods } = setup({ provider: "mock" });
+    const { methods } = await setupActive({ provider: "mock" });
     const handler = methods.get("voicecall.speak") as TestGatewayHandler | undefined;
     const respond = vi.fn();
 
@@ -613,7 +627,7 @@ describe("voice-call plugin", () => {
       createCallRecord({ callId: "call-1", providerCallId: "CA123" }),
     );
     runtimeStub.webhookServer.speakRealtime = vi.fn(() => ({ success: true }));
-    const { tools } = setup({ provider: "mock" });
+    const { tools } = await setupActive({ provider: "mock" });
     const tool = tools[0] as {
       execute: (id: string, params: unknown) => Promise<unknown>;
     };
@@ -631,7 +645,7 @@ describe("voice-call plugin", () => {
 
   it("keeps the tool's classic speech fallback when no realtime bridge is active", async () => {
     runtimeStub.config.realtime.enabled = true;
-    const { tools } = setup({ provider: "mock" });
+    const { tools } = await setupActive({ provider: "mock" });
     const tool = tools[0] as {
       execute: (id: string, params: unknown) => Promise<unknown>;
     };
@@ -659,7 +673,7 @@ describe("voice-call plugin", () => {
         endedAt: Date.UTC(2026, 4, 2, 9, 18, 23),
       }),
     );
-    const { methods } = setup({ provider: "mock" });
+    const { methods } = await setupActive({ provider: "mock" });
     const handler = methods.get("voicecall.speak") as TestGatewayHandler | undefined;
     const respond = vi.fn();
 
@@ -685,7 +699,7 @@ describe("voice-call plugin", () => {
         endedAt: Number.POSITIVE_INFINITY,
       }),
     );
-    const { methods } = setup({ provider: "mock" });
+    const { methods } = await setupActive({ provider: "mock" });
     const handler = methods.get("voicecall.speak") as TestGatewayHandler | undefined;
     const respond = vi.fn();
 
@@ -702,7 +716,7 @@ describe("voice-call plugin", () => {
   it.each([{ action: "initiate_call", message: "Hello" }, { message: "Hello" }])(
     "freezes invocation context for tool-created calls ($action)",
     async (params) => {
-      const { tools } = setup(
+      const { tools } = await setupActive(
         { provider: "mock" },
         { agentId: "support", sessionKey: "agent:support:discord:channel:general" },
       );
@@ -739,7 +753,7 @@ describe("voice-call plugin", () => {
   it("tool get_status returns json payload", async () => {
     const call = createPrivateCallRecord();
     runtimeStub.manager.getCall = vi.fn(() => call);
-    const { tools } = setup({ provider: "mock" });
+    const { tools } = await setupActive({ provider: "mock" });
     const tool = tools[0] as {
       execute: (id: string, params: unknown) => Promise<unknown>;
     };
@@ -760,7 +774,7 @@ describe("voice-call plugin", () => {
       endedAt: Date.UTC(2026, 4, 2, 9, 18, 23),
     });
     runtimeStub.manager.getCallFromMemoryOrStore = vi.fn(async () => completed);
-    const { tools } = setup({ provider: "mock" });
+    const { tools } = await setupActive({ provider: "mock" });
     const tool = tools[0] as {
       execute: (id: string, params: unknown) => Promise<unknown>;
     };
@@ -775,7 +789,7 @@ describe("voice-call plugin", () => {
 
   it("tool get_status reports found:false when the call is neither active nor persisted", async () => {
     runtimeStub.manager.getCallFromMemoryOrStore = vi.fn(async () => undefined);
-    const { tools } = setup({ provider: "mock" });
+    const { tools } = await setupActive({ provider: "mock" });
     const tool = tools[0] as {
       execute: (id: string, params: unknown) => Promise<unknown>;
     };
@@ -787,7 +801,7 @@ describe("voice-call plugin", () => {
   });
 
   it("tool send_dtmf returns json payload", async () => {
-    const { tools } = setup({ provider: "mock" });
+    const { tools } = await setupActive({ provider: "mock" });
     const tool = tools[0] as {
       execute: (id: string, params: unknown) => Promise<unknown>;
     };
@@ -977,7 +991,7 @@ describe("voice-call plugin", () => {
     runtimeStub.manager.continueCall = vi.fn(
       async () => await continuePromise,
     ) as VoiceCallRuntime["manager"]["continueCall"];
-    const { methods } = setup({
+    const { methods } = await setupActive({
       provider: "mock",
       transcriptTimeoutMs: 120000,
       tts: { timeoutMs: 30000 },

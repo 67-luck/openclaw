@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { safeEqualSecret } from "openclaw/plugin-sdk/security-runtime";
 import { registerPluginHttpRoute } from "openclaw/plugin-sdk/webhook-targets";
 import {
@@ -57,6 +58,7 @@ import { createMSTeamsWebhookHandler } from "./webhook-handler.js";
 import { resolveMSTeamsLegacyWebhook, resolveMSTeamsWebhookPathIssue } from "./webhook-route.js";
 
 type MonitorMSTeamsOpts = {
+  scheduler?: PluginServiceSchedulerV1;
   cfg: OpenClawConfig;
   runtime?: RuntimeEnv;
   abortSignal?: AbortSignal;
@@ -73,6 +75,10 @@ type MonitorMSTeamsResult = {
 export async function monitorMSTeamsProvider(
   opts: MonitorMSTeamsOpts,
 ): Promise<MonitorMSTeamsResult> {
+  const scheduler = opts.scheduler;
+  if (!scheduler) {
+    throw new Error("Microsoft Teams monitor requires an account service scheduler");
+  }
   const core = getMSTeamsRuntime();
   const log = core.logging.getChildLogger({ name: "msteams" });
   let cfg = opts.cfg;
@@ -308,6 +314,7 @@ export async function monitorMSTeamsProvider(
   const handleActivity = createMSTeamsActivityHandler(handlerDeps);
 
   const ingress = createMSTeamsIngress({
+    scheduler,
     accountId: appId,
     runtime,
     dispatch: async (activity, lifecycle, liveContext) => {

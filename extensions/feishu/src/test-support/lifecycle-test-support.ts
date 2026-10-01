@@ -5,6 +5,7 @@ import {
   createTestInboundDebounceFlush,
 } from "openclaw/plugin-sdk/channel-test-helpers";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { expect, vi, type Mock } from "vitest";
 import type { ClawdbotConfig, PluginRuntime, RuntimeEnv } from "../../runtime-api.js";
@@ -510,6 +511,7 @@ export async function setupFeishuLifecycleHandler(params: {
     }
   });
   const completion = monitorSingleAccount({
+    scheduler: createTestPluginServiceScheduler(),
     cfg: params.cfg,
     account: params.account,
     runtime: params.runtime,

@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { isRecord } from "openclaw/plugin-sdk/channel-secret-basic-runtime";
 import { collectErrorGraphCandidates, formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { GoogleChatEventPayloadError, parseGoogleChatInboundPayload } from "./monitor-event.js";
 import { getGoogleChatRuntime } from "./runtime.js";
 import type { GoogleChatEvent } from "./types.js";
@@ -127,6 +128,7 @@ function resolveGoogleChatIngressNonRetryableFailure(error: unknown) {
 }
 
 export function createGoogleChatIngressMonitor(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   queue?: ChannelIngressQueue<GoogleChatIngressPayload>;
   dispatch: GoogleChatIngressDispatch;
@@ -159,6 +161,7 @@ export function createGoogleChatIngressMonitor(options: {
   };
 
   return createStandardRawEventIngressMonitor({
+    scheduler: options.scheduler,
     queue:
       options.queue ??
       (() =>

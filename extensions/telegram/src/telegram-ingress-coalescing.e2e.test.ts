@@ -1,4 +1,3 @@
-// Telegram ingress coalescing regression: durable queue → core drain → grammY → inbound buffer.
 // Both Telegram inbound buffers (album, forward-burst debounce) defer their spooled
 // participant the same way, so both depend on deferredLaneOccupancy="release" to admit
 // later same-lane members. Cover them together — a lane regression breaks both at once.
@@ -15,6 +14,8 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+// Telegram ingress coalescing regression: durable queue → core drain → grammY → inbound buffer.
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
@@ -281,6 +282,7 @@ describe("Telegram durable ingress coalescing", () => {
       } as RuntimeEnv,
     });
     const monitor = createTelegramTransportIngressMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       stateDir,
       bot,
       accountId: "default",

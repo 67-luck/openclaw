@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
+import { createTestPluginServiceScheduler } from "../../plugin-sdk/plugin-test-api.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { createChannelIngressMonitor } from "./ingress-monitor.js";
 import { createChannelIngressQueue } from "./ingress-queue.js";
@@ -41,6 +42,7 @@ describe("channel ingress monitor admission", () => {
       });
       const acknowledged = vi.fn();
       const monitor = createChannelIngressMonitor<RawEvent, string, StoredEvent>({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         inspect: (raw) => ({ eventId: raw.id, laneKey: "lane:a" }),
         payload: {
@@ -78,6 +80,7 @@ describe("channel ingress monitor admission", () => {
     const inspections: string[] = [];
     const admissions: string[] = [];
     const monitor = createChannelIngressMonitor<RawEvent, string, StoredEvent>({
+      scheduler: createTestPluginServiceScheduler(),
       queue,
       inspect: () => {
         throw new Error("legacy inspection unexpectedly used");
@@ -138,6 +141,7 @@ describe("channel ingress monitor admission", () => {
       .mockImplementation(append);
     const admissions: boolean[] = [];
     const monitor = createChannelIngressMonitor<RawEvent, string, StoredEvent>({
+      scheduler: createTestPluginServiceScheduler(),
       queue,
       inspect: (raw) => ({ eventId: raw.id, laneKey: "lane:a" }),
       payload: {

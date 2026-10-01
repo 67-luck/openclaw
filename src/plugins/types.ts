@@ -77,6 +77,8 @@ export type {
 } from "./tool-types.js";
 export type {
   OpenClawPluginNodeHostCommand,
+  OpenClawPluginNodeHostCommandV2,
+  OpenClawPluginNodeHostCommandPrepareContextV2,
   OpenClawPluginNodeHostCommandAvailabilityContext,
   OpenClawPluginNodeHostCommandIo,
 } from "./types.node-host.js";

@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 // Voice Call tests cover runtime plugin behavior.
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -260,6 +261,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
   it("explains the missing phone-call owner before provisioning a runtime", async () => {
     await expect(
       createVoiceCallRuntime({
+        lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
         config: createBaseConfig(),
         coreConfig: {
           agents: { ownership: "explicit", entries: { operator: {}, support: {} } },
@@ -287,6 +289,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     },
   ])("preserves the $name for phone-call startup", async ({ coreConfig, agentId }) => {
     const runtime = await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config: { ...createBaseConfig(), agentId },
       coreConfig,
       agentRuntime: {} as never,
@@ -309,6 +312,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
 
     await expect(
       createVoiceCallRuntime({
+        lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
         config,
         coreConfig: {},
         agentRuntime: {} as never,
@@ -348,6 +352,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     });
 
     const runtime = await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config: createBaseConfig(),
       coreConfig: {} as OpenClawConfig,
       agentRuntime: {} as never,
@@ -383,6 +388,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     mocks.webhookStop.mockRejectedValue(transportFailure);
     mocks.managerStop.mockReturnValue(drain.promise);
     const runtime = await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config: createBaseConfig(),
       coreConfig: {},
       agentRuntime: {} as never,
@@ -409,14 +415,15 @@ describe("createVoiceCallRuntime lifecycle", () => {
     } as OpenClawConfig;
 
     await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config: createBaseConfig(),
       coreConfig,
       fullConfig,
       agentRuntime: {} as never,
     });
 
-    expect(mocks.webhookCtorArgs[0]?.[3]).toBe(coreConfig);
-    expect(mocks.webhookCtorArgs[0]?.[4]).toBe(fullConfig);
+    expect(mocks.webhookCtorArgs[0]?.[4]).toBe(coreConfig);
+    expect(mocks.webhookCtorArgs[0]?.[5]).toBe(fullConfig);
   });
 
   it("builds realtime instructions for the agent frozen on each call", async () => {
@@ -438,6 +445,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
       },
     };
     const runtime = await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config,
       coreConfig: {},
       fullConfig,
@@ -491,6 +499,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     async (provider) => {
       await expect(
         createVoiceCallRuntime({
+          lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
           config: createExternalProviderConfig({ provider }),
           coreConfig: {} as OpenClawConfig,
           agentRuntime: {} as never,
@@ -503,6 +512,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
   it("fails closed when Twilio publicUrl points at a local-only webhook", async () => {
     await expect(
       createVoiceCallRuntime({
+        lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
         config: createExternalProviderConfig({
           provider: "twilio",
           publicUrl: "http://127.0.0.1:3334/voice/webhook",
@@ -516,6 +526,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
 
   it("accepts an explicit public URL for external voice providers", async () => {
     const runtime = await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config: createExternalProviderConfig({
         provider: "twilio",
         publicUrl: "https://voice.example.com/voice/webhook",
@@ -538,6 +549,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     };
 
     const runtime = await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config: createExternalProviderConfig({
         provider: "twilio",
         publicUrl: "https://voice.example.com/voice/webhook",
@@ -600,6 +612,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     });
 
     await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config,
       coreConfig: {} as OpenClawConfig,
       agentRuntime: agentRuntime as never,
@@ -671,6 +684,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     ];
 
     await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config,
       coreConfig: {} as OpenClawConfig,
       agentRuntime: {} as never,
@@ -723,6 +737,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     });
 
     await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config,
       coreConfig: {} as OpenClawConfig,
       agentRuntime: agentRuntime as never,
@@ -771,6 +786,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     });
 
     await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config,
       coreConfig: {} as OpenClawConfig,
       agentRuntime: agentRuntime as never,
@@ -822,6 +838,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     });
 
     await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config,
       coreConfig: {} as OpenClawConfig,
       agentRuntime: agentRuntime as never,
@@ -875,6 +892,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     });
 
     await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config,
       coreConfig: {} as OpenClawConfig,
       agentRuntime: agentRuntime as never,
@@ -945,6 +963,7 @@ describe("createVoiceCallRuntime lifecycle", () => {
     });
 
     await createVoiceCallRuntime({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       config,
       coreConfig: {} as OpenClawConfig,
       agentRuntime: agentRuntime as never,

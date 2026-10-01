@@ -1,6 +1,9 @@
 import type { RequestListener } from "node:http";
 import { type FetchFunction, type WebClientOptions, WebClient } from "@slack/web-api";
-import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
+import {
+  createLegacyPluginServiceScheduler,
+  waitUntilAbort,
+} from "openclaw/plugin-sdk/channel-outbound";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import {
@@ -71,7 +74,7 @@ import {
 } from "./reconnect-policy.js";
 import { resolveSlackMonitorPolicy } from "./runtime-policy.js";
 import { registerSlackMonitorSlashCommands } from "./slash.js";
-import type { MonitorSlackOpts } from "./types.js";
+import type { MonitorSlackOpts, MonitorSlackOptsV2 } from "./types.js";
 
 let slackBoltInterop: SlackBoltResolvedExports | undefined;
 
@@ -216,6 +219,16 @@ function resolveSlackRelayConfig(params: { relay: unknown; accountId: string }):
 }
 
 export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
+  const scheduler = opts.scheduler?.scope() ?? createLegacyPluginServiceScheduler();
+  try {
+    return await monitorSlackAccount({ ...opts, scheduler });
+  } finally {
+    await scheduler.stop();
+  }
+}
+
+async function monitorSlackAccount(opts: MonitorSlackOptsV2) {
+  const { scheduler } = opts;
   const cfg = opts.config ?? getRuntimeConfig();
   const runtime: RuntimeEnv = opts.runtime ?? createNonExitingRuntime();
 
@@ -289,6 +302,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   const slackDispatchers = resolveSlackMonitorDispatchers(slackMode);
   const clientOptions = resolveSlackWebClientOptions({}, slackDispatchers.webApi);
   const durableIngress = createSlackDurableIngress({
+    scheduler,
     accountId: account.accountId,
     ...(runtime.log ? { onLog: runtime.log } : {}),
     ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
@@ -535,6 +549,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
       installationIdentity: identity,
     });
     presenceMonitor = createSlackPresenceMonitor({
+      scheduler,
       accountId: account.accountId,
       accountConfig: slackCfg.presenceEvents,
       resolveClient: (workspaceTeamId) => resolveClient(workspaceTeamId).users,

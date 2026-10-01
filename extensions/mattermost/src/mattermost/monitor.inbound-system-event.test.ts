@@ -17,6 +17,7 @@ import {
   createPluginRuntimeMock,
   createTestInboundDebounceFlush,
 } from "openclaw/plugin-sdk/channel-test-helpers";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createRuntimeEnv as testRuntime } from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
   clearRuntimeConfigSnapshot,
@@ -457,6 +458,7 @@ function startTestMonitor(
   runtime: RuntimeEnv = testRuntime(),
 ): Promise<void> {
   return monitorMattermostProvider({
+    scheduler: createTestPluginServiceScheduler(),
     config,
     runtime,
     abortSignal: abortController.signal,
@@ -600,6 +602,7 @@ describe("mattermost inbound user posts", () => {
     const abort = new AbortController();
     const socketFactory = vi.fn(() => socket);
     const monitor = monitorMattermostProvider({
+      scheduler: createTestPluginServiceScheduler(),
       config: cfg,
       runtime: testRuntime(),
       abortSignal: abort.signal,
@@ -744,6 +747,7 @@ describe("mattermost inbound user posts", () => {
     mockState.fetchMattermostMe.mockRejectedValue(new Error("HTTP 401 Unauthorized"));
 
     const monitor = monitorMattermostProvider({
+      scheduler: createTestPluginServiceScheduler(),
       config: testConfig,
       runtime: testRuntime(),
       abortSignal: abortController.signal,
@@ -778,6 +782,7 @@ describe("mattermost inbound user posts", () => {
       }
       await expect(
         monitorMattermostProvider({
+          scheduler: createTestPluginServiceScheduler(),
           config: testConfig,
           runtime: testRuntime(),
           abortSignal: new AbortController().signal,
@@ -927,6 +932,7 @@ describe("mattermost inbound user posts", () => {
       let monitor: Promise<void> | undefined;
       try {
         monitor = monitorMattermostProvider({
+          scheduler: createTestPluginServiceScheduler(),
           config,
           runtime: testRuntime(),
           abortSignal: abortController.signal,

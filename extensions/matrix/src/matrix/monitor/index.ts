@@ -10,6 +10,7 @@ import {
   resolvePromptHistoryLimit,
   resolveOptionalIntegerOption,
 } from "openclaw/plugin-sdk/number-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import {
   GROUP_POLICY_BLOCKED_LABEL,
@@ -60,6 +61,7 @@ import { createMatrixMonitorSyncLifecycle } from "./sync-lifecycle.js";
 import { createMatrixMonitorTaskRunner, getMatrixMonitorTaskSignal } from "./task-runner.js";
 
 type MonitorMatrixOpts = {
+  scheduler: PluginServiceSchedulerV1;
   runtime?: RuntimeEnv;
   channelRuntime?: ChannelRuntimeSurface;
   abortSignal?: AbortSignal;
@@ -94,7 +96,7 @@ function resolveMatrixPreviewToolProgressEnabled(streaming: MatrixStreamingInput
 
 const DEFAULT_MEDIA_MAX_MB = 20;
 
-export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promise<void> {
+export async function monitorMatrixProvider(opts: MonitorMatrixOpts): Promise<void> {
   // Fast-cancel callers should not pay the full Matrix startup/import cost.
   if (opts.abortSignal?.aborted) {
     return;
@@ -424,6 +426,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       needsRoomAliasesForConfig,
     });
     const createdThreadBindingManager = await createMatrixThreadBindingManager({
+      scheduler: opts.scheduler,
       cfg,
       accountId: effectiveAccountId,
       auth,

@@ -42,6 +42,7 @@ import {
 } from "./webhook-exposure.js";
 import { VoiceCallWebhookServer } from "./webhook.js";
 import type { ToolHandlerContext } from "./webhook/realtime-handler.js";
+import type { VoiceCallSchedulingLifetime } from "./webhook/stale-call-reaper.js";
 import { cleanupTailscaleExposure, setupTailscaleExposure } from "./webhook/tailscale.js";
 
 export type VoiceCallRuntime = {
@@ -257,6 +258,7 @@ async function createRealtimeInstructionsResolver(params: {
 }
 
 export async function createVoiceCallRuntime(params: {
+  lifetime: VoiceCallSchedulingLifetime;
   config: VoiceCallConfig;
   coreConfig: OpenClawConfig;
   fullConfig?: OpenClawConfig;
@@ -307,6 +309,7 @@ export async function createVoiceCallRuntime(params: {
   const manager = new CallManager(config, undefined, cfg.session, stateRuntime);
   const realtimeVoiceRuntime = config.realtime.enabled ? await loadRealtimeVoiceRuntime() : null;
   const webhookServer = new VoiceCallWebhookServer(
+    params.lifetime,
     config,
     manager,
     provider,

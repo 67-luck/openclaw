@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -99,7 +100,11 @@ it("keeps a watched reaction on the runtime-bound global owner's queue", async (
     return client;
   });
 
-  await monitorIMessageProvider({ config: cfg, runtime });
+  await monitorIMessageProvider({
+    scheduler: createTestPluginServiceScheduler(),
+    config: cfg,
+    runtime,
+  });
 
   expect(runtime.error).not.toHaveBeenCalled();
   expect(runtime.log).toHaveBeenCalledWith(

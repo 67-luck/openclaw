@@ -33,17 +33,17 @@ export default definePluginEntry({
 });
 ```
 
-| Field                     | Type                                                             | Required | Default             |
-| ------------------------- | ---------------------------------------------------------------- | -------- | ------------------- |
-| `id`                      | `string`                                                         | Yes      | -                   |
-| `name`                    | `string`                                                         | Yes      | -                   |
-| `description`             | `string`                                                         | Yes      | -                   |
-| `kind`                    | `string` (deprecated, see below)                                 | No       | -                   |
-| `configSchema`            | `OpenClawPluginConfigSchema \| () => OpenClawPluginConfigSchema` | No       | Empty object schema |
-| `reload`                  | `OpenClawPluginReloadRegistration`                               | No       | -                   |
-| `nodeHostCommands`        | `OpenClawPluginNodeHostCommand[]`                                | No       | -                   |
-| `securityAuditCollectors` | `OpenClawPluginSecurityAuditCollector[]`                         | No       | -                   |
-| `register`                | `(api: OpenClawPluginApi) => void`                               | Yes      | -                   |
+| Field                     | Type                                                                   | Required | Default             |
+| ------------------------- | ---------------------------------------------------------------------- | -------- | ------------------- |
+| `id`                      | `string`                                                               | Yes      | -                   |
+| `name`                    | `string`                                                               | Yes      | -                   |
+| `description`             | `string`                                                               | Yes      | -                   |
+| `kind`                    | `string` (deprecated, see below)                                       | No       | -                   |
+| `configSchema`            | `OpenClawPluginConfigSchema \| () => OpenClawPluginConfigSchema`       | No       | Empty object schema |
+| `reload`                  | `OpenClawPluginReloadRegistration`                                     | No       | -                   |
+| `nodeHostCommands`        | `(OpenClawPluginNodeHostCommand \| OpenClawPluginNodeHostCommandV2)[]` | No       | -                   |
+| `securityAuditCollectors` | `OpenClawPluginSecurityAuditCollector[]`                               | No       | -                   |
+| `register`                | `(api: OpenClawPluginApi) => void`                                     | Yes      | -                   |
 
 - `id` must match your `openclaw.plugin.json` manifest.
 - External session catalogs use
@@ -299,3 +299,7 @@ export default definePluginEntry({
   node's Gateway declaration. OpenClaw evaluates it against the node-local
   startup config; command handlers should still validate availability when
   invoked.
+- Version 2 descriptors require `prepare({ config, env, scheduler })` for
+  [node-owned scheduling](/plugins/sdk-runtime/gateway-and-nodes#node-command-scheduling).
+  The host joins the preceding lifetime before preparing a replacement after
+  disconnect; original descriptors retain their one-time preparation behavior.

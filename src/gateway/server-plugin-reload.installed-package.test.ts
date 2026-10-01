@@ -28,7 +28,10 @@ import {
   createPluginRegistryOwner,
   resetPluginRuntimeStateForTest,
 } from "../plugins/runtime.js";
-import { startPluginServices, type PluginServicesHandle } from "../plugins/services.js";
+import {
+  startPluginServices,
+  type PluginServicesHandle,
+} from "../plugins/services.test-support.js";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "../plugins/test-helpers/fs-fixtures.js";
 import { writeManagedNpmPlugin } from "../plugins/test-helpers/managed-npm-plugin.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";

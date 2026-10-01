@@ -10,6 +10,7 @@ import {
   formatErrorMessage,
 } from "openclaw/plugin-sdk/error-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginJsonValue } from "openclaw/plugin-sdk/plugin-entry";
 import {
   asOptionalRecord,
@@ -79,6 +80,7 @@ function resolveSlackRelayIngressEventId(event: SlackRelayIngressEvent): string 
 }
 
 type SlackDurableIngressOptions = {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   queue?: ChannelIngressQueue<SlackIngressPayload>;
   pollIntervalMs?: number;
@@ -228,6 +230,7 @@ export function createSlackDurableIngress(
     SlackIngressBody,
     SlackIngressPayload
   >({
+    scheduler: options.scheduler,
     queue:
       options.queue ??
       (() =>

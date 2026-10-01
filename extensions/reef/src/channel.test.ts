@@ -14,6 +14,7 @@ import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { defaultRuntime } from "openclaw/plugin-sdk/runtime";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
@@ -308,13 +309,14 @@ describe("Reef gateway account ownership", () => {
     if (!start) {
       throw new Error("expected Reef gateway account starter");
     }
-    const account = start(
-      createStartAccountContext({
+    const account = start({
+      ...createStartAccountContext({
         account: reefPlugin.config.resolveAccount(cfg),
         cfg,
         abortSignal: abort.signal,
       }),
-    );
+      scheduler: createTestPluginServiceScheduler(),
+    });
     accountTasks.push(account);
     return { abort, account, ready };
   }

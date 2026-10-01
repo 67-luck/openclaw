@@ -7,6 +7,7 @@ import { formatCliCommand } from "openclaw/plugin-sdk/cli-runtime";
 import { drainPendingDeliveries } from "openclaw/plugin-sdk/delivery-queue-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { resolvePromptHistoryLimit } from "openclaw/plugin-sdk/number-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import {
   registerUnhandledRejectionHandler,
@@ -121,6 +122,7 @@ const DEFAULT_TRANSPORT_TIMEOUT_MS = 5 * 60 * 1000;
 const WHATSAPP_RECONNECT_CATCH_UP_MAX_MS = 20 * 60_000;
 
 export async function monitorWebChannel(
+  scheduler: PluginServiceSchedulerV1,
   verbose: boolean,
   listenerFactory: typeof attachWebInboxToSocket | undefined = attachWebInboxToSocket,
   keepAlive = true,
@@ -187,6 +189,7 @@ export async function monitorWebChannel(
   );
   const watchdogCheckMs = tuning.watchdogCheckMs ?? 60 * 1000;
   const controller = new WhatsAppConnectionController({
+    scheduler,
     accountId: account.accountId,
     authDir: account.authDir,
     verbose,
@@ -253,6 +256,7 @@ export async function monitorWebChannel(
               dispatchReplyFromConfig: pluginChannelRuntime?.reply?.dispatchReplyFromConfig,
             });
             return (await (listenerFactory ?? attachWebInboxToSocket)({
+              scheduler,
               cfg,
               loadConfig: loadCurrentMonitorConfig,
               verbose,
@@ -488,7 +492,7 @@ export async function monitorWebChannel(
 
       const normalizedAccountId = normalizeReconnectAccountId(account.accountId);
       const drainDeliveries = (mode: "reconnect" | "periodic") => {
-        void drainPendingDeliveries({
+        return drainPendingDeliveries({
           drainKey: `whatsapp:${normalizedAccountId}`,
           logLabel: `WhatsApp ${mode} drain`,
           cfg,
@@ -506,8 +510,18 @@ export async function monitorWebChannel(
           );
         });
       };
-      drainDeliveries("reconnect");
-      const periodicDrainInterval = setInterval(() => drainDeliveries("periodic"), 30_000);
+      const initialDrain = drainDeliveries("reconnect").finally(() => {
+        connection.backgroundTasks.delete(initialDrain);
+        if (keepAlive && !connection.scheduler.signal.aborted) {
+          connection.scheduler.schedule({
+            id: "delivery-reconcile",
+            delayMs: 30_000,
+            everyMs: 30_000,
+            run: () => drainDeliveries("periodic"),
+          });
+        }
+      });
+      connection.backgroundTasks.add(initialDrain);
 
       const inboundPolicy = resolveWhatsAppInboundPolicy({
         cfg,
@@ -526,14 +540,14 @@ export async function monitorWebChannel(
       }
 
       if (!keepAlive) {
-        clearInterval(periodicDrainInterval);
+        await initialDrain;
         approvalContextLease?.dispose();
         await controller.shutdown();
         return;
       }
 
-      const reason = await controller.waitForClose().finally(() => {
-        clearInterval(periodicDrainInterval);
+      const reason = await controller.waitForClose().finally(async () => {
+        await connection.scheduler.stop();
         approvalContextLease?.dispose();
       });
       if (stopRequested() || sigintStop || reason === "aborted") {

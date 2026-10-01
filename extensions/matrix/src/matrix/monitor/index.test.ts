@@ -1,4 +1,5 @@
 import { setImmediate } from "node:timers/promises";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MatrixConfig, MatrixStreamingMode } from "../../types.js";
 import {
@@ -34,7 +35,10 @@ describe("monitorMatrixProvider", () => {
 
   async function startMonitorAndAbortAfterStartup(): Promise<void> {
     const abortController = new AbortController();
-    const monitorPromise = monitorMatrixProvider({ abortSignal: abortController.signal });
+    const monitorPromise = monitorMatrixProvider({
+      scheduler: createTestPluginServiceScheduler(),
+      abortSignal: abortController.signal,
+    });
     await waitForCallOrderEntry("start-client");
     abortController.abort();
     await monitorPromise;
@@ -185,7 +189,10 @@ describe("monitorMatrixProvider", () => {
     const abortController = new AbortController();
     abortController.abort();
 
-    await monitorMatrixProvider({ abortSignal: abortController.signal });
+    await monitorMatrixProvider({
+      scheduler: createTestPluginServiceScheduler(),
+      abortSignal: abortController.signal,
+    });
 
     expect(hoisted.callOrder).toStrictEqual([]);
     expect(hoisted.createMatrixRoomMessageHandler).not.toHaveBeenCalled();
@@ -195,6 +202,7 @@ describe("monitorMatrixProvider", () => {
   it("publishes disconnected startup status and connected sync status without failing the monitor", async () => {
     const abortController = new AbortController();
     const monitorPromise = monitorMatrixProvider({
+      scheduler: createTestPluginServiceScheduler(),
       abortSignal: abortController.signal,
       setStatus: hoisted.setStatus,
     });
@@ -227,6 +235,7 @@ describe("monitorMatrixProvider", () => {
     const abortController = new AbortController();
     try {
       const monitorPromise = monitorMatrixProvider({
+        scheduler: createTestPluginServiceScheduler(),
         abortSignal: abortController.signal,
         setStatus: hoisted.setStatus,
       });
@@ -286,7 +295,10 @@ describe("monitorMatrixProvider", () => {
 
     process.on("unhandledRejection", onUnhandled);
     try {
-      const monitorPromise = monitorMatrixProvider({ abortSignal: abortController.signal });
+      const monitorPromise = monitorMatrixProvider({
+        scheduler: createTestPluginServiceScheduler(),
+        abortSignal: abortController.signal,
+      });
       await waitForCallOrderEntry("start-client");
 
       const onRoomMessage = registeredRoomMessageHandler();
@@ -310,6 +322,7 @@ describe("monitorMatrixProvider", () => {
   it("fails the channel task when Matrix sync emits an unexpected fatal error", async () => {
     const abortController = new AbortController();
     const monitorPromise = monitorMatrixProvider({
+      scheduler: createTestPluginServiceScheduler(),
       abortSignal: abortController.signal,
       setStatus: hoisted.setStatus,
     });
@@ -333,6 +346,7 @@ describe("monitorMatrixProvider", () => {
 
     await expect(
       monitorMatrixProvider({
+        scheduler: createTestPluginServiceScheduler(),
         setStatus: hoisted.setStatus,
       }),
     ).rejects.toThrow("prepare failed");
@@ -353,6 +367,7 @@ describe("monitorMatrixProvider", () => {
 
     await expect(
       monitorMatrixProvider({
+        scheduler: createTestPluginServiceScheduler(),
         setStatus: hoisted.setStatus,
       }),
     ).rejects.toThrow("deduper failed");
@@ -383,7 +398,10 @@ describe("monitorMatrixProvider", () => {
       });
     });
 
-    const monitorPromise = monitorMatrixProvider({ abortSignal: abortController.signal });
+    const monitorPromise = monitorMatrixProvider({
+      scheduler: createTestPluginServiceScheduler(),
+      abortSignal: abortController.signal,
+    });
 
     await waitForCallOrderEntry("start-client");
 
@@ -415,7 +433,10 @@ describe("monitorMatrixProvider", () => {
         }),
     );
 
-    const monitorPromise = monitorMatrixProvider({ abortSignal: abortController.signal });
+    const monitorPromise = monitorMatrixProvider({
+      scheduler: createTestPluginServiceScheduler(),
+      abortSignal: abortController.signal,
+    });
 
     await flushUntil(
       () => hoisted.runMatrixStartupMaintenance.mock.calls.length === 1,
@@ -450,7 +471,7 @@ describe("monitorMatrixProvider", () => {
       return await managerReady;
     });
 
-    const monitorPromise = monitorMatrixProvider();
+    const monitorPromise = monitorMatrixProvider({ scheduler: createTestPluginServiceScheduler() });
     await waitForCallOrderEntry("create-manager");
 
     await hoisted.runRegisteredMonitorRetirement();
@@ -501,7 +522,10 @@ describe("monitorMatrixProvider", () => {
     );
 
     const abortController = new AbortController();
-    const monitorPromise = monitorMatrixProvider({ abortSignal: abortController.signal });
+    const monitorPromise = monitorMatrixProvider({
+      scheduler: createTestPluginServiceScheduler(),
+      abortSignal: abortController.signal,
+    });
 
     await waitForCallOrderEntry("start-client");
     expect(hoisted.backfillMatrixAuthDeviceIdAfterStartup).toHaveBeenCalledTimes(1);
@@ -525,7 +549,7 @@ describe("monitorMatrixProvider", () => {
   });
 
   it("terminates a fully started monitor when forced retirement aborts its lease", async () => {
-    const monitorPromise = monitorMatrixProvider();
+    const monitorPromise = monitorMatrixProvider({ scheduler: createTestPluginServiceScheduler() });
     await flushUntil(
       () =>
         hoisted.runMatrixStartupMaintenance.mock.calls.length === 1 &&
@@ -563,7 +587,9 @@ describe("monitorMatrixProvider", () => {
   it("cleans up thread bindings and shared clients when startup fails", async () => {
     hoisted.state.startClientError = new Error("start failed");
 
-    await expect(monitorMatrixProvider()).rejects.toThrow("start failed");
+    await expect(
+      monitorMatrixProvider({ scheduler: createTestPluginServiceScheduler() }),
+    ).rejects.toThrow("start failed");
 
     expect(hoisted.stopThreadBindingManager).toHaveBeenCalledTimes(1);
     expect(hoisted.releaseSharedClientInstance).toHaveBeenCalledTimes(1);
@@ -615,7 +641,10 @@ describe("monitorMatrixProvider", () => {
       hoisted.callOrder.push("release-client");
     });
 
-    const monitorPromise = monitorMatrixProvider({ abortSignal: abortController.signal });
+    const monitorPromise = monitorMatrixProvider({
+      scheduler: createTestPluginServiceScheduler(),
+      abortSignal: abortController.signal,
+    });
     await waitForCallOrderEntry("start-client");
     const onRoomMessage = registeredRoomMessageHandler();
 
@@ -678,7 +707,10 @@ describe("monitorMatrixProvider", () => {
       hoisted.callOrder.push("release-retained");
     });
 
-    const monitorPromise = monitorMatrixProvider({ abortSignal: abortController.signal });
+    const monitorPromise = monitorMatrixProvider({
+      scheduler: createTestPluginServiceScheduler(),
+      abortSignal: abortController.signal,
+    });
     await waitForCallOrderEntry("start-client");
     const onRoomMessage = registeredRoomMessageHandler();
 

@@ -7,6 +7,7 @@ import {
   requestGatewayRestartWithSignalAdmission,
   resetGatewayRestartStateForInProcessRestart,
 } from "../../src/infra/restart.js";
+import { createTestPluginServiceScheduler } from "../../src/plugin-sdk/plugin-test-api.js";
 import {
   getGatewayRestartDrainSignal,
   resetGatewayWorkAdmission,
@@ -97,6 +98,7 @@ const ingress = createStandardRawEventIngressMonitor<
   unknown,
   { eventId: string; laneKey: string }
 >({
+  scheduler: createTestPluginServiceScheduler(),
   queue,
   inspect: (raw: RawEvent) => ({ eventId: raw.id, laneKey: `lane:${raw.lane}` }),
   payload: {

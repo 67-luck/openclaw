@@ -17,7 +17,7 @@ import {
 } from "./one-shot-diagnostics.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "./runtime.js";
-import { startPluginServices } from "./services.js";
+import { startPluginServices } from "./services.test-support.js";
 import type { OpenClawPluginServiceContext } from "./types.js";
 
 type NativeConnection = {

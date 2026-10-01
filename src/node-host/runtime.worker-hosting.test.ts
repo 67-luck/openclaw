@@ -44,7 +44,12 @@ vi.mock("./node-worker-workspace.js", () => ({
   },
 }));
 vi.mock("./plugin-node-host.js", () => ({
-  ensureNodeHostPluginRegistry: vi.fn(async () => undefined),
+  ensureNodeHostPluginRegistry: vi.fn(async () => ({
+    prepare: async () => {},
+    watchAvailability: () => async () => {},
+    disconnect: async () => {},
+    close: async () => {},
+  })),
   hasRegisteredNodeHostCommandActiveWork: vi.fn(() => false),
   notifyRegisteredNodeHostCommandDisconnect: vi.fn(async () => undefined),
   listRegisteredNodeHostCapsAndCommands: vi.fn(() => ({
@@ -281,32 +286,52 @@ describe("node-host worker manifest", () => {
     expect(mocks.closeWorkerSupervisor).toHaveBeenCalledOnce();
   });
 
-  it("keeps a container engine-context mismatch permanently and actionably disabled", async () => {
-    const mismatch = new NodeWorkerContainerContextMismatchError(
-      "node worker launch launch-1 belongs to a different docker engine or daemon; restore its original engine context before enabling worker hosting",
-    );
-    mocks.initializeWorkerSupervisor.mockRejectedValueOnce(mismatch);
+  it.each([false, true])(
+    "keeps a prepared container mismatch disabled and retains failed cleanup=%s for close",
+    async (closeFails) => {
+      const mismatch = new NodeWorkerContainerContextMismatchError(
+        "node worker launch launch-1 belongs to a different docker engine or daemon; restore its original engine context before enabling worker hosting",
+      );
+      mocks.initializeWorkerSupervisor.mockRejectedValueOnce(mismatch);
+      if (closeFails) {
+        mocks.closeWorkerSupervisor.mockRejectedValueOnce(new Error("container cleanup failed"));
+      }
+      const prepared = await prepareWorkerRuntime("container");
 
-    const prepared = await prepareWorkerRuntime("container");
-
-    expect(prepared.workerHostingEnabled).toBe(false);
-    expect(prepared.workerHostingDisabledReason).toBe(mismatch.message);
-    expect(mocks.initializeWorkerSupervisor).toHaveBeenCalledOnce();
-    expect(mocks.closeWorkerSupervisor).toHaveBeenCalledOnce();
-    const onRunnerCapacityChanged = vi.fn();
-    const runtime = prepared.start({ client, onRunnerCapacityChanged });
-
-    expect(createNodeWorkerSupervisor).toHaveBeenCalledOnce();
-    expect(onRunnerCapacityChanged).not.toHaveBeenCalled();
-    await runtime.invoke({ id: "after-mismatch", nodeId: "node-1", command: "system.which" });
-    expect(await runtime.tryPauseForUpdate()).toBe(false);
-    await runtime.close();
-    expect(mocks.closeWorkerSupervisor).toHaveBeenCalledOnce();
-  });
+      expect(prepared.workerHostingEnabled).toBe(false);
+      expect(prepared.workerHostingDisabledReason).toContain(mismatch.message);
+      if (closeFails) {
+        expect(prepared.workerHostingDisabledReason).toContain("container cleanup failed");
+      }
+      expect(mocks.initializeWorkerSupervisor).toHaveBeenCalledOnce();
+      expect(mocks.closeWorkerSupervisor).toHaveBeenCalledOnce();
+      const onRunnerCapacityChanged = vi.fn();
+      const runtime = prepared.start({ client, onRunnerCapacityChanged });
+      try {
+        expect(createNodeWorkerSupervisor).toHaveBeenCalledOnce();
+        expect(onRunnerCapacityChanged).not.toHaveBeenCalled();
+        await runtime.invoke({ id: "after-mismatch", nodeId: "node-1", command: "system.which" });
+        expect(mocks.handleInvoke).toHaveBeenCalledWith(
+          expect.anything(),
+          client,
+          expect.anything(),
+          expect.anything(),
+          expect.not.objectContaining({ workerSupervisor: expect.anything() }),
+        );
+        expect(await runtime.tryPauseForUpdate()).toBe(false);
+        await runtime.close();
+        expect(mocks.closeWorkerSupervisor).toHaveBeenCalledTimes(closeFails ? 2 : 1);
+        expect(mocks.initializeWorkerSupervisor).toHaveBeenCalledOnce();
+      } finally {
+        await runtime.close();
+      }
+    },
+  );
 
   it.each([false, true])(
     "keeps foreign container ownership busy when cleanup failure is %s",
     async (closeFails) => {
+      vi.useFakeTimers();
       const mismatch = new NodeWorkerContainerContextMismatchError(
         "node worker launch launch-1 belongs to a different docker engine or daemon; restore its original engine context before enabling worker hosting",
       );
@@ -322,22 +347,41 @@ describe("node-host worker manifest", () => {
       const onWorkerHostingDisabled = vi.fn();
       const runtime = prepared.start({ client, onWorkerHostingDisabled });
 
-      await vi.waitFor(() =>
-        expect(onWorkerHostingDisabled).toHaveBeenCalledExactlyOnceWith(mismatch.message),
-      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(onWorkerHostingDisabled).toHaveBeenCalledExactlyOnceWith(mismatch.message);
       expect(mocks.initializeWorkerSupervisor).toHaveBeenCalledTimes(2);
       expect(mocks.closeWorkerSupervisor).toHaveBeenCalledOnce();
       expect(await runtime.tryPauseForUpdate()).toBe(false);
-      if (closeFails) {
-        retired.reject(new Error("container cleanup failed"));
-      } else {
-        retired.resolve();
-      }
       await runtime.invoke({ id: "after-retirement", nodeId: "node-1", command: "system.which" });
       expect(mocks.handleInvoke).toHaveBeenCalledOnce();
       expect(await runtime.tryPauseForUpdate()).toBe(false);
-      await runtime.close();
-      expect(mocks.closeWorkerSupervisor).toHaveBeenCalledOnce();
+      const closed = vi.fn();
+      const closing = runtime.close().then(closed);
+      const outcome = closing.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      const failure = new Error("container cleanup failed");
+      try {
+        await vi.advanceTimersByTimeAsync(0);
+        expect(closed).not.toHaveBeenCalled();
+        if (closeFails) {
+          retired.reject(failure);
+        } else {
+          retired.resolve();
+        }
+        expect(await outcome).toBe(closeFails ? failure : undefined);
+        expect(closed).toHaveBeenCalledTimes(closeFails ? 0 : 1);
+        expect(mocks.closeWorkerSupervisor).toHaveBeenCalledOnce();
+        await runtime.close();
+        expect(mocks.closeWorkerSupervisor).toHaveBeenCalledTimes(closeFails ? 2 : 1);
+        expect(createNodeWorkerSupervisor).toHaveBeenCalledOnce();
+        expect(await runtime.tryPauseForUpdate()).toBe(false);
+      } finally {
+        retired.resolve();
+        await outcome;
+        await runtime.close();
+      }
     },
   );
 

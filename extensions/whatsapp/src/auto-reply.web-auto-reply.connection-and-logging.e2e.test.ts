@@ -1,11 +1,12 @@
+import crypto from "node:crypto";
 // Whatsapp tests cover auto reply.web auto reply.connection and logging plugin behavior.
 import "./test-helpers.js";
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { escapeRegExp, formatEnvelopeTimestamp } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { getChildLogger, setLoggerOverride } from "openclaw/plugin-sdk/runtime-env";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createRuntimeSpies } from "../../test-support/runtime-spies.js";
@@ -367,18 +368,52 @@ describe("web auto-reply connection", () => {
     expect(sleep).toHaveBeenCalled();
   });
 
+  it("finishes the initial delivery drain before a one-shot monitor closes", async () => {
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const listener = createMockWebListener();
+    deliveryQueueMocks.drainPendingDeliveries.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const run = monitorWebChannel(
+      createTestPluginServiceScheduler(),
+      false,
+      async () => listener as never,
+      false,
+      async () => undefined,
+    );
+    try {
+      await Promise.race([
+        entered.promise,
+        run.then(() => {
+          throw new Error("Monitor closed before its delivery drain");
+        }),
+      ]);
+      expect(listener.close).not.toHaveBeenCalled();
+      release.resolve();
+      await run;
+      expect(deliveryQueueMocks.drainPendingDeliveries).toHaveBeenCalledOnce();
+      expect(listener.close).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+      await run;
+    }
+  });
+
   it("drains pending deliveries while connected and stops after close", async () => {
     vi.useFakeTimers();
+    const releaseInitial = Promise.withResolvers<void>();
+    deliveryQueueMocks.drainPendingDeliveries.mockImplementationOnce(() => releaseInitial.promise);
+    const sleep = vi.fn(async () => {});
+    const scripted = createScriptedWebListenerFactory();
+    const { controller, run } = startWebAutoReplyMonitor({
+      monitorWebChannelFn: monitorWebChannel as never,
+      listenerFactory: scripted.listenerFactory,
+      sleep,
+      accountId: "work",
+    });
     try {
-      const sleep = vi.fn(async () => {});
-      const scripted = createScriptedWebListenerFactory();
-      const { controller, run } = startWebAutoReplyMonitor({
-        monitorWebChannelFn: monitorWebChannel as never,
-        listenerFactory: scripted.listenerFactory,
-        sleep,
-        accountId: "work",
-      });
-
       await vi.waitFor(
         () => {
           expect(scripted.getListenerCount()).toBe(1);
@@ -392,6 +427,10 @@ describe("web auto-reply connection", () => {
         }),
       );
 
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(deliveryQueueMocks.drainPendingDeliveries).toHaveBeenCalledOnce();
+      releaseInitial.resolve();
+      await vi.advanceTimersByTimeAsync(0);
       deliveryQueueMocks.drainPendingDeliveries.mockClear();
       await vi.advanceTimersByTimeAsync(30_000);
       await vi.waitFor(() => {
@@ -435,6 +474,10 @@ describe("web auto-reply connection", () => {
       await vi.advanceTimersByTimeAsync(30_000);
       expect(deliveryQueueMocks.drainPendingDeliveries).not.toHaveBeenCalled();
     } finally {
+      releaseInitial.resolve();
+      controller.abort();
+      scripted.resolveClose(0, { status: 499, isLoggedOut: false, error: "aborted" });
+      await run;
       vi.useRealTimers();
     }
   });
@@ -848,6 +891,7 @@ describe("web auto-reply connection", () => {
         },
       } as OpenClawConfig);
       await monitorWebChannel(
+        createTestPluginServiceScheduler(),
         false,
         capture.listenerFactory as never,
         false,
@@ -873,6 +917,7 @@ describe("web auto-reply connection", () => {
     try {
       const capture = createWebListenerFactoryCapture();
       await monitorWebChannel(
+        createTestPluginServiceScheduler(),
         false,
         capture.listenerFactory as never,
         false,
@@ -934,6 +979,7 @@ describe("web auto-reply connection", () => {
     });
 
     const run = monitorWebChannel(
+      createTestPluginServiceScheduler(),
       false,
       listenerFactory as never,
       true,

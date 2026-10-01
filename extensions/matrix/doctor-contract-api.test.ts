@@ -4,29 +4,25 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   createPersistentDedupeImportEntry,
   type PersistentDedupeEntry,
 } from "openclaw/plugin-sdk/persistent-dedupe";
-import type {
-  OpenKeyedStoreOptions,
-  PluginStateKeyedStore,
-} from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
   executeSqliteQuerySync,
   getNodeSqliteKysely,
-  getPluginStateCapacityForTests,
-  importPluginStateEntriesForDoctorForTests,
   openOpenClawStateDatabase,
-  resetPluginStateStoreForTests,
   type OpenClawStateKyselyDatabaseForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import type { PluginDoctorStateMigrationContext } from "openclaw/plugin-sdk/runtime-doctor-migrations";
-import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { stateMigrations } from "./doctor-contract-api.js";
+import {
+  accountStorageRoot,
+  createContext,
+  createMigrationParams,
+  migrationById,
+  useMatrixDoctorMigrationTestState,
+} from "./doctor-contract-api.test-support.js";
 import { SqliteBackedMatrixSyncStore } from "./src/matrix/client/file-sync-store.js";
 import { openMatrixStorageMetaStoreOptions } from "./src/matrix/client/storage-metadata.js";
 import {
@@ -50,58 +46,13 @@ import {
   readDatabaseRecords,
 } from "./src/matrix/sdk/idb-persistence.test-helpers.js";
 import { installMatrixTestRuntime } from "./src/test-runtime.js";
-import { useAutoCleanupTempDirTracker } from "./test-support.js";
 
 const DOCTOR_IDB_DATABASE_PREFIX = "openclaw-matrix-doctor-test";
 
-function createContext(env?: NodeJS.ProcessEnv): PluginDoctorStateMigrationContext {
-  return {
-    getPluginStateCapacity() {
-      return getPluginStateCapacityForTests("matrix", env);
-    },
-    importPluginStateEntries(options, entries) {
-      importPluginStateEntriesForDoctorForTests("matrix", options, entries);
-    },
-    openPluginStateKeyedStore: <T>(options: OpenKeyedStoreOptions): PluginStateKeyedStore<T> =>
-      createPluginStateKeyedStoreForTests<T>("matrix", options),
-  };
-}
-
-function createMigrationParams(stateDir: string) {
-  const env = { OPENCLAW_STATE_DIR: stateDir };
-  return {
-    config: {} as OpenClawConfig,
-    env,
-    stateDir,
-    oauthDir: path.join(stateDir, "oauth"),
-    context: createContext(env),
-  };
-}
-
-function accountStorageRoot(stateDir: string, accountId = "default", token = "0123456789abcdef") {
-  return path.join(stateDir, "matrix", "accounts", accountId, "matrix.example.org__bot", token);
-}
-
-function migrationById(id: string) {
-  const migration = stateMigrations.find((entry) => entry.id === id);
-  if (!migration) {
-    throw new Error(`missing migration ${id}`);
-  }
-  return migration;
-}
-
 describe("matrix doctor contract state migrations", () => {
-  const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
-    afterEach(async () => {
-      await closeOpenClawStateDatabaseAsync();
-      resetPluginStateStoreForTests();
-      cleanup();
-    }),
-  );
+  const tempDirs = useMatrixDoctorMigrationTestState();
 
-  beforeEach(async () => {
-    await closeOpenClawStateDatabaseAsync();
-    resetPluginStateStoreForTests();
+  beforeEach(() => {
     installMatrixTestRuntime();
   });
 

@@ -415,6 +415,7 @@ export const matrixPlugin: ChannelPlugin<ResolvedMatrixAccount, MatrixProbe> =
         resolveToolPolicy: resolveMatrixGroupToolPolicy,
       },
       conversationBindings: {
+        apiVersion: 2,
         supportsCurrentConversationBinding: true,
         bindingStore: "adapter",
         defaultTopLevelPlacement,
@@ -524,6 +525,7 @@ export const matrixPlugin: ChannelPlugin<ResolvedMatrixAccount, MatrixProbe> =
         }),
       }),
       gateway: {
+        apiVersion: 2,
         startAccount: async (ctx) => {
           const account = ctx.account;
           ctx.setStatus({
@@ -536,6 +538,7 @@ export const matrixPlugin: ChannelPlugin<ResolvedMatrixAccount, MatrixProbe> =
 
           const { monitorMatrixProvider } = await loadMatrixMonitorModule();
           return monitorMatrixProvider({
+            scheduler: ctx.scheduler,
             runtime: ctx.runtime,
             channelRuntime: ctx.channelRuntime,
             abortSignal: ctx.abortSignal,

@@ -1,12 +1,27 @@
 import { setImmediate } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import type {
+  OpenClawPluginServiceV2,
+  PluginServiceSchedulerV1,
+} from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
-import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import {
+  createTestPluginApi,
+  createTestPluginServiceScheduler,
+} from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerMatrixFullRuntime } from "../../../index.js";
-import { getOptionalMatrixRuntime, setMatrixRuntime } from "../../runtime.js";
-import { acquireSharedMatrixClient, stopSharedClientForAccount } from "./shared.js";
+import {
+  getOptionalMatrixRuntime,
+  setMatrixRuntime,
+  setMatrixServiceScheduler,
+} from "../../runtime.js";
+import {
+  acquireSharedMatrixClient,
+  adoptSharedMatrixClientScheduler,
+  stopSharedClientForAccount,
+} from "./shared.js";
 import { authFor, createMockClient } from "./shared.test-support.js";
 
 const createMatrixClientMock = vi.hoisted(() => vi.fn());
@@ -19,6 +34,7 @@ type SharedLease = Awaited<ReturnType<typeof acquireSharedMatrixClient>>;
 type Disposer = () => void | Promise<void>;
 type RegisteredOwner = {
   runtime: PluginRuntime;
+  startService: (scheduler: PluginServiceSchedulerV1) => Promise<void>;
   snapshotDisposers: () => Disposer[];
   dispose: () => Promise<void>;
 };
@@ -37,7 +53,16 @@ let previousRuntime: PluginRuntime | null;
 function registerOwner(onDisposeRegistered?: () => void): RegisteredOwner {
   const controller = new AbortController();
   const disposers = new Set<Disposer>();
-  const api = createTestPluginApi({ id: "matrix", name: "Matrix" });
+  let timerService: OpenClawPluginServiceV2 | undefined;
+  const api = createTestPluginApi({
+    id: "matrix",
+    name: "Matrix",
+    registerService: (service) => {
+      if (service.id === "matrix-clients" && service.apiVersion === 2) {
+        timerService = service;
+      }
+    },
+  });
   api.lifecycle = {
     ...api.lifecycle,
     signal: controller.signal,
@@ -52,6 +77,12 @@ function registerOwner(onDisposeRegistered?: () => void): RegisteredOwner {
   let disposal: Promise<void> | undefined;
   const owner = {
     runtime: api.runtime,
+    startService: async (scheduler: PluginServiceSchedulerV1) => {
+      if (!timerService) {
+        throw new Error("Missing Matrix client service");
+      }
+      await timerService.start({ scheduler, config: {}, stateDir: ".", logger: api.logger });
+    },
     snapshotDisposers: () => [...disposers],
     dispose: () => {
       disposal ??= (async () => {
@@ -102,6 +133,131 @@ afterEach(async () => {
 });
 
 describe("shared Matrix plugin lifecycle", () => {
+  it("adopts a scheduler installed between client construction and publication", async () => {
+    const owner = registerOwner();
+    const scheduler = createTestPluginServiceScheduler();
+    const client = createMockClient("publishing-client");
+    const creationStarted = createDeferred<void>();
+    const construction = createDeferred<typeof client>();
+    releaseBlockedIo.push(() => construction.resolve(client));
+    createMatrixClientMock.mockImplementationOnce(() => {
+      creationStarted.resolve();
+      return construction.promise;
+    });
+    const acquiring = acquire(owner.runtime, {
+      auth: authFor("publishing-client"),
+      startClient: false,
+    });
+    try {
+      await creationStarted.promise;
+      construction.resolve(client);
+      const adopting = Promise.resolve().then(() => {
+        const lifecycle = setMatrixServiceScheduler(owner.runtime, scheduler);
+        return adoptSharedMatrixClientScheduler(lifecycle, scheduler);
+      });
+      await Promise.all([acquiring, adopting]);
+      expect(client.setServiceScheduler).toHaveBeenCalledWith(scheduler);
+    } finally {
+      construction.resolve(client);
+      await scheduler.stop();
+    }
+  });
+
+  it("keeps lifecycle disposal pending after a public retirement deadline until physical cleanup", async () => {
+    vi.useFakeTimers();
+    const owner = registerOwner();
+    const auth = authFor("late-startup-owner");
+    const client = createMockClient("late-startup-owner");
+    const startupEntered = createDeferred<void>();
+    const releaseStartup = createDeferred<void>();
+    const cleanupEntered = createDeferred<void>();
+    const releaseCleanup = createDeferred<void>();
+    releaseBlockedIo.push(() => {
+      releaseStartup.resolve();
+      releaseCleanup.resolve();
+    });
+    client.start.mockImplementationOnce(async () => {
+      startupEntered.resolve();
+      await releaseStartup.promise;
+    });
+    client.stopWithoutPersist.mockImplementationOnce(async () => {
+      cleanupEntered.resolve();
+      await releaseCleanup.promise;
+    });
+    createMatrixClientMock.mockResolvedValueOnce(client);
+    const lease = await acquire(owner.runtime, { auth, startClient: false, role: "monitor" });
+    const startup = lease.start().catch(() => undefined);
+    await startupEntered.promise;
+    const publicResult = stopSharedClientForAccount(auth).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    const disposal = owner.dispose();
+    let disposed = false;
+    void disposal.then(
+      () => {
+        disposed = true;
+      },
+      () => {
+        disposed = true;
+      },
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(publicResult).resolves.toMatchObject({
+        message: "Matrix client startup did not settle within 5000ms during retirement",
+      });
+      expect(disposed).toBe(false);
+      releaseStartup.resolve();
+      await cleanupEntered.promise;
+      expect(disposed).toBe(false);
+      releaseCleanup.resolve();
+      await expect(disposal).rejects.toThrow("startup did not settle");
+    } finally {
+      releaseStartup.resolve();
+      releaseCleanup.resolve();
+      await Promise.allSettled([startup, disposal]);
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["created", "creating"] as const)(
+    "adopts the service lifetime for a client %s before service startup",
+    async (phase) => {
+      const owner = registerOwner();
+      const scheduler = createTestPluginServiceScheduler();
+      const creationStarted = createDeferred<void>();
+      const releaseCreation = createDeferred<void>();
+      releaseBlockedIo.push(() => releaseCreation.resolve());
+      const client = createMockClient("early-client");
+      createMatrixClientMock.mockImplementationOnce(async () => {
+        creationStarted.resolve();
+        await releaseCreation.promise;
+        return client;
+      });
+      const acquiring = acquire(owner.runtime, {
+        auth: authFor("early-client"),
+        startClient: false,
+        role: "monitor",
+      });
+      try {
+        await creationStarted.promise;
+        if (phase === "created") {
+          releaseCreation.resolve();
+          await acquiring;
+        }
+        await owner.startService(scheduler);
+        releaseCreation.resolve();
+        await acquiring;
+        expect(client.setServiceScheduler).toHaveBeenCalledWith(scheduler);
+        expect(client.stopAndPersist).not.toHaveBeenCalled();
+      } finally {
+        releaseCreation.resolve();
+        await scheduler.stop();
+      }
+    },
+  );
+
   it("retires the disposed owner's shared client while another runtime stays live", async () => {
     const firstOwner = registerOwner();
     const otherOwner = registerOwner();

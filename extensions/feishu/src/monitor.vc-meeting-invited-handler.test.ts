@@ -1,5 +1,6 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createChannelReplayGuard } from "openclaw/plugin-sdk/persistent-dedupe";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeSpies } from "../../test-support/runtime-spies.js";
 import type { ClawdbotConfig, PluginRuntime } from "../runtime-api.js";
@@ -212,6 +213,7 @@ describe("monitorSingleAccount VC event registration", () => {
       await finish.promise;
     });
     const monitor = monitorSingleAccount({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: buildConfig(),
       account: buildAccount(),
       botOpenIdSource: {
@@ -249,6 +251,7 @@ describe("monitorSingleAccount VC event registration", () => {
       await finish.promise;
     });
     const monitor = monitorSingleAccount({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: buildConfig(),
       account: buildAccount({ vcAutoJoin: true }),
       botOpenIdSource: { kind: "prefetched", botOpenId: "ou_bot" },

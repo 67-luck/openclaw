@@ -3,6 +3,7 @@ import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { zstdCompressSync } from "node:zlib";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -51,6 +52,7 @@ describe("resident Codex catalog recovery", () => {
       return projectCodexCatalogPage({ data: [replacement] }, { sanitize: sanitizeTerminalText });
     });
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "remote-restart",
       state,
       readNative,
@@ -90,6 +92,7 @@ describe("resident Codex catalog recovery", () => {
         projectCodexCatalogPage({ data: [original] }, { sanitize: sanitizeTerminalText }),
       );
       const index = new CodexCatalogIndex({
+        scheduler: createTestPluginServiceScheduler(),
         homeId: "external-archive",
         localSessionsRoot: root,
         readNative,
@@ -134,6 +137,7 @@ describe("resident Codex catalog recovery", () => {
       return projected;
     });
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "compressed-initial",
       localSessionsRoot: root,
       readNative,
@@ -173,6 +177,7 @@ describe("resident Codex catalog recovery", () => {
       projectCodexCatalogPage({ data: [] }, { sanitize: sanitizeTerminalText }),
     );
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId,
       localSessionsRoot: root,
       readNative,
@@ -237,6 +242,7 @@ describe("resident Codex catalog recovery", () => {
       projectCodexCatalogPage({ data: [] }, { sanitize: sanitizeTerminalText }),
     );
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "read-recovery",
       localSessionsRoot: root,
       readNative,
@@ -297,6 +303,7 @@ describe("resident Codex catalog recovery", () => {
         projectCodexCatalogPage({ data: [original] }, { sanitize: sanitizeTerminalText }),
       );
       const index = new CodexCatalogIndex({
+        scheduler: createTestPluginServiceScheduler(),
         homeId: await codexCatalogResidentHomeKey({ startOptions }),
         localSessionsRoot: root,
         readNative,
@@ -398,6 +405,7 @@ describe("resident Codex catalog recovery", () => {
         return projected;
       });
       const index = new CodexCatalogIndex({
+        scheduler: createTestPluginServiceScheduler(),
         homeId: `missing-new-${layout}`,
         localSessionsRoot: root,
         readNative,
@@ -432,6 +440,7 @@ describe("resident Codex catalog recovery", () => {
       projectCodexCatalogPage({ data: [] }, { sanitize: sanitizeTerminalText }),
     );
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "bounded-preview",
       localSessionsRoot: root,
       readNative,

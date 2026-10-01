@@ -47,6 +47,7 @@ export type MatrixThreadBindingManager = {
 type MatrixThreadBindingManagerCacheEntry = {
   storageKey: string;
   manager: MatrixThreadBindingManager;
+  isRetiring: () => boolean;
 };
 
 const MANAGERS_BY_ACCOUNT_ID = new Map<string, MatrixThreadBindingManagerCacheEntry>();

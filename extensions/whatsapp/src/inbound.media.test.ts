@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   mockExtractMessageContent,
@@ -342,6 +343,7 @@ describe("web inbound media saves with extension", () => {
     mediaMaxMb?: number,
   ) {
     return monitorWebInbox({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: { channels: { whatsapp: { allowFrom: ["*"] } } },
       verbose: false,
       onMessage,

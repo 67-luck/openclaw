@@ -1,5 +1,6 @@
 import { clearAccountFieldsFromConfigSection } from "openclaw/plugin-sdk/channel-config-helpers";
-import type { ChannelPlugin, PluginRuntime } from "openclaw/plugin-sdk/channel-core";
+import type { ChannelGatewayAdapterV2 } from "openclaw/plugin-sdk/channel-contract";
+import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 import { createAccountStatusSink } from "openclaw/plugin-sdk/channel-outbound";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { resolveLineAccount } from "./accounts.js";
@@ -10,7 +11,8 @@ import type { ResolvedLineAccount } from "./types.js";
 const loadLineProbeRuntime = createLazyRuntimeModule(() => import("./probe.runtime.js"));
 const loadLineMonitorRuntime = createLazyRuntimeModule(() => import("./monitor.runtime.js"));
 
-export const lineGatewayAdapter: NonNullable<ChannelPlugin<ResolvedLineAccount>["gateway"]> = {
+export const lineGatewayAdapter: ChannelGatewayAdapterV2<ResolvedLineAccount> = {
+  apiVersion: 2,
   startAccount: async (ctx) => {
     const account = ctx.account;
     const statusSink = createAccountStatusSink({
@@ -58,6 +60,7 @@ export const lineGatewayAdapter: NonNullable<ChannelPlugin<ResolvedLineAccount>[
     const { monitorLineProvider } = await loadLineMonitorRuntime();
 
     return await monitorLineProvider({
+      scheduler: ctx.scheduler,
       channelAccessToken: token,
       channelSecret: secret,
       accountId: account.accountId,

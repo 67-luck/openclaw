@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CodexAppServerStartOptions } from "./app-server/config-contracts.js";
@@ -134,6 +135,7 @@ async function fixture(overflow = false, evicted = false) {
   await observeCodexCatalogClient(b.client, { startOptions: options });
   const homeId = await codexCatalogResidentHomeKey({ startOptions: options });
   const index = new CodexCatalogIndex({
+    scheduler: createTestPluginServiceScheduler(),
     homeId,
     readNative: async (params: CodexThreadListParams) =>
       projectCodexCatalogPage(

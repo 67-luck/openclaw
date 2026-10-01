@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { installDiscordIngressTestRuntime } from "../test-support/ingress-runtime.js";
 
 installDiscordIngressTestRuntime();
@@ -1430,6 +1431,7 @@ describe("shouldIgnoreBoundThreadWebhookMessage", () => {
     let nowMs = 1_000;
     vi.spyOn(Date, "now").mockImplementation(() => nowMs);
     const manager = await createThreadBindingManager({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: DEFAULT_PREFLIGHT_CFG,
       accountId: "default",
       persist: false,

@@ -3,6 +3,7 @@ import { buildChannelConfigSchema } from "openclaw/plugin-sdk/channel-config-sch
 import type { ChannelInboundEventRunnerParams } from "openclaw/plugin-sdk/channel-inbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { validateJsonSchemaValue } from "openclaw/plugin-sdk/json-schema-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -189,6 +190,7 @@ describe("monitorTwitchProvider", () => {
       mocks.onMessage.mockReturnValue(mocks.unregister);
       const runtimeError = vi.fn();
       const monitor = await monitorTwitchProvider({
+        scheduler: createTestPluginServiceScheduler(),
         account,
         accountId: "default",
         config,
@@ -296,6 +298,7 @@ describe("monitorTwitchProvider", () => {
       );
       const account = { ...BASE_TWITCH_TEST_ACCOUNT, accessToken: "oauth:test-token" };
       const monitor = await monitorTwitchProvider({
+        scheduler: createTestPluginServiceScheduler(),
         account,
         accountId: "default",
         config: {},

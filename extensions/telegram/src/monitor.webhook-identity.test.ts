@@ -5,6 +5,7 @@ import {
   createChannelIngressQueueForTests,
   createPluginStateKeyedStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { withStateDirEnv } from "openclaw/plugin-sdk/test-env";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -88,6 +89,7 @@ describe("webhook account identity", () => {
             });
           const abort = new AbortController();
           const provider = monitorTelegramProvider({
+            scheduler: createTestPluginServiceScheduler(),
             token,
             config: {},
             useWebhook: true,

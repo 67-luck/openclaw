@@ -313,6 +313,7 @@ export const ircPlugin: ChannelPlugin<ResolvedIrcAccount, IrcProbe> = createChat
       }),
     }),
     gateway: {
+      apiVersion: 2,
       startAccount: async (ctx) =>
         await startIrcGatewayAccount({
           ...ctx,

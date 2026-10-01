@@ -194,6 +194,7 @@ export const nostrPlugin: ChannelPlugin<ResolvedNostrAccount> = createChatChanne
       }),
     }),
     gateway: {
+      apiVersion: 2,
       startAccount: startNostrGatewayAccount,
     },
   },

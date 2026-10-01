@@ -26,7 +26,7 @@ export function registerTelegramModelPickerCases({
     },
   ) => OpenClawConfig;
   loadConfig: ReturnType<Harness["getLoadConfigMock"]>;
-  createTelegramBot: (options: TelegramBotOptions) => Promise<unknown>;
+  createTelegramBot: (options: Omit<TelegramBotOptions, "scheduler">) => Promise<unknown>;
   getTelegramCallbackHandlerForTests: () => (context: Record<string, unknown>) => Promise<void>;
   firstEditMessageTextArg: (index: number) => unknown;
   harness: Pick<

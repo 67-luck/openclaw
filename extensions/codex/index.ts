@@ -214,7 +214,9 @@ export default definePluginEntry({
       readCodexPluginConfig(resolveCurrentPluginConfig()).sessionCatalog?.enabled !== false;
     api.registerService({
       id: "codex-session-catalog",
-      start: () => (sessionCatalogEnabled ? sessionCatalogControlFactory.start() : undefined),
+      apiVersion: 2,
+      start: ({ scheduler }) =>
+        sessionCatalogEnabled ? sessionCatalogControlFactory.start(scheduler) : undefined,
       stop: () => sessionCatalogControlFactory.stop(),
     });
     if (sessionCatalogEnabled) {

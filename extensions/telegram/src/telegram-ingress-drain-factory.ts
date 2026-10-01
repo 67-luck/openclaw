@@ -1,3 +1,4 @@
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { TelegramBotInfo } from "./bot-info.js";
@@ -17,6 +18,7 @@ type TelegramSpooledBot = {
 };
 
 type CreateTelegramTransportIngressMonitorParams = {
+  scheduler: PluginServiceSchedulerV1;
   stateDir?: string;
   bot: TelegramSpooledBot;
   accountId: string;
@@ -41,6 +43,7 @@ export function createTelegramTransportIngressMonitor(
     env: process.env,
   });
   return createTelegramIngressMonitor({
+    scheduler: params.scheduler,
     queue,
     getConfig: getRuntimeConfig,
     accountId: params.accountId,

@@ -7,6 +7,7 @@ import path from "node:path";
 import { createChannelIngressQueueForTests } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import { saveRemoteMedia } from "openclaw/plugin-sdk/media-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SmsChannelRuntime } from "./inbound.js";
 import { createSmsIngressSpool } from "./ingress-spool.js";
@@ -47,6 +48,7 @@ function createTestSpool(
   >,
 ): SmsIngressSpool {
   const spool = createSmsIngressSpool({
+    scheduler: createTestPluginServiceScheduler(),
     cfg: {},
     account,
     channelRuntime: {} as SmsChannelRuntime,
@@ -191,6 +193,7 @@ describe("createSmsIngressSpool", () => {
     } as unknown as SmsChannelRuntime;
     const queue = createQueue(stateDir);
     const spool = createSmsIngressSpool({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: {},
       account: testAccount,
       channelRuntime,

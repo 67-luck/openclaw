@@ -5,6 +5,7 @@ import {
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createChannelReplayGuard } from "openclaw/plugin-sdk/persistent-dedupe";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock, createRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -77,6 +78,7 @@ function startAccount(controller: AbortController, vcAutoJoin = false) {
     },
   };
   return monitorSingleAccount({
+    scheduler: createTestPluginServiceScheduler(),
     cfg,
     account: resolveFeishuAccount({ cfg, accountId: "test" }),
     abortSignal: controller.signal,

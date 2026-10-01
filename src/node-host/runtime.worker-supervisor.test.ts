@@ -34,7 +34,12 @@ vi.mock("./mcp.js", () => ({
 }));
 
 vi.mock("./plugin-node-host.js", () => ({
-  ensureNodeHostPluginRegistry: vi.fn(async () => undefined),
+  ensureNodeHostPluginRegistry: vi.fn(async () => ({
+    prepare: async () => {},
+    watchAvailability: () => async () => {},
+    disconnect: async () => {},
+    close: async () => {},
+  })),
   hasRegisteredNodeHostCommandActiveWork: vi.fn(() => false),
   isRegisteredNodeHostCommandDuplex: vi.fn(() => false),
   listRegisteredNodeHostCapsAndCommands: vi.fn(() => ({

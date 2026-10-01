@@ -20,6 +20,7 @@ import {
 } from "openclaw/plugin-sdk/json-schema-runtime";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createCapturedPluginRegistration,
   createEmptyPluginRegistry,
@@ -136,8 +137,10 @@ function createCodexSessionCatalogControlFactory(
     ...params,
     resolveRuntimeOptions: resolveCodexSupervisionAppServerRuntimeOptions,
   });
+  const scheduler = createTestPluginServiceScheduler();
+  factory.bindScheduler(scheduler);
   catalogFactories.add(factory);
-  return factory;
+  return { ...factory, start: () => factory.start(scheduler) };
 }
 
 function createCodexCatalogHomeResolver(
@@ -174,6 +177,7 @@ function asControlFactory(
   }
   const forRequest = "forRequest" in control ? control.forRequest : () => control;
   return {
+    bindScheduler: () => {},
     hasActiveWork: () => false,
     disconnect: async () => {},
     forRequest,

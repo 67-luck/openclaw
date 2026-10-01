@@ -1,4 +1,3 @@
-// Discord plugin module owns raw gateway-message durable ingress and replay draining.
 import { GatewayDispatchEvents, type APIMessage } from "discord-api-types/v10";
 import {
   createChannelIngressError,
@@ -9,6 +8,8 @@ import {
   type ChannelIngressMonitorLifecycle,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+// Discord plugin module owns raw gateway-message durable ingress and replay draining.
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { danger, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeNullableString as nonEmptyString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { Client } from "../internal/discord.js";
@@ -99,6 +100,7 @@ function isDiscordAuthenticationFailure(error: unknown): boolean {
 }
 
 export function createDiscordIngressMonitor(params: {
+  scheduler?: PluginServiceSchedulerV1;
   accountId: string;
   client: Client;
   runtime: Pick<RuntimeEnv, "error" | "log">;
@@ -115,6 +117,7 @@ export function createDiscordIngressMonitor(params: {
     DiscordIngressBody,
     DiscordIngressPayload
   >({
+    scheduler: params.scheduler,
     queue,
     inspect: inspectDiscordMessage,
     payload: {

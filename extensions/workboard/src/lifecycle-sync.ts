@@ -4,8 +4,9 @@ import type {
   WorkboardStatus,
 } from "@openclaw/workboard-contract";
 import { resolveGlobalSingleton } from "openclaw/plugin-sdk/global-singleton";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
-import type { OpenClawPluginApi, OpenClawPluginService } from "../api.js";
+import type { OpenClawPluginApi, OpenClawPluginServiceV2 } from "../api.js";
 import {
   cleanupWorkboardCardWorktree,
   isWorkboardWorktreeCleanupCandidate,
@@ -81,10 +82,10 @@ type WorkboardLifecycleMatchHandler = (input: {
   sessionKey?: string;
 }) => Promise<void>;
 
-type WorkboardLifecycleService = OpenClawPluginService & {
-  stop: () => void;
+type WorkboardLifecycleService = OpenClawPluginServiceV2 & {
+  stop: () => Promise<void>;
   onGatewayStart: (abortSignal?: AbortSignal) => void;
-  onGatewayStop: () => void;
+  onGatewayStop: () => Promise<void>;
 };
 
 function needsWorkboardLifecycleReconciliation(card: WorkboardCard): boolean {
@@ -445,8 +446,7 @@ export function createWorkboardLifecycleService(params: {
   onSweep?: () => void;
   now?: () => number;
 }): WorkboardLifecycleService {
-  let generation = 0;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let scheduler: PluginServiceSchedulerV1 | undefined;
   let begin: (() => void) | undefined;
   let removeDrainListener: (() => void) | undefined;
   let cleanupCursor = 0;
@@ -474,20 +474,16 @@ export function createWorkboardLifecycleService(params: {
       }
     }
   };
-  const stop = () => {
+  const stop = async () => {
     removeDrainListener?.();
     removeDrainListener = undefined;
-    generation += 1;
     begin = undefined;
-    if (timer) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
+    await scheduler?.stop();
   };
   const onGatewayStop = () => {
     workboardLifecycleGatewayState.ready = false;
     workboardLifecycleGatewayState.abortSignal = undefined;
-    stop();
+    return stop();
   };
   const beginWhenGatewayReady = () => {
     if (!workboardLifecycleGatewayState.ready) {
@@ -505,17 +501,20 @@ export function createWorkboardLifecycleService(params: {
   };
   return {
     id: "workboard-lifecycle-sync",
-    start(ctx) {
-      const owner = ++generation;
+    apiVersion: 2,
+    async start(ctx) {
+      await scheduler?.stop();
+      const owner = ctx.scheduler.scope();
+      scheduler = owner;
       let begun = false;
       const reconcile = async () => {
         try {
           await params.store.runOperation(async () => {
-            if (generation === owner) {
+            if (!owner.signal.aborted) {
               params.onSweep?.();
             }
             let cards = await params.store.list();
-            if (generation !== owner) {
+            if (owner.signal.aborted) {
               return;
             }
             if (cards.some((card) => needsWorkboardLifecycleReconciliation(card))) {
@@ -525,7 +524,7 @@ export function createWorkboardLifecycleService(params: {
                     (card) => !card.metadata?.archivedAt && cardSessionKey(card) === "unknown",
                   ),
                 });
-                if (generation !== owner) {
+                if (owner.signal.aborted) {
                   return;
                 }
                 await syncWorkboardLifecycleSessions({
@@ -534,39 +533,39 @@ export function createWorkboardLifecycleService(params: {
                   ...snapshot,
                   now: params.now?.() ?? Date.now(),
                 });
-                if (generation !== owner) {
+                if (owner.signal.aborted) {
                   return;
                 }
                 cards = await params.store.list();
               } catch (error) {
-                if (generation === owner) {
+                if (!owner.signal.aborted) {
                   ctx.logger.warn(`workboard lifecycle sync failed: ${String(error)}`);
                 }
               }
             }
-            if (generation === owner) {
+            if (!owner.signal.aborted) {
               await cleanupWorktrees(cards, (message) => ctx.logger.warn(message));
             }
           });
         } catch (error) {
-          if (generation === owner) {
+          if (!owner.signal.aborted) {
             ctx.logger.warn(`workboard lifecycle recovery failed: ${String(error)}`);
-          }
-        } finally {
-          if (generation === owner) {
-            timer = setTimeout(() => void reconcile(), WORKBOARD_LIFECYCLE_SWEEP_MS);
-            timer.unref?.();
           }
         }
       };
       begin = () => {
-        if (generation !== owner || begun) {
+        if (owner.signal.aborted || begun) {
           return;
         }
         begun = true;
         // The Gateway lifecycle signal owns the first bounded sweep; terminal
         // hooks keep end-state writes immediate between 60-second sweeps.
-        void reconcile();
+        owner.schedule({
+          id: "lifecycle-sync",
+          delayMs: 0,
+          everyMs: WORKBOARD_LIFECYCLE_SWEEP_MS,
+          run: reconcile,
+        });
       };
       beginWhenGatewayReady();
     },

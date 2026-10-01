@@ -903,6 +903,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
         }),
       }),
       gateway: {
+        apiVersion: 2,
         startAccount: async (ctx) => {
           const { monitorMSTeamsProvider } = await import("./monitor.js");
           const webhookPath = ctx.cfg.channels?.msteams?.webhook?.path || "/api/messages";
@@ -922,6 +923,7 @@ export const msteamsPlugin: ChannelPlugin<ResolvedMSTeamsAccount, ProbeMSTeamsRe
             });
           }
           return monitorMSTeamsProvider({
+            scheduler: ctx.scheduler,
             cfg: ctx.cfg,
             runtime: ctx.runtime,
             abortSignal: ctx.abortSignal,

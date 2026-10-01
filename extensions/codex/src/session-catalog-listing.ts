@@ -1,4 +1,8 @@
-import type { OpenClawPluginNodeHostCommand } from "openclaw/plugin-sdk/plugin-entry";
+import type {
+  OpenClawPluginNodeHostCommand,
+  OpenClawPluginNodeHostCommandV2,
+  OpenClawPluginNodeHostCommandPrepareContextV2,
+} from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { CodexAppServerBindingStore } from "./app-server/session-binding.js";
@@ -44,7 +48,9 @@ import { listVisiblePage } from "./session-catalog-visible-page.js";
 export function createCodexSessionCatalogNodeHostCommands(
   controlFactory: CodexSessionCatalogControlFactory,
   bindingStore?: CodexAppServerBindingStore,
-): OpenClawPluginNodeHostCommand[] {
+): Array<OpenClawPluginNodeHostCommand | OpenClawPluginNodeHostCommandV2> {
+  const prepare = ({ scheduler }: OpenClawPluginNodeHostCommandPrepareContextV2) =>
+    controlFactory.bindScheduler(scheduler);
   // Native sources ignore the Gateway route; explicit preexisting sources retain their selector.
   const bindRequest = async (paramsJSON?: string | null) => {
     const parsed = parseJsonParams(paramsJSON);
@@ -74,7 +80,9 @@ export function createCodexSessionCatalogNodeHostCommands(
       control: CodexSessionCatalogControl,
       action: CodexNodeSessionTranscriptParams,
     ) => Promise<object>,
-  ): OpenClawPluginNodeHostCommand => ({
+  ): OpenClawPluginNodeHostCommandV2 => ({
+    apiVersion: 2,
+    prepare,
     command,
     cap: CODEX_APP_SERVER_THREADS_CAPABILITY,
     dangerous: false,
@@ -93,8 +101,10 @@ export function createCodexSessionCatalogNodeHostCommands(
       }
     },
   });
-  const commands: OpenClawPluginNodeHostCommand[] = [
+  const commands: Array<OpenClawPluginNodeHostCommand | OpenClawPluginNodeHostCommandV2> = [
     {
+      apiVersion: 2,
+      prepare,
       command: CODEX_APP_SERVER_THREADS_LIST_COMMAND,
       cap: CODEX_APP_SERVER_THREADS_CAPABILITY,
       dangerous: false,
@@ -152,7 +162,13 @@ export function createCodexSessionCatalogNodeHostCommands(
       );
     }),
     transcriptCommand(CODEX_CATALOG_TRANSCRIPT_READ_COMMAND, readCodexCatalogTranscriptPage),
-    createCodexTerminalNodeHostCommand(bindRequest),
+    {
+      ...createCodexTerminalNodeHostCommand(bindRequest),
+      apiVersion: 2,
+      prepare,
+      hasActiveWork: controlFactory.hasActiveWork,
+      onDisconnect: controlFactory.disconnect,
+    },
     createCodexTerminalStartNodeHostCommand(),
   ];
   // MacNodeHostWorker sets app ownership at launch. Its native catalog may use a

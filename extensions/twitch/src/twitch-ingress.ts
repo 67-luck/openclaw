@@ -1,4 +1,3 @@
-// Twitch plugin owns raw chat-envelope durable admission and replay draining.
 import { HttpStatusCodeError } from "@twurple/api-call";
 import {
   createChannelIngressError,
@@ -7,6 +6,8 @@ import {
   type ChannelIngressMonitorLifecycle,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+// Twitch plugin owns raw chat-envelope durable admission and replay draining.
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { normalizeNullableString as nonEmptyString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { getTwitchRuntime } from "./runtime.js";
 import type { TwitchChatMessage } from "./types.js";
@@ -94,6 +95,7 @@ function stoppedError(): Error {
 }
 
 export function createTwitchIngress(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   runtime: { error?: (message: string) => void };
   deliver: (message: TwitchChatMessage, lifecycle: TwitchIngressLifecycle) => Promise<void>;
@@ -108,6 +110,7 @@ export function createTwitchIngress(options: {
   const shutdown = new AbortController();
   let stopped = false;
   const monitor = createChannelIngressMonitor<unknown, string, TwitchIngressPayload>({
+    scheduler: options.scheduler,
     queue,
     inspect: (message) => inspectTwitchIngressEvent(message),
     payload: {

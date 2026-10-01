@@ -1,3 +1,4 @@
+import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import {
   readHelperResults,
   type FaceTimeHelperPeer,
@@ -116,6 +117,7 @@ export const OUTBOUND_RECONCILE_ATTEMPTS = 12;
 export const OUTBOUND_RECONCILE_INTERVAL_MS = 250;
 
 export async function reconcilePendingFaceTimeCarrier(params: {
+  signal?: AbortSignal;
   helper: FaceTimeHelperSocketServer;
   pending: PendingFaceTimeDial;
   isCurrent: () => boolean;
@@ -127,7 +129,7 @@ export async function reconcilePendingFaceTimeCarrier(params: {
   let previousAbsentTopology: number | undefined;
   let previousAbsenceCurrent: (() => boolean) | undefined;
   for (let attempt = 0; attempt < OUTBOUND_RECONCILE_ATTEMPTS; attempt += 1) {
-    if (!params.isCurrent()) {
+    if (params.signal?.aborted || !params.isCurrent()) {
       return;
     }
     // Native events can enrich this same pending object while its query is in flight.
@@ -148,8 +150,9 @@ export async function reconcilePendingFaceTimeCarrier(params: {
       proxyIdentifier,
       pending.requestedAt,
       pending.mode,
+      params.signal,
     );
-    if (!params.isCurrent()) {
+    if (params.signal?.aborted || !params.isCurrent()) {
       return;
     }
     if (!isSnapshotCurrent()) {
@@ -189,9 +192,7 @@ export async function reconcilePendingFaceTimeCarrier(params: {
     previousAbsentTopology = completeAbsence ? topologyGeneration : undefined;
     previousAbsenceCurrent = completeAbsence ? isSnapshotCurrent : undefined;
     if (attempt + 1 < OUTBOUND_RECONCILE_ATTEMPTS) {
-      await new Promise<void>((resolve) => {
-        setTimeout(resolve, OUTBOUND_RECONCILE_INTERVAL_MS);
-      });
+      await sleepWithAbort(OUTBOUND_RECONCILE_INTERVAL_MS, params.signal);
     }
   }
 }

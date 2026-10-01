@@ -1,4 +1,3 @@
-// Nostr outbound tests exercise signed EVENT/OK frames through the real pool.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -14,6 +13,8 @@ import {
   createPluginRuntimeMock,
   createStartAccountContext,
 } from "openclaw/plugin-sdk/channel-test-helpers";
+// Nostr outbound tests exercise signed EVENT/OK frames through the real pool.
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nostrPlugin } from "./channel.js";
 import { getActiveNostrBuses } from "./gateway.js";
@@ -50,6 +51,7 @@ async function relay(options: Parameters<typeof createNostrRelayFixture>[0] = {}
 
 async function startBus(urls: string[], onError?: Parameters<typeof startNostrBus>[0]["onError"]) {
   const bus = await startNostrBus({
+    scheduler: createTestPluginServiceScheduler(),
     privateKey: TEST_HEX_PRIVATE_KEY,
     relays: urls,
     onMessage: async () => {},

@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { ErrorCodes, errorShape } from "openclaw/plugin-sdk/gateway-runtime";
 import { resolveGlobalSingleton } from "openclaw/plugin-sdk/global-singleton";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { normalizeAgentId, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import {
   asNonArrayRecord as asParamRecord,
@@ -95,6 +96,7 @@ const VOICE_CALL_RUNTIME_COORDINATOR_KEY = Symbol.for("openclaw.voice-call.runti
 
 type VoiceCallRuntimeGeneration = {
   retired: boolean;
+  scheduler?: PluginServiceSchedulerV1;
   serviceHealth?: Parameters<
     Parameters<OpenClawPluginApi["registerService"]>[0]["start"]
   >[0]["serviceHealth"];
@@ -263,7 +265,12 @@ export default definePluginEntry({
           return createdRuntime;
         }
 
+        const scheduler = runtimeGeneration.scheduler;
+        if (!isCliOnlyProcess() && (!scheduler || scheduler.signal.aborted)) {
+          throw new VoiceCallRuntimeLifecycleError("Voice call service is not running");
+        }
         const runtimePromise = createVoiceCallRuntime({
+          lifetime: scheduler ? { kind: "service", scheduler } : { kind: "standalone-cli" },
           config,
           coreConfig: api.config as OpenClawConfig,
           fullConfig: api.config,
@@ -561,6 +568,7 @@ export default definePluginEntry({
 
     api.registerService({
       id: "voicecall",
+      apiVersion: 2,
       start: (ctx) => {
         if (isCliOnlyProcess()) {
           return;
@@ -574,6 +582,7 @@ export default definePluginEntry({
             }
             runtimeRegistration.generation = { retired: false };
           }
+          runtimeRegistration.generation.scheduler = ctx.scheduler;
           runtimeRegistration.generation.serviceHealth = ctx.serviceHealth;
           activateRuntimeGeneration(runtimeRegistration.generation);
         } catch (err) {
@@ -605,6 +614,7 @@ export default definePluginEntry({
         try {
           await stopVoiceCallRuntimeGeneration(runtimeCoordinator, runtimeGeneration);
         } finally {
+          runtimeGeneration.scheduler = undefined;
           runtimeGeneration.serviceHealth = undefined;
         }
       },

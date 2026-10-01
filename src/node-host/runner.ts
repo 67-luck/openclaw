@@ -21,6 +21,7 @@ import {
   loadOrCreateDeviceIdentity,
 } from "../infra/device-identity.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { getMachineDisplayName } from "../infra/machine-name.js";
 import { logInfo } from "../logger.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -51,6 +52,7 @@ import { prepareNodeHostRuntime } from "./runtime.js";
 import { ensureNodeHostStateReady } from "./startup-state-readiness.js";
 
 type NodeHostRunOptions = {
+  scheduler?: GatewayScheduler;
   gatewayHost: string;
   gatewayPort: number;
   gatewayTls?: boolean;
@@ -268,6 +270,7 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
     }
   });
   const preparedRuntime = await prepareNodeHostRuntime({
+    scheduler: opts.scheduler,
     config: cfg,
     env: process.env,
     enableAgentRuns: true,

@@ -1,4 +1,3 @@
-// Tlon plugin module owns raw Urbit firehose durable ingress mapping and draining.
 import {
   createChannelIngressError,
   createChannelIngressMonitor,
@@ -8,6 +7,8 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { isRecord } from "openclaw/plugin-sdk/channel-secret-basic-runtime";
 import { collectErrorGraphCandidates, formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+// Tlon plugin module owns raw Urbit firehose durable ingress mapping and draining.
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeNullableString as nonEmptyString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { getTlonRuntime } from "../runtime.js";
@@ -148,6 +149,7 @@ type TlonIngressMonitor = {
 };
 
 export function createTlonIngressMonitor(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   queue?: ChannelIngressQueue<TlonIngressPayload>;
   dispatch: TlonIngressDispatch;
@@ -157,6 +159,7 @@ export function createTlonIngressMonitor(options: {
   abortSignal?: AbortSignal;
 }): TlonIngressMonitor {
   const monitor = createChannelIngressMonitor<TlonIngressRaw, TlonIngressBody, TlonIngressPayload>({
+    scheduler: options.scheduler,
     queue:
       options.queue ??
       (() =>

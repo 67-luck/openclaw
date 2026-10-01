@@ -1,5 +1,6 @@
 import type { webhook } from "@line/bot-sdk";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -48,6 +49,7 @@ function createDeliverableBot(startupConfig: OpenClawConfig): {
   });
 
   createLineBot({
+    scheduler: createTestPluginServiceScheduler(),
     channelAccessToken: "test-token",
     channelSecret: "test-secret",
     config: startupConfig,

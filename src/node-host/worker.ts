@@ -1,6 +1,7 @@
 /** Private JSONL worker exposing the CLI node-host runtime to the macOS app. */
 import { createInterface } from "node:readline";
 import { requestExitAfterOneShotOutput } from "../cli/one-shot-exit.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { VERSION } from "../version.js";
 import type { NodeHostClient } from "./client.js";
@@ -23,7 +24,7 @@ function writeStderrLine(message: string): void {
 }
 
 export async function runNodeHostWorker(
-  options: { desktopSharingEnabled?: boolean } = {},
+  options: { desktopSharingEnabled?: boolean; scheduler?: GatewayScheduler } = {},
 ): Promise<void> {
   const { initializeSqliteRuntimeCapabilities } = await import("../infra/bun-sqlite-library.js");
   await initializeSqliteRuntimeCapabilities();
@@ -32,6 +33,7 @@ export async function runNodeHostWorker(
   // The private app worker is a capability superset; persisted headless
   // command allowlists never apply here.
   const prepared = await prepareNodeHostRuntime({
+    scheduler: options.scheduler,
     enableDuplexPluginCommands: true,
     enableWorkerRuns: true,
     installedAppsSharingEnabled: nodeConfig?.installedAppsSharing === true,

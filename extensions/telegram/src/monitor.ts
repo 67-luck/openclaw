@@ -44,7 +44,8 @@ const loadTelegramMonitorPollingRuntime = createLazyRuntimeModule(
 
 const loadTelegramMonitorWebhookRuntime = createLazyRuntimeModule(() => import("./webhook.js"));
 
-export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
+export async function monitorTelegramProvider(opts: MonitorTelegramOpts) {
+  const scheduler = opts.scheduler;
   const logInfo = (line: string) => (opts.runtime?.log ?? console.log)(line);
   const logError = (line: string) => (opts.runtime?.error ?? console.error)(line);
   const log = (line: string) => {
@@ -117,6 +118,7 @@ export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
     if (opts.useWebhook) {
       const { startTelegramWebhook } = await loadTelegramMonitorWebhookRuntime();
       const webhook = await startTelegramWebhook({
+        scheduler,
         token,
         accountId: account.accountId,
         ownerAgentId,
@@ -179,6 +181,7 @@ export async function monitorTelegramProvider(opts: MonitorTelegramOpts = {}) {
     const telegramTransport = createTelegramTransportForPolling();
 
     const pollingSession = new TelegramPollingSession({
+      scheduler,
       token,
       config: cfg,
       accountId: account.accountId,

@@ -3,7 +3,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const fixture = vi.hoisted(() => ({
   bootstrap: vi.fn<() => Promise<void>>(),
-  worker: vi.fn<() => Promise<void>>(),
+  worker:
+    vi.fn<
+      (options: Parameters<typeof import("./worker.js").runNodeHostWorker>[0]) => Promise<void>
+    >(),
 }));
 vi.mock("../cli/command-execution-startup.js", () => ({
   ensureCliExecutionBootstrap: fixture.bootstrap,
@@ -55,7 +58,10 @@ it.each([0, 143])("finalizes the worker's requested exit code %s", async (code) 
   const { defaultRuntime } = await import("../runtime.js");
   const { requestExitAfterOneShotOutput } = await import("../cli/one-shot-exit.js");
   const exit = vi.spyOn(defaultRuntime, "exit").mockImplementation(() => {});
-  fixture.worker.mockImplementation(async () => {
+  let lifetime: AbortSignal | undefined;
+  fixture.worker.mockImplementation(async (options) => {
+    lifetime = options?.scheduler?.signal;
+    expect(lifetime?.aborted).toBe(false);
     process.exitCode = code;
     requestExitAfterOneShotOutput();
   });
@@ -63,6 +69,7 @@ it.each([0, 143])("finalizes the worker's requested exit code %s", async (code) 
   await import("./mac-worker-entry.js");
 
   expect(fixture.worker).toHaveBeenCalledOnce();
+  expect(lifetime?.aborted).toBe(true);
   expect(exit).toHaveBeenCalledExactlyOnceWith(code);
 });
 
@@ -77,7 +84,10 @@ it.each([
 
   await import("./mac-worker-entry.js");
 
-  expect(fixture.worker).toHaveBeenCalledExactlyOnceWith({ desktopSharingEnabled: enabled });
+  expect(fixture.worker).toHaveBeenCalledExactlyOnceWith({
+    desktopSharingEnabled: enabled,
+    scheduler: expect.anything(),
+  });
 });
 
 it("reports startup failure and finalizes an unsuccessful exit", async () => {

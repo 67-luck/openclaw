@@ -352,6 +352,7 @@ export async function startGatewaySidecars(params: {
           return;
         }
         await startPluginServices({
+          scheduler: params.scheduler,
           registry: params.pluginRegistry,
           config: params.cfg,
           workspaceDir: params.defaultWorkspaceDir,

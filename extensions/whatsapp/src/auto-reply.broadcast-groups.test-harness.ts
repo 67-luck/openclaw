@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 // Whatsapp plugin module implements auto reply.broadcast groups harness behavior.
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { vi } from "vitest";
@@ -49,7 +50,13 @@ export async function monitorWebChannelWithCapture(resolver: unknown): Promise<{
   const spies = createWebInboundDeliverySpies();
   const { listenerFactory, getOnMessage } = createWebListenerFactoryCapture();
 
-  await monitorWebChannel(false, listenerFactory, false, resolver as never);
+  await monitorWebChannel(
+    createTestPluginServiceScheduler(),
+    false,
+    listenerFactory,
+    false,
+    resolver as never,
+  );
   const onMessage = getOnMessage();
   if (!onMessage) {
     throw new Error("Missing onMessage handler");

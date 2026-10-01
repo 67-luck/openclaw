@@ -6,6 +6,7 @@ import {
   createChannelIngressQueueForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createTestRegistry,
   resetPluginRuntimeStateForTest,
@@ -202,6 +203,7 @@ export async function admitSpooledUpdate(
   });
   try {
     const monitor = createTelegramTransportIngressMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       bot,
       accountId: "default",
       botInfo: bot.botInfo,

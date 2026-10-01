@@ -4,6 +4,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { withStateDirEnv } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { monitorTelegramProvider } from "./monitor.js";
@@ -54,10 +55,11 @@ vi.mock("./fetch.js", () => ({
 
 const controllers: AbortController[] = [];
 const monitors: Promise<void>[] = [];
-function startMonitor(options: MonitorTelegramOpts = {}) {
+function startMonitor(options: Omit<MonitorTelegramOpts, "scheduler"> = {}) {
   const abort = new AbortController();
   controllers.push(abort);
   const task = monitorTelegramProvider({
+    scheduler: createTestPluginServiceScheduler(),
     token: "test-token",
     ...options,
     abortSignal: abort.signal,

@@ -3,23 +3,41 @@ import { asOptionalRecord as normalizeRecord } from "@openclaw/normalization-cor
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { NodePluginToolDescriptor } from "../../packages/gateway-protocol/src/schema/nodes.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { logDebug } from "../logger.js";
+import { createPluginRuntimeCapabilityLease } from "../plugins/capability-lease.js";
 import {
   parseComputerUseCapabilityDescriptor,
   type ComputerUseCapabilityDescriptor,
 } from "../plugins/computer-use-contract.js";
+import {
+  getPluginInstance,
+  getPluginOriginalValue,
+  getPluginValueInstance,
+  runPluginCleanup,
+} from "../plugins/plugin-instance-scope.js";
+import { PluginInvocationScope } from "../plugins/plugin-invocation-scope.js";
+import {
+  capturePluginRegistryLifecycleEpoch,
+  capturePluginRegistryLifecycleSignal,
+} from "../plugins/registry-lifecycle.js";
 import type {
   PluginNodeHostCommandRegistration,
   PluginRegistry,
 } from "../plugins/registry-types.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
+import { createPluginServiceSchedulerRunner } from "../plugins/service-scheduler-context.js";
+import { createPluginServiceScheduler } from "../plugins/service-scheduler.js";
 import type {
   OpenClawPluginNodeHostCommandAvailabilityContext,
   OpenClawPluginNodeHostCommandIo,
   PluginLogger,
 } from "../plugins/types.js";
-import type { OpenClawPluginNodeHostCommandContext } from "../plugins/types.node-host.js";
+import type {
+  OpenClawPluginNodeHostCommandContext,
+  OpenClawPluginNodeHostCommandV2,
+} from "../plugins/types.node-host.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { preparePluginExecAuthorization } from "./plugin-exec-policy.js";
 
@@ -27,9 +45,26 @@ const loadPluginRegistryLoaderModule = createLazyRuntimeModule(
   () => import("../plugins/loader.js"),
 );
 let nodeHostPluginRegistry: PluginRegistry | undefined;
+let nodeHostPluginLifetime: ReturnType<typeof createNodeHostPluginLifetime> | undefined;
 
 function resolveNodeHostPluginRegistry() {
   return nodeHostPluginRegistry ?? getActivePluginRegistry() ?? undefined;
+}
+
+function nodeHostCallbackIdentity(callback: object): object {
+  const instance = getPluginValueInstance(callback);
+  if (!instance) {
+    return callback;
+  }
+  let identity = callback;
+  for (
+    let original = getPluginOriginalValue(identity, instance);
+    original;
+    original = getPluginOriginalValue(identity, instance)
+  ) {
+    identity = original;
+  }
+  return identity;
 }
 
 /** Ensure plugin registry data is loaded before node-host command dispatch. */
@@ -39,7 +74,9 @@ export async function ensureNodeHostPluginRegistry(params: {
   commandAllowlist?: ReadonlySet<string>;
   onlyPluginIds?: string[];
   logger?: PluginLogger;
-}): Promise<void> {
+  scheduler?: GatewayScheduler;
+}) {
+  await nodeHostPluginLifetime?.close();
   const registry = (await loadPluginRegistryLoaderModule()).loadPluginRegistryHandle({
     config: params.config,
     activationSourceConfig: params.config,
@@ -47,23 +84,254 @@ export async function ensureNodeHostPluginRegistry(params: {
     onlyPluginIds: params.onlyPluginIds,
     logger: params.logger,
   });
-  // Resolve this registry's native readiness before publishing the first manifest.
-  // No process-wide preparation cache: a replacement registry owns fresh resources.
-  await withPluginRuntimeRegistryScope(registry, async () => {
-    const prepare = new Set(
-      registry.nodeHostCommands
-        .filter(
-          (entry) => !params.commandAllowlist || params.commandAllowlist.has(entry.command.command),
-        )
-        .map((entry) => entry.command.prepare),
-    );
-    await Promise.all(
-      [...prepare].map(async (callback) =>
-        callback?.({ config: params.config, env: params.env ?? process.env }),
-      ),
-    );
-  });
+  const lifetime = createNodeHostPluginLifetime(registry, params);
   nodeHostPluginRegistry = registry;
+  nodeHostPluginLifetime = lifetime;
+  await using preparation = {
+    transferred: false,
+    async [Symbol.asyncDispose]() {
+      if (!this.transferred) {
+        await lifetime.close();
+      }
+    },
+  };
+  await lifetime.prepare();
+  preparation.transferred = true;
+  return lifetime;
+}
+
+function createNodeHostPluginLifetime(
+  registry: PluginRegistry,
+  params: {
+    config: OpenClawConfig;
+    env?: NodeJS.ProcessEnv;
+    commandAllowlist?: ReadonlySet<string>;
+    scheduler?: GatewayScheduler;
+  },
+) {
+  type Owner = {
+    scheduler: ReturnType<typeof createPluginServiceScheduler>;
+    lease: ReturnType<typeof createPluginRuntimeCapabilityLease>;
+    preparing: Promise<void>;
+  };
+  const owners = new Map<string, Owner>();
+  const commands = registry.nodeHostCommands.filter(
+    (entry) => !params.commandAllowlist || params.commandAllowlist.has(entry.command.command),
+  );
+  const signal = capturePluginRegistryLifecycleSignal(
+    registry,
+    capturePluginRegistryLifecycleEpoch(registry),
+    { scopedRuntime: true },
+  );
+  if (!signal) {
+    throw new Error("Node plugin registry is retired");
+  }
+  const instances = new Set(
+    commands.flatMap((entry) => {
+      const record = registry.plugins.find((candidate) => candidate.id === entry.pluginId);
+      const instance = record ? getPluginInstance(record) : getPluginValueInstance(entry.command);
+      return instance ? [instance] : [];
+    }),
+  );
+  const custody = new PluginInvocationScope(registry, instances, {
+    retained: true,
+    kind: "custody",
+  });
+  let cleanupScope = custody;
+  const availabilityStops = new Set<() => Promise<void>>();
+  const legacyPreparations = new Set(
+    commands.flatMap(({ command }) =>
+      command.apiVersion !== 2 && command.prepare ? [command.prepare] : [],
+    ),
+  );
+  let initialPreparation: Promise<void> | undefined;
+  const preparations = new Map<string, Map<object, OpenClawPluginNodeHostCommandV2["prepare"]>>();
+  for (const entry of commands) {
+    if (entry.command.apiVersion !== 2) {
+      continue;
+    }
+    let callbacks = preparations.get(entry.pluginId);
+    if (!callbacks) {
+      callbacks = new Map();
+      preparations.set(entry.pluginId, callbacks);
+    }
+    const prepare = entry.command.prepare;
+    const identity = nodeHostCallbackIdentity(prepare);
+    if (!callbacks.has(identity)) {
+      callbacks.set(identity, prepare);
+    }
+  }
+  let closed = false;
+  let stopping: Promise<void> | undefined;
+  let closing: Promise<void> | undefined;
+  let disconnectFailure: AggregateError | undefined;
+  let disconnected = false;
+  const completedDisconnects = new Map<object | undefined, Set<object>>();
+  let finalCleanup: ReturnType<PluginInvocationScope["beginCleanup"]> | undefined;
+  const disconnect = () => {
+    if (closing) {
+      return closing;
+    }
+    if (stopping) {
+      return stopping;
+    }
+    if (disconnected) {
+      return Promise.resolve();
+    }
+    const current = [...owners.values()];
+    stopping = Promise.resolve()
+      .then(async () => {
+        await Promise.all([
+          ...(initialPreparation ? [initialPreparation.catch(() => undefined)] : []),
+          ...current.map((owner) => owner.preparing.catch(() => undefined)),
+        ]);
+        const results = await Promise.allSettled([
+          cleanupScope.run(() =>
+            notifyRegisteredNodeHostCommandDisconnect(registry, commands, completedDisconnects),
+          ),
+          ...current.map((owner) => owner.scheduler.stop()),
+        ]);
+        for (const owner of current) {
+          owner.lease.revoke();
+        }
+        const failures = results.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        if (failures.length) {
+          disconnectFailure = new AggregateError(
+            failures,
+            "node plugin lifetime retirement failed; reconnect the node to retry cleanup",
+          );
+          throw disconnectFailure;
+        }
+        owners.clear();
+        disconnectFailure = undefined;
+        disconnected = true;
+      })
+      .finally(() => {
+        stopping = undefined;
+      });
+    for (const owner of current) {
+      owner.scheduler.beginClose();
+    }
+    return stopping;
+  };
+  const assertOpen = () => {
+    if (closed || nodeHostPluginRegistry !== registry) {
+      throw new Error("Node plugin preparation owner is retired");
+    }
+    signal.throwIfAborted();
+  };
+  const lifetime = {
+    async prepare() {
+      while (stopping) {
+        await stopping;
+      }
+      if (disconnectFailure) {
+        throw disconnectFailure;
+      }
+      assertOpen();
+      params.scheduler?.signal.throwIfAborted();
+      if (disconnected) {
+        completedDisconnects.clear();
+        disconnected = false;
+      }
+      initialPreparation ??= Promise.resolve().then(() =>
+        custody.run(async () => {
+          signal.throwIfAborted();
+          await withPluginRuntimeRegistryScope(registry, async () => {
+            await Promise.all(
+              [...legacyPreparations].map(async (prepare) =>
+                prepare({ config: params.config, env: params.env ?? process.env }),
+              ),
+            );
+          });
+        }),
+      );
+      for (const [pluginId, callbacks] of preparations) {
+        if (owners.has(pluginId)) {
+          continue;
+        }
+        if (!params.scheduler) {
+          throw new Error("Node plugin preparation requires the host scheduler");
+        }
+        const record = registry.plugins.find((plugin) => plugin.id === pluginId);
+        const lease = createPluginRuntimeCapabilityLease("node plugin preparation");
+        const runOwned = createPluginServiceSchedulerRunner({
+          registry,
+          record,
+          instance: record ? getPluginInstance(record) : undefined,
+          lease,
+        });
+        const scheduler = createPluginServiceScheduler(params.scheduler, runOwned);
+        const owner: Owner = {
+          scheduler,
+          lease,
+          preparing: Promise.resolve().then(async () => {
+            await runOwned(async () => {
+              for (const prepare of callbacks.values()) {
+                scheduler.signal.throwIfAborted();
+                await prepare({ config: params.config, env: params.env ?? process.env, scheduler });
+              }
+            });
+          }),
+        };
+        owners.set(pluginId, owner);
+      }
+      await Promise.all([
+        initialPreparation,
+        ...Array.from(owners.values(), (owner) => owner.preparing),
+      ]);
+      assertOpen();
+    },
+    watchAvailability(onChange: () => void) {
+      assertOpen();
+      const stop = watchRegisteredNodeHostCommandAvailability(
+        { config: params.config, env: params.env ?? process.env },
+        onChange,
+        params.commandAllowlist,
+      );
+      availabilityStops.add(stop);
+      return stop;
+    },
+    disconnect,
+    close() {
+      if (closing) {
+        return closing;
+      }
+      closed = true;
+      signal.removeEventListener("abort", retire);
+      const cleanup = (finalCleanup ??= custody.beginCleanup());
+      cleanupScope = cleanup.scope;
+      const disconnected = disconnect();
+      closing = Promise.resolve()
+        .then(async () => {
+          const results = await Promise.allSettled([
+            disconnected,
+            cleanup.scope.run(() => Promise.all([...availabilityStops].map((stop) => stop()))),
+          ]);
+          const failures = results.flatMap((result) =>
+            result.status === "rejected" ? [result.reason] : [],
+          );
+          if (failures.length) {
+            throw new AggregateError(failures, "node plugin owner close failed");
+          }
+          await cleanup.release();
+        })
+        .catch((error: unknown) => {
+          closing = undefined;
+          throw error;
+        });
+      return closing;
+    },
+  };
+  const retire = () => {
+    void lifetime
+      .close()
+      .catch((error: unknown) => logDebug(`node-host: plugin retirement failed: ${String(error)}`));
+  };
+  signal.addEventListener("abort", retire, { once: true });
+  return lifetime;
 }
 
 /** List registered node-host capabilities and command ids in deterministic order. */
@@ -172,19 +440,53 @@ export function watchRegisteredNodeHostCommandAvailability(
 }
 
 /** Release plugin command state before a reconnected Gateway can invoke it again. */
-export async function notifyRegisteredNodeHostCommandDisconnect(): Promise<void> {
-  const registry = resolveNodeHostPluginRegistry();
-  const callbacks = new Set(
-    (registry?.nodeHostCommands ?? [])
-      .map((entry) => entry.command.onDisconnect)
-      .filter((callback): callback is () => Promise<void> | void => callback !== undefined),
-  );
+export async function notifyRegisteredNodeHostCommandDisconnect(
+  registry = resolveNodeHostPluginRegistry(),
+  commands: readonly PluginNodeHostCommandRegistration[] = registry?.nodeHostCommands ?? [],
+  completed = new Map<object | undefined, Set<object>>(),
+): Promise<void> {
+  const callbacks = new Map<object | undefined, Map<object, () => void | Promise<void>>>();
+  const failures: unknown[] = [];
+  for (const { command } of commands) {
+    try {
+      runPluginCleanup(command, () => {
+        const callback = command.onDisconnect;
+        if (!callback) {
+          return;
+        }
+        const instance = getPluginValueInstance(callback);
+        const identity = nodeHostCallbackIdentity(callback);
+        // Callable views bind different command receivers to the same cleanup owner.
+        // Original values identify duplicates; invocation always uses the admitted view.
+        let owned = callbacks.get(instance);
+        if (!owned) {
+          owned = new Map();
+          callbacks.set(instance, owned);
+        }
+        if (!owned.has(identity) && !completed.get(instance)?.has(identity)) {
+          owned.set(identity, async () => {
+            await runPluginCleanup(command, () => callback());
+            let completedOwned = completed.get(instance);
+            if (!completedOwned) {
+              completedOwned = new Set();
+              completed.set(instance, completedOwned);
+            }
+            completedOwned.add(identity);
+          });
+        }
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+  }
   await withPluginRuntimeRegistryScope(registry, async () => {
     const results = await Promise.allSettled(
-      [...callbacks].map(async (callback) => await callback()),
+      [...callbacks.values()].flatMap((owned) =>
+        [...owned.values()].map(async (callback) => await callback()),
+      ),
     );
-    const failures = results.flatMap((result) =>
-      result.status === "rejected" ? [result.reason] : [],
+    failures.push(
+      ...results.flatMap((result) => (result.status === "rejected" ? [result.reason] : [])),
     );
     if (failures.length === 1) {
       const failure = failures[0];
@@ -323,6 +625,7 @@ export function isRegisteredNodeHostCommandDuplex(command: string): boolean {
 
 function resetNodeHostPluginRegistry(): void {
   nodeHostPluginRegistry = undefined;
+  nodeHostPluginLifetime = undefined;
 }
 
 if (process.env.VITEST || process.env.NODE_ENV === "test") {

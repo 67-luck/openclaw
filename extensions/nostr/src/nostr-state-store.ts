@@ -10,8 +10,7 @@ type NostrBusState = {
   lastProcessedAt: number | null;
   /** Gateway startup timestamp (seconds) - events before this are old */
   gatewayStartedAt: number | null;
-  /** Retired replay-guard seed, cleared after durable ingress tombstone migration. */
-  recentEventIds: string[];
+  recentEventIds: [];
 };
 
 /** Profile publish state (separate from bus state) */
@@ -45,25 +44,33 @@ export async function readNostrBusState(params: {
   accountId?: string;
   env?: NodeJS.ProcessEnv;
 }): Promise<NostrBusState | null> {
-  return (
-    (await openNostrBusStateStore(params.env).lookup(
-      normalizeNostrStateAccountId(params.accountId),
-    )) ?? null
+  const state = await openNostrBusStateStore(params.env).lookup(
+    normalizeNostrStateAccountId(params.accountId),
   );
+  if (
+    state &&
+    (state.version !== STORE_VERSION ||
+      !Array.isArray(state.recentEventIds) ||
+      state.recentEventIds.length !== 0)
+  ) {
+    throw new Error(
+      "Nostr bus state requires migration; run openclaw doctor --fix before starting this account",
+    );
+  }
+  return state ?? null;
 }
 
 export async function writeNostrBusState(params: {
   accountId?: string;
   lastProcessedAt: number;
   gatewayStartedAt: number;
-  recentEventIds?: string[];
   env?: NodeJS.ProcessEnv;
 }): Promise<void> {
   const payload: NostrBusState = {
     version: STORE_VERSION,
     lastProcessedAt: params.lastProcessedAt,
     gatewayStartedAt: params.gatewayStartedAt,
-    recentEventIds: (params.recentEventIds ?? []).filter((x): x is string => typeof x === "string"),
+    recentEventIds: [],
   };
   await openNostrBusStateStore(params.env).register(
     normalizeNostrStateAccountId(params.accountId),

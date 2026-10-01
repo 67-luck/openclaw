@@ -1,5 +1,6 @@
 import { DEFAULT_EMOJIS, DEFAULT_TIMING } from "openclaw/plugin-sdk/channel-feedback";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi, onTestFinished } from "vitest";
 import {
   BASE_CHANNEL_ROUTE,
@@ -519,6 +520,7 @@ describe("processDiscordMessage session routing and room events", () => {
 
   it("prefers bound session keys and sets MessageThreadId for bound thread messages", async () => {
     const threadBindings = await createThreadBindingManager({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: {} as import("openclaw/plugin-sdk/config-contracts").OpenClawConfig,
       accountId: "default",
       persist: false,

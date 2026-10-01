@@ -8,6 +8,7 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -220,6 +221,7 @@ it("settles a real zca-js handshake timeout and reconnects the same monitor prof
       });
       runtime.error = errors;
       const options = {
+        scheduler: createTestPluginServiceScheduler(),
         account: createDefaultResolvedZalouserAccount(),
         config: {},
         runtime,

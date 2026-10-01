@@ -5,7 +5,10 @@ import type {
   OpenClawPluginReloadRegistration,
   OpenClawPluginSecurityAuditCollector,
 } from "./plugin-registration.types.js";
-import type { OpenClawPluginNodeHostCommand } from "./types.node-host.js";
+import type {
+  OpenClawPluginNodeHostCommand,
+  OpenClawPluginNodeHostCommandV2,
+} from "./types.node-host.js";
 
 /** Module-level plugin definition loaded from a native plugin entry file. */
 export type OpenClawPluginDefinition = {
@@ -22,7 +25,7 @@ export type OpenClawPluginDefinition = {
   kind?: PluginKind | PluginKind[];
   configSchema?: OpenClawPluginConfigSchema;
   reload?: OpenClawPluginReloadRegistration;
-  nodeHostCommands?: OpenClawPluginNodeHostCommand[];
+  nodeHostCommands?: Array<OpenClawPluginNodeHostCommand | OpenClawPluginNodeHostCommandV2>;
   securityAuditCollectors?: OpenClawPluginSecurityAuditCollector[];
   register?: (api: OpenClawPluginApi) => void;
 };

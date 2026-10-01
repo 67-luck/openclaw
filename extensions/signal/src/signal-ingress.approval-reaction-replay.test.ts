@@ -11,6 +11,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearSignalApprovalReactionTargetsForTest,
@@ -110,6 +111,7 @@ describe("Signal approval reaction durable replay", () => {
           }),
         );
         const monitor = await startSignalIngressMonitor({
+          scheduler: createTestPluginServiceScheduler(),
           accountId: "default",
           queue,
           dispatch: handler,

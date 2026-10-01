@@ -183,6 +183,7 @@ export const twitchPlugin: ChannelPlugin<ResolvedTwitchAccount> =
         },
       }),
       gateway: {
+        apiVersion: 2,
         startAccount: async (ctx): Promise<void> => {
           const account = ctx.account;
           const accountId = ctx.accountId;
@@ -215,6 +216,7 @@ export const twitchPlugin: ChannelPlugin<ResolvedTwitchAccount> =
                 // Lazy import: the monitor pulls the reply pipeline; avoid ESM init cycles.
                 const { monitorTwitchProvider } = await import("./monitor.js");
                 return monitorTwitchProvider({
+                  scheduler: ctx.scheduler,
                   account,
                   accountId,
                   channelRuntime,

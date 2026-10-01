@@ -6,6 +6,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SignalSseEvent } from "./client-adapter.js";
 import { startSignalIngressMonitor } from "./signal-ingress.js";
@@ -16,6 +17,7 @@ type SignalIngressDispatch = Parameters<typeof startSignalIngressMonitor>[0]["di
 
 async function startMonitor(queue: SignalIngressQueue, dispatch: SignalIngressDispatch) {
   const monitor = await startSignalIngressMonitor({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     queue,
     dispatch,
@@ -87,6 +89,7 @@ describe("Signal durable ingress", () => {
       } satisfies SignalIngressQueue;
       const dispatch = vi.fn();
       const monitor = await startSignalIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue: failingQueue,
         dispatch,
@@ -455,6 +458,7 @@ describe("Signal durable ingress", () => {
       const otherDispatch = vi.fn().mockResolvedValue(undefined);
       const first = await startMonitor(queue, firstDispatch);
       const other = await startSignalIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "other",
         queue: otherQueue,
         dispatch: otherDispatch,

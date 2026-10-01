@@ -364,6 +364,7 @@ export async function reloadGatewayPlugins(
     phase = "activate";
     const startedServices = await withPluginRegistryPreparationScope(nextRegistry, () =>
       startPluginServices({
+        scheduler: kernel.scheduler,
         registry: nextRegistry,
         config: params.nextConfig,
         workspaceDir: pluginWorkspaceDir,
@@ -575,6 +576,7 @@ export async function reloadGatewayPlugins(
             await withPluginRegistryPreparationScope(restoredRegistry, async () => {
               await attempt(recoveryErrors, async () => {
                 await startPluginServices({
+                  scheduler: kernel.scheduler,
                   registry: restoredRegistry,
                   config: previousConfig,
                   workspaceDir: pluginWorkspaceDir,

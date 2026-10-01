@@ -180,6 +180,7 @@ async function bindObservedConversation(params: {
 }
 
 export async function pollPendingIMessageApprovalReactions(params: {
+  signal?: AbortSignal;
   client: IMessageRpcClient;
   cfg: OpenClawConfig;
   accountId: string;
@@ -190,7 +191,7 @@ export async function pollPendingIMessageApprovalReactions(params: {
   const targets = await listPendingIMessageApprovalReactionPollTargets({
     accountId: params.accountId,
   });
-  if (targets.length === 0) {
+  if (params.signal?.aborted || targets.length === 0) {
     return;
   }
   const pendingByMessageId = buildPendingTargetsByMessageId(targets);
@@ -202,7 +203,7 @@ export async function pollPendingIMessageApprovalReactions(params: {
   const chatIds = shouldDiscoverRecentChats
     ? [...new Set([...explicitChatIds, ...(await listRecentChatIds(params.client))])]
     : explicitChatIds;
-  if (chatIds.length === 0) {
+  if (params.signal?.aborted || chatIds.length === 0) {
     return;
   }
   for (const chatId of chatIds) {
@@ -214,6 +215,9 @@ export async function pollPendingIMessageApprovalReactions(params: {
         `imessage: approval reaction poll skipped chat_id=${chatId}: ${String(err)}`,
       );
       continue;
+    }
+    if (params.signal?.aborted) {
+      return;
     }
     for (const message of messages) {
       const targetGuid = message.guid?.trim();
@@ -228,6 +232,9 @@ export async function pollPendingIMessageApprovalReactions(params: {
       }
       await bindObservedConversation({ target, message });
       for (const reaction of message.reactions ?? []) {
+        if (params.signal?.aborted) {
+          return;
+        }
         const reactionPayload = buildReactionPayload({ targetMessage: message, reaction });
         if (!reactionPayload) {
           continue;

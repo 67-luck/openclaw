@@ -9,6 +9,7 @@ import {
 import * as channelOutbound from "openclaw/plugin-sdk/channel-outbound";
 import type { ChannelIngressQueue } from "openclaw/plugin-sdk/channel-outbound";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createLineNodeWebhookHandler } from "./webhook-node.js";
 import {
@@ -65,7 +66,13 @@ function createSpool(
   queue: ChannelIngressQueue<SpoolPayload>,
   deliver: Parameters<typeof createLineWebhookSpool>[0]["deliver"],
 ) {
-  return createLineWebhookSpool({ accountId: "default", runtime: runtime(), queue, deliver });
+  return createLineWebhookSpool({
+    scheduler: createTestPluginServiceScheduler(),
+    accountId: "default",
+    runtime: runtime(),
+    queue,
+    deliver,
+  });
 }
 
 function observeActiveDeliveryStopGrace() {
@@ -96,6 +103,7 @@ describe("LINE webhook spool", () => {
       const failingQueue: ChannelIngressQueue<SpoolPayload> = { ...queue, enqueue };
       const deliver = vi.fn(async () => {});
       const spool = createLineWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue: failingQueue,
@@ -253,6 +261,7 @@ describe("LINE webhook spool", () => {
       );
       const firstRuntime = runtime();
       const first = createLineWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: firstRuntime,
         queue,
@@ -347,6 +356,7 @@ describe("LINE webhook spool", () => {
         },
       );
       const spool = createLineWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: spoolRuntime,
         queue,
@@ -443,6 +453,7 @@ describe("LINE webhook spool", () => {
     await withQueue(async (queue) => {
       const event = createEvent({ webhookEventId: "event-restart" });
       const first = createLineWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -501,6 +512,7 @@ describe("LINE webhook spool", () => {
       const event = createEvent({ webhookEventId: "event-raw", text: "before" });
       const deliveredText: string[] = [];
       const spool = createLineWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,

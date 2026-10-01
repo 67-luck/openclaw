@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createPluginRuntimeMock,
   resetPluginRuntimeStateForTest,
@@ -147,6 +148,7 @@ describe("forkCodexUpstreamSession", () => {
         resolveRuntimeOptions: resolveCodexSupervisionAppServerRuntimeOptions,
         env: {},
       });
+      controlFactory.bindScheduler(createTestPluginServiceScheduler());
       const appServer = resolveCodexSupervisionAppServerRuntimeOptions({ pluginConfig, env: {} });
       const clientOptions = {
         agentDir: stateDir,

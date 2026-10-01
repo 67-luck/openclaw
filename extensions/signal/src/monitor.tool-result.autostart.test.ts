@@ -1,6 +1,7 @@
 // Signal tests cover monitor.tool result.autostart plugin behavior.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { toErrorObject as toLintErrorObject } from "openclaw/plugin-sdk/error-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import type { SignalDaemonHandle } from "./daemon.js";
 import {
@@ -52,6 +53,7 @@ function createAutoAbortController() {
 
 async function runMonitorWithMocks(opts: MonitorSignalProviderOptions) {
   return monitorSignalProvider({
+    scheduler: createTestPluginServiceScheduler(),
     config: config as OpenClawConfig,
     waitForTransportReady:
       waitForTransportReadyMock as MonitorSignalProviderOptions["waitForTransportReady"],
@@ -493,7 +495,7 @@ describe("monitorSignalProvider autostart", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("awaits daemon exit before resolving aborted monitor shutdown", async () => {
+  it("keeps the published scheduler-less monitor alive until daemon shutdown finishes", async () => {
     const runtime = createMonitorRuntime();
     setSignalAutoStartConfig();
     const abortController = new AbortController();
@@ -501,14 +503,19 @@ describe("monitorSignalProvider autostart", () => {
     const stopPromise = new Promise<void>((resolve) => {
       resolveStop = resolve;
     });
-    const stop = vi.fn(() => stopPromise);
+    const stopEntered = Promise.withResolvers<void>();
+    const stop = vi.fn(() => {
+      stopEntered.resolve();
+      return stopPromise;
+    });
     spawnSignalDaemonMock.mockReturnValueOnce(createMockSignalDaemonHandle({ stop }));
     streamMock.mockImplementationOnce(async () => {
       abortController.abort(new Error("stop"));
     });
 
     let settled = false;
-    const monitorPromise = runMonitorWithMocks({
+    const monitorPromise = monitorSignalProvider({
+      config: config as OpenClawConfig,
       autoStart: true,
       baseUrl: SIGNAL_BASE_URL,
       runtime,
@@ -517,11 +524,14 @@ describe("monitorSignalProvider autostart", () => {
       settled = true;
     });
 
-    await vi.waitFor(() => expect(stop).toHaveBeenCalledTimes(1));
-    expect(settled).toBe(false);
-
-    resolveStop();
-    await monitorPromise;
+    try {
+      await Promise.race([stopEntered.promise, monitorPromise]);
+      expect(stop).toHaveBeenCalledOnce();
+      expect(settled).toBe(false);
+    } finally {
+      resolveStop();
+      await monitorPromise;
+    }
     expect(settled).toBe(true);
   });
 });

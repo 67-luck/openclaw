@@ -1,3 +1,4 @@
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { CodexThreadListParams } from "./app-server/protocol.js";
 import type { CodexCatalogIndexRow } from "./session-catalog-index-row.js";
 import type { CodexCatalogState } from "./session-catalog-index-state.js";
@@ -16,6 +17,7 @@ type CodexCatalogIndexRead = (
 }>;
 
 export type CodexCatalogIndexOptions = {
+  scheduler: PluginServiceSchedulerV1;
   homeId: string;
   localSessionsRoot?: string;
   state?: CodexCatalogState;
@@ -24,5 +26,4 @@ export type CodexCatalogIndexOptions = {
   runNativeWalk?: <T>(run: () => Promise<T>) => Promise<T>;
   requestTimeoutMs?: number;
   assertCurrent: () => void;
-  runBackground?: (run: () => Promise<void>) => Promise<void>;
 };

@@ -5,6 +5,7 @@ import {
   createPluginStateKeyedStoreForTests,
   openOpenClawStateDatabase,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createTestRegistry,
   resetPluginRuntimeStateForTest,
@@ -348,6 +349,7 @@ describe("user identity provider transport", () => {
   async function startWithoutBotToken(config: OpenClawConfig) {
     const controller = new AbortController();
     const run = monitorSlackProvider({
+      scheduler: createTestPluginServiceScheduler(),
       config,
       abortSignal: controller.signal,
     });
@@ -476,6 +478,7 @@ describe("user identity provider transport", () => {
     vi.stubEnv("SLACK_APP_TOKEN", "");
     await expect(
       monitorSlackProvider({
+        scheduler: createTestPluginServiceScheduler(),
         config: { channels: { slack: { postAs: "user", ...config } } },
       }),
     ).rejects.toThrow(error);

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { createPluginStateKeyedStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
@@ -54,6 +55,7 @@ it.each([false, true])(
     const readNative = vi.fn(async () => ({ rows: [] }));
     const createIndex = () =>
       new CodexCatalogIndex({
+        scheduler: createTestPluginServiceScheduler(),
         homeId,
         localSessionsRoot: path.join(home, "sessions"),
         state: openState(),

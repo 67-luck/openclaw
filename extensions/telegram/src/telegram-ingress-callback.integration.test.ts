@@ -1,4 +1,3 @@
-// Real grammY command handling and SQLite ingress, with a loopback Telegram API.
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
@@ -15,6 +14,8 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+// Real grammY command handling and SQLite ingress, with a loopback Telegram API.
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { expect, it, vi } from "vitest";
@@ -163,6 +164,7 @@ it.each(["none", "middleware", "handler"] as const)(
       });
       const answerRequests = vi.spyOn(bot.api, "answerCallbackQuery");
       monitor = createTelegramTransportIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         stateDir,
         bot,
         accountId: "default",

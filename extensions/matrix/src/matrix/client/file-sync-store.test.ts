@@ -10,6 +10,7 @@ import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   closeOpenClawStateDatabaseAsync,
   observeHostDataSql,
@@ -509,31 +510,40 @@ describe("SqliteBackedMatrixSyncStore", () => {
     expect(persisted.hasSavedSyncFromCleanShutdown()).toBe(false);
   });
 
-  it("coalesces background persistence until the debounce window elapses", async () => {
-    vi.useFakeTimers();
-    const storageRoot = createStorageRoot();
+  it.each([false, true])(
+    "coalesces background persistence with late scheduler attachment: %s",
+    async (lateAttachment) => {
+      vi.useFakeTimers();
+      const storageRoot = createStorageRoot();
 
-    const store = await SqliteBackedMatrixSyncStore.create(storageRoot);
-    await store.setSyncData(createSyncResponse("s111"));
-    await store.setSyncData(createSyncResponse("s222"));
-    await store.storeClientOptions({ lazyLoadMembers: true });
+      const scheduler = createTestPluginServiceScheduler();
+      const store = await SqliteBackedMatrixSyncStore.create(
+        storageRoot,
+        lateAttachment ? undefined : scheduler,
+      );
+      await store.setSyncData(createSyncResponse("s111"));
+      await store.setSyncData(createSyncResponse("s222"));
+      await store.storeClientOptions({ lazyLoadMembers: true });
+      if (lateAttachment) {
+        await store.setServiceScheduler(scheduler);
+      }
 
-    const beforeDebounce = await SqliteBackedMatrixSyncStore.create(storageRoot);
-    expect(beforeDebounce.hasSavedSync()).toBe(false);
+      const beforeDebounce = await SqliteBackedMatrixSyncStore.create(storageRoot);
+      expect(beforeDebounce.hasSavedSync()).toBe(false);
 
-    await vi.advanceTimersByTimeAsync(249);
-    const beforeElapsed = await SqliteBackedMatrixSyncStore.create(storageRoot);
-    expect(beforeElapsed.hasSavedSync()).toBe(false);
+      await vi.advanceTimersByTimeAsync(249);
+      const beforeElapsed = await SqliteBackedMatrixSyncStore.create(storageRoot);
+      expect(beforeElapsed.hasSavedSync()).toBe(false);
 
-    await vi.advanceTimersByTimeAsync(1);
-    await Promise.resolve();
-    await store.flush();
+      await vi.advanceTimersByTimeAsync(1);
+      await scheduler.stop();
 
-    const persisted = await SqliteBackedMatrixSyncStore.create(storageRoot);
-    expect(persisted.hasSavedSync()).toBe(true);
-    await expect(persisted.getSavedSyncToken()).resolves.toBe("s222");
-    await expect(persisted.getClientOptions()).resolves.toEqual({ lazyLoadMembers: true });
-  });
+      const persisted = await SqliteBackedMatrixSyncStore.create(storageRoot);
+      expect(persisted.hasSavedSync()).toBe(true);
+      await expect(persisted.getSavedSyncToken()).resolves.toBe("s222");
+      await expect(persisted.getClientOptions()).resolves.toEqual({ lazyLoadMembers: true });
+    },
+  );
 
   it("persists client options alongside sync state", async () => {
     const storageRoot = createStorageRoot();

@@ -12,6 +12,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   executeSqliteQuerySync,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { resolveRuntimeWorkerThreadExecArgv } from "openclaw/plugin-sdk/test-env";
@@ -250,6 +251,7 @@ function createPollingSession(params: {
   botInfo?: ConstructorParameters<typeof TelegramPollingSession>[0]["botInfo"];
 }) {
   return new TelegramPollingSession({
+    scheduler: createTestPluginServiceScheduler(),
     token: "tok",
     config: {},
     accountId: "default",

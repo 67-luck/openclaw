@@ -7,6 +7,7 @@ import {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createCapturedPluginRegistration } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { upsertSessionUpstreamLink } from "openclaw/plugin-sdk/session-catalog";
 import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
@@ -104,6 +105,7 @@ export async function createCanonicalForkFixture(params: {
     getPluginConfig: () => pluginConfig,
     env: { HOME: workspaceDir, CODEX_HOME: path.join(workspaceDir, "primary-codex-home") },
   });
+  controls.bindScheduler(createTestPluginServiceScheduler());
   const home = expectDefined(
     (await controls.homesForAgent("main")).find(
       (candidate) => candidate.localSessionsRoot === native.sessionsRoot,

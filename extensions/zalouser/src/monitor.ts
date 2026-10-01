@@ -21,6 +21,7 @@ import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import { resolvePromptHistoryLimit } from "openclaw/plugin-sdk/number-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { type HistoryEntry, createChannelHistoryWindow } from "openclaw/plugin-sdk/reply-history";
 import {
   deliverTextOrMediaReply,
@@ -62,6 +63,7 @@ import {
 } from "./zalo-js.js";
 
 type ZalouserMonitorOptions = {
+  scheduler: PluginServiceSchedulerV1;
   account: ResolvedZalouserAccount;
   config: OpenClawConfig;
   runtime: RuntimeEnv;
@@ -829,6 +831,7 @@ export async function monitorZalouserProvider(
 
   const ownUserId = await resolveZaloOwnUserId(account.profile);
   const ingress = createZalouserIngressMonitor({
+    scheduler: options.scheduler,
     accountId: account.accountId,
     ownUserId,
     runtime,

@@ -53,25 +53,28 @@ describe("channel startup trust refusal", () => {
     });
     const api = builder.createApi(record, { config: {} });
     const healthAtHandoff: Array<string | undefined> = [];
-    const startAccount = vi.fn(async ({ abortSignal, getStatus }: ChannelGatewayContext) => {
-      healthAtHandoff.push(getStatus().healthState);
-      const monitor = createChannelIngressMonitor<string, string, string>({
-        queue: () => api.runtime.state.openChannelIngressQueue<string>(),
-        inspect: () => null,
-        payload: {
-          version: 1,
-          storage: "raw-event",
-          serialize: (raw) => raw,
-          deserialize: (body) => body,
-          createClaimError: () => new Error("invalid fixture event"),
-        },
-        deliver: async () => {},
-        pollIntervalMs: 10,
-        retention: "standard",
-        abortSignal,
-      });
-      monitor.start();
-    });
+    const startAccount = vi.fn(
+      async ({ abortSignal, getStatus, scheduler }: ChannelGatewayContext) => {
+        healthAtHandoff.push(getStatus().healthState);
+        const monitor = createChannelIngressMonitor<string, string, string>({
+          scheduler,
+          queue: () => api.runtime.state.openChannelIngressQueue<string>(),
+          inspect: () => null,
+          payload: {
+            version: 1,
+            storage: "raw-event",
+            serialize: (raw) => raw,
+            deserialize: (body) => body,
+            createClaimError: () => new Error("invalid fixture event"),
+          },
+          deliver: async () => {},
+          pollIntervalMs: 10,
+          retention: "standard",
+          abortSignal,
+        });
+        monitor.start();
+      },
+    );
     const plugin: ChannelPlugin = {
       ...createChannelTestPluginBase({
         id: "discord",

@@ -8,6 +8,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -123,6 +124,7 @@ describe("iMessage approval reaction durable replay", () => {
         } as Parameters<typeof maybeResolveIMessageApprovalReaction>[0]["cfg"];
         const chatLaneDispatch = vi.fn(async () => ({ kind: "completed" as const }));
         const monitor = createIMessageDurableIngress({
+          scheduler: createTestPluginServiceScheduler(),
           accountId: "default",
           queue,
           // Mirrors the monitor-provider ownership mapping for the reaction

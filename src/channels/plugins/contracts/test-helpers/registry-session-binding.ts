@@ -18,6 +18,7 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "../../../../plugin-sdk/plugin-state-test-runtime.js";
+import { createTestPluginServiceScheduler } from "../../../../plugin-sdk/plugin-test-api.js";
 import { setActivePluginRegistry } from "../../../../plugins/runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../../../state/openclaw-state-db.js";
 import { loadBundledPluginFacade } from "../../../../test-utils/bundled-plugin-public-surface.js";
@@ -49,7 +50,11 @@ async function createContractChannelConversationBindingManager(params: {
 }): Promise<{ stop: () => void | Promise<void> } | null> {
   const createManager = getChannelPlugin(params.channelId)?.conversationBindings?.createManager;
   return createManager
-    ? await createManager({ cfg: params.cfg, accountId: params.accountId })
+    ? await createManager({
+        scheduler: createTestPluginServiceScheduler(),
+        cfg: params.cfg,
+        accountId: params.accountId,
+      })
     : null;
 }
 
@@ -142,6 +147,8 @@ async function createContractMatrixThreadBindingManager() {
     },
   } as never);
   const manager = await createMatrixThreadBindingManager({
+    cfg: {},
+    scheduler: createTestPluginServiceScheduler(),
     accountId: matrixSessionBindingAuth.accountId,
     auth: matrixSessionBindingAuth,
     client: {} as never,
@@ -186,6 +193,8 @@ type IMessageContractApi = {
 
 type MatrixContractApi = {
   createMatrixThreadBindingManager: (params: {
+    cfg: OpenClawConfig;
+    scheduler: ReturnType<typeof createTestPluginServiceScheduler>;
     accountId: string;
     auth: typeof matrixSessionBindingAuth;
     client: unknown;

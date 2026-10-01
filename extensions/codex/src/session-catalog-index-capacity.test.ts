@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import type { CodexThreadListParams } from "./app-server/protocol.js";
 import type { CodexCatalogIndexRow } from "./session-catalog-index-row.js";
@@ -76,6 +77,7 @@ describe("resident Codex catalog restore bounds", () => {
       };
     });
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "incremental-overflow",
       state,
       readNative,
@@ -145,6 +147,7 @@ describe("resident Codex catalog restore bounds", () => {
     ];
     const readNative = vi.fn(async () => ({ rows: [] }));
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "oversized-complete-snapshot",
       state: completeState(rows),
       readNative,

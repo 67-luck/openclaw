@@ -2,6 +2,7 @@ import { normalizeOptionalAccountId } from "openclaw/plugin-sdk/account-id";
 import { toStringifiedError as toRetirementError } from "openclaw/plugin-sdk/error-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { getMatrixRuntimeLifecycle, type MatrixRuntimeLifecycle } from "../../runtime.js";
 import type { CoreConfig } from "../../types.js";
 import { getMatrixMonitorTaskSignal } from "../monitor/task-runner.js";
@@ -53,6 +54,7 @@ type SharedMatrixClientState = {
   monitorRetirementPromises: Set<Promise<void>>;
   noLeases: { promise: Promise<void>; resolve: () => void };
   retirementPromise: Promise<void> | null;
+  retirementResult: Promise<void> | null;
   poisonError: Error | null;
   releaseMode: MatrixClientReleaseMode;
   ownerSignal?: AbortSignal;
@@ -106,6 +108,7 @@ async function createSharedMatrixClient(params: {
     allowPrivateNetwork: params.auth.allowPrivateNetwork,
     ssrfPolicy: params.auth.ssrfPolicy,
     dispatcherPolicy: params.auth.dispatcherPolicy,
+    scheduler: params.lifecycle?.scheduler,
   });
   return {
     auth: params.auth,
@@ -118,10 +121,23 @@ async function createSharedMatrixClient(params: {
     monitorRetirementPromises: new Set(),
     noLeases: createDeferred<void>(),
     retirementPromise: null,
+    retirementResult: null,
     poisonError: null,
     releaseMode: "discard",
     ownerSignal: params.lifecycle?.signal,
   };
+}
+
+/** Attach service authority to clients admitted by earlier channel handoffs. */
+export async function adoptSharedMatrixClientScheduler(
+  lifecycle: MatrixRuntimeLifecycle,
+  scheduler: PluginServiceSchedulerV1,
+): Promise<void> {
+  await Promise.all(
+    [...sharedClientStates.values()]
+      .filter((state) => state.phase === "open" && state.ownerSignal === lifecycle.signal)
+      .map((state) => state.client.setServiceScheduler(scheduler)),
+  );
 }
 
 function deleteSharedClientState(state: SharedMatrixClientState): void {
@@ -140,7 +156,7 @@ function bindSharedClientLifecycle(
   if (!lifecycle) {
     return;
   }
-  const retire = () => forceRetireState(state);
+  const retire = () => joinSharedClientRetirement(state, forceRetireState(state));
   const onAbort = () => {
     // The disposal callback joins the same retirement and reports its failure.
     void retire().catch(() => undefined);
@@ -250,8 +266,12 @@ async function resolveOpenSharedMatrixClientState(
       sharedClientStates.set(key, created);
       try {
         bindSharedClientLifecycle(created, lifecycle);
+        // Installation either precedes this check or finds the published client.
+        if (lifecycle?.scheduler) {
+          await created.client.setServiceScheduler(lifecycle.scheduler);
+        }
       } catch (error) {
-        await forceRetireState(created);
+        await joinSharedClientRetirement(created, forceRetireState(created));
         throw error;
       }
       return created;
@@ -369,15 +389,15 @@ function beginGenerationRetirement(params: {
   monitorLeases?: SharedMatrixClientLeaseState[];
 }): Promise<void> {
   const { state } = params;
-  if (state.retirementPromise) {
-    return state.retirementPromise;
+  if (state.retirementResult) {
+    return state.retirementResult;
   }
   state.phase = "quiescing";
   if (state.leases.size === 0) {
     state.noLeases.resolve();
   }
   const result = createDeferred<void>();
-  state.retirementPromise = result.promise;
+  state.retirementResult = result.promise;
   const owner = Promise.resolve().then(async () => {
     const startup = state.startPromise;
     if (startup) {
@@ -482,9 +502,22 @@ function beginGenerationRetirement(params: {
       throw failure;
     }
   });
+  state.retirementPromise = owner;
   void owner.then(result.resolve, result.reject);
   abortTransientLeases(state);
-  return state.retirementPromise;
+  return state.retirementResult;
+}
+
+async function joinSharedClientRetirement(
+  state: SharedMatrixClientState,
+  observed: Promise<void>,
+): Promise<void> {
+  try {
+    await observed;
+  } finally {
+    // Public deadlines report promptly; the lifecycle retains physical cleanup.
+    await state.retirementPromise;
+  }
 }
 
 function createSharedMatrixClientLease(
@@ -587,7 +620,7 @@ export async function acquireSharedMatrixClient(
     if (abortSignal?.aborted) {
       // An awaited creation can outlive its caller; retire an unclaimed client before rejecting.
       if (state.phase === "open" && state.leases.size === 0) {
-        await beginGenerationRetirement({ state });
+        await joinSharedClientRetirement(state, beginGenerationRetirement({ state }));
       }
       throwIfMatrixStartupAborted(abortSignal);
     }

@@ -1,5 +1,6 @@
 import type { WorkboardChange } from "@openclaw/workboard-contract";
-import type { OpenClawPluginService } from "../api.js";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
+import type { OpenClawPluginServiceV2 } from "../api.js";
 import type { WorkboardStore } from "./store.js";
 
 const WORKBOARD_EXTERNAL_CHANGE_CHECK_MS = 1000;
@@ -9,15 +10,15 @@ export function createWorkboardChangeEventService(
     WorkboardStore,
     "ready" | "subscribeChanges" | "announceChangeEpoch" | "reconcileExternalChanges"
   >,
-): OpenClawPluginService & { stop: () => Promise<void> } {
+): OpenClawPluginServiceV2 & { stop: () => Promise<void> } {
   let unsubscribe: (() => void) | undefined;
-  let timer: ReturnType<typeof setInterval> | undefined;
+  let scheduler: PluginServiceSchedulerV1 | undefined;
   let generation = 0;
   let starting: { generation: number; promise: Promise<void> } | undefined;
-  let polling: Promise<void> | undefined;
 
   return {
     id: "workboard-change-events",
+    apiVersion: 2,
     start(ctx) {
       const gatewayEvents = ctx.gatewayEvents;
       if (!gatewayEvents || unsubscribe) {
@@ -31,7 +32,7 @@ export function createWorkboardChangeEventService(
       const pending = (async () => {
         await previous?.catch(() => undefined);
         await store.ready();
-        if (currentGeneration !== generation) {
+        if (currentGeneration !== generation || ctx.scheduler.signal.aborted) {
           return;
         }
         const emit = (change: WorkboardChange) => {
@@ -41,23 +42,19 @@ export function createWorkboardChangeEventService(
         };
         unsubscribe = store.subscribeChanges(emit);
         store.announceChangeEpoch();
-        timer = setInterval(() => {
-          if (polling) {
-            return;
-          }
-          polling = store
-            .reconcileExternalChanges()
-            .then(
-              () => undefined,
-              (error: unknown) => {
-                ctx.logger.warn(`workboard external change check failed: ${String(error)}`);
-              },
-            )
-            .finally(() => {
-              polling = undefined;
-            });
-        }, WORKBOARD_EXTERNAL_CHANGE_CHECK_MS);
-        timer.unref?.();
+        scheduler = ctx.scheduler.scope();
+        scheduler.schedule({
+          id: "external-change-check",
+          delayMs: WORKBOARD_EXTERNAL_CHANGE_CHECK_MS,
+          everyMs: WORKBOARD_EXTERNAL_CHANGE_CHECK_MS,
+          run: async () => {
+            try {
+              await store.reconcileExternalChanges();
+            } catch (error) {
+              ctx.logger.warn(`workboard external change check failed: ${String(error)}`);
+            }
+          },
+        });
       })().finally(() => {
         if (starting?.promise === pending) {
           starting = undefined;
@@ -70,11 +67,7 @@ export function createWorkboardChangeEventService(
       generation += 1;
       unsubscribe?.();
       unsubscribe = undefined;
-      if (timer) {
-        clearInterval(timer);
-        timer = undefined;
-      }
-      return Promise.allSettled([starting?.promise, polling]).then(() => undefined);
+      return Promise.allSettled([starting?.promise, scheduler?.stop()]).then(() => undefined);
     },
   };
 }

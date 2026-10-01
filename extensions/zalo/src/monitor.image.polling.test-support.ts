@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 // Zalo test support covers monitor.image.polling plugin behavior.
 import { createRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { withServer } from "openclaw/plugin-sdk/test-env";
@@ -31,6 +32,7 @@ async function startImageMonitor(
     ...setup,
   });
   const run = monitorZaloProvider({
+    scheduler: createTestPluginServiceScheduler(),
     token: "zalo-token",
     account,
     config,
@@ -267,6 +269,7 @@ describe("Zalo polling image handling", () => {
     });
     const started = Date.now();
     const run = monitorZaloProvider({
+      scheduler: createTestPluginServiceScheduler(),
       token: "zalo-token", // pragma: allowlist secret
       account,
       config,

@@ -217,6 +217,7 @@ describe("codex plugin", () => {
       };
       const command = createCodexSessionCatalogNodeHostCommands(
         {
+          bindScheduler: () => {},
           hasActiveWork: () => false,
           disconnect: async () => {},
           forRequest: () => control,

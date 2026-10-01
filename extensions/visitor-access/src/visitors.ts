@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { z } from "zod";
 import type { PluginGatewayAccessAuthority, PluginLogger, PluginStateKeyedStore } from "../api.js";
 import type { ReadVisitorGatewayAccess } from "./access.js";
@@ -45,7 +46,6 @@ const githubSchema = z.object({ email: z.string().nullable() });
 const grantIdSchema = z.uuid();
 const DAY_MS = 86_400_000;
 const LIST_MAX_CHARS = 12_000;
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const SIGN_IN_URL = "https://team.openclaw.ai";
 
 type LiveVisitorGrant = {
@@ -70,10 +70,9 @@ function expiryText(expiresAt: number | null): string {
 export class VisitorAccessService {
   private pending: Promise<unknown> = Promise.resolve();
   private readonly grants = new Map<string, LiveVisitorGrant>();
-  private expiryTimer: ReturnType<typeof setTimeout> | undefined;
+  private expiryJob: ReturnType<PluginServiceSchedulerV1["schedule"]> | undefined;
   private initialized: Promise<void> | undefined;
   private ready = false;
-  private closed = false;
 
   constructor(
     private readonly config: VisitorAccessConfig,
@@ -81,8 +80,8 @@ export class VisitorAccessService {
     private readonly policy: VisitorPolicyClient,
     private readonly logger: PluginLogger,
     private readonly readAccess: ReadVisitorGatewayAccess,
+    private readonly scheduler: PluginServiceSchedulerV1,
     private readonly fetcher: typeof fetch = fetch,
-    private readonly signal?: AbortSignal,
   ) {}
 
   initialize(): Promise<void> {
@@ -103,9 +102,7 @@ export class VisitorAccessService {
   }
 
   close(): void {
-    this.closed = true;
-    clearTimeout(this.expiryTimer);
-    this.expiryTimer = undefined;
+    this.scheduler.beginClose();
     for (const { controller } of this.grants.values()) {
       controller.abort(new VisitorAccessError("Visitor access is stopping."));
     }
@@ -113,8 +110,7 @@ export class VisitorAccessService {
   }
 
   private assertOpen(): void {
-    this.signal?.throwIfAborted();
-    if (this.closed) {
+    if (this.scheduler.signal.aborted) {
       throw new VisitorAccessError("Visitor access is stopping; retry after the Gateway starts.");
     }
   }
@@ -169,14 +165,12 @@ export class VisitorAccessService {
     return Object.freeze({
       grantId: state.grant.grantId,
       assertCurrent,
-      signal: this.signal
-        ? AbortSignal.any([state.controller.signal, this.signal])
-        : state.controller.signal,
+      signal: AbortSignal.any([state.controller.signal, this.scheduler.signal]),
     });
   }
 
   private publishGrant(grant: VisitorGrant): void {
-    if (this.closed) {
+    if (this.scheduler.signal.aborted) {
       return;
     }
     const previous = this.grants.get(grant.email);
@@ -198,9 +192,9 @@ export class VisitorAccessService {
   }
 
   private scheduleExpiry(): void {
-    clearTimeout(this.expiryTimer);
-    this.expiryTimer = undefined;
-    if (this.closed) {
+    this.expiryJob?.cancel();
+    this.expiryJob = undefined;
+    if (this.scheduler.signal.aborted) {
       return;
     }
     let next = Infinity;
@@ -212,9 +206,11 @@ export class VisitorAccessService {
     if (next === Infinity) {
       return;
     }
-    this.expiryTimer = setTimeout(
-      () => {
-        this.expiryTimer = undefined;
+    this.expiryJob = this.scheduler.schedule({
+      id: "grant-expiry",
+      atMs: next,
+      run: () => {
+        this.expiryJob = undefined;
         const now = Date.now();
         for (const { grant, controller } of this.grants.values()) {
           if (grant.expiresAt !== null && grant.expiresAt <= now) {
@@ -223,9 +219,7 @@ export class VisitorAccessService {
         }
         this.scheduleExpiry();
       },
-      Math.max(0, Math.min(next - Date.now(), MAX_TIMER_DELAY_MS)),
-    );
-    this.expiryTimer.unref();
+    });
   }
 
   private async registerGrant(
@@ -297,9 +291,7 @@ export class VisitorAccessService {
             "User-Agent": "OpenClaw-visitor-access",
           },
           redirect: "error",
-          signal: this.signal
-            ? AbortSignal.any([this.signal, AbortSignal.timeout(15_000)])
-            : AbortSignal.timeout(15_000),
+          signal: AbortSignal.any([this.scheduler.signal, AbortSignal.timeout(15_000)]),
         },
       );
       if (!response.ok) {

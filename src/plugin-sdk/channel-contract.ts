@@ -1,5 +1,9 @@
 // Pure channel contract types used by plugin implementations and tests.
 export type {
+  ChannelConversationBindingManagerParamsV2,
+  ChannelConversationBindingSupportV2,
+} from "../channels/plugins/types.conversation-bindings.js";
+export type {
   BaseProbeResult,
   BaseTokenResolution,
   ChannelAgentTool,
@@ -36,6 +40,8 @@ export type {
   ChannelDoctorLegacyConfigRule,
   ChannelDoctorSequenceResult,
   ChannelGatewayContext,
+  ChannelGatewayContextV2,
+  ChannelGatewayAdapterV2,
   ChannelOutboundAdapter,
   ChannelOutboundContext,
   ChannelOutboundPayloadHint,

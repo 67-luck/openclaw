@@ -11,6 +11,7 @@ import {
   recordInboundSession,
   type ensureConfiguredBindingRouteReady,
 } from "openclaw/plugin-sdk/conversation-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createTestRegistry,
   resetPluginRuntimeStateForTest,
@@ -587,6 +588,7 @@ describe("iMessage monitor last-route updates", () => {
 
   async function runIMessageMonitor(params: MonitorRunParams = {}): Promise<void> {
     await monitorIMessageProvider({
+      scheduler: createTestPluginServiceScheduler(),
       ...(params.accountId ? { accountId: params.accountId } : {}),
       config: {
         channels: {

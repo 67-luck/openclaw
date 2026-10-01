@@ -1,5 +1,6 @@
 import type { Event } from "nostr-tools";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { withTimeout } from "openclaw/plugin-sdk/text-utility-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createNostrCursorStateWriter, createNostrDurableCursor } from "./nostr-cursor.js";
@@ -61,6 +62,7 @@ describe("Nostr durable cursor", () => {
       }
     });
     const writer = createNostrCursorStateWriter({
+      scheduler: createTestPluginServiceScheduler(),
       initialCursor: 1_000,
       minimumCursor: 1_000,
       debounceMs: 60_000,
@@ -87,6 +89,7 @@ describe("Nostr durable cursor", () => {
       .fn<(cursor: number) => Promise<void>>()
       .mockRejectedValue(new Error("state unavailable"));
     const writer = createNostrCursorStateWriter({
+      scheduler: createTestPluginServiceScheduler(),
       initialCursor: 1_000,
       minimumCursor: 1_000,
       debounceMs: 60_000,
@@ -104,6 +107,37 @@ describe("Nostr durable cursor", () => {
     expect(write).toHaveBeenCalledTimes(4);
   });
 
+  it("joins an active debounced write before retirement and rejects later scheduling", async () => {
+    vi.useFakeTimers();
+    const started = createDeferred<void>();
+    const release = createDeferred<void>();
+    const write = vi.fn(async () => {
+      started.resolve();
+      await release.promise;
+    });
+    const writer = createNostrCursorStateWriter({
+      scheduler: createTestPluginServiceScheduler(),
+      initialCursor: 1_000,
+      minimumCursor: 1_000,
+      debounceMs: 10,
+      write,
+    });
+    writer.schedule(1_100);
+    await vi.advanceTimersByTimeAsync(10);
+    await started.promise;
+    let stopped = false;
+    const stopping = writer.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    release.resolve();
+    await stopping;
+    expect(() => writer.schedule(1_200)).toThrow();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(write).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps retrying a failed safety write until it is durable", async () => {
     vi.useFakeTimers();
     const write = vi
@@ -113,6 +147,7 @@ describe("Nostr durable cursor", () => {
       .mockRejectedValueOnce(new Error("state unavailable"))
       .mockResolvedValue(undefined);
     const writer = createNostrCursorStateWriter({
+      scheduler: createTestPluginServiceScheduler(),
       initialCursor: 1_000,
       minimumCursor: 1_000,
       debounceMs: 60_000,

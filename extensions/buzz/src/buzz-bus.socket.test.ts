@@ -12,6 +12,7 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { startBuzzBus, type BuzzBus } from "./buzz-bus.js";
@@ -34,6 +35,7 @@ it("delivers live messages on the room-scoped roster subscription", async () => 
   let bus: BuzzBus | undefined;
   try {
     bus = await startBuzzBus({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: randomUUID(),
       relayUrl: fixture.relayUrl,
       privateKey: fixture.botPrivateKey,
@@ -90,6 +92,7 @@ it("keeps removal denied through stale snapshots and accepts a confirmed rejoin"
   let bus: BuzzBus | undefined;
   try {
     bus = await startBuzzBus({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: randomUUID(),
       relayUrl: fixture.relayUrl,
       privateKey: fixture.botPrivateKey,
@@ -189,6 +192,7 @@ it("finishes an admitted room turn after its sender is removed", async () => {
   let bus: BuzzBus | undefined;
   try {
     bus = await startBuzzBus({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: account.accountId,
       relayUrl: fixture.relayUrl,
       privateKey: fixture.botPrivateKey,
@@ -279,6 +283,7 @@ it("keeps healthy rooms subscribed when a configured room lost the Bot role", as
   let bus: BuzzBus | undefined;
   try {
     bus = await startBuzzBus({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: randomUUID(),
       relayUrl: fixture.relayUrl,
       privateKey: fixture.botPrivateKey,
@@ -313,6 +318,7 @@ it("revokes the active bot immediately on a signed role downgrade", async () => 
   let bus: BuzzBus | undefined;
   try {
     bus = await startBuzzBus({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: randomUUID(),
       relayUrl: fixture.relayUrl,
       privateKey: fixture.botPrivateKey,
@@ -453,6 +459,7 @@ it("accepts a startup bot-join notification already reflected in the signed rost
   let bus: BuzzBus | undefined;
   try {
     bus = await startBuzzBus({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: randomUUID(),
       relayUrl: fixture.relayUrl,
       privateKey: fixture.botPrivateKey,
@@ -490,6 +497,7 @@ it.each(["reject", "silent"] as const)(
     let bus: BuzzBus | undefined;
     try {
       bus = await startBuzzBus({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: randomUUID(),
         relayUrl: fixture.relayUrl,
         privateKey: fixture.botPrivateKey,
@@ -536,6 +544,7 @@ it.each(["before", "after"] as const)(
     let bus: BuzzBus | undefined;
     try {
       bus = await startBuzzBus({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: randomUUID(),
         relayUrl: fixture.relayUrl,
         privateKey: fixture.botPrivateKey,

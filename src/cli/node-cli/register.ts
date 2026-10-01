@@ -6,6 +6,7 @@ import { defaultRuntime } from "../../runtime.js";
 import { inheritOptionFromParent } from "../command-options.js";
 import { formatInvalidPortOption } from "../error-format.js";
 import { formatHelpExamples } from "../help-format.js";
+import { getProgramContext } from "../program/program-context.js";
 import { addNodeCommandOptions, createNodeWorkerCommand } from "./command-options.js";
 import { resolveNodeGatewayOptions, resolveNodePairGatewayOptions } from "./gateway-options.js";
 import { runNodeIdentityShow } from "./identity.js";
@@ -40,7 +41,10 @@ export function registerNodeCli(program: Command) {
   node.addCommand(
     createNodeWorkerCommand().action(async (opts: { desktopSharing?: boolean }) => {
       const { runNodeHostWorker } = await import("../../node-host/worker.js");
-      await runNodeHostWorker({ desktopSharingEnabled: opts.desktopSharing });
+      await runNodeHostWorker({
+        desktopSharingEnabled: opts.desktopSharing,
+        scheduler: getProgramContext(program)?.scheduler,
+      });
     }),
     { hidden: true },
   );
@@ -99,6 +103,7 @@ export function registerNodeCli(program: Command) {
       }
       const { runNodeHost } = await import("../../node-host/runner.js");
       await runNodeHost({
+        scheduler: getProgramContext(program)?.scheduler,
         gatewayHost: host,
         gatewayPort: port,
         gatewayTls: tls,

@@ -6,6 +6,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createSignedCreateMessageRequest } from "./monitor.test-fixtures.js";
 import { migrateNextcloudTalkLegacyReplayState } from "./webhook-spool-state.js";
@@ -36,6 +37,7 @@ function startSpool(
   log = vi.fn(),
 ) {
   return createNextcloudTalkWebhookSpool({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     queue,
     deliver,
@@ -79,6 +81,7 @@ describe("Nextcloud Talk durable ingress", () => {
       );
       const prune = vi.spyOn(queue, "prune");
       const spool = createNextcloudTalkWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         deliver: vi.fn(),
@@ -107,6 +110,7 @@ describe("Nextcloud Talk durable ingress", () => {
       );
       const deliver = vi.fn();
       const spool = createNextcloudTalkWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         deliver,

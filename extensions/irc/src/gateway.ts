@@ -3,6 +3,7 @@ import {
   runPassiveAccountLifecycle,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/status-helpers";
 import type { ResolvedIrcAccount } from "./accounts.js";
@@ -16,6 +17,7 @@ export async function startIrcGatewayAccount(ctx: {
   account: ResolvedIrcAccount;
   runtime: RuntimeEnv;
   abortSignal: AbortSignal;
+  scheduler: PluginServiceSchedulerV1;
   setStatus: (next: ChannelAccountSnapshot) => void;
   log?: {
     info?: (message: string) => void;
@@ -39,6 +41,7 @@ export async function startIrcGatewayAccount(ctx: {
     abortSignal: ctx.abortSignal,
     start: async () =>
       await monitorIrcProvider({
+        scheduler: ctx.scheduler,
         accountId: account.accountId,
         config: ctx.cfg,
         runtime: ctx.runtime,

@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 // Synology Chat tests cover channel.integration plugin behavior.
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -20,6 +21,7 @@ let synologyChatPlugin: typeof import("./channel.js").synologyChatPlugin;
 function makeStartContext<T>(cfg: T, accountId: string, abortSignal: AbortSignal) {
   setSynologyRuntimeConfigForTest(cfg);
   return {
+    scheduler: createTestPluginServiceScheduler(),
     cfg,
     accountId,
     log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },

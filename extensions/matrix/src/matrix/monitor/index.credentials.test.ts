@@ -5,6 +5,7 @@ import {
   resolveInboundMentionDecision,
 } from "openclaw/plugin-sdk/channel-mention-gating";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -122,7 +123,10 @@ describe("Matrix monitor credential discovery", () => {
         ),
       ];
       const controller = new AbortController();
-      const monitoring = monitorMatrixProvider({ abortSignal: controller.signal });
+      const monitoring = monitorMatrixProvider({
+        scheduler: createTestPluginServiceScheduler(),
+        abortSignal: controller.signal,
+      });
       try {
         await Promise.race([
           started.promise,
@@ -178,7 +182,10 @@ describe("Matrix monitor credential discovery", () => {
         return stored;
       });
     const controller = new AbortController();
-    const monitoring = monitorMatrixProvider({ abortSignal: controller.signal });
+    const monitoring = monitorMatrixProvider({
+      scheduler: createTestPluginServiceScheduler(),
+      abortSignal: controller.signal,
+    });
     let settled = false;
     void monitoring.then(() => {
       settled = true;

@@ -4,6 +4,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createEmptyPluginRegistry,
   resetPluginRuntimeStateForTest,
@@ -225,6 +226,7 @@ it("authenticates SSO webhooks before real sender authorization, token I/O, and 
     });
     setActivePluginRegistry(registry);
     monitorTask = monitorMSTeamsProvider({
+      scheduler: createTestPluginServiceScheduler(),
       cfg,
       runtime: createRuntime(),
       abortSignal: abort.signal,

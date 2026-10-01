@@ -1,11 +1,31 @@
+import { onTestFinished } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { createPluginRuntimeCapabilityLease } from "./capability-lease.js";
 import { createPluginServiceGatewayEvents } from "./gateway-events.js";
 import type { OpenClawPluginSessionsChangedEvent } from "./gateway-events.js";
 import type { PluginOrigin } from "./plugin-origin.types.js";
 import type { PluginServiceRegistration } from "./registry-types.js";
 import { createEmptyPluginRegistry } from "./registry.js";
+import { startPluginServices as start } from "./services.js";
 import type { OpenClawPluginService } from "./types.js";
+
+export type { PluginServicesHandle } from "./services.js";
+
+type WithTestScheduler<T> = T extends { scheduler: GatewayScheduler }
+  ? Omit<T, "scheduler"> & { scheduler?: GatewayScheduler }
+  : never;
+
+export function startPluginServices(
+  params: WithTestScheduler<Parameters<typeof start>[0]>,
+): ReturnType<typeof start> {
+  const scheduler = params.scheduler ?? createTestGatewayScheduler("fake-timers");
+  if (!params.scheduler) {
+    onTestFinished(() => scheduler.stop());
+  }
+  return start({ ...params, scheduler });
+}
 
 export function createServiceRegistration(
   service: OpenClawPluginService,

@@ -6,6 +6,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeSpies } from "../../test-support/runtime-spies.js";
 import { createGoogleChatIngressMonitor } from "./monitor-ingress.js";
@@ -62,6 +63,7 @@ function cardClickEvent(messageName = "spaces/AAA/messages/message-1") {
 
 function startIngress(queue: GoogleChatIngressQueue, dispatch: GoogleChatIngressDispatch) {
   const ingress = createGoogleChatIngressMonitor({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     queue,
     dispatch,

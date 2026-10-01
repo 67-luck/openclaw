@@ -11,6 +11,7 @@ import { VerificationMethod } from "matrix-js-sdk/lib/types.js";
 import { captureChannelReadAuthority } from "openclaw/plugin-sdk/fetch-runtime";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { PinnedDispatcherPolicy } from "openclaw/plugin-sdk/ssrf-dispatcher";
 import type { SsrFPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import type { SqliteBackedMatrixSyncStore } from "../client/file-sync-store.js";
@@ -120,8 +121,10 @@ export abstract class MatrixClientBase {
   private cryptoInitializationPromise: Promise<void> | null = null;
   private sdkStopped = false;
   private stopDiscardPromise: Promise<void> | null = null;
-  private idbPersistPromise: Promise<void> | null = null;
-  private idbPersistAbortController: AbortController | null = null;
+  private scheduler: PluginServiceSchedulerV1 | undefined;
+  private schedulerOwner: PluginServiceSchedulerV1 | undefined;
+  private schedulerUpdates: Promise<void> = Promise.resolve();
+  private persistCryptoSnapshot: MatrixCryptoRuntime["persistIdbToDisk"] | undefined;
 
   private readonly assertClientActive = () => {
     this.requestAbortController.signal.throwIfAborted();
@@ -159,6 +162,7 @@ export abstract class MatrixClientBase {
     homeserver: string,
     accessToken: string,
     opts: {
+      scheduler?: PluginServiceSchedulerV1;
       userId?: string;
       password?: string;
       deviceId?: string;
@@ -176,6 +180,8 @@ export abstract class MatrixClientBase {
       stateRuntime?: MatrixSnapshotStateRuntime;
     } = {},
   ) {
+    this.schedulerOwner = opts.scheduler;
+    this.scheduler = opts.scheduler?.scope();
     this.transactionScopeHomeserver = homeserver;
     this.transactionScopeAccessTokenHash = createHash("sha256").update(accessToken).digest("hex");
     this.transactionScopeDeviceId = opts.deviceId?.trim() || null;
@@ -270,8 +276,6 @@ export abstract class MatrixClientBase {
     this.emitter.off(eventName, listener as (...args: unknown[]) => void);
     return this;
   }
-
-  protected idbPersistTimer: ReturnType<typeof setInterval> | null = null;
 
   protected async ensureCryptoSupportInitialized(): Promise<void> {
     if (
@@ -489,6 +493,44 @@ export abstract class MatrixClientBase {
     // startSyncSession, after sync has created real Room objects.
   }
 
+  setServiceScheduler(scheduler: PluginServiceSchedulerV1): Promise<void> {
+    const update = this.schedulerUpdates.then(async () => {
+      if (this.schedulerOwner === scheduler || this.syncQuiescePromise) {
+        return;
+      }
+      await this.scheduler?.stop();
+      if (this.syncQuiescePromise || this.requestAbortController.signal.aborted) {
+        return;
+      }
+      this.scheduler = scheduler.scope();
+      this.schedulerOwner = scheduler;
+      await this.syncStore?.setServiceScheduler(scheduler);
+      this.scheduleCryptoPersistence();
+    });
+    this.schedulerUpdates = update.catch(noop);
+    return update;
+  }
+
+  private scheduleCryptoPersistence(): void {
+    const scheduler = this.scheduler;
+    const persist = this.persistCryptoSnapshot;
+    if (!scheduler || !persist || scheduler.signal.aborted || this.syncQuiescePromise) {
+      return;
+    }
+    scheduler.schedule({
+      id: "crypto-persist",
+      delayMs: MATRIX_IDB_PERSIST_INTERVAL_MS,
+      everyMs: MATRIX_IDB_PERSIST_INTERVAL_MS,
+      run: () =>
+        persist({
+          snapshotPath: this.idbSnapshotPath,
+          databasePrefix: this.cryptoDatabasePrefix,
+          abortSignal: scheduler.signal,
+          stateRuntime: this.stateRuntime,
+        }).catch(noop),
+    });
+  }
+
   hasPersistedSyncState(): boolean {
     // Only trust restart replay when the previous process completed a final
     // sync-store persist. A stale cursor can make Matrix re-surface old events.
@@ -551,17 +593,15 @@ export abstract class MatrixClientBase {
       // Join that initialization before stopping the backend it may publish.
       await this.startupPromise?.catch(noop);
       await this.cryptoInitializationPromise?.catch(noop);
-      clearInterval(this.idbPersistTimer ?? undefined);
-      this.idbPersistTimer = null;
-      this.idbPersistAbortController?.abort();
-      const activePeriodicPersist = this.idbPersistPromise;
+      await this.schedulerUpdates;
+      this.scheduler?.beginClose();
       try {
         this.stopSdkClient();
         this.decryptBridge?.stop();
       } finally {
         this.cryptoRequestOwner.disable();
       }
-      await Promise.all([this.recoveryKeyStore.close(), activePeriodicPersist]);
+      await Promise.all([this.recoveryKeyStore.close(), this.scheduler?.stop()]);
       if (persist) {
         const runtime = loadedMatrixCryptoRuntime ?? (await loadMatrixCryptoRuntime());
         await runtime.persistIdbToDisk({
@@ -574,7 +614,7 @@ export abstract class MatrixClientBase {
         await this.syncStore?.flush();
       }
     } finally {
-      await this.recoveryKeyStore.close();
+      await Promise.all([this.recoveryKeyStore.close(), this.scheduler?.stop()]);
     }
   }
 
@@ -697,26 +737,8 @@ export abstract class MatrixClientBase {
       });
       throwIfMatrixStartupAborted(abortSignal);
 
-      // Periodically persist to capture new Olm sessions and room keys.
-      this.idbPersistTimer = setInterval(() => {
-        if (this.idbPersistPromise) {
-          return;
-        }
-        const abortController = new AbortController();
-        this.idbPersistAbortController = abortController;
-        this.idbPersistPromise = persistIdbToDisk({
-          snapshotPath: this.idbSnapshotPath,
-          databasePrefix: this.cryptoDatabasePrefix,
-          abortSignal: abortController.signal,
-          stateRuntime: this.stateRuntime,
-        })
-          .catch(noop)
-          .finally(() => {
-            this.idbPersistPromise = null;
-            this.idbPersistAbortController = null;
-          });
-      }, MATRIX_IDB_PERSIST_INTERVAL_MS);
-      this.idbPersistTimer.unref?.();
+      this.persistCryptoSnapshot = persistIdbToDisk;
+      this.scheduleCryptoPersistence();
     } catch (err) {
       throwIfMatrixStartupAborted(abortSignal);
       LogService.warn("MatrixClientLite", "Failed to initialize rust crypto:", err);

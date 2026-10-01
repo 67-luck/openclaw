@@ -9,6 +9,7 @@ import {
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import type { ChannelIngressQueue } from "openclaw/plugin-sdk/channel-outbound";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDiscordIngressMonitor, type DiscordIngressLifecycle } from "./ingress.js";
@@ -95,6 +96,7 @@ describe("Discord durable ingress", () => {
         await lifecycle.onAdopted();
       });
       const monitor = createDiscordIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         client: {} as never,
         runtime: runtime(),
@@ -127,6 +129,7 @@ describe("Discord durable ingress", () => {
     await withQueue(async (queue) => {
       const dispatch = vi.fn();
       const monitor = createDiscordIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         client: {} as never,
         runtime: runtime(),
@@ -153,6 +156,7 @@ describe("Discord durable ingress", () => {
       const monitors: DiscordIngressMonitor[] = [];
       const firstDispatch = vi.fn(async () => ({ kind: "deferred" as const }));
       const first = createDiscordIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         client: {} as never,
         runtime: runtime(),
@@ -170,6 +174,7 @@ describe("Discord durable ingress", () => {
           await lifecycle.onAdopted();
         });
         const recovered = createDiscordIngressMonitor({
+          scheduler: createTestPluginServiceScheduler(),
           accountId: "default",
           client: {} as never,
           runtime: runtime(),
@@ -196,6 +201,7 @@ describe("Discord durable ingress", () => {
         await lifecycle.onAdopted();
       });
       const monitor = createDiscordIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         client: {} as never,
         runtime: runtime(),
@@ -231,6 +237,7 @@ describe("Discord durable ingress", () => {
         return { kind: "deferred" as const };
       });
       const monitor = createDiscordIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         client: {} as never,
         runtime: runtime(),
@@ -258,6 +265,7 @@ describe("Discord durable ingress", () => {
   it("dead-letters a permanent Discord authentication failure", async () => {
     await withQueue(async (queue) => {
       const monitor = createDiscordIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         client: {} as never,
         runtime: runtime(),

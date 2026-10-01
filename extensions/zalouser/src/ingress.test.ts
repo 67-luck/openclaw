@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 // Zalouser tests cover durable socket admission, recovery, and replay semantics.
 import type { ChannelIngressQueue } from "openclaw/plugin-sdk/channel-outbound";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createZalouserIngressMonitor, type ZalouserIngressLifecycle } from "./ingress.js";
 import {
@@ -16,10 +17,11 @@ import {
 function createIngress(
   params: Omit<
     Parameters<typeof createZalouserIngressMonitor>[0],
-    "accountId" | "ownUserId" | "runtime"
+    "accountId" | "ownUserId" | "runtime" | "scheduler"
   >,
 ) {
   return createZalouserIngressMonitor({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     ownUserId: "owner-1",
     runtime: { error: vi.fn(), log: vi.fn() },

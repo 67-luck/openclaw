@@ -89,10 +89,10 @@ export class CodexCatalogIndex {
 
   constructor(private readonly options: CodexCatalogIndexOptions) {
     this.currency = new CodexCatalogCurrency({
+      scheduler: options.scheduler.scope(),
       local: Boolean(options.localSessionsRoot),
       reconcileFiles: () => this.reconcile(),
       reconcileNative: (full) => this.reconcileNative(full),
-      runBackground: options.runBackground,
       report: (error) => this.report(error),
     });
     this.persistence = new CodexCatalogPersistence(options.state, (error) => this.report(error));

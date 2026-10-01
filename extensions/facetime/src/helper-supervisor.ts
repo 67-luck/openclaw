@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 
@@ -21,6 +22,7 @@ type HelperSupervisorTargetState = {
 export type FaceTimeHelperSupervisorStatus = HelperSupervisorTargetState[];
 
 type HelperSupervisorParams = {
+  scheduler: PluginServiceSchedulerV1;
   pluginRoot: string;
   logger: RuntimeLogger;
   runCommandWithTimeout: PluginRuntime["system"]["runCommandWithTimeout"];
@@ -54,12 +56,13 @@ function targetForBundle(bundleIdentifier: string): FaceTimeHelperTarget | undef
 
 export class FaceTimeHelperSupervisor {
   readonly #states: Map<FaceTimeHelperTarget, HelperSupervisorTargetState>;
-  readonly #timers = new Map<FaceTimeHelperTarget, ReturnType<typeof setTimeout>>();
+  readonly #timers = new Map<
+    FaceTimeHelperTarget,
+    ReturnType<PluginServiceSchedulerV1["schedule"]>
+  >();
   readonly #retryDelaysMs: readonly number[];
   #injectionChain: Promise<void> = Promise.resolve();
-  #started = false;
-  #generation = 0;
-  #abortController = new AbortController();
+  #scheduler: PluginServiceSchedulerV1 | undefined;
 
   constructor(private readonly params: HelperSupervisorParams) {
     this.#retryDelaysMs =
@@ -85,12 +88,10 @@ export class FaceTimeHelperSupervisor {
   }
 
   start(): void {
-    if (this.#started) {
+    if (this.#scheduler && !this.#scheduler.signal.aborted) {
       return;
     }
-    this.#started = true;
-    this.#generation += 1;
-    this.#abortController = new AbortController();
+    this.#scheduler = this.params.scheduler.scope();
     this.#refreshConnections();
     for (const target of this.#states.keys()) {
       if (!this.#states.get(target)?.connected) {
@@ -100,14 +101,8 @@ export class FaceTimeHelperSupervisor {
   }
 
   async stop(): Promise<void> {
-    this.#started = false;
-    this.#generation += 1;
-    this.#abortController.abort(new Error("FaceTime helper supervisor stopped"));
-    for (const timer of this.#timers.values()) {
-      clearTimeout(timer);
-    }
     this.#timers.clear();
-    await this.#injectionChain;
+    await this.#scheduler?.stop();
   }
 
   connected(bundleIdentifier: string): void {
@@ -133,12 +128,15 @@ export class FaceTimeHelperSupervisor {
       return;
     }
     this.#refreshConnections();
-    if (this.#started && !this.#states.get(target)?.connected) {
+    if (!this.#states.get(target)?.connected) {
       this.#schedule(target, this.#retryDelaysMs[0] ?? 1_000);
     }
   }
 
   stale(bundleIdentifier: string, processId: number): void {
+    if (!this.#scheduler || this.#scheduler.signal.aborted) {
+      return;
+    }
     const target = targetForBundle(bundleIdentifier);
     const state = target ? this.#states.get(target) : undefined;
     if (!target || !state) {
@@ -164,7 +162,11 @@ export class FaceTimeHelperSupervisor {
       this.#scheduleStaleProcessCheck(target, processId);
     } else {
       this.#cancelTimer(target);
-      void this.#resolveLegacyStaleProcess(target);
+      this.#scheduler?.schedule({
+        id: `resolve-stale:${target}`,
+        delayMs: 0,
+        run: () => this.#resolveLegacyStaleProcess(target),
+      });
     }
   }
 
@@ -189,69 +191,87 @@ export class FaceTimeHelperSupervisor {
   #cancelTimer(target: FaceTimeHelperTarget): void {
     const timer = this.#timers.get(target);
     if (timer) {
-      clearTimeout(timer);
+      timer.cancel();
       this.#timers.delete(target);
     }
   }
 
   #schedule(target: FaceTimeHelperTarget, delayMs: number): void {
     this.#cancelTimer(target);
-    const timer = setTimeout(() => {
-      this.#timers.delete(target);
-      this.#enqueueInjection(target);
-    }, delayMs);
-    timer.unref?.();
+    if (!this.#scheduler || this.#scheduler.signal.aborted) {
+      return;
+    }
+    const timer = this.#scheduler.schedule({
+      id: `target:${target}`,
+      delayMs,
+      run: () => {
+        this.#timers.delete(target);
+        return this.#enqueueInjection(target);
+      },
+    });
     this.#timers.set(target, timer);
   }
 
   #scheduleStaleProcessCheck(target: FaceTimeHelperTarget, processId: number): void {
     this.#cancelTimer(target);
-    const timer = setTimeout(() => {
-      this.#timers.delete(target);
-      if (!this.#started) {
-        return;
-      }
-      const processAlive =
-        this.params.processAlive ??
-        ((candidate: number) => {
-          try {
-            process.kill(candidate, 0);
-            return true;
-          } catch (error) {
-            if (error && typeof error === "object" && "code" in error) {
-              return error.code !== "ESRCH";
+    if (!this.#scheduler || this.#scheduler.signal.aborted) {
+      return;
+    }
+    const timer = this.#scheduler.schedule({
+      id: `target:${target}`,
+      delayMs: 2_000,
+      run: () => {
+        this.#timers.delete(target);
+        const processAlive =
+          this.params.processAlive ??
+          ((candidate: number) => {
+            try {
+              process.kill(candidate, 0);
+              return true;
+            } catch (error) {
+              if (error && typeof error === "object" && "code" in error) {
+                return error.code !== "ESRCH";
+              }
+              return true;
             }
-            return true;
-          }
-        });
-      const state = this.#states.get(target);
-      if (!state?.stale || state.staleProcessId !== processId) {
-        return;
-      }
-      if (processAlive(processId)) {
-        this.#scheduleStaleProcessCheck(target, processId);
-        return;
-      }
-      state.stale = false;
-      state.staleProcessId = undefined;
-      state.attempts = 0;
-      state.lastError = undefined;
-      this.#schedule(target, 0);
-    }, 2_000);
-    timer.unref?.();
+          });
+        const state = this.#states.get(target);
+        if (!state?.stale || state.staleProcessId !== processId) {
+          return;
+        }
+        if (processAlive(processId)) {
+          this.#scheduleStaleProcessCheck(target, processId);
+          return;
+        }
+        state.stale = false;
+        state.staleProcessId = undefined;
+        state.attempts = 0;
+        state.lastError = undefined;
+        this.#schedule(target, 0);
+      },
+    });
     this.#timers.set(target, timer);
   }
 
   async #resolveLegacyStaleProcess(target: FaceTimeHelperTarget): Promise<void> {
     const state = this.#states.get(target);
-    if (!this.#started || !state?.stale || state.staleProcessId !== undefined) {
+    const scheduler = this.#scheduler;
+    if (
+      !scheduler ||
+      scheduler.signal.aborted ||
+      !state?.stale ||
+      state.staleProcessId !== undefined
+    ) {
       return;
     }
     try {
       const result = await this.params.runCommandWithTimeout(
         ["/usr/bin/pgrep", "-f", TARGET_EXECUTABLES[target]],
-        { timeoutMs: 5_000 },
+        { timeoutMs: 5_000, signal: scheduler.signal },
       );
+      if (scheduler.signal.aborted) {
+        return;
+      }
       const processId = Number.parseInt(result.stdout.trim().split(/\s+/u)[0] ?? "", 10);
       if (result.code === 0 && Number.isSafeInteger(processId) && processId > 0) {
         state.staleProcessId = processId;
@@ -263,47 +283,48 @@ export class FaceTimeHelperSupervisor {
         `[facetime] failed to resolve stale ${target} helper process: ${formatErrorMessage(error)}`,
       );
     }
-    if (this.#started && state.stale && state.staleProcessId === undefined) {
+    if (!scheduler.signal.aborted && state.stale && state.staleProcessId === undefined) {
       state.stale = false;
       state.lastError = undefined;
       this.#schedule(target, 0);
     }
   }
 
-  #enqueueInjection(target: FaceTimeHelperTarget): void {
+  async #enqueueInjection(target: FaceTimeHelperTarget): Promise<void> {
     const state = this.#states.get(target);
-    if (!state || state.queued || state.injecting) {
+    const scheduler = this.#scheduler;
+    if (!scheduler || scheduler.signal.aborted || !state || state.queued || state.injecting) {
       return;
     }
     state.queued = true;
-    const generation = this.#generation;
     const pending = this.#injectionChain.then(async () => {
       state.queued = false;
-      if (this.#started && generation === this.#generation) {
-        await this.#inject(target, generation);
+      if (!scheduler.signal.aborted) {
+        await this.#inject(target, scheduler);
       }
     });
     this.#injectionChain = pending.catch(() => undefined);
+    await this.#injectionChain;
   }
 
   async #waitForAuthenticatedConnection(
     target: FaceTimeHelperTarget,
-    generation: number,
+    scheduler: PluginServiceSchedulerV1,
   ): Promise<void> {
     const deadline = Date.now() + (this.params.connectionGraceMs ?? 10_000);
-    while (this.#started && generation === this.#generation && Date.now() < deadline) {
+    while (!scheduler.signal.aborted && Date.now() < deadline) {
       this.#refreshConnections();
       const state = this.#states.get(target);
       if (!state || state.connected || state.stale) {
         return;
       }
-      await sleepWithAbort(250, this.#abortController.signal).catch(() => undefined);
+      await sleepWithAbort(250, scheduler.signal).catch(() => undefined);
     }
     this.#refreshConnections();
   }
 
-  async #inject(target: FaceTimeHelperTarget, generation: number): Promise<void> {
-    if (!this.#started || generation !== this.#generation) {
+  async #inject(target: FaceTimeHelperTarget, scheduler: PluginServiceSchedulerV1): Promise<void> {
+    if (scheduler.signal.aborted) {
       return;
     }
     this.#refreshConnections();
@@ -319,11 +340,11 @@ export class FaceTimeHelperSupervisor {
         ["/bin/bash", script, "--app", target],
         {
           timeoutMs: 120_000,
-          signal: this.#abortController.signal,
+          signal: scheduler.signal,
           killProcessTree: true,
         },
       );
-      if (!this.#started || generation !== this.#generation) {
+      if (scheduler.signal.aborted) {
         return;
       }
       if (result.code !== 0) {
@@ -332,7 +353,7 @@ export class FaceTimeHelperSupervisor {
       state.lastError = undefined;
       this.params.logger.info(`[facetime] injected helper into ${target}`);
       if (!state.connected && !state.stale) {
-        await this.#waitForAuthenticatedConnection(target, generation);
+        await this.#waitForAuthenticatedConnection(target, scheduler);
         if (!state.connected && !state.stale) {
           throw new Error(
             `${target} helper injection completed but no authenticated connection arrived`,
@@ -340,14 +361,14 @@ export class FaceTimeHelperSupervisor {
         }
       }
     } catch (error) {
-      if (this.#started && generation === this.#generation) {
+      if (!scheduler.signal.aborted) {
         state.lastError = formatErrorMessage(error);
         this.params.logger.warn(`[facetime] ${target} helper injection failed: ${state.lastError}`);
       }
     } finally {
       state.injecting = false;
     }
-    if (!this.#started || generation !== this.#generation) {
+    if (scheduler.signal.aborted) {
       return;
     }
     this.#refreshConnections();

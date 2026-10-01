@@ -7,7 +7,10 @@ import {
 import { runPluginCleanup } from "./plugin-instance-scope.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import type { SessionCatalogProvider } from "./session-catalog.js";
-import type { OpenClawPluginNodeHostCommand } from "./types.node-host.js";
+import type {
+  OpenClawPluginNodeHostCommand,
+  OpenClawPluginNodeHostCommandV2,
+} from "./types.node-host.js";
 
 function hasReadableNativeCatalogConfig(): boolean {
   try {
@@ -135,20 +138,15 @@ export function createNativeSessionCatalogGate(params: {
           : {}),
       };
     },
-    node(command: OpenClawPluginNodeHostCommand): OpenClawPluginNodeHostCommand {
+    node(
+      command: OpenClawPluginNodeHostCommand | OpenClawPluginNodeHostCommandV2,
+    ): OpenClawPluginNodeHostCommand | OpenClawPluginNodeHostCommandV2 {
       const { prepare, watchAvailability } = command;
-      return {
-        ...command,
+      const guarded: Pick<
+        OpenClawPluginNodeHostCommand,
+        "isAvailable" | "watchAvailability" | "handle"
+      > = {
         isAvailable: (context) => enabled() && (command.isAvailable?.(context) ?? true),
-        ...(prepare
-          ? {
-              prepare: (context) => {
-                if (enabled()) {
-                  return prepare.call(command, context);
-                }
-              },
-            }
-          : {}),
         ...(watchAvailability
           ? {
               watchAvailability: (context, onChange) => {
@@ -162,6 +160,24 @@ export function createNativeSessionCatalogGate(params: {
           assertEnabled();
           return command.handle(...args);
         },
+      };
+      if (command.apiVersion === 2) {
+        return {
+          ...command,
+          ...guarded,
+          prepare: (context) => (enabled() ? command.prepare(context) : undefined),
+        };
+      }
+      return {
+        ...command,
+        ...guarded,
+        ...(prepare
+          ? {
+              prepare: (
+                context: Parameters<NonNullable<OpenClawPluginNodeHostCommand["prepare"]>>[0],
+              ) => (enabled() ? command.prepare?.(context) : undefined),
+            }
+          : {}),
       };
     },
   };

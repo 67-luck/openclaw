@@ -1,5 +1,6 @@
 import type { WorkboardChange } from "@openclaw/workboard-contract";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkboardChangeEventService } from "./change-events.js";
 
@@ -27,6 +28,7 @@ describe("createWorkboardChangeEventService", () => {
     const emit = vi.fn();
     const service = createWorkboardChangeEventService(store);
     const context = {
+      scheduler: createTestPluginServiceScheduler(),
       config: {},
       stateDir: "/tmp/workboard-change-events-test",
       gatewayEvents: { emit, onSessionsChanged: () => () => undefined },
@@ -75,6 +77,7 @@ describe("createWorkboardChangeEventService", () => {
     const warn = vi.fn();
     const service = createWorkboardChangeEventService(store);
     const context = {
+      scheduler: createTestPluginServiceScheduler(),
       config: {},
       stateDir: "/tmp/workboard-change-events-test",
       gatewayEvents: { emit, onSessionsChanged: () => () => undefined },
@@ -111,6 +114,7 @@ describe("createWorkboardChangeEventService", () => {
     const warn = vi.fn();
     const service = createWorkboardChangeEventService(store);
     const context = {
+      scheduler: createTestPluginServiceScheduler(),
       config: {},
       stateDir: "/tmp/workboard-change-events-test",
       gatewayEvents: { emit: vi.fn(), onSessionsChanged: () => () => undefined },
@@ -138,6 +142,7 @@ describe("createWorkboardChangeEventService", () => {
     } satisfies Parameters<typeof createWorkboardChangeEventService>[0];
     const service = createWorkboardChangeEventService(store);
     const context = {
+      scheduler: createTestPluginServiceScheduler(),
       config: {},
       stateDir: "/unused-workboard-change-events",
       gatewayEvents: { emit: vi.fn(), onSessionsChanged: () => () => {} },
@@ -176,6 +181,7 @@ describe("createWorkboardChangeEventService", () => {
     const service = createWorkboardChangeEventService(store);
     const warn = vi.fn();
     const context = {
+      scheduler: createTestPluginServiceScheduler(),
       config: {},
       stateDir: "/unused-workboard-change-events",
       gatewayEvents: { emit: vi.fn(), onSessionsChanged: () => () => {} },

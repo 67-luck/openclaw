@@ -5,6 +5,7 @@ import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-entry-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeStore, type PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { discordPlugin } from "../../channel-plugin-api.js";
 import { registerDiscordTranscriptSourceProvider } from "../../transcripts-source-api.js";
@@ -187,6 +188,7 @@ export function createDiscordGatewayCaptureFixture(params: {
   }
   const createManager = (cfg: OpenClawConfig) => {
     const createdManager = new DiscordVoiceManager({
+      scheduler: createTestPluginServiceScheduler(),
       client,
       cfg,
       discordConfig: cfg.channels!.discord!.accounts![captureTarget.accountId]!,

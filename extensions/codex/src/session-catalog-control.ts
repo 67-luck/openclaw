@@ -1,8 +1,8 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-registration";
 import { listAgentIds, resolveAgentDir } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveCodexAppServerLocalHomeDir } from "./app-server/auth-start-options.js";
 import { CODEX_CONTROL_METHODS } from "./app-server/capabilities.js";
 import type { CodexAppServerStartOptions } from "./app-server/config-contracts.js";
@@ -61,7 +61,10 @@ export function createCodexSessionCatalogControl(params: {
   now?: () => number;
   managedThreads?: CodexManagedThreadStore;
   openResidentState?: (homeId: string) => CodexCatalogState;
-}): CodexSessionCatalogControlFactory & { start(): Promise<void>; stop(): Promise<void> } {
+}): CodexSessionCatalogControlFactory & {
+  start(scheduler: PluginServiceSchedulerV1): Promise<void>;
+  stop(): Promise<void>;
+} {
   const now = params.now ?? Date.now;
   const sourceBackoff = new CodexCatalogSourceBackoff(now);
   const noConfig: OpenClawConfig = {};
@@ -90,7 +93,7 @@ export function createCodexSessionCatalogControl(params: {
   let residentEpoch = 0;
   let starting = 0;
   let closed = false;
-  let runBackground = (run: () => Promise<void>) => run();
+  let scheduler: PluginServiceSchedulerV1 | undefined;
   let retiring: Promise<void> | undefined;
   const retireIndexes = (): Promise<void> => {
     residentEpoch++;
@@ -118,7 +121,8 @@ export function createCodexSessionCatalogControl(params: {
     agentId: string | undefined,
     source?: CodexCatalogControlSource,
   ): Promise<CodexCatalogIndex> => {
-    if (closed) {
+    const lifetime = scheduler;
+    if (closed || !lifetime || lifetime.signal.aborted) {
       throw new Error("Codex resident catalog is closed");
     }
     const config = params.getRuntimeConfig();
@@ -144,7 +148,13 @@ export function createCodexSessionCatalogControl(params: {
     // Only already-admitted writes can affect the replacement's snapshot.
     // Retired native reads remain owned by stop(), without delaying this list.
     await retiringState.get(homeId);
-    if (closed || generation !== config || residentEpoch !== epoch) {
+    if (
+      closed ||
+      lifetime.signal.aborted ||
+      scheduler !== lifetime ||
+      generation !== config ||
+      residentEpoch !== epoch
+    ) {
       throw new Error("Codex catalog configuration changed");
     }
     let index = indexes.get(homeId);
@@ -157,7 +167,13 @@ export function createCodexSessionCatalogControl(params: {
         import("./session-catalog-projection.js"),
       ]);
       source?.assertCurrent();
-      if (closed || generation !== config || residentEpoch !== epoch) {
+      if (
+        closed ||
+        lifetime.signal.aborted ||
+        scheduler !== lifetime ||
+        generation !== config ||
+        residentEpoch !== epoch
+      ) {
         throw new Error("Codex catalog configuration changed");
       }
       index = indexes.get(homeId);
@@ -178,9 +194,9 @@ export function createCodexSessionCatalogControl(params: {
           : undefined);
       let nativeAttempt: ReturnType<CodexCatalogSourceBackoff["begin"]> | undefined;
       index = new CodexCatalogIndex({
+        scheduler: lifetime,
         homeId,
         requestTimeoutMs: runtime.requestTimeoutMs,
-        runBackground: (run) => runBackground(run),
         localSessionsRoot: root,
         state: params.openResidentState?.(homeId),
         runNativeWalk: async (run) => {
@@ -201,7 +217,12 @@ export function createCodexSessionCatalogControl(params: {
         },
         assertCurrent: () => {
           source?.assertCurrent();
-          if (closed || params.getRuntimeConfig() !== config || residentEpoch !== epoch) {
+          if (
+            closed ||
+            lifetime.signal.aborted ||
+            params.getRuntimeConfig() !== config ||
+            residentEpoch !== epoch
+          ) {
             throw new Error("Codex catalog configuration changed");
           }
         },
@@ -475,6 +496,13 @@ export function createCodexSessionCatalogControl(params: {
     return source ? forRequest(agentId, source) : undefined;
   };
   return {
+    bindScheduler(owner) {
+      owner.signal.throwIfAborted();
+      if (closed || (scheduler && scheduler !== owner && !scheduler.signal.aborted)) {
+        throw new Error("Codex catalog already belongs to another active scheduling owner");
+      }
+      scheduler = owner;
+    },
     hasActiveWork: () =>
       starting > 0 ||
       residentRequests.size > 0 ||
@@ -492,15 +520,14 @@ export function createCodexSessionCatalogControl(params: {
         await clearSharedCodexAppServerClientAndWait();
       }
     },
-    async start() {
+    async start(owner) {
+      this.bindScheduler(owner);
       const epoch = residentEpoch;
       starting++;
       try {
-        const serviceScope = AsyncLocalStorage.snapshot();
-        runBackground = (run) => serviceScope(run);
         for (const agentId of listAgentIds(params.getRuntimeConfig() ?? params.config ?? {})) {
           for (const source of await homeResolver.forAgent(agentId)) {
-            if (closed || residentEpoch !== epoch) {
+            if (closed || owner.signal.aborted || residentEpoch !== epoch) {
               return;
             }
             // Implicit process HOME is admitted by the Gateway's request policy.
@@ -508,13 +535,18 @@ export function createCodexSessionCatalogControl(params: {
             if (source.usesProcessHomeFallback) {
               continue;
             }
-            void forRequest(agentId, source)
-              .initialize()
-              .catch((error: unknown) => {
-                if (!findCodexAppServerSpawnError(error)) {
-                  embeddedAgentLog.warn("Codex catalog hydration failed", { error });
-                }
-              });
+            owner.schedule({
+              id: `initial-home:${agentId}:${source.sourceHomeId}`,
+              delayMs: 0,
+              run: () =>
+                forRequest(agentId, source)
+                  .initialize()
+                  .catch((error: unknown) => {
+                    if (!closed && !owner.signal.aborted && !findCodexAppServerSpawnError(error)) {
+                      embeddedAgentLog.warn("Codex catalog hydration failed", { error });
+                    }
+                  }),
+            });
           }
         }
       } finally {
@@ -523,8 +555,10 @@ export function createCodexSessionCatalogControl(params: {
     },
     async stop() {
       closed = true;
+      scheduler?.beginClose();
       await retireIndexes();
       await Promise.allSettled(residentRequests);
+      await scheduler?.stop();
     },
     forRequest,
     forUpstream,

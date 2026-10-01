@@ -14,6 +14,7 @@ import {
   createChannelIngressMonitor,
   DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -311,6 +312,7 @@ describe("Microsoft Teams drain claim ownership", () => {
         createDebouncer,
       );
       const ingress = createMSTeamsIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "test-app",
         queue,
         runtime: { error: vi.fn(), log: vi.fn() },

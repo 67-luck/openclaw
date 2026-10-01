@@ -5,6 +5,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { getChildLogger } from "openclaw/plugin-sdk/logging-core";
 import { parseStrictFiniteNumber } from "openclaw/plugin-sdk/number-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { defaultRuntime, createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { maybeResolveWhatsAppApprovalReaction } from "../approval-reactions.js";
 import { resolveComparableIdentity } from "../identity.js";
@@ -76,6 +77,7 @@ export type WhatsAppAppendReplyWindow = {
 };
 
 type WhatsAppMessageDeliveryOptions = {
+  scheduler: PluginServiceSchedulerV1;
   cfg: OpenClawConfig;
   loadConfig?: () => OpenClawConfig;
   verbose: boolean;
@@ -463,6 +465,7 @@ export function createWhatsAppMessageDeliveryCoordinator(options: WhatsAppMessag
   };
 
   const durableInboundMonitor = createWhatsAppIngressMonitor({
+    scheduler: options.scheduler,
     queue: durableInboundQueue,
     dispatch: async (admission, lifecycle) => ({
       kind: await processDurableInboundMessage(admission, lifecycle),

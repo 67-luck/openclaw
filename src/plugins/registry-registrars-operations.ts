@@ -32,10 +32,12 @@ import type {
   OpenClawPluginCliRootCommandDescriptor,
   OpenClawPluginCommandDefinition,
   OpenClawPluginNodeHostCommand,
+  OpenClawPluginNodeHostCommandV2,
   OpenClawPluginNodeInvokePolicy,
   OpenClawPluginReloadRegistration,
   OpenClawPluginSecurityAuditCollector,
   OpenClawPluginService,
+  OpenClawPluginServiceV2,
 } from "./types.js";
 
 function isOfficialCodexPluginRecord(
@@ -230,9 +232,13 @@ export function createOperationRegistrars(state: PluginRegistryState) {
 
   const registerNodeHostCommand = (
     record: PluginRecord,
-    nodeCommand: OpenClawPluginNodeHostCommand,
+    nodeCommand: OpenClawPluginNodeHostCommand | OpenClawPluginNodeHostCommandV2,
   ) => {
     const command = nodeCommand.command.trim();
+    if (nodeCommand.apiVersion === 2 && typeof nodeCommand.prepare !== "function") {
+      reportRegistrationError(record, "node host command version 2 requires preparation");
+      return;
+    }
     if (!command) {
       reportRegistrationError(record, "node host command registration missing command");
       return;
@@ -366,7 +372,10 @@ export function createOperationRegistrars(state: PluginRegistryState) {
     return undefined;
   };
 
-  const registerService = (record: PluginRecord, service: OpenClawPluginService) => {
+  const registerService = (
+    record: PluginRecord,
+    service: OpenClawPluginService | OpenClawPluginServiceV2,
+  ) => {
     const id = resolveServiceRegistrationId(record, service, "service");
     if (!id) {
       return;

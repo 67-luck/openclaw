@@ -4,7 +4,9 @@ import type {
   OpenClawPluginApi,
   OpenClawPluginNodeInvokePolicy,
   OpenClawPluginService,
+  OpenClawPluginServiceV2,
 } from "openclaw/plugin-sdk/plugin-entry";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createCapturedPluginRegistration } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
@@ -20,7 +22,7 @@ function registerLogbook(runtimeSource = fileURLToPath(new URL("./index.ts", imp
   const captured = createCapturedPluginRegistration({ id: "logbook" });
   captured.api.pluginConfig = { captureEnabled: false };
   const policies: OpenClawPluginNodeInvokePolicy[] = [];
-  const services: OpenClawPluginService[] = [];
+  const services: (OpenClawPluginService | OpenClawPluginServiceV2)[] = [];
   const methods: Array<{
     method: string;
     handler: Parameters<OpenClawPluginApi["registerGatewayMethod"]>[1];
@@ -45,6 +47,7 @@ describe("logbook gateway methods", () => {
     const service = services[0]!;
     const handler = methods.find((entry) => entry.method === "logbook.frames")!.handler;
     const context = {
+      scheduler: createTestPluginServiceScheduler(),
       config: {},
       stateDir,
       logger: { info() {}, warn() {}, error() {}, debug() {} },
@@ -146,7 +149,12 @@ describe("logbook gateway methods", () => {
       const stopBeforeOpening = new Error("worker location captured");
       const open = vi.spyOn(LogbookStore, "open").mockRejectedValueOnce(stopBeforeOpening);
       await expect(
-        services[0]!.start({ config: {}, stateDir: "/unused", logger: console }),
+        services[0]!.start({
+          config: {},
+          stateDir: "/unused",
+          logger: console,
+          scheduler: createTestPluginServiceScheduler(),
+        }),
       ).rejects.toBe(stopBeforeOpening);
       expect(open).toHaveBeenCalledExactlyOnceWith(
         path.join("/unused", "logbook"),

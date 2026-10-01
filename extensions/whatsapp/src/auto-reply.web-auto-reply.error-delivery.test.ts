@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 // WhatsApp web auto-reply terminal failure delivery behavior.
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -19,7 +20,7 @@ const SELF_JID = "123@s.whatsapp.net";
 
 describe("web auto-reply terminal failure delivery", () => {
   installWebAutoReplyUnitTestHooks({ pinDns: true });
-  type ListenerFactory = NonNullable<Parameters<typeof monitorWebChannel>[1]>;
+  type ListenerFactory = NonNullable<Parameters<typeof monitorWebChannel>[2]>;
 
   beforeAll(async () => {
     ({ monitorWebChannel } = await import("./auto-reply/monitor.js"));
@@ -37,7 +38,13 @@ describe("web auto-reply terminal failure delivery", () => {
       return createMockWebListener();
     };
 
-    await monitorWebChannel(false, listenerFactory, false, resolver);
+    await monitorWebChannel(
+      createTestPluginServiceScheduler(),
+      false,
+      listenerFactory,
+      false,
+      resolver,
+    );
     if (!capturedOnMessage) {
       throw new Error("expected WhatsApp web message handler");
     }

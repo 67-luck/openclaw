@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolvePromptHistoryLimit } from "openclaw/plugin-sdk/number-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { HistoryEntry } from "openclaw/plugin-sdk/reply-history";
 import {
   getRuntimeConfig,
@@ -23,6 +24,7 @@ type BuildChannelInboundContext =
   typeof import("openclaw/plugin-sdk/channel-inbound").buildChannelInboundEventContext;
 
 interface LineBotOptions {
+  scheduler?: PluginServiceSchedulerV1;
   channelAccessToken: string;
   channelSecret: string;
   accountId?: string;
@@ -46,6 +48,10 @@ interface LineBot {
 }
 
 export function createLineBot(opts: LineBotOptions): LineBot {
+  const scheduler = opts.scheduler;
+  if (!scheduler) {
+    throw new Error("LINE monitor requires an account service scheduler");
+  }
   const runtime: RuntimeEnv = opts.runtime ?? createNonExitingRuntime();
 
   const startupConfig = opts.config ?? getRuntimeConfig();
@@ -91,6 +97,7 @@ export function createLineBot(opts: LineBotOptions): LineBot {
     });
   const groupHistories = new Map<string, HistoryEntry[]>();
   const spool = createLineWebhookSpool({
+    scheduler,
     accountId: account.accountId,
     runtime,
     deliver: async (events, _destination, control) => {

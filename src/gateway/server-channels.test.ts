@@ -22,11 +22,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getGatewayNativeApprovalRuntime } from "../infra/approval-gateway-runtime-context.js";
 import type { GatewayNativeApprovalRuntime } from "../infra/approval-gateway-runtime.types.js";
 import { tryReadSecretFileSync } from "../infra/secret-file.js";
-import {
-  createSubsystemLogger,
-  type SubsystemLogger,
-  runtimeForLogger,
-} from "../logging/subsystem.js";
+import { createSubsystemLogger, type SubsystemLogger } from "../logging/subsystem.js";
 import { registerPluginHttpRoute } from "../plugins/http-registry.js";
 import { createPluginModuleLoader } from "../plugins/loader-module-runtime.js";
 import { createEmptyPluginRegistry, type PluginRegistry } from "../plugins/registry.js";
@@ -59,7 +55,15 @@ import {
 } from "./channel-status-patches.js";
 import { restartRunningChannelAccounts } from "./channel-thaw-restart.js";
 import { createChannelManager, type ChannelManager } from "./server-channels.js";
-import { createTestPlugin, healthOf, type TestAccount } from "./server-channels.test-support.js";
+import {
+  createTestPlugin,
+  createTestChannelRegistry,
+  createTestChannelManager,
+  waitForAbort,
+  flushMicrotasks,
+  healthOf,
+  type TestAccount,
+} from "./server-channels.test-support.js";
 import { AUTH_NONE, createTestGatewayServer } from "./server-http.test-harness.js";
 import { createGatewayPluginRequestHandler } from "./server/plugins-http.js";
 
@@ -115,18 +119,6 @@ type ApprovalGatewayRequestRuntime = Pick<GatewayNativeApprovalRuntime, "request
 const createdManagers: Array<{ manager: ChannelManager; channelIds: ChannelId[] }> = [];
 const channelTempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-function waitForAbort(signal: AbortSignal): Promise<void> {
-  return new Promise<void>((resolve) => {
-    signal.addEventListener("abort", () => resolve(), { once: true });
-  });
-}
-
-async function flushMicrotasks(times = 8): Promise<void> {
-  for (let i = 0; i < times; i += 1) {
-    await Promise.resolve();
-  }
-}
-
 async function waitForImmediate(): Promise<void> {
   await new Promise<void>((resolve) => {
     const handle = setImmediate(resolve);
@@ -176,52 +168,15 @@ function firstStartAccountContext(
   return ctx as ChannelGatewayContext<TestAccount>;
 }
 
-function installTestRegistry(
-  ...plugins: Array<
-    | ChannelPlugin<TestAccount>
-    | {
-        plugin: ChannelPlugin<TestAccount>;
-        origin: string;
-        resolveChannelRuntime?: () => PluginRuntime["channel"];
-      }
-  >
-) {
-  const registry = createEmptyPluginRegistry();
-  for (const candidate of plugins) {
-    const plugin = "plugin" in candidate ? candidate.plugin : candidate;
-    registry.channels.push({
-      pluginId: plugin.id,
-      ...("origin" in candidate ? { origin: candidate.origin as never } : {}),
-      ...(typeof candidate === "object" && "resolveChannelRuntime" in candidate
-        ? { resolveChannelRuntime: candidate.resolveChannelRuntime }
-        : {}),
-      source: "test",
-      plugin,
-    } as PluginRegistry["channels"][number]);
-  }
+function installTestRegistry(...plugins: Parameters<typeof createTestChannelRegistry>) {
+  const registry = createTestChannelRegistry(...plugins);
   setActivePluginRegistry(registry);
   return registry;
 }
 
-function createManager(
-  options: Partial<
-    Omit<
-      Parameters<typeof createChannelManager>[0],
-      "scheduler" | "channelLogs" | "channelRuntimeEnvs"
-    >
-  > & { channelIds?: ChannelId[] } = {},
-) {
-  const { channelIds = ["discord"], ...overrides } = options;
-  const log = createSubsystemLogger("gateway/server-channels-test");
-  const manager = createChannelManager({
-    scheduler: createTestGatewayScheduler(),
-    getRuntimeConfig: () => ({}),
-    getPluginRegistry: requireActivePluginChannelRegistry,
-    channelLogs: Object.fromEntries(channelIds.map((id) => [id, log.child(id)])),
-    channelRuntimeEnvs: Object.fromEntries(channelIds.map((id) => [id, runtimeForLogger(log)])),
-    ...overrides,
-  });
-  createdManagers.push({ channelIds, manager });
+function createManager(options: Parameters<typeof createTestChannelManager>[0] = {}) {
+  const manager = createTestChannelManager(options);
+  createdManagers.push({ channelIds: options.channelIds ?? ["discord"], manager });
   return manager;
 }
 

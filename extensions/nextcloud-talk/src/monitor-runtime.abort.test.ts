@@ -5,6 +5,7 @@ import {
   setActivePluginRegistry,
 } from "openclaw/plugin-sdk/channel-test-helpers";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createMockIncomingRequest } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it, vi } from "vitest";
 import { createRuntimeSpies } from "../../test-support/runtime-spies.js";
@@ -38,6 +39,7 @@ function createMonitorFixture() {
     abortController,
     spool,
     options: {
+      scheduler: createTestPluginServiceScheduler(),
       config,
       runtime: createRuntimeSpies(),
       abortSignal: abortController.signal,
@@ -73,6 +75,7 @@ describe("Nextcloud Talk monitor abort", () => {
       }));
       for (const webhookPath of [path, `${path}?tenant=a`]) {
         const options = {
+          scheduler: createTestPluginServiceScheduler(),
           config: {
             gateway: { port: 19001 },
             channels: {
@@ -97,6 +100,7 @@ describe("Nextcloud Talk monitor abort", () => {
         expect(statusSink).not.toHaveBeenCalled();
       }
       const monitor = await monitorNextcloudTalkProvider({
+        scheduler: createTestPluginServiceScheduler(),
         config: {
           gateway: { port: 19001 },
           channels: {
@@ -219,6 +223,7 @@ describe("Nextcloud Talk monitor abort", () => {
         expect(registry.httpRoutes).toHaveLength(0);
       });
       const monitor = await monitorNextcloudTalkProvider({
+        scheduler: createTestPluginServiceScheduler(),
         config: {
           channels: {
             "nextcloud-talk": {

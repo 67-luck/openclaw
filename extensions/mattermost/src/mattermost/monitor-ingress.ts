@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { isRecord } from "openclaw/plugin-sdk/channel-secret-basic-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { getMattermostRuntime } from "../runtime.js";
 import type { MattermostPost } from "./client.js";
@@ -156,6 +157,7 @@ type MattermostIngressMonitor = {
 };
 
 export function createMattermostIngressMonitor(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   queue?: ChannelIngressQueue<MattermostIngressPayload>;
   dispatch: MattermostIngressDispatch;
@@ -169,6 +171,7 @@ export function createMattermostIngressMonitor(options: {
     Omit<MattermostIngressPayload, "version">,
     MattermostIngressPayload
   >({
+    scheduler: options.scheduler,
     queue:
       options.queue ??
       (() =>

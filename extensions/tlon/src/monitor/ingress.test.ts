@@ -6,6 +6,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { UrbitHttpError } from "../urbit/errors.js";
 import { createTlonIngressMonitor } from "./ingress.js";
@@ -98,6 +99,7 @@ async function withQueue<T>(
 
 function startMonitor(queue: TlonIngressQueue, dispatch: TlonIngressDispatch) {
   const monitor = createTlonIngressMonitor({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     queue,
     dispatch,

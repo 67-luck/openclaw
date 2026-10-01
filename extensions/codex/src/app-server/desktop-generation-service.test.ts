@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { FSWatcher } from "node:fs";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createCodexDesktopGenerationService,
@@ -57,6 +59,7 @@ function createHarness(initialFingerprint: string) {
 
 async function startAndSettle(harness: ReturnType<typeof createHarness>): Promise<void> {
   await harness.service.start?.({
+    scheduler: createTestPluginServiceScheduler(),
     logger: { warn: harness.warn },
     serviceHealth: {
       clearFailure: harness.clearFailure,
@@ -83,6 +86,7 @@ describe("Codex desktop generation service", () => {
     service = harness.service;
 
     await service.start?.({
+      scheduler: createTestPluginServiceScheduler(),
       logger: { warn: harness.warn },
       serviceHealth: {
         clearFailure: harness.clearFailure,
@@ -180,6 +184,7 @@ describe("Codex desktop generation service", () => {
       },
     );
     await service.start?.({
+      scheduler: createTestPluginServiceScheduler(),
       logger: { warn },
       serviceHealth: { clearFailure, reportFailure },
     } as never);
@@ -211,6 +216,7 @@ describe("Codex desktop generation service", () => {
     const harness = createHarness("desktop-stop");
     service = harness.service;
     await service.start?.({
+      scheduler: createTestPluginServiceScheduler(),
       logger: { warn: harness.warn },
       serviceHealth: {
         clearFailure: harness.clearFailure,
@@ -221,10 +227,45 @@ describe("Codex desktop generation service", () => {
 
     await service.stop?.({} as never);
     service = undefined;
+    expect(vi.getTimerCount()).toBe(0);
     harness.setFingerprint("desktop-after-stop");
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(harness.onGenerationChange).not.toHaveBeenCalled();
     expect(harness.readFingerprint).toHaveBeenCalledOnce();
+  });
+
+  it("joins an admitted fingerprint read before service retirement completes", async () => {
+    vi.useFakeTimers();
+    const harness = createHarness("desktop-in-flight");
+    const read = createDeferred<string>();
+    harness.readFingerprint.mockImplementationOnce(() => read.promise);
+    service = harness.service;
+    await service.start({
+      scheduler: createTestPluginServiceScheduler(),
+      logger: { warn: harness.warn },
+    } as never);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(harness.readFingerprint).toHaveBeenCalledOnce();
+
+    const retired = vi.fn();
+    const stopping = Promise.resolve(service.stop?.({} as never)).then(retired);
+    try {
+      await Promise.resolve();
+      expect(retired).not.toHaveBeenCalled();
+      expect(
+        harness.registrations.every(({ watcher }) => watcher.close.mock.calls.length === 1),
+      ).toBe(true);
+    } finally {
+      read.resolve("desktop-after-stop");
+      await stopping;
+    }
+    service = undefined;
+    expect(retired).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(harness.readFingerprint).toHaveBeenCalledOnce();
+    expect(harness.onGenerationChange).not.toHaveBeenCalled();
+    expect(harness.warn).not.toHaveBeenCalled();
   });
 });

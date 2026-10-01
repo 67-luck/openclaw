@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
   getActivePluginRegistry,
@@ -6,9 +7,11 @@ import {
   setActivePluginRegistry,
 } from "../plugins/runtime.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import type { NodeHostClient } from "./client.js";
 import { startNodeHostConnection } from "./connection.js";
 import { startNodeHostMcpManager } from "./mcp.js";
+import { ensureNodeHostPluginRegistry } from "./plugin-node-host.js";
 import { resetNodeHostPluginRegistry } from "./plugin-node-host.test-support.js";
 import { prepareNodeHostRuntime } from "./runtime.js";
 import { scanNodeHostedSkills } from "./skills.js";
@@ -66,6 +69,7 @@ beforeEach(() => {
 afterEach(() => {
   resetNodeHostPluginRegistry();
   resetPluginRuntimeStateForTest();
+  vi.useRealTimers();
 });
 
 describe("restricted node command surface", () => {
@@ -137,6 +141,89 @@ describe("restricted node command surface", () => {
       caps: ["fixture-catalog", "system"],
     });
   });
+
+  it.each([false, true])(
+    "joins unavailable-command cleanup and preserves startup failure when cleanup fails=%s",
+    async (cleanupFails) => {
+      vi.useFakeTimers();
+      const scheduler = createTestGatewayScheduler("fake-timers");
+      const cleanupEntered = createDeferred<void>();
+      const releaseCleanup = createDeferred<void>();
+      const cleanupFailure = new Error("catalog flush failed");
+      let failCleanup = cleanupFails;
+      const cleanup = vi.fn(async () => {
+        cleanupEntered.resolve();
+        await releaseCleanup.promise;
+        if (failCleanup) {
+          failCleanup = false;
+          throw cleanupFailure;
+        }
+      });
+      const ran = vi.fn();
+      const registry = getActivePluginRegistry();
+      assert(registry);
+      registry.nodeHostCommands.push({
+        pluginId: "fixture",
+        source: "test",
+        command: {
+          apiVersion: 2,
+          command: "fixture.unavailable",
+          prepare: ({ scheduler }) => {
+            scheduler.schedule({ id: "refresh", delayMs: 10, run: ran });
+          },
+          isAvailable: () => false,
+          onDisconnect: cleanup,
+          handle: read,
+        },
+      });
+      const startup = prepareNodeHostRuntime({
+        config: {},
+        commands: ["fixture.unavailable"],
+        scheduler,
+      });
+      const settled = vi.fn();
+      const outcome = startup.then(settled, (error: unknown) => {
+        settled();
+        return error;
+      });
+      try {
+        expect(
+          await Promise.race([
+            cleanupEntered.promise.then(() => "cleanup"),
+            outcome.then(() => "settled"),
+          ]),
+        ).toBe("cleanup");
+        await vi.advanceTimersByTimeAsync(100);
+        expect(ran).not.toHaveBeenCalled();
+        expect(settled).not.toHaveBeenCalled();
+        releaseCleanup.resolve();
+        const error = await outcome;
+        const startupFailure = { message: expect.stringContaining("fixture.unavailable") };
+        expect(error).toMatchObject(
+          cleanupFails
+            ? {
+                name: "SuppressedError",
+                suppressed: startupFailure,
+                error: expect.objectContaining({
+                  errors: [expect.objectContaining({ errors: [cleanupFailure] })],
+                }),
+              }
+            : startupFailure,
+        );
+        const replacement = await ensureNodeHostPluginRegistry({
+          config: {},
+          scheduler,
+          commandAllowlist: new Set(),
+        });
+        await replacement.close();
+        expect(cleanup).toHaveBeenCalledTimes(cleanupFails ? 2 : 1);
+      } finally {
+        releaseCleanup.resolve();
+        await outcome;
+        await scheduler.stop();
+      }
+    },
+  );
 
   it.each([{ commands: [] }, { commands: ["missing.command"] }])(
     "fails startup when no requested command is available: $commands",

@@ -5,6 +5,7 @@ import {
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { withTempDir } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RuntimeEnv } from "../runtime-api.js";
@@ -158,6 +159,7 @@ function startSpool(params: {
   config?: CoreConfig;
 }) {
   return createNextcloudTalkWebhookSpool({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "proof",
     queue: params.queue,
     deliver: async (message, lifecycle) =>

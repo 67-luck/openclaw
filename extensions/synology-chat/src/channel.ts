@@ -3,7 +3,7 @@ import {
   createHybridChannelConfigAdapter,
   createScopedDmSecurityResolver,
 } from "openclaw/plugin-sdk/channel-config-helpers";
-import type { ChannelGatewayContext } from "openclaw/plugin-sdk/channel-contract";
+import type { ChannelGatewayContextV2 } from "openclaw/plugin-sdk/channel-contract";
 import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import {
   waitUntilAbort,
@@ -78,10 +78,10 @@ const resolveSynologyChatDmPolicy = createScopedDmSecurityResolver<ResolvedSynol
 });
 
 type SynologyGatewayContext = Pick<
-  ChannelGatewayContext,
-  "cfg" | "accountId" | "abortSignal" | "log"
+  ChannelGatewayContextV2,
+  "cfg" | "accountId" | "abortSignal" | "log" | "scheduler"
 > &
-  Partial<Pick<ChannelGatewayContext, "setStatus">>;
+  Partial<Pick<ChannelGatewayContextV2, "setStatus">>;
 type SynologyMediaContext = Omit<
   ChannelMessageSendMediaContext,
   "onDeliveryResult" | "mediaUrl" | "text"
@@ -360,6 +360,7 @@ export const synologyChatPlugin = {
     }),
   }),
   gateway: {
+    apiVersion: 2,
     startAccount: async (ctx: SynologyGatewayContext) => {
       const { cfg, accountId, log, abortSignal } = ctx;
       const account = resolveAccount(cfg, accountId);
@@ -377,6 +378,7 @@ export const synologyChatPlugin = {
         `Starting Synology Chat channel (account: ${accountId}, path: ${account.webhookPath})`,
       );
       const cleanup = await registerSynologyWebhookRoute({
+        scheduler: ctx.scheduler,
         cfg,
         account,
         accountId,

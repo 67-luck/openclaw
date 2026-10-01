@@ -1,6 +1,7 @@
 import type { GroupMetadata, WASocket, WAMessageKey, proto } from "baileys";
 import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { info } from "openclaw/plugin-sdk/runtime-env";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import {
@@ -50,7 +51,6 @@ export const WHATSAPP_LOGGED_OUT_QR_MESSAGE =
   "WhatsApp reported the session is logged out. Cleared cached web session; please scan a new QR.";
 export const WHATSAPP_WATCHDOG_TIMEOUT_ERROR = "watchdog-timeout";
 
-type TimerHandle = ReturnType<typeof setInterval>;
 type WaSocket = Awaited<ReturnType<typeof createWaSocket>>;
 
 export type ManagedWhatsAppListener = ActiveWebListener & {
@@ -63,8 +63,7 @@ type WhatsAppLiveConnection = {
   startedAt: number;
   sock: WASocket;
   listener: ManagedWhatsAppListener;
-  heartbeat: TimerHandle | null;
-  watchdogTimer: TimerHandle | null;
+  scheduler: PluginServiceSchedulerV1;
   lastInboundAt: number | null;
   lastTransportActivityAt: number;
   handledMessages: number;
@@ -153,6 +152,7 @@ type SocketActivityEmitter = {
 };
 
 function createLiveConnection(params: {
+  scheduler: PluginServiceSchedulerV1;
   connectionId: string;
   sock: WASocket;
   listener: ManagedWhatsAppListener;
@@ -165,8 +165,7 @@ function createLiveConnection(params: {
     startedAt: Date.now(),
     sock: params.sock,
     listener: params.listener,
-    heartbeat: null,
-    watchdogTimer: null,
+    scheduler: params.scheduler.scope(),
     lastInboundAt: null,
     lastTransportActivityAt: Date.now(),
     handledMessages: 0,
@@ -441,6 +440,7 @@ export class WhatsAppConnectionController {
   readonly authDir: string;
   readonly socketRef: { current: WASocket | null };
 
+  private readonly scheduler: PluginServiceSchedulerV1;
   private readonly reconnectPolicy: ReconnectPolicy;
   private readonly heartbeatSeconds: number;
   private readonly keepAlive: boolean;
@@ -471,6 +471,7 @@ export class WhatsAppConnectionController {
   private lastHandledInboundAt: number | null = null;
 
   constructor(params: {
+    scheduler: PluginServiceSchedulerV1;
     accountId: string;
     authDir: string;
     verbose: boolean;
@@ -485,6 +486,7 @@ export class WhatsAppConnectionController {
     isNonRetryableStatus?: (statusCode: unknown) => boolean;
     socketTiming?: WhatsAppSocketTimingOptions;
   }) {
+    this.scheduler = params.scheduler;
     this.accountId = params.accountId;
     this.authDir = params.authDir;
     this.verbose = params.verbose;
@@ -656,6 +658,7 @@ export class WhatsAppConnectionController {
       this.socketRef.current = sock;
       const placeholderListener = {} as ManagedWhatsAppListener;
       connection = createLiveConnection({
+        scheduler: this.scheduler,
         connectionId: params.connectionId,
         sock,
         listener: placeholderListener,
@@ -699,6 +702,7 @@ export class WhatsAppConnectionController {
         if (connection && this.current === connection) {
           await this.closeCurrentConnection();
         } else {
+          await connection?.scheduler.stop();
           try {
             await connection?.listener.close?.();
           } catch {
@@ -852,12 +856,7 @@ export class WhatsAppConnectionController {
     }
     connection.unregisterUnhandled?.();
     connection.unregisterTransportActivity?.();
-    if (connection.heartbeat) {
-      clearInterval(connection.heartbeat);
-    }
-    if (connection.watchdogTimer) {
-      clearInterval(connection.watchdogTimer);
-    }
+    await connection.scheduler.stop();
     if (connection.backgroundTasks.size > 0) {
       await Promise.allSettled(connection.backgroundTasks);
       connection.backgroundTasks.clear();
@@ -1015,36 +1014,49 @@ export class WhatsAppConnectionController {
       return;
     }
 
-    connection.heartbeat = setInterval(() => {
-      const snapshot = this.getCurrentSnapshot(connection);
-      if (!snapshot) {
-        return;
-      }
-      hooks.onHeartbeat?.(snapshot);
-    }, this.heartbeatSeconds * 1000);
+    connection.scheduler.schedule({
+      id: "heartbeat",
+      delayMs: this.heartbeatSeconds * 1000,
+      everyMs: this.heartbeatSeconds * 1000,
+      run: () => {
+        const snapshot = this.getCurrentSnapshot(connection);
+        if (!snapshot) {
+          return;
+        }
+        hooks.onHeartbeat?.(snapshot);
+      },
+    });
 
-    connection.watchdogTimer = setInterval(() => {
-      const now = Date.now();
-      const transportStaleForMs = now - connection.lastTransportActivityAt;
-      const appBaselineAt = connection.lastInboundAt ?? connection.startedAt;
-      const appSilentForMs = now - appBaselineAt;
-      const appSilenceTimeoutMs = connection.openedAfterRecentInbound
-        ? this.messageTimeoutMs
-        : this.appSilenceTimeoutMs;
-      if (transportStaleForMs <= this.transportTimeoutMs && appSilentForMs <= appSilenceTimeoutMs) {
-        return;
-      }
-      const snapshot = this.getCurrentSnapshot(connection);
-      if (!snapshot) {
-        return;
-      }
-      hooks.onWatchdogTimeout?.(snapshot);
-      this.forceClose({
-        status: 499,
-        isLoggedOut: false,
-        error: WHATSAPP_WATCHDOG_TIMEOUT_ERROR,
-      });
-    }, this.watchdogCheckMs);
+    connection.scheduler.schedule({
+      id: "watchdog",
+      delayMs: this.watchdogCheckMs,
+      everyMs: this.watchdogCheckMs,
+      run: () => {
+        const now = Date.now();
+        const transportStaleForMs = now - connection.lastTransportActivityAt;
+        const appBaselineAt = connection.lastInboundAt ?? connection.startedAt;
+        const appSilentForMs = now - appBaselineAt;
+        const appSilenceTimeoutMs = connection.openedAfterRecentInbound
+          ? this.messageTimeoutMs
+          : this.appSilenceTimeoutMs;
+        if (
+          transportStaleForMs <= this.transportTimeoutMs &&
+          appSilentForMs <= appSilenceTimeoutMs
+        ) {
+          return;
+        }
+        const snapshot = this.getCurrentSnapshot(connection);
+        if (!snapshot) {
+          return;
+        }
+        hooks.onWatchdogTimeout?.(snapshot);
+        this.forceClose({
+          status: 499,
+          isLoggedOut: false,
+          error: WHATSAPP_WATCHDOG_TIMEOUT_ERROR,
+        });
+      },
+    });
   }
 
   private attachTransportActivityListener(sock: WASocket): (() => void) | null {

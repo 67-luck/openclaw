@@ -1,4 +1,3 @@
-// Signal plugin module owns raw-envelope durable ingress mapping and draining.
 import {
   createChannelIngressError,
   createChannelIngressMonitor,
@@ -6,6 +5,8 @@ import {
   type ChannelIngressMonitorDeliveryResult,
   type ChannelIngressMonitorLifecycle,
 } from "openclaw/plugin-sdk/channel-outbound";
+// Signal plugin module owns raw-envelope durable ingress mapping and draining.
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import {
   asPositiveSafeInteger,
@@ -157,6 +158,7 @@ export type SignalIngressMonitor = {
 
 /** Open the account queue, recover it, and keep newly appended rows draining. */
 export async function startSignalIngressMonitor(params: {
+  scheduler?: PluginServiceSchedulerV1;
   accountId: string;
   queue?: ChannelIngressQueue<SignalIngressPayload>;
   dispatch: SignalIngressDispatch;
@@ -178,6 +180,7 @@ export async function startSignalIngressMonitor(params: {
     SignalIngressBody,
     SignalIngressPayload
   >({
+    scheduler: params.scheduler,
     queue: ingressQueue,
     inspect: inspectSignalIngressEvent,
     payload: {

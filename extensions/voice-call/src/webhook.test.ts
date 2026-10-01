@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { RealtimeTranscriptionProviderPlugin } from "openclaw/plugin-sdk/realtime-transcription";
 import * as webhookRequestGuards from "openclaw/plugin-sdk/webhook-request-guards";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -140,8 +141,16 @@ const createManager = (calls: CallRecord[]) => {
   return { manager, endCall, processEvent };
 };
 
-function createServer(...args: ConstructorParameters<typeof VoiceCallWebhookServer>) {
-  const server = new VoiceCallWebhookServer(...args);
+type WebhookServerArgs =
+  ConstructorParameters<typeof VoiceCallWebhookServer> extends [unknown, ...infer Args]
+    ? Args
+    : never;
+
+function createServer(...args: WebhookServerArgs) {
+  const server = new VoiceCallWebhookServer(
+    { kind: "service", scheduler: createTestPluginServiceScheduler() },
+    ...args,
+  );
   onTestFinished(() => server.stop());
   return server;
 }
@@ -406,6 +415,42 @@ describe("VoiceCallWebhookServer stale call reaper", () => {
     await server.start();
     await vi.advanceTimersByTimeAsync(30_000);
     expect(endCall).toHaveBeenCalledExactlyOnceWith(stale.callId);
+  });
+
+  it("joins admitted reaper hangups while handler shutdown can finish", async () => {
+    const hangup = createDeferred<{ success: boolean }>();
+    const handlerClosed = createDeferred<void>();
+    const handlerClose = vi.fn(() => handlerClosed.promise);
+    const { manager, endCall } = createManager([createCall(Date.now() - 60_000)]);
+    endCall.mockImplementation(() => hangup.promise);
+    const server = createServer(createConfig({ staleCallReaperSeconds: 1 }), manager, provider);
+    const handler = createRealtimeHandler(vi.fn());
+    handler.close = handlerClose;
+    server.setRealtimeHandler(handler);
+    let stopped = false;
+    try {
+      await server.start();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(endCall).toHaveBeenCalledOnce();
+      const stopping = server.stop();
+      void stopping.then(() => {
+        stopped = true;
+      });
+      expect(server.stop()).toBe(stopping);
+      expect(handlerClose).toHaveBeenCalledOnce();
+      handlerClosed.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stopped).toBe(false);
+      hangup.resolve({ success: true });
+      await stopping;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(endCall).toHaveBeenCalledOnce();
+    } finally {
+      handlerClosed.resolve();
+      hangup.resolve({ success: true });
+      await server.stop();
+    }
+    expect(stopped).toBe(true);
   });
 });
 

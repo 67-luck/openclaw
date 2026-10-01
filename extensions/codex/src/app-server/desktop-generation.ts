@@ -2,8 +2,9 @@
 import { existsSync, watch, type FSWatcher } from "node:fs";
 import path from "node:path";
 import type {
-  OpenClawPluginService,
-  OpenClawPluginServiceContext,
+  OpenClawPluginServiceV2,
+  OpenClawPluginServiceContextV2,
+  PluginServiceSchedulerV1,
 } from "openclaw/plugin-sdk/plugin-entry";
 import { defineCodexBuildState } from "../build-state.js";
 import { resolveMacOSDesktopCodexAppPathCandidates } from "./desktop-app-paths.js";
@@ -39,9 +40,10 @@ type DesktopGenerationState = {
   watchers?: Set<FSWatcher>;
   watchHealthy?: boolean;
   armEpoch?: number;
-  rearmTimer?: NodeJS.Timeout;
+  rearmTimer?: ReturnType<PluginServiceSchedulerV1["schedule"]>;
   rearmDelayMs?: number;
-  context?: OpenClawPluginServiceContext;
+  context?: OpenClawPluginServiceContextV2;
+  scheduler?: PluginServiceSchedulerV1;
   runtime?: DesktopGenerationRuntime;
 };
 
@@ -71,8 +73,9 @@ export function createCodexDesktopGenerationService(
     pathExists: existsSync,
     watchPath: (watchedPath, options, listener) => watch(watchedPath, options, listener),
   },
-): OpenClawPluginService {
+): OpenClawPluginServiceV2 {
   return {
+    apiVersion: 2,
     id: "codex-desktop-generation",
     async start(ctx) {
       if (runtime.platform !== "darwin") {
@@ -80,30 +83,39 @@ export function createCodexDesktopGenerationService(
       }
       const current = state();
       current.context = ctx;
+      current.scheduler = ctx.scheduler.scope();
       current.runtime = { ...runtime };
       current.owner = createCodexDesktopGenerationOwner({
+        signal: current.scheduler.signal,
         readFingerprint: runtime.readFingerprint,
         onGenerationChange: params.onGenerationChange,
         initialGeneration: current.lastGeneration,
       });
       armWatchers(current);
-      refreshGeneration(current, current.owner, current.owner.refresh());
+      const owner = current.owner;
+      owner.markDirty();
+      current.scheduler.schedule({
+        id: "initial-generation",
+        delayMs: 0,
+        run: () => refreshGeneration(current, owner, owner.wait()),
+      });
     },
     async stop() {
       const current = state();
+      const owner = current.owner;
+      const scheduler = current.scheduler;
+      scheduler?.beginClose();
       current.lastGeneration = current.owner?.read() ?? current.lastGeneration;
-      current.owner?.stop();
       current.owner = undefined;
+      current.scheduler = undefined;
       current.armEpoch = (current.armEpoch ?? 0) + 1;
       current.context = undefined;
       current.runtime = undefined;
       current.watchHealthy = undefined;
       current.rearmDelayMs = undefined;
-      if (current.rearmTimer) {
-        clearTimeout(current.rearmTimer);
-        current.rearmTimer = undefined;
-      }
+      current.rearmTimer = undefined;
       closeWatchers(current);
+      await Promise.all([scheduler?.stop(), owner?.join()]);
     },
   };
 }
@@ -193,7 +205,12 @@ function isCurrentArm(
   watchers: Set<FSWatcher>,
   armEpoch: number,
 ): boolean {
-  return current.owner === owner && current.watchers === watchers && current.armEpoch === armEpoch;
+  return (
+    current.owner === owner &&
+    !current.scheduler?.signal.aborted &&
+    current.watchers === watchers &&
+    current.armEpoch === armEpoch
+  );
 }
 
 function scheduleRearm(current: DesktopGenerationState, owner: GenerationOwner): void {
@@ -201,7 +218,7 @@ function scheduleRearm(current: DesktopGenerationState, owner: GenerationOwner):
     if (current.watchHealthy === false) {
       return;
     }
-    clearTimeout(current.rearmTimer);
+    current.rearmTimer.cancel();
   }
   const delayMs =
     current.watchHealthy === false
@@ -210,34 +227,37 @@ function scheduleRearm(current: DesktopGenerationState, owner: GenerationOwner):
   if (current.watchHealthy === false) {
     current.rearmDelayMs = Math.min(delayMs * 2, REARM_MAX_DELAY_MS);
   }
-  current.rearmTimer = setTimeout(() => {
-    current.rearmTimer = undefined;
-    if (current.owner !== owner) {
-      return;
-    }
-    const wasUnhealthy = current.watchHealthy === false;
-    closeWatchers(current);
-    if (!armWatchers(current) || wasUnhealthy) {
-      owner.markDirty();
-    }
-    refreshGeneration(current, owner, owner.wait());
-  }, delayMs);
-  current.rearmTimer.unref();
+  current.rearmTimer = current.scheduler?.schedule({
+    id: "watcher-rearm",
+    delayMs,
+    run: () => {
+      current.rearmTimer = undefined;
+      if (current.owner !== owner || current.scheduler?.signal.aborted) {
+        return;
+      }
+      const wasUnhealthy = current.watchHealthy === false;
+      closeWatchers(current);
+      if (!armWatchers(current) || wasUnhealthy) {
+        owner.markDirty();
+      }
+      return refreshGeneration(current, owner, owner.wait());
+    },
+  });
 }
 
 function refreshGeneration(
   current: DesktopGenerationState,
   owner: GenerationOwner,
   refresh: Promise<CodexDesktopGeneration | undefined>,
-): void {
-  void refresh
+): Promise<void> {
+  return refresh
     .then(() => {
-      if (current.owner === owner && current.watchHealthy) {
+      if (current.owner === owner && !current.scheduler?.signal.aborted && current.watchHealthy) {
         current.context?.serviceHealth?.clearFailure();
       }
     })
     .catch((error: unknown) => {
-      if (current.owner !== owner) {
+      if (current.owner !== owner || current.scheduler?.signal.aborted) {
         return;
       }
       current.context?.serviceHealth?.reportFailure(error);

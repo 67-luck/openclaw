@@ -1,5 +1,6 @@
 // Node-host plugin command contracts, including the opt-in duplex transport.
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { PluginServiceSchedulerV1 } from "./service-scheduler.types.js";
 
 export type OpenClawPluginNodeHostCommandAvailabilityContext = {
   /** Node-local configuration used to build this host's Gateway declaration. */
@@ -52,6 +53,7 @@ export type OpenClawPluginNodeHostCommandContext = {
 };
 
 type OpenClawPluginNodeHostCommandBase = {
+  apiVersion?: 1;
   command: string;
   cap?: string;
   dangerous?: boolean;
@@ -90,4 +92,22 @@ export type OpenClawPluginNodeHostCommand = OpenClawPluginNodeHostCommandBase & 
     io?: OpenClawPluginNodeHostCommandIo,
     context?: OpenClawPluginNodeHostCommandContext,
   ) => Promise<string>;
+};
+
+export type OpenClawPluginNodeHostCommandPrepareContextV2 =
+  OpenClawPluginNodeHostCommandAvailabilityContext & {
+    /** Shared by this plugin's commands until disconnect or node retirement. */
+    scheduler: PluginServiceSchedulerV1;
+  };
+
+export type OpenClawPluginNodeHostCommandV2 = Omit<
+  OpenClawPluginNodeHostCommand,
+  "apiVersion" | "prepare"
+> & {
+  apiVersion: 2;
+  /**
+   * Shared callbacks run once per plugin connection, again after the preceding connection retires.
+   * Cancel pending preparation through scheduler.signal; final onDisconnect waits for settlement.
+   */
+  prepare: (context: OpenClawPluginNodeHostCommandPrepareContextV2) => Promise<void> | void;
 };

@@ -364,6 +364,7 @@ export const imessagePlugin: ChannelPlugin<ResolvedIMessageAccount, IMessageProb
         resolveAccountState: ({ enabled }) => (enabled ? "enabled" : "disabled"),
       }),
       gateway: {
+        apiVersion: 2,
         startAccount: async (ctx) => {
           const conversationBindings = createIMessageConversationBindingManager({
             cfg: ctx.cfg,

@@ -1,4 +1,4 @@
-import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
+import type { ChannelConversationBindingSupportV2 } from "openclaw/plugin-sdk/channel-contract";
 import {
   createTelegramThreadBindingManager,
   setTelegramThreadBindingIdleTimeoutBySessionKey,
@@ -7,18 +7,17 @@ import {
   setTelegramThreadBindingMaxAgeBySessionKeyAsync,
 } from "./thread-bindings.js";
 
-type ConversationBindings = NonNullable<ChannelPlugin["conversationBindings"]>;
-
 export const telegramThreadBindingLifecycle: Pick<
-  ConversationBindings,
+  ChannelConversationBindingSupportV2,
   | "createManager"
   | "setIdleTimeoutBySessionKey"
   | "setMaxAgeBySessionKey"
   | "setIdleTimeoutBySessionKeyAsync"
   | "setMaxAgeBySessionKeyAsync"
 > = {
-  createManager: ({ cfg, accountId }) =>
+  createManager: ({ cfg, accountId, scheduler }) =>
     createTelegramThreadBindingManager({
+      scheduler,
       cfg,
       accountId: accountId ?? undefined,
       persist: false,

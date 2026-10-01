@@ -196,6 +196,7 @@ describe("fork boundaries from imported Codex history", () => {
         {
           bindingStore,
           controlFactory: {
+            bindScheduler: () => {},
             hasActiveWork: () => false,
             disconnect: async () => {},
             forRequest: () => control,

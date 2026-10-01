@@ -8,6 +8,7 @@ import {
   definePluginEntry,
   type OpenClawPluginApi,
   type OpenClawPluginDefinition,
+  type PluginServiceSchedulerV1,
 } from "openclaw/plugin-sdk/plugin-entry";
 import {
   resolveFaceTimeConfig,
@@ -38,10 +39,15 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
     const pluginRoot = api.rootDir ?? api.resolvePath(".");
     let runtimePromise: Promise<import("./runtime-api.js").FaceTimeRuntime> | undefined;
     let uninstalling = false;
+    let scheduler: PluginServiceSchedulerV1 | undefined;
 
     const ensureRuntime = async () => {
       if (uninstalling) {
         throw new Error("facetime native uninstall is in progress");
+      }
+      const activeScheduler = scheduler;
+      if (!activeScheduler || activeScheduler.signal.aborted) {
+        throw new Error("facetime service is not running");
       }
       if (!config.enabled) {
         throw new Error("facetime disabled in plugin config");
@@ -52,6 +58,7 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
       runtimePromise ??= import("./runtime-api.js")
         .then(({ createFaceTimeRuntime }) =>
           createFaceTimeRuntime({
+            scheduler: activeScheduler,
             config,
             fullConfig: api.config,
             runtime: api.runtime,
@@ -95,7 +102,9 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
 
     api.registerService({
       id: "facetime-runtime",
-      async start() {
+      apiVersion: 2,
+      async start(ctx) {
+        scheduler = ctx.scheduler;
         if (!config.enabled || !validation.valid) {
           return;
         }
@@ -106,6 +115,7 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
         }
       },
       async stop() {
+        scheduler = undefined;
         await stopRetainedRuntime(runtimePromise, (stopped) => {
           if (runtimePromise === stopped) {
             runtimePromise = undefined;

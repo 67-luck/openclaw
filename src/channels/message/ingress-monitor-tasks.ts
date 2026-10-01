@@ -1,4 +1,38 @@
-import { toErrorObject } from "../../infra/errors.js";
+import { formatErrorMessage, toErrorObject } from "../../infra/errors.js";
+import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
+import { sleep } from "../../utils/sleep.js";
+
+const DEFAULT_APPEND_RETRY_DELAYS_MS = [0, 100, 300] as const;
+
+export async function appendChannelIngressWithRetry<T>(
+  append: () => Promise<T>,
+  retryDelaysMs: readonly number[] = DEFAULT_APPEND_RETRY_DELAYS_MS,
+): Promise<T> {
+  let lastError: unknown;
+  for (const delayMs of retryDelaysMs) {
+    if (delayMs > 0) {
+      await sleep(delayMs);
+    }
+    try {
+      return await append();
+    } catch (error) {
+      if (hasSqliteWorkerOutcomeUnknown(error)) {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+  // Accepted transport input must fail closed if every durable append attempt fails.
+  if (lastError instanceof Error) {
+    throw lastError;
+  }
+  throw new Error(
+    lastError === undefined
+      ? "Channel ingress append failed without an error."
+      : formatErrorMessage(lastError),
+    { cause: lastError },
+  );
+}
 
 /** Join the monitor-owned task collection, including work added while awaiting it. */
 export async function waitForPending(

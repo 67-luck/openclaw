@@ -1,4 +1,3 @@
-// Nostr tests cover nostr bus.inbound plugin behavior.
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +5,8 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+// Nostr tests cover nostr bus.inbound plugin behavior.
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginRuntime } from "../runtime-api.js";
 import { startNostrBus } from "./nostr-bus.js";
@@ -138,8 +139,9 @@ let stateDir = "";
 let ingressQueue: ReturnType<typeof createChannelIngressQueueForTests<Record<string, unknown>>>;
 let ingressTasks: Promise<void>[] = [];
 
-function startTestNostrBus(options: Parameters<typeof startNostrBus>[0]) {
+function startTestNostrBus(options: Omit<Parameters<typeof startNostrBus>[0], "scheduler">) {
   return startNostrBus({
+    scheduler: createTestPluginServiceScheduler(),
     ...options,
     trackIngressTask: (task) => ingressTasks.push(task),
   });

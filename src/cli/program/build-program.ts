@@ -8,7 +8,7 @@ import { setProgramContext } from "./program-context.js";
 import { registerSubCliCommands } from "./register.subclis.js";
 
 export function buildProgram(
-  prepared?: Pick<ProgramContext, "doctorDatabasePreflight" | "runtimeRecoveryEnv">,
+  prepared?: Pick<ProgramContext, "doctorDatabasePreflight" | "runtimeRecoveryEnv" | "scheduler">,
 ) {
   const program = new OpenClawCommand();
   program.enablePositionalOptions();

@@ -6,6 +6,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createSynologyIngressMonitor,
@@ -45,6 +46,7 @@ function webhookEvent(params?: {
 
 function startIngress(queue: SynologyIngressQueue, dispatch: SynologyIngressDispatch) {
   const ingress = createSynologyIngressMonitor({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     queue,
     dispatch,

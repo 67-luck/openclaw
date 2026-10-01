@@ -8,6 +8,7 @@ import {
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import * as channelOutbound from "openclaw/plugin-sdk/channel-outbound";
 import type { ChannelIngressQueue } from "openclaw/plugin-sdk/channel-outbound";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMSTeamsIngress } from "./msteams-ingress.js";
@@ -73,6 +74,7 @@ function runtime() {
 
 function makeIngress(queue: IngressQueue, dispatch: IngressDispatch) {
   return createMSTeamsIngress({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "app-id",
     queue,
     dispatch,
@@ -146,6 +148,7 @@ describe("Microsoft Teams durable ingress", () => {
       };
       const contexts: unknown[] = [];
       const ingress = createMSTeamsIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         runtime: runtime(),

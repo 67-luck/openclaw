@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createPluginStateKeyedStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
@@ -56,6 +57,7 @@ describe("resident Codex catalog SQLite durability", () => {
       return projected;
     });
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "obsolete-authority",
       state: {
         ...state,
@@ -121,6 +123,7 @@ describe("resident Codex catalog SQLite durability", () => {
     const factory = createFactory();
     const source = (await factory.homesForAgent("main"))[0]!;
     const first = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: source.sourceHomeId,
       localSessionsRoot: root,
       state: openState(),
@@ -260,6 +263,7 @@ describe("resident Codex catalog SQLite durability", () => {
     });
     const createIndex = () =>
       new CodexCatalogIndex({
+        scheduler: createTestPluginServiceScheduler(),
         homeId: "restart",
         localSessionsRoot: root,
         state: openState(),
@@ -363,6 +367,7 @@ describe("resident Codex catalog SQLite durability", () => {
     });
     const createIndex = () =>
       new CodexCatalogIndex({
+        scheduler: createTestPluginServiceScheduler(),
         homeId: "offline-title",
         localSessionsRoot: root,
         state: openState(),
@@ -444,6 +449,7 @@ describe("resident Codex catalog SQLite durability", () => {
     );
     const createIndex = () =>
       new CodexCatalogIndex({
+        scheduler: createTestPluginServiceScheduler(),
         homeId,
         state: openState(),
         readNative,

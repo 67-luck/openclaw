@@ -16,6 +16,7 @@ import type {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { PluginJsonValue } from "openclaw/plugin-sdk/plugin-entry";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import {
   peekSystemEventEntries,
@@ -127,6 +128,7 @@ function attachBoltMemberIngress(params: {
 }) {
   installSlackTestRuntime();
   const ingress = createSlackDurableIngress({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     queue: params.queue,
     pollIntervalMs: params.pollIntervalMs ?? 60_000,
@@ -222,6 +224,7 @@ function attachIngress(
   options: { adoptionStallTimeoutMs?: number; pollIntervalMs?: number } = {},
 ) {
   const ingress = createSlackDurableIngress({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     queue,
     pollIntervalMs: options.pollIntervalMs ?? 60_000,
@@ -677,6 +680,7 @@ describe("Slack durable ingress", () => {
       const migrationGate = createDeferred<void>();
       const starts: string[] = [];
       const ingress = createSlackDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         pollIntervalMs: 60_000,

@@ -31,6 +31,7 @@ import {
   type PluginInstanceHandle,
 } from "../plugins/plugin-instance-scope.js";
 import { getPluginRecordRegistry } from "../plugins/registry-lifecycle.js";
+import type { PluginServiceSchedulerV1 } from "../plugins/service-scheduler.types.js";
 export { channelIngressRoutes } from "../channels/message-access/runtime.js";
 export {
   meetsIdentifierAuthentication,
@@ -159,6 +160,11 @@ type StandardRawEventIngressOptions<TRaw, TMetadata, TInspection> = Omit<
   drain?: Omit<ChannelIngressMonitorDrainOptions<StandardRawEventPayload, TMetadata>, "startLimit">;
   classifyAdmissionError: (error: unknown) => string | undefined;
 };
+
+export type StandardRawEventIngressOptionsV2<TRaw, TMetadata, TInspection> =
+  StandardRawEventIngressOptions<TRaw, TMetadata, TInspection> & {
+    scheduler: PluginServiceSchedulerV1;
+  };
 
 /** Version-1 raw events, 500 ms polling, eight deliveries, and standard retention. */
 export function createStandardRawEventIngressMonitor<

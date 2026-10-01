@@ -7,8 +7,8 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { migrateNostrLegacyRecentEventIds } from "./nostr-ingress-state.js";
 import { createNostrIngress } from "./nostr-ingress.js";
 
 type NostrIngressQueue = NonNullable<Parameters<typeof createNostrIngress>[0]["queue"]>;
@@ -32,18 +32,17 @@ function startIngress(params: {
   queue: NostrIngressQueue;
   deliver: NostrIngressDeliver;
   afterDurableAppend?: (event: Event) => void;
-  legacyEventIds?: readonly string[];
   maxSerializedPayloadBytes?: number;
   maxPendingEvents?: number;
   maxQueuedAdmissions?: number;
   admissionRateLimit?: { windowMs: number; maxEvents: number };
 }) {
   return createNostrIngress({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     queue: params.queue,
     deliver: params.deliver,
     afterDurableAppend: params.afterDurableAppend ?? (() => {}),
-    legacyEventIds: params.legacyEventIds,
     maxSerializedPayloadBytes: params.maxSerializedPayloadBytes ?? 128 * 1024,
     maxPendingEvents: params.maxPendingEvents ?? 1_000,
     maxQueuedAdmissions: params.maxQueuedAdmissions ?? 1_000,
@@ -153,16 +152,6 @@ describe("Nostr durable ingress", () => {
       } finally {
         await ingress.stop();
       }
-    });
-  });
-
-  it("migrates the persisted LRU seed into completion tombstones", async () => {
-    await withQueue(async (queue) => {
-      const legacyId = "5".repeat(64);
-      await expect(
-        migrateNostrLegacyRecentEventIds({ queue, eventIds: [legacyId, legacyId] }),
-      ).resolves.toBe(1);
-      expect((await queue.enqueue(legacyId, {} as NostrIngressPayload)).kind).toBe("completed");
     });
   });
 

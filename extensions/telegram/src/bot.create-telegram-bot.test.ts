@@ -1,4 +1,3 @@
-// Telegram tests cover bot.create telegram bot plugin behavior.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -17,6 +16,8 @@ import type {
   PluginStateKeyedStore,
   PluginStateSyncKeyedStore,
 } from "openclaw/plugin-sdk/plugin-state-runtime";
+// Telegram tests cover bot.create telegram bot plugin behavior.
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { questionGatewayRuntime } from "openclaw/plugin-sdk/question-gateway-runtime";
 import type { GetReplyOptions, MsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import {
@@ -88,7 +89,9 @@ const {
   resetTelegramTopicNameCacheForTest,
 } = await import("./runtime.test-support.js");
 const { setTelegramRuntime } = await import("./runtime.js");
-let createTelegramBot: (opts: TelegramBotOptions) => ReturnType<typeof createTelegramBotBase>;
+let createTelegramBot: (
+  opts: Omit<TelegramBotOptions, "scheduler">,
+) => ReturnType<typeof createTelegramBotBase>;
 
 function createTelegramBotTestStateDir(): string {
   const dir = mkdtempSync(path.join(tmpdir(), "openclaw-telegram-bot-"));
@@ -365,6 +368,7 @@ describe("createTelegramBot", () => {
     throttlerSpy.mockReset();
     createTelegramBot = (opts) =>
       createTelegramBotBase({
+        scheduler: createTestPluginServiceScheduler(),
         botInfo: telegramBotInfoForTest,
         ...opts,
         telegramDeps: telegramBotDepsForTest,

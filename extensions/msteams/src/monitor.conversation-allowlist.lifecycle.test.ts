@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 // Provider startup must preserve Teams thread identities in group-only allowlists.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig, RuntimeEnv } from "../runtime-api.js";
@@ -142,6 +143,7 @@ async function withStartedProvider(
 ): Promise<void> {
   const abort = new AbortController();
   const task = monitorMSTeamsProvider({
+    scheduler: createTestPluginServiceScheduler(),
     cfg,
     runtime: createRuntime(),
     abortSignal: abort.signal,

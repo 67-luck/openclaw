@@ -3,10 +3,12 @@ import type {
   ChannelRuntimeSurface,
 } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { TelegramBotInfo } from "./bot-info.js";
 
 export type MonitorTelegramOpts = {
+  scheduler: PluginServiceSchedulerV1;
   token?: string;
   accountId?: string;
   ownerAgentId?: string;
@@ -25,4 +27,4 @@ export type MonitorTelegramOpts = {
   setStatus?: (patch: Omit<ChannelAccountSnapshot, "accountId">) => void;
 };
 
-export type TelegramMonitorFn = (opts?: MonitorTelegramOpts) => Promise<void>;
+export type TelegramMonitorFn = (opts: MonitorTelegramOpts) => Promise<void>;

@@ -2,6 +2,7 @@
 import type { webhook } from "@line/bot-sdk";
 import type { ChannelIngressQueue } from "openclaw/plugin-sdk/channel-outbound";
 import { closeOpenClawStateDatabaseForTest } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { migrateLineLegacySpoolRows } from "./webhook-spool-migration.js";
 import { createLineWebhookSpool, type LineWebhookTurnAdoptionLifecycle } from "./webhook-spool.js";
@@ -18,7 +19,13 @@ function createSpool(
   queue: ChannelIngressQueue<SpoolPayload>,
   deliver: Parameters<typeof createLineWebhookSpool>[0]["deliver"],
 ) {
-  return createLineWebhookSpool({ accountId: "default", runtime: runtime(), queue, deliver });
+  return createLineWebhookSpool({
+    scheduler: createTestPluginServiceScheduler(),
+    accountId: "default",
+    runtime: runtime(),
+    queue,
+    deliver,
+  });
 }
 
 describe("LINE webhook spool upgrade migration", () => {

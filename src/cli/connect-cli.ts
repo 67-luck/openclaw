@@ -11,6 +11,7 @@ import {
 import { theme } from "../../packages/terminal-core/src/theme.js";
 import { getRuntimeConfig, mutateConfigFileWithRetry } from "../config/config.js";
 import { isLoopbackHost } from "../gateway/net.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { cancelUnreadResponseBody, readResponseWithLimit } from "../infra/http-body.js";
 import { fetchWithSsrFGuard } from "../infra/net/fetch-guard.js";
 import { normalizeHostname } from "../infra/net/hostname.js";
@@ -32,6 +33,7 @@ import { formatDocsHelp, formatHelpExamples } from "./help-format.js";
 import { addNodeCommandOptions } from "./node-cli/command-options.js";
 import { runNodeDaemonInstall } from "./node-cli/daemon.js";
 import { resolveNodePairGatewayPayload } from "./node-cli/gateway-options.js";
+import { getProgramContext } from "./program/program-context.js";
 import { quoteCliArg, quotePowerShellArg } from "./quote-cli-arg.js";
 
 type ConnectCommandOptions = {
@@ -228,6 +230,7 @@ async function resolveConnectTarget(
 async function runConnectCommand(
   target: string | undefined,
   opts: ConnectCommandOptions,
+  scheduler: GatewayScheduler | undefined,
 ): Promise<void> {
   if (opts.ephemeral && opts.sessionHost) {
     throw new Error("--ephemeral cannot be combined with --session-host.");
@@ -274,6 +277,7 @@ async function runConnectCommand(
   });
   const forceWorkerRuns = opts.ephemeral === true || (opts.sessionHost === true && !opts.service);
   const nodeRunOptions = {
+    scheduler,
     gatewayHost: pair.host,
     gatewayPort: pair.port,
     gatewayTls: pair.tls,
@@ -355,7 +359,7 @@ export function registerConnectCli(program: Command): void {
     )
     .action(async (target: string | undefined, opts: ConnectCommandOptions) => {
       try {
-        await runConnectCommand(target, opts);
+        await runConnectCommand(target, opts, getProgramContext(program)?.scheduler);
       } catch (error) {
         defaultRuntime.error(error instanceof Error ? error.message : String(error));
         defaultRuntime.exit(1);

@@ -229,6 +229,11 @@ The reaper runs every 30 seconds and only ends calls that have no
 by this timer; `maxDurationSeconds` (default 300) is the separate cap that
 ends answered calls that run too long.
 
+The Gateway service owns the reaper schedule and joins pending provider hangups
+before closing its call manager. The documented standalone CLI fallback retains
+its own 30-second timer while its webhook server remains open after the command
+returns; closing that server also stops and joins the reaper.
+
 For notify-style flows where carriers can be slow to deliver ring/answer
 webhooks, raise `staleCallReaperSeconds` past the default so slow-but-normal
 calls are not reaped early; `120`-`300` seconds is a reasonable production

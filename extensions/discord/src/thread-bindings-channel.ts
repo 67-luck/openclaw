@@ -27,11 +27,13 @@ function toConversationLifecycleBinding(binding: {
 export const discordConversationBindings: NonNullable<
   ChannelPlugin<ResolvedDiscordAccount>["conversationBindings"]
 > = {
+  apiVersion: 2,
   supportsCurrentConversationBinding: true,
   bindingStore: "adapter",
   defaultTopLevelPlacement,
-  createManager: async ({ cfg, accountId }) =>
+  createManager: async ({ cfg, accountId, scheduler }) =>
     (await loadDiscordThreadBindingsManagerModule()).createThreadBindingManager({
+      scheduler,
       cfg,
       accountId: accountId ?? undefined,
       persist: false,

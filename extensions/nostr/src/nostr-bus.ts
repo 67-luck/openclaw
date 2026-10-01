@@ -5,6 +5,7 @@ import {
   createDirectDmPreCryptoGuardPolicy,
   type DirectDmPreCryptoGuardPolicyOverrides,
 } from "openclaw/plugin-sdk/direct-dm-guard-policy";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { createFixedWindowRateLimiter } from "openclaw/plugin-sdk/webhook-ingress";
 import type { NostrProfile } from "./config-schema.js";
 import { DEFAULT_RELAYS } from "./default-relays.js";
@@ -44,6 +45,7 @@ const CIRCUIT_BREAKER_RESET_MS = 30000; // 30 seconds before half-open
 const HEALTH_WINDOW_MS = 60000;
 
 interface NostrBusOptions {
+  scheduler: PluginServiceSchedulerV1;
   /** Private key in hex or nsec format */
   privateKey: string;
   /** WebSocket relay URLs (defaults to damus + nos.lol) */
@@ -257,6 +259,7 @@ export async function startNostrBus(options: NostrBusOptions): Promise<NostrBusH
 
   const initialCursor = Math.max(baseSince, state?.lastProcessedAt ?? cursorStartedAt);
   const cursorWriter = createNostrCursorStateWriter({
+    scheduler: options.scheduler,
     initialCursor,
     minimumCursor: baseSince,
     debounceMs: STATE_PERSIST_DEBOUNCE_MS,
@@ -265,7 +268,6 @@ export async function startNostrBus(options: NostrBusOptions): Promise<NostrBusH
         accountId,
         lastProcessedAt: cursor,
         gatewayStartedAt: cursorStartedAt,
-        recentEventIds: [],
       });
     },
     onBackgroundError: (error) => onError?.(error, "persist state"),
@@ -426,8 +428,8 @@ export async function startNostrBus(options: NostrBusOptions): Promise<NostrBusH
   };
 
   const ingress = createNostrIngress({
+    scheduler: options.scheduler,
     accountId,
-    legacyEventIds: state?.recentEventIds ?? [],
     maxSerializedPayloadBytes:
       guardPolicy.maxCiphertextBytes + NOSTR_INGRESS_ENVELOPE_OVERHEAD_BYTES,
     maxPendingEvents: NOSTR_INGRESS_MAX_PENDING_EVENTS,
@@ -502,12 +504,10 @@ export async function startNostrBus(options: NostrBusOptions): Promise<NostrBusH
   try {
     await ingress.ready();
 
-    // Clear the retired persisted-ID seed only after every id is a queue tombstone.
     await writeNostrBusState({
       accountId,
       lastProcessedAt: initialCursor,
       gatewayStartedAt: cursorStartedAt,
-      recentEventIds: [],
     });
 
     relaySubscriptions = createNostrRelaySubscriptionGroup({
@@ -589,6 +589,7 @@ export async function startNostrBus(options: NostrBusOptions): Promise<NostrBusH
       await ingress.stop();
       await backfillFinalizePromise;
       await cursorWriter.flushUntilSuccess();
+      await cursorWriter.stop();
       perSenderRateLimiter.clear();
       globalRateLimiter.clear();
     })();

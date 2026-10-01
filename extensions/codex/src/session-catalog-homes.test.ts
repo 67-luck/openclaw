@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodexAppServerClient } from "./app-server/client.js";
@@ -66,6 +67,7 @@ describe("Codex catalog home discovery", () => {
         resolveRuntimeOptions: resolveCodexSupervisionAppServerRuntimeOptions,
         env: { CODEX_HOME: homeScope === "user" ? alias : path.join(root, "native") },
       });
+      factory.bindScheduler(createTestPluginServiceScheduler());
       const launchedHomes: string[] = [];
       const threadId = "123e4567-e89b-12d3-a456-426614174001";
       const start = vi.spyOn(CodexAppServerClient, "start").mockImplementation(async (options) => {

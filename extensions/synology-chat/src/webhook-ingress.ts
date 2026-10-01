@@ -1,4 +1,3 @@
-// Synology Chat plugin owns raw webhook durable admission and draining.
 import { createStandardRawEventIngressMonitor } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
   createChannelIngressError,
@@ -8,6 +7,8 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { isRecord } from "openclaw/plugin-sdk/channel-secret-basic-runtime";
 import { collectErrorGraphCandidates, formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+// Synology Chat plugin owns raw webhook durable admission and draining.
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { getSynologyRuntime } from "./runtime.js";
 
 export type SynologyWebhookRawEvent = {
@@ -119,6 +120,7 @@ function resolveSynologyIngressNonRetryableFailure(error: unknown) {
 }
 
 export function createSynologyIngressMonitor(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   queue?: ChannelIngressQueue<SynologyIngressPayload>;
   dispatch: SynologyIngressDispatch;
@@ -139,6 +141,7 @@ export function createSynologyIngressMonitor(options: {
   };
 
   return createStandardRawEventIngressMonitor({
+    scheduler: options.scheduler,
     queue:
       options.queue ??
       (() =>

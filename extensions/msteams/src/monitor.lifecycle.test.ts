@@ -1,4 +1,5 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../runtime-api.js";
 import {
@@ -39,6 +40,7 @@ function runProvider(
   overrides: Partial<Parameters<typeof monitorMSTeamsProvider>[0]> = {},
 ) {
   return monitorMSTeamsProvider({
+    scheduler: createTestPluginServiceScheduler(),
     cfg,
     runtime: createRuntime(),
     abortSignal: abort.signal,

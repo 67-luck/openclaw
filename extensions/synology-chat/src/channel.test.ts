@@ -1,5 +1,6 @@
 // Synology Chat tests cover channel plugin behavior.
 import { verifyChannelMessageAdapterCapabilityProofs } from "openclaw/plugin-sdk/channel-outbound";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginSetupWizardStatus } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedSynologyChatAccount, SynologyChatChannelConfig } from "./types.js";
@@ -660,6 +661,7 @@ describe("createSynologyChatPlugin", () => {
       return {
         abortController,
         ctx: {
+          scheduler: createTestPluginServiceScheduler(),
           cfg: {
             channels: { "synology-chat": accountConfig },
           },
@@ -678,6 +680,7 @@ describe("createSynologyChatPlugin", () => {
       return {
         abortController,
         ctx: {
+          scheduler: createTestPluginServiceScheduler(),
           cfg: {
             channels: {
               "synology-chat": {

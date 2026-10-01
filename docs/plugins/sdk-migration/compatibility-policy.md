@@ -205,7 +205,17 @@ authorize a migration, or replace an updater's required capture checks.
 For single-file imports, `defineLegacyJsonStateMigration(...)` skips missing
 sources (`ENOENT`) and values the plugin parser rejects with `null`. Other read
 errors and invalid JSON reach Doctor's detection or migration warnings; the
-source remains untouched so the operator can fix it and retry.
+source remains untouched so the operator can fix it and retry. Successful imports
+verify the captured source bytes before archiving; a source replaced during the
+import is preserved and reported for repair.
+
+For imports with completion receipts, `archiveLegacyStateSource(...)` accepts
+`verifiedCompletion: { expectedBytes, complete }`. It captures the source and
+verifies the captured bytes before calling `complete` to record receipts. If
+verification or completion fails, it retains the archive and restores the source
+only if the source path is free. A recreated source is never overwritten;
+warnings identify both paths for recovery. Callers without this option keep the
+existing archive behavior.
 
 Use `phase: "after-session-repair"` when a migration needs canonical session
 ownership evidence. Ordinary Doctor detects these migrations; `--fix` applies

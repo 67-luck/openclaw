@@ -1,4 +1,5 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CodexAppServerStartOptions } from "./app-server/config-contracts.js";
@@ -57,6 +58,7 @@ async function fixture() {
     ),
   );
   const index = new CodexCatalogIndex({
+    scheduler: createTestPluginServiceScheduler(),
     homeId: await codexCatalogResidentHomeKey({ startOptions: options }),
     readNative,
     assertCurrent: () => {},

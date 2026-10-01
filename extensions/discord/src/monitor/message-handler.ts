@@ -1,3 +1,4 @@
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { Client } from "../internal/discord.js";
 import { createDiscordIngressMonitor } from "./ingress.js";
 import type { DiscordMessageHandler } from "./listeners.js";
@@ -10,11 +11,12 @@ type DiscordMessageHandlerWithLifecycle = DiscordMessageHandler & {
 };
 
 export function createDiscordMessageHandler(
-  params: DiscordMessageHandlerParams & { client: Client },
+  params: DiscordMessageHandlerParams & { client: Client; scheduler?: PluginServiceSchedulerV1 },
 ): DiscordMessageHandlerWithLifecycle {
   const dispatcher = createDiscordMessageDispatcher(params);
   const createIngressMonitor = params.testing?.createIngressMonitor ?? createDiscordIngressMonitor;
   const ingress = createIngressMonitor({
+    scheduler: params.scheduler,
     accountId: params.accountId,
     client: params.client,
     runtime: params.runtime,

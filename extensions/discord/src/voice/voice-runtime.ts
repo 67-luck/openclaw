@@ -1,10 +1,11 @@
 import type { DiscordAccountConfig, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { createSubsystemLogger, type RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import type { APIVoiceState, Client } from "../internal/discord.js";
 import { formatMention } from "../mentions.js";
 import type { DiscordLivePolicyReader } from "../monitor/live-policy.js";
-import { resolveDiscordVoiceEnabled } from "./config.js";
+import { resolveDiscordVoiceEnabled, isDiscordVoiceFatalAutoJoinFailure } from "./config.js";
 import type { DiscordVoiceListenerManager } from "./listener-contract.js";
 import { DiscordVoiceMembershipTracker } from "./membership.js";
 import { resolveDiscordVoiceAccess, resolveDiscordVoiceAccessTarget } from "./owner-access.js";
@@ -34,25 +35,8 @@ import { DiscordVoiceReceive } from "./voice-receive.js";
 import { DiscordVoiceSessions } from "./voice-session.js";
 
 const logger = createSubsystemLogger("discord/voice");
-const DISCORD_VOICE_FATAL_AUTOJOIN_ERROR_PATTERNS = [
-  "api key missing",
-  "incorrect api key",
-  "invalid api key",
-  "unauthorized",
-  "authentication",
-  "permission denied",
-  "forbidden",
-];
-
 function formatAutoJoinFailureKey(entry: { guildId: string; channelId: string }): string {
   return `${entry.guildId}:${entry.channelId}`;
-}
-
-function isFatalAutoJoinFailure(message: string): boolean {
-  const normalized = message.toLowerCase();
-  return DISCORD_VOICE_FATAL_AUTOJOIN_ERROR_PATTERNS.some((pattern) =>
-    normalized.includes(pattern),
-  );
 }
 
 type CaptureJoinOrigin = {
@@ -89,6 +73,7 @@ export class DiscordVoiceManager implements DiscordVoiceListenerManager {
   private destroyed = false;
 
   constructor(params: {
+    scheduler: PluginServiceSchedulerV1;
     readPolicy?: DiscordLivePolicyReader;
     client: Client;
     cfg: OpenClawConfig;
@@ -143,6 +128,7 @@ export class DiscordVoiceManager implements DiscordVoiceListenerManager {
       speakerContext,
     });
     this.following = new DiscordVoiceFollowing({
+      scheduler: params.scheduler,
       allowedChannels: this.allowedChannels,
       autoJoinChannels: this.autoJoinChannels,
       botUserId: () => this.botUserId,
@@ -602,7 +588,7 @@ export class DiscordVoiceManager implements DiscordVoiceListenerManager {
   async destroy(): Promise<void> {
     this.destroyed = true;
     this.occupancyWatchers.clear();
-    this.following.destroy();
+    const followingStopped = this.following.destroy();
     for (const entry of this.sessions.values()) {
       void entry.stop();
     }
@@ -614,7 +600,7 @@ export class DiscordVoiceManager implements DiscordVoiceListenerManager {
       });
     }
     this.receive.daveRecoveryAttempts.clear();
-    await this.voiceSessions.waitForStops();
+    await Promise.all([followingStopped, this.voiceSessions.waitForStops()]);
   }
 
   private isEntryCurrent(entry: VoiceSessionEntry): boolean {
@@ -735,7 +721,7 @@ export class DiscordVoiceManager implements DiscordVoiceListenerManager {
       logger.warn(
         `discord voice: autoJoin skipped guild=${entry.guildId} channel=${entry.channelId}: ${result.message}`,
       );
-      if (isFatalAutoJoinFailure(result.message)) {
+      if (isDiscordVoiceFatalAutoJoinFailure(result.message)) {
         this.fatalAutoJoinFailures.set(failureKey, {
           message: result.message,
           skipLogged: false,

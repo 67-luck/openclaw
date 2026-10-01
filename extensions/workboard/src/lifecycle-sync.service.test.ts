@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import { createWorkboardLifecycleService } from "./lifecycle-sync.js";
 import { createDeferred, createLinkedCard } from "./lifecycle-sync.test-support.js";
@@ -37,7 +38,7 @@ describe("Workboard lifecycle service", () => {
     });
     const warn = vi.fn();
     const service = createWorkboardLifecycleService({ store, readSessions });
-    const context = { logger: { warn } } as never;
+    const context = { scheduler: createTestPluginServiceScheduler(), logger: { warn } } as never;
     const runOperation = vi.spyOn(store, "runOperation");
     vi.useFakeTimers();
     try {
@@ -48,6 +49,7 @@ describe("Workboard lifecycle service", () => {
 
       gatewayReady = true;
       service.onGatewayStart();
+      await vi.advanceTimersByTimeAsync(0);
       await runOperation.mock.results[0]?.value;
       expect((await store.get(card.id))?.status).toBe("review");
       expect(readSessions).toHaveBeenCalledOnce();
@@ -66,7 +68,7 @@ describe("Workboard lifecycle service", () => {
     const card = await createLinkedCard(store, { status: "todo", sessionKey });
     const readSessions = createSessionReader(sessionKey, card.updatedAt);
     const warn = vi.fn();
-    const context = { logger: { warn } } as never;
+    const context = { scheduler: createTestPluginServiceScheduler(), logger: { warn } } as never;
     const original = createWorkboardLifecycleService({ store, readSessions });
     const replacement = createWorkboardLifecycleService({ store, readSessions });
     const lifetime = new AbortController();
@@ -75,12 +77,14 @@ describe("Workboard lifecycle service", () => {
     try {
       await original.start(context);
       original.onGatewayStart(lifetime.signal);
+      await vi.advanceTimersByTimeAsync(0);
       await runOperation.mock.results[0]?.value;
       expect((await store.get(card.id))?.status).toBe("running");
       original.stop();
 
       runOperation.mockClear();
       await replacement.start(context);
+      await vi.advanceTimersByTimeAsync(0);
       await runOperation.mock.results[0]?.value;
       expect((await store.get(card.id))?.status).toBe("review");
       const admittedSweeps = runOperation.mock.calls.length;
@@ -108,8 +112,12 @@ describe("Workboard lifecycle service", () => {
       const readSessions = createSessionReader(sessionKey, card.updatedAt);
       service = createWorkboardLifecycleService({ store, readSessions });
       runOperation.mockClear();
-      await service.start({ logger: { warn: vi.fn() } } as never);
+      await service.start({
+        scheduler: createTestPluginServiceScheduler(),
+        logger: { warn: vi.fn() },
+      } as never);
       service.onGatewayStart();
+      await vi.advanceTimersByTimeAsync(0);
       expect(runOperation).toHaveBeenCalled();
       // The next interval is armed only after the whole admitted sweep settles.
       await runOperation.mock.results[0]?.value;
@@ -145,8 +153,12 @@ describe("Workboard lifecycle service", () => {
     const service = createWorkboardLifecycleService({ store, readSessions });
     vi.useFakeTimers();
     try {
-      await service.start({ logger: { warn } } as never);
+      await service.start({
+        scheduler: createTestPluginServiceScheduler(),
+        logger: { warn },
+      } as never);
       service.onGatewayStart(lifetime.signal);
+      await vi.advanceTimersByTimeAsync(0);
       await readEntered.promise;
       lifetime.abort();
       readResult.reject(new Error("Gateway request entry is closed"));

@@ -1,5 +1,6 @@
 // Google Chat tests cover monitor lifecycle status publication.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -77,6 +78,7 @@ describe("Google Chat monitor lifecycle", () => {
       const startup = { messages: { visibleReplies: "message_tool" as const } };
       setRuntimeConfigSnapshot(runtimeOwned ? startup : {});
       const stop = await startGoogleChatMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         account: {
           ...configuredAccount,
           config: { ...configuredAccount.config, typingIndicator: "none" },
@@ -121,6 +123,7 @@ describe("Google Chat monitor lifecycle", () => {
     const statusSink = vi.fn();
 
     const stop = await startGoogleChatMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       account: { ...configuredAccount, config },
       config: {},
       runtime: {},
@@ -163,6 +166,7 @@ describe("Google Chat monitor lifecycle", () => {
     const runtime = { error: vi.fn() };
 
     const stop = await startGoogleChatMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       account: { ...configuredAccount, config },
       config: {},
       runtime,
@@ -196,6 +200,7 @@ describe("Google Chat monitor lifecycle", () => {
 
     await expect(
       startGoogleChatMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         account: configuredAccount,
         config: {},
         runtime: {},

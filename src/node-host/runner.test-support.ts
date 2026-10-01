@@ -149,7 +149,12 @@ vi.mock("./config.js", () => ({
 }));
 
 vi.mock("./plugin-node-host.js", () => ({
-  ensureNodeHostPluginRegistry: vi.fn(async () => undefined),
+  ensureNodeHostPluginRegistry: vi.fn(async () => ({
+    prepare: async () => {},
+    watchAvailability: () => async () => {},
+    disconnect: async () => {},
+    close: async () => {},
+  })),
   notifyRegisteredNodeHostCommandDisconnect: vi.fn(async () => {}),
   listRegisteredNodeHostCapsAndCommands: vi.fn((context: { env: NodeJS.ProcessEnv }) => {
     mocks.runtimeSteps.push(`commands:${context.env.PATH ?? ""}`);

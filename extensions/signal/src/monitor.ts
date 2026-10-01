@@ -10,6 +10,7 @@ import {
   saveMediaBuffer,
 } from "openclaw/plugin-sdk/media-runtime";
 import { resolvePromptHistoryLimit } from "openclaw/plugin-sdk/number-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { HistoryEntry } from "openclaw/plugin-sdk/reply-history";
 import {
   deliverTextOrMediaReply,
@@ -64,6 +65,7 @@ import {
 import { normalizeSignalTransportHost } from "./transport-url.js";
 
 export type MonitorSignalOpts = {
+  scheduler?: PluginServiceSchedulerV1;
   runtime?: RuntimeEnv;
   abortSignal?: AbortSignal;
   account?: string;
@@ -88,6 +90,8 @@ export type MonitorSignalOpts = {
   waitForTransportReady?: typeof waitForTransportReady;
   statusSink?: SignalStatusSink;
 };
+
+export type MonitorSignalOptsV2 = MonitorSignalOpts & { scheduler: PluginServiceSchedulerV1 };
 
 function createSignalMonitorTaskRunner(runtime: RuntimeEnv) {
   const inFlight = new Set<Promise<void>>();
@@ -496,6 +500,7 @@ export async function monitorSignalProvider(opts: MonitorSignalOpts = {}): Promi
     });
 
     ingressMonitor = await startSignalIngressMonitor({
+      scheduler: opts.scheduler,
       accountId: accountInfo.accountId,
       dispatch: handleEvent,
       runtime,

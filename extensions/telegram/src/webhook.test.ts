@@ -18,6 +18,7 @@ import {
   startDiagnosticHeartbeat,
   stopDiagnosticHeartbeat,
 } from "openclaw/plugin-sdk/logging-core";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
@@ -445,12 +446,14 @@ describe("startTelegramWebhook", () => {
       publicUrl: webhookUrl(getServerPort(gatewayServer), TELEGRAM_WEBHOOK_PATH),
     };
     const first = await firstModule.startTelegramWebhook({
+      scheduler: createTestPluginServiceScheduler(),
       ...base,
       accountId: "first",
       secret: "first-secret",
       setStatus: statusA,
     });
     const second = await secondModule.startTelegramWebhook({
+      scheduler: createTestPluginServiceScheduler(),
       ...base,
       accountId: "second",
       secret: "second-secret",
@@ -470,6 +473,7 @@ describe("startTelegramWebhook", () => {
       expect(statusA).not.toHaveBeenCalled();
       expect(statusB).toHaveBeenCalled();
       const ambiguous = await secondModule.startTelegramWebhook({
+        scheduler: createTestPluginServiceScheduler(),
         ...base,
         accountId: "ambiguous",
         secret: "second-secret",
@@ -1073,6 +1077,7 @@ describe("startTelegramWebhook", () => {
       update: telegramMessageUpdate(62, "not accepted"),
     });
     await monitorTelegramProvider({
+      scheduler: createTestPluginServiceScheduler(),
       token: TELEGRAM_TOKEN,
       accountId: "test",
       config: {},
@@ -1158,6 +1163,7 @@ describe("startTelegramWebhook", () => {
       });
       let stopped = false;
       const provider = monitorTelegramProvider({
+        scheduler: createTestPluginServiceScheduler(),
         token: TELEGRAM_TOKEN,
         accountId: "test",
         config: {},

@@ -3,6 +3,7 @@ import path from "node:path";
 import { isImplicitSameChatApprovalAuthorization } from "openclaw/plugin-sdk/approval-auth-runtime";
 import { CHANNEL_APPROVAL_NATIVE_RUNTIME_CONTEXT_CAPABILITY } from "openclaw/plugin-sdk/approval-handler-adapter-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { withTempDir } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MSTeamsConfigSchema } from "../config-api.js";
@@ -252,6 +253,7 @@ describe("msteamsPlugin", () => {
     };
     const startAccount = async (config: OpenClawConfig) =>
       await msteamsPlugin.gateway?.startAccount?.({
+        scheduler: createTestPluginServiceScheduler(),
         cfg: config,
         accountId: "default",
         account: msteamsPlugin.config.resolveAccount(config, "default"),

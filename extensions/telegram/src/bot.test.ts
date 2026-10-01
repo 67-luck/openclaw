@@ -8,6 +8,7 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createNonExitingRuntimeEnv,
   mockPublishedModelRuntimeForTest,
@@ -119,7 +120,7 @@ const { runWithTelegramSpooledReplayUpdate, runWithTelegramUpdateProcessingFrame
 
 let createTelegramBotBase: typeof import("./bot-core.js").createTelegramBotCore;
 let createTelegramBot: (
-  opts: import("./bot.types.js").TelegramBotOptions,
+  opts: Omit<import("./bot.types.js").TelegramBotOptions, "scheduler">,
 ) => ReturnType<typeof import("./bot-core.js").createTelegramBotCore>;
 
 const loadConfig = getLoadConfigMock();
@@ -759,6 +760,7 @@ describe("createTelegramBot", () => {
         ...telegramBotDepsForTest,
       };
       return createTelegramBotBase({
+        scheduler: createTestPluginServiceScheduler(),
         botInfo: telegramBotInfoForTest,
         ...opts,
         telegramDeps,

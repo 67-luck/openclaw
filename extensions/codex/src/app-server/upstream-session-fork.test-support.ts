@@ -89,6 +89,7 @@ type ForkThreadStub = (params: CodexThreadForkParams) => Promise<unknown>;
 
 function factoryForControl(control: CodexSessionCatalogControl): CodexSessionCatalogControlFactory {
   return {
+    bindScheduler: () => {},
     hasActiveWork: () => false,
     disconnect: async () => {},
     forRequest: () => control,

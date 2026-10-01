@@ -4,22 +4,28 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import type {
+  OpenKeyedStoreOptions,
+  PluginStateKeyedStore,
+} from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { getSessionBindingService, testing } from "openclaw/plugin-sdk/session-binding-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginRuntime } from "../../runtime-api.js";
-import { setMatrixRuntime } from "../runtime.js";
+import { getMatrixRuntime, setMatrixRuntime } from "../runtime.js";
 import {
   resolveMatrixStateFilePath,
   resolveMatrixStoragePaths,
   writeStorageMeta,
 } from "./client/storage.js";
 import type { MatrixAuth, MatrixStoragePaths } from "./client/types.js";
+import { matrixThreadBindingsMigration } from "./thread-bindings-doctor.js";
 import {
   setMatrixThreadBindingIdleTimeoutBySessionKey,
   setMatrixThreadBindingMaxAgeBySessionKey,
@@ -82,6 +88,7 @@ describe("matrix thread bindings", () => {
     } = {},
   ) {
     const manager = await createMatrixThreadBindingManager({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: params.cfg ?? {},
       accountId,
       auth: params.auth ?? auth,
@@ -210,6 +217,49 @@ describe("matrix thread bindings", () => {
     resetPluginStateStoreForTests();
     vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("loads legacy binding state only after Doctor preserves and imports its source", async () => {
+    const sourcePath = await resolveBindingsFilePath();
+    const record = {
+      accountId: "ops",
+      conversationId: "$retained-thread",
+      parentConversationId: "!room:example",
+      targetKind: "subagent",
+      targetSessionKey: "agent:ops:subagent:retained",
+      agentId: "ops",
+      label: "Retained binding",
+      boundBy: "operator",
+      boundAt: 100,
+      lastActivityAt: 200,
+      idleTimeoutMs: 0,
+      maxAgeMs: 0,
+    };
+    const sourceBytes = JSON.stringify({ version: 1, bindings: [record] }, null, 2) + "\n";
+    await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+    await fs.writeFile(sourcePath, sourceBytes);
+    const beforeDoctor = await createBindingManager();
+    expect(beforeDoctor.listBindings()).toEqual([]);
+    expect(await fs.readFile(sourcePath, "utf8")).toBe(sourceBytes);
+    await beforeDoctor.stop();
+    const result = await matrixThreadBindingsMigration.migrateLegacyState({
+      config: {},
+      env: process.env,
+      stateDir,
+      oauthDir: path.join(stateDir, "oauth"),
+      context: {
+        openPluginStateKeyedStore: <T>(options: OpenKeyedStoreOptions) =>
+          createPluginStateKeyedStoreForTests<T>("matrix", options),
+      },
+    });
+    expect(result.warnings).toEqual([]);
+    expect(await fs.readFile(`${sourcePath}.migrated`, "utf8")).toBe(sourceBytes);
+    await expect(fs.stat(sourcePath)).rejects.toMatchObject({ code: "ENOENT" });
+    const afterDoctor = await createBindingManager();
+    expect(afterDoctor.listBindings()).toEqual([record]);
+    await afterDoctor.stop();
+    const restarted = await createBindingManager();
+    expect(restarted.listBindings()).toEqual([record]);
   });
 
   it("creates child Matrix thread bindings from a top-level room context", async () => {
@@ -563,6 +613,67 @@ describe("matrix thread bindings", () => {
     }
   });
 
+  it("retains failed final persistence until replacement can recover the latest bindings", async () => {
+    const manager = await createBindingManager();
+    const binding = await bindCurrentThread();
+    const runtimeState = getMatrixRuntime().state;
+    const openStore = runtimeState.openKeyedStore;
+    const finalWriteStarted = createDeferred<void>();
+    const releaseFinalWrite = createDeferred<void>();
+    let writes = 0;
+    let failWrites = true;
+    vi.spyOn(runtimeState, "openKeyedStore").mockImplementation(
+      <T>(options: OpenKeyedStoreOptions): PluginStateKeyedStore<T> => {
+        const store = openStore<T>(options);
+        return options.namespace === "thread-bindings"
+          ? {
+              ...store,
+              register: async (...args: Parameters<PluginStateKeyedStore<T>["register"]>) => {
+                writes++;
+                if (failWrites) {
+                  throw new Error("synthetic binding persistence failure");
+                }
+                finalWriteStarted.resolve();
+                await releaseFinalWrite.promise;
+                return await store.register(...args);
+              },
+            }
+          : store;
+      },
+    );
+    try {
+      manager.setIdleTimeoutBySessionKey({
+        targetSessionKey: binding.targetSessionKey,
+        idleTimeoutMs: 123_000,
+      });
+      const expected = manager.listBindings();
+      await expect(manager.stop()).rejects.toThrow("synthetic binding persistence failure");
+      expect(writes).toBe(2);
+      expect(
+        getSessionBindingService().resolveByConversation(currentThreadConversation()),
+      ).toBeNull();
+
+      failWrites = false;
+      const replacement = createBindingManager();
+      let replaced = false;
+      void replacement.then(() => {
+        replaced = true;
+      });
+      await finalWriteStarted.promise;
+      expect(replaced).toBe(false);
+      releaseFinalWrite.resolve();
+      const nextManager = await replacement;
+      expect(nextManager).not.toBe(manager);
+      expect(nextManager.listBindings()).toEqual(expected);
+      expect(manager.touchBinding(binding.bindingId, Date.now() + 1_000)).toBeNull();
+      await expect(manager.persist()).rejects.toThrow("manager has retired");
+      expect(nextManager.listBindings()).toEqual(expected);
+    } finally {
+      failWrites = false;
+      releaseFinalWrite.resolve();
+    }
+  });
+
   it("persists the latest touched activity only after the debounce window", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-06T10:00:00.000Z"));
@@ -590,21 +701,65 @@ describe("matrix thread bindings", () => {
     }
   });
 
-  it("flushes pending touch persistence on stop", async () => {
+  it.each(["v1", "closing-account"])("flushes an admitted touch on stop (%s)", async (mode) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-06T10:00:00.000Z"));
+    const scheduler = mode === "closing-account" ? createTestPluginServiceScheduler() : undefined;
+    const releaseTouch = createDeferred<void>();
     try {
-      const manager = await createBindingManager();
+      const manager = await createMatrixThreadBindingManager({
+        ...(scheduler ? { scheduler } : {}),
+        cfg: {},
+        accountId,
+        auth,
+        client: matrixClient,
+        idleTimeoutMs,
+        maxAgeMs: 0,
+        enableSweeper: false,
+      });
+      trackedManagers.add(manager);
       const binding = await bindCurrentThread();
       const touchedAt = Date.parse("2026-03-06T12:00:00.000Z");
-      getSessionBindingService().touch(binding.bindingId, touchedAt);
-
+      const touch = vi.fn(() =>
+        getSessionBindingService().touch(binding.bindingId, touchedAt, {
+          channel: "matrix",
+          accountId,
+        }),
+      );
+      if (scheduler) {
+        const entered = createDeferred<void>();
+        scheduler.schedule({
+          id: "admitted-account-touch",
+          delayMs: 0,
+          run: async () => {
+            entered.resolve();
+            await releaseTouch.promise;
+            touch();
+          },
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        await entered.promise;
+        scheduler.beginClose();
+        let stopped = false;
+        const stopping = scheduler.stop().then(() => {
+          stopped = true;
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(stopped).toBe(false);
+        releaseTouch.resolve();
+        await stopping;
+      } else {
+        touch();
+      }
+      expect(touch).toHaveReturned();
       await manager.stop();
       vi.useRealTimers();
 
       const bindingsPath = await resolveBindingsFilePath();
       expect(await readPersistedLastActivityAt(bindingsPath)).toBe(touchedAt);
     } finally {
+      releaseTouch.resolve();
+      await scheduler?.stop();
       vi.useRealTimers();
     }
   });

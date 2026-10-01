@@ -1,6 +1,7 @@
 // Line tests cover grouping the durable claims LINE splits one multi-image send into.
 import type { webhook } from "@line/bot-sdk";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import * as imageSetIngress from "./inbound-image-set.js";
 import { createLineWebhookSpool, type LineWebhookTurnAdoptionLifecycle } from "./webhook-spool.js";
@@ -9,13 +10,13 @@ import { callback, createEvent, runtime, withQueue } from "./webhook-spool.test-
 type SpoolOptions = Parameters<typeof createLineWebhookSpool>[0];
 
 function createImageSetClockSpool(
-  options: SpoolOptions & { queue: NonNullable<SpoolOptions["queue"]> },
+  options: Omit<SpoolOptions, "scheduler"> & { queue: NonNullable<SpoolOptions["queue"]> },
 ) {
   const factory = vi.spyOn(imageSetIngress, "createLineImageSetIngressBuffer");
   let spool: ReturnType<typeof createLineWebhookSpool>;
   let buffer: ReturnType<typeof imageSetIngress.createLineImageSetIngressBuffer>;
   try {
-    spool = createLineWebhookSpool(options);
+    spool = createLineWebhookSpool({ ...options, scheduler: createTestPluginServiceScheduler() });
     const result = factory.mock.results[0];
     if (result?.type !== "return") {
       throw new Error("LINE spool did not create its image-set buffer");
@@ -101,6 +102,7 @@ describe("LINE webhook spool image sets", () => {
         },
       );
       const spool = createLineWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -143,6 +145,7 @@ describe("LINE webhook spool image sets", () => {
     await withQueue(async (queue) => {
       const deliver = vi.fn(async () => {});
       const spool = createLineWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -181,6 +184,7 @@ describe("LINE webhook spool image sets", () => {
         await delivering;
       });
       const spool = createLineWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -232,6 +236,7 @@ describe("LINE webhook spool image sets", () => {
         },
       );
       const spool = createLineWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -273,6 +278,7 @@ describe("LINE webhook spool image sets", () => {
         throw new Error("combined turn failed before adoption");
       });
       const spool = createLineWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -649,6 +655,7 @@ describe("LINE webhook spool image sets", () => {
         },
       );
       const spool = createLineWebhookSpool({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue: lossyQueue,

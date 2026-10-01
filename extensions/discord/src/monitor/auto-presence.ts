@@ -10,6 +10,7 @@ import type {
   DiscordAccountConfig,
   DiscordAutoPresenceConfig,
 } from "openclaw/plugin-sdk/config-contracts";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { warn } from "openclaw/plugin-sdk/runtime-env";
 import type { UpdatePresenceData } from "../internal/plugin-contract.js";
 import { resolveDiscordPresenceUpdate } from "./presence.js";
@@ -147,13 +148,14 @@ function stablePresenceSignature(payload: UpdatePresenceData): string {
 
 type DiscordAutoPresenceController = {
   start: () => void;
-  stop: () => void;
+  stop: () => Promise<void>;
   refresh: () => void;
   runNow: () => void;
   enabled: boolean;
 };
 
 export function createDiscordAutoPresenceController(params: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   discordConfig: Pick<
     DiscordAccountConfig,
@@ -169,7 +171,7 @@ export function createDiscordAutoPresenceController(params: {
     return {
       enabled: false,
       start: () => undefined,
-      stop: () => undefined,
+      stop: async () => undefined,
       refresh: () => undefined,
       runNow: () => undefined,
     };
@@ -178,11 +180,15 @@ export function createDiscordAutoPresenceController(params: {
   const loadAuthStore = params.loadAuthStore ?? (() => ensureAuthProfileStore());
   const now = params.now ?? (() => Date.now());
 
-  let timer: ReturnType<typeof setInterval> | undefined;
+  const scheduler = params.scheduler.scope();
+  let started = false;
   let lastAppliedSignature: string | null = null;
   let lastAppliedAt = 0;
 
   const runEvaluation = (options?: { force?: boolean }) => {
+    if (scheduler.signal.aborted) {
+      return;
+    }
     let presence: UpdatePresenceData | null;
     try {
       presence = resolveDiscordAutoPresenceUpdate({
@@ -224,18 +230,18 @@ export function createDiscordAutoPresenceController(params: {
     runNow: () => runEvaluation(),
     refresh: () => runEvaluation({ force: true }),
     start: () => {
-      if (timer) {
+      if (started || scheduler.signal.aborted) {
         return;
       }
+      started = true;
       runEvaluation({ force: true });
-      timer = setInterval(() => runEvaluation(), autoCfg.intervalMs);
+      scheduler.schedule({
+        id: "presence",
+        delayMs: autoCfg.intervalMs,
+        everyMs: autoCfg.intervalMs,
+        run: () => runEvaluation(),
+      });
     },
-    stop: () => {
-      if (!timer) {
-        return;
-      }
-      clearInterval(timer);
-      timer = undefined;
-    },
+    stop: () => scheduler.stop(),
   };
 }

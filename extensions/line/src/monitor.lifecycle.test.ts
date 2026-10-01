@@ -5,6 +5,7 @@ import { Socket } from "node:net";
 import type { webhook } from "@line/bot-sdk";
 import type { ChannelInboundTurnPlan } from "openclaw/plugin-sdk/channel-inbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { createMockIncomingRequest } from "openclaw/plugin-sdk/test-env";
 import { WEBHOOK_IN_FLIGHT_DEFAULTS } from "openclaw/plugin-sdk/webhook-request-guards";
@@ -122,6 +123,7 @@ vi.mock("./template-messages.js", () => ({
 
 function startMonitor(options: Partial<Parameters<typeof monitorLineProvider>[0]> = {}) {
   return monitorLineProvider({
+    scheduler: createTestPluginServiceScheduler(),
     channelAccessToken: "token",
     channelSecret: "secret", // pragma: allowlist secret
     config: {},
@@ -260,6 +262,7 @@ describe("monitorLineProvider lifecycle", () => {
   it("rejects a blank channel secret before creating a bot or registering a route", async () => {
     await expect(
       monitorLineProvider({
+        scheduler: createTestPluginServiceScheduler(),
         channelAccessToken: "token",
         channelSecret: "  ",
         config: {} as OpenClawConfig,
@@ -722,6 +725,7 @@ describe("monitorLineProvider lifecycle", () => {
       await withQueue(async (queue) => {
         const delivered: webhook.Event[] = [];
         const spool = createLineWebhookSpool({
+          scheduler: createTestPluginServiceScheduler(),
           accountId: "default",
           runtime,
           queue,

@@ -3,6 +3,7 @@ import { createServer, type Server } from "node:http";
 import { brotliCompressSync, deflateSync, gzipSync } from "node:zlib";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { resolvePluginRoutePathContext } from "openclaw/plugin-sdk/gateway-config-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { acquireTestPortBlock } from "openclaw/plugin-sdk/test-env";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { getMSTeamsIngressMockState } from "./monitor-ingress-mock.test-support.js";
@@ -76,6 +77,7 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
       updateMSTeamsConfig(cfg, { legacyWebhook: setting });
       const abort = new AbortController();
       const task = monitorMSTeamsProvider({
+        scheduler: createTestPluginServiceScheduler(),
         cfg,
         runtime: createRuntime(),
         abortSignal: abort.signal,
@@ -100,7 +102,12 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
       const cfg = createConfig();
       updateMSTeamsConfig(cfg, { webhook: { path } });
       await expect(
-        monitorMSTeamsProvider({ cfg, runtime: createRuntime(), ...createStores() }),
+        monitorMSTeamsProvider({
+          scheduler: createTestPluginServiceScheduler(),
+          cfg,
+          runtime: createRuntime(),
+          ...createStores(),
+        }),
       ).rejects.toThrow("Set channels.msteams.webhook.path to /api/messages");
       expect(routeState.routes).toEqual([]);
     },
@@ -110,6 +117,7 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
     routeState.fail = true;
     await expect(
       monitorMSTeamsProvider({
+        scheduler: createTestPluginServiceScheduler(),
         cfg: createConfig(),
         runtime: createRuntime(),
         ...createStores(),
@@ -121,6 +129,7 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
   it("rejects requests without Bearer token before SDK route", async () => {
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
@@ -148,6 +157,7 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
   it("keeps oversized webhook parse failures JSON-shaped", async () => {
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
@@ -179,6 +189,7 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
   ] as const)("retains %s decoding and the decoded body limit", async (encoding, compress) => {
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
@@ -215,6 +226,7 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
   it("keeps bearer-gated Express OPTIONS and method responses", async () => {
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
@@ -254,6 +266,7 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
     routeState.unregister.mockImplementation(() => gateway.closeAllConnections());
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
@@ -304,6 +317,7 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
     routeState.responseGate = gate.promise;
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
@@ -346,6 +360,7 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
     });
     const abort = new AbortController();
     const task = monitorMSTeamsProvider({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: createConfig(),
       runtime: createRuntime(),
       abortSignal: abort.signal,
@@ -377,6 +392,7 @@ describe("Microsoft Teams Gateway webhook lifecycle", () => {
     const cfg = createConfig();
     updateMSTeamsConfig(cfg, { webhook: { path } });
     const task = monitorMSTeamsProvider({
+      scheduler: createTestPluginServiceScheduler(),
       cfg,
       runtime: createRuntime(),
       abortSignal: abort.signal,

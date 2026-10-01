@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { createTestPluginServiceScheduler } from "../../plugin-sdk/plugin-test-api.js";
+import { LegacyPluginSdkResourceHost } from "../../plugins/legacy-sdk-resource-host.js";
 import {
   GatewayDrainingError,
   isGatewaySubordinateWorkAdmissionClosed,
@@ -8,6 +10,10 @@ import {
   runWithGatewayIndependentRootWorkAdmission,
   runWithGatewayIndependentRootWorkContinuation,
 } from "../../process/gateway-work-admission.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../../test-utils/gateway-scheduler-clock.js";
 import { createChannelIngressError } from "./ingress-errors.js";
 import {
   CHANNEL_INGRESS_RETENTION_DEFAULTS,
@@ -31,6 +37,101 @@ import {
 const withQueue = useIngressMonitorQueueFixture();
 
 describe("channel ingress monitor", () => {
+  it.each(["account", "legacy-host"] as const)(
+    "resumes polling after pause and joins a running poll when its %s retires",
+    async (source) => {
+      await withQueue(async (queue) => {
+        const time = createGatewaySchedulerClock(60_000);
+        const gateway = createTestGatewayScheduler(time.clock);
+        const scheduler = createTestPluginServiceScheduler(gateway);
+        const host = new LegacyPluginSdkResourceHost();
+        host.bindScheduler(gateway);
+        const deliver = vi.fn();
+        const monitor = host.run(() =>
+          createMonitor(queue, deliver, {
+            scheduler: source === "account" ? scheduler : undefined,
+            now: time.clock.now,
+          }),
+        );
+        monitor.start();
+        await monitor.waitForIdle();
+        await monitor.pause();
+        await queue.enqueue(
+          "paused",
+          { version: 1, rawEvent: JSON.stringify({ id: "paused", lane: "a", text: "hello" }) },
+          { laneKey: "lane:a" },
+        );
+        await time.advanceBy(100);
+        expect(deliver).not.toHaveBeenCalled();
+        monitor.start();
+        await monitor.waitForIdle();
+        expect(deliver).toHaveBeenCalledOnce();
+
+        const entered = createDeferred();
+        const release = createDeferred();
+        const prune = vi.spyOn(queue, "prune").mockImplementationOnce(async () => {
+          entered.resolve();
+          await release.promise;
+          return 0;
+        });
+        const wake = time.advanceBy(60_000);
+        await entered.promise;
+        const stopped = vi.fn();
+        const stopping = (source === "account" ? scheduler.stop() : gateway.stop()).then(stopped);
+        await Promise.resolve();
+        expect(stopped).not.toHaveBeenCalled();
+        release.resolve();
+        await Promise.all([wake, stopping]);
+        await monitor.stop();
+        await time.advanceBy(60_000);
+        expect(stopped).toHaveBeenCalledOnce();
+        expect(prune).toHaveBeenCalledOnce();
+        expect(deliver).toHaveBeenCalledOnce();
+        await expect(monitor.admit({ id: "late", lane: "a", text: "late" })).rejects.toThrow(
+          "stopped",
+        );
+        await gateway.stop();
+        await host.close();
+      });
+    },
+  );
+
+  it("preserves standalone V1 startup and joins its scheduler on stop", async () => {
+    await withQueue(async (queue) => {
+      const monitor = createMonitor(queue, vi.fn(), {
+        scheduler: undefined,
+        retention: { pruneIntervalMs: 1 },
+      });
+      const entered = createDeferred();
+      const release = createDeferred();
+      vi.useFakeTimers();
+      try {
+        monitor.start();
+        await monitor.waitForIdle();
+        const prune = vi.spyOn(queue, "prune").mockImplementationOnce(async () => {
+          entered.resolve();
+          await release.promise;
+          return 0;
+        });
+        await vi.advanceTimersByTimeAsync(10);
+        await entered.promise;
+        const stopped = vi.fn();
+        const stopping = monitor.stop().then(stopped);
+        await Promise.resolve();
+        expect(stopped).not.toHaveBeenCalled();
+        release.resolve();
+        await stopping;
+        await vi.advanceTimersByTimeAsync(100);
+        expect(stopped).toHaveBeenCalledOnce();
+        expect(prune).toHaveBeenCalledOnce();
+      } finally {
+        release.resolve();
+        await monitor.stop();
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("creates named plain and reasoned ingress errors", () => {
     const PayloadError = createChannelIngressError("TestIngressPayloadError");
     const PermanentError = createChannelIngressError<"invalid-event">("TestIngressPermanentError", {
@@ -226,6 +327,7 @@ describe("channel ingress monitor", () => {
       });
       const deliver = vi.fn();
       const monitor = createChannelIngressMonitor<RawEvent, string, StoredEvent>({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         inspect: (raw) => ({ eventId: raw.id, laneKey: `lane:${raw.lane}` }),
         payload: {

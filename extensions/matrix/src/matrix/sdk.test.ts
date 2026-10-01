@@ -17,6 +17,7 @@ import { EventStatus } from "matrix-js-sdk/lib/models/event-status.js";
 import { SyncApi, SyncState } from "matrix-js-sdk/lib/sync.js";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 // Matrix tests cover sdk plugin behavior.
@@ -2861,62 +2862,69 @@ describe("MatrixClient crypto bootstrapping", () => {
     });
   });
 
-  it("awaits and cancels active periodic crypto persistence during discard shutdown", async () => {
-    resetPluginStateStoreForTests();
-    installMatrixTestRuntime();
-    const tempDir = tempDirs.make("matrix-idb-interval-");
-    const pendingDatabases = createDeferred<IDBDatabaseInfo[]>();
-    const databasesSpy = vi
-      .spyOn(indexedDB, "databases")
-      .mockResolvedValueOnce([])
-      .mockReturnValueOnce(pendingDatabases.promise);
-    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
-    const warnSpy = vi.spyOn(LogService, "warn").mockImplementation(() => {});
-    let shutdown: Promise<void> | undefined;
+  it.each(["before-start", "after-start"])(
+    "joins periodic crypto persistence with scheduler attachment %s",
+    async (attachment) => {
+      resetPluginStateStoreForTests();
+      installMatrixTestRuntime();
+      const tempDir = tempDirs.make("matrix-idb-interval-");
+      const pendingDatabases = createDeferred<IDBDatabaseInfo[]>();
+      const persistenceStarted = createDeferred<void>();
+      const backendStopped = createDeferred<void>();
+      vi.useFakeTimers();
+      const scheduler = createTestPluginServiceScheduler();
+      const databasesSpy = vi
+        .spyOn(indexedDB, "databases")
+        .mockResolvedValueOnce([])
+        .mockImplementationOnce(() => {
+          persistenceStarted.resolve();
+          return pendingDatabases.promise;
+        });
+      matrixJsClient.stopClient.mockImplementationOnce(() => backendStopped.resolve());
+      const warnSpy = vi.spyOn(LogService, "warn").mockImplementation(() => {});
+      let shutdown: Promise<void> | undefined;
 
-    try {
-      const client = createSdkClient({
-        encryption: true,
-        idbSnapshotPath: path.join(tempDir, "crypto-idb-snapshot.json"),
-        cryptoDatabasePrefix: "openclaw-matrix-interval",
-      });
+      try {
+        const client = createSdkClient({
+          ...(attachment === "before-start" ? { scheduler } : {}),
+          encryption: true,
+          idbSnapshotPath: path.join(tempDir, "crypto-idb-snapshot.json"),
+          cryptoDatabasePrefix: "openclaw-matrix-interval",
+        });
 
-      await client.start();
+        await client.start();
+        if (attachment === "after-start") {
+          await client.setServiceScheduler(scheduler);
+        }
 
-      const intervalCall = setIntervalSpy.mock.calls.find((call) => call[1] === 60_000) as
-        | unknown[]
-        | undefined;
-      if (!intervalCall || typeof intervalCall[0] !== "function") {
-        throw new Error("expected Matrix IDB snapshot interval");
-      }
-      intervalCall[0]();
-      intervalCall[0]();
-      await vi.waitFor(() => {
+        await vi.advanceTimersByTimeAsync(60_000);
+        await persistenceStarted.promise;
         expect(databasesSpy).toHaveBeenCalledTimes(2);
-      });
 
-      shutdown = Promise.resolve(client.stopWithoutPersist());
-      let shutdownSettled = false;
-      void shutdown.then(() => {
-        shutdownSettled = true;
-      });
-      await vi.waitFor(() => {
-        expect(matrixJsClient.stopClient).toHaveBeenCalledTimes(1);
-      });
-      expect(shutdownSettled).toBe(false);
+        shutdown = Promise.resolve(client.stopWithoutPersist());
+        let shutdownSettled = false;
+        void shutdown.then(() => {
+          shutdownSettled = true;
+        });
+        await backendStopped.promise;
+        expect(shutdownSettled).toBe(false);
 
-      pendingDatabases.resolve([]);
-      await shutdown;
-      expect(await readMatrixIdbSnapshotJson(tempDir)).toBeNull();
-      expect(warnSpy).not.toHaveBeenCalled();
-    } finally {
-      pendingDatabases.resolve([]);
-      await shutdown?.catch(() => undefined);
-      warnSpy.mockRestore();
-      databasesSpy.mockRestore();
-      setIntervalSpy.mockRestore();
-    }
-  });
+        pendingDatabases.resolve([]);
+        await shutdown;
+        await vi.advanceTimersByTimeAsync(120_000);
+        expect(databasesSpy).toHaveBeenCalledTimes(2);
+        expect(await readMatrixIdbSnapshotJson(tempDir)).toBeNull();
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        pendingDatabases.resolve([]);
+        await shutdown?.catch(() => undefined);
+        await scheduler.stop();
+        vi.useRealTimers();
+        warnSpy.mockRestore();
+        databasesSpy.mockRestore();
+      }
+    },
+  );
 
   it("reports when the current Matrix device is missing from the homeserver device list", async () => {
     matrixJsClient.getDevices = vi.fn(async () => ({

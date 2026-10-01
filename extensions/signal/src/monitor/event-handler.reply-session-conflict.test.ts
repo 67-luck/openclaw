@@ -9,6 +9,7 @@ import {
 import { DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { startSignalIngressMonitor } from "../signal-ingress.js";
@@ -339,6 +340,7 @@ describe("signal reply session init conflict retry", () => {
       );
       const dispatched = createDeferred<Awaited<ReturnType<typeof handler>>>();
       const monitor = await startSignalIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch: (incoming, lifecycle) => {

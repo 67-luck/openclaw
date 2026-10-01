@@ -9,6 +9,74 @@ read_when:
 Checks 0-2 cover config normalization and the legacy config key migrations,
 plus how doctor publishes shared-state schema during an update.
 
+## Retention policy
+
+Doctor retains migrations for formats that any release from `v2026.3.1` onward
+can still write, covering the current six-month compatibility window. A
+format becomes eligible for retirement only after its last writer is verified
+against release tags. Runtime code consumes canonical state; Doctor owns legacy
+normalization and preserves source data before retiring an input. An unsupported
+retired format must produce an actionable intermediate-upgrade instruction rather
+than silently dropping data.
+
+## Matrix thread bindings
+
+Doctor imports `thread-bindings.json` into the existing account-scoped SQLite
+binding store. This format remains supported: `v2026.5.29-alpha.1` could still
+write it, before the SQLite cutover in `v2026.5.30-beta.1`.
+
+Updates run the plugin's normal Doctor migration before the new runtime uses
+canonical state. After a direct binary replacement, run `openclaw doctor --fix`
+before starting the new Gateway. The migration declares the source JSON and
+account SQLite database in the update backup inventory. Existing SQLite bindings
+win on conflicts; missing bindings are imported and read back before the exact
+source bytes are archived under `.migrated`. Existing import-completion markers
+prevent deleted bindings from being resurrected by leftover JSON. Before importing
+any binding, Doctor records the exact source hash in the existing migration
+ledger. The archive owner captures and verifies those bytes before writing
+completion receipts. If the file changes during a partial import, retries preserve
+the changed file and refuse to mark it complete. Verification or receipt failures
+retain the captured archive and restore the source only when its path is free;
+a concurrently recreated source is never overwritten. Restore the source from its
+pre-migration backup before retrying, or resolve its changed bindings in canonical
+state before retiring the source. The ledger has room for the 10,000-binding
+limit plus the source claim, without evicting prior completion receipts.
+
+The import retains the previous normalization: trim identifiers and labels,
+round timestamps and durations down to whole milliseconds, clamp negative
+lifecycle durations to zero, and keep activity at or after binding creation.
+Missing creation times use the import time; missing activity times use creation.
+Legacy non-subagent target kinds normalize to ACP. The last source record wins
+when the JSON repeats a binding; an existing SQLite record still wins over both.
+Malformed files and conflicting account identities remain in place with a repair
+warning. Schema versions, canonical record fields, and thread expiry policy do
+not change. The Gateway no longer reads or deletes this legacy JSON itself.
+
+## Nostr state and replay protection
+
+Doctor retains the bus/profile JSON imports: `v2026.5.31-alpha.1` still wrote
+both formats before the SQLite cutover in `v2026.5.30-beta.2`. The replay seed
+also remains supported; `v2026.7.35` still wrote nonempty `recentEventIds` in
+SQLite. These formats fall within the retention window and do not require an
+intermediate upgrade through `2026.9.5`.
+
+The normal update migration inventories the exact JSON sources and the shared
+`state/openclaw.sqlite` database for backup. JSON imports preserve current SQLite
+rows and archive the original source bytes. Bus timestamps normalize nonfinite
+values to `null`; version 1 bus input becomes version 2 with an empty seed.
+Version 2 keeps string event IDs. Profile imports keep string event IDs, finite
+timestamps, and the supported `ok`, `failed`, and `timeout` relay outcomes.
+
+Doctor converts replay seeds into durable ingress completion records. Existing
+pending or claimed messages retain their payloads and custody; existing completed
+and failed records also win. Only newly inserted or partially imported legacy
+markers are completed. Seed clearing compares the entire observed bus row, so a
+newer cursor or seed is never overwritten. Partial failures retain the seed for
+retry and refuse migration completion. Runtime admission rejects noncanonical
+bus state with an `openclaw doctor --fix` instruction before subscribing to relays
+or writing a new cursor; runtime performs no legacy import. After replacing a
+binary directly, run Doctor before restarting Nostr.
+
 ## Channel ownership during an update
 
 When Doctor migrates a legacy `agents.list` roster without a `default: true` marker

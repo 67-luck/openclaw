@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 // Discord tests cover auto presence plugin behavior.
 import type { AuthProfileStore } from "openclaw/plugin-sdk/provider-auth";
 import { describe, expect, it, vi } from "vitest";
@@ -32,6 +33,7 @@ describe("discord auto presence", () => {
     const now = Date.now();
     const updatePresence = vi.fn();
     const controller = createDiscordAutoPresenceController({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       discordConfig: {
         autoPresence: {
@@ -56,6 +58,7 @@ describe("discord auto presence", () => {
   it("reports degraded availability when no auth profiles exist", () => {
     const updatePresence = vi.fn();
     const controller = createDiscordAutoPresenceController({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       discordConfig: { autoPresence: { enabled: true } },
       gateway: { isConnected: true, updatePresence },
@@ -75,6 +78,7 @@ describe("discord auto presence", () => {
     const store = createStore({ cooldownUntil: now - 1, failureCounts: { rate_limit: 1 } });
     const updatePresence = vi.fn();
     const controller = createDiscordAutoPresenceController({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       discordConfig: { autoPresence: { enabled: true } },
       gateway: { isConnected: false, updatePresence },
@@ -91,6 +95,7 @@ describe("discord auto presence", () => {
     let store = createStore({ cooldownUntil: now + 60_000, failureCounts: { rate_limit: 1 } });
     const updatePresence = vi.fn();
     const controller = createDiscordAutoPresenceController({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       discordConfig: {
         activity: "working",
@@ -142,6 +147,7 @@ describe("discord auto presence", () => {
     const updatePresence = vi.fn();
 
     const controller = createDiscordAutoPresenceController({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       discordConfig: {
         autoPresence: {
@@ -187,6 +193,7 @@ describe("discord auto presence", () => {
   it("does nothing when auto presence is disabled", () => {
     const updatePresence = vi.fn();
     const controller = createDiscordAutoPresenceController({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       discordConfig: {
         autoPresence: {

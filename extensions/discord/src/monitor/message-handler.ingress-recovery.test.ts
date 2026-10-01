@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { installDiscordIngressTestRuntime } from "../test-support/ingress-runtime.js";
 
 installDiscordIngressTestRuntime();
@@ -116,6 +117,7 @@ async function expectRecovered(queue: DiscordQueue, id: string) {
   });
   const completed = observeChannelIngressQueueWrite(queue, "complete", id);
   const replacement = createDiscordIngressMonitor({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     client: {} as never,
     runtime: createDiscordHandlerParams().runtime,
@@ -143,6 +145,7 @@ function createHandler(params: {
   const handlerParams = createDiscordHandlerParams();
   handlerParams.cfg.messages = { inbound: { debounceMs: params.debounceMs ?? 0 } };
   return createDiscordMessageHandler({
+    scheduler: createTestPluginServiceScheduler(),
     ...handlerParams,
     client: {} as never,
     testing: {
@@ -268,6 +271,7 @@ describe("Discord durable ingress settlement", () => {
     const stop = vi.fn(async () => {});
     const params = createDiscordHandlerParams();
     const handler = createDiscordMessageHandler({
+      scheduler: createTestPluginServiceScheduler(),
       ...params,
       client: {} as never,
       testing: {
@@ -291,56 +295,60 @@ describe("Discord durable ingress settlement", () => {
     expect(stop).toHaveBeenCalledTimes(1);
   });
 
-  it("dead-letters an exhausted queued processing failure and releases its Discord lane", async () => {
-    vi.useFakeTimers();
-    try {
-      await withQueue(async (queue) => {
-        await seedPendingFailure({
-          queue,
-          id: "processing-poison",
-          attempts: DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS - 1,
-        });
-        await queue.enqueue(
-          "processing-follower",
-          {
-            version: 1,
-            receivedAt: 2,
-            rawMessage: rawMessage("processing-follower"),
-          },
-          { laneKey: "channel:lane-a", receivedAt: 2 },
-        );
-        const processed: string[] = [];
-        const handler = createDiscordMessageHandler({
-          ...createDiscordHandlerParams(),
-          client: {} as never,
-          testing: {
-            preflightDiscordMessage: (async (preflightParams: DiscordMessagePreflightParams) => ({
-              ...createDiscordQueuePreflightContextForMessage(preflightParams.data),
-              turnAdoptionLifecycle: preflightParams.turnAdoptionLifecycle,
-            })) as never,
-            processDiscordMessage: async (ctx) => {
-              processed.push(ctx.message.id);
-              if (ctx.message.id === "processing-poison") {
-                throw new Error("deterministic queued processing failure");
-              }
+  it.each([true, false])(
+    "dead-letters exhausted work with supplied scheduler=%s",
+    async (suppliedScheduler) => {
+      vi.useFakeTimers();
+      try {
+        await withQueue(async (queue) => {
+          await seedPendingFailure({
+            queue,
+            id: "processing-poison",
+            attempts: DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS - 1,
+          });
+          await queue.enqueue(
+            "processing-follower",
+            {
+              version: 1,
+              receivedAt: 2,
+              rawMessage: rawMessage("processing-follower"),
             },
-            createIngressMonitor: (monitorParams) =>
-              createDiscordIngressMonitor({ ...monitorParams, queue }),
-          },
+            { laneKey: "channel:lane-a", receivedAt: 2 },
+          );
+          const processed: string[] = [];
+          const handler = createDiscordMessageHandler({
+            ...(suppliedScheduler ? { scheduler: createTestPluginServiceScheduler() } : {}),
+            ...createDiscordHandlerParams(),
+            client: {} as never,
+            testing: {
+              preflightDiscordMessage: (async (preflightParams: DiscordMessagePreflightParams) => ({
+                ...createDiscordQueuePreflightContextForMessage(preflightParams.data),
+                turnAdoptionLifecycle: preflightParams.turnAdoptionLifecycle,
+              })) as never,
+              processDiscordMessage: async (ctx) => {
+                processed.push(ctx.message.id);
+                if (ctx.message.id === "processing-poison") {
+                  throw new Error("deterministic queued processing failure");
+                }
+              },
+              createIngressMonitor: (monitorParams) =>
+                createDiscordIngressMonitor({ ...monitorParams, queue }),
+            },
+          });
+          try {
+            await vi.advanceTimersByTimeAsync(1_000);
+            await vi.waitFor(() => expect(processed).toHaveLength(2));
+            expect(processed).toEqual(["processing-poison", "processing-follower"]);
+            expect((await queue.listFailed?.())?.[0]?.reason).toBe("retry-limit-exceeded");
+          } finally {
+            await handler.deactivate();
+          }
         });
-        try {
-          await vi.advanceTimersByTimeAsync(1_000);
-          await vi.waitFor(() => expect(processed).toHaveLength(2));
-          expect(processed).toEqual(["processing-poison", "processing-follower"]);
-          expect((await queue.listFailed?.())?.[0]?.reason).toBe("retry-limit-exceeded");
-        } finally {
-          await handler.deactivate();
-        }
-      });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it.each(["returns", "throws"] as const)(
     "preserves retry facts when a started durable Discord job %s after cancellation",
@@ -362,6 +370,7 @@ describe("Discord durable ingress settlement", () => {
         });
         const params = createDiscordHandlerParams();
         const handler = createDiscordMessageHandler({
+          scheduler: createTestPluginServiceScheduler(),
           ...params,
           client: {} as never,
           testing: {
@@ -407,6 +416,7 @@ describe("Discord durable ingress settlement", () => {
       });
       const skipped = createDeferred<void>();
       const monitor = createDiscordIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         client: {} as never,
         runtime: params.runtime,

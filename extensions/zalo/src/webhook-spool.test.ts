@@ -4,6 +4,7 @@ import {
   createChannelIngressMonitor,
   type ChannelIngressQueue,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { zaloWebhookIngressRuntime } from "./webhook-spool.js";
 import {
@@ -60,6 +61,7 @@ describe("Zalo durable webhook ingress", () => {
         enqueue,
       };
       const ingress = createZaloWebhookIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue: serializedQueue,
@@ -88,6 +90,7 @@ describe("Zalo durable webhook ingress", () => {
       const failingQueue: ChannelIngressQueue<ZaloWebhookTestPayload> = { ...queue, enqueue };
       const deliver = vi.fn(async () => {});
       const ingress = createZaloWebhookIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue: failingQueue,
@@ -106,6 +109,7 @@ describe("Zalo durable webhook ingress", () => {
   it("recovers an uncompleted event with a fresh drain and dispatches exactly once", async () => {
     await withZaloWebhookTestQueue(async (queue) => {
       const interrupted = createZaloWebhookIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -118,6 +122,7 @@ describe("Zalo durable webhook ingress", () => {
         await lifecycle.onAdopted();
       });
       const recovered = createZaloWebhookIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -140,6 +145,7 @@ describe("Zalo durable webhook ingress", () => {
         await lifecycle.onAdopted();
       });
       const ingress = createZaloWebhookIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -173,6 +179,7 @@ describe("Zalo durable webhook ingress", () => {
       });
       const deliveredText: string[] = [];
       const ingress = createZaloWebhookIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -211,6 +218,7 @@ describe("Zalo durable webhook ingress", () => {
       );
       const deliver = vi.fn(async () => {});
       const ingress = createZaloWebhookIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -240,6 +248,7 @@ describe("Zalo durable webhook ingress", () => {
         await lifecycle.onAdopted();
       });
       const ingress = createZaloWebhookIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -262,6 +271,7 @@ describe("Zalo durable webhook ingress", () => {
         throw Object.assign(new Error("invalid Zalo token"), { statusCode: 401 });
       });
       const ingress = createZaloWebhookIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -294,6 +304,7 @@ describe("Zalo durable webhook ingress", () => {
         await deliveryGate.promise;
       });
       const ingress = createZaloWebhookIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,
@@ -339,6 +350,7 @@ describe("Zalo durable webhook ingress", () => {
         deferred.resolve();
       });
       const ingress = createZaloWebhookIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         runtime: runtime(),
         queue,

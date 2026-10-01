@@ -12,6 +12,7 @@ import type {
   ChannelResolverAdapter,
   ChannelElevatedAdapter,
   ChannelGatewayAdapter,
+  ChannelGatewayAdapterV2,
   ChannelGroupAdapter,
   ChannelHeartbeatAdapter,
   ChannelLifecycleAdapter,
@@ -24,6 +25,7 @@ import type {
   ChannelConfiguredBindingProvider,
 } from "./types.adapters.js";
 import type { ChannelConfigSchema } from "./types.config.js";
+import type { ChannelConversationBindingSupportV2 } from "./types.conversation-bindings.js";
 import type {
   ChannelAgentTool,
   ChannelAgentToolFactory,
@@ -76,7 +78,7 @@ export type ChannelPlugin<ResolvedAccount = any, Probe = unknown, Audit = unknow
   status?: ChannelStatusAdapter<ResolvedAccount, Probe, Audit>;
   gatewayMethods?: string[];
   gatewayMethodDescriptors?: ChannelGatewayMethodDescriptor[];
-  gateway?: ChannelGatewayAdapter<ResolvedAccount>;
+  gateway?: ChannelGatewayAdapter<ResolvedAccount> | ChannelGatewayAdapterV2<ResolvedAccount>;
   // Login/logout and channel-auth only. Approval auth lives on approvalCapability.
   auth?: ChannelAuthAdapter;
   approvalCapability?: ChannelApprovalCapability;
@@ -87,7 +89,7 @@ export type ChannelPlugin<ResolvedAccount = any, Probe = unknown, Audit = unknow
   allowlist?: ChannelAllowlistAdapter;
   doctor?: ChannelDoctorAdapter;
   bindings?: ChannelConfiguredBindingProvider;
-  conversationBindings?: ChannelConversationBindingSupport;
+  conversationBindings?: ChannelConversationBindingSupport | ChannelConversationBindingSupportV2;
   streaming?: ChannelStreamingAdapter;
   threading?: ChannelThreadingAdapter;
   message?: ChannelMessageAdapterShape;

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { WAMessage } from "baileys";
 import { createChannelIngressQueueForTests } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import {
   deserializeWhatsAppDurableInboundMessage,
@@ -67,6 +68,7 @@ describe("createWhatsAppIngressMonitor", () => {
     await withTempState(async (stateDir) => {
       const queue = createQueue(stateDir);
       const monitor = createWhatsAppIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         pollIntervalMs: 10,
         dispatch: async () => ({ kind: "completed" }),
@@ -94,6 +96,7 @@ describe("createWhatsAppIngressMonitor", () => {
       await queue.enqueue(id, payload("msg-1"), { laneKey: REMOTE_JID });
 
       const monitor = createWhatsAppIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         pollIntervalMs: 10,
         dispatch: async () => {
@@ -119,6 +122,7 @@ describe("createWhatsAppIngressMonitor", () => {
       await queue.enqueue(id, payload("msg-2"), { laneKey: REMOTE_JID });
 
       const monitor = createWhatsAppIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         pollIntervalMs: 10,
         dispatch: async () => ({
@@ -145,6 +149,7 @@ describe("createWhatsAppIngressMonitor", () => {
       await queue.enqueue(id, payload("msg-3"), { laneKey: REMOTE_JID });
 
       const monitor = createWhatsAppIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         pollIntervalMs: 10,
         dispatch: async () => ({ kind: "completed" }),
@@ -176,6 +181,7 @@ describe("createWhatsAppIngressMonitor", () => {
       const dispatched: string[] = [];
       const adoptions: Array<() => void | Promise<void>> = [];
       const monitor = createWhatsAppIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         pollIntervalMs: 10,
         dispatch: async (inbound, lifecycle) => {
@@ -243,6 +249,7 @@ describe("createWhatsAppIngressMonitor", () => {
         onError,
       });
       const monitor = createWhatsAppIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         pollIntervalMs: 10,
         dispatch: async (inbound, lifecycle) => {
@@ -313,6 +320,7 @@ describe("createWhatsAppIngressMonitor", () => {
 
       const dispatched: string[] = [];
       const monitor = createWhatsAppIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         pollIntervalMs: 10,
         dispatch: async (admission) => {
@@ -350,6 +358,7 @@ describe("createWhatsAppIngressMonitor", () => {
 
       const dispatched: string[] = [];
       const monitor = createWhatsAppIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         pollIntervalMs: 10,
         dispatch: async (admission) => {
@@ -376,6 +385,7 @@ describe("createWhatsAppIngressMonitor", () => {
       const queue = createQueue(stateDir);
       const prune = vi.spyOn(queue, "prune");
       const monitor = createWhatsAppIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         pollIntervalMs: 10,
         dispatch: async () => ({ kind: "completed" }),
@@ -419,6 +429,7 @@ describe("WhatsApp durable message serialization", () => {
         receiveOrder?: number;
       }> = [];
       const monitor = createWhatsAppIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         pollIntervalMs: 10,
         dispatch: async (admission) => {

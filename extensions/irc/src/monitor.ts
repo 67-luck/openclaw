@@ -1,5 +1,6 @@
 import { resolveLoggerBackedRuntime } from "openclaw/plugin-sdk/extension-shared";
 import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/status-helpers";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -16,6 +17,7 @@ import { getIrcRuntime } from "./runtime.js";
 import type { CoreConfig, IrcInboundMessage } from "./types.js";
 
 type IrcMonitorOptions = {
+  scheduler?: PluginServiceSchedulerV1;
   accountId?: string;
   config?: CoreConfig;
   runtime?: RuntimeEnv;
@@ -30,6 +32,10 @@ const IRC_MONITOR_RECONNECT_DELAY_MS = 1000;
 export async function monitorIrcProvider(
   opts: IrcMonitorOptions,
 ): Promise<{ stop: () => Promise<void> }> {
+  const scheduler = opts.scheduler;
+  if (!scheduler) {
+    throw new Error("IRC monitor requires an account service scheduler");
+  }
   const core = getIrcRuntime();
   const cfg = opts.config ?? (core.config.current() as CoreConfig);
   const account = resolveIrcAccount({
@@ -71,6 +77,7 @@ export async function monitorIrcProvider(
   }
 
   const ingress: IrcIngressMonitor = createIrcIngressMonitor({
+    scheduler,
     accountId: account.accountId,
     runtime,
     ...(opts.ingressQueue ? { queue: opts.ingressQueue } : {}),

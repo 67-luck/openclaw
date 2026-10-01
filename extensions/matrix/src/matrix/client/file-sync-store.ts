@@ -7,6 +7,7 @@ import {
   type IStoredClientOpts,
 } from "matrix-js-sdk/lib/matrix.js";
 import { createAsyncLock } from "openclaw/plugin-sdk/async-lock-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { getMatrixRuntime } from "../../runtime.js";
 import { LogService } from "../sdk/logger.js";
@@ -43,10 +44,15 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
   private cleanShutdown = false;
   private dirty = false;
   private frozen = false;
-  private persistTimer: NodeJS.Timeout | null = null;
+  private scheduler: PluginServiceSchedulerV1 | undefined;
+  private schedulerOwner: PluginServiceSchedulerV1 | undefined;
+  private persistJob: ReturnType<PluginServiceSchedulerV1["schedule"]> | undefined;
   private persistPromise: Promise<void> | null = null;
 
-  static async create(storageRootDir: string): Promise<SqliteBackedMatrixSyncStore> {
+  static async create(
+    storageRootDir: string,
+    scheduler?: PluginServiceSchedulerV1,
+  ): Promise<SqliteBackedMatrixSyncStore> {
     let store: PluginStateKeyedStore<MatrixSyncCacheRecord> | undefined;
     let persisted: PersistedMatrixSyncStore | null = null;
     let unavailableError: unknown;
@@ -59,7 +65,13 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
       unavailableError = error;
       LogService.warn("MatrixSyncCacheStore", "Failed to load Matrix sync cache:", error);
     }
-    return new SqliteBackedMatrixSyncStore(storageRootDir, store, persisted, unavailableError);
+    return new SqliteBackedMatrixSyncStore(
+      storageRootDir,
+      store,
+      persisted,
+      unavailableError,
+      scheduler,
+    );
   }
 
   private constructor(
@@ -67,8 +79,11 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
     private readonly store: PluginStateKeyedStore<MatrixSyncCacheRecord> | undefined,
     persisted: PersistedMatrixSyncStore | null,
     private readonly storeUnavailableError: unknown,
+    scheduler?: PluginServiceSchedulerV1,
   ) {
     super();
+    this.schedulerOwner = scheduler;
+    this.scheduler = scheduler?.scope();
     const restoredSavedSync = persisted?.savedSync ?? null;
     const restoredClientOptions = persisted?.clientOptions;
     const restoredCleanShutdown = persisted?.cleanShutdown === true;
@@ -90,6 +105,22 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
 
   hasSavedSync(): boolean {
     return this.hadSavedSyncOnLoad;
+  }
+
+  async setServiceScheduler(scheduler: PluginServiceSchedulerV1): Promise<void> {
+    if (this.frozen || this.schedulerOwner === scheduler) {
+      return;
+    }
+    await this.scheduler?.stop();
+    if (this.frozen) {
+      return;
+    }
+    this.clearPersistTimer();
+    this.scheduler = scheduler.scope();
+    this.schedulerOwner = scheduler;
+    if (this.dirty) {
+      this.schedulePersist();
+    }
   }
 
   hasSavedSyncFromCleanShutdown(): boolean {
@@ -167,14 +198,20 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
 
   async freezeSyncCursorPersistence(): Promise<void> {
     this.frozen = true;
+    this.scheduler?.beginClose();
     this.clearPersistTimer();
-    while (this.persistPromise) {
-      await this.persistPromise;
+    try {
+      while (this.persistPromise) {
+        await this.persistPromise;
+      }
+    } finally {
+      await this.scheduler?.stop();
     }
   }
 
   discardPendingSyncCursorPersistence(): void {
     this.frozen = true;
+    this.scheduler?.beginClose();
     this.clearPersistTimer();
     this.cleanShutdown = false;
     this.dirty = false;
@@ -191,10 +228,8 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
   }
 
   private clearPersistTimer(): void {
-    if (this.persistTimer) {
-      clearTimeout(this.persistTimer);
-      this.persistTimer = null;
-    }
+    this.persistJob?.cancel();
+    this.persistJob = undefined;
   }
 
   private markDirtyAndSchedulePersist(): void {
@@ -203,16 +238,24 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
     }
     this.cleanShutdown = false;
     this.dirty = true;
-    if (this.persistTimer) {
+    this.schedulePersist();
+  }
+
+  private schedulePersist(): void {
+    // One-off clients and retiring services persist accepted state in their final flush.
+    if (!this.scheduler || this.scheduler.signal.aborted || this.persistJob) {
       return;
     }
-    this.persistTimer = setTimeout(() => {
-      this.persistTimer = null;
-      void this.flush().catch((err: unknown) => {
-        LogService.warn("MatrixSyncCacheStore", "Failed to persist Matrix sync store:", err);
-      });
-    }, PERSIST_DEBOUNCE_MS);
-    this.persistTimer.unref?.();
+    this.persistJob = this.scheduler.schedule({
+      id: "sync-store-persist",
+      delayMs: PERSIST_DEBOUNCE_MS,
+      run: () => {
+        this.persistJob = undefined;
+        return this.flush().catch((err: unknown) => {
+          LogService.warn("MatrixSyncCacheStore", "Failed to persist Matrix sync store:", err);
+        });
+      },
+    });
   }
 
   private async persist(): Promise<void> {

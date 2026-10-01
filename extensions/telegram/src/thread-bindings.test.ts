@@ -2,6 +2,7 @@
 import { getSessionBindingService } from "openclaw/plugin-sdk/conversation-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { openOpenClawStateDatabase } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -374,7 +375,7 @@ describe("telegram thread bindings", () => {
   });
 
   it("rechecks later expiry candidates after a synchronous SDK touch", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "performance"] });
     installThreadBindingStore(fixture.store, true);
     const manager = await createTelegramThreadBindingManager({
       accountId: "expiry",
@@ -519,6 +520,7 @@ describe("telegram thread bindings", () => {
         "./thread-bindings.js?scope=legacy-registry-reload",
       );
       manager = await reloaded.createTelegramThreadBindingManager({
+        scheduler: createTestPluginServiceScheduler(),
         cfg: TELEGRAM_THREAD_BINDINGS_TEST_CFG,
         accountId: "source-reload",
         persist: false,
@@ -566,6 +568,7 @@ describe("telegram thread bindings", () => {
       "./thread-bindings.js?scope=shared-b",
     );
     const managerA = await bindingsA.createTelegramThreadBindingManager({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: TELEGRAM_THREAD_BINDINGS_TEST_CFG,
       accountId: "shared-runtime",
       persist: false,
@@ -574,6 +577,7 @@ describe("telegram thread bindings", () => {
 
     try {
       const managerB = await bindingsB.createTelegramThreadBindingManager({
+        scheduler: createTestPluginServiceScheduler(),
         cfg: TELEGRAM_THREAD_BINDINGS_TEST_CFG,
         accountId: "shared-runtime",
         persist: false,

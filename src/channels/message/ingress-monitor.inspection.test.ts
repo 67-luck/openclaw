@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createTestPluginServiceScheduler } from "../../plugin-sdk/plugin-test-api.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import {
   createChannelIngressMonitor,
@@ -39,6 +40,7 @@ function createMonitor(
   >,
 ) {
   return createChannelIngressMonitor<RawEvent, string, StoredEvent>({
+    scheduler: createTestPluginServiceScheduler(),
     queue,
     inspect: (raw) => ({ eventId: raw.id, laneKey: raw.lane }),
     payload: {

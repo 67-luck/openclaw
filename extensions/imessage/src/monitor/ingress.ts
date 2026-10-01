@@ -1,4 +1,3 @@
-// iMessage plugin module owns raw-row durable admission and replay.
 import {
   createChannelIngressError,
   createChannelIngressMonitor,
@@ -9,6 +8,8 @@ import {
 import { isRecord } from "openclaw/plugin-sdk/channel-secret-basic-runtime";
 import { collectErrorGraphCandidates, formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
+// iMessage plugin module owns raw-row durable admission and replay.
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { asSafeIntegerInRange } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { getIMessageRuntime } from "../runtime.js";
@@ -155,6 +156,7 @@ type IMessageDurableIngress = {
 };
 
 export function createIMessageDurableIngress(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   queue?: ChannelIngressQueue<IMessageIngressPayload>;
   dispatch: IMessageIngressDispatch;
@@ -177,6 +179,7 @@ export function createIMessageDurableIngress(options: {
     IMessageIngressBody,
     IMessageIngressPayload
   >({
+    scheduler: options.scheduler,
     queue,
     inspect: (event, context) => {
       try {

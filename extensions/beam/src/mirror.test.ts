@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { SessionCatalogTranscriptItem } from "openclaw/plugin-sdk/session-catalog";
 import * as sessionCatalogRuntime from "openclaw/plugin-sdk/session-catalog-runtime";
 import * as ssrfRuntime from "openclaw/plugin-sdk/ssrf-runtime";
@@ -832,6 +833,13 @@ describe("createBeamMirrorRunner", () => {
 
 describe("createBeamMirrorService", () => {
   it("stops before catalog listing settles without starting reads or uploads", async () => {
+    vi.useFakeTimers();
+    const context = {
+      config: {},
+      stateDir: "/unused",
+      logger: beamTestLogger,
+      scheduler: createTestPluginServiceScheduler(),
+    };
     const listingStarted = createDeferred<void>();
     const releaseListing = createDeferred<void>();
     const list = vi.fn(async () => {
@@ -857,10 +865,11 @@ describe("createBeamMirrorService", () => {
     });
 
     try {
-      service.start({ logger: beamTestLogger });
+      service.start(context);
+      await vi.advanceTimersByTimeAsync(0);
       await listingStarted.promise;
 
-      await service.stop();
+      await context.scheduler.stop();
       expect(read).not.toHaveBeenCalled();
       expect(upload).not.toHaveBeenCalled();
 
@@ -873,7 +882,8 @@ describe("createBeamMirrorService", () => {
       releaseListing.resolve();
       upload.mockRestore();
       listCatalogs.mockRestore();
-      await service.stop();
+      await context.scheduler.stop();
+      vi.useRealTimers();
     }
   });
 });

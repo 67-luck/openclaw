@@ -2,6 +2,7 @@ import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contrac
 import { createChannelInboundEnvelopeBuilder } from "openclaw/plugin-sdk/channel-inbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveOutboundMediaUrls } from "openclaw/plugin-sdk/reply-payload";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -18,6 +19,7 @@ type TwitchRuntimeEnv = {
 };
 
 type TwitchMonitorOptions = {
+  scheduler: PluginServiceSchedulerV1;
   account: TwitchAccountConfig;
   accountId: string;
   channelRuntime: ReturnType<typeof getTwitchRuntime>["channel"];
@@ -247,6 +249,7 @@ export async function monitorTwitchProvider(
   }
 
   const ingress = createTwitchIngress({
+    scheduler: options.scheduler,
     accountId,
     runtime,
     deliver: async (message, turnAdoptionLifecycle) => {

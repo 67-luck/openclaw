@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import * as terminalText from "openclaw/plugin-sdk/text-chunking";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { CodexThread, CodexThreadListParams } from "./app-server/protocol.js";
@@ -43,6 +44,7 @@ it.each([
       },
     });
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "preview-transitions",
       assertCurrent: () => {},
       readNative: async (params) => {

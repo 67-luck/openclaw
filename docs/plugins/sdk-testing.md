@@ -30,7 +30,10 @@ import {
 } from "openclaw/plugin-sdk/channel-feedback";
 import { installCommonResolveTargetErrorCases } from "openclaw/plugin-sdk/channel-target-testing";
 import { AUTH_PROFILE_RUNTIME_CONTRACT } from "openclaw/plugin-sdk/agent-runtime-test-contracts";
-import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import {
+  createTestPluginApi,
+  createTestPluginServiceScheduler,
+} from "openclaw/plugin-sdk/plugin-test-api";
 import { expectChannelInboundContextContract } from "openclaw/plugin-sdk/channel-contract-testing";
 import { createStartAccountContext } from "openclaw/plugin-sdk/channel-test-helpers";
 import { describePluginRegistrationContract } from "openclaw/plugin-sdk/plugin-test-contracts";
@@ -57,6 +60,13 @@ alias was removed with it. `pnpm run lint:plugins:no-extension-test-core-imports
 (`scripts/check-no-extension-test-core-imports.ts`) keeps extension tests on
 the focused test subpaths above.
 
+`createTestPluginServiceScheduler()` supplies the real service scheduler adapter
+for service and account fixtures. Its default Gateway clock follows the test's
+timer environment, including fake timers. Core tests can supply an existing
+test Gateway scheduler to drive an injected clock. Await `scheduler.stop()` in
+fixture cleanup to cancel pending work and join running callbacks; this helper
+does not create production scheduling authority.
+
 Bundled channel integration tests can use `agent-runtime-test-contracts` for
 real session and subscriber fixtures, `reply-payload-testing` for payload
 construction and delivery settlement, and `plugin-test-runtime` for hook
@@ -78,6 +88,7 @@ built workers on the runtime owner's startup arguments.
 | Export                                                                    | Purpose                                                                                                                                     |
 | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `createTestPluginApi`                                                     | Build a minimal plugin API mock for direct registration unit tests. Import from `plugin-sdk/plugin-test-api`                                |
+| `createTestPluginServiceScheduler`                                        | Build a service or account scheduling fixture with real cancellation and joins. Import from `plugin-sdk/plugin-test-api`                    |
 | `AUTH_PROFILE_RUNTIME_CONTRACT`                                           | Shared auth-profile contract fixture for native agent runtime adapters. Import from `plugin-sdk/agent-runtime-test-contracts`               |
 | `DELIVERY_NO_REPLY_RUNTIME_CONTRACT`                                      | Shared delivery suppression contract fixture for native agent runtime adapters. Import from `plugin-sdk/agent-runtime-test-contracts`       |
 | `OUTCOME_FALLBACK_RUNTIME_CONTRACT`                                       | Shared fallback-classification contract fixture for native agent runtime adapters. Import from `plugin-sdk/agent-runtime-test-contracts`    |

@@ -12,6 +12,7 @@ import type { CoreConfig } from "./types.js";
 export const nextcloudTalkGatewayAdapter: NonNullable<
   ChannelPlugin<ResolvedNextcloudTalkAccount>["gateway"]
 > = {
+  apiVersion: 2,
   startAccount: async (ctx) => {
     const account = ctx.account;
     if (!account.secret || !account.baseUrl) {
@@ -31,6 +32,7 @@ export const nextcloudTalkGatewayAdapter: NonNullable<
       abortSignal: ctx.abortSignal,
       start: async () =>
         await monitorNextcloudTalkProvider({
+          scheduler: ctx.scheduler,
           accountId: account.accountId,
           config: ctx.cfg as CoreConfig,
           runtime: ctx.runtime,

@@ -5,6 +5,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import * as diagnosticRuntime from "openclaw/plugin-sdk/diagnostic-runtime";
 import type { DiagnosticEventPayload } from "openclaw/plugin-sdk/diagnostic-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { resetLogger, setLoggerOverride } from "openclaw/plugin-sdk/runtime-env";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -103,6 +104,7 @@ async function createCatalogHarness(agentDir: string, resources: CatalogResource
       env: {},
       ...(state ? { openResidentState: () => state } : {}),
     });
+    created.bindScheduler(createTestPluginServiceScheduler());
     resources.factories.push(created);
     return created;
   };

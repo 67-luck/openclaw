@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import * as timers from "node:timers/promises";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { waitForAbortSignal } from "openclaw/plugin-sdk/runtime-env";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -23,7 +24,7 @@ const { replyMock, sendMock, streamMock, signalRpcRequestMock, upsertPairingRequ
 type MonitorSignalProviderOptions = Parameters<typeof monitorSignalProvider>[0];
 
 async function runMonitorWithMocks(opts: MonitorSignalProviderOptions) {
-  return monitorSignalProvider(opts);
+  return monitorSignalProvider({ scheduler: createTestPluginServiceScheduler(), ...opts });
 }
 
 function mockCallArg(mock: ReturnType<typeof vi.fn>, callIndex = 0, argIndex = 0): unknown {
@@ -119,6 +120,7 @@ describe("monitorSignalProvider tool results", () => {
 
     try {
       const monitorPromise = monitorSignalProvider({
+        scheduler: createTestPluginServiceScheduler(),
         autoStart: false,
         baseUrl: "http://127.0.0.1:8080",
         abortSignal: abortController.signal,
@@ -196,6 +198,7 @@ describe("monitorSignalProvider tool results", () => {
     });
 
     const monitorPromise = monitorSignalProvider({
+      scheduler: createTestPluginServiceScheduler(),
       autoStart: false,
       baseUrl: "http://127.0.0.1:8080",
       abortSignal: AbortSignal.any([abortController.signal, signal]),
@@ -254,6 +257,7 @@ describe("monitorSignalProvider tool results", () => {
     });
 
     const monitorPromise = monitorSignalProvider({
+      scheduler: createTestPluginServiceScheduler(),
       autoStart: false,
       baseUrl: "http://127.0.0.1:8080",
       abortSignal: AbortSignal.any([abortController.signal, signal]),
@@ -302,6 +306,7 @@ describe("monitorSignalProvider tool results", () => {
 
     try {
       await monitorSignalProvider({
+        scheduler: createTestPluginServiceScheduler(),
         autoStart: false,
         baseUrl: "http://127.0.0.1:8080",
         abortSignal: abortController.signal,
@@ -352,6 +357,7 @@ describe("monitorSignalProvider tool results", () => {
     });
 
     await monitorSignalProvider({
+      scheduler: createTestPluginServiceScheduler(),
       mediaMaxMb: 2,
       abortSignal: abortController.signal,
     });

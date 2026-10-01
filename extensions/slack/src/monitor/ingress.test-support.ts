@@ -1,5 +1,6 @@
 import { App, type AppOptions, type Receiver, type ReceiverEvent } from "@slack/bolt";
 import { createChannelIngressQueueForTests } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { vi } from "vitest";
 import { createSlackDurableIngress } from "./ingress.js";
@@ -50,6 +51,7 @@ export function attachBoltIngress(
 ) {
   const { authorize, ...ingressOptions } = options;
   const ingress = createSlackDurableIngress({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     queue,
     pollIntervalMs: 60_000,

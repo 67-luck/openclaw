@@ -1,6 +1,7 @@
 // Sms tests cover gateway plugin behavior.
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { registerPluginHttpRoute as registerPluginHttpRouteType } from "openclaw/plugin-sdk/webhook-ingress";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { collectSmsStartupWarnings, startSmsGatewayAccount } from "./gateway.js";
@@ -95,10 +96,11 @@ describe("startSmsGatewayAccount", () => {
   async function startRoute(
     params: Omit<
       Parameters<typeof startSmsGatewayAccount>[0],
-      "abortSignal" | "cfg" | "channelRuntime"
+      "abortSignal" | "cfg" | "channelRuntime" | "scheduler"
     >,
   ) {
     return await startSmsGatewayAccount({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: {},
       channelRuntime: {} as SmsChannelRuntime,
       ...params,

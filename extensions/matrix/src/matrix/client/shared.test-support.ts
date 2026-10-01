@@ -18,6 +18,7 @@ export function authFor(accountId: string): MatrixAuth {
 export function createMockClient(name: string, callOrder: string[] = []) {
   return {
     name,
+    setServiceScheduler: vi.fn(async () => {}),
     start: vi.fn(async (_params?: { abortSignal?: AbortSignal }) => {
       callOrder.push("start");
     }),

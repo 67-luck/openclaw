@@ -14,6 +14,7 @@ import {
   logWebhookProcessed,
   logWebhookReceived,
 } from "openclaw/plugin-sdk/logging-core";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { createRuntimeConfigReader } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import type { BackoffPolicy, RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import {
@@ -206,6 +207,7 @@ async function handleTelegramWebhook(
 }
 
 export async function startTelegramWebhook(opts: {
+  scheduler: PluginServiceSchedulerV1;
   token: string;
   accountId?: string;
   ownerAgentId?: string;
@@ -374,6 +376,7 @@ export async function startTelegramWebhook(opts: {
   };
   const bot = await runStartupPhase(() =>
     createTelegramBot({
+      scheduler: opts.scheduler,
       token: opts.token,
       runtime,
       buildContext: opts.buildContext,
@@ -406,6 +409,7 @@ export async function startTelegramWebhook(opts: {
     // Shutdown must abort in-flight drain work (tombstone retries), not just
     // stop the next claim; the composed signal carries webhook stop + caller abort.
     webhookIngressMonitor = createTelegramTransportIngressMonitor({
+      scheduler: opts.scheduler,
       stateDir: opts.stateDir,
       bot,
       botInfo,

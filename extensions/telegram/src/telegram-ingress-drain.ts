@@ -8,6 +8,7 @@ import {
 } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { clampPositiveTimerTimeoutMs } from "openclaw/plugin-sdk/number-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import {
   fitsTelegramCallbackData,
   hasTelegramApprovalCallbackPrefix,
@@ -291,6 +292,7 @@ type TelegramIngressDrainDispatch = (
 ) => Promise<TelegramMessageProcessingResult | void> | TelegramMessageProcessingResult | void;
 
 type CreateTelegramIngressMonitorParams = {
+  scheduler: PluginServiceSchedulerV1;
   queue: ChannelIngressQueue<TelegramSpooledUpdatePayload>;
   /** Read committed policy for every supersession decision, including after reconnect. */
   getConfig: () => OpenClawConfig;
@@ -318,6 +320,7 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
     TelegramSpooledUpdatePayload,
     TelegramSpooledUpdatePayload
   >({
+    scheduler: params.scheduler,
     queue: params.queue,
     inspect: (update, context) => {
       if (

@@ -9,6 +9,8 @@ import { withConsoleLogsRoutedToStderrForJson } from "../cli/json-output-mode.js
 import { createNodeWorkerCommand } from "../cli/node-cli/command-options.js";
 import { runCliWithExitFinalization } from "../cli/one-shot-exit.js";
 import { applyCliProfileEnv, parseCliProfileArgs } from "../cli/profile.js";
+import { withCliCommandCleanup, withCliProcessScope } from "../cli/runtime-cleanup-scope.js";
+import { closeCliResources, runCliDisposer } from "../cli/runtime-cleanup.js";
 import { normalizeEnv } from "../infra/env.js";
 import { isMainModule } from "../infra/is-main.js";
 import { ensureOpenClawExecMarkerOnProcess } from "../infra/openclaw-exec-env.js";
@@ -70,12 +72,27 @@ async function runMacNodeWorkerEntry(argv: string[] = process.argv): Promise<voi
   await withConsoleLogsRoutedToStderrForJson(
     parsed.argv,
     async () => {
-      await ensureCliExecutionBootstrap({
-        runtime: defaultRuntime,
-        commandPath: [...COMMAND_PATH],
-        startupPolicy,
-      });
-      await runNodeHostWorker({ desktopSharingEnabled: parsed.desktopSharingEnabled });
+      await withCliProcessScope(() =>
+        withCliCommandCleanup(false, async (cleanup) => {
+          try {
+            await ensureCliExecutionBootstrap({
+              runtime: defaultRuntime,
+              commandPath: [...COMMAND_PATH],
+              startupPolicy,
+            });
+            await runNodeHostWorker({
+              desktopSharingEnabled: parsed.desktopSharingEnabled,
+              scheduler: cleanup?.scheduler,
+            });
+          } finally {
+            await closeCliResources(cleanup);
+            const resources = cleanup?.pluginResources;
+            if (resources) {
+              await runCliDisposer("plugin-registration-resources", () => resources.release());
+            }
+          }
+        }),
+      );
     },
     { machineOutput: true, retainRoutingUntilProcessExit: true },
   );

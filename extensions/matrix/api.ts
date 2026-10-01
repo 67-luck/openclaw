@@ -25,6 +25,8 @@ export {
 export {
   createMatrixThreadBindingManager,
   getMatrixThreadBindingManager,
+  type MatrixThreadBindingManagerParams,
+  type MatrixThreadBindingManagerParamsV2,
 } from "./src/matrix/thread-bindings.js";
 export {
   setMatrixThreadBindingIdleTimeoutBySessionKey,

@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +27,42 @@ afterEach(() => {
 });
 
 describe("resident Codex catalog", () => {
+  it.each(["hydration", "initial files"])(
+    "joins scheduled %s before currency closes",
+    async (kind) => {
+      vi.useFakeTimers();
+      const pending = Promise.withResolvers<void>();
+      const reconcile = vi.fn(() => pending.promise);
+      const currency = new CodexCatalogCurrency({
+        scheduler: createTestPluginServiceScheduler(),
+        local: kind === "initial files",
+        reconcileFiles: reconcile,
+        reconcileNative: async () => {},
+        report: () => {},
+      });
+      const closed = vi.fn();
+      let closing: Promise<void> | undefined;
+      try {
+        if (kind === "hydration") currency.scheduleHydration(reconcile);
+        else currency.start();
+        await vi.advanceTimersByTimeAsync(0);
+        expect(reconcile).toHaveBeenCalledOnce();
+        closing = Promise.resolve(currency.close()).then(closed);
+        await Promise.resolve();
+        expect(closed).not.toHaveBeenCalled();
+        pending.resolve();
+        await closing;
+        await vi.advanceTimersByTimeAsync(30_000);
+        expect(reconcile).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        pending.resolve();
+        await closing;
+        await currency.close();
+      }
+    },
+  );
+
   it("runs due local file scans while a demand-triggered native walk is blocked", async () => {
     vi.useFakeTimers({
       toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"],
@@ -37,6 +74,7 @@ describe("resident Codex catalog", () => {
     const reconcileFiles = vi.fn(async () => {});
     const reconcileNative = vi.fn(async () => blocked);
     const currency = new CodexCatalogCurrency({
+      scheduler: createTestPluginServiceScheduler(),
       local: true,
       reconcileFiles,
       reconcileNative,
@@ -88,6 +126,7 @@ describe("resident Codex catalog", () => {
       );
     });
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "idle-safety-reconcile",
       readNative,
       assertCurrent: () => {},
@@ -139,6 +178,7 @@ describe("resident Codex catalog", () => {
       return projectCodexCatalogPage({ data: [native] }, { sanitize: sanitizeTerminalText });
     });
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "blocked-safety-reconcile",
       readNative,
       assertCurrent: () => {},
@@ -165,6 +205,7 @@ describe("resident Codex catalog", () => {
       }),
     );
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "native-order",
       assertCurrent: () => {},
       readNative: async () =>
@@ -320,6 +361,7 @@ describe("resident Codex catalog", () => {
       projectCodexCatalogPage({ data: [existing] }, { sanitize: sanitizeTerminalText }),
     );
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "currency",
       localSessionsRoot: root,
       readNative,
@@ -383,6 +425,7 @@ describe("resident Codex catalog", () => {
     const file = await writeCatalogRollout(root, idleThread({ id: "partial" }));
     await fs.writeFile(file, '{"type":"session_meta","payload":');
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "incomplete",
       localSessionsRoot: root,
       readNative: async () => ({ rows: [] }),
@@ -420,6 +463,7 @@ describe("resident Codex catalog", () => {
     );
     const readNative = vi.fn(async () => page);
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "file-scan-outage",
       localSessionsRoot: root,
       readNative,

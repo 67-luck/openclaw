@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import { telegramReservedGatewayPaths } from "./test-support/webhook-fixtures.js";
 import { startTelegramWebhook } from "./webhook.js";
@@ -10,7 +11,13 @@ describe("Telegram webhook routes", () => {
     "rejects the exact health path with legacy listener %j",
     async (legacyWebhook) => {
       await expect(
-        startTelegramWebhook({ token: "tok", secret: "secret", path: "/healthz", legacyWebhook }),
+        startTelegramWebhook({
+          scheduler: createTestPluginServiceScheduler(),
+          token: "tok",
+          secret: "secret",
+          path: "/healthz",
+          legacyWebhook,
+        }),
       ).rejects.toThrow('webhook path "/healthz" conflicts with the health path');
       expect(createTelegramBot).not.toHaveBeenCalled();
     },
@@ -20,7 +27,13 @@ describe("Telegram webhook routes", () => {
     "rejects reserved Gateway path %s",
     async (path) => {
       await expect(
-        startTelegramWebhook({ token: "tok", secret: "secret", path, legacyWebhook: false }),
+        startTelegramWebhook({
+          scheduler: createTestPluginServiceScheduler(),
+          token: "tok",
+          secret: "secret",
+          path,
+          legacyWebhook: false,
+        }),
       ).rejects.toThrow(/webhook path.*reserved.*Gateway probes/i);
       expect(createTelegramBot).not.toHaveBeenCalled();
     },
@@ -30,7 +43,13 @@ describe("Telegram webhook routes", () => {
     "rejects Gateway-authenticated path %s",
     async (path) => {
       await expect(
-        startTelegramWebhook({ token: "tok", secret: "secret", path, legacyWebhook: false }),
+        startTelegramWebhook({
+          scheduler: createTestPluginServiceScheduler(),
+          token: "tok",
+          secret: "secret",
+          path,
+          legacyWebhook: false,
+        }),
       ).rejects.toThrow("requires Gateway authentication");
       expect(createTelegramBot).not.toHaveBeenCalled();
     },

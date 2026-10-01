@@ -81,6 +81,7 @@ type OpenClawPluginReloadRegistration = import("./types.js").OpenClawPluginReloa
 type OpenClawPluginSecurityAuditCollector =
   import("./types.js").OpenClawPluginSecurityAuditCollector;
 type OpenClawPluginService = import("./types.js").OpenClawPluginService;
+type OpenClawPluginServiceV2 = import("./types.js").OpenClawPluginServiceV2;
 type OpenClawPluginToolFactory = import("./types.js").OpenClawPluginToolFactory;
 type PluginConversationBindingResolvedEvent =
   import("./types.js").PluginConversationBindingResolvedEvent;
@@ -238,7 +239,7 @@ type PluginHookRegistration = {
 
 export type PluginServiceRegistration = PluginRegistrationOwner & {
   readonly id: string;
-  service: OpenClawPluginService;
+  service: OpenClawPluginService | OpenClawPluginServiceV2;
   origin: PluginOrigin;
   trustedOfficialInstall?: boolean;
 };
@@ -254,7 +255,9 @@ type PluginReloadRegistration = PluginRegistrationOwner & {
 };
 
 export type PluginNodeHostCommandRegistration = PluginRegistrationOwner & {
-  command: import("./types.js").OpenClawPluginNodeHostCommand;
+  command:
+    | import("./types.js").OpenClawPluginNodeHostCommand
+    | import("./types.js").OpenClawPluginNodeHostCommandV2;
 };
 
 type PluginNodeInvokePolicyRegistration = PluginRegistrationOwner & {

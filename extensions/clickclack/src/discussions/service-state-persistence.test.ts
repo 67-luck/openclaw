@@ -14,6 +14,7 @@ import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -58,7 +59,6 @@ describe("ClickClack discussion state persistence", () => {
         createPluginStateKeyedStoreForTests<T>("clickclack", { ...options, env });
       const service = new ClickClackDiscussionService(harness.runtime, {
         clientFactory: () => harness.client,
-        startTimer: false,
       });
       const sessionKey = "agent:main:persisted-legacy-title";
       vi.mocked(harness.createChannel).mockImplementationOnce(async (_workspaceId, input) =>
@@ -100,7 +100,6 @@ describe("ClickClack discussion state persistence", () => {
     };
     const service = new ClickClackDiscussionService(harness.runtime, {
       clientFactory: () => harness.client,
-      startTimer: false,
     });
 
     await expect(service.open("agent:main:unpersisted-installation")).rejects.toBe(failure);
@@ -122,7 +121,6 @@ describe("ClickClack discussion state persistence", () => {
       });
       const service = new ClickClackDiscussionService(harness.runtime, {
         clientFactory: () => harness.client,
-        startTimer: false,
       });
 
       await expect(service.open("agent:main:missing-installation")).rejects.toThrow(
@@ -299,9 +297,11 @@ describe("ClickClack pending generation persistence", () => {
     await entered.promise;
     const stopping = f.service.cleanup();
     let restarted = false;
-    const restarting = f.service.bindGatewayEvents(undefined).then(() => {
-      restarted = true;
-    });
+    const restarting = f.service
+      .bindGatewayEvents(undefined, createTestPluginServiceScheduler())
+      .then(() => {
+        restarted = true;
+      });
     try {
       await expect(f.service.open("agent:main:too-late")).rejects.toThrow("service is stopped");
       await new Promise<void>((resolve) => {

@@ -1,7 +1,7 @@
 import type { WorkboardCard } from "@openclaw/workboard-contract";
 import { resolveGlobalSingleton } from "openclaw/plugin-sdk/global-singleton";
 import { isCronSessionKey } from "openclaw/plugin-sdk/routing";
-import type { OpenClawPluginService } from "../api.js";
+import type { OpenClawPluginServiceV2 } from "../api.js";
 import { cardBoardId } from "./store-card-helpers.js";
 import { MAX_CARDS } from "./store-constants.js";
 import type { WorkboardStore } from "./store.js";
@@ -13,16 +13,19 @@ type WorkboardAutomationNudgeInput = {
   sessionKey?: string;
 };
 
-type WorkboardAutomationNudgeService = OpenClawPluginService & {
+type WorkboardAutomationNudgeService = OpenClawPluginServiceV2 & {
   stop: () => void;
   nudge: (input: WorkboardAutomationNudgeInput) => Promise<void>;
 };
 
 type PendingBoardNudge = {
-  timer?: ReturnType<typeof setTimeout>;
+  cancel?: () => void;
 };
 
-type NudgeOwner = Pick<Parameters<OpenClawPluginService["start"]>[0], "logger" | "getCron">;
+type NudgeOwner = Pick<
+  Parameters<OpenClawPluginServiceV2["start"]>[0],
+  "logger" | "getCron" | "scheduler"
+>;
 
 type WorkboardAutomationNudgeState = {
   owner?: NudgeOwner;
@@ -35,9 +38,7 @@ const WORKBOARD_AUTOMATION_NUDGE_STATE_KEY = Symbol.for("openclaw.workboard.auto
 // Shared state lets those closures reach the active service owner and its debounce fence.
 function clearPendingBoardNudges(state: WorkboardAutomationNudgeState): void {
   for (const pending of state.pendingByBoard.values()) {
-    if (pending.timer) {
-      clearTimeout(pending.timer);
-    }
+    pending.cancel?.();
   }
   state.pendingByBoard.clear();
 }
@@ -67,7 +68,11 @@ export function createWorkboardAutomationNudgeService(params: {
 
   const nudgeBoard = async (boardId: string, jobId: string, owner: NudgeOwner) => {
     const state = getWorkboardAutomationNudgeState();
-    if (state.owner !== owner || state.pendingByBoard.has(boardId)) {
+    if (
+      owner.scheduler.signal.aborted ||
+      state.owner !== owner ||
+      state.pendingByBoard.has(boardId)
+    ) {
       return;
     }
     if (state.pendingByBoard.size >= MAX_CARDS) {
@@ -107,26 +112,35 @@ export function createWorkboardAutomationNudgeService(params: {
         );
       }
     } finally {
-      if (state.owner === owner && state.pendingByBoard.get(boardId) === pending) {
-        pending.timer = setTimeout(
-          () => {
+      if (
+        !owner.scheduler.signal.aborted &&
+        state.owner === owner &&
+        state.pendingByBoard.get(boardId) === pending
+      ) {
+        pending.cancel = owner.scheduler.schedule({
+          id: `automation-nudge:${boardId}`,
+          atMs: expiresAt,
+          run: () => {
             if (state.pendingByBoard.get(boardId) === pending) {
               state.pendingByBoard.delete(boardId);
             }
           },
-          Math.max(0, expiresAt - Date.now()),
-        );
-        pending.timer.unref?.();
+        }).cancel;
       }
     }
   };
 
   return {
     id: "workboard-automation-nudge",
+    apiVersion: 2,
     start(ctx) {
       const state = getWorkboardAutomationNudgeState();
       clearPendingBoardNudges(state);
-      state.owner = serviceOwner = { logger: ctx.logger, getCron: ctx.getCron };
+      state.owner = serviceOwner = {
+        logger: ctx.logger,
+        getCron: ctx.getCron,
+        scheduler: ctx.scheduler,
+      };
     },
     stop() {
       const state = getWorkboardAutomationNudgeState();

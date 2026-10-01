@@ -168,6 +168,11 @@ Unchanged rows are not rewritten to SQLite.
 
 Native starts, metadata refreshes, renames, archives, deletions, and changed file
 fingerprints coalesce an incremental native check on the next 30-second tick.
+Each resident catalog owns a child scheduling scope. Gateway service retirement,
+paired-node disconnect, and configuration replacement cancel pending hydration
+and file scans and join admitted work before releasing catalog resources. A
+reconnected node prepares a fresh scope after the preceding connection's catalog
+and persistence work has settled. Durable rows and update formats are unchanged.
 It reads database-only pages in descending recency order and stops after a whole
 page leaves the resident metadata unchanged, or at the 20,000-row retained limit.
 The comparison includes timestamps, selected path, fingerprint, and bounded display

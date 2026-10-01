@@ -97,6 +97,9 @@ export type CodexSessionCatalogControl = {
 };
 
 export type CodexSessionCatalogControlFactory = {
+  bindScheduler(
+    scheduler: import("openclaw/plugin-sdk/plugin-entry").PluginServiceSchedulerV1,
+  ): void;
   hasActiveWork(this: void): boolean;
   /** Drain node-owned state and transports while permitting the next connection. */
   disconnect(this: void): Promise<void>;

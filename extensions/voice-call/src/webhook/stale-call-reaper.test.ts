@@ -1,5 +1,6 @@
 // Voice Call tests cover stale call reaper plugin behavior.
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startStaleCallReaper } from "./stale-call-reaper.js";
 
@@ -20,8 +21,19 @@ describe("startStaleCallReaper", () => {
       endCall: vi.fn(),
     };
 
-    expect(startStaleCallReaper({ manager })).toBeNull();
-    expect(startStaleCallReaper({ manager, staleCallReaperSeconds: 0 })).toBeNull();
+    expect(
+      startStaleCallReaper({
+        lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
+        manager,
+      }),
+    ).toBeNull();
+    expect(
+      startStaleCallReaper({
+        lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
+        manager,
+        staleCallReaperSeconds: 0,
+      }),
+    ).toBeNull();
   });
 
   it("reaps stale calls and ignores fresh ones", async () => {
@@ -43,6 +55,7 @@ describe("startStaleCallReaper", () => {
     };
 
     const stop = startStaleCallReaper({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       manager,
       staleCallReaperSeconds: 60,
     });
@@ -52,48 +65,68 @@ describe("startStaleCallReaper", () => {
     expect(endCall).toHaveBeenCalledTimes(1);
     expect(endCall).toHaveBeenCalledWith("call-stale");
 
-    stop?.();
+    await stop?.();
   });
 
-  it("does not overlap reaps, logs typed failure, and retries after settlement", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const firstEndCall = createDeferred<{ success: false; error: string }>();
-    const endCall = vi
-      .fn()
-      .mockImplementationOnce(() => firstEndCall.promise)
-      .mockResolvedValue({ success: true });
-    const manager = {
-      getActiveCalls: vi.fn(() => [
-        {
-          callId: "call-stale",
-          startedAt: Date.now() - 61_000,
-          state: "active" as const,
-        },
-      ]),
-      endCall,
-    };
+  it.each(["service", "standalone-cli"] as const)(
+    "%s does not overlap reaps and retries after settlement",
+    async (kind) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const firstEndCall = createDeferred<{ success: false; error: string }>();
+      const secondEndCall = createDeferred<{ success: true }>();
+      const endCall = vi
+        .fn()
+        .mockImplementationOnce(() => firstEndCall.promise)
+        .mockImplementationOnce(() => secondEndCall.promise);
+      const manager = {
+        getActiveCalls: vi.fn(() => [
+          {
+            callId: "call-stale",
+            startedAt: Date.now() - 61_000,
+            state: "active" as const,
+          },
+        ]),
+        endCall,
+      };
 
-    const stop = startStaleCallReaper({
-      manager,
-      staleCallReaperSeconds: 60,
-    });
+      const stop = startStaleCallReaper({
+        lifetime:
+          kind === "service" ? { kind, scheduler: createTestPluginServiceScheduler() } : { kind },
+        manager,
+        staleCallReaperSeconds: 60,
+      });
 
-    await vi.advanceTimersByTimeAsync(30_000);
-    await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(30_000);
 
-    expect(endCall).toHaveBeenCalledTimes(1);
+      expect(endCall).toHaveBeenCalledTimes(1);
 
-    firstEndCall.resolve({ success: false, error: "network" });
-    await firstEndCall.promise;
-    await Promise.resolve();
-    expect(warn).toHaveBeenCalledWith("[voice-call] Reaper failed to end call call-stale: network");
-    await vi.advanceTimersByTimeAsync(30_000);
+      firstEndCall.resolve({ success: false, error: "network" });
+      await firstEndCall.promise;
+      await Promise.resolve();
+      expect(warn).toHaveBeenCalledWith(
+        "[voice-call] Reaper failed to end call call-stale: network",
+      );
+      await vi.advanceTimersByTimeAsync(30_000);
 
-    expect(endCall).toHaveBeenCalledTimes(2);
-    expect(endCall).toHaveBeenNthCalledWith(2, "call-stale");
+      expect(endCall).toHaveBeenCalledTimes(2);
+      expect(endCall).toHaveBeenNthCalledWith(2, "call-stale");
 
-    stop?.();
-  });
+      let stopped = false;
+      const stopping = stop?.().then(() => {
+        stopped = true;
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(stopped).toBe(false);
+        expect(endCall).toHaveBeenCalledTimes(2);
+      } finally {
+        secondEndCall.resolve({ success: true });
+        await stopping;
+      }
+      expect(stopped).toBe(true);
+    },
+  );
 
   it.each(["speaking", "listening"] as const)(
     "does not reap live %s calls without answeredAt",
@@ -111,6 +144,7 @@ describe("startStaleCallReaper", () => {
       };
 
       const stop = startStaleCallReaper({
+        lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
         manager,
         staleCallReaperSeconds: 60,
       });
@@ -119,7 +153,7 @@ describe("startStaleCallReaper", () => {
 
       expect(endCall).not.toHaveBeenCalled();
 
-      stop?.();
+      await stop?.();
     },
   );
 
@@ -141,6 +175,7 @@ describe("startStaleCallReaper", () => {
     };
 
     const stop = startStaleCallReaper({
+      lifetime: { kind: "service", scheduler: createTestPluginServiceScheduler() },
       manager,
       staleCallReaperSeconds: 60,
     });
@@ -159,6 +194,6 @@ describe("startStaleCallReaper", () => {
     expect(endCall).toHaveBeenCalledTimes(2);
     expect(warn).toHaveBeenCalledTimes(2);
 
-    stop?.();
+    await stop?.();
   });
 });

@@ -7,6 +7,7 @@ import {
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createIrcIngressMonitor } from "./irc-ingress.js";
 
@@ -37,6 +38,7 @@ async function withQueue<T>(fn: (queue: IrcIngressQueue) => Promise<T>): Promise
 
 function startIngress(queue: IrcIngressQueue, dispatch: IrcIngressDispatch) {
   const ingress = createIrcIngressMonitor({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     queue,
     dispatch,
@@ -79,6 +81,7 @@ describe("IRC durable ingress", () => {
     await withQueue(async (queue) => {
       const interruptedDispatch = vi.fn();
       const interrupted = createIrcIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch: interruptedDispatch,
@@ -166,6 +169,7 @@ describe("IRC durable ingress", () => {
   it("derives the direct-message lane from the sender nick", async () => {
     await withQueue(async (queue) => {
       const ingress = createIrcIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch: vi.fn(),

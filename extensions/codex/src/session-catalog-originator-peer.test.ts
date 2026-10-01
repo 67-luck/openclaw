@@ -2,6 +2,7 @@ import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, expect, it, vi } from "vitest";
@@ -114,6 +115,7 @@ it("hydrates recorded originators through the protocol and serves excluded rows 
       getRuntimeConfig: () => config,
       resolveRuntimeOptions: resolveCodexSupervisionAppServerRuntimeOptions,
     });
+    control.bindScheduler(createTestPluginServiceScheduler());
     const source = {
       ...(await control.homesForAgent("main"))[0]!,
       localSessionsRoot: sessionsRoot,

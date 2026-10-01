@@ -78,6 +78,7 @@ function createActivityChecker(params: {
     api,
     bindingStore,
     control: {
+      bindScheduler: () => {},
       hasActiveWork: () => false,
       disconnect: async () => {},
       forRequest: () => params.control,

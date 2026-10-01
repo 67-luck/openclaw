@@ -1,4 +1,4 @@
-import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
+import type { ChannelGatewayContextV2 } from "openclaw/plugin-sdk/channel-contract";
 import { createAccountStatusSink } from "openclaw/plugin-sdk/channel-outbound";
 import { probeZalo } from "./probe.js";
 import { resolveZaloProxyFetch } from "./proxy.js";
@@ -26,11 +26,7 @@ export async function probeZaloAccount(params: {
   );
 }
 
-export async function startZaloGatewayAccount(
-  ctx: Parameters<
-    NonNullable<NonNullable<ChannelPlugin<ResolvedZaloAccount>["gateway"]>["startAccount"]>
-  >[0],
-) {
+export async function startZaloGatewayAccount(ctx: ChannelGatewayContextV2<ResolvedZaloAccount>) {
   const account = ctx.account;
   const token = account.token.trim();
   const mode = account.config.webhookUrl ? "webhook" : "polling";
@@ -63,6 +59,7 @@ export async function startZaloGatewayAccount(
   ctx.log?.info(`[${account.accountId}] starting provider${zaloBotLabel} mode=${mode}`);
   const { monitorZaloProvider } = await import("./monitor.js");
   return monitorZaloProvider({
+    scheduler: ctx.scheduler,
     token,
     account,
     config: ctx.cfg,

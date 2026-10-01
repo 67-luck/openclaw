@@ -6,6 +6,7 @@ import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   closeOpenClawStateDatabaseAsync,
   observeHostDataSql,
@@ -68,6 +69,7 @@ it("keeps binding restoration, mutation, and shutdown SQL off the process main t
     let manager: Awaited<ReturnType<typeof createThreadBindingManager>> | undefined;
     try {
       manager = await createThreadBindingManager({
+        scheduler: createTestPluginServiceScheduler(),
         cfg: EMPTY_DISCORD_TEST_CONFIG,
         accountId: "work",
         persist: true,

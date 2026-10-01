@@ -1,11 +1,15 @@
 // Twitch tests share isolated durable-ingress state and raw chat envelopes.
 import { createChannelIngressQueueForTests } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterAll, beforeAll } from "vitest";
 import { createTwitchIngress } from "./twitch-ingress.js";
 import type { TwitchChatMessage } from "./types.js";
 
 type TwitchIngressTestQueue = NonNullable<Parameters<typeof createTwitchIngress>[0]["queue"]>;
+type CreateTestIngress = (
+  options: Omit<Parameters<typeof createTwitchIngress>[0], "scheduler">,
+) => ReturnType<typeof createTwitchIngress>;
 export type TwitchIngressTestPayload = Parameters<TwitchIngressTestQueue["enqueue"]>[1];
 
 export function createTwitchIngressTestMessage(
@@ -41,7 +45,7 @@ export function useTwitchIngressTestQueue() {
   });
 
   return async <T>(
-    fn: (queue: TwitchIngressTestQueue, createIngress: typeof createTwitchIngress) => Promise<T>,
+    fn: (queue: TwitchIngressTestQueue, createIngress: CreateTestIngress) => Promise<T>,
   ): Promise<T> => {
     if (!state || poisoned) {
       throw new Error(
@@ -58,8 +62,11 @@ export function useTwitchIngressTestQueue() {
       throw new Error("Twitch ingress test queue requires purge support");
     }
     const ingresses: ReturnType<typeof createTwitchIngress>[] = [];
-    const createIngress: typeof createTwitchIngress = (options) => {
-      const ingress = createTwitchIngress(options);
+    const createIngress: CreateTestIngress = (options) => {
+      const ingress = createTwitchIngress({
+        scheduler: createTestPluginServiceScheduler(),
+        ...options,
+      });
       ingresses.push(ingress);
       return ingress;
     };

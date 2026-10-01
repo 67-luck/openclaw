@@ -791,6 +791,7 @@ export const mattermostPlugin: ChannelPlugin<ResolvedMattermostAccount> = create
       }),
     }),
     gateway: {
+      apiVersion: 2,
       // Same function as the public gateway-auth artifact so the pre-plugin
       // fast path and the loaded plugin cannot drift (pinned by contract test).
       resolveGatewayAuthBypassPaths: resolveMattermostGatewayAuthBypassPaths,
@@ -806,6 +807,7 @@ export const mattermostPlugin: ChannelPlugin<ResolvedMattermostAccount> = create
         });
         ctx.log?.info(`[${account.accountId}] starting channel`);
         return (await import("./mattermost/monitor.js")).monitorMattermostProvider({
+          scheduler: ctx.scheduler,
           botToken: account.botToken ?? undefined,
           baseUrl: account.baseUrl ?? undefined,
           accountId: account.accountId,

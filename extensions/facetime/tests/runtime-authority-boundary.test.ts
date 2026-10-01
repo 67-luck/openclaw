@@ -6,6 +6,7 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const isolation = vi.hoisted(() => ({
@@ -217,6 +218,7 @@ describe("FaceTime production authority boundary", () => {
 
   async function start(ownerHandles = ["owner@example.com"]) {
     const runtime = await createFaceTimeRuntime({
+      scheduler: createTestPluginServiceScheduler(),
       config: resolveFaceTimeConfig({ ownerHandles }),
       fullConfig: {},
       logger: log,

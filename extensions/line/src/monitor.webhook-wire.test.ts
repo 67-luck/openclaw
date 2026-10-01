@@ -2,6 +2,7 @@
 import crypto from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { postRawWebhook } from "openclaw/plugin-sdk/test-env";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -72,6 +73,7 @@ describe("monitorLineProvider webhook body limits over a real connection", () =>
   // answers while the sender is still uploading, and then closes the connection.
   const withLineWebhookWire = async (run: (webhookUrl: string) => Promise<void>) => {
     const monitor = await monitorLineProvider({
+      scheduler: createTestPluginServiceScheduler(),
       channelAccessToken: "token",
       channelSecret: "secret", // pragma: allowlist secret
       accountId: "default",

@@ -1,5 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import type { CodexThreadListParams } from "./app-server/protocol.js";
 import type { CodexCatalogIndexRow } from "./session-catalog-index-row.js";
@@ -89,6 +90,7 @@ describe("cold resident catalog availability", () => {
         return { rows: [row("charlie")] };
       });
       const index = new CodexCatalogIndex({
+        scheduler: createTestPluginServiceScheduler(),
         homeId: "cold-backward-archive",
         readNative,
         assertCurrent: () => {},
@@ -146,7 +148,10 @@ describe("cold resident catalog availability", () => {
       readNative,
       assertCurrent: () => {},
     };
-    const index = new CodexCatalogIndex(options);
+    const index = new CodexCatalogIndex({
+      ...options,
+      scheduler: createTestPluginServiceScheduler(),
+    });
     const firstCall = index.list({ cwd: "/workspace" });
     try {
       await tailEntered.promise;
@@ -183,6 +188,7 @@ describe("cold resident catalog availability", () => {
       const entered = createDeferred<void>();
       const release = createDeferred<void>();
       const index = new CodexCatalogIndex({
+        scheduler: createTestPluginServiceScheduler(),
         homeId: `saved-${kind}`,
         state: savedState(entries),
         assertCurrent: () => {},
@@ -221,7 +227,10 @@ describe("cold resident catalog availability", () => {
       requestTimeoutMs: 20,
       assertCurrent: () => {},
     };
-    const index = new CodexCatalogIndex(options);
+    const index = new CodexCatalogIndex({
+      ...options,
+      scheduler: createTestPluginServiceScheduler(),
+    });
     const pending = index.list({}).then(
       (page) => ({ page }),
       (error: unknown) => ({ error }),
@@ -250,6 +259,7 @@ describe("cold resident catalog availability", () => {
       at("oldest", 50),
     ];
     const warm = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "prefix",
       readNative: async () => ({ rows: native }),
       assertCurrent: () => {},
@@ -271,6 +281,7 @@ describe("cold resident catalog availability", () => {
     const headReady = createDeferred<void>();
     const tailReady = createDeferred<void>();
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "prefix",
       assertCurrent: () => {},
       readNative: async ({ cursor }) => {
@@ -338,6 +349,7 @@ describe("cold resident catalog availability", () => {
       return { rows: [row("charlie"), row("delta")] };
     });
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: "cold-retry",
       readNative,
       assertCurrent: () => {},

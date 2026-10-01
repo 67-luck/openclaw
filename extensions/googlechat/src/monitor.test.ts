@@ -8,6 +8,7 @@ import {
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { MediaFetchError } from "openclaw/plugin-sdk/media-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeSpies } from "../../test-support/runtime-spies.js";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
@@ -560,6 +561,7 @@ describe("googlechat monitor inbound space classification", () => {
       },
     );
     const ingress = createGoogleChatIngressMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: account.accountId,
       queue,
       runtime,

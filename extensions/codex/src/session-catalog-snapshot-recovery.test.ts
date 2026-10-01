@@ -1,5 +1,6 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { createPluginStateKeyedStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
@@ -30,7 +31,13 @@ function createSnapshotFixture(namespace: string, rows: CodexThread[], homeId = 
     projectCodexCatalogPage({ data: native.rows }, { sanitize: sanitizeTerminalText }),
   );
   const createIndex = (state = openState()) =>
-    new CodexCatalogIndex({ homeId, state, readNative, assertCurrent: () => {} });
+    new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
+      homeId,
+      state,
+      readNative,
+      assertCurrent: () => {},
+    });
   return { native, openState, readNative, createIndex };
 }
 

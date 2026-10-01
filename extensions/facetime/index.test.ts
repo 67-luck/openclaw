@@ -1,4 +1,8 @@
-import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import type { OpenClawPluginServiceV2 } from "openclaw/plugin-sdk/plugin-entry";
+import {
+  createTestPluginApi,
+  createTestPluginServiceScheduler,
+} from "openclaw/plugin-sdk/plugin-test-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -56,6 +60,7 @@ vi.mock("./src/config.js", async (importOriginal) => {
 import plugin from "./index.js";
 
 function registerPlugin(enabled?: boolean) {
+  let service: OpenClawPluginServiceV2 | undefined;
   const gatewayMethods = new Map<string, (options: unknown) => Promise<void>>();
   let toolFactory: (() => { execute(id: string, input: unknown): Promise<unknown> }) | undefined;
   plugin.register!(
@@ -65,6 +70,11 @@ function registerPlugin(enabled?: boolean) {
       rootDir: "/plugin",
       pluginConfig: { enabled, ownerHandles: ["owner@example.com"] },
       runtime: { system: { runCommandWithTimeout: vi.fn() } } as never,
+      registerService: (entry) => {
+        if (entry.apiVersion === 2) {
+          service = entry;
+        }
+      },
       registerGatewayMethod: (name, handler) => {
         gatewayMethods.set(name, handler as (options: unknown) => Promise<void>);
       },
@@ -73,7 +83,17 @@ function registerPlugin(enabled?: boolean) {
       },
     }),
   );
-  return { gatewayMethods, toolFactory };
+  return {
+    gatewayMethods,
+    toolFactory,
+    start: () =>
+      service?.start({
+        config: {},
+        stateDir: "/unused",
+        logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+        scheduler: createTestPluginServiceScheduler(),
+      }),
+  };
 }
 
 describe("FaceTime control-plane registration", () => {
@@ -117,7 +137,8 @@ describe("FaceTime control-plane registration", () => {
       throw new Error("carrier shutdown unresolved");
     });
     mocks.activateRuntime.mockResolvedValueOnce({ stop } as never);
-    const { gatewayMethods } = registerPlugin(true);
+    const { gatewayMethods, start } = registerPlugin(true);
+    await start();
 
     await gatewayMethods.get("facetime.preflight")!({ respond: vi.fn() });
     const firstRespond = vi.fn();
@@ -140,7 +161,8 @@ describe("FaceTime control-plane registration", () => {
       preflight: vi.fn(async () => ({ ready: true })),
     };
     mocks.activateRuntime.mockResolvedValue(runtime as never);
-    const { gatewayMethods } = registerPlugin(true);
+    const { gatewayMethods, start } = registerPlugin(true);
+    await start();
 
     await gatewayMethods.get("facetime.preflight")!({ respond: vi.fn() });
     const uninstall = gatewayMethods.get("facetime.uninstall")!({ respond: vi.fn() });

@@ -1,12 +1,14 @@
 import { parseAccessGroupAllowFromEntry } from "openclaw/plugin-sdk/access-groups";
-import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-contract";
+import type {
+  ChannelGatewayContextV2,
+  ChannelOutboundAdapter,
+} from "openclaw/plugin-sdk/channel-contract";
 import type { StableChannelIngressIdentityParams } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
   bindIngressLifecycleToReplyOptions,
   runPassiveAccountLifecycle,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { createChannelPairingController } from "openclaw/plugin-sdk/channel-pairing";
-import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-plugin-common";
 import { attachChannelToResult } from "openclaw/plugin-sdk/channel-send-result";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
@@ -22,9 +24,6 @@ import { normalizePubkey } from "./nostr-key-utils.js";
 import { getNostrRuntime } from "./runtime.js";
 import { resolveDefaultNostrAccountId, type ResolvedNostrAccount } from "./types.js";
 
-type NostrGatewayStart = NonNullable<
-  NonNullable<ChannelPlugin<ResolvedNostrAccount>["gateway"]>["startAccount"]
->;
 type NostrOutboundAdapter = Pick<
   ChannelOutboundAdapter,
   "chunker" | "deliveryCapabilities" | "deliveryMode" | "textChunkLimit" | "sendText"
@@ -73,7 +72,10 @@ const nostrIngressIdentity = {
   entryIdPrefix: "nostr-entry",
 } satisfies StableChannelIngressIdentityParams;
 
-export const startNostrGatewayAccount: NostrGatewayStart = async (ctx) => {
+export const startNostrGatewayAccount = async (
+  ctx: ChannelGatewayContextV2<ResolvedNostrAccount>,
+) => {
+  const scheduler = ctx.scheduler;
   const account = ctx.account;
   ctx.setStatus({
     accountId: account.accountId,
@@ -160,6 +162,7 @@ export const startNostrGatewayAccount: NostrGatewayStart = async (ctx) => {
     abortSignal: ctx.abortSignal,
     start: async () => {
       const bus = await startNostrBus({
+        scheduler,
         accountId: account.accountId,
         privateKey: account.privateKey,
         relays: account.relays,

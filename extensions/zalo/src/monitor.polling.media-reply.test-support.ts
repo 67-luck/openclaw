@@ -6,6 +6,7 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createEmptyPluginRegistry,
   createPluginRegistryOwner,
@@ -226,6 +227,7 @@ describe("Zalo polling media replies", () => {
         webhookUrl: hosted ? "https://example.com/hooks/zalo" : "",
       });
       const run = monitorZaloProvider({
+        scheduler: createTestPluginServiceScheduler(),
         token: "zalo-token",
         account,
         config,
@@ -414,6 +416,7 @@ describe("Zalo polling media replies", () => {
       webhookUrl: testCase.hosted ? "https://example.com/hooks/zalo" : "",
     });
     const run = monitorZaloProvider({
+      scheduler: createTestPluginServiceScheduler(),
       token: "zalo-token",
       account,
       config,
@@ -490,6 +493,7 @@ describe("Zalo polling media replies", () => {
         webhookUrl: "https://example.com/hooks/zalo",
       });
       const firstRun = monitorZaloProvider({
+        scheduler: createTestPluginServiceScheduler(),
         token: "zalo-token-one",
         account: firstSetup.account,
         config: firstSetup.config,
@@ -522,6 +526,7 @@ describe("Zalo polling media replies", () => {
           webhookUrl: "https://example.com/Hooks//Zalo/",
         });
         secondRun = monitorZaloProvider({
+          scheduler: createTestPluginServiceScheduler(),
           token: "zalo-token-two",
           account: secondSetup.account,
           config: secondSetup.config,
@@ -618,6 +623,7 @@ describe("Zalo polling media replies", () => {
       webhookUrl: "https://example.com/hooks/zalo",
     });
     const firstRun = monitorZaloProvider({
+      scheduler: createTestPluginServiceScheduler(),
       token: "zalo-token",
       account,
       config,
@@ -638,6 +644,7 @@ describe("Zalo polling media replies", () => {
       setActivePluginRegistry(secondRegistry);
       secondOwner = createPluginRegistryOwner(secondRegistry);
       secondRun = monitorZaloProvider({
+        scheduler: createTestPluginServiceScheduler(),
         token: "zalo-token",
         account,
         config,

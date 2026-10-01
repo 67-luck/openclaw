@@ -4,6 +4,7 @@ import { createChannelIngressQueueForTests } from "openclaw/plugin-sdk/channel-i
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { drainPendingDeliveries } from "openclaw/plugin-sdk/delivery-queue-runtime";
 import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createTestRegistry,
   readQueuedDeliveryEntriesForTest,
@@ -182,6 +183,7 @@ describe("Signal partial final delivery ingress boundary", () => {
       }),
     );
     const monitor = await startSignalIngressMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       queue: queue as Parameters<typeof startSignalIngressMonitor>[0]["queue"],
       dispatch: async (event, lifecycle: SignalIngressLifecycle) => await handler(event, lifecycle),
@@ -285,6 +287,7 @@ describe("Signal partial final delivery ingress boundary", () => {
       }),
     );
     const monitor = await startSignalIngressMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       queue: queue as Parameters<typeof startSignalIngressMonitor>[0]["queue"],
       dispatch: async (event, lifecycle) => await handler(event, lifecycle),
@@ -323,6 +326,7 @@ describe("Signal partial final delivery ingress boundary", () => {
     );
 
     const restarted = await startSignalIngressMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       queue: queue as Parameters<typeof startSignalIngressMonitor>[0]["queue"],
       dispatch: async (incoming, lifecycle) => await handler(incoming, lifecycle),
@@ -368,6 +372,7 @@ describe("Signal partial final delivery ingress boundary", () => {
       );
       const createMonitor = async () =>
         await startSignalIngressMonitor({
+          scheduler: createTestPluginServiceScheduler(),
           accountId: "default",
           queue: queue as Parameters<typeof startSignalIngressMonitor>[0]["queue"],
           dispatch: async (event, lifecycle) => await handler(event, lifecycle),
@@ -469,6 +474,7 @@ describe("Signal partial final delivery ingress boundary", () => {
         }),
       );
       return await startSignalIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue: queue as Parameters<typeof startSignalIngressMonitor>[0]["queue"],
         dispatch: async (event, lifecycle) => await handler(event, lifecycle),
@@ -543,6 +549,7 @@ describe("Signal partial final delivery ingress boundary", () => {
       }),
     );
     const retryMonitor = await freshIngress.startSignalIngressMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       queue: queue as Parameters<typeof freshIngress.startSignalIngressMonitor>[0]["queue"],
       dispatch: async (retryEvent, lifecycle) => await retryHandler(retryEvent, lifecycle),

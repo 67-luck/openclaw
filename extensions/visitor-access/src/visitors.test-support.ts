@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/plugin-entry";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { vi } from "vitest";
 import type { PluginRuntime, PluginStateKeyedStore } from "../api.js";
 import { createVisitorAccessReader } from "./access.js";
@@ -236,6 +237,7 @@ export function visitorFixture(
     new VisitorPolicyClient(resolved, fetcher),
     logger,
     createVisitorAccessReader(runtime),
+    createTestPluginServiceScheduler(),
     fetcher,
   );
   services.add(service);

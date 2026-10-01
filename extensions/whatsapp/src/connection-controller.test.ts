@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DisconnectReason } from "baileys";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   closeWaSocket,
@@ -158,6 +159,30 @@ async function runLoggedOutRecovery(opts: {
   return { createSocket, error, harness, result, waitForConnection };
 }
 
+function createController(
+  overrides: Partial<ConstructorParameters<typeof WhatsAppConnectionController>[0]> = {},
+) {
+  return new WhatsAppConnectionController({
+    scheduler: createTestPluginServiceScheduler(),
+    accountId: "work",
+    authDir: "/tmp/wa-auth",
+    verbose: false,
+    keepAlive: false,
+    heartbeatSeconds: 30,
+    transportTimeoutMs: 60_000,
+    messageTimeoutMs: 60_000,
+    watchdogCheckMs: 5_000,
+    reconnectPolicy: {
+      initialMs: 250,
+      maxMs: 1_000,
+      factor: 2,
+      jitter: 0,
+      maxAttempts: 5,
+    },
+    ...overrides,
+  });
+}
+
 describe("WhatsAppConnectionController", () => {
   let controller: WhatsAppConnectionController;
 
@@ -171,23 +196,7 @@ describe("WhatsAppConnectionController", () => {
       .mockReset()
       .mockResolvedValue({ outcome: "stable", exists: true });
     waitForCredsSaveQueueWithTimeoutMock.mockReset().mockResolvedValue("drained");
-    controller = new WhatsAppConnectionController({
-      accountId: "work",
-      authDir: "/tmp/wa-auth",
-      verbose: false,
-      keepAlive: false,
-      heartbeatSeconds: 30,
-      transportTimeoutMs: 60_000,
-      messageTimeoutMs: 60_000,
-      watchdogCheckMs: 5_000,
-      reconnectPolicy: {
-        initialMs: 250,
-        maxMs: 1_000,
-        factor: 2,
-        jitter: 0,
-        maxAttempts: 5,
-      },
-    });
+    controller = createController();
   });
 
   afterEach(async () => {
@@ -216,6 +225,43 @@ describe("WhatsAppConnectionController", () => {
     expect(sock.ws.close).not.toHaveBeenCalled();
     expect(controller.socketRef.current).toBeNull();
     expect(controller.getActiveListener()).toBeNull();
+  });
+
+  it("joins scheduled delivery work before closing its connection", async () => {
+    vi.useFakeTimers();
+    const pending = Promise.withResolvers<void>();
+    const sock = createSocketWithTransportEmitter();
+    const listener = { ...createListenerStub(), close: vi.fn(async () => {}) };
+    createWaSocketMock.mockResolvedValueOnce(sock as never);
+    const connection = await controller.openConnection({
+      connectionId: "scheduled-delivery",
+      createListener: async () => listener as never,
+    });
+    const delivering = vi.fn(() => pending.promise);
+    connection.scheduler.schedule({
+      id: "delivery",
+      delayMs: 0,
+      everyMs: 30_000,
+      run: delivering,
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      const closing = controller.closeCurrentConnection();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(delivering).toHaveBeenCalledOnce();
+      expect(listener.close).not.toHaveBeenCalled();
+      expect(sock.end).not.toHaveBeenCalled();
+      pending.resolve();
+      await closing;
+      expect(listener.close).toHaveBeenCalledOnce();
+      expect(sock.end).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(delivering).toHaveBeenCalledOnce();
+    } finally {
+      pending.resolve();
+      await controller.shutdown();
+      vi.useRealTimers();
+    }
   });
 
   it("falls back to raw websocket close when Baileys end is unavailable", () => {
@@ -635,23 +681,7 @@ describe("WhatsAppConnectionController", () => {
   it("keeps the ready controller published while a different-auth replacement connects", async () => {
     const disposeRuntimeContext = vi.fn();
     registerChannelRuntimeContextMock.mockReturnValueOnce({ dispose: disposeRuntimeContext });
-    const liveController = new WhatsAppConnectionController({
-      accountId: "work",
-      authDir: "/tmp/wa-auth",
-      verbose: false,
-      keepAlive: false,
-      heartbeatSeconds: 30,
-      transportTimeoutMs: 60_000,
-      messageTimeoutMs: 60_000,
-      watchdogCheckMs: 5_000,
-      reconnectPolicy: {
-        initialMs: 250,
-        maxMs: 1_000,
-        factor: 2,
-        jitter: 0,
-        maxAttempts: 5,
-      },
-    });
+    const liveController = createController();
     const liveListener = createListenerStub("live");
     createWaSocketMock.mockResolvedValueOnce(createSocketWithTransportEmitter() as never);
     waitForWaConnectionMock.mockResolvedValueOnce(undefined);
@@ -660,23 +690,7 @@ describe("WhatsAppConnectionController", () => {
       createListener: async () => liveListener,
     });
 
-    const replacement = new WhatsAppConnectionController({
-      accountId: "work",
-      authDir: "/tmp/wa-auth-2",
-      verbose: false,
-      keepAlive: false,
-      heartbeatSeconds: 30,
-      transportTimeoutMs: 60_000,
-      messageTimeoutMs: 60_000,
-      watchdogCheckMs: 5_000,
-      reconnectPolicy: {
-        initialMs: 250,
-        maxMs: 1_000,
-        factor: 2,
-        jitter: 0,
-        maxAttempts: 5,
-      },
-    });
+    const replacement = createController({ authDir: "/tmp/wa-auth-2" });
 
     try {
       createWaSocketMock.mockResolvedValueOnce(createSocketWithTransportEmitter() as never);
@@ -918,23 +932,7 @@ describe("WhatsAppConnectionController", () => {
 
   it("tracks real websocket frame activity in the connection snapshot", async () => {
     vi.useFakeTimers();
-    const controllerValue = new WhatsAppConnectionController({
-      accountId: "work",
-      authDir: "/tmp/wa-auth",
-      verbose: false,
-      keepAlive: true,
-      heartbeatSeconds: 1,
-      transportTimeoutMs: 60_000,
-      messageTimeoutMs: 60_000,
-      watchdogCheckMs: 5_000,
-      reconnectPolicy: {
-        initialMs: 250,
-        maxMs: 1_000,
-        factor: 2,
-        jitter: 0,
-        maxAttempts: 5,
-      },
-    });
+    const controllerValue = createController({ keepAlive: true, heartbeatSeconds: 1 });
 
     try {
       const sock = createSocketWithTransportEmitter();
@@ -967,22 +965,12 @@ describe("WhatsAppConnectionController", () => {
 
   it("forces reconnect on transport stall before the long app-silence window", async () => {
     vi.useFakeTimers();
-    const controllerLocal = new WhatsAppConnectionController({
-      accountId: "work",
-      authDir: "/tmp/wa-auth",
-      verbose: false,
+    const controllerLocal = createController({
       keepAlive: true,
       heartbeatSeconds: 1,
       transportTimeoutMs: 30,
       messageTimeoutMs: 3_000,
       watchdogCheckMs: 5,
-      reconnectPolicy: {
-        initialMs: 250,
-        maxMs: 1_000,
-        factor: 2,
-        jitter: 0,
-        maxAttempts: 5,
-      },
     });
 
     try {
@@ -1011,22 +999,12 @@ describe("WhatsAppConnectionController", () => {
     // Transport is kept well within its own timeout so only app-silence fires.
     vi.useFakeTimers();
     const msgTimeoutMs = 100;
-    const controllerLocal = new WhatsAppConnectionController({
-      accountId: "work",
-      authDir: "/tmp/wa-auth",
-      verbose: false,
+    const controllerLocal = createController({
       keepAlive: true,
       heartbeatSeconds: 1,
       transportTimeoutMs: 10_000,
       messageTimeoutMs: msgTimeoutMs,
       watchdogCheckMs: 10,
-      reconnectPolicy: {
-        initialMs: 250,
-        maxMs: 1_000,
-        factor: 2,
-        jitter: 0,
-        maxAttempts: 5,
-      },
     });
 
     try {
@@ -1058,24 +1036,7 @@ describe("WhatsAppConnectionController", () => {
     const abort = new AbortController();
     const stopReason = new Error("already stopped");
     abort.abort(stopReason);
-    const preAbortedController = new WhatsAppConnectionController({
-      accountId: "work",
-      authDir: "/tmp/wa-auth",
-      verbose: false,
-      keepAlive: false,
-      heartbeatSeconds: 30,
-      transportTimeoutMs: 60_000,
-      messageTimeoutMs: 60_000,
-      watchdogCheckMs: 5_000,
-      reconnectPolicy: {
-        initialMs: 250,
-        maxMs: 1_000,
-        factor: 2,
-        jitter: 0,
-        maxAttempts: 5,
-      },
-      abortSignal: abort.signal,
-    });
+    const preAbortedController = createController({ abortSignal: abort.signal });
 
     let ownerAcquireSignal: AbortSignal | undefined;
     connectionOwnerMocks.acquire.mockImplementationOnce(async (_authDir, signal) => {

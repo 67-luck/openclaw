@@ -1,5 +1,6 @@
 import { once } from "node:events";
 import { createServer, type Server } from "node:http";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createEmptyPluginRegistry,
   setActivePluginRegistry,
@@ -9,7 +10,7 @@ import { vi } from "vitest";
 import * as telegramIngressFactory from "../telegram-ingress-drain-factory.js";
 
 type StartWebhook = typeof import("../webhook.js").startTelegramWebhook;
-type StartWebhookOptions = Omit<Parameters<StartWebhook>[0], "token" | "abortSignal">;
+type StartWebhookOptions = Omit<Parameters<StartWebhook>[0], "token" | "abortSignal" | "scheduler">;
 
 export function getServerPort(server: Server): number {
   const address = server.address();
@@ -50,9 +51,10 @@ export function createTelegramWebhookTestGateway(options: {
       res.end();
     }
   });
-  const startWebhook = async (params: Parameters<StartWebhook>[0]) => ({
+  const startWebhook = async (params: Omit<Parameters<StartWebhook>[0], "scheduler">) => ({
     ...(await production({
       ...params,
+      scheduler: createTestPluginServiceScheduler(),
       publicUrl:
         params.publicUrl ?? webhookUrl(getServerPort(server), params.path ?? "/telegram-webhook"),
     })),

@@ -3,6 +3,7 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterAll, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -32,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   systemRun: vi.fn(),
   carrierProcessAlive: false,
   warn: vi.fn(),
+  debug: vi.fn(),
 }));
 
 export { mocks };
@@ -240,6 +242,7 @@ export async function createRuntime(
   ownerHandles = ["owner@example.com"],
 ) {
   return await createFaceTimeRuntime({
+    scheduler: createTestPluginServiceScheduler(),
     config: resolveFaceTimeConfig({ ownerHandles }),
     fullConfig: {} as never,
     runtime: {
@@ -253,7 +256,7 @@ export async function createRuntime(
     logger: {
       info: vi.fn(),
       warn: mocks.warn,
-      debug: vi.fn(),
+      debug: mocks.debug,
       error: vi.fn(),
     },
     pluginRoot: "/plugin",
@@ -297,6 +300,7 @@ export async function resetRuntimeTestState() {
     overflowPolicy: "reject-new",
   }).clear();
   vi.clearAllMocks();
+  mocks.debug.mockReset();
   mocks.helperParams = undefined;
   mocks.helper.connectedSockets = 2;
   mocks.helper.connectedHelperBundles = ["com.apple.FaceTime", "com.apple.mobilephone"];

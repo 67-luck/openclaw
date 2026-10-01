@@ -714,6 +714,7 @@ export const telegramPlugin = createChatChannelPlugin({
       resolveCommandConversation: resolveTelegramCommandConversation,
     },
     conversationBindings: {
+      apiVersion: 2,
       supportsCurrentConversationBinding: true,
       bindingStore: "adapter",
       defaultTopLevelPlacement: "current",
@@ -930,6 +931,7 @@ export const telegramPlugin = createChatChannelPlugin({
       },
     }),
     gateway: {
+      apiVersion: 2,
       startAccount: async (ctx) => {
         const account = ctx.account;
         const ownerAgentId = resolveAgentRoute({
@@ -1017,6 +1019,7 @@ export const telegramPlugin = createChatChannelPlugin({
         }
         ctx.log?.info(`[${account.accountId}] starting provider${telegramBotLabel}`);
         return resolveTelegramMonitor()({
+          scheduler: ctx.scheduler,
           token,
           accountId: account.accountId,
           ownerAgentId,

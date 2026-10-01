@@ -1,4 +1,3 @@
-// Nextcloud Talk plugin module owns durable webhook admission and replay draining.
 import {
   createChannelIngressMonitor,
   type ChannelIngressQueue,
@@ -7,6 +6,8 @@ import {
 import { isRecord } from "openclaw/plugin-sdk/channel-secret-basic-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { resolvePersistentDedupePluginStateNamespace } from "openclaw/plugin-sdk/persistent-dedupe";
+// Nextcloud Talk plugin module owns durable webhook admission and replay draining.
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { z } from "zod";
 import {
@@ -123,6 +124,7 @@ function resolveNonRetryableFailure(error: unknown) {
 }
 
 export function createNextcloudTalkWebhookSpool(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   queue?: ChannelIngressQueue<NextcloudTalkIngressPayload>;
   deliver: (
@@ -165,6 +167,7 @@ export function createNextcloudTalkWebhookSpool(options: {
     Omit<NextcloudTalkIngressPayload, "version">,
     NextcloudTalkIngressPayload
   >({
+    scheduler: options.scheduler,
     queue: getQueue,
     inspect: (rawEvent) => inspectNextcloudTalkWebhookEnvelope(rawEvent),
     payload: {

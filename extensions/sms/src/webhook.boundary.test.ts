@@ -6,6 +6,7 @@ import {
   type RequestListener,
 } from "node:http";
 import { createConnection } from "node:net";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createEmptyPluginRegistry,
   getActivePluginRegistry,
@@ -164,6 +165,7 @@ describe("SMS webhook real route boundary", () => {
     setActivePluginRegistry(registry);
     const abortController = new AbortController();
     const lifecycle = startSmsGatewayAccount({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: {},
       account,
       channelRuntime: {} as SmsChannelRuntime,

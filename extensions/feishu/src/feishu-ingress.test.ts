@@ -8,6 +8,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createNonExitingRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -92,6 +93,7 @@ function createTestIngress(params: {
   dispatcher: Pick<Lark.EventDispatcher, "invoke">;
 }) {
   return createFeishuDurableIngress({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "default",
     queue: params.queue,
     dispatcher: params.dispatcher,

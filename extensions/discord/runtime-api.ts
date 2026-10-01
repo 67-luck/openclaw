@@ -58,7 +58,7 @@ export { registerDiscordListener } from "./src/monitor/listeners.js";
 
 export { createDiscordMessageHandler } from "./src/monitor/message-handler.js";
 export { createDiscordNativeCommand } from "./src/monitor/native-command.js";
-export type { MonitorDiscordOpts } from "./src/monitor/provider.js";
+export type { MonitorDiscordOpts, MonitorDiscordOptsV2 } from "./src/monitor/provider.js";
 export { monitorDiscordProvider } from "./src/monitor/provider.js";
 
 export { resolveDiscordReplyTarget, sanitizeDiscordThreadName } from "./src/monitor/threading.js";
@@ -193,6 +193,8 @@ export {
   unbindThreadBindingsBySessionKey,
   type AcpThreadBindingReconciliationResult,
   type ThreadBindingManager,
+  type ThreadBindingManagerParams,
+  type ThreadBindingManagerParamsV2,
   type ThreadBindingRecord,
   type ThreadBindingTargetKind,
 } from "./src/monitor/thread-bindings.js";

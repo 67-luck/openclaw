@@ -43,6 +43,7 @@ export {
   createChannelIngressMonitor,
 } from "../channels/message/ingress-monitor.js";
 export { createChannelIngressError } from "../channels/message/ingress-errors.js";
+export { createLegacyPluginServiceScheduler } from "../plugins/legacy-service-scheduler.js";
 export {
   DEFAULT_INGRESS_RETRY_DEAD_LETTER_MIN_AGE_MS,
   DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS,
@@ -206,6 +207,7 @@ export type { ChannelIngressDrain } from "../channels/message/ingress-drain.js";
 export type {
   ChannelIngressMonitorDeliveryResult,
   ChannelIngressMonitorLifecycle,
+  CreateChannelIngressMonitorOptionsV2,
 } from "../channels/message/ingress-monitor.js";
 export type {
   ChannelIngressQueue,

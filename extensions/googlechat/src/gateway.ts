@@ -8,6 +8,7 @@ import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runti
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { channelBlockedPatch } from "openclaw/plugin-sdk/gateway-runtime";
 import { createLazyRuntimeNamedExport } from "openclaw/plugin-sdk/lazy-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/status-helpers";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
 import { isGoogleChatNativeApprovalClientEnabled } from "./approval-native.js";
@@ -26,6 +27,7 @@ export async function startGoogleChatGatewayAccount(ctx: {
   cfg: OpenClawConfig;
   runtime: GoogleChatRuntimeEnv;
   abortSignal: AbortSignal;
+  scheduler: PluginServiceSchedulerV1;
   channelRuntime?: ChannelRuntimeSurface;
   setStatus: (next: ChannelAccountSnapshot) => void;
   log?: {
@@ -78,6 +80,7 @@ export async function startGoogleChatGatewayAccount(ctx: {
       abortSignal: ctx.abortSignal,
       start: async () =>
         await startGoogleChatMonitor({
+          scheduler: ctx.scheduler,
           account,
           config: ctx.cfg,
           runtime: ctx.runtime,

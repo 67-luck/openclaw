@@ -6,6 +6,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createIMessageDurableIngress } from "./ingress.js";
 
@@ -79,6 +80,7 @@ describe("iMessage durable ingress", () => {
       const onDurableEnqueue = vi.fn();
       const onDurableEnqueueFailure = vi.fn();
       const ingress = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue: failingQueue,
         dispatch,
@@ -102,6 +104,7 @@ describe("iMessage durable ingress", () => {
     await withQueue(async (queue) => {
       const onDurableEnqueueFailure = vi.fn();
       const ingress = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch: vi.fn(),
@@ -131,6 +134,7 @@ describe("iMessage durable ingress", () => {
         await cursorGate.promise;
       });
       const ingress = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch: vi.fn(),
@@ -178,6 +182,7 @@ describe("iMessage durable ingress", () => {
         return { kind: "completed" } as const;
       });
       const ingress = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch,
@@ -229,6 +234,7 @@ describe("iMessage durable ingress", () => {
         return { kind: "completed" } as const;
       });
       const ingress = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch,
@@ -268,6 +274,7 @@ describe("iMessage durable ingress", () => {
     await withQueue(async (queue, stateDir) => {
       const event = rawRow();
       const interrupted = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch: vi.fn(),
@@ -282,6 +289,7 @@ describe("iMessage durable ingress", () => {
         return { kind: "deferred" } as const;
       });
       const recovered = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue: createQueue(stateDir),
         dispatch: recoveredDispatch,
@@ -309,6 +317,7 @@ describe("iMessage durable ingress", () => {
         return { kind: "deferred" } as const;
       });
       const ingress = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch,
@@ -331,6 +340,7 @@ describe("iMessage durable ingress", () => {
     await withQueue(async (queue) => {
       const event = rawRow({ text: "\u0005hello" });
       const ingress = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch: vi.fn(),
@@ -355,6 +365,7 @@ describe("iMessage durable ingress", () => {
     await withQueue(async (queue) => {
       const provenances: Array<{ catchup?: boolean } | undefined> = [];
       const ingress = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch: vi.fn(async (_message, claimLifecycle, _receivedAt, provenance) => {
@@ -392,6 +403,7 @@ describe("iMessage durable ingress", () => {
       );
       const dispatch = vi.fn();
       const ingress = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch,
@@ -420,6 +432,7 @@ describe("iMessage durable ingress", () => {
         { laneKey: "chat:42" },
       );
       const ingress = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch: vi.fn(),
@@ -440,6 +453,7 @@ describe("iMessage durable ingress", () => {
   it("dead-letters permanent Full Disk Access failures", async () => {
     await withQueue(async (queue) => {
       const ingress = createIMessageDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatch: vi.fn(async () => {

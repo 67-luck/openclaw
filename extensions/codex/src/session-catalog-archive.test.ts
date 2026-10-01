@@ -411,6 +411,7 @@ describe("Codex supervision actions", () => {
     const { api, getProvider, registerSessionCatalog } = createGatewayApi(runtime);
     const control = createEligibleControl();
     const processFallbackControl = {
+      bindScheduler: () => {},
       hasActiveWork: () => false,
       disconnect: async () => {},
       forRequest: () => control,

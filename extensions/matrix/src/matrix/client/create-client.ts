@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { PinnedDispatcherPolicy } from "openclaw/plugin-sdk/ssrf-dispatcher";
 import {
   ssrfPolicyFromDangerouslyAllowPrivateNetwork,
@@ -26,6 +27,7 @@ const loadMatrixCreateClientRuntimeDeps = createLazyRuntimeModule(() =>
 );
 
 export async function createMatrixClient(params: {
+  scheduler?: PluginServiceSchedulerV1;
   homeserver: string;
   userId?: string;
   accessToken: string;
@@ -78,10 +80,11 @@ export async function createMatrixClient(params: {
     : undefined;
 
   const syncStore = storagePaths
-    ? await SqliteBackedMatrixSyncStore.create(storagePaths.rootDir)
+    ? await SqliteBackedMatrixSyncStore.create(storagePaths.rootDir, params.scheduler)
     : undefined;
 
   return new MatrixClient(homeserver, params.accessToken, {
+    scheduler: params.scheduler,
     userId: matrixClientUserId,
     password: params.password,
     deviceId: params.deviceId,

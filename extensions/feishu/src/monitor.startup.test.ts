@@ -1,6 +1,7 @@
 // Feishu tests cover monitor.startup plugin behavior.
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { MAX_TIMER_TIMEOUT_MS } from "openclaw/plugin-sdk/number-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createNonExitingRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClawdbotConfig } from "../runtime-api.js";
@@ -125,7 +126,10 @@ describe("Feishu monitor startup preflight", () => {
     probeFeishuMock.mockResolvedValue(providerIdentity);
 
     await expect(
-      monitorFeishuProvider({ config: buildMultiAccountWebsocketConfig(["alpha"]) }),
+      monitorFeishuProvider({
+        scheduler: createTestPluginServiceScheduler(),
+        config: buildMultiAccountWebsocketConfig(["alpha"]),
+      }),
     ).rejects.toBe(startError);
 
     expect(ingressStart).toHaveBeenCalledTimes(1);
@@ -175,6 +179,7 @@ describe("Feishu monitor startup preflight", () => {
     const abort = new AbortController();
     const runtime = createNonExitingRuntimeEnv();
     const monitor = monitorFeishuProvider({
+      scheduler: createTestPluginServiceScheduler(),
       config: buildMultiAccountWebsocketConfig(["alpha", "beta", "gamma"]),
       runtime,
       abortSignal: abort.signal,
@@ -275,6 +280,7 @@ describe("Feishu monitor startup preflight", () => {
     const abortController = new AbortController();
     const runtime = createNonExitingRuntimeEnv();
     const monitorPromise = monitorFeishuProvider({
+      scheduler: createTestPluginServiceScheduler(),
       config: buildMultiAccountWebsocketConfig(["alpha"]),
       runtime,
       abortSignal: abortController.signal,

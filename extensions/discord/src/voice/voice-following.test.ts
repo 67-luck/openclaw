@@ -615,9 +615,14 @@ defineDiscordVoiceTests(
       await vi.waitFor(() => {
         expect(client.rest.get).toHaveBeenCalled();
       });
-      await manager.destroy();
+      let destroyed = false;
+      const destroying = manager.destroy().then(() => {
+        destroyed = true;
+      });
+      await Promise.resolve();
+      expect(destroyed).toBe(false);
       resolveVoiceState({ guild_id: "g1", user_id: "u-owner", channel_id: "1001" });
-      await autoJoinPromise;
+      await Promise.all([destroying, autoJoinPromise]);
 
       expect(joinVoiceChannelMock).not.toHaveBeenCalled();
       expect(manager.status()).toEqual([]);

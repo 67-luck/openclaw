@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/channel-inbound-debounce";
 import { hasControlCommand, isControlCommandMessage } from "openclaw/plugin-sdk/command-detection";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createNonExitingRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -144,6 +145,7 @@ async function setupDebounceMonitor() {
     await finish.promise;
   });
   const monitor = monitorSingleAccount({
+    scheduler: createTestPluginServiceScheduler(),
     ...monitorParams(),
     // A partial injected runtime must fall back to the installed channel runtime.
     channelRuntime: { runtimeContexts: {} } as unknown as PluginRuntime["channel"],

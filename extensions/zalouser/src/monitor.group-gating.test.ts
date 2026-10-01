@@ -4,6 +4,7 @@ import { createChannelMessageReplyPipeline } from "openclaw/plugin-sdk/channel-o
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginRuntime } from "openclaw/plugin-sdk/core";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
@@ -345,6 +346,7 @@ async function processMessageThroughMonitor(params: {
       return { stop: vi.fn() };
     });
     const run = monitorZalouserProvider({
+      scheduler: createTestPluginServiceScheduler(),
       account,
       config: params.config,
       runtime: params.runtime,
@@ -437,6 +439,7 @@ describe("zalouser monitor group mention gating", () => {
     abortController.abort();
     await withMonitorIngressQueue(async (ingressQueue) => {
       await monitorZalouserProvider({
+        scheduler: createTestPluginServiceScheduler(),
         account: {
           ...createAccount(),
           config: accountConfig,

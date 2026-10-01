@@ -595,6 +595,7 @@ export const discordPlugin: ChannelPlugin<ResolvedDiscordAccount, DiscordProbe> 
         },
       }),
       gateway: {
+        apiVersion: 2,
         startAccount: async (ctx) => {
           const readConfig = createRuntimeConfigReader(ctx.cfg);
           const account = ctx.account;
@@ -634,6 +635,7 @@ export const discordPlugin: ChannelPlugin<ResolvedDiscordAccount, DiscordProbe> 
             );
           }
           return (await loadDiscordProviderRuntime()).monitorDiscordProvider({
+            scheduler: ctx.scheduler,
             token,
             accountId: account.accountId,
             config: ctx.cfg,

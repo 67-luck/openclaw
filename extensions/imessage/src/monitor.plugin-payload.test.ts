@@ -9,6 +9,7 @@ import {
   resetGlobalHookRunner,
 } from "openclaw/plugin-sdk/channel-test-helpers";
 import { recordInboundSession } from "openclaw/plugin-sdk/conversation-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { dispatchReplyWithBufferedBlockDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import type { waitForTransportReady } from "openclaw/plugin-sdk/transport-ready-runtime";
@@ -120,6 +121,7 @@ describe("iMessage plugin payload attachments", () => {
     });
 
     await monitorIMessageProvider({
+      scheduler: createTestPluginServiceScheduler(),
       config: {
         channels: { imessage: { includeAttachments: true, dmPolicy: "open" } },
         session: { mainKey: "main" },
@@ -242,6 +244,7 @@ describe("iMessage plugin payload attachments", () => {
       });
 
       await monitorIMessageProvider({
+        scheduler: createTestPluginServiceScheduler(),
         config: {
           channels: {
             imessage: {

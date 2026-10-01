@@ -415,6 +415,10 @@ async function downloadAttachment(
 export async function startGoogleChatMonitor(
   options: GoogleChatMonitorOptions,
 ): Promise<() => Promise<void>> {
+  const scheduler = options.scheduler;
+  if (!scheduler) {
+    throw new Error("Google Chat monitor requires an account service scheduler");
+  }
   const core = getGoogleChatRuntime();
   const webhookPath = resolveGoogleChatWebhookPath(options);
   if (!webhookPath) {
@@ -448,6 +452,7 @@ export async function startGoogleChatMonitor(
 
   const readConfig = createRuntimeConfigReader(options.config);
   const ingress = createGoogleChatIngressMonitor({
+    scheduler,
     accountId: options.account.accountId,
     runtime: options.runtime,
     abortSignal: options.abortSignal,

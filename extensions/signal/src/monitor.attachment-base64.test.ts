@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SignalEventHandlerDeps } from "./monitor/event-handler.types.js";
 
@@ -77,7 +78,11 @@ describe("Signal attachment fetch", () => {
       data: "iVBORw0KGgoAAAANSUhE%%%UgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIW2Nk+M/wHwAF/gL+M6Q10QAAAABJRU5ErkJggg==",
     });
 
-    await monitorSignalProvider({ config, autoStart: false });
+    await monitorSignalProvider({
+      scheduler: createTestPluginServiceScheduler(),
+      config,
+      autoStart: false,
+    });
     const fetchAttachment = requireCapturedFetchAttachment();
 
     await expect(

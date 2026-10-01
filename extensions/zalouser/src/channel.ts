@@ -104,6 +104,7 @@ export const zalouserPlugin: ChannelPlugin<ResolvedZalouserAccount, ZalouserProb
         }),
       }),
       gateway: {
+        apiVersion: 2,
         startAccount: async (ctx) => {
           const { getZaloUserInfo } = await loadZalouserChannelRuntime();
           const account = ctx.account;
@@ -127,6 +128,7 @@ export const zalouserPlugin: ChannelPlugin<ResolvedZalouserAccount, ZalouserProb
           ctx.log?.info(`[${account.accountId}] starting zalouser provider${userLabel}`);
           const { monitorZalouserProvider } = await import("./monitor.js");
           return monitorZalouserProvider({
+            scheduler: ctx.scheduler,
             account,
             config: ctx.cfg,
             runtime: ctx.runtime,

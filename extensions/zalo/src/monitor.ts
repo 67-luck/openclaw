@@ -17,6 +17,7 @@ import {
   createLazyRuntimeModule,
   createLazyRuntimeNamedExport,
 } from "openclaw/plugin-sdk/lazy-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import {
   deliverTextOrMediaReply,
   resolveSendableOutboundReplyParts,
@@ -65,6 +66,7 @@ const ZALO_MEDIA_READ_IDLE_TIMEOUT_MS = 30_000;
 const ZALO_MEDIA_RESPONSE_HEADER_TIMEOUT_MS = 120_000;
 
 type ZaloMonitorOptions = {
+  scheduler: PluginServiceSchedulerV1;
   token: string;
   account: ResolvedZaloAccount;
   config: OpenClawConfig;
@@ -864,6 +866,7 @@ export async function monitorZaloProvider(options: ZaloMonitorOptions): Promise<
         `[${account.accountId}] Zalo configuring webhook path=${path} target=${describeWebhookTarget(effectiveWebhookUrl)}`,
       );
       const ingress = createZaloWebhookIngress({
+        scheduler: options.scheduler,
         accountId: account.accountId,
         runtime,
         deliver: async (update, turnAdoptionLifecycle) => {

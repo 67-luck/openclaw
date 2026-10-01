@@ -7,6 +7,7 @@ import {
   type SessionBindingAdapter,
 } from "openclaw/plugin-sdk/conversation-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { normalizeAccountId } from "openclaw/plugin-sdk/routing";
 import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { runQueuedStoreWrite } from "openclaw/plugin-sdk/sqlite-runtime";
@@ -44,6 +45,7 @@ const DEFAULT_THREAD_BINDING_IDLE_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_THREAD_BINDING_MAX_AGE_MS = 0;
 const THREAD_BINDINGS_SWEEP_INTERVAL_MS = 60_000;
 type TelegramThreadBindingManagerParams = {
+  scheduler: PluginServiceSchedulerV1;
   cfg: OpenClawConfig;
   accountId?: string;
   persist?: boolean;
@@ -104,7 +106,7 @@ async function initializeThreadBindingManager(
     persist,
   });
 
-  let sweepTimer: NodeJS.Timeout | null = null;
+  const scheduler = params.scheduler.scope();
   let stopping: Promise<void> | undefined;
   const assertManagerCurrent = () => {
     if (getThreadBindingsState().managersByAccountId.get(accountId) !== manager) {
@@ -277,11 +279,8 @@ async function initializeThreadBindingManager(
       if (stopping) {
         return stopping;
       }
-      if (sweepTimer) {
-        clearInterval(sweepTimer);
-        sweepTimer = null;
-      }
-      stopping = queueBindingWork(accountId, async () => {
+      scheduler.beginClose();
+      const retire = queueBindingWork(accountId, async () => {
         unregisterSessionBindingAdapter({
           channel: "telegram",
           accountId,
@@ -299,6 +298,7 @@ async function initializeThreadBindingManager(
           }
         }
       });
+      stopping = Promise.all([scheduler.stop(), retire]).then(() => undefined);
       return stopping;
     },
   };
@@ -490,48 +490,42 @@ async function initializeThreadBindingManager(
 
   const sweeperEnabled = params.enableSweeper !== false;
   if (sweeperEnabled) {
-    let sweeping = false;
-    sweepTimer = setInterval(() => {
-      if (sweeping) {
-        return;
-      }
-      sweeping = true;
-      void mutate(async () => {
-        const now = Date.now();
-        for (const candidate of listBindingsForAccount(accountId)) {
-          const mutation = captureBindingMutation(manager, candidate.conversationId);
-          const record = mutation.previous;
-          if (!record) {
-            continue;
+    scheduler.schedule({
+      id: "thread-binding-sweep",
+      delayMs: THREAD_BINDINGS_SWEEP_INTERVAL_MS,
+      everyMs: THREAD_BINDINGS_SWEEP_INTERVAL_MS,
+      run: () =>
+        mutate(async () => {
+          const now = Date.now();
+          for (const candidate of listBindingsForAccount(accountId)) {
+            const mutation = captureBindingMutation(manager, candidate.conversationId);
+            const record = mutation.previous;
+            if (!record) {
+              continue;
+            }
+            const { expiresAt, reason } = resolveThreadBindingLifecycle({
+              record,
+              defaultIdleTimeoutMs: idleTimeoutMs,
+              defaultMaxAgeMs: maxAgeMs,
+            });
+            if (expiresAt === undefined || now < expiresAt) {
+              continue;
+            }
+            mutation.prepare(null);
+            const committed = await persistBindingMutation({
+              accountId,
+              persist,
+              binding: record,
+              remove: true,
+              reason: reason ?? "expired",
+              assertCurrent: mutation.assertCurrent,
+            });
+            mutation.publish(null, committed);
           }
-          const { expiresAt, reason } = resolveThreadBindingLifecycle({
-            record,
-            defaultIdleTimeoutMs: idleTimeoutMs,
-            defaultMaxAgeMs: maxAgeMs,
-          });
-          if (expiresAt === undefined || now < expiresAt) {
-            continue;
-          }
-          mutation.prepare(null);
-          const committed = await persistBindingMutation({
-            accountId,
-            persist,
-            binding: record,
-            remove: true,
-            reason: reason ?? "expired",
-            assertCurrent: mutation.assertCurrent,
-          });
-          mutation.publish(null, committed);
-        }
-      })
-        .catch((error: unknown) => {
+        }).catch((error: unknown) => {
           logVerbose(`telegram thread bindings sweep failed (${accountId}): ${String(error)}`);
-        })
-        .finally(() => {
-          sweeping = false;
-        });
-    }, THREAD_BINDINGS_SWEEP_INTERVAL_MS);
-    sweepTimer.unref?.();
+        }),
+    });
   }
 
   getThreadBindingsState().managersByAccountId.set(accountId, manager);

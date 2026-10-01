@@ -8,6 +8,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { resetInboundDedupe } from "openclaw/plugin-sdk/reply-runtime";
 import { resetLogger, setLoggerOverride } from "openclaw/plugin-sdk/runtime-env";
@@ -371,6 +372,7 @@ export function startWebAutoReplyMonitor(params: {
   const runtime: WebAutoReplyRuntime = createRuntimeSpies();
   const controller = new AbortController();
   const run = params.monitorWebChannelFn(
+    createTestPluginServiceScheduler(),
     false,
     params.listenerFactory as never,
     true,

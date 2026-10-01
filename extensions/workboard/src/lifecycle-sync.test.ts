@@ -1,10 +1,11 @@
 import type { WorkboardExecution } from "@openclaw/workboard-contract";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createHookRunner,
   createMockPluginRegistry,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { describe, expect, it, vi } from "vitest";
-import type { OpenClawPluginService } from "../api.js";
+import type { OpenClawPluginServiceV2 } from "../api.js";
 import { createWorkboardAutomationNudgeService } from "./automation-nudge.js";
 import {
   createWorkboardLifecycleService,
@@ -17,7 +18,7 @@ import { workboardSessionKeyForCard } from "./session-link.js";
 import type { WorkboardStore } from "./store.js";
 import { createWorkboardSqliteTestStore } from "./test/sqlite-store.js";
 
-type ServiceContext = Parameters<OpenClawPluginService["start"]>[0];
+type ServiceContext = Parameters<OpenClawPluginServiceV2["start"]>[0];
 type ServiceCron = NonNullable<ReturnType<NonNullable<ServiceContext["getCron"]>>>;
 
 function nudgeContext(
@@ -28,6 +29,7 @@ function nudgeContext(
     throw new Error("Unexpected scheduler mutation");
   };
   return {
+    scheduler: createTestPluginServiceScheduler(),
     config: {},
     stateDir: "unused",
     logger,
@@ -82,9 +84,14 @@ async function runSessionSweep(params: {
     ...(now === undefined ? {} : { now: () => now }),
   });
   const runOperation = vi.spyOn(params.store, "runOperation");
+  vi.useFakeTimers();
   try {
-    await service.start({ logger: { warn: vi.fn() } } as never);
+    await service.start({
+      scheduler: createTestPluginServiceScheduler(),
+      logger: { warn: vi.fn() },
+    } as never);
     service.onGatewayStart();
+    await vi.advanceTimersByTimeAsync(0);
     // The admitted operation spans the full sweep, including SQLite worker writes.
     expect(runOperation).toHaveBeenCalled();
     await runOperation.mock.results[0]?.value;
@@ -93,6 +100,7 @@ async function runSessionSweep(params: {
     service.onGatewayStop();
     await service.stop?.({ logger: { warn: vi.fn() } } as never);
     runOperation.mockRestore();
+    vi.useRealTimers();
   }
 }
 
@@ -590,7 +598,10 @@ describe("Workboard gateway lifecycle sync", () => {
     });
     await store.archive(archived.id, true);
     const readSessions = vi.fn().mockResolvedValue({ sessions: [], complete: true });
-    const context = { logger: { warn: vi.fn() } } as never;
+    const context = {
+      scheduler: createTestPluginServiceScheduler(),
+      logger: { warn: vi.fn() },
+    } as never;
     const service = createWorkboardLifecycleService({ store, readSessions });
 
     await service.start(context);
@@ -626,7 +637,10 @@ describe("Workboard gateway lifecycle sync", () => {
       async (options: { includeUnknown: boolean }) =>
         await readWorkboardLifecycleSessions({ isAvailable: async () => true, request }, options),
     );
-    const context = { logger: { warn: vi.fn() } } as never;
+    const context = {
+      scheduler: createTestPluginServiceScheduler(),
+      logger: { warn: vi.fn() },
+    } as never;
     const service = createWorkboardLifecycleService({ store, readSessions });
 
     await service.start(context);

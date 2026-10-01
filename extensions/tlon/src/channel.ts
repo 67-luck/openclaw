@@ -179,6 +179,7 @@ export const tlonPlugin = createChatChannelPlugin({
       }),
     }),
     gateway: {
+      apiVersion: 2,
       startAccount: async (ctx) =>
         await (await loadTlonChannelRuntime()).startTlonGatewayAccount(ctx),
     },

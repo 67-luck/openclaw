@@ -245,6 +245,16 @@ function retainPluginHttpRoute(params: {
   return release;
 }
 
+/** Detached callbacks keep every registration lease that constrained their owner. */
+export function capturePluginHttpRouteRegistry(): <T>(run: () => T) => T {
+  const scope = pluginHttpRouteRegistryScope.getStore();
+  if (scope?.leases.some((lease) => !lease.isActive())) {
+    throw new Error("plugin runtime HTTP route lease is no longer active");
+  }
+  return (run) =>
+    scope ? pluginHttpRouteRegistryScope.run(scope, run) : pluginHttpRouteRegistryScope.exit(run);
+}
+
 export function withPluginHttpRouteRegistry<T>(
   registry: PluginRegistry,
   run: () => T,

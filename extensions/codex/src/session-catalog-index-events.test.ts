@@ -2,6 +2,7 @@ import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-registration";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CodexAppServerStartOptions } from "./app-server/config-contracts.js";
@@ -68,6 +69,7 @@ async function fixture(
     );
   });
   const index = new CodexCatalogIndex({
+    scheduler: createTestPluginServiceScheduler(),
     homeId,
     readNative,
     state: options.state,

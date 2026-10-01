@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { FaceTimeHelperPeer, HelperActionResult } from "../src/helper-rpc.js";
+import type {
+  FaceTimeHelperPeer,
+  FaceTimeHelperSocketServer,
+  HelperActionResult,
+} from "../src/helper-rpc.js";
 import {
   createRuntime,
   FaceTimeHelperActionError,
@@ -81,6 +85,72 @@ describe("FaceTime pending dial reconciliation", () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("requeues a pending dial when scheduled reconciliation failure reporting throws", async () => {
+    const state = await pendingDialState();
+    mocks.helper.findOutgoingCall.mockResolvedValue(
+      topologyResult([{ ...absentPeer(originalPeer), found: true }]),
+    );
+    const runtime = await createRuntime(state);
+    try {
+      mocks.helperParams?.onConnect(originalPeer.bundleIdentifier);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.helper.findOutgoingCall).toHaveBeenCalledOnce();
+      mocks.helper.findOutgoingCall.mockRejectedValueOnce(new Error("helper unavailable"));
+      mocks.debug.mockImplementationOnce(() => {
+        throw new Error("diagnostic sink unavailable");
+      });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(mocks.helper.findOutgoingCall).toHaveBeenCalledTimes(2);
+      expect(await state.lookup("active")).toMatchObject({ dialID: "approved-dial" });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(mocks.helper.findOutgoingCall).toHaveBeenCalledTimes(3);
+    } finally {
+      await mocks.helperParams?.onMessage(endedCall("approved-call", "approved-dial"));
+      await runtime.stop();
+    }
+    const callsAtStop = mocks.helper.findOutgoingCall.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mocks.helper.findOutgoingCall).toHaveBeenCalledTimes(callsAtStop);
+  });
+
+  it("cancels the scheduled read on stop while retaining helper call cleanup", async () => {
+    const state = await pendingDialState();
+    mocks.helper.findOutgoingCall.mockResolvedValue(
+      topologyResult([{ ...absentPeer(originalPeer), found: true }]),
+    );
+    mocks.helper.cancelOutgoingCall.mockResolvedValue(pendingDialCancellationResult());
+    const runtime = await createRuntime(state);
+    const held = Promise.withResolvers<HelperActionResult>();
+    let readSignal: AbortSignal | undefined;
+    try {
+      mocks.helperParams?.onConnect(originalPeer.bundleIdentifier);
+      await vi.advanceTimersByTimeAsync(0);
+      mocks.helper.findOutgoingCall.mockImplementationOnce(
+        (...args: Parameters<FaceTimeHelperSocketServer["findOutgoingCall"]>) => {
+          readSignal = args[6];
+          readSignal?.addEventListener("abort", () => held.reject(readSignal?.reason), {
+            once: true,
+          });
+          return held.promise;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(readSignal).toBeInstanceOf(AbortSignal);
+      const stopping = runtime.stop();
+      expect(readSignal?.aborted).toBe(true);
+      await stopping;
+      expect(mocks.helper.cancelOutgoingCall).toHaveBeenCalled();
+      expect(mocks.helper.stop).toHaveBeenCalledOnce();
+      expect(mocks.debug).not.toHaveBeenCalled();
+      expect(await state.lookup("active")).toBeUndefined();
+    } finally {
+      held.reject(new Error("test cleanup"));
+      await held.promise.catch(() => undefined);
+      await runtime.stop();
+    }
   });
 
   it("preserves newly identified carriers when an older absence reply arrives", async () => {

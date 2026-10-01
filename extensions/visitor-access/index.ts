@@ -2,7 +2,7 @@ import { definePluginEntry, type OpenClawPluginApi } from "./api.js";
 import { createVisitorAccessReader } from "./src/access.js";
 import { VisitorPolicyClient } from "./src/cloudflare.js";
 import { visitorConfigSchema, visitorPluginSchema } from "./src/config.js";
-import { visitorErrorText } from "./src/errors.js";
+import { VisitorAccessError, visitorErrorText } from "./src/errors.js";
 import { profileUsesVisitorRole, resolveVisitorRole } from "./src/roles.js";
 import { visitorRuntimeStore, type VisitorRuntime } from "./src/runtime.js";
 import { createVisitorTools } from "./src/tools.js";
@@ -25,30 +25,23 @@ function registerVisitorPlugin(api: OpenClawPluginApi): void {
     return;
   }
   const config = visitorConfigSchema.parse(api.pluginConfig);
-  const lifetime = new AbortController();
   const store = api.runtime.state.openKeyedStore<VisitorGrant>({
     namespace: "visitor-grants",
     // Fixed storage bound survives config reload; maxVisitors controls admission.
     maxEntries: 500,
     overflowPolicy: "reject-new",
   });
-  const service = new VisitorAccessService(
-    config,
-    store,
-    new VisitorPolicyClient(config, fetch, lifetime.signal),
-    api.logger,
-    createVisitorAccessReader(api.runtime),
-    fetch,
-    lifetime.signal,
-  );
-  const runtime: VisitorRuntime = {
-    service,
-    errorText: (error) => visitorErrorText(error, config.apiToken),
+  let runtime: VisitorRuntime | undefined;
+  const requireService = () => {
+    if (!runtime) {
+      throw new VisitorAccessError("Visitor access is starting; retry shortly.");
+    }
+    return runtime.service;
   };
 
   api.registerGatewayAccessPolicy({
     resume({ profile, grantId }) {
-      return service.resume(profile.emails, grantId);
+      return requireService().resume(profile.emails, grantId);
     },
     authorize({ config: currentConfig, profile, requiredByRole }) {
       const roles = currentConfig.gateway?.roles;
@@ -59,61 +52,50 @@ function registerVisitorPlugin(api: OpenClawPluginApi): void {
         return undefined;
       }
       resolveVisitorRole(currentConfig);
-      return service.authorize(profile.emails);
+      return requireService().authorize(profile.emails);
     },
   });
 
-  let interval: ReturnType<typeof setInterval> | undefined;
-  let sweeping: Promise<void> | undefined;
-  let startupSweep: Promise<void> | undefined;
-  const sweep = () => {
-    sweeping ??= service
-      .sweep()
-      .catch((error: unknown) => {
-        if (!lifetime.signal.aborted) {
-          api.logger.error(
-            `visitor-access sweep failed: ${visitorErrorText(error, config.apiToken)}`,
-          );
-        }
-      })
-      .finally(() => {
-        sweeping = undefined;
-      });
-    return sweeping;
-  };
-  const start = () => {
-    lifetime.signal.throwIfAborted();
-    const active = visitorRuntimeStore.tryGetRuntime();
-    if (active && active !== runtime) {
-      throw new Error("A visitor-access Gateway service is already running.");
-    }
-    return (startupSweep ??= (async () => {
+  api.registerService({
+    id: "visitor-access-expiry",
+    apiVersion: 2,
+    async start({ scheduler }) {
+      scheduler.signal.throwIfAborted();
+      if (visitorRuntimeStore.tryGetRuntime()) {
+        throw new Error("A visitor-access Gateway service is already running.");
+      }
+      const service = new VisitorAccessService(
+        config,
+        store,
+        new VisitorPolicyClient(config, fetch, scheduler.signal),
+        api.logger,
+        createVisitorAccessReader(api.runtime),
+        scheduler,
+      );
+      runtime = { service, errorText: (error) => visitorErrorText(error, config.apiToken) };
       await service.initialize();
-      lifetime.signal.throwIfAborted();
+      scheduler.signal.throwIfAborted();
       const current = visitorRuntimeStore.tryGetRuntime();
       if (current && current !== runtime) {
         service.close();
         throw new Error("A visitor-access Gateway service is already running.");
       }
       visitorRuntimeStore.setRuntime(runtime);
-      interval ??= setInterval(() => {
-        void sweep();
-      }, 3_600_000);
-      interval.unref();
+      const sweep = () =>
+        service.sweep().catch((error: unknown) => {
+          if (!scheduler.signal.aborted) {
+            api.logger.error(
+              `visitor-access sweep failed: ${visitorErrorText(error, config.apiToken)}`,
+            );
+          }
+        });
+      scheduler.schedule({ id: "sweep", delayMs: 3_600_000, everyMs: 3_600_000, run: sweep });
       await sweep();
-    })());
-  };
-  api.on("gateway_start", start);
-  // Services, unlike gateway hooks alone, stop on plugin hot replacement too.
-  api.registerService({
-    id: "visitor-access-expiry",
-    start,
-    async stop() {
-      clearInterval(interval);
-      interval = undefined;
-      service.close();
-      lifetime.abort();
-      await service.waitForIdle();
+    },
+    async stop({ scheduler }) {
+      runtime?.service.close();
+      await scheduler.stop();
+      await runtime?.service.waitForIdle();
       if (visitorRuntimeStore.tryGetRuntime() === runtime) {
         visitorRuntimeStore.clearRuntime();
       }

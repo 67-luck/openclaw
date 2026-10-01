@@ -470,7 +470,7 @@ describe("FaceTime helper RPC", () => {
     expect(rpc.connectedSockets).toBe(0);
   });
 
-  it("queries the helper for a known outgoing call UUID", async () => {
+  it("queries outgoing identity and cancels retired reads without closing call control", async () => {
     const { rpc, client } = await startConnectedHelper();
 
     const received = readHelperPayload(client);
@@ -491,6 +491,34 @@ describe("FaceTime helper RPC", () => {
       call_uuid: "call-3",
     });
     await expect(actionPromise).resolves.toMatchObject({ found: true, call_uuid: "call-3" });
+
+    const lifetime = new AbortController();
+    const nextRead = readHelperPayload(client);
+    const reading = rpc.findOutgoingCall(
+      "owner@example.com",
+      "call-3",
+      "dial-5",
+      "proxy-3",
+      undefined,
+      undefined,
+      lifetime.signal,
+    );
+    await nextRead;
+    const reason = new Error("reconciliation retired");
+    const rejected = expect(reading).rejects.toBe(reason);
+    lifetime.abort(reason);
+    await rejected;
+
+    const cancelRequest = readHelperPayload(client);
+    const cancelling = rpc.cancelOutgoingCall({ dialID: "dial-5", handle: "owner@example.com" });
+    const cancellation = await cancelRequest;
+    expect(cancellation.action).toBe("cancel-outgoing-call");
+    sendHelperPayload(client, {
+      transactionId: cancellation.transactionId,
+      cancelled: true,
+      found: false,
+    });
+    await expect(cancelling).resolves.toMatchObject({ cancelled: true });
   });
 
   it("excludes unauthenticated sockets from call-control fanout", async () => {

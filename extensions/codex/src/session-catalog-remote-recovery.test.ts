@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import type { CodexAppServerStartOptions } from "./app-server/config-contracts.js";
 import { createClientHarness } from "./app-server/test-support.js";
@@ -46,6 +47,7 @@ describe("remote resident snapshot recovery", () => {
       .mockRejectedValueOnce(offline)
       .mockResolvedValue({ rows: [row("reconnected")] });
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: await codexCatalogResidentHomeKey({ startOptions }),
       readNative,
       state,

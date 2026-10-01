@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 // Preserve lifecycle mocks before loading the real monitor and bot.
 // oxfmt-ignore
 import { getFeishuLifecycleTestMocks, resetFeishuLifecycleTestMocks } from "./lifecycle.test-support.js";
@@ -78,6 +79,7 @@ it("suppresses rich-post transport twins and retained legacy records without blo
     feishuDedupeState.reset();
     expect(await hasProcessedFeishuMessage("om-legacy", "test")).toBe(true);
     const monitor = monitorSingleAccount({
+      scheduler: createTestPluginServiceScheduler(),
       cfg,
       account: resolveFeishuAccount({ cfg, accountId: "test" }),
       runtime: createNonExitingRuntimeEnv(),

@@ -1,7 +1,6 @@
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { CallManager } from "../manager.js";
 import { TerminalStates, type CallRecord, type CallState } from "../types.js";
-
-// Background cleanup loop for calls that never reached answered/terminal state.
 
 const CHECK_INTERVAL_MS = 30_000;
 
@@ -11,24 +10,29 @@ const CHECK_INTERVAL_MS = 30_000;
  * prove the call is live and should not be reaped. */
 const LiveConversationStates: ReadonlySet<CallState> = new Set(["speaking", "listening"]);
 
+export type VoiceCallSchedulingLifetime =
+  | { kind: "service"; scheduler: PluginServiceSchedulerV1 }
+  | { kind: "standalone-cli" };
+
 type StaleCallReaperManager = {
   getActiveCalls(): Array<Pick<CallRecord, "answeredAt" | "callId" | "startedAt" | "state">>;
   endCall: CallManager["endCall"];
 };
 
-/** Start a stale-call reaper and return its cleanup callback. */
+/** Stop joins provider hangups before the call manager can close. */
 export function startStaleCallReaper(params: {
+  lifetime: VoiceCallSchedulingLifetime;
   manager: StaleCallReaperManager;
   staleCallReaperSeconds?: number;
-}): (() => void) | null {
+}): (() => Promise<void>) | null {
   const maxAgeSeconds = params.staleCallReaperSeconds;
   if (!maxAgeSeconds || maxAgeSeconds <= 0) {
     return null;
   }
 
   const maxAgeMs = maxAgeSeconds * 1000;
-  const callsBeingReaped = new Set<string>();
-  const interval = setInterval(() => {
+  const callsBeingReaped = new Map<string, Promise<void>>();
+  const reap = async () => {
     const now = Date.now();
     for (const call of params.manager.getActiveCalls()) {
       // Skip calls that have been answered (answeredAt set) or are in a live
@@ -47,11 +51,10 @@ export function startStaleCallReaper(params: {
       // Unanswered provider calls can be stranded when callbacks are missed; end them explicitly.
       const age = now - call.startedAt;
       if (age > maxAgeMs && !callsBeingReaped.has(call.callId)) {
-        callsBeingReaped.add(call.callId);
         console.log(
           `[voice-call] Reaping stale call ${call.callId} (age: ${Math.round(age / 1000)}s, state: ${call.state})`,
         );
-        void params.manager
+        const operation = params.manager
           .endCall(call.callId)
           .then((result) => {
             if (!result.success) {
@@ -66,11 +69,30 @@ export function startStaleCallReaper(params: {
           .finally(() => {
             callsBeingReaped.delete(call.callId);
           });
+        callsBeingReaped.set(call.callId, operation);
       }
     }
-  }, CHECK_INTERVAL_MS);
+    await Promise.all(callsBeingReaped.values());
+  };
 
-  return () => {
+  if (params.lifetime.kind === "service") {
+    if (params.lifetime.scheduler.signal.aborted) {
+      return null;
+    }
+    const scheduler = params.lifetime.scheduler.scope();
+    scheduler.schedule({
+      id: "stale-call-reaper",
+      delayMs: CHECK_INTERVAL_MS,
+      everyMs: CHECK_INTERVAL_MS,
+      run: reap,
+    });
+    return () => scheduler.stop();
+  }
+
+  // Standalone CLI calls keep their webhook serving after the command returns.
+  const interval = setInterval(() => void reap(), CHECK_INTERVAL_MS);
+  return async () => {
     clearInterval(interval);
+    await Promise.all(callsBeingReaped.values());
   };
 }

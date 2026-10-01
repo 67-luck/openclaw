@@ -364,6 +364,7 @@ export async function createTelegramBotCore(
   // Acquire the account owner only after bot setup has succeeded.
   const threadBindingManager = threadBindingPolicy.enabled
     ? await createTelegramThreadBindingManager({
+        scheduler: opts.scheduler,
         cfg,
         accountId: account.accountId,
         idleTimeoutMs: resolveThreadBindingIdleTimeoutMsForChannel({

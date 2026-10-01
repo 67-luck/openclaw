@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { AsyncWorkScope, captureAsyncWorkTracker } from "../shared/async-work-scope.js";
 
@@ -71,6 +72,7 @@ export async function startOneShotDiagnosticsExporters(params: {
     preferBuiltPluginArtifacts: true,
   });
   const work = new AsyncWorkScope();
+  const scheduler = new GatewayScheduler();
   let servicesHandle: Awaited<ReturnType<typeof startPluginServices>> | undefined;
   let shutdown: { stopping: Promise<void>; released: Promise<void> } | undefined;
   const reportShutdownFailure = (error: unknown) => {
@@ -94,6 +96,8 @@ export async function startOneShotDiagnosticsExporters(params: {
           }
         } catch (error) {
           reportShutdownFailure(error);
+        } finally {
+          await scheduler.stop();
         }
       });
       // Cleanup must run even if a retained callback restores a closed caller scope.
@@ -120,6 +124,7 @@ export async function startOneShotDiagnosticsExporters(params: {
     }
     servicesHandle = await work.track(() =>
       startPluginServices({
+        scheduler,
         registry: { ...acquired.registry, services },
         config,
         oneShotStopTimeouts: {

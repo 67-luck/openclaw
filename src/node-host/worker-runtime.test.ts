@@ -51,7 +51,12 @@ vi.mock("./mcp.js", async (importOriginal) => ({
   startNodeHostMcpManager: async () => ({ descriptors: [], close: async () => {} }),
 }));
 vi.mock("./plugin-node-host.js", () => ({
-  ensureNodeHostPluginRegistry: async () => {},
+  ensureNodeHostPluginRegistry: async () => ({
+    prepare: async () => {},
+    watchAvailability: () => async () => {},
+    disconnect: async () => {},
+    close: async () => {},
+  }),
   invokeRegisteredNodeHostCommand: async () => null,
   isRegisteredNodeHostCommandDuplex: () => false,
   listRegisteredNodeHostCapsAndCommands: () => ({ caps: [], commands: [], nodePluginTools: [] }),
@@ -205,7 +210,12 @@ it("keeps the private app worker unrestricted by a saved headless command allowl
   });
   vi.spyOn(pathEnv, "ensureOpenClawCliOnPath").mockImplementation(() => {});
   vi.spyOn(terminalUpload, "ensureTerminalUploadCleanup").mockResolvedValue();
-  vi.spyOn(pluginNodeHost, "ensureNodeHostPluginRegistry").mockResolvedValue();
+  vi.spyOn(pluginNodeHost, "ensureNodeHostPluginRegistry").mockResolvedValue({
+    prepare: async () => {},
+    watchAvailability: () => async () => {},
+    disconnect: async () => {},
+    close: async () => {},
+  });
   vi.spyOn(pluginNodeHost, "listRegisteredNodeHostCapsAndCommands").mockReturnValue({
     commands: ["openclaw.sessions.list.v1"],
     caps: ["sessions"],

@@ -10,7 +10,123 @@ sidebarTitle: "Gateway and nodes"
 
 Reach the Gateway and paired nodes from plugin code, and the events a long-lived Gateway service receives. Part of the [Plugin runtime helpers](/plugins/sdk-runtime) reference.
 
+## Service scheduling
+
+Register a service with `apiVersion: 2` to require the host-owned
+`PluginServiceSchedulerV1` capability in its start and stop context:
+
+```typescript
+api.registerService({
+  id: "catalog-refresh",
+  apiVersion: 2,
+  start({ scheduler }) {
+    scheduler.schedule({
+      id: "refresh",
+      delayMs: 0,
+      everyMs: 60_000,
+      run: () => refreshCatalog({ signal: scheduler.signal }),
+    });
+  },
+});
+```
+
+Import `OpenClawPluginServiceV2`, `OpenClawPluginServiceContextV2`, and
+`PluginServiceSchedulerV1` from `openclaw/plugin-sdk/plugin-entry` when naming
+these contracts. Existing `OpenClawPluginService` and
+`OpenClawPluginServiceContext` types remain source-compatible; their scheduler
+field is optional. The Gateway supplies a scheduler to both service versions.
+
+`schedule` accepts either an absolute `atMs` or a relative `delayMs`. Job IDs
+belong to one scope: scheduling the same ID replaces its pending dispatch,
+while other services and child scopes can use the same ID independently.
+`mode: "earliest"` retains the earlier pending deadline. `everyMs` schedules
+the next run after the callback settles and coalesces missed periods; callbacks
+must return their asynchronous work so retirement can join it. Errors are
+reported by the host scheduler. The returned handle's `cancel()` prevents
+future dispatch, and `stop()` also waits for that job's running callback.
+
+Use `scheduler.scope()` for a shorter connection or watcher lifetime. Its
+`beginClose()` closes admission, aborts its signal, and cancels pending work;
+`await stop()` also joins running work and all descendants. Closing a child
+does not stop its parent or siblings. Closing the service closes all its child
+scopes. Retained `schedule` and `scope` functions throw after closure. Do not
+await a scope's `stop()` from one of its own running callbacks.
+
+The host first closes scheduling admission and signals cancellation, then invokes
+the service's stop hook. Retirement waits for both that hook and scheduled work.
+Plugins retain ownership of reconnection policy, sockets, watchers, durable flush
+ordering, and delivery custody. Stop transports and flush pending delivery in the
+owner's required order, then join its child scope before closing resources used
+by that work. Pass the lifetime signal to operations that support cancellation,
+and finish admitted writes before returning. Scheduling creates no durable jobs
+and changes no stored config or state; an update requires no state migration.
+
+Channel ingress monitors also consume the account's scheduler. Pass
+`ChannelGatewayContextV2.scheduler` through transport adapters to
+`createChannelIngressMonitor` or `createStandardRawEventIngressMonitor`.
+`CreateChannelIngressMonitorOptionsV2` is available from
+`openclaw/plugin-sdk/channel-outbound`; `StandardRawEventIngressOptionsV2`
+is available from `openclaw/plugin-sdk/channel-ingress-runtime`. The shipped V1
+factories remain source- and runtime-compatible until the next SDK major: when
+no scheduler is supplied, core borrows the current SDK host's scheduler or
+creates a standalone scheduler owned by the returned monitor's `stop()`.
+Bundled plugins use the explicit V2 account capability. Every monitor owns its
+own scope; each active polling period has a child scope. Pause joins that period,
+resume starts a fresh child, and account retirement cancels future polls.
+Stopping one monitor leaves its parent scheduler available to siblings. Durable
+admission, delivery settlement, and retention remain with the ingress owner.
+
+The shipped Discord, Matrix, Signal, and Slack package API factories also retain
+their scheduler-less V1 calls through the next SDK major. Their compatibility
+path uses `createLegacyPluginServiceScheduler()` from
+`openclaw/plugin-sdk/channel-outbound`, which returns the same
+`PluginServiceSchedulerV1`. The monitor or manager owns that handle and awaits
+its `stop()` after its transport and durable work settle. This core helper
+borrows an existing SDK host's scheduler when present; only an unbound
+standalone caller receives a private root, which the returned handle also
+closes. Timed callbacks drop the initiating request's client and operator
+authority. They retain only the existing resource host and canonical Gateway
+binding, plus ordinary invocation of the exact still-active plugin instance
+that created the lifetime. No retained plugin consumer or invocation scope is
+created. Existing HTTP registration leases remain constraints: after any captured
+lease is revoked, scheduled callbacks cannot register routes or create a new
+scheduling lifetime. Existing handles still retire through their owning monitor
+or manager. New integrations use the injected service or account capability.
+
 ## Gateway and node namespaces
+
+### Node command scheduling
+
+Node commands that retain timed work across requests use `apiVersion: 2` and
+`prepare({ config, env, scheduler })`. Import
+`OpenClawPluginNodeHostCommandV2` and
+`OpenClawPluginNodeHostCommandPrepareContextV2` from
+`openclaw/plugin-sdk/plugin-entry`. The required scheduler is the same
+`PluginServiceSchedulerV1` used by Gateway services; it belongs to the node host,
+not the individual invocation.
+
+Commands from one plugin share a scheduling lifetime. A shared `prepare` callback
+runs once per plugin connection; use distinct callbacks for distinct startup
+work. The node prepares selected commands before advertising them. On disconnect
+it closes scheduling admission and aborts `scheduler.signal`, waits for preparation to settle, then runs
+`onDisconnect` alongside joining scheduled work. Pending preparation must use
+`scheduler.signal` for cancellation rather than depend on final `onDisconnect`
+cleanup to release it. Final cleanup sees any resources acquired before
+preparation settles, including acquisition that could not be canceled.
+The next invocation waits for retirement, then prepares a fresh lifetime before
+dispatch. Registry replacement and node shutdown also retire the old lifetime.
+Failed disconnect cleanup blocks preparation until an explicit cleanup retry
+succeeds. Retries run only callbacks that have not completed successfully in that
+connection lifetime. Failed terminal cleanup retains physical custody until
+close succeeds.
+Use child scopes for resident catalogs or other shorter-lived resources, and
+return asynchronous work from scheduled callbacks so retirement can join it.
+
+The original `OpenClawPluginNodeHostCommand` remains source-compatible and keeps
+its one-time preparation behavior. Version 2 requires an explicitly injected
+host scheduler; plugins must not retain invocation signals as background-work
+authority. The CLI and private app worker use the same process cleanup owner.
+This change does not alter node wire commands, config, or stored data.
 
 ### Session resource methods
 
@@ -307,8 +423,8 @@ applicable policy also requires fresh publication admission.
     A node command may declare `prepare(context)` for asynchronous native startup.
     Node-host initialization awaits it before publishing the initial manifest or
     connecting to the Gateway; plugin registration itself stays synchronous.
-    Shared preparation callbacks run once per node registry initialization, not
-    per invocation or reconnect. Optional providers should retain a known
+    For version 1 commands, shared preparation callbacks run once per node
+    registry initialization, not per invocation or reconnect. Optional providers should retain a known
     unavailable state on expected preparation failure and let `isAvailable`
     withhold their commands; throwing aborts node startup. Use `watchAvailability`
     for later availability changes and `onDisconnect` for execution cleanup.

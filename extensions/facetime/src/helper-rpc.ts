@@ -174,15 +174,22 @@ export class FaceTimeHelperSocketServer {
     proxyIdentifier?: string,
     requestedAt?: string,
     mode?: FaceTimeDialRequest["mode"],
+    signal?: AbortSignal,
   ): Promise<HelperActionResult> {
-    return await this.#sendActionToAll("find-outgoing-call", {
-      handle,
-      ...(callUUID ? { callUUID } : {}),
-      ...(dialID ? { dialID } : {}),
-      ...(proxyIdentifier ? { proxyIdentifier } : {}),
-      ...(requestedAt ? { requestedAt } : {}),
-      ...(mode ? { mode } : {}),
-    });
+    return await this.#sendActionToAll(
+      "find-outgoing-call",
+      {
+        handle,
+        ...(callUUID ? { callUUID } : {}),
+        ...(dialID ? { dialID } : {}),
+        ...(proxyIdentifier ? { proxyIdentifier } : {}),
+        ...(requestedAt ? { requestedAt } : {}),
+        ...(mode ? { mode } : {}),
+      },
+      undefined,
+      undefined,
+      signal,
+    );
   }
 
   async cancelOutgoingCall(params: {
@@ -555,6 +562,7 @@ export class FaceTimeHelperSocketServer {
     data: Record<string, unknown>,
     timeoutMs = 5_000,
     requiredPeerProcessIds: readonly number[] = [],
+    signal?: AbortSignal,
   ): Promise<HelperActionResult> {
     const sockets = [...this.#sockets].filter(
       (candidate) =>
@@ -568,8 +576,9 @@ export class FaceTimeHelperSocketServer {
     }
     const peers = sockets.map((socket) => this.#socketPeers.get(socket));
     const results = await Promise.allSettled(
-      sockets.map((socket) => this.#sendActionOnSocket(socket, action, data, timeoutMs)),
+      sockets.map((socket) => this.#sendActionOnSocket(socket, action, data, timeoutMs, signal)),
     );
+    signal?.throwIfAborted();
     const fulfilled = results.flatMap((result, index) =>
       result.status === "fulfilled" && sockets[index]
         ? [
@@ -611,7 +620,9 @@ export class FaceTimeHelperSocketServer {
     action: string,
     data: Record<string, unknown>,
     timeoutMs = 5_000,
+    signal?: AbortSignal,
   ): Promise<HelperActionResult> {
+    signal?.throwIfAborted();
     if (this.#pending.size >= MAX_PENDING_ACTIONS) {
       throw new FaceTimeHelperUnavailableError("FaceTime helper action queue is full");
     }
@@ -619,19 +630,32 @@ export class FaceTimeHelperSocketServer {
     if (!this.#socketAuthSessions.has(socket)) {
       throw new FaceTimeHelperUnavailableError("FaceTime helper socket is not authenticated");
     }
-    return await new Promise<HelperActionResult>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.#pending.delete(transactionId);
-        reject(new Error(`FaceTime helper action timed out: ${action}`));
-      }, timeoutMs);
-      this.#pending.set(transactionId, { resolve, reject, timeout });
-      try {
-        this.#writeServerPayload(socket, { action, transactionId, data });
-      } catch (error) {
-        clearTimeout(timeout);
-        this.#pending.delete(transactionId);
-        reject(error instanceof Error ? error : new Error(String(error)));
+    let onAbort: (() => void) | undefined;
+    try {
+      return await new Promise<HelperActionResult>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          this.#pending.delete(transactionId);
+          reject(new Error(`FaceTime helper action timed out: ${action}`));
+        }, timeoutMs);
+        onAbort = () => {
+          clearTimeout(timeout);
+          this.#pending.delete(transactionId);
+          reject(signal?.reason);
+        };
+        signal?.addEventListener("abort", onAbort, { once: true });
+        this.#pending.set(transactionId, { resolve, reject, timeout });
+        try {
+          this.#writeServerPayload(socket, { action, transactionId, data });
+        } catch (error) {
+          clearTimeout(timeout);
+          this.#pending.delete(transactionId);
+          reject(error instanceof Error ? error : new Error(String(error)));
+        }
+      });
+    } finally {
+      if (onAbort) {
+        signal?.removeEventListener("abort", onAbort);
       }
-    });
+    }
   }
 }

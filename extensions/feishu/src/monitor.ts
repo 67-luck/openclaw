@@ -1,10 +1,12 @@
 import type { createAccountStatusSink } from "openclaw/plugin-sdk/channel-outbound";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { ClawdbotConfig, PluginRuntime, RuntimeEnv } from "../runtime-api.js";
 import { listEnabledFeishuAccounts, resolveFeishuRuntimeAccount } from "./accounts.js";
 import { fetchBotIdentityForMonitor } from "./monitor.startup.js";
 
 type MonitorFeishuOpts = {
+  scheduler?: PluginServiceSchedulerV1;
   config?: ClawdbotConfig;
   runtime?: RuntimeEnv;
   channelRuntime?: PluginRuntime["channel"];
@@ -23,6 +25,10 @@ export type FeishuStatusSink = ReturnType<typeof createAccountStatusSink>;
 const loadMonitorAccountRuntime = createLazyRuntimeModule(() => import("./monitor.account.js"));
 
 export async function monitorFeishuProvider(opts: MonitorFeishuOpts = {}): Promise<void> {
+  const scheduler = opts.scheduler;
+  if (!scheduler) {
+    throw new Error("Feishu monitor requires an account service scheduler");
+  }
   const cfg = opts.config;
   if (!cfg) {
     throw new Error("Config is required for Feishu monitor");
@@ -40,6 +46,7 @@ export async function monitorFeishuProvider(opts: MonitorFeishuOpts = {}): Promi
     }
     const { monitorSingleAccount } = await loadMonitorAccountRuntime();
     return monitorSingleAccount({
+      scheduler,
       cfg,
       account,
       channelRuntime: opts.channelRuntime,
@@ -79,6 +86,7 @@ export async function monitorFeishuProvider(opts: MonitorFeishuOpts = {}): Promi
 
     monitorPromises.push(
       monitorSingleAccount({
+        scheduler,
         cfg,
         account,
         channelRuntime: opts.channelRuntime,

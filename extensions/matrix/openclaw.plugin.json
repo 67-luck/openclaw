@@ -5,6 +5,7 @@
     "configRepair": true,
     "stateMigrations": [
       { "id": "matrix-account-sqlite-schema" },
+      { "id": "matrix-thread-bindings-json-to-plugin-state" },
       { "id": "matrix-credentials-json-to-plugin-state" },
       { "id": "matrix-inbound-dedupe-to-claimable-dedupe" },
       { "id": "matrix-storage-meta-json-to-plugin-state" },

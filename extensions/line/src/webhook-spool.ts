@@ -1,4 +1,3 @@
-// Line plugin module owns durable webhook admission and core-drain wiring.
 import type { webhook } from "@line/bot-sdk";
 import { fanInChannelIngressLifecycles } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
@@ -10,6 +9,8 @@ import {
   type ChannelIngressQueue,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+// Line plugin module owns durable webhook admission and core-drain wiring.
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { danger, type RuntimeEnv, warn } from "openclaw/plugin-sdk/runtime-env";
 import { runDetachedWebhookWork } from "openclaw/plugin-sdk/webhook-request-guards";
 import { createLineImageSetIngressBuffer } from "./inbound-image-set.js";
@@ -44,6 +45,7 @@ export type LineWebhookTurnAdoptionLifecycle = ReturnType<
 >["turnAdoptionLifecycle"];
 
 type LineWebhookSpoolOptions = {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   runtime: RuntimeEnv;
   deliver: (
@@ -160,6 +162,7 @@ export function createLineWebhookSpool(options: LineWebhookSpoolOptions): LineWe
     LineWebhookSpoolBody,
     LineWebhookSpoolPayload
   >({
+    scheduler: options.scheduler,
     queue,
     inspect: ({ event }) => {
       const eventId = eventIdFor(event);

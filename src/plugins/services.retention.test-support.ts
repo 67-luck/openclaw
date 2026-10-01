@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
-import { startPluginServices, type PluginServicesHandle } from "./services.js";
+import { startPluginServices, type PluginServicesHandle } from "./services.test-support.js";
 
 const gc = globalThis.gc;
 assert.ok(gc, "The retention child requires --expose-gc");

@@ -16,7 +16,6 @@ import { isLoopbackHost, isSecureWebSocketUrl } from "../gateway/net.js";
 import { normalizeWebSocketProtocol } from "../gateway/websocket-protocol.js";
 import { FLAG_TERMINATOR, isValueToken } from "../infra/cli-root-options.js";
 import { normalizeEnv } from "../infra/env.js";
-import type { ProxyHandle } from "../infra/net/proxy/proxy-lifecycle.js";
 import { tryProcessCwd } from "../infra/safe-cwd.js";
 import type { PluginCliLoadSession } from "../plugins/cli-registry-loader.js";
 import { getPluginCache } from "../plugins/plugin-cache.js";
@@ -71,6 +70,7 @@ import {
   shouldUseRootHelpFastPath,
   shouldUseSetupOnboardConfigureHelpFastPath,
 } from "./run-main-policy.js";
+import { createCliManagedProxy } from "./run-main-proxy.js";
 import { tryRunUpdateAdmissionBeforeStartup } from "./run-main-update-admission.js";
 import type {
   BareRootLaunchTarget,
@@ -82,7 +82,6 @@ import type {
 } from "./run-main.gateway-types.js";
 import type { CliHarnessCleanup } from "./runtime-cleanup-scope.js";
 import { closeCliResources, runCliDisposer } from "./runtime-cleanup.js";
-import { registerSignalExitBarrier, waitForSignalExitBarriers } from "./signal-exit-barrier.js";
 import {
   configureCliStartupDiagnostics,
   configureGatewayStartupTraceConsoleFormatting,
@@ -1010,12 +1009,9 @@ async function runCliWithPreparedOutputMode(
   // Activate operator-managed proxy routing for network-capable commands.
   // Local Gateway/control-plane commands keep direct loopback access while
   // runtime, provider, plugin, update, and manifest/metadata-owned plugin commands route egress.
-  let proxyHandle: ProxyHandle | null = null;
-  let proxyStopPromise: Promise<void> | undefined;
-  let onSigterm: (() => void) | null = null;
-  let onSigint: (() => void) | null = null;
-  let onExit: (() => void) | null = null;
-  let unregisterProxySignalExitBarrier: (() => void) | null = null;
+  const { stop: stopStartedProxy, replace: replaceStartedProxy } = createCliManagedProxy(
+    options.harnessCleanup?.pluginResources,
+  );
   let bestEffortConfigPromise: Promise<OpenClawConfig> | null = null;
   let pluginCliSession: PluginCliLoadSession | undefined;
   const getPluginCliSession = async () => {
@@ -1064,70 +1060,6 @@ async function runCliWithPreparedOutputMode(
       });
     }
     return await bestEffortConfigPromise;
-  };
-  const uninstallProxySignalHandlers = () => {
-    if (onSigterm) {
-      process.off("SIGTERM", onSigterm);
-      onSigterm = null;
-    }
-    if (onSigint) {
-      process.off("SIGINT", onSigint);
-      onSigint = null;
-    }
-    if (onExit) {
-      process.off("exit", onExit);
-      onExit = null;
-    }
-  };
-  const stopStartedProxy = () => {
-    if (proxyStopPromise) {
-      return proxyStopPromise;
-    }
-    unregisterProxySignalExitBarrier?.();
-    unregisterProxySignalExitBarrier = null;
-    uninstallProxySignalHandlers();
-    const handle = proxyHandle;
-    proxyHandle = null;
-    const stop = async () => {
-      if (handle) {
-        const { stopProxy } = await import("../infra/net/proxy/proxy-lifecycle.js");
-        await stopProxy(handle);
-      }
-    };
-    const resources = options.harnessCleanup?.pluginResources;
-    proxyStopPromise = Promise.resolve().then(() =>
-      resources ? resources.runCleanup(stop) : stop(),
-    );
-    return proxyStopPromise;
-  };
-  const killStartedProxy = () => {
-    const handle = proxyHandle;
-    proxyHandle = null;
-    handle?.kill("SIGTERM");
-  };
-  const installProxySignalHandlers = () => {
-    if (!proxyHandle || onSigterm || onSigint || onExit) {
-      return;
-    }
-    unregisterProxySignalExitBarrier = registerSignalExitBarrier(stopStartedProxy);
-    const shutdown = (exitCode: number) => {
-      void waitForSignalExitBarriers().finally(() => {
-        process.exit(exitCode);
-      });
-    };
-    onSigterm = () => shutdown(143);
-    onSigint = () => shutdown(130);
-    onExit = () => killStartedProxy();
-    process.once("SIGTERM", onSigterm);
-    process.once("SIGINT", onSigint);
-    process.once("exit", onExit);
-  };
-  const replaceStartedProxy = async (config: OpenClawConfig["proxy"]) => {
-    await stopStartedProxy();
-    const { startProxy } = await import("../infra/net/proxy/proxy-lifecycle.js");
-    proxyHandle = await startProxy(config);
-    proxyStopPromise = undefined;
-    installProxySignalHandlers();
   };
   let uninstallGatewayRunRuntimeHooks: (() => void) | null = null;
   let unhandledRejectionHandlerInstalled = false;
@@ -1387,7 +1319,11 @@ async function runCliWithPreparedOutputMode(
         ]),
       );
       const program = await startupTrace.measure("build-program", () =>
-        buildProgram({ doctorDatabasePreflight, runtimeRecoveryEnv: options.runtimeRecoveryEnv }),
+        buildProgram({
+          doctorDatabasePreflight,
+          runtimeRecoveryEnv: options.runtimeRecoveryEnv,
+          scheduler: options.harnessCleanup?.scheduler,
+        }),
       );
       await options.harnessCleanup?.pluginResources?.waitForRegistrations();
 

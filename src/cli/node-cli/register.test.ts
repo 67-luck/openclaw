@@ -82,6 +82,7 @@ describe("registerNodeCli", () => {
       await createProgram().parseAsync(["node", "worker", ...args], { from: "user" });
       expect(daemonMocks.runNodeHostWorker).toHaveBeenCalledWith({
         desktopSharingEnabled: enabled,
+        scheduler: undefined,
       });
     },
   );

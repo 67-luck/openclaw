@@ -9,6 +9,7 @@ import {
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { withTimeout } from "openclaw/plugin-sdk/security-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { createIrcIngressMonitor } from "./irc-ingress.js";
@@ -265,6 +266,7 @@ describe("IRC automatic reply outcomes", () => {
       let monitor: Awaited<ReturnType<typeof monitorIrcProvider>> | undefined;
       try {
         monitor = await monitorIrcProvider({
+          scheduler: createTestPluginServiceScheduler(),
           config: {
             channels: {
               irc: {
@@ -322,9 +324,13 @@ describe("IRC configured-unavailable credential connection boundaries", () => {
 
     try {
       await withIngressQueue(async (ingressQueue) => {
-        await expect(monitorIrcProvider({ config, ingressQueue })).rejects.toThrow(
-          /configured but unavailable/i,
-        );
+        await expect(
+          monitorIrcProvider({
+            scheduler: createTestPluginServiceScheduler(),
+            config,
+            ingressQueue,
+          }),
+        ).rejects.toThrow(/configured but unavailable/i);
       });
       expect(connectSpy).not.toHaveBeenCalled();
     } finally {
@@ -385,7 +391,13 @@ describe("irc monitor reconnect", () => {
         ingressQueue: IrcIngressQueue,
         onMessage: IrcMonitorMessageHandler,
       ) => {
-        const monitor = await monitorIrcProvider({ accountId, config, ingressQueue, onMessage });
+        const monitor = await monitorIrcProvider({
+          scheduler: createTestPluginServiceScheduler(),
+          accountId,
+          config,
+          ingressQueue,
+          onMessage,
+        });
         monitors.push(monitor);
         return monitor;
       };
@@ -442,7 +454,12 @@ describe("irc monitor reconnect", () => {
       let monitor: { stop: () => Promise<void> } | undefined;
 
       try {
-        monitor = await monitorIrcProvider({ config, ingressQueue, statusSink });
+        monitor = await monitorIrcProvider({
+          scheduler: createTestPluginServiceScheduler(),
+          config,
+          ingressQueue,
+          statusSink,
+        });
         server.disconnectFirst();
         await withTimeout(reconnected, 3000, "IRC recovery after a failed reconnect attempt");
         expect(
@@ -489,6 +506,7 @@ describe("irc monitor reconnect", () => {
       let monitor: { stop: () => Promise<void> } | undefined;
       try {
         monitor = await monitorIrcProvider({
+          scheduler: createTestPluginServiceScheduler(),
           config: monitorConfig(server.port, "receipt-bot", { dmPolicy: "pairing" }),
           ingressQueue,
           statusSink,
@@ -556,6 +574,7 @@ describe("irc monitor inbound target", () => {
         let monitor: { stop: () => Promise<void> } | undefined;
         try {
           monitor = await monitorIrcProvider({
+            scheduler: createTestPluginServiceScheduler(),
             config: monitorConfig(server.port),
             ingressQueue,
             onMessage: (message) => {
@@ -604,6 +623,7 @@ describe("irc monitor inbound target", () => {
       let monitor: { stop: () => Promise<void> } | undefined;
       try {
         monitor = await monitorIrcProvider({
+          scheduler: createTestPluginServiceScheduler(),
           config: monitorConfig(server.port, "reconnected-bot"),
           ingressQueue,
           onMessage,
@@ -644,6 +664,7 @@ describe("irc monitor inbound target", () => {
       let monitor: { stop: () => Promise<void> } | undefined;
       try {
         monitor = await monitorIrcProvider({
+          scheduler: createTestPluginServiceScheduler(),
           config: monitorConfig(server.port, "receipt-bot"),
           ingressQueue,
           onMessage,
@@ -671,6 +692,7 @@ describe("irc monitor inbound target", () => {
       let monitor: { stop: () => Promise<void> } | undefined;
       try {
         monitor = await monitorIrcProvider({
+          scheduler: createTestPluginServiceScheduler(),
           config: monitorConfig(server.port),
           ingressQueue,
           onMessage,

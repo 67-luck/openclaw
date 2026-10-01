@@ -2,6 +2,7 @@
 import type { CloudflareAccessCredentials } from "../../packages/gateway-client/src/cloudflare-access.js";
 import type { OpenClawConfig } from "../config/config.js";
 import { getRuntimeConfig } from "../config/config.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { NODE_CLAUDE_SKILLS_MESSAGE_BYTES } from "../infra/node-claude-skill-protocol.js";
 import {
   NODE_AGENT_CLI_CLAUDE_RUN_COMMAND,
@@ -39,8 +40,6 @@ import {
   hasRegisteredNodeHostCommandActiveWork,
   isRegisteredNodeHostCommandDuplex,
   listRegisteredNodeHostCapsAndCommands,
-  notifyRegisteredNodeHostCommandDisconnect,
-  watchRegisteredNodeHostCommandAvailability,
 } from "./plugin-node-host.js";
 import {
   buildNodeHostManifest,
@@ -120,6 +119,7 @@ async function settleNodeHostCleanup(owners: Array<Promise<unknown> | undefined>
 }
 
 export async function prepareNodeHostRuntime(params?: {
+  scheduler?: GatewayScheduler;
   config?: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
   /** The embedded app worker never advertises native agent runs. */
@@ -143,7 +143,20 @@ export async function prepareNodeHostRuntime(params?: {
   }
   const config = params?.config ?? getRuntimeConfig();
   const env = params?.env ?? process.env;
-  await ensureNodeHostPluginRegistry({ config, env, commandAllowlist });
+  const pluginLifetime = await ensureNodeHostPluginRegistry({
+    config,
+    env,
+    commandAllowlist,
+    scheduler: params?.scheduler,
+  });
+  await using preparation = {
+    transferred: false,
+    async [Symbol.asyncDispose]() {
+      if (!this.transferred) {
+        await pluginLifetime.close();
+      }
+    },
+  };
   const pathEnv = ensureNodePathEnv();
   env.PATH = pathEnv;
   const duplexEnabled =
@@ -187,6 +200,7 @@ export async function prepareNodeHostRuntime(params?: {
     workerCleanupIncomplete ||= error instanceof NodeWorkerContainerContextMismatchError;
     try {
       await preparedContainerSupervisor?.close();
+      preparedContainerSupervisor = undefined;
     } catch (closeError) {
       workerCleanupIncomplete = true;
       if (closeError !== error) {
@@ -195,7 +209,6 @@ export async function prepareNodeHostRuntime(params?: {
     }
     workerRunsEnabled = false;
     preparedWorkerWorkspace = undefined;
-    preparedContainerSupervisor = undefined;
     preparedContainerCapacity = undefined;
     workerHostingDisabledReason = failure instanceof Error ? failure.message : String(failure);
   };
@@ -264,6 +277,7 @@ export async function prepareNodeHostRuntime(params?: {
   }
   const initialInventory = createNodeHostInventory(skills, pluginNodeHost.nodePluginTools);
 
+  preparation.transferred = true;
   return {
     manifest,
     workerHostingEnabled: workerRunsEnabled,
@@ -290,17 +304,29 @@ export async function prepareNodeHostRuntime(params?: {
       const workerBundleInstaller = workerRunsEnabled
         ? new NodeWorkerBundleInstaller({ env })
         : undefined;
-      let workerSupervisor =
-        preparedContainerSupervisor ??
-        (workerRunsEnabled
-          ? createNodeWorkerSupervisor({
-              env,
-              capacity: config.nodeHost?.workerRuns?.capacity,
-              onCapacityChanged: onRunnerCapacityChanged,
-              workspace: workerWorkspace,
-            })
-          : undefined);
-      if (preparedContainerSupervisor) {
+      let workerSupervisor = workerRunsEnabled
+        ? (preparedContainerSupervisor ??
+          createNodeWorkerSupervisor({
+            env,
+            capacity: config.nodeHost?.workerRuns?.capacity,
+            onCapacityChanged: onRunnerCapacityChanged,
+            workspace: workerWorkspace,
+          }))
+        : undefined;
+      let retiringSupervisor = workerRunsEnabled ? undefined : preparedContainerSupervisor;
+      const closeWorkerSupervisor = () =>
+        (supervisorClose ??= Promise.resolve()
+          .then(async () => {
+            await (retiringSupervisor ?? workerSupervisor)?.close();
+            retiringSupervisor = undefined;
+            preparedContainerSupervisor = undefined;
+          })
+          .catch((error: unknown) => {
+            // Failed retirement keeps the physical supervisor and its open journal for retry.
+            supervisorClose = undefined;
+            throw error;
+          }));
+      if (workerSupervisor && preparedContainerSupervisor) {
         publishContainerCapacity = onRunnerCapacityChanged;
         if (preparedContainerCapacity) {
           onRunnerCapacityChanged?.(preparedContainerCapacity);
@@ -319,9 +345,11 @@ export async function prepareNodeHostRuntime(params?: {
           if (error instanceof NodeWorkerContainerContextMismatchError) {
             // Closing this supervisor cannot retire claims on a different daemon.
             workerCleanupIncomplete = true;
+            retiringSupervisor = supervisor;
             workerSupervisor = undefined;
+            const retirement = closeWorkerSupervisor();
             onWorkerHostingDisabled?.(error.message);
-            await supervisor.close().catch((closeError: unknown) => {
+            await retirement.catch((closeError: unknown) => {
               logDebug(`node-host: worker supervisor cleanup failed: ${String(closeError)}`);
             });
             return;
@@ -402,16 +430,10 @@ export async function prepareNodeHostRuntime(params?: {
         }
         publishInventory();
       };
-      const stopAvailabilityWatch = onManifestChanged
-        ? watchRegisteredNodeHostCommandAvailability(
-            availabilityContext,
-            refreshAvailability,
-            commandAllowlist,
-          )
-        : async () => {};
       // The watcher cannot replay a socket change between preparation and
       // registration. Resolve once after attachment to close that race.
       if (onManifestChanged) {
+        pluginLifetime.watchAvailability(refreshAvailability);
         refreshAvailability();
       }
       const updatePause = createNodeHostUpdatePause({
@@ -452,6 +474,21 @@ export async function prepareNodeHostRuntime(params?: {
                 await createNodeInvokeResponder(client, frame).error(
                   "UNAVAILABLE",
                   "Node disconnect cleanup failed. Reconnect the node to retry cleanup.",
+                );
+              }
+              return;
+            }
+            if (closing || generation !== connectionGeneration) {
+              return;
+            }
+            try {
+              await pluginLifetime.prepare();
+            } catch (error) {
+              if (!closing && generation === connectionGeneration) {
+                logDebug(`node-host: plugin preparation failed: ${String(error)}`);
+                await createNodeInvokeResponder(client, frame).error(
+                  "UNAVAILABLE",
+                  "Node plugin preparation failed; reconnect the node to retry.",
                 );
               }
               return;
@@ -612,9 +649,10 @@ export async function prepareNodeHostRuntime(params?: {
           skillBins = new SkillBinsCache(client, pathEnv);
           // Close can reenter from an abort listener and must see this cleanup barrier.
           pendingDisconnectCleanups += 1;
+          const pluginCleanup = pluginLifetime.disconnect();
           const idleCleanup = workerSupervisor?.retireIdle();
           const cleanup = settleNodeHostCleanup([
-            disconnectCleanup.catch(() => {}).then(notifyRegisteredNodeHostCommandDisconnect),
+            disconnectCleanup.catch(() => {}).then(() => pluginCleanup),
             idleCleanup,
           ]).finally(() => {
             pendingDisconnectCleanups -= 1;
@@ -663,20 +701,14 @@ export async function prepareNodeHostRuntime(params?: {
               // cancelAll publishes the cleanup barrier joined below.
               void this.cancelAll();
             }
-            const watcherClose = stopAvailabilityWatch();
+            const pluginClose = pluginLifetime.close();
             // Startup observes this signal before either independent owner is joined.
             mcpAbort.abort();
             const disconnectClose = disconnectCleanup;
-            supervisorClose ??= Promise.resolve()
-              .then(() => workerSupervisor?.close())
-              .catch((error: unknown) => {
-                // The supervisor retains failed retirement records and an open journal for retry.
-                supervisorClose = undefined;
-                throw error;
-              });
+            const workerClose = closeWorkerSupervisor();
             // MCP close is terminal: another call after failure can return an empty success.
             mcpClose ??= startup.then((resolved) => resolved?.close());
-            await settleNodeHostCleanup([watcherClose, disconnectClose, supervisorClose, mcpClose]);
+            await settleNodeHostCleanup([disconnectClose, pluginClose, workerClose, mcpClose]);
           };
           void closeOwners().then(completion.resolve, (error: unknown) => {
             closePromise = undefined;

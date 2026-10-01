@@ -1,7 +1,9 @@
 import type { ChannelRuntimeSurface } from "openclaw/plugin-sdk/channel-contract";
 import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
+import { createLegacyPluginServiceScheduler } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig, ReplyToMode } from "openclaw/plugin-sdk/config-contracts";
 import { resolvePromptHistoryLimit } from "openclaw/plugin-sdk/number-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveTextChunkLimit } from "openclaw/plugin-sdk/reply-chunking";
 import {
   createRuntimeConfigReader,
@@ -56,6 +58,7 @@ import { formatDiscordStartupStatusMessage } from "./startup-status.js";
 import { createDiscordReadyStatusPatch, type DiscordMonitorStatusSink } from "./status.js";
 
 export type MonitorDiscordOpts = {
+  scheduler?: PluginServiceSchedulerV1;
   token?: string;
   accountId?: string;
   config?: OpenClawConfig;
@@ -69,6 +72,8 @@ export type MonitorDiscordOpts = {
   setStatus?: DiscordMonitorStatusSink;
   commandDeployHashStore?: DiscordCommandDeployHashStore;
 };
+
+export type MonitorDiscordOptsV2 = MonitorDiscordOpts & { scheduler: PluginServiceSchedulerV1 };
 
 const DEFAULT_DISCORD_MEDIA_MAX_MB = 100;
 
@@ -85,6 +90,16 @@ function isDiscordDisallowedIntentsError(err: unknown): boolean {
 }
 
 export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
+  const scheduler = opts.scheduler?.scope() ?? createLegacyPluginServiceScheduler();
+  try {
+    return await monitorDiscordAccount({ ...opts, scheduler });
+  } finally {
+    await scheduler.stop();
+  }
+}
+
+async function monitorDiscordAccount(opts: MonitorDiscordOptsV2) {
+  const { scheduler } = opts;
   const startupStartedAt = Date.now();
   const cfg = opts.config ?? getRuntimeConfig();
   const readConfig = opts.readConfig ?? createRuntimeConfigReader(cfg);
@@ -272,6 +287,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
   const voiceManagerRef: { current: DiscordVoiceManager | null } = { current: null };
   const threadBindings = threadBindingsEnabled
     ? await discordProviderSessionRuntime.createThreadBindingManager({
+        scheduler,
         accountId: account.accountId,
         token,
         cfg,
@@ -360,6 +376,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       gatewaySupervisor: createdGatewaySupervisor,
       autoPresenceController: createdAutoPresenceController,
     } = await createDiscordMonitorClient({
+      scheduler,
       accountId: account.accountId,
       applicationId,
       token,
@@ -427,6 +444,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
         DiscordVoiceStateUpdateListener,
       } = await discordProviderRuntime.loadDiscordVoiceRuntime();
       voiceManager = new DiscordVoiceManager({
+        scheduler,
         readPolicy,
         client,
         cfg,
@@ -446,6 +464,7 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       registerDiscordListener(client.listeners, new DiscordVoiceStateUpdateListener(voiceManager));
     }
     const messageHandler = discordProviderSessionRuntime.createDiscordMessageHandler({
+      scheduler,
       readPolicy,
       client,
       cfg,

@@ -2,6 +2,7 @@
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginRuntime } from "openclaw/plugin-sdk/core";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 // Preserve module setup before modules that consume it.
@@ -116,6 +117,7 @@ describe("zalouser monitor pairing account scoping", () => {
         return { stop: vi.fn() };
       });
       const run = monitorZalouserProvider({
+        scheduler: createTestPluginServiceScheduler(),
         account,
         config,
         runtime: createZalouserRuntimeEnv(),
@@ -166,6 +168,7 @@ describe("zalouser monitor lifecycle", () => {
     await withZalouserIngressTestQueue(async (ingressQueue) => {
       const abortController = new AbortController();
       const run = monitorZalouserProvider({
+        scheduler: createTestPluginServiceScheduler(),
         account: {
           accountId: "default",
           enabled: true,

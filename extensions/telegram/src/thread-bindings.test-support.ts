@@ -6,6 +6,7 @@ import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeEach, vi } from "vitest";
 import { setTelegramRuntime } from "./runtime.js";
@@ -105,9 +106,10 @@ export function useTelegramThreadBindingsFixture() {
     installStore,
     storedBindings: async () => (await store.entries()).map((entry) => entry.value),
     createManager: async (
-      params: Omit<Parameters<typeof createTelegramThreadBindingManager>[0], "cfg">,
+      params: Omit<Parameters<typeof createTelegramThreadBindingManager>[0], "cfg" | "scheduler">,
     ) => {
       const manager = await createTelegramThreadBindingManager({
+        scheduler: createTestPluginServiceScheduler(),
         cfg: TELEGRAM_THREAD_BINDINGS_TEST_CFG,
         ...params,
       });

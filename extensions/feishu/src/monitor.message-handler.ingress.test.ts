@@ -10,6 +10,7 @@ import {
 import { DEFAULT_INGRESS_RETRY_MAX_ATTEMPTS } from "openclaw/plugin-sdk/channel-outbound";
 import { createTestInboundDebounceFlush } from "openclaw/plugin-sdk/channel-test-helpers";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createNonExitingRuntimeEnv } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ClawdbotConfig, PluginRuntime, RuntimeEnv } from "../runtime-api.js";
@@ -427,6 +428,7 @@ describe("Feishu durable ingress debounce lifecycle", () => {
         resolveIngressLifecycle: (data) => ingress.resolveLifecycle(data),
       });
       const ingress = createFeishuDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         dispatcher: { invoke: async (data: unknown) => await handler(data as never) } as never,

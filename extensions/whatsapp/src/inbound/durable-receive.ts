@@ -6,6 +6,7 @@ import {
   type ChannelIngressMonitorLifecycle,
   type ChannelIngressQueue,
 } from "openclaw/plugin-sdk/channel-outbound";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { getWhatsAppRuntime } from "../runtime.js";
 import {
   deserializeWhatsAppDurableInboundMessage,
@@ -88,6 +89,7 @@ function resolveWhatsAppIngressNonRetryableFailure(error: unknown) {
 
 /** Shared monitor with per-conversation lanes and completion at reply-lane adoption. */
 export function createWhatsAppIngressMonitor(params: {
+  scheduler: PluginServiceSchedulerV1;
   queue: WhatsAppDurableInboundQueue;
   dispatch: (
     admission: WhatsAppIngressAdmission,
@@ -104,6 +106,7 @@ export function createWhatsAppIngressMonitor(params: {
     WhatsAppDurableInboundPayload,
     WhatsAppDurableInboundPayload
   >({
+    scheduler: params.scheduler,
     queue: params.queue,
     inspect: (admission) => inspectWhatsAppIngressMessage(admission.message),
     payload: {

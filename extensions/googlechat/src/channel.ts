@@ -163,6 +163,7 @@ export const googlechatPlugin = createChatChannelPlugin({
       }),
     }),
     gateway: {
+      apiVersion: 2,
       startAccount: startGoogleChatGatewayAccount,
     },
   },

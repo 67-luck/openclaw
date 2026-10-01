@@ -92,6 +92,7 @@ describe("Codex supervision catalog", () => {
       });
       const command = createCodexSessionCatalogNodeHostCommands(
         {
+          bindScheduler: () => {},
           hasActiveWork: () => false,
           disconnect: async () => {},
           forRequest: () => control,

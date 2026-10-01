@@ -1,5 +1,6 @@
 import { fanInChannelIngressLifecycles } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import { isLoopbackHost } from "openclaw/plugin-sdk/gateway-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { createRuntimeConfigReader } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { isPrivateNetworkOptInEnabled } from "openclaw/plugin-sdk/ssrf-runtime";
 import {
@@ -51,6 +52,7 @@ import { cleanupSlashCommands } from "./slash-commands.js";
 import { deactivateSlashCommands, getSlashCommandState } from "./slash-state.js";
 
 type MonitorMattermostOpts = {
+  scheduler?: PluginServiceSchedulerV1;
   botToken?: string;
   baseUrl?: string;
   accountId?: string;
@@ -73,6 +75,10 @@ function publishMattermostRecoveringStatus(
 }
 
 export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}): Promise<void> {
+  const scheduler = opts.scheduler;
+  if (!scheduler) {
+    throw new Error("Mattermost monitor requires an account service scheduler");
+  }
   const core = getMattermostRuntime();
   const runtime =
     opts.runtime ??
@@ -321,6 +327,7 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
     },
   });
   const ingress = createMattermostIngressMonitor({
+    scheduler,
     accountId: account.accountId,
     runtime,
     abortSignal: opts.abortSignal,

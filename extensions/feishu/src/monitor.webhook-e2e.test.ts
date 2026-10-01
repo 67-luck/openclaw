@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { createConnection } from "node:net";
 import * as Lark from "@larksuiteoapi/node-sdk";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { resolveRequestClientIp } from "openclaw/plugin-sdk/webhook-ingress";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
@@ -665,9 +666,9 @@ describe("Feishu webhook security hardening", () => {
       path: "/hook-missing-token",
     });
 
-    await expect(monitorFeishuProvider({ config: cfg })).rejects.toThrow(
-      /requires verificationToken/i,
-    );
+    await expect(
+      monitorFeishuProvider({ scheduler: createTestPluginServiceScheduler(), config: cfg }),
+    ).rejects.toThrow(/requires verificationToken/i);
   });
 
   it("rejects webhook mode without encryptKey", async () => {
@@ -679,7 +680,9 @@ describe("Feishu webhook security hardening", () => {
       verificationToken: "verify_token",
     });
 
-    await expect(monitorFeishuProvider({ config: cfg })).rejects.toThrow(/requires encryptKey/i);
+    await expect(
+      monitorFeishuProvider({ scheduler: createTestPluginServiceScheduler(), config: cfg }),
+    ).rejects.toThrow(/requires encryptKey/i);
   });
 
   it("rejects oversized unsigned webhook bodies with 413 before signature verification", async () => {

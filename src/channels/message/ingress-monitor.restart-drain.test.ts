@@ -6,6 +6,7 @@ import {
   resolveRuntimeWorkerArgv,
   resolveRuntimeWorkerUrl,
 } from "../../infra/runtime-worker-url.js";
+import { createTestPluginServiceScheduler } from "../../plugin-sdk/plugin-test-api.js";
 import { runDetachedWebhookWork } from "../../plugin-sdk/webhook-request-guards.js";
 import { PluginInstance } from "../../plugins/plugin-instance.js";
 import {
@@ -58,6 +59,7 @@ function createMonitor(
   runPumpTask?: (work: () => Promise<void>) => Promise<void>,
 ) {
   return createChannelIngressMonitor<RawEvent, string, StoredEvent>({
+    scheduler: createTestPluginServiceScheduler(),
     queue,
     inspect: (raw) => ({ eventId: raw.id, laneKey: `lane:${raw.lane}` }),
     payload: {

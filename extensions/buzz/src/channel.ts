@@ -200,6 +200,7 @@ export const buzzPlugin = createChatChannelPlugin<ResolvedBuzzAccount, BuzzProbe
       },
     },
     gateway: {
+      apiVersion: 2,
       startAccount: startBuzzGatewayAccount,
     },
     heartbeat: {

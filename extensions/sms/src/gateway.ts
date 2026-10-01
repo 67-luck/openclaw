@@ -5,6 +5,7 @@ import {
   channelReadyPatch,
   channelStoppedPatch,
 } from "openclaw/plugin-sdk/gateway-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { registerPluginHttpRoute } from "openclaw/plugin-sdk/webhook-ingress";
 import { createSmsIngressSpool, type SmsIngressLog } from "./ingress-spool.js";
 import { resolveTwilioStatusCallbackUrl } from "./public-webhook-url.js";
@@ -91,6 +92,7 @@ export function collectSmsStartupWarnings(account: ResolvedSmsAccount): string[]
 }
 
 async function registerSmsWebhookRoute(params: {
+  scheduler: PluginServiceSchedulerV1;
   cfg: SmsWebhookHandlerParams["cfg"];
   account: ResolvedSmsAccount;
   channelRuntime: Parameters<typeof createSmsIngressSpool>[0]["channelRuntime"];
@@ -108,6 +110,7 @@ async function registerSmsWebhookRoute(params: {
     ? stopSmsWebhookRoute(webhookPath, currentRoute)
     : (pendingRouteStops.get(webhookPath) ?? Promise.resolve());
   const ingress = createSmsIngressSpool({
+    scheduler: params.scheduler,
     cfg: params.cfg,
     account: params.account,
     channelRuntime: params.channelRuntime,
@@ -169,6 +172,7 @@ async function registerSmsWebhookRoute(params: {
 }
 
 export async function startSmsGatewayAccount(params: {
+  scheduler: PluginServiceSchedulerV1;
   cfg: SmsWebhookHandlerParams["cfg"];
   account: ResolvedSmsAccount;
   channelRuntime: Parameters<typeof createSmsIngressSpool>[0]["channelRuntime"];

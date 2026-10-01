@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { WorkboardExecution } from "@openclaw/workboard-contract";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { createWorkboardLifecycleService, syncWorkboardSubagentEnded } from "./lifecycle-sync.js";
@@ -83,7 +84,10 @@ function doneSessionSnapshot(updatedAt: number) {
   });
 }
 
-const context = { logger: { warn: vi.fn() } } as never;
+const context = {
+  scheduler: createTestPluginServiceScheduler(),
+  logger: { warn: vi.fn() },
+} as never;
 
 describe("Workboard managed-worktree cleanup recovery", () => {
   it("retries cleanup after a hook failure and process restart", async () => {

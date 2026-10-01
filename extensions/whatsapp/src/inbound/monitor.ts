@@ -1,6 +1,7 @@
 import type { WAMessageKey, WASocket } from "baileys";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { getChildLogger } from "openclaw/plugin-sdk/logging-core";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { createSubsystemLogger, defaultRuntime } from "openclaw/plugin-sdk/runtime-env";
 import type { ReconnectPolicy } from "../reconnect.js";
 import { createWaSocket, waitForWaConnection } from "../session.js";
@@ -31,6 +32,7 @@ function logWhatsAppVerbose(enabled: boolean | undefined, message: string) {
 }
 
 type MonitorWebInboxOptions = {
+  scheduler: PluginServiceSchedulerV1;
   cfg: OpenClawConfig;
   loadConfig?: () => OpenClawConfig;
   socketTiming?: Required<WhatsAppSocketTimingOptions>;
@@ -106,6 +108,7 @@ export async function attachWebInboxToSocket(
     },
   });
   const delivery = createWhatsAppMessageDeliveryCoordinator({
+    scheduler: options.scheduler,
     cfg: options.cfg,
     loadConfig: options.loadConfig,
     verbose: options.verbose,

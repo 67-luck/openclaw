@@ -1,4 +1,5 @@
 import { DEFAULT_ACCOUNT_ID, type OpenClawConfig } from "openclaw/plugin-sdk/account-resolution";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { registerPluginHttpRoute } from "openclaw/plugin-sdk/webhook-ingress";
 import { listAccountIds, resolveAccount } from "./accounts.js";
 import { resolveSynologyPublicWebhookRouteKey } from "./hosted-media-route.js";
@@ -194,6 +195,7 @@ export function validateSynologyGatewayAccountStartup(params: {
 }
 
 export async function registerSynologyWebhookRoute(params: {
+  scheduler: PluginServiceSchedulerV1;
   cfg: OpenClawConfig;
   account: ResolvedSynologyChatAccount;
   accountId: string;
@@ -210,6 +212,7 @@ export async function registerSynologyWebhookRoute(params: {
 
   const logAdapter = createUnknownArgsLogAdapter(log);
   const ingress = createSynologyIngressMonitor({
+    scheduler: params.scheduler,
     accountId: account.accountId,
     runtime: {
       error: (message) => log?.error?.(message),

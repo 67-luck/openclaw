@@ -4,6 +4,7 @@ import { hasFinalInboundReplyDispatch } from "openclaw/plugin-sdk/channel-inboun
 import { resolveChannelStreamingBlockEnabled } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { channelReadyPatch, channelStoppedPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import {
   danger,
   logVerbose,
@@ -31,6 +32,7 @@ import { LineWebhookTerminalDeliveryError } from "./webhook-spool.js";
 import { resolveLineWebhookPath } from "./webhook-utils.js";
 
 interface MonitorLineProviderOptions {
+  scheduler?: PluginServiceSchedulerV1;
   channelAccessToken: string;
   channelSecret: string;
   accountId?: string;
@@ -110,6 +112,10 @@ function startLineLoadingKeepalive(params: {
 export async function monitorLineProvider(
   opts: MonitorLineProviderOptions,
 ): Promise<LineProviderMonitor> {
+  const scheduler = opts.scheduler;
+  if (!scheduler) {
+    throw new Error("LINE monitor requires an account service scheduler");
+  }
   const {
     channelAccessToken,
     channelSecret,
@@ -133,6 +139,7 @@ export async function monitorLineProvider(
   }
 
   const bot = createLineBot({
+    scheduler,
     channelAccessToken: token,
     channelSecret: secret,
     accountId,

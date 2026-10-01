@@ -6,6 +6,7 @@ import { createChannelIngressQueueForTests } from "openclaw/plugin-sdk/channel-i
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { FinalizedMsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { createMockServerResponse } from "openclaw/plugin-sdk/test-env";
 import { vi } from "vitest";
@@ -35,7 +36,11 @@ export async function withSlackIngressIdentityTestHarness(
     accountId: "team",
     stateDir: params.stateDir,
   });
-  const pending = createSlackDurableIngress({ accountId: "team", queue });
+  const pending = createSlackDurableIngress({
+    scheduler: createTestPluginServiceScheduler(),
+    accountId: "team",
+    queue,
+  });
   const message: SlackMessageEvent = {
     type: "message",
     channel: "D123",
@@ -47,7 +52,11 @@ export async function withSlackIngressIdentityTestHarness(
   await pending.acceptRelayEvent({ deliveryId: "relay-before-restart", message });
   await pending.stop();
 
-  const ingress = createSlackDurableIngress({ accountId: "team", queue });
+  const ingress = createSlackDurableIngress({
+    scheduler: createTestPluginServiceScheduler(),
+    accountId: "team",
+    queue,
+  });
   const receiver = new SocketModeReceiver({ appToken: "xapp-fixture" });
   const app = new App({
     receiver: ingress.wrapReceiver(receiver),

@@ -11,6 +11,7 @@ import {
   extractErrorCode,
   formatErrorMessage,
 } from "openclaw/plugin-sdk/error-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import { normalizeNullableString as nonEmptyString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { getZalouserRuntime } from "./runtime.js";
@@ -122,6 +123,7 @@ function isZalouserAuthenticationFailure(error: unknown): boolean {
 }
 
 export function createZalouserIngressMonitor(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   ownUserId: string;
   runtime: Pick<RuntimeEnv, "error" | "log">;
@@ -135,6 +137,7 @@ export function createZalouserIngressMonitor(options: {
     { receivedAt: number; rawMessage: string },
     ZalouserIngressPayload
   >({
+    scheduler: options.scheduler,
     queue:
       options.queue ??
       (() =>

@@ -1,5 +1,6 @@
 // WhatsApp web auto-reply media delivery behavior.
 import fs from "node:fs/promises";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { createNoisyPngBuffer, createSolidPngBuffer } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -19,7 +20,7 @@ let monitorWebChannel: typeof import("./auto-reply/monitor.js").monitorWebChanne
 
 describe("web auto-reply media delivery", () => {
   installWebAutoReplyUnitTestHooks({ pinDns: true });
-  type ListenerFactory = NonNullable<Parameters<typeof monitorWebChannel>[1]>;
+  type ListenerFactory = NonNullable<Parameters<typeof monitorWebChannel>[2]>;
   type WebInboundPlatform = WebInboundCallbackMessage["platform"];
   type ReplyMock = ReturnType<typeof vi.fn<WebInboundPlatform["reply"]>>;
   type SendMediaMock = ReturnType<typeof vi.fn<WebInboundPlatform["sendMedia"]>>;
@@ -51,7 +52,13 @@ describe("web auto-reply media delivery", () => {
       return createMockWebListener();
     };
 
-    await monitorWebChannel(false, listenerFactory, false, resolver);
+    await monitorWebChannel(
+      createTestPluginServiceScheduler(),
+      false,
+      listenerFactory,
+      false,
+      resolver,
+    );
     if (!capturedOnMessage) {
       throw new Error("expected WhatsApp web message handler");
     }

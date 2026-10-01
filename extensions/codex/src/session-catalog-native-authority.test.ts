@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -93,6 +94,7 @@ describe("native catalog metadata authority", () => {
         },
       });
       const index = new CodexCatalogIndex({
+        scheduler: createTestPluginServiceScheduler(),
         homeId: await codexCatalogResidentHomeKey({ startOptions }),
         localSessionsRoot: root,
         readNative: async () =>
@@ -167,6 +169,7 @@ describe("native catalog metadata authority", () => {
         projectCodexCatalogPage({ data: [peer, native] }, { sanitize: sanitizeTerminalText }),
       );
       const index = new CodexCatalogIndex({
+        scheduler: createTestPluginServiceScheduler(),
         homeId: root,
         localSessionsRoot: root,
         readNative,
@@ -217,6 +220,7 @@ describe("native catalog metadata authority", () => {
       projectCodexCatalogPage({ data: [native] }, { sanitize: sanitizeTerminalText }),
     );
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: root,
       localSessionsRoot: root,
       readNative,
@@ -244,6 +248,7 @@ describe("native catalog metadata authority", () => {
   it("honors an explicit native preview clear instead of restoring its previous fallback", async () => {
     const { root, thread } = await fixture();
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: root,
       readNative: async () =>
         projectCodexCatalogPage({ data: [thread] }, { sanitize: sanitizeTerminalText }),
@@ -284,6 +289,7 @@ describe("native catalog metadata authority", () => {
       projectCodexCatalogPage({ data: [peer, native] }, { sanitize: sanitizeTerminalText }),
     );
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: root,
       localSessionsRoot: root,
       readNative,
@@ -345,6 +351,7 @@ describe("native catalog metadata authority", () => {
       projectCodexCatalogPage({ data: [] }, { sanitize: sanitizeTerminalText }),
     );
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: root,
       localSessionsRoot: root,
       readNative,

@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
 
@@ -55,6 +56,7 @@ function createMembershipContext(params?: {
 async function registerJoinHandler(config: OpenClawConfig) {
   getLoadConfigMock().mockReturnValue(config);
   await createTelegramBotCore({
+    scheduler: createTestPluginServiceScheduler(),
     token: "tok",
     botInfo: telegramBotInfoForTest,
     telegramDeps: telegramBotDepsForTest,

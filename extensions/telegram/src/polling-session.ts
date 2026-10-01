@@ -2,6 +2,7 @@ import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contrac
 import type { TelegramNetworkConfig } from "openclaw/plugin-sdk/config-contracts";
 import { drainPendingDeliveries } from "openclaw/plugin-sdk/delivery-queue-runtime";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { formatDurationPrecise, sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import { withTelegramApiErrorLogging } from "./api-logging.js";
 import { createTelegramBot } from "./bot.js";
@@ -69,6 +70,7 @@ const resolvePollingStallThresholdMs = (value: number | undefined): number => {
 };
 
 type TelegramPollingSessionOpts = {
+  scheduler: PluginServiceSchedulerV1;
   token: string;
   config: NonNullable<Parameters<typeof createTelegramBot>[0]["config"]>;
   accountId: string;
@@ -245,6 +247,7 @@ export class TelegramPollingSession {
     };
     try {
       return await createTelegramBot({
+        scheduler: this.opts.scheduler,
         token: this.opts.token,
         runtime: this.opts.runtime,
         buildContext: this.opts.buildContext,
@@ -324,6 +327,7 @@ export class TelegramPollingSession {
         : cycleAbortController.signal
       : this.opts.abortSignal;
     const ingressMonitor = createTelegramTransportIngressMonitor({
+      scheduler: this.opts.scheduler,
       stateDir: ingress.stateDir,
       bot,
       accountId: this.opts.accountId,

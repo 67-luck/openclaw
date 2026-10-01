@@ -7,12 +7,12 @@ import {
   type ChannelIngressQueue,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { retryAsync } from "openclaw/plugin-sdk/retry-runtime";
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   inspectNostrIngressEvent,
-  migrateNostrLegacyRecentEventIds,
   NOSTR_INGRESS_PAYLOAD_VERSION,
   NostrIngressPermanentError,
   type NostrIngressPayload,
@@ -73,9 +73,9 @@ function deserializeNostrIngressEvent(rawEvent: string, claimedId: string): Even
 }
 
 export function createNostrIngress(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   queue?: ChannelIngressQueue<NostrIngressPayload>;
-  legacyEventIds?: readonly string[];
   maxSerializedPayloadBytes: number;
   maxPendingEvents: number;
   maxQueuedAdmissions: number;
@@ -108,6 +108,7 @@ export function createNostrIngress(options: {
     { receivedAt: number; rawEvent: string },
     NostrIngressPayload
   >({
+    scheduler: options.scheduler,
     queue: getQueue,
     inspect: (event) => {
       const facts = inspectNostrIngressEvent(event);
@@ -165,20 +166,12 @@ export function createNostrIngress(options: {
     createStoppedError,
     onError: (error) => options.onError?.(error as Error, "ingress drain"),
   });
-  const monitorStart = (async () => {
-    // Open through the shared monitor first so a denied queue is classified for
-    // gateway health before Nostr's legacy tombstone migration touches it.
+  const monitorStart = Promise.resolve().then(() => {
     monitor.ensureQueueAvailable();
-    await migrateNostrLegacyRecentEventIds({
-      queue: getQueue(),
-      eventIds: options.legacyEventIds ?? [],
-    });
-    // stop() may run while the legacy migration is pending. Do not let that
-    // deferred startup revive polling after shutdown has begun.
     if (!stopping) {
       monitor.start();
     }
-  })();
+  });
   void monitorStart.catch((error: unknown) => options.onError?.(error as Error, "ingress drain"));
 
   // Admission stays local because relay ack needs accepted/duplicate plus rate,

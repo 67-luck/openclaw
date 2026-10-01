@@ -61,6 +61,7 @@ import {
   type MatrixInboundDedupeMigrationIo,
 } from "./src/matrix/monitor/inbound-dedupe-migration.js";
 import { walkMatrixStateFiles } from "./src/matrix/state-layout-walk.js";
+import { matrixThreadBindingsMigration } from "./src/matrix/thread-bindings-doctor.js";
 import { resolveMatrixCredentialsDir } from "./src/storage-paths.js";
 
 export { normalizeCompatibilityConfig, legacyConfigRules } from "./config-doctor-api.js";
@@ -269,6 +270,7 @@ const legacyCryptoMigration = defineMatrixLegacyFileMigration({
 
 export const stateMigrations: PluginDoctorStateMigration[] = [
   matrixAccountStateSchemaMigration,
+  matrixThreadBindingsMigration,
   {
     id: "matrix-credentials-json-to-plugin-state",
     label: "Matrix credentials",

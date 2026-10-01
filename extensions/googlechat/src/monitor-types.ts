@@ -1,5 +1,6 @@
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { ResolvedGoogleChatAccount } from "./accounts.js";
 import type { GoogleChatAudienceType } from "./auth.js";
 import type { GoogleChatIngressMonitor } from "./monitor-ingress.js";
@@ -13,6 +14,7 @@ export type GoogleChatRuntimeEnv = {
 type GoogleChatStatusSink = (patch: Partial<ChannelAccountSnapshot>) => void;
 
 export type GoogleChatMonitorOptions = {
+  scheduler?: PluginServiceSchedulerV1;
   account: ResolvedGoogleChatAccount;
   config: OpenClawConfig;
   runtime: GoogleChatRuntimeEnv;

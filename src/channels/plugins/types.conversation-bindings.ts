@@ -1,7 +1,19 @@
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { PluginServiceSchedulerV1 } from "../../plugins/service-scheduler.types.js";
+
+export type ChannelConversationBindingManagerParams = {
+  cfg: OpenClawConfig;
+  accountId?: string | null;
+  scheduler?: PluginServiceSchedulerV1;
+};
+
+export type ChannelConversationBindingManagerParamsV2 = ChannelConversationBindingManagerParams & {
+  scheduler: PluginServiceSchedulerV1;
+};
 
 export type ChannelConversationBindingSupport = {
+  apiVersion?: 1;
   supportsCurrentConversationBinding?: boolean;
   isCurrentConversationBindingSupported?: (params: { accountId: string }) => boolean;
   /** Declares that live bindings come from a channel-registered adapter, never generic storage. */
@@ -78,11 +90,21 @@ export type ChannelConversationBindingSupport = {
   setMaxAgeBySessionKeyAsync?: (
     params: Parameters<NonNullable<ChannelConversationBindingSupport["setMaxAgeBySessionKey"]>>[0],
   ) => Promise<ReturnType<NonNullable<ChannelConversationBindingSupport["setMaxAgeBySessionKey"]>>>;
-  createManager?: (params: { cfg: OpenClawConfig; accountId?: string | null }) =>
+  createManager?: (params: ChannelConversationBindingManagerParams) =>
     | {
         stop: () => void | Promise<void>;
       }
     | Promise<{
         stop: () => void | Promise<void>;
       }>;
+};
+
+export type ChannelConversationBindingSupportV2 = Omit<
+  ChannelConversationBindingSupport,
+  "apiVersion" | "createManager"
+> & {
+  apiVersion: 2;
+  createManager?: (
+    params: ChannelConversationBindingManagerParamsV2,
+  ) => ReturnType<NonNullable<ChannelConversationBindingSupport["createManager"]>>;
 };

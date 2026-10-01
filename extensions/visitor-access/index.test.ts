@@ -7,7 +7,8 @@ import type {
   OpenClawConfig,
   OpenClawPluginApi,
   OpenClawPluginService,
-  OpenClawPluginServiceContext,
+  OpenClawPluginServiceV2,
+  OpenClawPluginServiceContextV2,
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenAsyncKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
@@ -15,7 +16,10 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import {
+  createTestPluginServiceScheduler,
+  createTestPluginApi,
+} from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -124,7 +128,7 @@ describe("visitor-access plugin lifecycle", () => {
     config: OpenClawConfig = gatewayConfig,
   ) {
     const tools = new Map<string, AnyAgentTool>();
-    const services: OpenClawPluginService[] = [];
+    const services: (OpenClawPluginService | OpenClawPluginServiceV2)[] = [];
     const accessPolicies: PluginGatewayAccessPolicy[] = [];
     const on = vi.fn<OpenClawPluginApi["on"]>();
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
@@ -188,7 +192,12 @@ describe("visitor-access plugin lifecycle", () => {
     if (!accessPolicy) {
       throw new Error("Plugin did not register its Gateway access policy");
     }
-    const context: OpenClawPluginServiceContext = { config: {}, stateDir, logger };
+    const context: OpenClawPluginServiceContextV2 = {
+      config: {},
+      stateDir,
+      logger,
+      scheduler: createTestPluginServiceScheduler(),
+    };
     cleanups.push(() => service.stop?.(context));
     const store = createPluginStateKeyedStoreForTests<VisitorGrant>("visitor-access", {
       namespace: "visitor-grants",
@@ -208,17 +217,6 @@ describe("visitor-access plugin lifecycle", () => {
       toolContext,
       start: () => service.start(context),
       stop: () => service.stop?.(context),
-      gatewayStart: () => {
-        const hook = on.mock.calls.find(([name]) => name === "gateway_start")?.[1];
-        if (!hook) {
-          throw new Error("Plugin did not register its Gateway startup sweep");
-        }
-        const startHook = hook as (
-          event: { port: number },
-          context: { port?: number },
-        ) => void | Promise<void>;
-        return startHook({ port: 18789 }, {});
-      },
       execute: (name: string, input: Record<string, unknown> = {}) => {
         const tool = tools.get(name);
         if (!tool) {
@@ -496,7 +494,7 @@ describe("visitor-access plugin lifecycle", () => {
     expect(await restarted.store.entries()).toHaveLength(grants.length);
   });
 
-  it("revokes persisted expiries after restart, coalesces startup, and continues hourly", async () => {
+  it("revokes persisted expiries after restart and continues hourly", async () => {
     const policy = createPolicyFetch();
     vi.stubGlobal("fetch", policy.fetcher);
     const first = registerPlugin();
@@ -516,7 +514,7 @@ describe("visitor-access plugin lifecycle", () => {
     policy.fetcher.mockClear();
 
     const restarted = registerPlugin();
-    await Promise.all([restarted.start(), restarted.gatewayStart()]);
+    await restarted.start();
     expect(policy.emails()).toEqual(["active@example.test"]);
     expect((await restarted.store.entries()).map((entry) => entry.key)).toEqual([
       "active@example.test",

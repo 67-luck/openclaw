@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FaceTimeHelperSupervisor } from "../src/helper-supervisor.js";
 
@@ -16,6 +17,7 @@ describe("FaceTime helper supervisor", () => {
   let activeSupervisor: FaceTimeHelperSupervisor;
   function createSupervisor(overrides: Partial<SupervisorParams> = {}) {
     activeSupervisor = new FaceTimeHelperSupervisor({
+      scheduler: createTestPluginServiceScheduler(),
       pluginRoot: "/tmp/facetime",
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
       runCommandWithTimeout: vi

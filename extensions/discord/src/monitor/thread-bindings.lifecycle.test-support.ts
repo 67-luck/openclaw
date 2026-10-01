@@ -5,6 +5,7 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   clearRuntimeConfigSnapshot,
   type OpenClawConfig,
@@ -77,11 +78,12 @@ const discordClientModule = await import("../client.js");
 const discordThreadBindingApi = await import("./thread-bindings.discord-api.js");
 
 export function createTestThreadBindingManager(
-  params: Omit<Parameters<typeof createThreadBindingManager>[0], "cfg"> & {
+  params: Omit<Parameters<typeof createThreadBindingManager>[0], "cfg" | "scheduler"> & {
     cfg?: OpenClawConfig;
   } = {},
 ) {
   return createThreadBindingManager({
+    scheduler: createTestPluginServiceScheduler(),
     cfg: EMPTY_DISCORD_TEST_CONFIG,
     accountId: "default",
     persist: false,

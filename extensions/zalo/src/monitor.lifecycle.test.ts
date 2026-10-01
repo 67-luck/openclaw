@@ -8,6 +8,7 @@ import {
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createEmptyPluginRegistry,
   createRuntimeEnv,
@@ -69,6 +70,7 @@ async function startLifecycleMonitor(
   const abort = new AbortController();
   const runtime = createRuntimeEnv();
   const run = monitorZaloProvider({
+    scheduler: createTestPluginServiceScheduler(),
     token: "test-token",
     account: TEST_ACCOUNT,
     config: TEST_CONFIG,

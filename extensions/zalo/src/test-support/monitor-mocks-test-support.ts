@@ -9,6 +9,7 @@ import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helper
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginRuntime } from "openclaw/plugin-sdk/core";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createEmptyPluginRegistry,
   createRuntimeEnv,
@@ -235,6 +236,7 @@ export async function startWebhookLifecycleMonitor(params: {
     ? await loadCachedLifecycleMonitorModule(params.cacheKey)
     : await loadLifecycleMonitorModule();
   const run = monitorZaloProvider({
+    scheduler: createTestPluginServiceScheduler(),
     token: params.token ?? "zalo-token",
     account: params.account,
     config: params.config,

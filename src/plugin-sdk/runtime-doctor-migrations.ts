@@ -419,9 +419,13 @@ export function defineLegacyJsonStateMigration<TSource>(params: {
   };
   toRows: (source: TSource) => readonly { key: string; value: unknown }[];
 }): PluginDoctorStateMigration {
-  const readSource = async (filePath: string): Promise<TSource | null> => {
+  const readSource = async (
+    filePath: string,
+  ): Promise<{ value: TSource; bytes: Buffer } | null> => {
     try {
-      return params.parse(JSON.parse(await fs.readFile(filePath, "utf8")) as unknown);
+      const bytes = await fs.readFile(filePath);
+      const value = params.parse(JSON.parse(bytes.toString("utf8")) as unknown);
+      return value ? { value, bytes } : null;
     } catch (error) {
       if (!hasErrnoCode(error, "ENOENT")) {
         throw error;
@@ -441,11 +445,11 @@ export function defineLegacyJsonStateMigration<TSource>(params: {
       if (!source) {
         return null;
       }
-      const rows = params.toRows(source);
+      const rows = params.toRows(source.value);
       if (rows.length === 0) {
         return null;
       }
-      const description = describe(source, filePath);
+      const description = describe(source.value, filePath);
       return { preview: description.preview };
     },
     async migrateLegacyState({ stateDir, context }) {
@@ -456,11 +460,11 @@ export function defineLegacyJsonStateMigration<TSource>(params: {
       if (!source) {
         return { changes, warnings };
       }
-      const rows = params.toRows(source);
+      const rows = params.toRows(source.value);
       if (rows.length === 0) {
         return { changes, warnings };
       }
-      const description = describe(source, filePath);
+      const description = describe(source.value, filePath);
       const store = context.openPluginStateKeyedStore<unknown>({
         namespace: params.namespace,
         maxEntries: params.maxEntries,
@@ -498,14 +502,19 @@ export function defineLegacyJsonStateMigration<TSource>(params: {
         imported,
         alreadyPresent: rows.length - imported,
       });
-      if (change) {
-        changes.push(change);
-      }
       await archiveLegacyStateSource({
         filePath,
         label: params.archiveLabel ?? params.label,
         changes,
         warnings,
+        verifiedCompletion: {
+          expectedBytes: source.bytes,
+          complete: async () => {
+            if (change) {
+              changes.push(change);
+            }
+          },
+        },
       });
       return { changes, warnings };
     },

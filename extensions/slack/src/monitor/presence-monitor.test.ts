@@ -1,6 +1,7 @@
 import { WebAPIRateLimitedError } from "@slack/web-api";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import type { PreparedSlackMessage } from "./message-handler/types.js";
 import {
@@ -83,6 +84,44 @@ function createPrepared(params: {
 }
 
 describe("Slack presence monitor", () => {
+  it("joins an active scheduled poll when its account lifetime retires", async () => {
+    vi.useFakeTimers();
+    const scheduler = createTestPluginServiceScheduler();
+    const response = createDeferred<{ presence: string }>();
+    const getPresence = vi.fn().mockReturnValue(response.promise);
+    const enqueue = vi.fn(() => true);
+    const monitor = createSlackPresenceMonitor({
+      scheduler,
+      accountId: "default",
+      accountConfig: { mode: "auto" },
+      client: { getPresence } as never,
+      cooldownStore: createCooldownStore(),
+      enqueue,
+      wake: vi.fn(),
+    });
+    try {
+      monitor.observe(createPrepared({ userId: "U123" }));
+      monitor.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(getPresence).toHaveBeenCalledOnce();
+      let stopped = false;
+      const stopping = scheduler.stop().then(() => {
+        stopped = true;
+      });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+      response.resolve({ presence: "active" });
+      await stopping;
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(getPresence).toHaveBeenCalledOnce();
+      expect(enqueue).not.toHaveBeenCalled();
+    } finally {
+      response.resolve({ presence: "active" });
+      await scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("retires an old policy target while its presence request is in flight", async () => {
     let current = true;
     const response = createDeferred<{ presence: string }>();
@@ -93,6 +132,7 @@ describe("Slack presence monitor", () => {
     const enqueue = vi.fn(() => true);
     const cooldownStore = createCooldownStore();
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto" },
       client: { getPresence } as never,
@@ -133,6 +173,7 @@ describe("Slack presence monitor", () => {
       .mockResolvedValueOnce({ presence: "active" });
     const enqueue = vi.fn((..._args: unknown[]) => true);
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto", prompt: "Account guidance" },
       client: { getPresence } as never,
@@ -167,6 +208,7 @@ describe("Slack presence monitor", () => {
       .mockResolvedValueOnce({ presence: "active" });
     const enqueue = vi.fn((..._args: unknown[]) => true);
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto", prompt: "Account guidance" },
       client: { getPresence } as never,
@@ -203,6 +245,7 @@ describe("Slack presence monitor", () => {
     const enqueue = vi.fn((..._args: unknown[]) => true);
     const wake = vi.fn();
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto" },
       client: { getPresence } as never,
@@ -266,6 +309,7 @@ describe("Slack presence monitor", () => {
       .mockResolvedValueOnce({ presence: "away" });
     const enqueue = vi.fn(() => true);
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto" },
       client: { getPresence } as never,
@@ -339,6 +383,7 @@ describe("Slack presence monitor", () => {
     });
     const enqueue = vi.fn(() => true);
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "org",
       accountConfig: { mode: "auto" },
       resolveClient,
@@ -378,6 +423,7 @@ describe("Slack presence monitor", () => {
   it("auto excludes top-level channels and threads larger than eight people", async () => {
     const getPresence = vi.fn().mockResolvedValue({ presence: "away" });
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto" },
       client: { getPresence } as never,
@@ -405,6 +451,7 @@ describe("Slack presence monitor", () => {
   it("does not let excluded auto channels evict an eligible direct message", async () => {
     const getPresence = vi.fn().mockResolvedValue({ presence: "away" });
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto" },
       client: { getPresence } as never,
@@ -431,6 +478,7 @@ describe("Slack presence monitor", () => {
   it("on includes top-level channels and overrides the auto size cap", async () => {
     const getPresence = vi.fn().mockResolvedValue({ presence: "away" });
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto" },
       client: { getPresence } as never,
@@ -471,6 +519,7 @@ describe("Slack presence monitor", () => {
       .mockResolvedValueOnce({ presence: "active" });
     const enqueue = vi.fn(() => true);
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto" },
       client: { getPresence } as never,
@@ -504,6 +553,7 @@ describe("Slack presence monitor", () => {
         .mockReturnValueOnce(stalled)
         .mockResolvedValueOnce({ presence: "away" });
       const monitor = createSlackPresenceMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         accountConfig: { mode: "auto" },
         client: { getPresence } as never,
@@ -539,6 +589,7 @@ describe("Slack presence monitor", () => {
       .mockRejectedValueOnce(new WebAPIRateLimitedError(120))
       .mockResolvedValue({ presence: "away" });
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "on" },
       client: { getPresence } as never,
@@ -578,6 +629,7 @@ describe("Slack presence monitor", () => {
     try {
       const getPresence = vi.fn(() => stalled);
       const monitor = createSlackPresenceMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         accountConfig: { mode: "auto" },
         client: { getPresence } as never,
@@ -638,6 +690,7 @@ describe("Slack presence monitor", () => {
       const wake = vi.fn();
       let now = 1_000;
       const monitor = createSlackPresenceMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         accountConfig: { mode: "auto" },
         client: { getPresence } as never,
@@ -711,6 +764,7 @@ describe("Slack presence monitor", () => {
     const cooldownStore: PluginStateKeyedStore<number> = createCooldownStore();
     delete cooldownStore.deleteIfEqual;
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto" },
       client: {
@@ -738,6 +792,7 @@ describe("Slack presence monitor", () => {
     const wake = vi.fn();
     const error = vi.fn();
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto" },
       client: {
@@ -770,6 +825,7 @@ describe("Slack presence monitor", () => {
       .mockReturnValueOnce(active);
     const enqueue = vi.fn(() => true);
     const monitor = createSlackPresenceMonitor({
+      scheduler: createTestPluginServiceScheduler(),
       accountId: "default",
       accountConfig: { mode: "auto" },
       client: { getPresence } as never,

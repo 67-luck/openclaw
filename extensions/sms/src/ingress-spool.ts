@@ -1,10 +1,11 @@
-// Sms plugin module owns durable Twilio webhook admission and replay.
 import {
   bindIngressLifecycleToReplyOptions,
   createChannelIngressMonitor,
   type ChannelIngressQueue,
 } from "openclaw/plugin-sdk/channel-outbound";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+// Sms plugin module owns durable Twilio webhook admission and replay.
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { runDetachedWebhookWork } from "openclaw/plugin-sdk/webhook-request-guards";
 import { dispatchSmsInboundEvent, type SmsChannelRuntime } from "./inbound.js";
 import { looksLikeSmsPhoneNumber, normalizeSmsPhoneNumber } from "./phone.js";
@@ -80,6 +81,7 @@ function parseSmsIngressForm(
 }
 
 export function createSmsIngressSpool(params: {
+  scheduler: PluginServiceSchedulerV1;
   cfg: OpenClawConfig;
   account: ResolvedSmsAccount;
   channelRuntime: SmsChannelRuntime;
@@ -115,6 +117,7 @@ export function createSmsIngressSpool(params: {
     Record<string, string>,
     SmsIngressPayload
   >({
+    scheduler: params.scheduler,
     queue,
     inspect: (form, context) => {
       const eventId = resolveTwilioMessageSid(form);

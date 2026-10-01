@@ -288,6 +288,7 @@ export const zaloPlugin: ChannelPlugin<ResolvedZaloAccount, ZaloProbeResult> =
         },
       }),
       gateway: {
+        apiVersion: 2,
         startAccount: async (ctx) =>
           await (await loadZaloChannelRuntime()).startZaloGatewayAccount(ctx),
       },

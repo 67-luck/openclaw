@@ -6,6 +6,7 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleSlackHttpRequest } from "../http/registry.js";
 import { getSlackTestState, resetSlackTestState } from "../monitor.test-helpers.js";
@@ -68,6 +69,7 @@ describe("Slack ingress startup cleanup", () => {
     };
     const controller = new AbortController();
     const run = monitorSlackProvider({
+      scheduler: createTestPluginServiceScheduler(),
       botToken: "bot-token",
       abortSignal: controller.signal,
       config: state.config,
@@ -141,22 +143,26 @@ describe("Slack ingress startup cleanup", () => {
     }
   });
 
-  it("stops ingress and the Bolt transport when ingress start throws", async () => {
-    const startError = new Error("durable ingress unavailable");
-    ingressStartMock.mockImplementation(() => {
-      throw startError;
-    });
+  it.each([true, false])(
+    "cleans up failed ingress startup with a supplied scheduler=%s",
+    async (suppliedScheduler) => {
+      const startError = new Error("durable ingress unavailable");
+      ingressStartMock.mockImplementation(() => {
+        throw startError;
+      });
 
-    await expect(
-      monitorSlackProvider({
-        botToken: "bot-token",
-        appToken: "app-token",
-        config: getSlackTestState().config,
-      }),
-    ).rejects.toBe(startError);
+      await expect(
+        monitorSlackProvider({
+          ...(suppliedScheduler ? { scheduler: createTestPluginServiceScheduler() } : {}),
+          botToken: "bot-token",
+          appToken: "app-token",
+          config: getSlackTestState().config,
+        }),
+      ).rejects.toBe(startError);
 
-    expect(ingressStopMock).toHaveBeenCalledTimes(1);
-    expect(getSlackTestState().appStartMock).not.toHaveBeenCalled();
-    expect(getSlackTestState().appStopMock).toHaveBeenCalledTimes(1);
-  });
+      expect(ingressStopMock).toHaveBeenCalledTimes(1);
+      expect(getSlackTestState().appStartMock).not.toHaveBeenCalled();
+      expect(getSlackTestState().appStopMock).toHaveBeenCalledTimes(1);
+    },
+  );
 });

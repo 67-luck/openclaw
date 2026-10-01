@@ -1,10 +1,12 @@
+import type { ChannelGatewayAdapterV2 } from "openclaw/plugin-sdk/channel-contract";
 import { createAccountStatusSink } from "openclaw/plugin-sdk/channel-outbound";
 import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
-import type { ChannelPlugin, PluginRuntime } from "../runtime-api.js";
+import type { PluginRuntime } from "../runtime-api.js";
 import { resolveFeishuRuntimeAccount } from "./accounts.js";
 import type { ResolvedFeishuAccount } from "./types.js";
 
-export const feishuGatewayAdapter: NonNullable<ChannelPlugin<ResolvedFeishuAccount>["gateway"]> = {
+export const feishuGatewayAdapter: ChannelGatewayAdapterV2<ResolvedFeishuAccount> = {
+  apiVersion: 2,
   startAccount: async (ctx) => {
     const { monitorFeishuProvider } = await import("./monitor.js");
     const account = resolveFeishuRuntimeAccount(
@@ -21,6 +23,7 @@ export const feishuGatewayAdapter: NonNullable<ChannelPlugin<ResolvedFeishuAccou
       setStatus: ctx.setStatus,
     });
     return monitorFeishuProvider({
+      scheduler: ctx.scheduler,
       config: ctx.cfg,
       runtime: ctx.runtime,
       // SAFETY: Gateway supplies the full runtime behind the SDK's narrower context type.

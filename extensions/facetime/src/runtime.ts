@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
 import { normalizeFaceTimeCallEvent } from "./call-events.js";
 import { FaceTimeCallRegistry } from "./call-lifecycle.js";
@@ -61,6 +62,7 @@ export type FaceTimeRuntime = {
 const OUTBOUND_RECONCILE_DELAY_MS = 1_000;
 
 export async function createFaceTimeRuntime(params: {
+  scheduler: PluginServiceSchedulerV1;
   config: FaceTimeConfig;
   fullConfig: OpenClawConfig;
   runtime: PluginRuntime;
@@ -76,6 +78,7 @@ export async function createFaceTimeRuntime(params: {
     throw new Error(`Invalid facetime config: ${validation.errors.join("; ")}`);
   }
 
+  const scheduler = params.scheduler.scope();
   const calls = new FaceTimeCallRegistry<ActiveFaceTimeCall>();
   const pendingDialStore = new PendingFaceTimeDialStore(
     params.runtime.state.openKeyedStore({
@@ -92,7 +95,7 @@ export async function createFaceTimeRuntime(params: {
     outboundCallPending.ownerEpoch += 1;
     await pendingDialStore.save(outboundCallPending);
   }
-  let outboundReconcileTimer: NodeJS.Timeout | undefined;
+  let outboundReconcileTimer: ReturnType<PluginServiceSchedulerV1["schedule"]> | undefined;
   let outboundReconcileInFlight: Promise<void> | undefined;
   let driverInstall: FaceTimeRuntimeStatus["driverInstall"] = { phase: "idle" };
   let driverInstallAbortController: AbortController | undefined;
@@ -107,6 +110,7 @@ export async function createFaceTimeRuntime(params: {
   let helperStopped = false;
   const helperRef: { current?: FaceTimeHelperSocketServer } = {};
   const helperSupervisor = new FaceTimeHelperSupervisor({
+    scheduler,
     pluginRoot: params.pluginRoot,
     logger: params.logger,
     runCommandWithTimeout: params.runtime.system.runCommandWithTimeout,
@@ -131,7 +135,7 @@ export async function createFaceTimeRuntime(params: {
     expectedDialID = outboundCallPending?.dialID,
   ): Promise<void> => {
     if (outboundReconcileTimer) {
-      clearTimeout(outboundReconcileTimer);
+      outboundReconcileTimer.cancel();
       outboundReconcileTimer = undefined;
     }
     const pending = outboundCallPending;
@@ -149,7 +153,7 @@ export async function createFaceTimeRuntime(params: {
   };
   const persistOutboundCallPending = (): Promise<void> =>
     outboundCallPending ? pendingDialStore.save(outboundCallPending) : Promise.resolve();
-  const reconcilePendingOutboundCall = async (): Promise<void> => {
+  const reconcilePendingOutboundCall = async (signal?: AbortSignal): Promise<void> => {
     if (outboundDialDispatchPending) {
       return;
     }
@@ -160,9 +164,10 @@ export async function createFaceTimeRuntime(params: {
     if (!pending) {
       return;
     }
-    const reconciliation = (async () => {
+    outboundReconcileInFlight = (async () => {
       try {
         await reconcilePendingFaceTimeCarrier({
+          signal,
           helper,
           pending,
           isCurrent: () =>
@@ -172,27 +177,29 @@ export async function createFaceTimeRuntime(params: {
           clear: () => clearOutboundCallPending(pending.dialID),
         });
         // Cancellation is retained intent; discovering a late carrier cannot restore consent.
-        if (outboundCallPending === pending && pending.delivery === "cancelling") {
+        if (
+          !signal?.aborted &&
+          outboundCallPending === pending &&
+          pending.delivery === "cancelling"
+        ) {
           await cancelPendingOutboundCall();
         }
       } catch (error) {
-        params.logger.debug?.(
-          `[facetime] outbound dial reconciliation deferred: ${formatErrorMessage(error)}`,
-        );
+        if (!signal?.aborted) {
+          params.logger.debug?.(
+            `[facetime] outbound dial reconciliation deferred: ${formatErrorMessage(error)}`,
+          );
+        }
       }
-    })();
-    outboundReconcileInFlight = reconciliation;
-    try {
-      await reconciliation;
-    } finally {
-      if (outboundReconcileInFlight === reconciliation) {
-        outboundReconcileInFlight = undefined;
-      }
-    }
+    })().finally(() => {
+      outboundReconcileInFlight = undefined;
+    });
+    await outboundReconcileInFlight;
   };
   const scheduleOutboundReconciliation = () => {
     if (
       stopping ||
+      scheduler.signal.aborted ||
       outboundReconcileTimer ||
       !outboundCallPending ||
       helper.connectedSockets === 0
@@ -200,17 +207,20 @@ export async function createFaceTimeRuntime(params: {
       return;
     }
     const pending = outboundCallPending;
-    outboundReconcileTimer = setTimeout(() => {
-      outboundReconcileTimer = undefined;
-      void observePendingOperation(
-        reconcilePendingOutboundCall().finally(() => {
-          if (outboundCallPending === pending) {
+    outboundReconcileTimer = scheduler.schedule({
+      id: "outbound-reconcile",
+      delayMs: OUTBOUND_RECONCILE_DELAY_MS,
+      run: async () => {
+        outboundReconcileTimer = undefined;
+        try {
+          await reconcilePendingOutboundCall(scheduler.signal);
+        } finally {
+          if (!scheduler.signal.aborted && outboundCallPending === pending) {
             scheduleOutboundReconciliation();
           }
-        }),
-      );
-    }, OUTBOUND_RECONCILE_DELAY_MS);
-    outboundReconcileTimer.unref?.();
+        }
+      },
+    });
   };
   const cancelPendingOutboundCall = async (): Promise<
     | {
@@ -306,7 +316,7 @@ export async function createFaceTimeRuntime(params: {
       }
       if (!stopping) {
         void observePendingOperation(
-          reconcilePendingOutboundCall().finally(scheduleOutboundReconciliation),
+          reconcilePendingOutboundCall(scheduler.signal).finally(scheduleOutboundReconciliation),
         );
       }
     },
@@ -503,7 +513,7 @@ export async function createFaceTimeRuntime(params: {
           if (outboundDialInFlight === dialPromise) {
             outboundDialInFlight = undefined;
           }
-          await reconcilePendingOutboundCall();
+          await reconcilePendingOutboundCall(scheduler.signal);
           scheduleOutboundReconciliation();
         }
         throw error;
@@ -645,10 +655,8 @@ export async function createFaceTimeRuntime(params: {
     },
     async stop() {
       stopping = true;
-      if (outboundReconcileTimer) {
-        clearTimeout(outboundReconcileTimer);
-        outboundReconcileTimer = undefined;
-      }
+      await scheduler.stop();
+      outboundReconcileTimer = undefined;
       driverInstallAbortController?.abort();
       await driverInstallTask;
       await pendingDialStore.settle();

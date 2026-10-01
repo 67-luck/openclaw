@@ -1,4 +1,5 @@
 import type { PhotoSize } from "grammy/types";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import * as ssrf from "openclaw/plugin-sdk/ssrf-runtime";
 import { afterEach, beforeAll, beforeEach, expect, vi, type Mock } from "vitest";
 import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
@@ -17,7 +18,9 @@ export function createTelegramPhotoForTest(fileId: string): PhotoSize {
   return { file_id: fileId, file_unique_id: `unique-${fileId}`, width: 100, height: 100 };
 }
 
-let createTelegramBotRef: typeof import("./bot.js").createTelegramBot;
+let createTelegramBotRef: (
+  opts: Omit<Parameters<typeof import("./bot.js").createTelegramBot>[0], "scheduler">,
+) => ReturnType<typeof import("./bot.js").createTelegramBot>;
 let replySpyRef: ReturnType<typeof vi.fn>;
 let onSpyRef: Mock;
 let sendChatActionSpyRef: Mock;
@@ -107,6 +110,7 @@ async function loadTelegramBotHarness() {
   const botModule = await import("./bot.js");
   createTelegramBotRef = (opts) =>
     botModule.createTelegramBot({
+      scheduler: createTestPluginServiceScheduler(),
       ...opts,
       telegramDeps: harness.telegramBotDepsForTest,
     });

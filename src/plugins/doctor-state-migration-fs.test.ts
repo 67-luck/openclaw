@@ -68,4 +68,39 @@ describe("archiveLegacyStateSource", () => {
     expect(warnings).toHaveLength(1);
     expect(warnings[0]).toContain("Failed archiving test state legacy source");
   });
+
+  it.each([false, true])(
+    "preserves captured bytes when completion fails (recreated source: %s)",
+    async (recreateSource) => {
+      const filePath = path.join(dir, "state.json");
+      await fs.writeFile(filePath, "original");
+      const changes: string[] = [];
+      const warnings: string[] = [];
+
+      await archiveLegacyStateSource({
+        filePath,
+        label: "test state",
+        changes,
+        warnings,
+        verifiedCompletion: {
+          expectedBytes: Buffer.from("original"),
+          complete: async () => {
+            if (recreateSource) {
+              await fs.writeFile(filePath, "recreated");
+            }
+            throw new Error("receipt write failed");
+          },
+        },
+      });
+
+      expect(changes).toEqual([]);
+      expect(warnings).toHaveLength(2);
+      expect(warnings[0]).toContain("receipt write failed");
+      expect(warnings[1]).toContain(`${filePath}.migrated`);
+      await expect(fs.readFile(filePath, "utf8")).resolves.toBe(
+        recreateSource ? "recreated" : "original",
+      );
+      await expect(fs.readFile(`${filePath}.migrated`, "utf8")).resolves.toBe("original");
+    },
+  );
 });

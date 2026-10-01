@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
 import { describe, expect, it, vi } from "vitest";
 import type { CodexAppServerStartOptions } from "./app-server/config-contracts.js";
@@ -43,6 +44,7 @@ describe("resident catalog cursor stability", () => {
     );
     const nativeReads = vi.spyOn(harness.client, "request");
     const index = new CodexCatalogIndex({
+      scheduler: createTestPluginServiceScheduler(),
       homeId: await codexCatalogResidentHomeKey({ startOptions }),
       readNative,
       assertCurrent: () => {},

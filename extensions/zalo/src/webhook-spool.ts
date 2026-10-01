@@ -7,6 +7,7 @@ import {
   type ChannelIngressQueue,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { normalizeNullableString as nonEmptyString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { runDetachedWebhookWork } from "openclaw/plugin-sdk/webhook-request-guards";
 import { z } from "zod";
@@ -212,6 +213,7 @@ function isZaloAuthenticationFailure(error: unknown): boolean {
 }
 
 function createZaloWebhookIngress(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   runtime: Pick<ZaloRuntimeEnv, "error" | "log">;
   deliver: (update: ZaloUpdate, lifecycle: ZaloWebhookIngressLifecycle) => Promise<void>;
@@ -223,6 +225,7 @@ function createZaloWebhookIngress(options: {
       accountId: options.accountId,
     });
   const monitor = createChannelIngressMonitor<string, string, ZaloWebhookSpoolPayload>({
+    scheduler: options.scheduler,
     queue,
     inspect: (rawEvent) => inspectZaloWebhookEvent(rawEvent),
     payload: {

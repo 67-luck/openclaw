@@ -436,6 +436,7 @@ export const smsPlugin: ChannelPlugin<ResolvedSmsAccount, SmsProbe> = createChat
     },
     directory: createEmptyChannelDirectoryAdapter(),
     gateway: {
+      apiVersion: 2,
       startAccount: async (ctx) => {
         if (!ctx.channelRuntime) {
           ctx.log?.warn?.("SMS channel runtime is not available; webhook route not started");
@@ -446,6 +447,7 @@ export const smsPlugin: ChannelPlugin<ResolvedSmsAccount, SmsProbe> = createChat
           setStatus: ctx.setStatus,
         });
         return await startSmsGatewayAccount({
+          scheduler: ctx.scheduler,
           cfg: ctx.cfg,
           account: ctx.account,
           channelRuntime: ctx.channelRuntime as unknown as SmsChannelRuntime,

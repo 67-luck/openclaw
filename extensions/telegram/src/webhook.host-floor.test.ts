@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { createServer, request } from "node:http";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createEmptyPluginRegistry,
   setActivePluginRegistry,
@@ -90,6 +91,7 @@ async function start(
   overrides: Partial<Parameters<typeof startTelegramWebhook>[0]> = {},
 ) {
   const webhook = await startTelegramWebhook({
+    scheduler: createTestPluginServiceScheduler(),
     token: "fixture-token",
     accountId: "primary",
     path: "/hook",

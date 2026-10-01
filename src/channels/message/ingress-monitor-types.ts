@@ -1,3 +1,4 @@
+import type { PluginServiceSchedulerV1 } from "../../plugins/service-scheduler.types.js";
 import type { ChannelIngressDispatchLifecycle } from "./ingress-drain-lifecycle.js";
 import type { ChannelIngressDrainDispatchResult } from "./ingress-drain-state.js";
 import type { CreateChannelIngressDrainOptions } from "./ingress-drain.js";
@@ -65,6 +66,7 @@ export type ChannelIngressMonitorDrainOptions<TStoredPayload, TMetadata> = Omit<
 >;
 
 export type CreateChannelIngressMonitorOptions<TRaw, TBody, TStoredPayload, TMetadata> = {
+  scheduler?: PluginServiceSchedulerV1;
   queue:
     | ChannelIngressQueue<TStoredPayload, TMetadata>
     | (() => ChannelIngressQueue<TStoredPayload, TMetadata>);
@@ -115,3 +117,8 @@ export type CreateChannelIngressMonitorOptions<TRaw, TBody, TStoredPayload, TMet
   /** Durable-after-stop preserves append-only admission for handlers selected before unregister. */
   admissionMode?: "until-stopped" | "while-running" | "durable-after-stop";
 };
+
+export type CreateChannelIngressMonitorOptionsV2<TRaw, TBody, TStoredPayload, TMetadata> =
+  CreateChannelIngressMonitorOptions<TRaw, TBody, TStoredPayload, TMetadata> & {
+    scheduler: PluginServiceSchedulerV1;
+  };

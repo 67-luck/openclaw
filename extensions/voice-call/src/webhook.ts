@@ -45,7 +45,10 @@ import { resolveCallAgentId } from "./resolve-call-agent-id.js";
 import type { CallRecord, NormalizedEvent, WebhookContext } from "./types.js";
 import type { WebhookResponsePayload } from "./webhook.types.js";
 import type { RealtimeCallHandler } from "./webhook/realtime-handler.js";
-import { startStaleCallReaper } from "./webhook/stale-call-reaper.js";
+import {
+  startStaleCallReaper,
+  type VoiceCallSchedulingLifetime,
+} from "./webhook/stale-call-reaper.js";
 import {
   StreamDisconnectGrace,
   type StreamDisconnectLifecycle,
@@ -188,7 +191,8 @@ export class VoiceCallWebhookServer {
   private fullConfig: OpenClawConfig | null;
   private agentRuntime: OpenClawPluginApi["runtime"]["agent"] | null;
   private logger: PluginLogger;
-  private stopStaleCallReaper: (() => void) | null = null;
+  private readonly lifetime: VoiceCallSchedulingLifetime;
+  private stopStaleCallReaper: (() => Promise<void>) | null = null;
   private readonly webhookInFlightLimiter = createWebhookInFlightLimiter();
 
   /** Media stream handler for bidirectional audio (when streaming enabled) */
@@ -202,6 +206,7 @@ export class VoiceCallWebhookServer {
   private replayResponseCacheCalls = 0;
 
   constructor(
+    lifetime: VoiceCallSchedulingLifetime,
     config: VoiceCallConfig,
     manager: CallManager,
     provider: VoiceCallProvider,
@@ -210,6 +215,7 @@ export class VoiceCallWebhookServer {
     agentRuntime?: OpenClawPluginApi["runtime"]["agent"],
     logger?: PluginLogger,
   ) {
+    this.lifetime = lifetime;
     this.config = normalizeVoiceCallConfig(config);
     this.manager = manager;
     this.provider = provider;
@@ -592,8 +598,8 @@ export class VoiceCallWebhookServer {
         }
         resolve(url);
 
-        // Start the stale call reaper if configured
         this.stopStaleCallReaper = startStaleCallReaper({
+          lifetime: this.lifetime,
           manager: this.manager,
           staleCallReaperSeconds: this.config.staleCallReaperSeconds,
         });
@@ -624,14 +630,13 @@ export class VoiceCallWebhookServer {
     });
     this.startPromise = null;
     this.streamDisconnectGrace.close();
-    if (this.stopStaleCallReaper) {
-      this.stopStaleCallReaper();
-      this.stopStaleCallReaper = null;
-    }
+    const reaperStopped = this.stopStaleCallReaper?.();
+    this.stopStaleCallReaper = null;
     this.webhookInFlightLimiter.clear();
 
     this.stopPromise = (async () => {
       const results = await Promise.allSettled([
+        reaperStopped,
         serverClosePromise,
         this.mediaStreamHandler?.close(serverClosePromise) ?? Promise.resolve(),
         this.realtimeHandler?.close(serverClosePromise) ?? Promise.resolve(),

@@ -6,6 +6,7 @@ import path from "node:path";
 import { createChannelIngressQueueForTests } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { resetLogger, setLoggerOverride } from "openclaw/plugin-sdk/runtime-env";
 import { afterEach, beforeEach, expect, vi } from "vitest";
 import {
@@ -344,6 +345,7 @@ export async function startInboxMonitor(
   inboundWorkTrackers.add(tracker);
   const callerOnPendingWorkChanged = merged.onPendingWorkChanged;
   const listener = await monitorWebInbox({
+    scheduler: createTestPluginServiceScheduler(),
     ...merged,
     onPendingWorkChanged: (pendingWorkCount: number, at?: number) => {
       publishInboundPendingWork(tracker, pendingWorkCount);

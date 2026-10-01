@@ -1,5 +1,6 @@
 // Line tests cover the channel-scoped block streaming choice reaching the turn.
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -109,6 +110,7 @@ async function replyOptionsFor(params: {
   } as unknown as Parameters<typeof setLineRuntime>[0]);
 
   const monitor = await monitorLineProvider({
+    scheduler: createTestPluginServiceScheduler(),
     channelAccessToken: "token",
     channelSecret: "secret", // pragma: allowlist secret
     config: params.startupConfig ?? ({} as OpenClawConfig),

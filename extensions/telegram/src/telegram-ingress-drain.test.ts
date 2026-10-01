@@ -1,10 +1,11 @@
-// Telegram ingress drain adapter: dispatch result propagation.
 import { GrammyError } from "grammy";
 import {
   closeOpenClawStateDatabaseForTest,
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+// Telegram ingress drain adapter: dispatch result propagation.
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { describe, expect, it, vi } from "vitest";
@@ -194,6 +195,7 @@ describe("createTelegramIngressMonitor", () => {
 
       const dispatch = vi.fn(async () => ({ kind: "failed-retryable" as const, error }));
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",
@@ -231,6 +233,7 @@ describe("createTelegramIngressMonitor", () => {
 
       const retryError = new Error("provider blip");
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",
@@ -291,6 +294,7 @@ describe("createTelegramIngressMonitor", () => {
         return { kind: "completed" as const };
       });
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",
@@ -389,6 +393,7 @@ describe("createTelegramIngressMonitor", () => {
         return { kind: "completed" as const };
       });
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",
@@ -433,6 +438,7 @@ describe("createTelegramIngressMonitor", () => {
       await queue.enqueue(eventId, payload, { laneKey });
       const participant: { current?: TelegramSpooledReplayDeferredParticipant } = {};
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",
@@ -487,6 +493,7 @@ describe("createTelegramIngressMonitor", () => {
           createTelegramSpooledReplayDeferredParticipant("test:late-fatal") ?? undefined;
       });
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",
@@ -527,6 +534,7 @@ describe("createTelegramIngressMonitor", () => {
         await queue.enqueue(eventId, payload, { laneKey });
         const participant: { current?: TelegramSpooledReplayDeferredParticipant } = {};
         const monitor = createTelegramIngressMonitor({
+          scheduler: createTestPluginServiceScheduler(),
           queue,
           getConfig: () => cfg,
           accountId: "default",
@@ -573,6 +581,7 @@ describe("createTelegramIngressMonitor", () => {
       await queue.enqueue(eventId, payload, { laneKey });
       const started = deferred();
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",
@@ -618,6 +627,7 @@ describe("createTelegramIngressMonitor", () => {
       await queue.enqueue(eventId, payload, { laneKey });
       const release = vi.spyOn(queue, "release");
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",
@@ -660,6 +670,7 @@ describe("createTelegramIngressMonitor", () => {
       const adopted = deferred();
       const finishDispatch = deferred();
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",
@@ -695,6 +706,7 @@ describe("createTelegramIngressMonitor", () => {
       await queue.enqueue(eventId, payload, { laneKey });
       const participant: { current?: TelegramSpooledReplayDeferredParticipant } = {};
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",
@@ -749,6 +761,7 @@ describe("createTelegramIngressMonitor", () => {
       });
       let ownerSignal: AbortSignal | undefined;
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",
@@ -797,6 +810,7 @@ describe("createTelegramIngressMonitor", () => {
 
       const logs: string[] = [];
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => cfg,
         accountId: "default",

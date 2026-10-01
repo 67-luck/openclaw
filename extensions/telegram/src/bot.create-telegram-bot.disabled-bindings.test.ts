@@ -5,6 +5,7 @@ import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import {
   createTestRegistry,
   resetPluginRuntimeStateForTest,
@@ -167,6 +168,7 @@ describe("Telegram startup with disabled thread bindings", () => {
 
   async function createBot(cfg: OpenClawConfig, botToken = token) {
     const bot = await createTelegramBotCore({
+      scheduler: createTestPluginServiceScheduler(),
       token: botToken,
       accountId,
       config: cfg,

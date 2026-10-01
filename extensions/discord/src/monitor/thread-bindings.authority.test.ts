@@ -10,6 +10,7 @@ import {
   createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { clearRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RequestClient } from "../internal/rest.js";
@@ -54,6 +55,7 @@ function createRestFixture() {
 
 function createTestThreadBindingManager() {
   return createThreadBindingManager({
+    scheduler: createTestPluginServiceScheduler(),
     cfg: EMPTY_DISCORD_TEST_CONFIG,
     token: "synthetic-token",
     accountId: "default",
@@ -139,6 +141,7 @@ describe("thread binding current authority", () => {
   it("drains its own native create without blocking another account's mutations or shutdown", async () => {
     const manager = await createTestThreadBindingManager();
     const independent = await createThreadBindingManager({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: EMPTY_DISCORD_TEST_CONFIG,
       accountId: "independent",
       persist: false,

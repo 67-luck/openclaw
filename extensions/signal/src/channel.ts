@@ -525,6 +525,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
         }),
       }),
       gateway: {
+        apiVersion: 2,
         startAccount: async (ctx) => {
           const account = ctx.account;
           const statusSink = createAccountStatusSink({
@@ -537,6 +538,7 @@ export const signalPlugin: ChannelPlugin<ResolvedSignalAccount, SignalProbe> =
           ctx.log?.info(`[${account.accountId}] starting provider (${account.baseUrl})`);
           const { monitorSignalProvider } = await loadSignalMonitorModule();
           return await monitorSignalProvider({
+            scheduler: ctx.scheduler,
             accountId: account.accountId,
             config: ctx.cfg,
             runtime: ctx.runtime,

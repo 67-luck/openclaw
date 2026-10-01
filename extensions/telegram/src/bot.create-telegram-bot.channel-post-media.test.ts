@@ -1,6 +1,7 @@
 import type { File as TelegramFile } from "grammy/types";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import type { SavedRemoteMedia } from "openclaw/plugin-sdk/media-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -64,7 +65,7 @@ const {
 const { MediaFetchError } = await import("openclaw/plugin-sdk/media-runtime");
 
 let createTelegramBot: (
-  opts: import("./bot.types.js").TelegramBotOptions,
+  opts: Omit<import("./bot.types.js").TelegramBotOptions, "scheduler">,
 ) => ReturnType<typeof import("./bot-core.js").createTelegramBotCore>;
 
 const loadConfig = getLoadConfigMock();
@@ -263,6 +264,7 @@ describe("createTelegramBot channel_post media", () => {
   beforeAll(() => {
     createTelegramBot = (opts) =>
       createTelegramBotBase({
+        scheduler: createTestPluginServiceScheduler(),
         botInfo: telegramBotInfoForTest,
         telegramTransport: {
           fetch: globalThis.fetch,

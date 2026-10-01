@@ -1,4 +1,5 @@
 import type { Event } from "nostr-tools";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { retryAsync } from "openclaw/plugin-sdk/retry-runtime";
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 
@@ -59,6 +60,7 @@ export function createNostrDurableCursor(options: {
 
 /** Serializes cursor writes so a safety rewind always lands after older progress writes. */
 export function createNostrCursorStateWriter(options: {
+  scheduler: PluginServiceSchedulerV1;
   initialCursor: number;
   minimumCursor: number;
   debounceMs: number;
@@ -67,7 +69,8 @@ export function createNostrCursorStateWriter(options: {
 }) {
   let desiredCursor = Math.max(options.minimumCursor, options.initialCursor);
   let dirty = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  const scheduler = options.scheduler.scope();
+  let pendingFlush: ReturnType<PluginServiceSchedulerV1["schedule"]> | undefined;
   let writeTail: Promise<void> = Promise.resolve();
   let activeFlush: Promise<void> | undefined;
   let recoveryFlush: Promise<void> | undefined;
@@ -92,10 +95,8 @@ export function createNostrCursorStateWriter(options: {
   };
 
   const clearTimer = (): void => {
-    if (timer) {
-      clearTimeout(timer);
-      timer = undefined;
-    }
+    pendingFlush?.cancel();
+    pendingFlush = undefined;
   };
 
   const runFlush = async (): Promise<void> => {
@@ -138,19 +139,24 @@ export function createNostrCursorStateWriter(options: {
 
   return {
     schedule: (cursor: number): void => {
+      scheduler.signal.throwIfAborted();
       setDesiredCursor(cursor);
       clearTimer();
-      timer = setTimeout(() => {
-        timer = undefined;
-        void flush().catch((error: unknown) => options.onBackgroundError?.(error as Error));
-      }, options.debounceMs);
-      timer.unref?.();
+      pendingFlush = scheduler.schedule({
+        id: "cursor-flush",
+        delayMs: options.debounceMs,
+        run: () => {
+          pendingFlush = undefined;
+          return flush().catch((error: unknown) => options.onBackgroundError?.(error as Error));
+        },
+      });
     },
     persistNow: async (cursor: number): Promise<void> => {
       setDesiredCursor(cursor);
       await flush();
     },
     flush,
+    stop: () => scheduler.stop(),
     flushUntilSuccess: (): Promise<void> => {
       recoveryFlush ??= (async () => {
         for (;;) {

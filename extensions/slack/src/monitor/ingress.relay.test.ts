@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import { createSlackDurableIngress } from "./ingress.js";
 import { withQueue } from "./ingress.test-support.js";
@@ -16,6 +17,7 @@ describe("Slack relay durable ingress", () => {
     await withQueue(async (queue) => {
       const dispatched: unknown[] = [];
       const ingress = createSlackDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         pollIntervalMs: 60_000,
@@ -40,6 +42,7 @@ describe("Slack relay durable ingress", () => {
   it("retries a claimed relay event until a dispatcher attaches", async () => {
     await withQueue(async (queue) => {
       const detached = createSlackDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         pollIntervalMs: 60_000,
@@ -50,6 +53,7 @@ describe("Slack relay durable ingress", () => {
 
       const dispatched: unknown[] = [];
       const recovered = createSlackDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
         accountId: "default",
         queue,
         pollIntervalMs: 25,
@@ -93,7 +97,11 @@ describe("Slack relay durable ingress", () => {
       );
 
       const dispatched: unknown[] = [];
-      const ingress = createSlackDurableIngress({ accountId: "default", queue });
+      const ingress = createSlackDurableIngress({
+        scheduler: createTestPluginServiceScheduler(),
+        accountId: "default",
+        queue,
+      });
       ingress.attachRelayDispatch(async (message) => {
         dispatched.push(message);
       });

@@ -1,6 +1,7 @@
 import { resolveLoggerBackedRuntime } from "openclaw/plugin-sdk/extension-shared";
 import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
 import { channelReadyPatch } from "openclaw/plugin-sdk/gateway-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import type { ChannelAccountSnapshot } from "openclaw/plugin-sdk/status-helpers";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -28,6 +29,7 @@ function normalizeOrigin(value: string): string | null {
 }
 
 type NextcloudTalkMonitorOptions = {
+  scheduler: PluginServiceSchedulerV1;
   accountId?: string;
   config?: CoreConfig;
   runtime?: RuntimeEnv;
@@ -72,6 +74,7 @@ export async function monitorNextcloudTalkProvider(
   });
   const expectedBackendOrigin = normalizeOrigin(account.baseUrl);
   const spool = (opts.createSpool ?? createNextcloudTalkWebhookSpool)({
+    scheduler: opts.scheduler,
     accountId: account.accountId,
     runtime,
     abortSignal: opts.abortSignal,

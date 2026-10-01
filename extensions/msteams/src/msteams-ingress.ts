@@ -1,4 +1,3 @@
-// Microsoft Teams plugin owns durable Bot Framework activity admission and draining.
 import {
   createChannelIngressError,
   createChannelIngressMonitor,
@@ -7,6 +6,8 @@ import {
   type ChannelIngressMonitorLifecycle,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
+// Microsoft Teams plugin owns durable Bot Framework activity admission and draining.
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeNullableString as nonEmptyString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { classifyMSTeamsSendError } from "./errors.js";
@@ -32,6 +33,7 @@ export type MSTeamsIngressLifecycle = Omit<ChannelIngressMonitorLifecycle, "admi
 export type MSTeamsIngressDispatchResult = ChannelIngressMonitorDeliveryResult;
 
 type MSTeamsIngressOptions = {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   runtime: Pick<RuntimeEnv, "error" | "log">;
   dispatch: (
@@ -145,6 +147,7 @@ export function createMSTeamsIngress(options: MSTeamsIngressOptions): MSTeamsIng
     Omit<MSTeamsIngressPayload, "version">,
     MSTeamsIngressPayload
   >({
+    scheduler: options.scheduler,
     queue,
     inspect: (activity) => inspectMSTeamsIngressActivity(activity),
     payload: {

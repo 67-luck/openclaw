@@ -47,6 +47,45 @@ describe("thread binding lifecycle", () => {
     });
   };
 
+  it("joins a swept farewell without holding another account's mutation queue", async () => {
+    vi.useFakeTimers();
+    const farewellStarted = createDeferred<void>();
+    const farewellReleased = createDeferred<void>();
+    const manager = await createTestThreadBindingManager({
+      enableSweeper: true,
+      idleTimeoutMs: 1,
+    });
+    const other = await createNonSweepingTestManager({ accountId: "other" });
+    try {
+      await bindDefaultThreadTarget(manager);
+      hoisted.sendMessageDiscord.mockImplementationOnce(async () => {
+        farewellStarted.resolve();
+        await farewellReleased.promise;
+        return {};
+      });
+      await vi.advanceTimersByTimeAsync(120_000);
+      await farewellStarted.promise;
+      expect(manager.listBindings()).toEqual([]);
+
+      await bindDefaultThreadTarget(other);
+      expect(other.listBindings()).toHaveLength(1);
+      let stopped = false;
+      const stopping = manager.stop().then(() => {
+        stopped = true;
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stopped).toBe(false);
+      farewellReleased.resolve();
+      await stopping;
+      await vi.advanceTimersByTimeAsync(240_000);
+      expect(hoisted.sendMessageDiscord).toHaveBeenCalledTimes(1);
+    } finally {
+      farewellReleased.resolve();
+      await Promise.all([manager.stop(), other.stop()]);
+      vi.useRealTimers();
+    }
+  });
+
   it.each([false, true])(
     "ignores stale sweep results after rebinding (restart=%s)",
     async (restart) => {

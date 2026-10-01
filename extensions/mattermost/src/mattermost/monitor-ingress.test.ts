@@ -7,6 +7,7 @@ import {
   createChannelIngressQueueForTests,
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMattermostIngressMonitor } from "./monitor-ingress.js";
 
@@ -45,6 +46,7 @@ function startMonitor(
   },
 ) {
   return createMattermostIngressMonitor({
+    scheduler: createTestPluginServiceScheduler(),
     accountId,
     queue,
     dispatch,

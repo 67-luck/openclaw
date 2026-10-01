@@ -7,6 +7,7 @@ import {
   type ChannelIngressMonitorDeliveryResult,
   type ChannelIngressMonitorLifecycle,
 } from "openclaw/plugin-sdk/channel-outbound";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { isChannelTarget } from "./normalize.js";
@@ -151,6 +152,7 @@ export type IrcIngressMonitor = {
 };
 
 export function createIrcIngressMonitor(options: {
+  scheduler: PluginServiceSchedulerV1;
   accountId: string;
   queue?: ChannelIngressQueue<IrcIngressPayload>;
   dispatch: IrcIngressDispatch;
@@ -159,6 +161,7 @@ export function createIrcIngressMonitor(options: {
   adoptionStallTimeoutMs?: number;
 }): IrcIngressMonitor {
   const monitor = createChannelIngressMonitor<IrcIngressRaw, IrcIngressBody, IrcIngressPayload>({
+    scheduler: options.scheduler,
     queue:
       options.queue ??
       (() =>

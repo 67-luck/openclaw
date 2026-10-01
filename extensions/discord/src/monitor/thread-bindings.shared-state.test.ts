@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 // Discord tests cover thread bindings.shared state plugin behavior.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EMPTY_DISCORD_TEST_CONFIG } from "../test-support/config.js";
@@ -22,6 +23,7 @@ describe("thread binding manager state", () => {
     const viaAlternateLoader = await loadThreadBindingsViaAlternateLoader();
 
     await createThreadBindingManager({
+      scheduler: createTestPluginServiceScheduler(),
       cfg: EMPTY_DISCORD_TEST_CONFIG,
       accountId: "work",
       persist: false,
@@ -49,6 +51,7 @@ describe("thread binding manager state", () => {
       const { THREAD_BINDINGS_STATE: firstState } = await import("./thread-bindings.state.js");
       expect(firstState).toBe(predecessor);
       const manager = await first.createThreadBindingManager({
+        scheduler: createTestPluginServiceScheduler(),
         cfg: EMPTY_DISCORD_TEST_CONFIG,
         accountId: "work",
         persist: false,
@@ -73,6 +76,7 @@ describe("thread binding manager state", () => {
       expect(secondState).toBe(predecessor);
       expect(secondState.accountOperationTails).toBe(accountTails);
       const replacement = await second.createThreadBindingManager({
+        scheduler: createTestPluginServiceScheduler(),
         cfg: EMPTY_DISCORD_TEST_CONFIG,
         accountId: "work",
         persist: false,

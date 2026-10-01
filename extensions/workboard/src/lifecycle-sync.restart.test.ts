@@ -1,3 +1,4 @@
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import { dispatchAndStartWorkboardCards } from "./dispatcher.js";
 import { createWorkboardLifecycleService, syncWorkboardSubagentEnded } from "./lifecycle-sync.js";
@@ -58,7 +59,10 @@ async function startLifecycleSweep(params: {
     complete: params.complete,
   });
   const service = createWorkboardLifecycleService({ store: params.store, readSessions });
-  const context = { logger: { warn: vi.fn() } } as never;
+  const context = {
+    scheduler: createTestPluginServiceScheduler(),
+    logger: { warn: vi.fn() },
+  } as never;
   await service.start(context);
   return { context, readSessions, service };
 }

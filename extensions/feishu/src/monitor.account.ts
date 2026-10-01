@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
 import type * as Lark from "@larksuiteoapi/node-sdk";
 import { resolveGatewayPort } from "openclaw/plugin-sdk/gateway-config-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import {
   isRecord,
   normalizeOptionalString,
@@ -422,6 +423,7 @@ type BotOpenIdSource =
   | { kind: "fetch" };
 
 type MonitorSingleAccountParams = {
+  scheduler: PluginServiceSchedulerV1;
   cfg: ClawdbotConfig;
   account: ResolvedFeishuAccount;
   channelRuntime?: PluginRuntime["channel"];
@@ -499,6 +501,7 @@ export async function monitorSingleAccount(params: MonitorSingleAccountParams): 
     const durableIngress =
       typeof (eventDispatcher as { invoke?: unknown }).invoke === "function"
         ? createFeishuDurableIngress({
+            scheduler: params.scheduler,
             accountId,
             dispatcher: eventDispatcher,
             ...(account.encryptKey ? { encryptKey: account.encryptKey } : {}),

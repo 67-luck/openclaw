@@ -12,6 +12,7 @@ import {
   resetPluginStateStoreForTests,
   openOpenClawStateDatabase,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discordPlugin } from "../channel.js";
@@ -93,6 +94,7 @@ const replacementTarget = {
 
 function createTestManager(options: { accountId?: string; persist?: boolean } = {}) {
   return createThreadBindingManager({
+    scheduler: createTestPluginServiceScheduler(),
     accountId: "work",
     cfg: EMPTY_DISCORD_TEST_CONFIG,
     persist: false,
@@ -193,10 +195,18 @@ describe("Discord thread binding restoration", () => {
     });
     const createManager = discordPlugin.conversationBindings!.createManager!;
     const first = Promise.resolve(
-      createManager({ cfg: EMPTY_DISCORD_TEST_CONFIG, accountId: "work" }),
+      createManager({
+        scheduler: createTestPluginServiceScheduler(),
+        cfg: EMPTY_DISCORD_TEST_CONFIG,
+        accountId: "work",
+      }),
     );
     const second = Promise.resolve(
-      createManager({ cfg: EMPTY_DISCORD_TEST_CONFIG, accountId: "other" }),
+      createManager({
+        scheduler: createTestPluginServiceScheduler(),
+        cfg: EMPTY_DISCORD_TEST_CONFIG,
+        accountId: "other",
+      }),
     );
     try {
       await entered.promise;
@@ -242,9 +252,14 @@ describe("Discord thread binding restoration", () => {
     },
   );
 
-  it("keeps bindings in memory after unavailable persistent startup", async () => {
+  it("keeps V1 bindings in memory after unavailable persistent startup", async () => {
     stores.entries.mockRejectedValueOnce(new Error("state unavailable"));
-    const manager = await createTestManager({ persist: true });
+    const manager = await createThreadBindingManager({
+      cfg: EMPTY_DISCORD_TEST_CONFIG,
+      accountId: "work",
+      persist: true,
+      enableSweeper: false,
+    });
     expect(manager).toBe(getThreadBindingManager("work"));
     const bindingManager = getThreadBindingManager("work")!;
     expect(bindingManager.listBindings()).toEqual([]);

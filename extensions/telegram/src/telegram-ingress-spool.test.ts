@@ -9,6 +9,7 @@ import {
   createPluginStateKeyedStoreForTests,
   createPluginStateSyncKeyedStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createTestPluginServiceScheduler } from "openclaw/plugin-sdk/plugin-test-api";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { beginTelegramPollRegistration } from "./poll-answer-context.js";
@@ -95,6 +96,7 @@ describe("telegram ingress spool ordering", () => {
       const onError = vi.fn();
       const queue = openTelegramIngressQueue({ accountId: "acct", stateDir });
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => ({ channels: { telegram: { groupPolicy: "open" } } }) as OpenClawConfig,
         accountId: "acct",
@@ -199,6 +201,7 @@ describe("telegram ingress spool ordering", () => {
       const dispatchOrder: number[] = [];
       const queue = openTelegramIngressQueue({ accountId: "acct", stateDir });
       const monitor = createTelegramIngressMonitor({
+        scheduler: createTestPluginServiceScheduler(),
         queue,
         getConfig: () => ({ channels: { telegram: { groupPolicy: "open" } } }) as OpenClawConfig,
         accountId: "acct",

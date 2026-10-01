@@ -1,10 +1,12 @@
 import { resolveSessionAgentIdStrict } from "openclaw/plugin-sdk/agent-scope-runtime";
+import { createLegacyPluginServiceScheduler } from "openclaw/plugin-sdk/channel-outbound";
 import {
   registerSessionBindingAdapter,
   resolveThreadBindingFarewellText,
   resolveThreadBindingThreadName,
   unregisterSessionBindingAdapter,
 } from "openclaw/plugin-sdk/conversation-runtime";
+import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { normalizeAccountId } from "openclaw/plugin-sdk/routing";
 import {
   getRuntimeConfigSnapshot,
@@ -72,7 +74,8 @@ function isDirectConversationBindingId(value?: string | null): boolean {
   return Boolean(trimmed && /^(user:|channel:)/i.test(trimmed));
 }
 
-export async function createThreadBindingManager(input: {
+export type ThreadBindingManagerParams = {
+  scheduler?: PluginServiceSchedulerV1;
   accountId?: string;
   token?: string;
   cfg: OpenClawConfig;
@@ -80,7 +83,15 @@ export async function createThreadBindingManager(input: {
   enableSweeper?: boolean;
   idleTimeoutMs?: number;
   maxAgeMs?: number;
-}): Promise<ThreadBindingManager> {
+};
+
+export type ThreadBindingManagerParamsV2 = ThreadBindingManagerParams & {
+  scheduler: PluginServiceSchedulerV1;
+};
+
+export async function createThreadBindingManager(
+  input: ThreadBindingManagerParams,
+): Promise<ThreadBindingManager> {
   const params = { ...input };
   await ensureBindingsLoadedAsync();
   const manager = await runThreadBindingMutation(async () =>
@@ -94,7 +105,7 @@ export async function createThreadBindingManager(input: {
 }
 
 function createLoadedThreadBindingManager(
-  params: Parameters<typeof createThreadBindingManager>[0],
+  params: ThreadBindingManagerParams,
 ): ThreadBindingManager {
   const accountId = normalizeAccountId(params.accountId);
   const existing = MANAGERS_BY_ACCOUNT_ID.get(accountId);
@@ -122,7 +133,7 @@ function createLoadedThreadBindingManager(
 
   let stopping = false;
   let stopPromise: Promise<void> | undefined;
-  let sweepPromise: Promise<void> | undefined;
+  const scheduler = params.scheduler?.scope() ?? createLegacyPluginServiceScheduler();
   const assertManagerCurrent = () => {
     if (MANAGERS_BY_ACCOUNT_ID.get(accountId) !== manager) {
       throw new Error("Discord thread binding manager was retired");
@@ -145,7 +156,6 @@ function createLoadedThreadBindingManager(
       }),
     );
 
-  let sweepTimer: NodeJS.Timeout | null = null;
   const runSweepOnce = async () => {
     const bindings = manager.listBindings();
     if (bindings.length === 0) {
@@ -290,12 +300,14 @@ function createLoadedThreadBindingManager(
         // Use bot send path for farewell messages so unbound threads don't process
         // webhook echoes as fresh inbound events when allowBots is enabled.
         if (cfg) {
-          void maybeSendBindingMessage({
-            cfg,
-            record: removed,
-            text: farewell,
-            preferWebhook: false,
-          });
+          void runThreadBindingAccountOperation([manager], () =>
+            maybeSendBindingMessage({
+              cfg,
+              record: removed,
+              text: farewell,
+              preferWebhook: false,
+            }),
+          );
         }
       }
     },
@@ -595,12 +607,9 @@ function createLoadedThreadBindingManager(
         return stopPromise;
       }
       stopping = true;
-      if (sweepTimer) {
-        clearInterval(sweepTimer);
-        sweepTimer = null;
-      }
+      scheduler.beginClose();
       stopPromise = (async () => {
-        await sweepPromise;
+        await scheduler.stop();
         await drainThreadBindingAccountOperations(manager);
         await drainThreadBindingMutations();
         if (MANAGERS_BY_ACCOUNT_ID.get(accountId) === manager) {
@@ -618,23 +627,18 @@ function createLoadedThreadBindingManager(
   };
 
   if (params.enableSweeper !== false) {
-    sweepTimer = setInterval(() => {
-      if (stopping || sweepPromise) {
-        return;
-      }
-      sweepPromise = runSweepOnce()
-        .catch((error: unknown) => {
+    scheduler.schedule({
+      id: "thread-binding-sweep",
+      delayMs: THREAD_BINDINGS_SWEEP_INTERVAL_MS,
+      everyMs: THREAD_BINDINGS_SWEEP_INTERVAL_MS,
+      run: async () => {
+        await runSweepOnce().catch((error: unknown) => {
           logVerbose(`discord thread binding sweep failed: ${String(error)}`);
-        })
-        .finally(() => {
-          sweepPromise = undefined;
         });
-    }, THREAD_BINDINGS_SWEEP_INTERVAL_MS);
-    // Keep the production process free to exit, but avoid breaking fake-timer
-    // sweeper tests where unref'd intervals may never fire.
-    if (!(process.env.VITEST || process.env.NODE_ENV === "test")) {
-      sweepTimer.unref?.();
-    }
+        // Farewells keep account custody after the global mutation queue is released.
+        await drainThreadBindingAccountOperations(manager);
+      },
+    });
   }
 
   const sessionBindingAdapter = createThreadBindingSessionAdapter({

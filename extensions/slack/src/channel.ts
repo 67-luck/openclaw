@@ -748,12 +748,14 @@ export const slackPlugin: ChannelPlugin<ResolvedSlackAccount, SlackProbe> = crea
       },
     }),
     gateway: {
+      apiVersion: 2,
       startAccount: async (ctx) => {
         const account = ctx.account;
         const botToken = account.botToken?.trim();
         const appToken = account.appToken?.trim();
         ctx.log?.info(`[${account.accountId}] starting provider`);
         return (await loadSlackMonitorModule()).monitorSlackProvider({
+          scheduler: ctx.scheduler,
           botToken: botToken ?? "",
           appToken: appToken ?? "",
           accountId: account.accountId,
