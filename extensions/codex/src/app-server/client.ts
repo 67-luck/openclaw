@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { recordModelFallbackStop } from "openclaw/plugin-sdk/agent-harness-attempt-runtime";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { coerceErrorMessage, toStringifiedError } from "openclaw/plugin-sdk/error-runtime";
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
@@ -121,6 +122,7 @@ class CodexAppServerLocalRequestCancellationError extends Error {
       cause instanceof Error || typeof cause === "string" ? coerceErrorMessage(cause) : undefined;
     super(`${method} ${reason}${detail ? `: ${detail}` : ""}`, { cause });
     this.name = "CodexAppServerLocalRequestCancellationError";
+    recordModelFallbackStop(this);
   }
 }
 
@@ -154,6 +156,7 @@ class CodexAppServerIndeterminateTransportError extends Error {
   constructor(method: string, cause: Error) {
     super(`${method} transport failed after request write: ${cause.message}`, { cause });
     this.name = "CodexAppServerIndeterminateTransportError";
+    recordModelFallbackStop(this);
   }
 }
 
@@ -198,16 +201,21 @@ export function isCodexAppServerIndeterminateTransportError(error: unknown): err
 }
 
 export function isCodexAppServerConnectionClosedError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
+  const seen = new Set<Error>();
+  let current = error;
+  while (current instanceof Error && !seen.has(current)) {
+    seen.add(current);
+    if (
+      isCodexAppServerIndeterminateTransportError(current) ||
+      ("code" in current && (current.code === "EPIPE" || current.code === "ECONNRESET")) ||
+      current.message === "codex app-server client is closed" ||
+      current.message.startsWith("codex app-server exited:")
+    ) {
+      return true;
+    }
+    current = current.cause;
   }
-  if (isCodexAppServerIndeterminateTransportError(error)) {
-    return true;
-  }
-  return (
-    error.message === "codex app-server client is closed" ||
-    error.message.startsWith("codex app-server exited:")
-  );
+  return false;
 }
 
 /** Runtime identity returned by the Codex app-server initialize handshake. */
@@ -937,6 +945,7 @@ export class CodexAppServerClient {
       return false;
     }
     this.closed = true;
+    recordModelFallbackStop(error);
     closeCodexCatalogClientSource(this);
     this.closeError = error;
     this.closeMessageReader();
