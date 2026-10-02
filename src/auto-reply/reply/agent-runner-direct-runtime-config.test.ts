@@ -1,7 +1,7 @@
 // Tests direct runtime config overrides passed into agent runner execution.
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { OAuthRefreshFailureError } from "../../agents/auth-profiles/oauth-refresh-failure.js";
 import { FailoverError } from "../../agents/failover-error.js";
@@ -16,7 +16,10 @@ import {
   clearMemoryPluginState,
   registerMemoryCapability,
 } from "../../plugins/memory-state.test-fixtures.js";
-import type { ReplyOperation } from "../../sessions/session-controller.js";
+import {
+  createReplyOperation as createSessionReplyOperation,
+  type ReplyOperation,
+} from "../../sessions/session-controller.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { withReplyDispatcher } from "../dispatch-dispatcher.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
@@ -32,7 +35,7 @@ import {
   resolveReplyOperationAgentTurn,
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
-import { createMockReplyOperation, createMockTypingController } from "./test-helpers.js";
+import { createMockTypingController } from "./test-helpers.js";
 
 const freshCfg = { runtimeFresh: true };
 const staleCfg = {
@@ -46,6 +49,7 @@ const staleCfg = {
   },
 };
 const sentinelError = new Error("stop-after-preflight");
+const directSessionKey = "agent:main:telegram:default:direct:test";
 
 const resolveQueuedReplyExecutionConfigMock = vi.fn();
 const resolveReplyToModeMock = vi.fn();
@@ -134,14 +138,24 @@ type TestReplyOperation = ReplyOperation & {
   setPhase: ReturnType<typeof vi.fn<ReplyOperation["setPhase"]>>;
 };
 
-function createReplyOperation(): TestReplyOperation {
-  const { replyOperation } = createMockReplyOperation({ key: "test", sessionId: "session-1" });
-  return Object.assign(replyOperation, {
-    phase: "queued" as const,
-    setPhase: vi.fn<ReplyOperation["setPhase"]>(),
-    hasOwnedSessionId: vi.fn(() => false),
-    captureOwnedSessionIds: vi.fn(() => new Set()),
+function createOwnedReplyOperation(upstreamAbortSignal?: AbortSignal): ReplyOperation {
+  const operation = createSessionReplyOperation({
+    sessionKey: directSessionKey,
+    sessionId: "session-1",
+    resetTriggered: false,
+    upstreamAbortSignal,
   });
+  onTestFinished(async () => {
+    operation.complete();
+    await operation.ownerSettlement;
+  });
+  return operation;
+}
+
+function createReplyOperation(): TestReplyOperation {
+  const replyOperation = createOwnedReplyOperation();
+  const setPhase = vi.spyOn(replyOperation, "setPhase");
+  return Object.assign(replyOperation, { setPhase });
 }
 
 function createDirectRuntimeReplyParams({
@@ -151,9 +165,10 @@ function createDirectRuntimeReplyParams({
   shouldFollowup?: boolean;
   isActive?: boolean;
 } = {}) {
+  const sessionKey = directSessionKey;
   const followupRun = createTestFollowupRun({
     sessionId: "session-1",
-    sessionKey: "agent:main:telegram:default:direct:test",
+    sessionKey,
     messageProvider: "telegram",
     config: staleCfg,
     provider: "openai",
@@ -163,7 +178,7 @@ function createDirectRuntimeReplyParams({
   const replyParams: Parameters<typeof runReplyAgent>[0] = {
     commandBody: "hello",
     followupRun,
-    queueKey: "main",
+    queueKey: sessionKey,
     resolvedQueue,
     shouldSteer: false,
     shouldFollowup,
@@ -307,6 +322,7 @@ describe("runReplyAgent runtime config", () => {
     const runtimePolicySessionKey = "agent:main:telegram:default:direct:test";
     followupRun.run.sessionKey = "agent:main:main";
     followupRun.run.runtimePolicySessionKey = runtimePolicySessionKey;
+    replyParams.queueKey = followupRun.run.sessionKey;
     replyParams.sessionKey = "agent:main:main";
     replyParams.runtimePolicySessionKey = runtimePolicySessionKey;
 
@@ -374,7 +390,7 @@ describe("runReplyAgent runtime config", () => {
     try {
       await withTestDir({ prefix: "openclaw-direct-runtime-" }, async (tempDir) => {
         const { replyParams, followupRun } = createDirectRuntimeReplyParams();
-        const sessionKey = "agent:main:telegram:default:direct:test";
+        const sessionKey = directSessionKey;
         const sessionEntry: SessionEntry = {
           sessionId: "session-1",
           lifecycleRevision: "before-maintenance",
@@ -472,7 +488,7 @@ describe("runReplyAgent runtime config", () => {
           shouldFollowup: false,
           isActive: false,
         });
-        const sessionKey = "agent:main:telegram:default:direct:test";
+        const sessionKey = directSessionKey;
         const sessionEntry: SessionEntry = {
           sessionId: "session-1",
           updatedAt: 1,
@@ -501,11 +517,7 @@ describe("runReplyAgent runtime config", () => {
         replyParams.sessionEntry = sessionEntry;
         replyParams.sessionStore = { [sessionKey]: sessionEntry };
         replyParams.storePath = storePath;
-        replyParams.replyOperation = createMockReplyOperation({
-          key: "test",
-          sessionId: "session-1",
-          abortSignal: operationAbort.signal,
-        }).replyOperation;
+        replyParams.replyOperation = createOwnedReplyOperation(operationAbort.signal);
         resolveQueuedReplyExecutionConfigMock.mockResolvedValue(
           withTestModelContextTokens({
             cfg: {},

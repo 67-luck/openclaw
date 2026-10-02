@@ -593,54 +593,49 @@ export async function runReplyAgent(
       }
       return didDeliverVisiblePartialReply || blockReplyPipeline?.didStream() === true;
     };
-    replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
-    bindReplyOperationTyping(replyOperation, typing);
     let runFollowupTurn = queuedRunFollowupTurn;
     let shouldDrainQueuedFollowupsAfterClear = false;
     const returnWithQueuedFollowupDrain = <T>(value: T): T => {
       shouldDrainQueuedFollowupsAfterClear = true;
       return value;
     };
-    const {
-      admitUserTurn,
-      beginBeforeAgentReply,
-      checkpointBeforeAgentReply,
-      clear: clearRestartRecoveryDeliveryClaim,
-      isArmed: isRestartRecoveryArmed,
-    } = createReplyAgentRestartRecoveryController({
-      activeSessionStore,
-      cfg,
-      followupRun,
-      getActiveSessionEntry: () => activeSessionEntry,
-      opts,
-      replyOperation,
-      restartRecoverySourceTurnId,
-      runtimePolicySessionKey,
-      sessionCtx,
-      sessionKey,
-      setActiveSessionEntry: (entry) => {
-        activeSessionEntry = entry;
-      },
-      storePath,
-    });
+    let restartRecovery: ReturnType<typeof createReplyAgentRestartRecoveryController> | undefined;
     try {
+      replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
+      bindReplyOperationTyping(replyOperation, typing);
+      restartRecovery = createReplyAgentRestartRecoveryController({
+        activeSessionStore,
+        cfg,
+        followupRun,
+        getActiveSessionEntry: () => activeSessionEntry,
+        opts,
+        replyOperation,
+        restartRecoverySourceTurnId,
+        runtimePolicySessionKey,
+        sessionCtx,
+        sessionKey,
+        setActiveSessionEntry: (entry) => {
+          activeSessionEntry = entry;
+        },
+        storePath,
+      });
       if (turn.preflightError) {
         throw turn.preflightError;
       }
       return await executePreparedReplyAgentRun({
         ...params,
         activeSessionStore,
-        admitUserTurn,
+        admitUserTurn: restartRecovery.admitUserTurn,
         applyReplyToMode,
-        beginBeforeAgentReply,
+        beginBeforeAgentReply: restartRecovery.beginBeforeAgentReply,
         blockReplyPipeline,
         cfg,
-        checkpointBeforeAgentReply,
+        checkpointBeforeAgentReply: restartRecovery.checkpointBeforeAgentReply,
         resolveVisibleReplyDelivery,
         activeIsNewSession: isNewSession,
         getActiveSessionEntry: () => activeSessionEntry,
         isHeartbeat,
-        isRestartRecoveryArmed,
+        isRestartRecoveryArmed: restartRecovery.isArmed,
         opts: runOpts,
         pendingToolTasks,
         replyMediaContext,
@@ -669,7 +664,7 @@ export async function runReplyAgent(
         resolveVisibleReplyDelivery,
         isHeartbeat,
         replyExpectation,
-        isRestartRecoveryArmed,
+        isRestartRecoveryArmed: restartRecovery?.isArmed ?? (async () => false),
         replyOperation,
         resolvedVerboseLevel,
         returnWithQueuedFollowupDrain,
@@ -678,7 +673,7 @@ export async function runReplyAgent(
     } finally {
       await cleanupReplyAgentRun({
         blockReplyPipeline,
-        clearRestartRecoveryDeliveryClaim,
+        clearRestartRecoveryDeliveryClaim: restartRecovery?.clear ?? (async () => {}),
         providedReplyOperation,
         queueKey,
         replyOperation,
