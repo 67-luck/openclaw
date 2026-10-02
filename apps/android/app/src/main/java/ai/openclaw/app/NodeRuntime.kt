@@ -60,6 +60,7 @@ import ai.openclaw.app.gateway.parseChatSendAck
 import ai.openclaw.app.gateway.parseGatewayUpdateAvailableSummary
 import ai.openclaw.app.gateway.probeGatewayTlsFingerprint
 import ai.openclaw.app.gateway.resolveGatewaySourcePreviewConfig
+import ai.openclaw.app.gateway.syntheticGatewayRequestLease
 import ai.openclaw.app.i18n.NativeText
 import ai.openclaw.app.i18n.nativeString
 import ai.openclaw.app.i18n.nativeText
@@ -1699,7 +1700,7 @@ class NodeRuntime private constructor(
           }
 
           NodeRuntimeMode.ScreenshotFixture -> {
-            GatewaySession.RequestLease(endpointStableId = AndroidScreenshotFixture.gatewayId) { method, paramsJson, _, withEnqueue ->
+            syntheticGatewayRequestLease(endpointStableId = AndroidScreenshotFixture.gatewayId) { method, paramsJson, _, withEnqueue ->
               withEnqueue {}
               screenshotRequester(method, paramsJson)
             }
