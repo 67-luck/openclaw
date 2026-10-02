@@ -333,6 +333,10 @@ class ChatComposerLayoutTest {
     editor.assertTextEquals("  Atlas draft\nkeep spacing  ")
     editor.performTextReplacement("")
     observe("long-name-large-font", "Message Atlas Research and Accessibility Assistant")
+    // Restored drafts and history can precede the returning session's catalog.
+    composeRule.waitUntil {
+      composeRule.runOnIdle { model.chatModelCatalog.value.any { it.providerQualifiedRef() == "openai/gpt-5.2" } }
+    }
     assertComposerControlsVisible(primaryAction = null)
     composeRule.runOnIdle {
       scale.value = 1f
