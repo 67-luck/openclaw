@@ -215,10 +215,10 @@ describe("dispatchReplyFromConfig", () => {
           reason: "reply_operation_aborted",
         }),
       );
-      expect(preparedLookup).toHaveBeenCalledWith({
-        agentId: "main",
-        abortSignal: abort.signal,
-      });
+      const preparedSignal = preparedLookup.mock.calls[0]?.[0].abortSignal;
+      expect(preparedSignal).toBeInstanceOf(AbortSignal);
+      expect(preparedSignal?.aborted).toBe(true);
+      expect(preparedSignal?.reason).toBe(abort.signal.reason);
     } finally {
       preparedLoader.mockRestore();
     }
@@ -1045,8 +1045,8 @@ describe("dispatchReplyFromConfig", () => {
               sessionKey: boundSessionKey,
               storeSessionKey: boundSessionKey,
               cfg: {},
-              storePath: "/tmp/mock-sessions.json",
-              entry: {},
+              storePath: targetStorePath,
+              entry: targetEntry,
               acp: {
                 backend: "acpx",
                 agent: "opencode",
@@ -1129,7 +1129,10 @@ describe("dispatchReplyFromConfig", () => {
     }
 
     expect(result.queuedFinal).toBe(true);
-    expect(preparedLookup).toHaveBeenCalledWith({ agentId: "main" });
+    expect(preparedLookup).toHaveBeenCalledWith({
+      agentId: "main",
+      abortSignal: expect.any(AbortSignal),
+    });
     expect(sessionBindingMocks.resolveByConversation).toHaveBeenCalledWith({
       channel: "discord",
       accountId: "default",
