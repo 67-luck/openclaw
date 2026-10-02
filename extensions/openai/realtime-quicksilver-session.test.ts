@@ -1,3 +1,4 @@
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type {
   RealtimeVoiceBridge,
   RealtimeVoiceBrowserSessionCreateRequest,
@@ -52,6 +53,52 @@ async function reserveLiveSession(
 }
 
 describe("GPT-Live offer broker", () => {
+  it("enforces origin changes before reserving or sending an OpenAI offer", async () => {
+    const cfg: OpenClawConfig = { gateway: { publicOrigin: "https://old.example.test" } };
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("v=answer\r\n", {
+          status: 201,
+          headers: { Location: "/v1/live/rtc_origin_proof" },
+        }),
+    ) as unknown as typeof fetch;
+    const { realtime } = createBroker({ fetchImpl, getConfig: () => cfg });
+    const reservation = await reserveLiveSession(realtime);
+    const offer = async (origin: string) => {
+      const response = createResponseHarness();
+      await realtime.handler(
+        createRequest({ origin, token: reservation.clientSecret }),
+        response.res,
+      );
+      return response;
+    };
+
+    try {
+      expect((await offer("https://untrusted.example.test")).res.statusCode).toBe(403);
+      expect(realtime.getSessionCounts().pending).toBe(1);
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      cfg.gateway!.publicOrigin = "https://new.example.test";
+      expect((await offer("https://old.example.test")).res.statusCode).toBe(403);
+      expect(realtime.getSessionCounts().pending).toBe(1);
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      cfg.gateway!.controlUi = { allowedOrigins: [] };
+      expect((await offer("https://new.example.test")).res.statusCode).toBe(403);
+      expect(realtime.getSessionCounts().pending).toBe(1);
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      delete cfg.gateway!.controlUi;
+      const accepted = await offer("https://new.example.test");
+      expect(accepted.res.statusCode).toBe(200);
+      expect(accepted.end).toHaveBeenCalledWith("v=answer\r\n");
+      expect(realtime.getSessionCounts().pending).toBe(0);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    } finally {
+      await realtime.cleanup();
+    }
+  });
+
   it("waits for the GA sideband before returning an audio-only SDP answer and hangs up once", async () => {
     let releaseSideband!: () => void;
     const sidebandReady = new Promise<void>((resolve) => {
