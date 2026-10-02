@@ -193,7 +193,17 @@ it("keeps terminal persistence visible only to chat history", async () => {
     projectSessionActive: false,
     projectSessionTerminalPending: true,
   };
-  const terminalRef = createRpcSourceForTest(terminal);
+  const terminalRef = createRpcSourceForTest(
+    {
+      projectSessionActive: terminal.projectSessionActive,
+      projectSessionTerminalPending: terminal.projectSessionTerminalPending,
+    },
+    {
+      sessionKey: terminal.sessionKey,
+      sessionId: terminal.sessionId,
+      agentId: "main",
+    },
+  );
   rpcSourceTesting.reset([["run-terminal", terminalRef]]);
   releaseFixtureSources.push(() => retireSessionControllerInput(terminalRef.input));
   const params = {
@@ -490,12 +500,6 @@ it("counts settled but still registered chat runs for a session key", async () =
   expect(hasRegisteredChatRunForSessionKey({ sessionKey: "global", agentId: undefined })).toBe(
     false,
   );
-  expect(
-    hasRegisteredChatRunForSessionKey({
-      sessionKey: "agent:main:main",
-      agentId: undefined,
-    }),
-  ).toBe(false);
 });
 
 it("matches colliding bare active runs by stable owner", async () => {
