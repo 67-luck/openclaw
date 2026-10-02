@@ -11,6 +11,8 @@
 (allow file-read* (literal "/dev/random") (literal "/dev/urandom") (literal "/private/etc/services") (literal "/private/etc/protocols"))
 (allow file-read* file-write-data (literal "/dev/null") (literal "/dev/zero") (subpath "/dev/fd"))
 (allow process-exec (subpath (param "BENCH_ROOT")))
+; The bundled verifier launches this exact system tool before the helper.
+(allow file-read* file-map-executable process-exec (literal "/usr/bin/codesign"))
 (allow process-fork)
 (allow signal (target children))
 (allow network-outbound (remote ip (param "BENCH_ENDPOINT")))
