@@ -1019,6 +1019,7 @@ mod tests {
             run_gateway(incoming_rx, &outgoing, MAX_IN_FLIGHT, transport).await
         });
         let _abort = AbortTaskOnDrop(task.abort_handle());
+        let mut step = "open".to_owned();
         let observed = tokio::time::timeout(Duration::from_secs(10), async {
             incoming.send(SupervisorMessage::Open {
                 url: "ws://127.0.0.1:1".into(), private_commands: Vec::new(),
@@ -1026,7 +1027,9 @@ mod tests {
             native_input.receive(1, bytes::Bytes::from(json!({
                 "type":"event", "event":"connect.challenge", "payload":{"nonce":"fixture", "ts":1}
             }).to_string())).map_err(|_| "challenge rejected")?;
+            step = "challenge receipt".into();
             receipts.recv().await.ok_or("challenge receipt missing")?;
+            step = "native challenge".into();
             let challenge = queued.recv().await.ok_or("native challenge missing")?;
             if challenge["frame"]["event"] != "connect.challenge" { return Err("wrong challenge"); }
             incoming.send(SupervisorMessage::Frame {
@@ -1035,6 +1038,7 @@ mod tests {
                         "maxProtocol":4, "commands":["benchmark.hold"]}) },
                 caller_owns_lifetime:false,
             }).await.map_err(|_| "signed connect rejected")?;
+            step = "Gateway connect".into();
             let connect = writes.recv().await.ok_or("Gateway connect missing")?;
             let (metadata, body) = connect.payload_parts();
             let connect: Value = serde_json::from_slice(body).map_err(|_| "invalid Gateway connect")?;
@@ -1043,10 +1047,13 @@ mod tests {
             native_input.receive(1, bytes::Bytes::from(json!({
                 "type":"res", "id":connect["id"], "ok":true, "payload":{"type":"hello-ok","protocol":4}
             }).to_string())).map_err(|_| "hello rejected")?;
+            step = "hello receipt".into();
             receipts.recv().await.ok_or("hello receipt missing")?;
+            step = "native hello".into();
             let hello = queued.recv().await.ok_or("native hello missing")?;
             if hello["frame"]["ok"] != true { return Err("native hello failed"); }
             for index in 0..6 {
+                step = format!("invocation {index} encoding");
                 // Reach NodeClient's real paramsJSON parser; NodeInvocation::new has no raw bytes.
                 let raw = json!({"data": char::from(b'a' + index).to_string().repeat(24 * 1024 * 1024)}).to_string();
                 let frame = json!({"type":"event", "event":"node.invoke.request", "payload":{
@@ -1055,7 +1062,9 @@ mod tests {
                 }}).to_string();
                 if frame.len() >= GATEWAY_PAYLOAD_LIMIT { return Err("fixture exceeds per-frame limit"); }
                 native_input.receive(1, bytes::Bytes::from(frame)).map_err(|_| "invocation rejected")?;
+                step = format!("invocation {index} receipt");
                 receipts.recv().await.ok_or("invocation receipt missing")?;
+                step = format!("invocation {index} forwarding");
                 while queued.len() < usize::from(index + 1) && !task.is_finished() {
                     tokio::task::yield_now().await;
                 }
@@ -1082,7 +1091,12 @@ mod tests {
         }
         drop(queued);
         observed
-            .expect("fixture must finish")
+            .unwrap_or_else(|_| {
+                panic!(
+                    "fixture timed out at {step}; queued {} invocations",
+                    requests.len()
+                )
+            })
             .expect("valid native flow");
         assert!(
             retired,
