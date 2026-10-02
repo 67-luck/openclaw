@@ -70,17 +70,19 @@ function createTalkClientAgentRuntime(params: {
   const runEmbeddedAgent: typeof agentRuntime.runEmbeddedAgent = async (runParams) => {
     const config = runParams.config ?? params.config;
     runParams.abortSignal?.throwIfAborted();
-    const execution = await loadTalkAgentExecution();
-    runParams.abortSignal?.throwIfAborted();
     const { agentId, sessionId, sessionKey, storePath } = runParams.sessionTarget ?? {};
     if (!agentId || !sessionId || !sessionKey || !storePath) {
       throw new Error("Talk consult requires its prepared transcript target");
     }
+    // Accept under the live voice owner, then retain the run before lazy loading.
+    // Transport detachment releases that owner, not this accepted execution.
+    params.assertCurrent?.();
     const retained = await params.runAuthority?.retainRun(runParams.runId);
     try {
       runParams.abortSignal?.throwIfAborted();
+      const execution = await loadTalkAgentExecution();
+      runParams.abortSignal?.throwIfAborted();
       const operationalRunInstance = execution.createOperationalRunInstanceRef(runParams.runId);
-      params.assertCurrent?.();
       params.bindOperationalRunInstance?.(operationalRunInstance);
       const preparedRunAdmission = execution.prepareAgentRunAdmission({
         cfg: config,

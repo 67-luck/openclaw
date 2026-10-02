@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../../test/helpers/promise.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../../test/helpers/promise.js";
 import {
   loadSessionEntry,
   readSessionTranscriptMessageEvents,
@@ -50,6 +50,7 @@ import { talkClientHandlers } from "./client.js";
 const voiceMocks = vi.hoisted(() => ({
   resolveConfiguredRealtimeVoiceProvider: vi.fn(),
   consultRealtimeVoiceAgent: vi.fn(),
+  executionReady: vi.fn<() => Promise<void>>(),
   runEmbeddedAgent: vi.fn<typeof import("../../../agents/embedded-agent.js").runEmbeddedAgent>(),
 }));
 
@@ -70,6 +71,30 @@ vi.mock("../../../plugins/runtime/index.js", async () => {
 vi.mock("../../../agents/embedded-agent.js", () => ({
   runEmbeddedAgent: voiceMocks.runEmbeddedAgent,
 }));
+vi.mock("../../../shared/lazy-runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../shared/lazy-runtime.js")>();
+  return {
+    ...actual,
+    createLazyRuntimeModule: <T>(importer: () => Promise<T>) => {
+      const load = actual.createLazyRuntimeModule(importer);
+      return Object.assign(
+        async () => {
+          const runtime = await load();
+          if (
+            runtime &&
+            typeof runtime === "object" &&
+            "runEmbeddedAgent" in runtime &&
+            runtime.runEmbeddedAgent === voiceMocks.runEmbeddedAgent
+          ) {
+            await voiceMocks.executionReady();
+          }
+          return runtime;
+        },
+        { peek: load.peek, clear: load.clear },
+      );
+    },
+  };
+});
 vi.mock("../../../agents/bootstrap-files.js", () => ({
   resolveBootstrapFilesForRun: async () => [],
 }));
@@ -233,6 +258,7 @@ async function useRealConsultRuntime() {
 describe("talk.client.transcript", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    voiceMocks.executionReady.mockReset().mockResolvedValue(undefined);
     resetGatewayWorkAdmission();
     ownedVoiceSessionId = undefined;
     tempDir = await fs.realpath(
@@ -661,70 +687,47 @@ describe("talk.client.transcript", () => {
       (["close", "disconnect"] as const).map((ending) => ({ publicOnly, ending })),
     ),
   )(
-    "detaches accepted work on $ending (public callback: $publicOnly)",
+    "keeps accepted work while runtime loading spans $ending (public: $publicOnly)",
     async ({ ending, publicOnly }) => {
-      const createBrowserSession = vi.fn(async (_request: BrowserRequest) => browserSession);
-      const { cancelBrowserSession, client, clients, context } = configureDelegatedBrowserProvider(
-        createBrowserSession,
-        publicOnly,
-      );
-      let finishConsult!: (value: { text: string }) => void;
-      const acceptedResult = new Promise<{ text: string }>((resolve) => {
-        finishConsult = resolve;
+      await useRealConsultRuntime();
+      const loading = createDeferred();
+      const resume = createDeferred();
+      voiceMocks.executionReady.mockImplementationOnce(async () => {
+        loading.resolve();
+        await resume.promise;
       });
-      voiceMocks.consultRealtimeVoiceAgent
-        .mockResolvedValue({ text: "Late task started" })
-        .mockReturnValueOnce(acceptedResult);
-      const respond = vi.fn();
-      await invokeCreate({
-        params: { sessionKey, provider: "openai", model: "gpt-live-test" },
-        respond,
-        context,
-        client,
-      } as never);
-      expect(respond).toHaveBeenCalledWith(
-        true,
-        expect.objectContaining(browserSession),
-        undefined,
+      const { consult, clients, client, context, cancelBrowserSession } =
+        await createBrowserConsult(publicOnly);
+      const accepted = consult({ prompt: "Read the project status" });
+      const settled = accepted.then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
       );
-      const result = respond.mock.calls[0]?.[1] as { voiceSessionId: string };
-      ownedVoiceSessionId = result.voiceSessionId;
-      const runAgentConsult = createBrowserSession.mock.calls[0]?.[0].runAgentConsult;
-      expect(runAgentConsult).toBeTypeOf("function");
-      const acceptedSignal = new AbortController().signal;
-      const accepted = runAgentConsult!({
-        prompt: "Read the project status",
-        signal: acceptedSignal,
-      });
-      await vi.waitFor(() => expect(voiceMocks.consultRealtimeVoiceAgent).toHaveBeenCalledOnce());
-
       try {
+        await awaitGateBeforeSettlement(
+          loading.promise,
+          accepted,
+          "Consult settled before loading",
+        );
+        expect(context.chatAbortControllers.size).toBe(1);
+        expect(voiceMocks.runEmbeddedAgent).not.toHaveBeenCalled();
         if (ending === "close") {
           expect(
             await invokeClose({ sessionKey, voiceSessionId: ownedVoiceSessionId }),
           ).toHaveBeenCalledWith(true, { ok: true }, undefined);
         } else {
           clients.delete(client);
-          cleanupTalkConnection("conn-close", context.logGateway);
+          cleanupTalkConnection(client.connId, context.logGateway);
         }
-        await expect(runAgentConsult!({ prompt: "Start another task" })).rejects.toThrow(
-          /closed|stopped/i,
-        );
-        await vi.waitFor(() =>
-          expect(cancelBrowserSession).toHaveBeenCalledTimes(publicOnly ? 0 : 1),
-        );
-        await vi.waitFor(() =>
-          expect(readLegacyVoiceBinding(client.connId, sessionKey)).toBeUndefined(),
-        );
-        const acceptedConsult = voiceMocks.consultRealtimeVoiceAgent.mock.calls[0]?.[0] as {
-          abortSignal: AbortSignal;
-        };
-        expect(acceptedConsult.abortSignal.aborted).toBe(false);
-        expect(voiceMocks.consultRealtimeVoiceAgent).toHaveBeenCalledOnce();
+        await expect(consult({ prompt: "Start another task" })).rejects.toThrow(/closed|stopped/i);
       } finally {
-        finishConsult({ text: "Accepted work finished" });
-        await accepted;
+        resume.resolve();
       }
+      expect(await settled).toEqual({ result: { text: "fixture status" } });
+      expect(voiceMocks.runEmbeddedAgent).toHaveBeenCalledOnce();
+      expect(context.chatAbortControllers.size).toBe(0);
+      expect(cancelBrowserSession).toHaveBeenCalledTimes(publicOnly ? 0 : 1);
+      expect(readLegacyVoiceBinding(client.connId, sessionKey)).toBeUndefined();
     },
   );
 
