@@ -14,10 +14,13 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import android.view.ViewTreeObserver
+import android.view.accessibility.AccessibilityNodeInfo.AccessibilityAction
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
+import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
+import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -66,17 +69,8 @@ class WearChatFlowTest {
       assertTrue(!device.hasObject(By.textContains("TRAILING SENTINEL")))
       capture("full-01-preview")
 
-      fun reveal(text: String) {
-        repeat(100) {
-          val node = device.findObject(By.text(text))
-          if (node != null && node.visibleBounds.centerY() in 70..300) return
-          device.swipe(192, 290, 192, 100, 8)
-          SystemClock.sleep(100)
-        }
-        assertTrue("Reachable $text", false)
-      }
       reveal("Read full reply")
-      device.findObject(By.text("Read full reply")).click()
+      clickAction("Read full reply")
       assertTrue(device.wait(Until.hasObject(By.text("HEAD SENTINEL")), 10_000))
       capture("full-02-open")
       reveal("TRAILING SENTINEL")
@@ -133,7 +127,7 @@ class WearChatFlowTest {
       for (terminal in listOf("aborted", "error")) {
         scrollToAction("Type")
         val priorSends = phone.sends
-        device.findObject(By.text("Type")).click()
+        clickAction("Type")
         awaitState("accepted send") { phone.sends == priorSends + 1 }
         assertTrue("real input callback sends Hello", phone.lastMessage == "Hello")
         scrollToTop()
@@ -215,33 +209,68 @@ class WearChatFlowTest {
   }
 
   private fun scrollToAction(label: String) {
-    repeat(6) {
-      val button = device.findObject(By.text(label))
-      if (button != null && button.isEnabled && button.visibleBounds.height() > 12) return
-      device.swipe(190, 290, 190, 130, 12)
-      SystemClock.sleep(200)
-    }
-    assertTrue("$label action is reachable", device.wait(Until.hasObject(By.text(label)), 3_000))
+    reveal(label)
+    assertTrue("$label action is enabled", device.findObject(By.text(label)).isEnabled)
   }
 
   private fun refreshFromControls() {
     // The connection host owns the real UI's ViewModel; drive its refresh through the pager.
-    repeat(2) {
-      device.swipe(300, 190, 80, 190, 12)
-      device.waitForIdle()
-    }
+    navigateToPage("CONTROLS", forward = true)
     scrollToAction("Refresh")
-    device.findObject(By.text("Refresh")).click()
-    repeat(2) {
-      device.swipe(80, 190, 300, 190, 12)
-      device.waitForIdle()
-    }
+    clickAction("Refresh")
+    // The pager retains each list's position; leave its header visible for the next visit.
+    scrollToTop("CONTROLS")
+    navigateToPage("CHAT", forward = false)
   }
 
-  private fun scrollToTop() {
-    repeat(5) { device.swipe(190, 135, 190, 300, 12) }
-    SystemClock.sleep(500)
+  private fun navigateToPage(
+    label: String,
+    forward: Boolean,
+  ) {
+    // Voice has its own pager; a fixed swipe count does not establish the outer page.
+    repeat(4) {
+      if (device.hasObject(By.text(label))) return
+      val start = if (forward) 4 else 1
+      val end = if (forward) 1 else 4
+      assertTrue(device.swipe(device.displayWidth * start / 5, device.displayHeight / 2, device.displayWidth * end / 5, device.displayHeight / 2, 40))
+      device.waitForIdle()
+    }
+    if (!device.hasObject(By.text(label))) capture("unreachable-page-$label")
+    assertTrue("$label page is reachable", device.hasObject(By.text(label)))
   }
+
+  private fun reveal(text: String) {
+    repeat(100) {
+      val node = device.findObject(By.text(text))
+      if (node != null && node.visibleBounds.centerY() in device.displayHeight / 5..device.displayHeight * 4 / 5) return
+      // UiAutomator's scroll gesture stops before lifting, unlike a fling-producing swipe.
+      verticalList().scroll(Direction.DOWN, 0.3f)
+    }
+    capture("unreachable-$text")
+    assertTrue("Reachable $text", false)
+  }
+
+  private fun clickAction(label: String) {
+    val action = requireNotNull(device.findObject(By.text(label)))
+    val point = action.visibleCenter
+    // Unlike UiObject2.click(), this exposes a rejected native input injection.
+    assertTrue("$label native tap is accepted", device.click(point.x, point.y))
+  }
+
+  private fun scrollToTop(label: String = "CHAT") {
+    repeat(5) {
+      if (device.hasObject(By.text(label))) return
+      verticalList().scroll(Direction.UP, 1f)
+    }
+    assertTrue("$label header is reachable", device.hasObject(By.text(label)))
+  }
+
+  private fun verticalList(): UiObject2 =
+    device.findObjects(By.scrollable(true)).single { node ->
+      node.accessibilityNodeInfo.actionList.any { action ->
+        action.id == AccessibilityAction.ACTION_SCROLL_UP.id || action.id == AccessibilityAction.ACTION_SCROLL_DOWN.id
+      }
+    }
 
   private fun capture(name: String) {
     SystemClock.sleep(900)
