@@ -55,6 +55,7 @@ export async function runAnnounceAgentCall(params: {
   settleWakeSourceSessionKeys?: readonly string[];
   delegatedToolPolicyHandoff?: SubagentCompletionToolHandoffRegistration;
   expectFinal?: boolean;
+  onAccepted?: (payload: unknown) => void;
   signal?: AbortSignal;
   timeoutMs?: number;
   isExecutionAllowed: () => boolean;
@@ -120,7 +121,10 @@ export async function runAnnounceAgentCall(params: {
         : {}),
       // Accepted queue waits belong to session admission; execution belongs to
       // the requester runtime budget, not the announcement handoff deadline.
-      onAccepted: () => clearTimeout(timer),
+      onAccepted: (payload) => {
+        clearTimeout(timer);
+        params.onAccepted?.(payload);
+      },
       onExecutionStarted: () => {
         executionSignal.throwIfAborted();
         if (!params.isExecutionAllowed()) {
@@ -417,6 +421,12 @@ export async function deliverCompletionDirect(params: {
   const idempotencyKey = `${params.directIdempotencyKey}:text-direct`;
   let committedDelivery: SubagentAnnounceDeliveryResult | undefined;
   let deliveryResultReported: Promise<void> | undefined;
+  const assertDeliveryCurrent = () => {
+    params.signal?.throwIfAborted();
+    if (params.isSourceSessionEffectsAllowed?.() === false) {
+      throw new SourceOwnerChangedError();
+    }
+  };
   try {
     if (params.isSourceSessionEffectsAllowed?.() === false) {
       return sourceOwnerChangedResult();
@@ -439,12 +449,8 @@ export async function deliverCompletionDirect(params: {
       idempotencyKey,
       skipQueue: true,
       abortSignal: params.signal,
-      onPlatformSendDispatch: async () => {
-        params.signal?.throwIfAborted();
-        if (params.isSourceSessionEffectsAllowed?.() === false) {
-          throw new SourceOwnerChangedError();
-        }
-      },
+      onPlatformSendDispatch: async () => assertDeliveryCurrent(),
+      assertDirectAdapterHandoff: assertDeliveryCurrent,
       onDeliveredPayload: () => {
         if (committedDelivery) {
           return;

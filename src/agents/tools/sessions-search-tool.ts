@@ -9,6 +9,7 @@ import { optionalPositiveIntegerSchema, requesterProfileSchema } from "../schema
 import {
   describeSessionLinkRule,
   describeSessionsSearchTool,
+  SESSION_LINK_RULE_DESCRIPTION,
   SESSIONS_SEARCH_TOOL_DISPLAY_SUMMARY,
 } from "../tool-description-presets.js";
 import type { AnyAgentTool } from "./common.js";
@@ -49,7 +50,11 @@ const SESSIONS_SEARCH_INDEXING_WARNING =
 
 const SessionsSearchToolSchema = Type.Object({
   user: requesterProfileSchema(),
-  query: Type.String({ maxLength: SESSIONS_SEARCH_MAX_QUERY_CHARS }),
+  query: Type.String({
+    minLength: 1,
+    maxLength: SESSIONS_SEARCH_MAX_QUERY_CHARS,
+    description: "Required non-empty keywords to match in past user and assistant text.",
+  }),
   sessionKey: Type.Optional(Type.String()),
   limit: optionalPositiveIntegerSchema({
     maximum: SESSIONS_SEARCH_MAX_LIMIT,
@@ -74,11 +79,7 @@ const SessionsSearchOutputSchema = Type.Union([
   Type.Object(
     {
       results: Type.Array(SessionsSearchHitSchema),
-      sessionLinkRule: Type.Optional(
-        Type.String({
-          description: "How to build Control UI URLs for sessionKey values in this result.",
-        }),
-      ),
+      sessionLinkRule: Type.Optional(Type.String({ description: SESSION_LINK_RULE_DESCRIPTION })),
       indexing: Type.Optional(Type.Literal(true)),
       archivedTranscriptsExcluded: Type.Optional(Type.Integer({ minimum: 1 })),
       warning: Type.Optional(Type.String()),
@@ -313,7 +314,9 @@ export function createSessionsSearchTool(opts?: {
       const params = args as Record<string, unknown>;
       const query = readToolStringParam(params, "query") ?? "";
       if (!query) {
-        throw new ToolInputError("query must not be empty");
+        throw new ToolInputError(
+          "query must not be empty; retry with non-empty keywords to match in past session text",
+        );
       }
       if (query.length > SESSIONS_SEARCH_MAX_QUERY_CHARS) {
         throw new ToolInputError(

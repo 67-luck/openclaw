@@ -466,7 +466,6 @@ Each fact defaults to enabled when the channel produces it. Among bundled channe
   agents: {
     entries: {
       main: {
-        default: true,
         groupChat: {
           mentionPatterns: ["@openclaw", "openclaw", "\\+15555550123"],
           historyLimit: 50,

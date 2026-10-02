@@ -38,7 +38,10 @@ import {
   loadReplySessionInitializationSnapshot,
 } from "../../config/sessions/session-accessor.js";
 import { sessionEntryForkedFromParent } from "../../config/sessions/session-entry-lineage.js";
-import { buildSessionCreationStamp } from "../../config/sessions/session-entry-provenance.js";
+import {
+  buildSessionCreationStamp,
+  preserveCreationStamp,
+} from "../../config/sessions/session-entry-provenance.js";
 import { selectSessionModelOverride } from "../../config/sessions/session-entry-selection.js";
 import { resolveSessionKey } from "../../config/sessions/session-key.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
@@ -132,9 +135,9 @@ import {
 import { createReplySessionEntryHandle } from "./session-entry-handle.js";
 import { projectSessionEntryLifecycleCarry } from "./session-entry-lifecycle-carry.js";
 import {
-  buildSessionStartHookPayload,
   createReplySessionResetBoundary,
   emitReplySessionEndHook,
+  emitReplySessionStartHook,
   resolveExplicitSessionEndReason,
   resolveStaleSessionEndReason,
 } from "./session-hooks.js";
@@ -319,13 +322,10 @@ function resolveReplySessionRolloverState(
     parentSessionId: entry.parentSessionId,
     forkedFromParent: entry.forkedFromParent,
     forkSource: entry.forkSource,
-    createdVia: entry.createdVia,
-    createdActor: entry.createdActor,
-    createdAt: entry.createdAt,
+    ...preserveCreationStamp({}, entry),
     // Chat preferences survive rollover; native-runtime consent belongs to the old incarnation.
     permissionMode: entry.permissionMode,
     sandboxMode: entry.sandboxMode,
-    ...(entry.sandbox === "required" ? { sandbox: "required" } : {}),
   };
 }
 
@@ -1135,17 +1135,16 @@ async function initSessionStateAttemptLocked(
   if (createdNewEntry) {
     recordSessionCreated(cfg, { sessionKey, agentId, entry: sessionEntry });
   }
-  if (
-    !isSystemEvent &&
-    classifySessionStateActor({ inputProvenance: ctx.InputProvenance }).actorType === "human"
-  ) {
-    registerMainSessionGroupWatch({
-      sessionKey,
-      agentId,
-      entry: sessionEntry,
-      mainKey,
-    });
-  }
+  await registerMainSessionGroupWatch({
+    sessionKey,
+    agentId,
+    entry: sessionEntry,
+    mainKey,
+    isSystemEvent,
+    inputProvenance: ctx.InputProvenance,
+    signal: params.signal,
+  });
+  params.signal?.throwIfAborted();
   const sessionStore = committed.sessionStoreView;
   const sessionEntryHandle = createReplySessionEntryHandle({
     sessionEntry,
@@ -1251,15 +1250,12 @@ async function initSessionStateAttemptLocked(
       });
     }
     if (hookRunner.hasHooks("session_start")) {
-      const payload = buildSessionStartHookPayload({
+      emitReplySessionStartHook(hookRunner, {
         sessionId: effectiveSessionId,
         sessionKey,
         agentId,
         resumedFrom: previousSessionEntry?.sessionId,
       });
-      void runWithGatewayIndependentRootWorkContinuation(async () => {
-        await hookRunner.runSessionStart(payload.event, payload.context);
-      }, "hooks:session-start").catch(() => {});
     }
   }
 

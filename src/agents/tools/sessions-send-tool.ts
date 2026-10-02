@@ -6,7 +6,6 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { readAcpSessionMetaForEntry } from "../../acp/runtime/session-meta-readonly.js";
 import { resolveSessionThreadInfo } from "../../channels/plugins/session-conversation.js";
 import { tryResolveLegacyCompatibilityAgentId } from "../../config/legacy.default-agent-owner.js";
-import type { SessionDeliveryGeneration } from "../../config/sessions/session-delivery-generation.types.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
 import { shouldResumeParentSubagent } from "../../gateway/session-subagent-resume.js";
 import { resolveGatewaySessionStoreTargetWithStore } from "../../gateway/session-utils-store-lookup.js";
@@ -60,6 +59,7 @@ import {
   PLACED_SESSIONS_SEND_DESCRIPTION,
 } from "./sessions-placement-tool-contract.js";
 import { dispatchSessionsSendFollowup } from "./sessions-send-followup.js";
+import { sendFailure } from "./sessions-send-helpers.js";
 import { startSessionsSendReplyFlow } from "./sessions-send-reply-flow.js";
 import { captureSessionsSendResumeCaller, resumeSessionsSendTask } from "./sessions-send-resume.js";
 import {
@@ -74,20 +74,6 @@ import type { SessionsSendToolOptions } from "./sessions-send-tool.types.js";
 const log = createSubsystemLogger("agents/sessions-send");
 
 const NO_REPLY_MESSAGE = "No visible reply or pending delivery. Continue or retry if needed.";
-
-function sendFailure(
-  status: "error" | "forbidden",
-  error: string,
-  sessionKey?: string,
-  runId: string = crypto.randomUUID(),
-) {
-  return jsonResult({
-    runId,
-    status,
-    error,
-    ...(sessionKey !== undefined ? { sessionKey } : {}),
-  });
-}
 
 export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgentTool {
   const requesterOrigin = normalizeDeliveryContext(opts?.requesterOrigin);
@@ -287,6 +273,17 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
       if (!resolvedSession.ok) {
         return sendFailure(resolvedSession.status, resolvedSession.error);
       }
+      if (
+        resolvedSession.resolvedViaSessionId &&
+        !resolvedSession.agentId &&
+        classifySessionKeyShape(resolvedSession.key) === "legacy_or_alias"
+      ) {
+        return sendFailure(
+          "forbidden",
+          "Session ownership could not be verified. Upgrade the gateway or use an agent-prefixed session key.",
+          sessionKey,
+        );
+      }
       const resolutionAccess = createSessionVisibilityRowChecker({
         action: "send",
         defaultAgentId:
@@ -379,20 +376,21 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
         projection: "full",
       });
       const requesterSessionEntry = requesterSession.store[requesterSession.canonicalKey];
-      const requesterContinuationSession = opts?.agentSessionId
+      const requesterSessionId = opts?.agentSessionId ?? requesterSessionEntry?.sessionId;
+      const requesterContinuationSession = requesterSessionId
         ? {
-            sessionId: opts.agentSessionId,
+            sessionId: requesterSessionId,
             lifecycleRevision: requesterSessionEntry?.lifecycleRevision,
           }
         : undefined;
-      const requesterDeliveryGeneration: SessionDeliveryGeneration | undefined =
-        requesterSessionEntry?.sessionId
+      const requesterDeliveryGeneration =
+        requesterSessionEntry && requesterContinuationSession
           ? {
               agentId: requesterSession.agentId,
               storePath: requesterSession.storePath,
               sessionKey: requesterSession.canonicalKey,
-              sessionId: opts?.agentSessionId ?? requesterSessionEntry.sessionId,
-              lifecycleRevision: requesterSessionEntry.lifecycleRevision ?? null,
+              ...requesterContinuationSession,
+              lifecycleRevision: requesterContinuationSession.lifecycleRevision ?? null,
             }
           : undefined;
       const requesterIsSubagent = isSubagentSessionFromEntry(
@@ -576,11 +574,8 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
             });
           }
           // ACP background tasks already report to their parent through task completion.
-          const targetSessionEntryWithAcp = targetSessionEntry
-            ? { ...targetSessionEntry, acp: targetAcpMeta }
-            : targetSessionEntry;
           const skipTaskReplyFlow = isRequesterParentOfBackgroundAcpSession(
-            targetSessionEntryWithAcp,
+            targetSessionEntry ? { ...targetSessionEntry, acp: targetAcpMeta } : undefined,
             effectiveRequesterKey,
           );
           // Child reports, registered tasks, and exact-incarnation grants own their completion.
@@ -627,6 +622,7 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
               requesterSessionKey: effectiveRequesterKey,
               requesterAgentId,
               requesterTurnRunId: opts?.requesterTurnRunId,
+              targetSession: targetSessionEntry,
               withRequesterAuthority,
               watch: params.watch === true,
             });

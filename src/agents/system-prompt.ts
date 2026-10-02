@@ -70,7 +70,7 @@ import type {
   ProviderSystemPromptContribution,
   ProviderSystemPromptSectionId,
 } from "./system-prompt-contribution.js";
-import { buildMessagingSection } from "./system-prompt-messaging.js";
+import { buildMessagingSection, resolveSilentReplyPromptMode } from "./system-prompt-messaging.js";
 import { buildSkillsSection } from "./system-prompt-skills.js";
 import { buildSystemPromptToolLines } from "./system-prompt-tool-list.js";
 import type {
@@ -495,6 +495,8 @@ export function buildAgentSystemPrompt(params: {
   bootstrapMode?: BootstrapMode;
   bootstrapTruncationNotice?: string;
   skillsPrompt?: string;
+  /** Records the catalog selected by the renderer without changing prompt bytes. */
+  onRenderedSkillsPrompt?: (skillsPrompt: string) => void;
   codeModeActive?: boolean;
   docsPath?: string;
   sourcePath?: string;
@@ -502,7 +504,7 @@ export function buildAgentSystemPrompt(params: {
   ttsHint?: string;
   /** Controls which hardcoded sections to include. Defaults to "full". */
   promptMode?: PromptMode;
-  /** Controls the generic silent-reply section. Channel-aware prompts can set "none". */
+  /** Controls generic silent-reply guidance for external message channels. */
   silentReplyPromptMode?: SilentReplyPromptMode;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   requireExplicitMessageTarget?: boolean;
@@ -546,6 +548,7 @@ export function buildAgentSystemPrompt(params: {
   const runtimeInfo = params.runtimeInfo;
   const modelIdentityLine = buildModelIdentityPromptLine(runtimeInfo?.model);
   if (promptMode === "none") {
+    params.onRenderedSkillsPrompt?.("");
     return ["You are a personal assistant running inside OpenClaw.", modelIdentityLine]
       .filter(Boolean)
       .join("\n");
@@ -657,9 +660,7 @@ export function buildAgentSystemPrompt(params: {
   const messageChannelOptions = availableTools.has("message")
     ? buildMessageChannelOptions(runtimeChannel)
     : undefined;
-  const silentReplyPromptMode = sourceMessageToolOnly
-    ? "none"
-    : (params.silentReplyPromptMode ?? "generic");
+  const silentReplyPromptMode = resolveSilentReplyPromptMode(params);
   const sandboxContainerWorkspace = params.sandboxInfo?.containerWorkspaceDir?.trim();
   const sanitizedWorkspaceDir = sanitizeForPromptLiteral(params.workspaceDir);
   const runtimeCwd = params.runtimeCwd ?? params.workspaceDir;
@@ -715,6 +716,7 @@ export function buildAgentSystemPrompt(params: {
         installedSkillRead: availableTools.has("skills_read"),
       })
     : [];
+  params.onRenderedSkillsPrompt?.(canAccessSkills ? (skillsPrompt ?? "") : "");
   const skillWorkshopSection = availableTools.has(SKILL_WORKSHOP_TOOL_NAME)
     ? buildSkillWorkshopPromptSection()
     : [];
@@ -817,9 +819,9 @@ export function buildAgentSystemPrompt(params: {
               : []),
             ...(hasSessionsSpawn
               ? [
-                  "Large work: `sessions_spawn`; follow the accepted completion mode.",
-                  '`sessions_spawn`: clean context => `context:"isolated"`; transcript needed => `context:"fork"`.',
-                  "Default to subagents for internal work; use `visible:true` only for a separate session the user requests or needs to revisit and steer independently.",
+                  "Execute work directly by default. Delegate a bounded, independent task only when parallel execution or an independent review provides a concrete benefit. Keep dependent steps with the same owner.",
+                  '`sessions_spawn`: clean context => `context:"isolated"`; transcript needed => `context:"fork"`. Follow the accepted completion mode.',
+                  "Once delegation is appropriate, use a hidden subagent unless the user needs a separate, independently steerable session.",
                 ]
               : []),
             ...(availableTools.has("screen")

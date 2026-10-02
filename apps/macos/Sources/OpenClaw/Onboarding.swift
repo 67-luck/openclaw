@@ -2,6 +2,7 @@ import AppKit
 import CryptoKit
 import Observation
 import OpenClawDiscovery
+import OpenClawKit
 import SwiftUI
 
 enum UIStrings {
@@ -531,47 +532,13 @@ enum OnboardingSystemAgentResumeStore {
         components.user = nil
         components.password = nil
         components.queryItems = components.queryItems?.filter { queryItem in
-            !self.isSensitiveQueryItemName(queryItem.name)
+            !GatewayEndpointID.isSensitiveQueryItemName(queryItem.name)
         }
         if components.queryItems?.isEmpty == true {
             components.query = nil
         }
         components.fragment = nil
         return components.string ?? normalized
-    }
-
-    private static func isSensitiveQueryItemName(_ value: String) -> Bool {
-        let normalized = value
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .replacingOccurrences(of: "-", with: "_")
-        return [
-            "access_token",
-            "api_key",
-            "apikey",
-            "app_secret",
-            "auth",
-            "auth_token",
-            "authorization",
-            "client_secret",
-            "code",
-            "credential",
-            "hook_token",
-            "id_token",
-            "jwt",
-            "key",
-            "pass",
-            "passwd",
-            "password",
-            "private_key",
-            "refresh_token",
-            "secret",
-            "session",
-            "signature",
-            "token",
-            "x_amz_security_token",
-            "x_amz_signature",
-        ].contains(normalized)
     }
 }
 
@@ -580,6 +547,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
     static let shared = OnboardingController()
     static let windowStyleMask: NSWindow.StyleMask = [.titled, .closable, .resizable, .fullSizeContentView]
     private var window: NSWindow?
+    private var closeConfirmationPending = false
     var sheetPresentationWindow: NSWindow? {
         self.window
     }
@@ -604,8 +572,8 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         }
         if let window {
             DockIconManager.shared.temporarilyShowDock()
-            window.makeKeyAndOrderFront(nil)
-            NSApp.activate(ignoringOtherApps: true)
+            AppActivation.shared.makeKeyAndOrderFront(window: window)
+            AppActivation.shared.activate()
             return
         }
         let hosting = NSHostingController(rootView: OnboardingView())
@@ -631,8 +599,8 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         window.isMovableByWindowBackground = true
         window.delegate = self
         DockIconManager.shared.temporarilyShowDock()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        AppActivation.shared.makeKeyAndOrderFront(window: window)
+        AppActivation.shared.activate()
         self.window = window
     }
 
@@ -666,8 +634,10 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         self.show()
     }
 
-    func windowShouldClose(_: NSWindow) -> Bool {
+    func windowShouldClose(_ window: NSWindow) -> Bool {
         guard let busyReason else { return true }
+        guard !self.closeConfirmationPending else { return false }
+        self.closeConfirmationPending = true
         let alert = NSAlert()
         alert.messageText = "Setup is still working"
         alert.informativeText =
@@ -676,8 +646,17 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Continue Setup")
         alert.addButton(withTitle: "Quit Setup")
-        let response = alert.runModal()
-        return response == .alertSecondButtonReturn
+        var shouldClose = false
+        AppActivation.shared.presentAlert(alert) { [weak self, weak window] response in
+            self?.closeConfirmationPending = false
+            guard response == .alertSecondButtonReturn else { return }
+            if AppLaunchRuntimePlan.current.allowsActivation {
+                shouldClose = true
+            } else if let window, self?.window === window {
+                window.close()
+            }
+        }
+        return shouldClose
     }
 
     func windowWillClose(_ notification: Notification) {
