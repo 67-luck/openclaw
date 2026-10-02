@@ -7706,7 +7706,7 @@ describe("ci workflow guards", () => {
     writeExecutable(path.join(bin, "node"), [
       "#!/bin/sh",
       'test -f dist/.buildstamp || { echo "runtime not prepared" >&2; exit 1; }',
-      'if [ "$1" = "-p" ]; then exec "$STARTUP_CORPUS_NODE" "$@"; fi',
+      'if [ "$1" = "-p" ] || [ "$1" = "-e" ]; then exec "$STARTUP_CORPUS_NODE" "$@"; fi',
       'label="${OPENCLAW_TEST_STARTUP_CORPUS_SHARD:-config}"',
       'case "$label" in */*) label="${label%/*}-${label#*/}" ;; esac',
       'printf "%s\\n" "$@" > "$STARTUP_CORPUS_ARGS.$label"',
@@ -7759,6 +7759,7 @@ describe("ci workflow guards", () => {
       ]);
     } else {
       expect(readArgs("config")).toEqual([
+        FORCE_COLOR: "3",
         ...commonArgs,
         "src/config/config-startup-corpus.test.ts",
       ]);
