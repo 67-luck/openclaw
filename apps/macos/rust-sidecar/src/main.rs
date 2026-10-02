@@ -1007,4 +1007,92 @@ mod tests {
             json!({"type":"event","event":"gateway.status","payload":{"ready":true}})
         );
     }
+    #[tokio::test]
+    async fn native_invoke_backlog_retires_before_six_large_requests_are_retained() {
+        let (incoming, incoming_rx) = mpsc::channel(128);
+        let (outgoing, mut queued) = mpsc::channel(usize::from(MAX_IN_FLIGHT));
+        let (transport_outgoing, mut writes) = mpsc::channel(1);
+        let (transport_receipts, mut receipts) = mpsc::channel(1);
+        let (transport, native_input) =
+            transport::NativeTransport::new(transport_outgoing, transport_receipts);
+        let mut task = tokio::spawn(async move {
+            run_gateway(incoming_rx, &outgoing, MAX_IN_FLIGHT, transport).await
+        });
+        let _abort = AbortTaskOnDrop(task.abort_handle());
+        let observed = tokio::time::timeout(Duration::from_secs(10), async {
+            incoming.send(SupervisorMessage::Open {
+                url: "ws://127.0.0.1:1".into(), private_commands: Vec::new(),
+            }).await.map_err(|_| "open rejected")?;
+            native_input.receive(1, bytes::Bytes::from(json!({
+                "type":"event", "event":"connect.challenge", "payload":{"nonce":"fixture", "ts":1}
+            }).to_string())).map_err(|_| "challenge rejected")?;
+            receipts.recv().await.ok_or("challenge receipt missing")?;
+            let challenge = queued.recv().await.ok_or("native challenge missing")?;
+            if challenge["frame"]["event"] != "connect.challenge" { return Err("wrong challenge"); }
+            incoming.send(SupervisorMessage::Frame {
+                frame: Request { kind:"req".into(), id:"connect-1".into(), method:"connect".into(),
+                    params:json!({"role":"node", "client":{"mode":"node"}, "minProtocol":4,
+                        "maxProtocol":4, "commands":["benchmark.hold"]}) },
+                caller_owns_lifetime:false,
+            }).await.map_err(|_| "signed connect rejected")?;
+            let connect = writes.recv().await.ok_or("Gateway connect missing")?;
+            let (metadata, body) = connect.payload_parts();
+            let connect: Value = serde_json::from_slice(body).map_err(|_| "invalid Gateway connect")?;
+            native_input.acknowledge(u64::from_be_bytes(metadata[1..].try_into().unwrap()), true)
+                .map_err(|_| "connect acknowledgement rejected")?;
+            native_input.receive(1, bytes::Bytes::from(json!({
+                "type":"res", "id":connect["id"], "ok":true, "payload":{"type":"hello-ok","protocol":4}
+            }).to_string())).map_err(|_| "hello rejected")?;
+            receipts.recv().await.ok_or("hello receipt missing")?;
+            let hello = queued.recv().await.ok_or("native hello missing")?;
+            if hello["frame"]["ok"] != true { return Err("native hello failed"); }
+            for index in 0..6 {
+                // Reach NodeClient's real paramsJSON parser; NodeInvocation::new has no raw bytes.
+                let raw = json!({"data": char::from(b'a' + index).to_string().repeat(24 * 1024 * 1024)}).to_string();
+                let frame = json!({"type":"event", "event":"node.invoke.request", "payload":{
+                    "id":format!("hold-{index}"), "nodeId":"node-1", "command":"benchmark.hold",
+                    "paramsJSON":raw, "timeoutMs":0
+                }}).to_string();
+                if frame.len() >= GATEWAY_PAYLOAD_LIMIT { return Err("fixture exceeds per-frame limit"); }
+                native_input.receive(1, bytes::Bytes::from(frame)).map_err(|_| "invocation rejected")?;
+                receipts.recv().await.ok_or("invocation receipt missing")?;
+                while queued.len() < usize::from(index + 1) && !task.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+                if index < 5 && task.is_finished() { return Err("valid backlog retired early"); }
+            }
+            Ok::<_, &'static str>(())
+        }).await;
+        // Budget failure must retire the real run, not merely return a handler error.
+        let retired = tokio::time::timeout(Duration::from_secs(1), &mut task).await;
+        drop(native_input);
+        let retired = match retired {
+            Ok(result) => matches!(result, Ok(Err(_))),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                false
+            }
+        };
+        let mut requests = Vec::new();
+        while let Ok(frame) = queued.try_recv() {
+            if frame["frame"]["event"] == "node.invoke.request" {
+                requests.push(frame["frame"]["payload"]["id"].as_str().unwrap().to_owned());
+            }
+        }
+        drop(queued);
+        observed
+            .expect("fixture must finish")
+            .expect("valid native flow");
+        assert!(
+            retired,
+            "six distinct 24MiB native requests remained queued"
+        );
+        assert_eq!(
+            requests,
+            (0..5)
+                .map(|index| format!("hold-{index}"))
+                .collect::<Vec<_>>()
+        );
+    }
 }
