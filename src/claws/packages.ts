@@ -548,7 +548,7 @@ async function installClawPackagesUnlocked(
               expectedPluginId: probe.pluginId,
             },
             env: options.env,
-            beforePersistentApply: packageLease.assertOwned,
+            beforePersistentApply: () => packageLease.assertOwned(),
             logger: createPluginInstallLogger(runtime),
             confirmInstall: resolveClawHubInstallConfirmation(),
             ...resolvePluginCapabilityConsentCliOptions({ action: "install", runtime }),
@@ -648,7 +648,7 @@ async function installClawPackagesUnlocked(
                 caller: "cli",
                 invalidateRuntimeCache: false,
                 clawManaged: true,
-                beforePersistentApply: rollbackLease.assertOwned,
+                beforePersistentApply: () => rollbackLease.assertOwned(),
                 onWarning: (warning) => runtime.log(warning),
                 deferRuntime: options.runtimeBatch?.install(),
               });

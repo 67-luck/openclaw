@@ -25,8 +25,8 @@ import type {
   ChannelIngressReadCommand,
   ChannelIngressReadReply,
 } from "../channels/message/ingress-queue-read-contract.js";
-import type { PersistedClawInstall, PersistedClawPackageRef } from "../claws/provenance.js";
-import type { PersistedClawWorkspaceFile } from "../claws/workspace.js";
+import type { PersistedClawPackageRef } from "../claws/package-extension-provenance.js";
+import type { ClawOrphanWorkspace, PersistedClawInstall } from "../claws/provenance-types.js";
 import type { ConfigSnapshotAuditRecord } from "../config/config-journal-snapshot.kernel.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { CronScratchReadCommand, CronScratchSnapshot } from "../cron/scratch-contract.js";
@@ -288,7 +288,7 @@ export type OpenClawStateReadResult =
       install: PersistedClawInstall | undefined;
       installs: PersistedClawInstall[];
       packageRefs: PersistedClawPackageRef[];
-      orphanWorkspace: Pick<PersistedClawWorkspaceFile, "workspace" | "updatedAtMs"> | undefined;
+      orphanWorkspace: ClawOrphanWorkspace | undefined;
     }
   | { type: "doctor.gatewayOwnerLease.read"; lease: GatewayOwnerLeaseIdentity | undefined }
   | {

@@ -240,7 +240,7 @@ export async function uninstallPluginWithPolicy(
     signal?: AbortSignal;
     applyRuntime?: PluginLifecycleRuntimeApply;
     deferRuntime?: PluginInstallRuntimeDeferral;
-    onPreview?: (preview: PreparedPluginUninstall) => void;
+    onPreview?: (preview: PreparedPluginUninstall) => void | Promise<void>;
     onWarning?: (warning: string) => void;
     onComplete?: (result: PluginUninstallOutcome) => void;
   },
@@ -268,7 +268,7 @@ export async function uninstallPluginWithPolicy(
         return preparation;
       }
       const prepared = preparation.value;
-      params.onPreview?.(prepared);
+      await params.onPreview?.(prepared);
       const uninstall = async (): Promise<Result<PluginUninstallOutcome, string>> => {
         const {
           pluginId,

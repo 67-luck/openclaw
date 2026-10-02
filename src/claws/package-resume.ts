@@ -4,8 +4,8 @@ import {
   openExistingOpenClawStateDatabaseReadOnly,
   type OpenClawStateDatabaseOptions,
 } from "../state/openclaw-state-db.js";
+import { readClawInstallRecordFromDatabase } from "./provenance-read.kernel.js";
 import {
-  readClawInstallRecordFromDatabase,
   readClawPackageRefs,
   type PersistedClawInstall,
   type PersistedClawPackageRef,

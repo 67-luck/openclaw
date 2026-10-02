@@ -29,9 +29,7 @@ export async function collectClawPluginUninstallWarnings(params: {
   }
   let packageRefs: PersistedClawPackageRef[];
   try {
-    ({ packageRefs } = await readClawPackageOwnership({
-      ...(params.env ? { env: params.env } : {}),
-    }));
+    ({ packageRefs } = await readClawPackageOwnership(params.env ? { env: params.env } : {}));
   } catch (error) {
     return [
       `Could not inspect Claw references for plugin "${params.pluginId}": ${coerceErrorMessage(error)}`,

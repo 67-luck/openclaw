@@ -18,8 +18,10 @@ import type {
   PersistedClawPackageRef,
 } from "./package-extension-provenance.js";
 import { updateClawPackageRefStatusInDatabase } from "./package-status.kernel.js";
-import { readClawInstallRecordFromDatabase } from "./provenance.js";
-import { readClawOrphanWorkspaceInDatabase } from "./workspace.js";
+import {
+  readClawInstallRecordFromDatabase,
+  readClawOrphanWorkspaceInDatabase,
+} from "./provenance-read.kernel.js";
 
 export const clawProvenanceOperations = {
   "clawProvenance.packageStatus": (
