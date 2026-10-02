@@ -499,49 +499,68 @@ class WearDirectGatewayFlowTest {
     clickAction(activity, decisionLabel)
     findText(app.getString(R.string.watch_confirm_decision, decisionLabel)).recycle()
     capture(input.phase, "04-pending")
-    if (input.approvalScenario == "revoked-before-confirmation") {
-      writeProof(
-        File(app.filesDir, "wear-direct-approval-confirmation-ready.json"),
-        ApprovalChoice(input.runId, input.nonce, request.id, input.approvalDecision),
-      )
+    val dispatchedRevocation = input.approvalScenario == "revoked-in-dispatch"
+    if (input.approvalScenario == "revoked-before-confirmation" || dispatchedRevocation) {
+      if (dispatchedRevocation) {
+        clickAction(activity, app.getString(R.string.watch_confirm_decision, decisionLabel))
+      } else {
+        writeProof(
+          File(app.filesDir, "wear-direct-approval-confirmation-ready.json"),
+          ApprovalChoice(input.runId, input.nonce, request.id, input.approvalDecision),
+        )
+      }
       val revokedFile = File(app.filesDir, "wear-direct-approval-revoked.json")
       awaitState("Gateway observer confirms this watch's token revocation") { revokedFile.exists() }
       val revoked = consumePrivate<ApprovalRevoked>(revokedFile, 8192)
       assertTrue(
         "revocation receipt belongs to the displayed request and watch",
         revoked.runId == input.runId && revoked.nonce == input.nonce && revoked.id == request.id &&
-          revoked.deviceIdSha256 == deviceIdSha256 && revoked.revokedAtMs in (System.currentTimeMillis() - 120_000)..System.currentTimeMillis() &&
+          revoked.deviceIdSha256 == deviceIdSha256 &&
           revoked.closedConnectionLogKey.isNotBlank(),
+      )
+      // Both timestamps belong to the Gateway observer; the watch clock may lag.
+      // Nonce binding and the bounded receipt wait keep this observation run-local.
+      assertTrue(
+        "revocation is fresh on its owning observer clock",
+        revoked.observedAtMs in (input.expiresAtMs - 900_000)..input.expiresAtMs &&
+          revoked.revokedAtMs in (revoked.observedAtMs - 120_000)..revoked.observedAtMs,
       )
       awaitState("revoked watch loses its approval connection") {
         val state = runtime.state.value
-        !state.connected && !state.approvalsReady && request.id !in state.resolving
+        !state.connected && !state.approvalsReady &&
+          (if (dispatchedRevocation) state.resolving[request.id]?.submitted == true else request.id !in state.resolving)
       }
-      val confirmLabel = app.getString(R.string.watch_confirm_decision, decisionLabel)
-      awaitState("the visible confirmation action is disabled after revocation") {
-        val root = instrumentation.uiAutomation.rootInActiveWindow ?: return@awaitState false
-        val nodes = root.descendants()
-        try {
-          val target = nodes.singleOrNull { it.packageName?.toString() == app.packageName && it.text?.toString() == confirmLabel }
-          val parent = target?.getParent(0)
+      if (dispatchedRevocation) {
+        // A wire-submitted decision remains uncertain after losing its reply.
+        // The observer separately proves the server rejected it before command I/O.
+        findText(app.getString(R.string.watch_approval_unconfirmed)).recycle()
+      } else {
+        val confirmLabel = app.getString(R.string.watch_confirm_decision, decisionLabel)
+        awaitState("the visible confirmation action is disabled after revocation") {
+          val root = instrumentation.uiAutomation.rootInActiveWindow ?: return@awaitState false
+          val nodes = root.descendants()
           try {
-            target?.refresh() == true && parent?.refresh() == true &&
-              target.packageName?.toString() == app.packageName && target.text?.toString() == confirmLabel &&
-              root.packageName?.toString() == app.packageName && target.windowId == root.windowId &&
-              parent.packageName?.toString() == app.packageName && parent.windowId == root.windowId &&
-              target.isVisibleToUser && parent.isVisibleToUser && !parent.isEnabled
+            val target = nodes.singleOrNull { it.packageName?.toString() == app.packageName && it.text?.toString() == confirmLabel }
+            val parent = target?.getParent(0)
+            try {
+              target?.refresh() == true && parent?.refresh() == true &&
+                target.packageName?.toString() == app.packageName && target.text?.toString() == confirmLabel &&
+                root.packageName?.toString() == app.packageName && target.windowId == root.windowId &&
+                parent.packageName?.toString() == app.packageName && parent.windowId == root.windowId &&
+                target.isVisibleToUser && parent.isVisibleToUser && !parent.isEnabled
+            } finally {
+              @Suppress("DEPRECATION")
+              parent?.recycle()
+            }
           } finally {
             @Suppress("DEPRECATION")
-            parent?.recycle()
+            nodes.filter { it !== root }.forEach { it.recycle() }
+            @Suppress("DEPRECATION")
+            root.recycle()
           }
-        } finally {
-          @Suppress("DEPRECATION")
-          nodes.filter { it !== root }.forEach { it.recycle() }
-          @Suppress("DEPRECATION")
-          root.recycle()
         }
       }
-      capture(input.phase, "04-revoked")
+      capture(input.phase, if (dispatchedRevocation) "04-dispatch-revoked" else "04-revoked")
       writeProof(
         File(app.filesDir, "wear-direct-approval-rejected.json"),
         ApprovalChoice(input.runId, input.nonce, request.id, input.approvalDecision),
@@ -696,7 +715,7 @@ class WearDirectGatewayFlowTest {
       assertTrue("private native input has not expired", it.expiresAtMs - System.currentTimeMillis() in 1..900_000)
       assertTrue("private native input names an explicit phase", it.phase in setOf("bootstrap", "reopen"))
       assertTrue("private native input names an explicit approval decision", it.approvalDecision in setOf("deny", "allow-once"))
-      assertTrue("private native input names an explicit approval scenario", it.approvalScenario in setOf("ordinary", "revoked-before-confirmation", "excluded-reviewer"))
+      assertTrue("private native input names an explicit approval scenario", it.approvalScenario in setOf("ordinary", "revoked-before-confirmation", "revoked-in-dispatch", "excluded-reviewer"))
       assertTrue(
         "negative approval cases are fresh Allow-once attempts, not durable reconnect",
         it.approvalScenario == "ordinary" || (it.phase == "bootstrap" && it.approvalDecision == "allow-once"),
@@ -1283,6 +1302,7 @@ class WearDirectGatewayFlowTest {
     val id: String,
     val deviceIdSha256: String,
     val revokedAtMs: Long,
+    val observedAtMs: Long,
     val closedConnectionLogKey: String,
   )
 
