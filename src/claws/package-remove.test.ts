@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile, rename } from "node:fs/promises";
 import { join } from "node:path";
+import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { ok } from "@openclaw/normalization-core/result";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../test/helpers/promise.js";
@@ -181,7 +182,11 @@ describe("Claw package removal", () => {
         },
       );
       if (phase === "compensation claim") {
-        await expect(pending).rejects.toMatchObject({ errors: [cleanupError, unknown] });
+        const error = await pending.catch((error: unknown) => error);
+        expect(error).toMatchObject({ code: "outcome-unknown" });
+        expect(collectNestedErrorCandidates(error)).toEqual(
+          expect.arrayContaining([cleanupError, unknown]),
+        );
       } else {
         await expect(pending).rejects.toBe(unknown);
       }
@@ -197,28 +202,33 @@ describe("Claw package removal", () => {
       const store = packageRefStore(ref);
       const unknown = new SqliteWorkerError("Package claim outcome is unknown", "outcome-unknown");
       const failure = aggregate ? new AggregateError([unknown], "Lease cleanup failed") : unknown;
-      await expect(
-        applyClawPackageRemovals(
-          [
-            {
-              packageRef: ref,
-              workspace: install.workspace,
-              action: "retain",
-              reason: "Package is independently owned outside this Claw.",
-              affectedClawAgentIds: [],
-            },
-          ],
+      const pending = applyClawPackageRemovals(
+        [
           {
-            deps: {
-              ...store,
-              withPackageLease: async (artifact, operation, options) => {
-                await packageLeaseScope()(artifact, operation, options);
-                throw failure;
-              },
+            packageRef: ref,
+            workspace: install.workspace,
+            action: "retain",
+            reason: "Package is independently owned outside this Claw.",
+            affectedClawAgentIds: [],
+          },
+        ],
+        {
+          deps: {
+            ...store,
+            withPackageLease: async (artifact, operation, options) => {
+              await packageLeaseScope()(artifact, operation, options);
+              throw failure;
             },
           },
-        ),
-      ).rejects.toBe(failure);
+        },
+      );
+      if (aggregate) {
+        const error = await pending.catch((error: unknown) => error);
+        expect(error).toMatchObject({ code: "outcome-unknown" });
+        expect(collectNestedErrorCandidates(error)).toContain(failure);
+      } else {
+        await expect(pending).rejects.toBe(failure);
+      }
       expect(store.claimPackageRef).toHaveBeenCalledOnce();
       expect(store.readPackageRefs()[0]?.status).toBe("pending");
     },

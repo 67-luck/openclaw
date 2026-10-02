@@ -680,6 +680,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/claws/lifecycle-state.test.ts",
   "src/claws/update-plan.test.ts",
   "src/claws/packages.test.ts",
+  "src/skills/lifecycle/clawhub.test.ts",
   "src/commands/doctor/auth-alias-migration.test.ts",
   "src/commands/doctor/auth-alias-import-recovery.test.ts",
   "src/commands/doctor/auth-alias-preservation.test.ts",

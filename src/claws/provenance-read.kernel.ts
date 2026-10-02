@@ -2,6 +2,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../infra/sqlite-number.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
+import { CLAW_SCHEMA_VERSION } from "./manifest-contract.js";
 import {
   rowToPackageRef,
   type PackageRefRow,
@@ -16,7 +17,6 @@ import type {
   ClawOrphanWorkspace,
   PersistedClawInstall,
 } from "./provenance-types.js";
-import type { ClawAddPlan, ClawPackage } from "./types.js";
 
 type ClawInstallRow = {
   schema_version: string;
@@ -43,6 +43,10 @@ type ClawInstallRow = {
 
 function rowToRecord(row: ClawInstallRow): PersistedClawInstall {
   const ownership = decodeClawAgentOwnership(row.agent_owned_paths_json, row.schema_version);
+  const manifestSchemaVersion = sqliteNumber(row.manifest_schema_version);
+  if (manifestSchemaVersion !== CLAW_SCHEMA_VERSION) {
+    throw new Error(`Unsupported Claw manifest schema ${manifestSchemaVersion}.`);
+  }
   return {
     schemaVersion: installRecordSchema.parseClawInstallRecordSchemaVersion(row.schema_version),
     claw: {
@@ -55,9 +59,7 @@ function rowToRecord(row: ClawInstallRow): PersistedClawInstall {
       integrity: row.integrity,
       byteLength: sqliteNumber(row.source_byte_length),
     },
-    manifestSchemaVersion: sqliteNumber(
-      row.manifest_schema_version,
-    ) as ClawAddPlan["manifestSchemaVersion"],
+    manifestSchemaVersion,
     planIntegrity: row.plan_integrity,
     agentId: row.agent_id,
     workspace: row.workspace,
@@ -72,17 +74,20 @@ function rowToRecord(row: ClawInstallRow): PersistedClawInstall {
 }
 
 function selectClawInstallRow(db: DatabaseSync, agentId: string): ClawInstallRow | undefined {
-  return db /* sqlite-allow-raw: this Claw prototype state-table read is scoped to one owned row. */
-    .prepare(
-      `SELECT agent_id, schema_version, source_kind, claw_name, claw_version,
+  return (
+    db /* sqlite-allow-raw: this Claw prototype state-table read is scoped to one owned row. */
+      .prepare(
+        `SELECT agent_id, schema_version, source_kind, claw_name, claw_version,
               package_root, manifest_path, integrity_kind, integrity, source_byte_length,
               manifest_schema_version, plan_integrity, workspace, agent_config_digest,
               agent_owned_paths_json, bootstrap_source_path, bootstrap_content_digest,
               status, added_at_ms, updated_at_ms
          FROM claw_installs
         WHERE agent_id = ?`,
-    )
-    .get(agentId) as ClawInstallRow | undefined;
+      )
+      // SAFETY: The explicit projection reads the admitted Claw install table and its writer-owned discriminants.
+      .get(agentId) as ClawInstallRow | undefined
+  );
 }
 
 export function readClawInstallRecordFromDatabase(
@@ -106,14 +111,15 @@ export function readClawInstallRecordsInDatabase(db: DatabaseSync): PersistedCla
          FROM claw_installs
         ORDER BY agent_id`,
       )
+      // SAFETY: This inventory uses the same admitted install projection as the exact-row reader.
       .all() as ClawInstallRow[];
   return rows.map(rowToRecord);
 }
 
 export type ClawPackageRefQuery = {
   agentId?: string;
-  kind?: ClawPackage["kind"];
-  source?: ClawPackage["source"];
+  kind?: PersistedClawPackageRef["kind"];
+  source?: PersistedClawPackageRef["source"];
   ref?: string;
   version?: string;
   integrity?: string;
@@ -153,6 +159,7 @@ export function readClawPackageRefsInDatabase(
          FROM claw_package_refs${where}
         ORDER BY agent_id, package_kind, package_ref`,
       )
+      // SAFETY: The explicit projection matches the admitted package-reference schema consumed by its row codec.
       .all(params) as PackageRefRow[];
   return rows.map(rowToPackageRef);
 }

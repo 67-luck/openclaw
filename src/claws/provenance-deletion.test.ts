@@ -21,7 +21,6 @@ import {
   readClawInstallRecord,
   updateClawInstallRecord,
   updateClawInstallRecordStatus,
-  upgradeClawInstallSchema,
 } from "./provenance.js";
 import { makeProvenancePlan } from "./provenance.test-helpers.js";
 
@@ -250,14 +249,6 @@ describe("Claw installation identity during deletion", () => {
               expectedExistingRecord: original,
             }),
           ).toThrow("pending deletion");
-          if (original) {
-            expect(() =>
-              runOpenClawStateWriteTransaction(
-                (database) => upgradeClawInstallSchema(database, "worker", original, original),
-                options,
-              ),
-            ).toThrow("pending deletion");
-          }
           expect(readClawInstallRecord("worker", options)).toEqual(original);
           await withAgentDeletion(
             "worker",

@@ -42,7 +42,7 @@ import {
 } from "./provenance-runtime-read.js";
 import * as installRecordSchema from "./provenance-schema-version.js";
 import type { ClawInstallStatus, PersistedClawInstall } from "./provenance-types.js";
-import type { ClawAddPlan, ClawPackage, ResolvedClawPackage } from "./types.js";
+import type { ClawAddPlan, ResolvedClawPackage } from "./types.js";
 import type { PersistedClawWorkspaceFile } from "./workspace.js";
 export {
   CLAW_PACKAGE_REF_SCHEMA_VERSION,
@@ -496,7 +496,7 @@ export function readClawPackageRefs(
   return readClawPackageRefsInDatabase(openOpenClawStateDatabase(options).db, options);
 }
 
-export function upgradeClawInstallSchema<
+function upgradeClawInstallSchema<
   TRecord extends {
     schemaVersion: installRecordSchema.ClawInstallRecordSchemaVersion;
     planIntegrity: string;
