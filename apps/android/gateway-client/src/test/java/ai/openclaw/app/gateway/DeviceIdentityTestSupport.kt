@@ -11,7 +11,7 @@ internal fun testDeviceIdentityStore(context: Context): DeviceIdentityStore =
     ),
   )
 
-private class TestGatewayCredentialStore(
+internal class TestGatewayCredentialStore(
   private val prefs: SharedPreferences,
 ) : GatewayCredentialStore {
   override fun getString(key: String): String? = prefs.getString(key, null)

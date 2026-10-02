@@ -153,6 +153,7 @@ internal fun OpenClawWearScreens(
   onSpeakLatest: () -> Unit,
   onStopSpeaking: () -> Unit,
   readReply: suspend (WearReplyTarget, Int, String?) -> WearReplyTextPage = { _, _, _ -> WearReplyTextPage(WearReplyTextStatus.Unsupported) },
+  onManageConnection: (() -> Unit)? = null,
 ) {
   val lifecycleOwner = LocalLifecycleOwner.current
   val agentPulseSupported = snapshot?.agentPulseSupported == true
@@ -200,6 +201,7 @@ internal fun OpenClawWearScreens(
       loading = loading,
       failure = failure,
       onRefresh = onRefresh,
+      onManageConnection = onManageConnection,
     )
     return
   }
@@ -351,6 +353,7 @@ internal fun OpenClawWearScreens(
               onOpenNotificationSettings = onOpenNotificationSettings,
               onRefresh = onRefresh,
               onGatewayEnabledChange = onGatewayEnabledChange,
+              onManageConnection = onManageConnection,
             )
           }
 
@@ -1152,10 +1155,14 @@ private fun ControlsPage(
   onOpenNotificationSettings: () -> Unit,
   onRefresh: () -> Unit,
   onGatewayEnabledChange: (Boolean) -> Unit,
+  onManageConnection: (() -> Unit)? = null,
 ) {
   val gatewayConnected = snapshot.gatewayState == WearGatewayState.CONNECTED
 
   WearPage(pageLabel = stringResource(R.string.controls)) {
+    onManageConnection?.let { manage ->
+      item { SecondaryButton(label = stringResource(R.string.watch_connection), enabled = true, onClick = manage) }
+    }
     item {
       ConnectionPanel(snapshot = snapshot)
     }
@@ -1442,6 +1449,7 @@ private fun ConnectionStateScreen(
   loading: Boolean,
   failure: WearConversationFailure?,
   onRefresh: () -> Unit,
+  onManageConnection: (() -> Unit)? = null,
 ) {
   WearPage(pageLabel = stringResource(R.string.chat)) {
     item {
@@ -1466,6 +1474,9 @@ private fun ConnectionStateScreen(
         enabled = !loading,
         onClick = onRefresh,
       )
+    }
+    onManageConnection?.let { manage ->
+      item { SecondaryButton(label = stringResource(R.string.watch_connection), enabled = true, onClick = manage) }
     }
   }
 }
@@ -1936,7 +1947,7 @@ private fun ConversationStatus(
 }
 
 @Composable
-private fun MessageBubble(
+internal fun MessageBubble(
   role: WearChatRole,
   text: String,
   truncated: Boolean,
@@ -1993,7 +2004,7 @@ private fun MessageBubble(
 }
 
 @Composable
-private fun StreamingBubble(text: String) {
+internal fun StreamingBubble(text: String) {
   val colors = OpenClawWearTheme.colors
   Column(
     modifier =

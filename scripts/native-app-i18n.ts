@@ -9,6 +9,7 @@ import { sliceUtf16Safe } from "../packages/normalization-core/src/utf16-slice.t
 import { decodeXml } from "../src/shared/xml.ts";
 import {
   collectToolDisplaySources,
+  decodeAndroidResourceValue,
   findClosingDelimiter,
   lineNumber,
   selectDeterministicTranslation,
@@ -550,6 +551,9 @@ function decodeMultilineLiteral(raw: string): string {
 }
 
 function decodeLiteral(raw: string, kind: string): string {
+  if (kind.startsWith("resource-")) {
+    return decodeAndroidResourceValue(raw);
+  }
   if (kind.endsWith("-multiline")) {
     return decodeMultilineLiteral(raw);
   }

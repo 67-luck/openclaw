@@ -13,7 +13,7 @@ import android.app.RemoteInput
 import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
-import androidx.lifecycle.ViewModelProvider
+import android.view.ViewTreeObserver
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
@@ -30,6 +30,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /** Real launcher, input-result callback, ViewModel and wire decoder; only Phone IO is controlled. */
 @RunWith(AndroidJUnit4::class)
@@ -57,25 +60,10 @@ class WearChatFlowTest {
     var activity: MainActivity? = null
     try {
       activity = instrumentation.startActivitySync(Intent(app, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
-      lateinit var vm: WearViewModel
-      instrumentation.runOnMainSync { vm = ViewModelProvider(activity)[WearViewModel::class.java] }
-      awaitState("history") {
-        !vm.state.value.loading &&
-          vm.state.value.messages
-            .isNotEmpty()
-      }
-      assertTrue(
-        vm.state.value.messages
-          .single()
-          .textTruncated == true,
-      )
-      assertTrue(
-        !vm.state.value.messages
-          .single()
-          .text
-          .contains("TRAILING SENTINEL"),
-      )
+      awaitState("history") { phone.historyResponses.get() > 0 }
       scrollToTop()
+      awaitState("reply preview") { device.hasObject(By.textContains("HEAD SENTINEL")) }
+      assertTrue(!device.hasObject(By.textContains("TRAILING SENTINEL")))
       capture("full-01-preview")
 
       fun reveal(text: String) {
@@ -137,52 +125,56 @@ class WearChatFlowTest {
         instrumentation.startActivitySync(
           Intent(app, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
         ) as MainActivity
-      lateinit var vm: WearViewModel
-      instrumentation.runOnMainSync { vm = ViewModelProvider(activity)[WearViewModel::class.java] }
-      awaitState("initial history") { !vm.state.value.loading && vm.state.value.connected }
+      awaitState("initial history") { phone.historyResponses.get() > 0 }
+      scrollToTop()
+      awaitState("initial connected UI") { device.hasObject(By.text("Ready")) }
       instrumentation.addMonitor(monitor)
       capture("00-ready")
       for (terminal in listOf("aborted", "error")) {
-        scrollToType()
+        scrollToAction("Type")
         val priorSends = phone.sends
         device.findObject(By.text("Type")).click()
-        awaitState("accepted send") { phone.sends == priorSends + 1 && !vm.state.value.sending && !vm.state.value.loading }
+        awaitState("accepted send") { phone.sends == priorSends + 1 }
         assertTrue("real input callback sends Hello", phone.lastMessage == "Hello")
         scrollToTop()
+        awaitState("accepted reply UI") { device.hasObject(By.text("Sending")) || device.hasObject(By.text("Agent working")) }
         capture("$terminal-01-accepted")
-        phone.emit("error", runId = "older-run")
-        awaitState("foreign terminal refresh") { !vm.state.value.loading }
+        renderAfter(activity) { phone.emit("error", runId = "older-run") }
         capture("$terminal-02-foreign")
         // A stale foreign terminal must not settle the newly accepted reply.
         checkUi("$terminal foreign terminal preserves pending reply", device.hasObject(By.text("Sending")) || device.hasObject(By.text("Agent working")))
+        val beforeTerminalHistory = phone.historyResponses.get()
         phone.emit(terminal)
-        awaitState("remote terminal refresh") { !vm.state.value.loading && vm.state.value.activeRunId == null }
+        awaitState("remote terminal history response") { phone.historyResponses.get() > beforeTerminalHistory }
         scrollToTop()
+        val outcome = if (terminal == "error") "Error" else "Ready"
+        awaitState("remote terminal UI") {
+          device.hasObject(By.text(outcome)) && !device.hasObject(By.text("Sending")) && device.hasObject(By.text("Start a conversation"))
+        }
         capture("$terminal-03-terminal")
         checkUi("$terminal settles Sending with unchanged history", !device.hasObject(By.text("Sending")))
-        checkUi("$terminal visible outcome", device.hasObject(By.text(if (terminal == "error") "Error" else "Ready")))
-        assertTrue(
-          "no assistant fabricated by terminal",
-          vm.state.value.messages
-            .isEmpty(),
-        )
-        instrumentation.runOnMainSync { vm.refresh() }
-        awaitState("explicit refresh") { !vm.state.value.loading }
+        checkUi("$terminal visible outcome", device.hasObject(By.text(outcome)))
+        checkUi("empty controlled history produces no assistant", device.hasObject(By.text("Start a conversation")))
+        val beforeExplicitHistory = phone.historyResponses.get()
+        refreshFromControls()
+        awaitState("explicit refresh history response") { phone.historyResponses.get() > beforeExplicitHistory }
         scrollToTop()
+        awaitState("explicit refresh UI") { device.hasObject(By.text(outcome)) && !device.hasObject(By.text("Sending")) }
         capture("$terminal-04-refreshed")
-        checkUi("$terminal outcome survives refresh", device.hasObject(By.text(if (terminal == "error") "Error" else "Ready")))
+        checkUi("$terminal outcome survives refresh", device.hasObject(By.text(outcome)))
       }
       phone.emit("delta", runId = "stream-run", text = "Hello world")
-      awaitState("canonical stream") { vm.state.value.activeRunId == "stream-run" }
+      awaitState("canonical stream UI") { device.hasObject(By.text("Hello world")) }
       capture("stream-01-world")
       phone.emit("delta", runId = "stream-run", text = "Hello")
-      SystemClock.sleep(700)
+      awaitState("canonical stream shrinks") { device.hasObject(By.text("Hello")) && !device.hasObject(By.text("Hello world")) }
       capture("stream-02-shrink")
-      checkUi("ordered canonical replacement shrinks", vm.state.value.streamText == "Hello")
+      checkUi("ordered canonical replacement shrinks", device.hasObject(By.text("Hello")) && !device.hasObject(By.text("Hello world")))
       phone.emit("delta", runId = "stream-run", text = "")
-      SystemClock.sleep(700)
+      scrollToTop()
+      awaitState("canonical stream clears") { !device.hasObject(By.text("Hello")) && device.hasObject(By.text("Start a conversation")) }
       capture("stream-03-clear")
-      checkUi("ordered canonical replacement clears", vm.state.value.streamText == "")
+      checkUi("ordered canonical replacement clears", !device.hasObject(By.text("Hello")) && device.hasObject(By.text("Start a conversation")))
       File(output, "assertions.txt").writeText(if (failures.isEmpty()) "PASS\n" else failures.joinToString("\n"))
       assertEquals("Regression invariants", emptyList<String>(), failures)
     } finally {
@@ -201,14 +193,49 @@ class WearChatFlowTest {
     if (!passed) failures += label
   }
 
-  private fun scrollToType() {
+  private fun renderAfter(
+    activity: MainActivity,
+    event: () -> Unit,
+  ) {
+    val rendered = CountDownLatch(1)
+    val view = activity.window.decorView
+    val listener = ViewTreeObserver.OnDrawListener { view.post { rendered.countDown() } }
+    instrumentation.runOnMainSync {
+      // A foreign terminal intentionally has no history response to use as a barrier.
+      event()
+      view.viewTreeObserver.addOnDrawListener(listener)
+      view.postInvalidateOnAnimation()
+    }
+    try {
+      assertTrue("event reached a real UI draw", rendered.await(15, TimeUnit.SECONDS))
+      instrumentation.waitForIdleSync()
+    } finally {
+      instrumentation.runOnMainSync { view.viewTreeObserver.removeOnDrawListener(listener) }
+    }
+  }
+
+  private fun scrollToAction(label: String) {
     repeat(6) {
-      val button = device.findObject(By.text("Type"))
+      val button = device.findObject(By.text(label))
       if (button != null && button.isEnabled && button.visibleBounds.height() > 12) return
       device.swipe(190, 290, 190, 130, 12)
       SystemClock.sleep(200)
     }
-    assertTrue("Type action is reachable", device.wait(Until.hasObject(By.text("Type")), 3_000))
+    assertTrue("$label action is reachable", device.wait(Until.hasObject(By.text(label)), 3_000))
+  }
+
+  private fun refreshFromControls() {
+    // The connection host owns the real UI's ViewModel; drive its refresh through the pager.
+    repeat(2) {
+      device.swipe(300, 190, 80, 190, 12)
+      device.waitForIdle()
+    }
+    scrollToAction("Refresh")
+    device.findObject(By.text("Refresh")).click()
+    repeat(2) {
+      device.swipe(80, 190, 300, 190, 12)
+      device.waitForIdle()
+    }
   }
 
   private fun scrollToTop() {
@@ -236,10 +263,14 @@ class WearChatFlowTest {
   private class ControlledPhone(
     private val fullReply: String? = null,
   ) {
-    var sequence = 0L
-    var sends = 0
-    var runId = "not-sent"
-    var lastMessage: String? = null
+    @Volatile var sequence = 0L
+
+    @Volatile var sends = 0
+
+    @Volatile var runId = "not-sent"
+
+    @Volatile var lastMessage: String? = null
+    val historyResponses = AtomicInteger()
     val client: WearProxyClient =
       WearProxyClient.createForTests(
         nodeResolver = WearNodeResolver { "synthetic-phone" },
@@ -325,6 +356,7 @@ class WearChatFlowTest {
         WearProtocol.RESPONSE_PATH,
         WearProtocolCodec.encode(WearMessage.Response(requestId = request.requestId, ok = true, result = result, eventStreamId = "proof-epoch", eventSequence = sequence)),
       )
+      if (request.method == WearRpcMethod.ChatHistory) historyResponses.incrementAndGet()
     }
 
     fun emit(

@@ -107,6 +107,13 @@ class GatewayTlsProbeRunner(
     worker.get()?.cancel()
   }
 
+  suspend fun cancelAndJoin() {
+    worker.get()?.let {
+      it.cancel()
+      it.join()
+    }
+  }
+
   suspend fun probe(
     host: String,
     port: Int,

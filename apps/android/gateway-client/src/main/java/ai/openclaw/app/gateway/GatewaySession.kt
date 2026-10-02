@@ -177,6 +177,12 @@ data class GatewayConnectOptions(
   val permissions: Map<String, Boolean>,
   val client: GatewayClientInfo,
   val userAgent: String? = null,
+  val operatorScopePolicy: GatewayOperatorScopePolicy? = null,
+)
+
+data class GatewayOperatorScopePolicy(
+  val requestedScopes: Set<String>,
+  val rejectedGrantScopes: Set<String>,
 )
 
 private enum class GatewayConnectAuthSource {
@@ -1822,6 +1828,16 @@ class GatewaySession(
           .asArrayOrNull()
           ?.mapNotNull { it.asStringOrNull() }
           ?: emptyList()
+      // Validate all roles before the first write; a rejected operator grant must
+      // not persist a node token or retire the watch's limited bootstrap credential.
+      validateOperatorGrant(authRole, authScopes)
+      authObj?.get("deviceTokens").asArrayOrNull()?.forEach { entry ->
+        val tokenEntry = entry.asObjectOrNull() ?: return@forEach
+        validateOperatorGrant(
+          tokenEntry["role"].asStringOrNull().orEmpty(),
+          tokenEntry["scopes"].asArrayOrNull()?.mapNotNull { it.asStringOrNull() }.orEmpty(),
+        )
+      }
       val persistedRoles = mutableMapOf<String, Boolean>()
       if (!deviceToken.isNullOrBlank()) {
         // Hello scopes describe this socket. Reissuing the same stored token must not narrow its
@@ -2017,6 +2033,13 @@ class GatewaySession(
     }
 
     private fun resolveConnectScopes(selectedAuth: SelectedConnectAuth): List<String> {
+      target.options.operatorScopePolicy?.let { policy ->
+        if (target.options.role == "operator") {
+          return target.options.scopes
+            .filter { it in policy.requestedScopes }
+            .distinct()
+        }
+      }
       if (selectedAuth.authSource == GatewayConnectAuthSource.BOOTSTRAP_TOKEN) {
         return filteredBootstrapHandoffScopes(target.options.role, target.options.scopes).orEmpty()
       }
@@ -2024,6 +2047,26 @@ class GatewaySession(
         return selectedAuth.storedScopes
       }
       return target.options.scopes
+    }
+
+    private fun validateOperatorGrant(
+      role: String,
+      scopes: List<String>,
+    ) {
+      val policy = target.options.operatorScopePolicy ?: return
+      if (role.trim() != "operator" || scopes.none { it in policy.rejectedGrantScopes }) return
+      throw GatewayConnectFailure(
+        ErrorShape(
+          "INVALID_REQUEST",
+          "This client requires a limited setup code.",
+          GatewayErrorDetails(
+            code = "CLIENT_SCOPE_POLICY",
+            canRetryWithDeviceToken = false,
+            recommendedNextStep = "use_limited_setup_code",
+            pauseReconnect = true,
+          ),
+        ),
+      )
     }
 
     private suspend fun handleMessage(text: String) {
@@ -2625,6 +2668,7 @@ internal fun shouldPauseGatewayReconnectAfterAuthFailure(
     "AUTH_PASSWORD_MISMATCH",
     "AUTH_PASSWORD_NOT_CONFIGURED",
     "AUTH_SCOPE_MISMATCH",
+    "CLIENT_SCOPE_POLICY",
     "AUTH_VERIFIED_USER_REQUIRED",
     "CONTROL_UI_DEVICE_IDENTITY_REQUIRED",
     "DEVICE_IDENTITY_REQUIRED",
