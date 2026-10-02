@@ -428,7 +428,10 @@ describe("combined security review entry point", () => {
         `GitHub API recovery budget exhausted; security review remains incomplete. Request: ${JSON.stringify({ method: "GET", path: route.slice(4) })}`,
       );
       expect(result.stderr).not.toMatch(/head_sha=|per_page=/u);
-      expect(result.requests.some((entry) => entry.body?.state === "success")).toBe(false);
+      expect(result.combined).toEqual(["pending", "pending", "pending", "pending"]);
+      if (route === rolePath) {
+        expect(result.requests.some((entry) => entry.body?.state === "success")).toBe(false);
+      }
     },
   );
 
