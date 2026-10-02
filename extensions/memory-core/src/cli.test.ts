@@ -166,8 +166,8 @@ describe("memory cli", () => {
       files: 0,
       chunks: 0,
       dirty: false,
-      workspaceDir: "/tmp/openclaw",
-      dbPath: "/tmp/memory.sqlite",
+      workspaceDir: fixtureRoot,
+      dbPath: path.join(fixtureRoot, "memory.sqlite"),
       provider: "openai",
       model: "text-embedding-3-small",
       requestedProvider: "openai",
@@ -639,7 +639,7 @@ describe("memory cli", () => {
     expect(probeVectorAvailability).not.toHaveBeenCalled();
     expectLogged(log, "Vector store: ready");
     expectLogged(log, "Semantic vectors: ready");
-    expectLogged(log, "Extra paths: /tmp/openclaw/notes (pattern: runbooks/**/*.md)");
+    expectLogged(log, `Extra paths: ${fixtureRoot}${path.sep}notes (pattern: runbooks/**/*.md)`);
     expectLogged(log, "FTS: ready");
     expectLogged(log, "Agent database: 1.0 MiB · WAL 2.0 KiB · reusable 512.0 KiB");
   });
