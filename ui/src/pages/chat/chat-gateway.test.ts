@@ -2496,6 +2496,30 @@ describe("aborted chat diagnostics", () => {
     expect(state.chatRunId).toBeNull();
   });
 
+  it("refines an existing aborted diagnostic without replacing its detail or timing", () => {
+    const state = createAbortDiagnosticState();
+    const aborted = chatEvent("aborted", {
+      runId: "run-validation-abort",
+      seq: 4,
+      errorMessage: "Earlier provider diagnostic",
+    });
+    handleChatGatewayEvent(state, aborted);
+    const status = state.chatRunStatus;
+    const diagnostic = {
+      ...aborted,
+      seq: 5,
+      errorMessage: "Command cleanup could not confirm that owned work stopped",
+    };
+    handleChatGatewayEvent(state, diagnostic);
+    expect(state.chatRunError?.summary).toContain("Earlier provider diagnostic");
+    expect(state.chatRunError?.summary).toContain(diagnostic.errorMessage);
+    expect(state.chatRunStatus).toEqual(status);
+    const displayed = state.chatRunError;
+    handleChatGatewayEvent(state, { ...diagnostic, seq: 3, errorMessage: "Stale diagnostic" });
+    handleChatGatewayEvent(state, diagnostic);
+    expect(state.chatRunError).toBe(displayed);
+  });
+
   it("does not restore an old diagnostic while a newer send awaits its ACK", () => {
     const state = createAbortDiagnosticState("run-old");
     receive(state, "aborted", { runId: "run-old" });

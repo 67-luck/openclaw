@@ -46,6 +46,24 @@ function captureEvents() {
 describe("agent event routing after cancellation", () => {
   beforeEach(() => resetAgentEventsForTest());
 
+  it("retains cleanup provenance internally without extending the public event", () => {
+    const events = captureEvents();
+    emitAgentEvent({
+      runId: "cleanup-run",
+      stream: "lifecycle",
+      data: {
+        phase: "error",
+        error: "Cleanup could not be confirmed",
+        cleanupError: "Cleanup could not be confirmed",
+      },
+    });
+    expect(events[0]?.data.cleanupError).toBe("Cleanup could not be confirmed");
+    expect(JSON.parse(JSON.stringify(events[0])).data).toEqual({
+      phase: "error",
+      error: "Cleanup could not be confirmed",
+    });
+  });
+
   it.each([
     { name: "visible", hidden: false, messages: true },
     { name: "hidden private", hidden: true, messages: false },

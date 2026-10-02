@@ -1,10 +1,17 @@
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
+import {
+  buildAgentRunTerminalOutcome,
+  mergeAgentRunTerminalOutcome,
+  type AgentRunTerminalOutcome,
+} from "../../agents/agent-run-terminal-outcome.js";
 import { renderAgentHarnessPreflightUserMessage } from "../../agents/embedded-agent-helpers/user-facing-text.js";
 import { describeFailoverError } from "../../agents/failover-error.js";
 import { renderFailoverCodeUserCopy } from "../../agents/failover/user-copy.js";
+import { resolveAgentRunErrorLifecycleFields } from "../../agents/run-termination.js";
 import { DispatchSessionRefreshRequiredError } from "../../auto-reply/reply/dispatch-session-refresh-error.js";
 import { SessionGoalOperationError } from "../../config/sessions/goals-operations.js";
 import { clearAgentRunContext, getAgentRunContext } from "../../infra/agent-run-registry.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import { resolveStateContentionPresentation } from "../../sessions/session-run-error-presentation.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
@@ -15,7 +22,7 @@ import { SessionMutationAuthorizationChangedError } from "../session-mutation-au
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
 import { formatForLog } from "../ws-log.js";
 import { buildAbortedChatSendPayload } from "./chat-abort-authorization.js";
-import { broadcastChatError, broadcastChatFinal } from "./chat-broadcast.js";
+import { broadcastChatError, broadcastChatFinal, broadcastChatTerminal } from "./chat-broadcast.js";
 import type { RestartSafeChatTerminalState } from "./chat-restart-recovery.js";
 import type { AdmittedChatSend } from "./chat-send-admission.js";
 import {
@@ -45,6 +52,7 @@ type PendingDispatchLifecycleError = {
   errorKind?: "state_contention";
   sessionId: string;
   startedAt: number;
+  terminal?: AgentRunTerminalOutcome;
 };
 
 function formatChatSendError(error: unknown): string {
@@ -200,18 +208,26 @@ export function createChatSendDispatchErrorLifecycle(params: {
   const hidden = visibility?.projectSessionMessages === false;
   const suppressLifecycle = visibility?.projectSessionLifecycle === false;
   let abortedDispatchMarker: ChatAbortMarker | undefined;
+  let abortedCleanup: AgentRunTerminalOutcome | undefined;
   let pendingDispatchLifecycleError: PendingDispatchLifecycleError | undefined;
   let persistDispatchErrorUserTurn: (() => Promise<void>) | undefined;
   let publishDispatchError: (() => void) | undefined;
 
   const handleError = async (err: unknown) => {
-    const errorMessage = formatChatSendError(err);
+    const cleanup = hasCommandProcessCleanupError(err)
+      ? buildAgentRunTerminalOutcome({
+          status: "error",
+          error: err,
+          ...resolveAgentRunErrorLifecycleFields(err, activeRunAbort.controller.signal),
+        })
+      : undefined;
+    const errorMessage = cleanup?.error ?? formatChatSendError(err);
     const errorKind = resolveStateContentionPresentation(err)?.errorKind;
     const failureDisposition =
       params.classifyFailure?.(err) ??
       classifyAcceptedChatSendFailure({ error: err, phase: "post-ack" });
     const queuedFollowupEnqueued = isQueuedFollowupEnqueued();
-    if (queuedFollowupEnqueued) {
+    if (queuedFollowupEnqueued && !cleanup) {
       context.logGateway.warn(
         `webchat dispatch failed after followup queue admission: ${formatForLog(err)}`,
       );
@@ -254,6 +270,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
       // retained its registration until that durable projection settles.
       // A competing restart-admission write can strand an acknowledged abort.
       abortedDispatchMarker = abortMarkerAtDispatchReject;
+      abortedCleanup = cleanup;
       context.logGateway.warn(
         `chat.send post-dispatch threw after abort for runId=${clientRunId}: ${formatForLog(err)}`,
       );
@@ -286,7 +303,8 @@ export function createChatSendDispatchErrorLifecycle(params: {
         error: errorMessage,
         errorKind,
         retryable: shouldRetainAcceptedChatSendRetryIdentity(failureDisposition),
-        status: "failed",
+        status:
+          cleanup?.reason === "cancelled" || cleanup?.reason === "superseded" ? "killed" : "failed",
       }).catch((terminalizeError: unknown) => {
         context.logGateway.warn(
           `failed to release restart-safe chat admission after dispatch error: ${formatForLog(
@@ -313,7 +331,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
       !suppressLifecycle &&
       !restartSafeDispatchFailureTerminalized &&
       abortMarkerAtDispatchReject === undefined &&
-      !agentTerminalPersistenceOwnedAtDispatchReject
+      (!agentTerminalPersistenceOwnedAtDispatchReject || cleanup)
     ) {
       pendingDispatchLifecycleError = {
         endedAt: Date.now(),
@@ -321,9 +339,14 @@ export function createChatSendDispatchErrorLifecycle(params: {
         errorKind,
         sessionId: activeRunAbort.entry?.sessionId ?? backingSessionId ?? clientRunId,
         startedAt: activeRunAbort.entry?.startedAtMs ?? now,
+        terminal: cleanup,
       };
     }
-    if (!agentTerminalPersistenceOwnedAtDispatchReject || params.isReplyDispatchRun?.()) {
+    if (
+      !agentTerminalPersistenceOwnedAtDispatchReject ||
+      params.isReplyDispatchRun?.() ||
+      cleanup
+    ) {
       // Native lifecycle owns its replay result; dispatched runtimes leave
       // failure projection to this owner, including transcript-write failures.
       const publish = () => {
@@ -335,9 +358,11 @@ export function createChatSendDispatchErrorLifecycle(params: {
           entry: {
             ts: Date.now(),
             ok: false,
+            ...(cleanup ? { cleanupError: cleanup.cleanupError } : {}),
             payload: {
               runId: clientRunId,
-              status: "error" as const,
+              status: cleanup?.status ?? "error",
+              ...(cleanup?.stopReason ? { stopReason: cleanup.stopReason } : {}),
               summary: errorMessage,
             },
             error,
@@ -382,20 +407,77 @@ export function createChatSendDispatchErrorLifecycle(params: {
           : undefined);
       if (abortMarker) {
         const endedAt = chatAbortMarkerTimestampMs(abortMarker);
+        const stopReason = activeRunAbort.entry?.abortStopReason ?? "rpc";
+        const cleanup = abortedCleanup;
+        abortedCleanup = undefined;
+        const outcome = cleanup
+          ? mergeAgentRunTerminalOutcome(
+              buildAgentRunTerminalOutcome({
+                status: "timeout",
+                stopReason,
+                endedAt,
+                error: activeRunAbort.entry?.toolErrorSummary,
+              }),
+              cleanup,
+            )
+          : undefined;
         setGatewayDedupeEntry({
           dedupe: context.dedupe,
           key: `chat:${clientRunId}`,
           session: captureAgentJobSession(jobSessionBinding),
           entry: {
             ts: endedAt,
-            ok: true,
-            payload: buildAbortedChatSendPayload({
-              runId: clientRunId,
-              stopReason: activeRunAbort.entry?.abortStopReason ?? "rpc",
-              endedAt,
-            }),
+            ok: !outcome,
+            ...(outcome
+              ? {
+                  cleanupError: outcome.cleanupError,
+                  error: errorShape(ErrorCodes.UNAVAILABLE, outcome.error!),
+                }
+              : {}),
+            payload: {
+              ...buildAbortedChatSendPayload({ runId: clientRunId, stopReason, endedAt }),
+              ...(outcome ? { summary: outcome.error } : {}),
+            },
           },
         });
+        if (outcome) {
+          // The Stop write owns status and timing. Join it before enriching the
+          // same run, and retain its emitted sequence after live counters retire.
+          try {
+            await activeRunAbort.entry?.projectSessionTerminalPersistence;
+            if (!suppressLifecycle) {
+              await persistGatewaySessionLifecycleEvent({
+                sessionKey,
+                ...(agentId ? { agentId } : {}),
+                event: {
+                  runId: clientRunId,
+                  sessionKey: jobSessionBinding.sessionKey,
+                  agentId: jobSessionBinding.agentId,
+                  sessionId: activeRunAbort.entry?.sessionId ?? backingSessionId ?? clientRunId,
+                  lifecycleGeneration,
+                  ts: endedAt,
+                  data: { phase: "error", ...outcome },
+                },
+              });
+            }
+          } catch (error) {
+            context.logGateway.warn(
+              `chat cleanup diagnostic persistence failed: ${formatForLog(error)}`,
+            );
+          }
+          if (!hidden && abortMarker.chatSeq !== undefined) {
+            broadcastChatTerminal({
+              context,
+              runId: clientRunId,
+              sessionKey,
+              agentId,
+              state: "aborted",
+              stopReason,
+              errorMessage: outcome.error,
+              seq: ++abortMarker.chatSeq,
+            });
+          }
+        }
       }
       clearRun();
       cleanupAdmittedRun();
@@ -429,6 +511,8 @@ export function createChatSendDispatchErrorLifecycle(params: {
             ...(agentId ? { agentId } : {}),
             event: {
               runId: clientRunId,
+              sessionKey: jobSessionBinding.sessionKey,
+              agentId: jobSessionBinding.agentId,
               sessionId: dispatchError.sessionId,
               lifecycleGeneration,
               ts: dispatchError.endedAt,
@@ -438,6 +522,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
                 endedAt: dispatchError.endedAt,
                 error: dispatchError.error,
                 errorKind: dispatchError.errorKind,
+                ...dispatchError.terminal,
               },
             },
           });

@@ -28,6 +28,56 @@ function createMessage(
 
 /** Run-scoped terminal state: final acceptance, late diagnostics, and retention. */
 describe("session run terminal bookkeeping", () => {
+  it("refines only newer same-run aborted diagnostics without changing the terminal", () => {
+    const message = createMessage("assistant", "Partial answer");
+    const initial = reduceSessionProjection(createSessionProjection(primaryScope), {
+      type: "runTerminal",
+      runId: "cancelled-run",
+      status: "aborted",
+      seq: 7,
+      stopReason: "rpc",
+      errorMessage: "Earlier provider diagnostic",
+      message,
+    });
+    const diagnostic = {
+      type: "runTerminal" as const,
+      runId: "cancelled-run",
+      status: "aborted" as const,
+      seq: 8,
+      stopReason: "restart",
+      errorMessage: "Native cleanup could not confirm termination",
+    };
+    const refined = reduceSessionProjection(initial, diagnostic);
+    const expectedError = `Earlier provider diagnostic\n\n${diagnostic.errorMessage}`;
+    expect(refined.runs[diagnostic.runId]).toMatchObject({
+      status: "aborted",
+      stopReason: "rpc",
+      message,
+      seq: 8,
+      errorMessage: expectedError,
+    });
+    expect(reduceSessionProjection(refined, diagnostic)).toBe(refined);
+    expect(
+      reduceSessionProjection(refined, { ...diagnostic, seq: 6, errorMessage: "Stale failure" }),
+    ).toBe(refined);
+    const replayed = reduceSessionProjection(refined, {
+      ...diagnostic,
+      seq: 9,
+      errorMessage: expectedError,
+    });
+    expect(replayed.runs[diagnostic.runId]?.errorMessage).toBe(expectedError);
+    const withNewRun = reduceSessionProjection(replayed, {
+      type: "runDelta",
+      runId: "new-run",
+      seq: 1,
+      message: createMessage("assistant", "New answer"),
+    });
+    const late = reduceSessionProjection(withNewRun, { ...diagnostic, seq: 10 });
+    expect(late.runs["new-run"]).toBe(withNewRun.runs["new-run"]);
+    const ordinary = reduceSessionProjection(initial, { ...diagnostic, status: "error" });
+    expect(ordinary.runs[diagnostic.runId]?.errorMessage).toBe("Earlier provider diagnostic");
+  });
+
   it.each([
     { content: [] },
     { content: [{ type: "input_text", text: "provider rate limit" }] },

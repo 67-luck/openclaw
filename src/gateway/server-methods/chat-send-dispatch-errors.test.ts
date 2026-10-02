@@ -15,6 +15,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { SessionTranscriptProjectionUnavailableError } from "../../config/sessions/session-transcript-projection-error.js";
 import { onAgentRuntimeEvent } from "../../infra/agent-events.js";
+import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import * as sessionRunError from "../../sessions/session-run-error.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { abortChatRunById, registerChatAbortController } from "../chat-abort.js";
@@ -458,7 +459,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
     },
   );
 
-  it.each(["resolves", "rejects"])(
+  it.each(["resolves", "rejects", "cleanup rejects"])(
     "preserves an explicitly aborted terminal when its dispatch later %s",
     async (settlement) => {
       const runId = `explicit-abort-before-dispatch-${settlement}`;
@@ -476,6 +477,14 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         throw new Error("expected the chat abort controller to be registered");
       }
       const entry = registration.entry;
+      const cleanupError =
+        settlement === "cleanup rejects" ? new CommandProcessCleanupError() : undefined;
+      if (cleanupError) {
+        entry.toolErrorSummary = "Earlier provider diagnostic";
+      }
+      const persist = cleanupError
+        ? vi.spyOn(sessionLifecycleState, "persistGatewaySessionLifecycleEvent").mockResolvedValue()
+        : undefined;
       const removeChatRun = vi.fn();
       const broadcast = vi.fn();
       const dedupe = new Map();
@@ -548,13 +557,49 @@ describe("createChatSendDispatchErrorLifecycle", () => {
 
         if (settlement === "rejects") {
           await lifecycle.handleError(new Error("dispatch rejected after explicit abort"));
+        } else if (cleanupError) {
+          // Stop acknowledges before its producer's joined retirement rejects.
+          expect(broadcast).toHaveBeenCalledTimes(1);
+          expect(broadcast.mock.calls[0]?.[1]).toMatchObject({ state: "aborted", seq: 1 });
+          const retirement = createDeferred();
+          const pending = retirement.promise.catch(lifecycle.handleError);
+          retirement.reject(new Error("Native retirement failed", { cause: cleanupError }));
+          await pending;
         }
         await lifecycle.finalize();
 
         expect(dedupe.get(`chat:${runId}`)).toMatchObject({
-          ok: true,
-          payload: { runId, status: "timeout", summary: "aborted" },
+          ok: !cleanupError,
+          payload: {
+            runId,
+            status: "timeout",
+            summary: cleanupError ? expect.stringContaining(cleanupError.message) : "aborted",
+          },
         });
+        if (cleanupError) {
+          expect(broadcast.mock.calls[1]?.[1]).toMatchObject({
+            state: "aborted",
+            seq: 2,
+            stopReason: "rpc",
+            errorMessage: expect.stringContaining("Earlier provider diagnostic"),
+          });
+          expect(broadcast.mock.calls[1]?.[1].errorMessage).toContain(cleanupError.message);
+          expect(persist).toHaveBeenCalledWith(
+            expect.objectContaining({
+              event: expect.objectContaining({
+                runId,
+                sessionKey,
+                agentId: "main",
+                sessionId: "sess-main",
+                data: expect.objectContaining({ cleanupError: cleanupError.message }),
+              }),
+            }),
+          );
+          const replay = dedupe.get(`chat:${runId}`);
+          await lifecycle.finalize();
+          expect(broadcast).toHaveBeenCalledTimes(2);
+          expect(dedupe.get(`chat:${runId}`)).toBe(replay);
+        }
         expect(broadcast).not.toHaveBeenCalledWith(
           "chat",
           expect.objectContaining({ runId, state: "error" }),
@@ -567,6 +612,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         });
         expect(terminalizeRestartSafeAdmission).not.toHaveBeenCalled();
       } finally {
+        persist?.mockRestore();
         unsubscribe();
         registration.cleanup();
       }
@@ -803,6 +849,8 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         agentId: "ops",
         event: expect.objectContaining({
           runId: clientRunId,
+          sessionKey: "agent:ops:main",
+          agentId: "ops",
           sessionId: "sess-ops",
           data: expect.objectContaining({ phase: "error" }),
         }),

@@ -99,7 +99,14 @@ type ChatBroadcastParams = {
 };
 
 type ChatTerminal =
-  | { state: "final" | "aborted"; message?: Record<string, unknown>; stopReason?: string }
+  | { state: "final"; message?: Record<string, unknown>; stopReason?: string }
+  | {
+      state: "aborted";
+      message?: Record<string, unknown>;
+      stopReason?: string;
+      errorMessage?: string;
+      seq?: number;
+    }
   | {
       state: "error";
       errorMessage?: string;
@@ -117,7 +124,10 @@ function broadcastChatFrame(
   if (visibility?.isControlUiVisible === false && visibility.projectSessionMessages === false) {
     return;
   }
-  const seq = nextChatSeq(params.context, params.runId);
+  const seq =
+    params.state === "aborted" && params.seq !== undefined
+      ? params.seq
+      : nextChatSeq(params.context, params.runId);
   const payloadAgentId = parseAgentSessionKey(params.sessionKey) ? undefined : params.agentId;
   const frame =
     params.state === "delta"
@@ -135,6 +145,9 @@ function broadcastChatFrame(
             state: params.state,
             message: projectChatDisplayMessage(params.message),
             ...(params.stopReason ? { stopReason: params.stopReason } : {}),
+            ...(params.state === "aborted" && params.errorMessage
+              ? { errorMessage: params.errorMessage }
+              : {}),
           }
         : {
             state: params.state,
