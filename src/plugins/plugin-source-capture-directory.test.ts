@@ -4,6 +4,7 @@ import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { cleanupStartupPluginSourceCaptures } from "../commands/startup-plugin-source-captures.js";
 import * as nodeSqlite from "../infra/node-sqlite.js";
@@ -17,17 +18,11 @@ import { capturePluginGenerationArtifact } from "./plugin-generation-artifact.js
 import { retainGatewayPluginMetadata } from "./plugin-metadata-lifecycle.js";
 import { withPluginSourceCaptureDirectory } from "./plugin-package-metadata-capture.js";
 import {
-  createPluginNativeCaptureRoot,
   createPluginSourceCaptureRoot,
   retainPluginSourceCaptureInstance,
 } from "./plugin-source-capture-directory.js";
 import { sweepPluginSourceCapturesForTest } from "./plugin-source-capture-directory.test-support.js";
 import { pluginProcessRuntimeEntrypoints } from "./process-runtime.test-support.js";
-import {
-  createRecoverablePluginRelease,
-  PluginRuntimeCloseRetainedError,
-  hasRetainedPluginRuntimeCloseError,
-} from "./runtime-close-error.js";
 
 const temp = useAutoCleanupTempDirTracker(afterEach);
 const artifactUrl = resolveRuntimeWorkerUrl(pluginProcessRuntimeEntrypoints.artifact);
@@ -530,6 +525,58 @@ it("keeps hourly reclamation on a live metadata owner when its siblings are clos
   }
 }, 30_000);
 
+it("joins hourly reclamation during metadata retirement without stopping sibling schedules", async () => {
+  const stateDir = temp.make("plugin-capture-hourly-join-");
+  const root = path.join(stateDir, "tmp", "plugin-captures");
+  vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
+  const time = createGatewaySchedulerClock();
+  const scheduler = createTestGatewayScheduler(time.clock);
+  const metadata = retainGatewayPluginMetadata(scheduler);
+  await sweepPluginSourceCapturesForTest(stateDir);
+  const orphan = path.join(root, "abandoned");
+  fs.mkdirSync(orphan, { recursive: true });
+  fs.writeFileSync(path.join(orphan, "payload"), "reconstructible capture");
+  age(orphan);
+  const entered = createDeferred();
+  const release = createDeferred();
+  const remove = fsPromises.rm.bind(fsPromises);
+  const removal = vi.spyOn(fsPromises, "rm").mockImplementation(async (target, options) => {
+    if (path.dirname(String(target)) === root) {
+      entered.resolve();
+      await release.promise;
+    }
+    await remove(target, options);
+  });
+  const sweep = time.advanceBy(hour);
+  let closing: ReturnType<typeof metadata.close> | undefined;
+  try {
+    await entered.promise;
+    let closed = false;
+    closing = metadata.close().then((result) => {
+      closed = true;
+      return result;
+    });
+    const sibling = vi.fn();
+    scheduler.schedule({ id: "capture-maintenance-sibling", delayMs: 0, run: sibling });
+    await time.advanceBy(0);
+    await fsPromises.stat(stateDir);
+    expect(closed).toBe(false);
+    expect(sibling).toHaveBeenCalledOnce();
+    expect(scheduler.signal.aborted).toBe(false);
+    release.resolve();
+    await Promise.all([sweep, closing]);
+    expect(closed).toBe(true);
+    expect(fs.readdirSync(root)).toEqual([]);
+    expect(scheduler.nextWakeAtMs).toBeNull();
+  } finally {
+    release.resolve();
+    await Promise.allSettled([sweep, closing]);
+    removal.mockRestore();
+    await metadata.close();
+    await scheduler.stop();
+  }
+});
+
 it.each(["before command", "inside command"])(
   "allocates captures without timers when the loader is imported %s",
   (importOrder) => {
@@ -938,100 +985,4 @@ it("summarizes inaccessible owner records with backoff while continuing cleanup 
   fault.mockRestore();
   await sweepPluginSourceCapturesForTest(stateDir);
   expect(fs.readdirSync(root)).toEqual([]);
-});
-
-it.skipIf(process.platform === "win32")(
-  "preserves replacement capture bytes after a close-then-throw",
-  async () => {
-    const stateDir = temp.make("plugin-capture-recovery-replacement-");
-    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
-    const source = createSource();
-    const open = nodeSqlite.openNodeSqliteDatabase;
-    let token: ReturnType<typeof open> | undefined;
-    let closeToken: (() => void) | undefined;
-    vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementation((...args) => {
-      const database = open(...args);
-      if (args[0].includes("owner.sqlite")) {
-        token = database;
-        closeToken = database.close.bind(database);
-      }
-      return database;
-    });
-    const artifact = capturePluginGenerationArtifact(source);
-    const root = path.dirname(path.dirname(artifact.boundaryRoot));
-    const failure = new Error("close succeeded but observer failed");
-    if (!token || !closeToken) {
-      throw new Error("Missing capture token");
-    }
-    const originalClose = closeToken;
-    vi.spyOn(token, "close").mockImplementationOnce(() => {
-      originalClose();
-      throw failure;
-    });
-    let error: unknown;
-    try {
-      await artifact.disposeAsync();
-    } catch (cause) {
-      error = new PluginRuntimeCloseRetainedError(cause, {
-        isReleased: artifact.isReleased,
-        recover: artifact.disposeAsync,
-      });
-    }
-    expect(error).toBeDefined();
-    expect(token.isOpen).toBe(false);
-    // Both the payload and its token namespace can be replaced after native close.
-    fs.rmSync(root, { recursive: true, force: true });
-    fs.mkdirSync(artifact.boundaryRoot, { recursive: true });
-    const sentinel = path.join(artifact.boundaryRoot, "operator-data");
-    fs.writeFileSync(sentinel, "replacement bytes");
-    const release = createRecoverablePluginRelease(async () => {
-      throw error;
-    });
-    try {
-      await release().catch(() => undefined);
-      expect(fs.readFileSync(sentinel, "utf8")).toBe("replacement bytes");
-      expect(hasRetainedPluginRuntimeCloseError(error)).toBe(false);
-    } finally {
-      vi.restoreAllMocks();
-      await artifact.disposeAsync();
-    }
-  },
-);
-
-it.each([false, true])("retries native-root close (async: %s)", async (asynchronous) => {
-  const stateDir = temp.make("plugin-native-recovery-");
-  const open = nodeSqlite.openNodeSqliteDatabase;
-  let token: ReturnType<typeof open> | undefined;
-  vi.spyOn(nodeSqlite, "openNodeSqliteDatabase").mockImplementation((...args) => {
-    const database = open(...args);
-    if (args[0].includes("owner.sqlite")) {
-      token = database;
-    }
-    return database;
-  });
-  const root = createPluginNativeCaptureRoot(stateDir, "state");
-  if (!token) {
-    throw new Error("Missing native capture token");
-  }
-  const originalClose = token.close.bind(token);
-  const failure = new Error("native close unavailable");
-  const close = vi.spyOn(token, "close").mockImplementation(() => {
-    throw failure;
-  });
-  const dispose = async () => (asynchronous ? await root.disposeAsync() : root.dispose());
-  try {
-    await expect(dispose()).rejects.toBe(failure);
-    expect(token.isOpen).toBe(true);
-    expect(() => root.commit()).toThrow("disposed");
-    close.mockImplementation(originalClose);
-    await dispose();
-    expect(token.isOpen).toBe(false);
-    expect(close).toHaveBeenCalledTimes(2);
-    await dispose();
-    expect(close).toHaveBeenCalledTimes(2);
-  } finally {
-    close.mockImplementation(originalClose);
-    await root.disposeAsync();
-    vi.restoreAllMocks();
-  }
 });

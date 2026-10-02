@@ -1134,6 +1134,15 @@ export function resolveEmbeddedReplyActivity(sessionId: string): EmbeddedReplyAc
     : undefined;
 }
 
+/**
+ * True when work other than `runId` now holds the session. `runId` must name a
+ * run admitted outside reply dispatch (cron), so an active reply run is other work.
+ */
+export function isEmbeddedAgentSessionHeldByOtherRun(sessionId: string, runId: string): boolean {
+  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
+  return handle ? handle.runId !== runId : isReplyRunActiveForSessionId(sessionId);
+}
+
 export function isEmbeddedAgentRunHandleActive(sessionId: string): boolean {
   const active = ACTIVE_EMBEDDED_RUNS.has(sessionId);
   if (active) {
@@ -1800,12 +1809,4 @@ async function forceClearEmbeddedAgentRun(
   }
 }
 
-const testing = {
-  persistForceClearedEmbeddedRunTerminalState,
-};
-
-if (process.env.VITEST || process.env.NODE_ENV === "test") {
-  (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.embeddedRunsTestApi")] =
-    testing;
-}
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

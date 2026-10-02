@@ -1,3 +1,5 @@
+import type { SessionPerson } from "../../gateway-protocol/src/schema/session-participant.js";
+import type { SessionsListParams } from "../../gateway-protocol/src/schema/sessions-list.js";
 import type { WorkboardBoardMetadata } from "./index.js";
 
 const OBSERVER_HEALTH = [
@@ -75,13 +77,19 @@ export type WorkboardSessionPlacement = {
   factsHash: string;
   updatedAt: number;
 };
+export type WorkboardSessionsBoardView = Pick<
+  SessionsListParams,
+  "involvingMe" | "involvingProfileId" | "includePeople"
+>;
 export type WorkboardSessionsBoardRead = {
   board: WorkboardSessionsBoard;
   columns: WorkboardSessionsColumn[];
   sessions: Array<
     WorkboardSessionFacts & Pick<WorkboardSessionPlacement, "columnId" | "source" | "reason">
   >;
+  people?: SessionPerson[];
   warning?: string;
+  classifying?: true;
   classifiedAt?: number;
 };
 

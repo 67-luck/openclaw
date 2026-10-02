@@ -6,6 +6,7 @@ export const databaseWorkerExtensionTestRoots = [
 ];
 
 export const databaseWorkerExtensionTestFiles = [
+  "extensions/agentsapi/agentsapi-attempt.test.ts",
   "extensions/agentsapi/agentsapi-harness.persistence.test.ts",
   "extensions/openai/binary-transport.test.ts",
   "extensions/openai/tts.test.ts",
@@ -87,10 +88,8 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/google-meet/index.create.test.ts",
   "extensions/google-meet/index.test.ts",
   "extensions/teams-meetings/index.test.ts",
-  "extensions/teams-meetings/src/runtime-node.test.ts",
   "extensions/teams-meetings/src/runtime.test.ts",
   "extensions/zoom-meetings/index.test.ts",
-  "extensions/zoom-meetings/src/runtime-node.test.ts",
   "extensions/zoom-meetings/src/runtime.test.ts",
   "extensions/acpx/doctor-contract-api.test.ts",
   "extensions/acpx/src/process-lease.test.ts",

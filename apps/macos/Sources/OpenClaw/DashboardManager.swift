@@ -458,7 +458,7 @@ final class DashboardManager {
             windowAutosaveName: self.mainWindowAutosaveName,
             auxiliary: false)
         self.installMainController(controller)
-        controller.loadInBackground(url: configuration.url, auth: configuration.auth)
+        controller.update(url: configuration.url, auth: configuration.auth)
     }
 
     private func showResolvedPrimaryDashboard() async throws {
@@ -545,7 +545,7 @@ final class DashboardManager {
                   let fallbackURL = DashboardRouteMap.dashboardURL(
                       byAppendingSameAppPath: path,
                       search: search,
-                      to: destination.dashboardBaseURL)
+                      to: destination.currentURL)
             else { return }
             destination.dispatchNativeNavigation(DashboardNativeNavigation(
                 path: path,
@@ -629,7 +629,7 @@ final class DashboardManager {
             // This also invalidates a handoff still suspended in show(atPath:).
             self.retireNavigation(for: target)
         }
-        NSApp.activate(ignoringOtherApps: true)
+        AppActivation.shared.activate()
         if let source {
             // Admit once to the native window; replacements transfer its ordered queue before loading.
             let needsRecovery = !source.isWindowOpen || !source.canDeliverNativeCommands
@@ -1437,7 +1437,7 @@ extension DashboardManager {
         if available.count == 1 {
             return .profile(available[0].id)
         }
-        switch WebChatManager.promptForGatewayProfile(profiles: available, preferredID: nil) {
+        switch await WebChatManager.promptForGatewayProfile(profiles: available, preferredID: nil) {
         case let .profile(profile): return .profile(profile.id)
         case .local: return .local
         case .manage:
@@ -1581,10 +1581,6 @@ extension DashboardManager {
         await self.openWindow(for: target).value
     }
 
-    func _testSwitchTarget(_ target: DashboardGatewayTarget, in source: DashboardWindowController) async {
-        await self.switchTarget(target, in: source)?.value
-    }
-
     func _testHandleControlChannelStateChange(_ state: ControlChannel.ConnectionState) async {
         await self.handleControlChannelStateChange(state)
     }
@@ -1595,10 +1591,6 @@ extension DashboardManager {
 
     func _testAuxiliaryWindows() -> [(target: DashboardGatewayTarget, controller: DashboardWindowController)] {
         self.auxiliaryWindows.values.map { ($0.target, $0.controller) }
-    }
-
-    func _testPendingGatewayAlerts() -> [NSAlert] {
-        self.alertPresenter._testPendingAlerts
     }
 
     func _testSetMainTarget(_ target: DashboardGatewayTarget) {

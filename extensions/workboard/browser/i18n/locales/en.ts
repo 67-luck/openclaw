@@ -99,6 +99,9 @@ export default {
     cardsBoard: "Cards",
     sessionsBoard: {
       kind: "Sessions",
+      peopleFilter: "People filter",
+      everyone: "Everyone",
+      involvingMe: "Involving me",
       agent: "Board agent",
       agentLabel: "Sessions board · {name}",
       agentUnavailable:
@@ -107,6 +110,7 @@ export default {
       writeUnavailable:
         "Board appearance was saved. Reconnect with write access to save the session columns.",
       loading: "Loading sessions…",
+      classifying: "Classifying sessions…",
       empty: "No sessions in this column",
       columns: "Columns",
       columnLabel: "Column label",

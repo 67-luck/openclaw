@@ -169,7 +169,7 @@ final class CLIInstallPrompter {
 
     private func present(_ alert: NSAlert, presentingSheetOn window: NSWindow?) async -> NSApplication.ModalResponse {
         // Attaching onboarding alerts preserves their AX visibility and window-relative z-order.
-        guard let window else { return alert.runModal() }
+        guard let window else { return await AppActivation.shared.response(to: alert) }
         return await alert.beginSheetModal(for: window)
     }
 
@@ -246,7 +246,7 @@ final class CLIInstallPrompter {
             let alert = NSAlert()
             alert.messageText = installed ? "CLI install finished" : "CLI install failed"
             alert.informativeText = message
-            alert.runModal()
+            AppActivation.shared.presentAlert(alert)
         }
         return installed && activated
     }
@@ -383,7 +383,7 @@ final class CLIInstallPrompter {
         return location == CLIInstaller.managedExecutableLocation()
     }
 
-    static func isManagedUpgrade(found: String, required: String) -> Bool {
+    nonisolated static func isManagedUpgrade(found: String, required: String) -> Bool {
         guard let foundVersion = Semver.parse(found),
               let requiredVersion = Semver.parse(required)
         else { return false }
@@ -400,7 +400,7 @@ final class CLIInstallPrompter {
         }
     }
 
-    private static func prereleaseTail(_ version: String) -> String? {
+    private nonisolated static func prereleaseTail(_ version: String) -> String? {
         let trimmed = version.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let separator = trimmed.firstIndex(of: "-") else { return nil }
         let tail = String(trimmed[trimmed.index(after: separator)...])

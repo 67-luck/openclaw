@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, matchesGlob } from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -149,11 +149,11 @@ describe("Control UI release-only inventories", () => {
     expect(files.toSorted()).toEqual(expectedFiles.toSorted());
   }
 
-  it("omits only the named exhaustive matrices from ordinary UI owners", () => {
+  it("retains PR-exempt entries while omitting release-only UI matrices", () => {
     const groups = createUiTestShardGroups({ includeReleaseOnlyTests: false });
     expect(groups.ui[0]?.includePatterns).not.toContain(sidebar);
-    expect(groups.e2e[0]?.includePatterns).not.toContain(embed);
-    expect(groups.e2e[0]?.includePatterns).not.toContain(entry);
+    expect(groups.e2e[0]?.includePatterns).toContain(embed);
+    expect(groups.e2e[0]?.includePatterns).toContain(entry);
     expect(
       uiE2eRealGatewayTestFiles.filter((file) => groups.e2e[0]?.includePatterns?.includes(file)),
     ).toEqual(uiE2eRealGatewayTestFiles.filter((file) => !releaseOnlyRealGateway.has(file)));
@@ -169,7 +169,7 @@ describe("Control UI release-only inventories", () => {
     );
   });
 
-  it("retains directly edited matrices without widening from their source owner", () => {
+  it("retains directly edited release matrices alongside PR-exempt entries", () => {
     const options = {
       includeReleaseOnlyTests: false,
       changedPaths: [
@@ -186,7 +186,7 @@ describe("Control UI release-only inventories", () => {
     ).toEqual(
       uiE2eRealGatewayTestFiles.filter((file) => releaseOnlyRealGateway.has(file)).toSorted(),
     );
-    expect(groups.e2e[0]?.includePatterns).not.toContain(embed);
+    expect(groups.e2e[0]?.includePatterns).toContain(embed);
     expect(groups.ui[0]?.includePatterns).not.toContain(sidebar);
     expectRealGatewayCoverage(groups.e2e, uiE2eRealGatewayTestFiles);
     expectRealGatewayCoverage(
@@ -1026,6 +1026,23 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       );
       try {
         const owner = "agentic-agents-tools";
+        const pricedFile = "src/agents/embedded-agent-runner/pricing-heavy.test.ts";
+        if (indivisible) {
+          const listFiles = nodeTestInventory.listNodeTestConfigFiles;
+          vi.spyOn(nodeTestInventory, "listNodeTestConfigFiles").mockImplementation((config) =>
+            config === agentVitestProjectOwners.embedded.config
+              ? [
+                  pricedFile,
+                  "src/agents/embedded-agent-runner/pricing-light-a.test.ts",
+                  "src/agents/embedded-agent-runner/pricing-light-b.test.ts",
+                ]
+              : listFiles(config),
+          );
+          const fileSeconds = shardMetadata.estimateVitestTestFileSeconds;
+          vi.spyOn(shardMetadata, "estimateVitestTestFileSeconds").mockImplementation((file) =>
+            file === pricedFile ? 53 : fileSeconds(file),
+          );
+        }
         const timings: Record<"blacksmith" | "github", Record<string, number>> = {
           blacksmith: indivisible
             ? {
@@ -1050,9 +1067,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             plan.find((job) =>
               job.groups.some((group) =>
                 indivisible
-                  ? group.includePatterns?.includes(
-                      "src/agents/embedded-agent-runner/run.compaction-runtime.test.ts",
-                    )
+                  ? group.includePatterns?.includes(pricedFile)
                   : group.shard_name === owner,
               ),
             ),
@@ -2021,10 +2036,14 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       }
       expect(isPolicyTestOwnedPath(changedPath), changedPath).toBe(false);
     }
-    const unrelatedTargets = resolvePolicyTestTargets(["src/plugins/unrelated-new-plugin.ts"]);
+    const newModule = "src/plugins/unrelated-new-plugin.ts";
+    const newModuleTargets = resolvePolicyTestTargets([newModule]);
+    const testOnlyTargets = resolvePolicyTestTargets(["src/plugins/unrelated-new-plugin.test.ts"]);
     for (const guard of guards) {
-      expect(unrelatedTargets).not.toContain(guard);
+      expect(newModuleTargets).toContain(guard);
+      expect(testOnlyTargets).not.toContain(guard);
     }
+    expect(isPolicyTestOwnedPath(newModule)).toBe(false);
     expect(isPolicyTestOwnedPath(manifest)).toBe(true);
     const shards = expectDefined(createChangedNodeTestShards([manifest]), "manifest test plan");
     for (const guard of guards) {
@@ -2034,6 +2053,32 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expect(owners).toHaveLength(1);
       expect(owners[0]?.configs).toEqual(["test/vitest/vitest.tooling.config.ts"]);
     }
+  });
+
+  it("runs Telegram skill script changes, including test-only edits, through the skill wrapper", () => {
+    const wrapper = "test/scripts/telegram-e2e-userbot-skill.test.ts";
+    const scriptsDir = ".agents/skills/telegram-e2e-userbot/scripts";
+    const scripts = readdirSync(scriptsDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && !entry.name.startsWith("."))
+      .map((entry) => `${scriptsDir}/${entry.name}`);
+    expect(scripts.filter((file) => /\.test\.(?:mjs|py)$/u.test(file)).length).toBeGreaterThan(0);
+    for (const changedPath of scripts) {
+      expect(resolvePolicyTestTargets([changedPath]), changedPath).toContain(wrapper);
+    }
+    const changedTest = `${scriptsDir}/telegram-run-composition.test.mjs`;
+    const shards = expectDefined(
+      createChangedNodeTestShards([changedTest], { selectionMode: "aggressive" }),
+      "skill test plan",
+    );
+    const groups = shards.flatMap((shard) => shard.groups ?? []);
+    const selected = [
+      ...shards.flatMap((shard) => shard.targets ?? []),
+      ...groups.flatMap((group) => group.includePatterns ?? []),
+    ];
+    expect(selected).not.toContain(changedTest);
+    const owners = groups.filter((group) => group.includePatterns?.includes(wrapper));
+    expect(owners).toHaveLength(1);
+    expect(owners[0]?.configs).toEqual(["test/vitest/vitest.tooling.config.ts"]);
   });
 
   it("matches policy owners with literal and native glob semantics", () => {
@@ -4055,6 +4100,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         String.raw`src\plugins\tools.optional.test.ts`,
         "src/plugins/tools.optional.test.ts",
         PLUGIN_PRERELEASE_NPM_SPEC_TEST,
+        "src/plugins/runtime.test.ts",
         "src/plugins/contracts/plugin-sdk-subpaths.test.ts",
         "src/plugins/loader.test.ts",
         "src/plugins/install.npm-spec.e2e.test.ts",
@@ -4062,9 +4108,17 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     };
     const shards = createNodeTestShards(options);
     expect(shards.find((shard) => shard.shardName === "agentic-plugins")?.includePatterns).toEqual([
-      PLUGIN_PRERELEASE_NPM_SPEC_TEST,
+      "src/plugins/runtime.test.ts",
       "src/plugins/tools.optional.test.ts",
     ]);
+    expect(
+      shards.flatMap(
+        (shard) =>
+          shard.includePatterns
+            ?.filter((file) => file === PLUGIN_PRERELEASE_NPM_SPEC_TEST)
+            .map(() => shard.configs) ?? [],
+      ),
+    ).toEqual([["test/vitest/vitest.infra.config.ts"]]);
     expect(shards.filter((shard) => shard.shardName !== "agentic-plugins")).toEqual(
       createNodeTestShards({ includeReleaseOnlyPluginShards: false }),
     );
