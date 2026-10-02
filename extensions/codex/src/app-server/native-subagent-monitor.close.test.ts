@@ -293,7 +293,7 @@ describe("Codex native close admission", () => {
         await harness.client.closeAndWait();
         await parent.unregister();
         host.closeHost();
-        host.closeAdmission();
+        await host.closeAdmission();
       }
     });
   });
