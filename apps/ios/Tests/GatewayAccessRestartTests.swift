@@ -63,7 +63,7 @@ private enum AccessRestartProof {
         let expiresAt: Date
     }
 
-    // XCTest assertions normally continue. A failed invariant must stop before receipt writes or cleanup.
+    /// XCTest assertions normally continue. A failed invariant must stop before receipt writes or cleanup.
     static func require(
         _ condition: Bool,
         _ message: String = "Restart invariant failed",

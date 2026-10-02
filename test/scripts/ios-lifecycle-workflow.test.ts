@@ -901,7 +901,7 @@ describe("iOS Access process restart proof", () => {
     expect(bootTimeouts).toEqual([120]);
     expect(receiptRetained).toBe(false);
     const { config, environment } = runs[0]!;
-    expect(config.__xctestrun_metadata__?.FormatVersion).toBe(format || undefined);
+    expect(config["__xctestrun_metadata__"]?.FormatVersion).toBe(format || undefined);
     expect(config).not.toHaveProperty("OpenClawLogicTests");
     const targets =
       format === 2 ? config.TestConfigurations![0]!.TestTargets : [config.OpenClawTests!];

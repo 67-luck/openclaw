@@ -29,8 +29,8 @@ struct CloudflareAccessTestTokens {
 
     static func application() throws -> CloudflareAccessApplication {
         try CloudflareAccessApplication(
-            origin: CloudflareAccessOrigin(Self.unwrap(URL(string: "https://gateway.example.test:8443"))),
-            issuer: Self.unwrap(URL(string: "https://example.cloudflareaccess.com")),
+            origin: CloudflareAccessOrigin(self.unwrap(URL(string: "https://gateway.example.test:8443"))),
+            issuer: self.unwrap(URL(string: "https://example.cloudflareaccess.com")),
             audience: "test-audience")
     }
 
