@@ -1072,6 +1072,51 @@ class WearDirectRuntimeTest {
   @Test
   fun terminalHistoryAlreadyPendingSurvivesDelayedTimeoutAcknowledgement() = verifyTerminalAcknowledgement("error", ackFirst = false, status = "timeout")
 
+  @Test
+  fun sessionMessageBeforeAcknowledgementReconcilesCanonicalRun() = verifyMessageAcknowledgement("session.message")
+
+  @Test
+  fun messagePhaseBeforeAcknowledgementReconcilesCanonicalRun() = verifyMessageAcknowledgement("sessions.changed")
+
+  private fun verifyMessageAcknowledgement(event: String) =
+    conversationTest {
+      for ((status, historyApplied, active) in listOf(
+        Triple("started", false, false),
+        Triple("started", true, true),
+        Triple("in_flight", true, false),
+        Triple("in_flight", false, true),
+      )) {
+        val (sendWork, send) = beginSend()
+        val run = checkNotNull(send.params.text("idempotencyKey"))
+        gateway.event(
+          event,
+          buildJsonObject {
+            put("sessionKey", "agent:main:main")
+            put("phase", "message")
+          },
+        )
+        val earlier = next(gateway.histories)
+        if (historyApplied) {
+          earlier.reply(history("Transcript before acknowledgment"))
+          await { runtime.state.value.takeIf { it.messages.singleOrNull()?.text == "Transcript before acknowledgment" } }
+        }
+        send.acknowledge(status)
+        val canonical = await { gateway.histories.tryReceive().takeIf { it.isSuccess || sendWork.all { job -> job.isCompleted } } }
+        assertTrue("A transcript event cannot decide whether the acknowledged run is still active", canonical.isSuccess)
+        if (!historyApplied) earlier.reply(history("Stale transcript", "stale-run"))
+        checkNotNull(canonical.getOrNull()).reply(history("Canonical after acknowledgment", run.takeIf { active }))
+        finish(sendWork)
+        assertSettledSend()
+        assertEquals(run.takeIf { active }, runtime.state.value.runId)
+        assertEquals(
+          "Canonical after acknowledgment",
+          runtime.state.value.messages
+            .single()
+            .text,
+        )
+      }
+    }
+
   private fun verifyTerminalAcknowledgement(
     terminal: String,
     ackFirst: Boolean,
@@ -1133,6 +1178,15 @@ class WearDirectRuntimeTest {
           finish(refreshWork)
         }
         gateway.chat("foreign-run", "Foreign text", sessionKey = "agent:other:main")
+        for (event in listOf("session.message", "sessions.changed")) {
+          gateway.event(
+            event,
+            buildJsonObject {
+              put("sessionKey", "agent:other:main")
+              put("phase", "message")
+            },
+          )
+        }
         send.acknowledge(status)
         finish(sendWork)
         assertSettledSend()

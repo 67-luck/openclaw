@@ -132,6 +132,7 @@ internal class WearDirectRuntime(
   private var conversation = 0L
   private var historyRevision = 0L
   private var chatRevision = 0L
+  private var transcriptRevision = 0L
   private val mutableState =
     MutableStateFlow(
       WearDirectState(selected = store.registry.activeEntry(), gateways = store.registry.entries.value),
@@ -802,15 +803,15 @@ internal class WearDirectRuntime(
 
   private fun send(attempt: WearDirectSend) {
     val request = capture() ?: return
-    var admitted: Long? = null
+    var admitted: Pair<Long, Long>? = null
     commit(request) {
       val state = mutableState.value
       if (state.pendingSend !== attempt || state.sending) return@commit
       historyRevision += 1
       mutableState.value = state.copy(sending = true, error = null)
-      admitted = chatRevision
+      admitted = chatRevision to transcriptRevision
     }
-    val revision = admitted ?: return
+    val (revision, transcript) = admitted ?: return
     scope.launch {
       val result =
         try {
@@ -844,7 +845,9 @@ internal class WearDirectRuntime(
         val unchanged = chatRevision == revision
         val active = result.text("status") in setOf("started", "in_flight")
         val adoptRun = unchanged && active
-        reconcile = unchanged && !active
+        // Transcript events can belong to another run. Settle the ACK, then read
+        // fresh canonical state instead of treating an earlier snapshot as completion.
+        reconcile = unchanged && (!active || transcriptRevision != transcript)
         if (adoptRun) historyRevision += 1
         mutableState.value =
           mutableState.value.copy(
@@ -1038,6 +1041,7 @@ internal class WearDirectRuntime(
           )
         if (terminal) scope.launch { capture()?.let { runCatching { loadHistory(it) } } }
       } else if ((event == "session.message" || (event == "sessions.changed" && obj.text("phase") == "message")) && matchesSelectedSession(obj)) {
+        transcriptRevision += 1
         historyRevision += 1
         scope.launch { capture()?.let { runCatching { loadHistory(it) } } }
       }
