@@ -105,7 +105,10 @@ export async function prepareReplyAgentTurn<TConfigured = undefined>(params: {
       mailboxClaim = await (params.providedReplyOperation ? undefined : params.claimSource?.());
     }
     if (!mailboxClaim && !params.providedReplyOperation) {
-      return { kind: "skipped", reason: "active-run" } as const;
+      return {
+        kind: "skipped",
+        reason: resolveFollowupAbortSignal(params.queued)?.aborted ? "aborted" : "active-run",
+      } as const;
     }
 
     const sessionKey = params.queued.run.sessionKey ?? params.defaults.sessionKey;
