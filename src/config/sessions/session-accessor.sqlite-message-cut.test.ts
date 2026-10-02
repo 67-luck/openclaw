@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
@@ -37,6 +38,32 @@ afterEach(() => {
 });
 
 describe("SQLite session message cuts", () => {
+  it("records a committed fork before a synchronous publication failure", async () => {
+    const { env } = await createSession();
+    const targetKey = sessionKey + ":publication-failure";
+    const failure = new Error("session publication failed");
+    const onCommitted = vi.fn();
+    const publication = vi.spyOn(sessionChanges, "emitBatch").mockImplementation(() => {
+      throw failure;
+    });
+    try {
+      await expect(
+        forkSessionAtMessage({
+          agentId,
+          env,
+          sessionKey,
+          targetKey,
+          entryId: "user-2",
+          onCommitted,
+        }),
+      ).rejects.toBe(failure);
+      expect(onCommitted).toHaveBeenCalledOnce();
+      expect(loadSessionEntry({ agentId, env, sessionKey: targetKey })).toBeDefined();
+    } finally {
+      publication.mockRestore();
+    }
+  });
+
   it("returns authored text without captured context or attachments on fork", async () => {
     const { env, scope } = await createSession();
     const text = "Edit only these words";
