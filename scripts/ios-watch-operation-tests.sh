@@ -184,6 +184,19 @@ app_path="$(
     '
 )"
 if [ "$phase" = "suites" ]; then
+companion_id="$(
+  xcrun simctl list pairs --json | node --input-type=module -e '
+    const chunks = [];
+    for await (const chunk of process.stdin) chunks.push(chunk);
+    const pairs = Object.values(JSON.parse(Buffer.concat(chunks).toString("utf8")).pairs);
+    const pair = pairs.find((entry) => entry.watch.udid === process.argv[1]);
+    process.stdout.write(pair?.phone.udid ?? "");
+  ' "$simulator_id"
+)"
+# XCTest connects through the selected Watch companion, not necessarily IOS_SIMULATOR_ID.
+if [ -n "$companion_id" ]; then
+  xcrun simctl bootstatus "$companion_id" -b
+fi
 xcrun simctl boot "$simulator_id" 2>/dev/null || true
 xcrun simctl bootstatus "$simulator_id" -b
 fi

@@ -24,7 +24,7 @@ import { redactForDevToolLog } from "./lib/dev-tooling-safety.js";
 import { hasUnjoinedWork, runManagedCommand } from "./lib/managed-child-process.mts";
 
 const scopes = ["operator.read", "operator.talk"];
-const developerDirectory = "/Applications/Xcode_26.6.app/Contents/Developer";
+const developerDirectory = "/Applications/Xcode.app/Contents/Developer";
 const cancelled = new AbortController();
 type Phase = "identity" | "negative" | "positive" | "voice";
 type CommandOptions = { timeout?: number; cleanup?: boolean; diagnostic?: boolean };

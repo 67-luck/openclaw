@@ -26,22 +26,22 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { parse } from "yaml";
 import {
-  formatIosSimulatorSelectionSummary,
-  resolveIosSimulatorTestSelection,
-} from "../../scripts/lib/ci-ios-smoke-plan.mjs";
-import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
-import { runCiManifestFixture } from "./ci-workflow-manifest.test-support.js";
-import { evaluateWorkflowExpression } from "./ci-workflow.test-support.js";
-import {
   createVoiceFixture,
   runWatchPhase,
 } from "../../scripts/ios-watch-operator-https-proof.mts";
 import * as watchProof from "../../scripts/ios-watch-operator-https-proof.mts";
+import {
+  formatIosSimulatorSelectionSummary,
+  resolveIosSimulatorTestSelection,
+} from "../../scripts/lib/ci-ios-smoke-plan.mjs";
 import { hasUnjoinedWork } from "../../scripts/lib/managed-child-process.mts";
 import { createVitestResourceOwner } from "../../scripts/lib/vitest-resource-ownership.mts";
 import { waitForDead, waitForFile, waitForPidFile } from "../helpers/process-wait.js";
 import { runQaGatewayFixture } from "../helpers/qa-gateway-cleanup.js";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { TEST_TLS_CERT_PEM, TEST_TLS_KEY_PEM } from "../helpers/tls-fixture.js";
+import { runCiManifestFixture } from "./ci-workflow-manifest.test-support.js";
+import { evaluateWorkflowExpression } from "./ci-workflow.test-support.js";
 
 type Command = { tool: string; args: string[]; destination?: string; settings?: string };
 
@@ -89,7 +89,7 @@ const qualificationSteps: {
 }[] = qualification.jobs.scan.steps;
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-function runXcodeSelection(qualificationMode: boolean, present = true, version = "26.6") {
+function runXcodeSelection(qualificationMode: boolean, failure = "") {
   const root = tempDirs.make("watch-xcode-selection-");
   const envFile = path.join(root, "github-env");
   const commandsFile = path.join(root, "commands");
@@ -97,25 +97,21 @@ function runXcodeSelection(qualificationMode: boolean, present = true, version =
   assert(step?.run);
   // Execute the actual workflow shell; only filesystem and native commands are fixtures.
   const prelude = String.raw`
-function test {
-  if [[ "$1" == "-d" ]]; then
-    [[ "$2" == "/Applications/Xcode_26.6.app/Contents/Developer" && "$XCODE_PRESENT" == "true" ]]
-  else builtin test "$@"; fi
+function sudo {
+  printf 'sudo:%s\n' "$*" >> "$XCODE_COMMANDS"
+  [[ "$XCODE_FAILURE" != "select" ]]
 }
-function [ {
-  if [[ "$1" == "-d" ]]; then test -d "$2"; else builtin [ "$@"; fi
-}
-function sudo { printf 'sudo:%s\n' "$*" >> "$XCODE_COMMANDS"; }
 function xcodebuild {
   local selected="$DEVELOPER_DIR"
   if [[ -z "$selected" ]]; then selected=unset; fi
   printf 'xcodebuild:%s\n' "$selected" >> "$XCODE_COMMANDS"
-  printf 'Xcode %s\nBuild version fixture\n' "$XCODE_VERSION"
+  [[ "$XCODE_FAILURE" != "xcodebuild" ]]
 }
 function swift {
   local selected="$DEVELOPER_DIR"
   if [[ -z "$selected" ]]; then selected=unset; fi
   printf 'swift:%s\n' "$selected" >> "$XCODE_COMMANDS"
+  [[ "$XCODE_FAILURE" != "swift" ]]
 }
 `;
   const result = spawnSync("/bin/bash", ["--noprofile", "--norc", "-c", prelude + step.run], {
@@ -125,8 +121,7 @@ function swift {
       ...process.env,
       DEVELOPER_DIR: "",
       WATCH_QUALIFICATION: String(qualificationMode),
-      XCODE_PRESENT: String(present),
-      XCODE_VERSION: version,
+      XCODE_FAILURE: failure,
       XCODE_COMMANDS: commandsFile,
       GITHUB_ENV: envFile,
     },
@@ -309,7 +304,16 @@ if (tool === "installer") {
 }
 `,
   );
-  for (const tool of ["xcrun", "xcodebuild", "codesign", "plutil", "pnpm", "uname", "installer", "simslim"]) {
+  for (const tool of [
+    "xcrun",
+    "xcodebuild",
+    "codesign",
+    "plutil",
+    "pnpm",
+    "uname",
+    "installer",
+    "simslim",
+  ]) {
     const executable = path.join(bin, tool);
     writeFileSync(executable, `#!/bin/sh\nexec '${process.execPath}' '${runner}' '${tool}' "$@"\n`);
     chmodSync(executable, 0o755);
@@ -331,40 +335,42 @@ if (tool === "installer") {
   const summaryFile = path.join(root, "summary.md");
   writeFileSync(environmentFile, "");
   writeFileSync(summaryFile, "");
-  const script = steps
-    .map((step) => {
-      if (!step?.run) {
-        throw new Error("Missing simulator workflow step");
-      }
-      return `${step.run}\nset -a\nsource "$GITHUB_ENV"\nset +a`;
-    })
-    .join("\n");
+  const script =
+    "set -euo pipefail\n" +
+    steps
+      .map((step) => {
+        if (!step?.run) {
+          throw new Error("Missing simulator workflow step");
+        }
+        return `${step.run}\nset -a\nsource "$GITHUB_ENV"\nset +a`;
+      })
+      .join("\n");
   let result;
   try {
     const options = {
-    cwd: root,
-    encoding: "utf8" as const,
-    env: {
-      ...process.env,
-      PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
-      RUNNER_TEMP: root,
-      TMPDIR: temporaryRoot,
-      TMP: temporaryRoot,
-      TEMP: temporaryRoot,
-      CI: "true",
-      OPENCLAW_CI_SIMSLIM_BINARY: "",
-      WATCH_FIXTURE_ROOT: root,
-      WATCH_FIXTURE_MODE: mode,
-      GITHUB_ENV: environmentFile,
-      GITHUB_STEP_SUMMARY: summaryFile,
-      IOS_SIMULATOR_SELECTION: JSON.stringify(resolveIosSimulatorTestSelection(null)),
-      IOS_CI_PHASE: "smoke",
-      IOS_MAIN_TIER: "false",
-      HISTORICAL_TARGET: "false",
-      IOS_DEST: "",
-      XCODE_XCCONFIG_FILE: "",
-      ...env,
-    },
+      cwd: root,
+      encoding: "utf8" as const,
+      env: {
+        ...process.env,
+        PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}`,
+        RUNNER_TEMP: root,
+        TMPDIR: temporaryRoot,
+        TMP: temporaryRoot,
+        TEMP: temporaryRoot,
+        CI: "true",
+        OPENCLAW_CI_SIMSLIM_BINARY: "",
+        WATCH_FIXTURE_ROOT: root,
+        WATCH_FIXTURE_MODE: mode,
+        GITHUB_ENV: environmentFile,
+        GITHUB_STEP_SUMMARY: summaryFile,
+        IOS_SIMULATOR_SELECTION: JSON.stringify(resolveIosSimulatorTestSelection(null)),
+        IOS_CI_PHASE: "smoke",
+        IOS_MAIN_TIER: "false",
+        HISTORICAL_TARGET: "false",
+        IOS_DEST: steps.some((step) => step?.name === watchStep?.name) ? undefined : "",
+        XCODE_XCCONFIG_FILE: "",
+        ...env,
+      },
     };
     if (phases) {
       const state = path.join(root, "owned-build");
@@ -471,40 +477,28 @@ describe.skipIf(process.platform === "win32")("SimSlim workflow admission", () =
 });
 
 describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => {
-  it("exports the fixed qualification Xcode without changing global selection", () => {
-    const { result, commands, environment } = runXcodeSelection(true);
-    expect(result.status, result.stderr).toBe(0);
-    expect(commands).toEqual([
-      "xcodebuild:/Applications/Xcode_26.6.app/Contents/Developer",
-      "xcodebuild:/Applications/Xcode_26.6.app/Contents/Developer",
-      "swift:/Applications/Xcode_26.6.app/Contents/Developer",
-    ]);
-    expect(environment).toBe("DEVELOPER_DIR=/Applications/Xcode_26.6.app/Contents/Developer\n");
-  });
-
-  it.each([
-    ["absent", false, "26.6"],
-    ["wrong-version", true, "26.5"],
-  ] as const)(
-    "fails qualification for %s Xcode without global selection or fallback",
-    (_, present, version) => {
-      const { result, commands } = runXcodeSelection(true, present, version);
-      expect(result.status).not.toBe(0);
-      expect(commands.some((command) => command.startsWith("sudo:"))).toBe(false);
-      expect(commands.some((command) => command.startsWith("swift:"))).toBe(false);
+  it.each([false, true])(
+    "uses canonical Xcode selection for qualification=%s",
+    (qualificationMode) => {
+      const { result, commands, environment } = runXcodeSelection(qualificationMode);
+      expect(result.status, result.stderr).toBe(0);
+      expect(commands).toEqual([
+        "sudo:xcode-select -s /Applications/Xcode.app/Contents/Developer",
+        "xcodebuild:unset",
+        "swift:unset",
+      ]);
+      expect(environment).toBe("");
     },
   );
 
-  it("preserves ordinary Periphery Xcode selection", () => {
-    const { result, commands, environment } = runXcodeSelection(false);
-    expect(result.status, result.stderr).toBe(0);
-    expect(commands).toEqual([
-      "sudo:xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer",
-      "xcodebuild:unset",
-      "xcodebuild:unset",
-      "swift:unset",
-    ]);
-    expect(environment).toBe("");
+  it.each([
+    ["select", 1],
+    ["xcodebuild", 2],
+    ["swift", 3],
+  ] as const)("stops Xcode admission on %s failure", (failure, commandCount) => {
+    const { result, commands } = runXcodeSelection(true, failure);
+    expect(result.status).not.toBe(0);
+    expect(commands).toHaveLength(commandCount);
   });
 
   it.each(["success", "failure", "cancelled", "skipped"])(
@@ -528,122 +522,129 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     },
   );
 
-  it("reuses project build products and installs the exact Watch target before running its tests", () => {
-    const { result, commands, product, testProduct, root, temporaryRoot } = runWatchStep();
-    expect(result.status, result.stderr).toBe(0);
-    const xcodeCommands = commands.filter((command) => command.tool === "xcodebuild");
-    for (const command of xcodeCommands) {
-      expect(command.args).not.toContain("-derivedDataPath");
-      expect(command.args).not.toContain("-target");
-      expect(command.args).not.toContain("-alltargets");
-    }
-    expect(
-      commands
-        .filter((command) => command.tool === "xcrun" && command.args[0] === "simctl")
-        .map((command) => command.args),
-    ).toEqual([
-      ["simctl", "list", "devices", "available", "--json"],
-      ["simctl", "boot", "watch-fixture"],
-      ["simctl", "bootstatus", "watch-fixture", "-b"],
-      ["simctl", "install", "watch-fixture", product],
-    ]);
-    expect(
-      xcodeCommands.map((command) =>
-        command.args.find((arg) =>
-          ["build-for-testing", "-showBuildSettings", "test-without-building"].includes(arg),
+  it.each(["ready", "unpaired"])(
+    "prepares the %s Watch and companion before testing the exact product",
+    (mode) => {
+      const { result, commands, product, testProduct, root, temporaryRoot } = runWatchStep(mode);
+      expect(result.status, result.stderr).toBe(0);
+      const xcodeCommands = commands.filter((command) => command.tool === "xcodebuild");
+      for (const command of xcodeCommands) {
+        expect(command.args).not.toContain("-derivedDataPath");
+        expect(command.args).not.toContain("-target");
+        expect(command.args).not.toContain("-alltargets");
+      }
+      expect(
+        commands
+          .filter((command) => command.tool === "xcrun" && command.args[0] === "simctl")
+          .map((command) => command.args),
+      ).toEqual([
+        ["simctl", "list", "devices", "available", "--json"],
+        ["simctl", "list", "pairs", "--json"],
+        ...(mode === "unpaired" ? [] : [["simctl", "bootstatus", "companion-fixture", "-b"]]),
+        ["simctl", "boot", "watch-fixture"],
+        ["simctl", "bootstatus", "watch-fixture", "-b"],
+        ["simctl", "install", "watch-fixture", product],
+      ]);
+      expect(
+        xcodeCommands.map((command) =>
+          command.args.find((arg) =>
+            ["build-for-testing", "-showBuildSettings", "test-without-building"].includes(arg),
+          ),
         ),
-      ),
-    ).toEqual(["build-for-testing", "-showBuildSettings", "test-without-building"]);
-    const build = xcodeCommands.find((command) => !command.args.includes("-showBuildSettings"));
-    const settingsQuery = xcodeCommands.find((command) =>
-      command.args.includes("-showBuildSettings"),
-    );
-    expect(
-      settingsQuery?.args.filter((arg) => arg !== "-showBuildSettings" && arg !== "-json"),
-    ).toEqual(build?.args);
-    for (const command of xcodeCommands.filter(
-      (entry) =>
-        entry.args.includes("build-for-testing") || entry.args.includes("test-without-building"),
-    )) {
-      expect(command.args).toEqual(
-        expect.arrayContaining([
-          "OpenClawWatchApp",
-          "Debug",
-          "platform=watchOS Simulator,id=watch-fixture",
-          "-parallel-testing-enabled",
-          "NO",
-          "-only-testing:OpenClawWatchTests/WatchInboxStoreOperationTests",
-          "-only-testing:OpenClawWatchTests/WatchRealtimeMediaTests",
-          "-only-testing:OpenClawWatchTests/WatchGatewayConfigurationTests",
-          "-only-testing:OpenClawWatchTests/WatchDirectConversationTests",
-          "-only-testing:OpenClawWatchTests/WatchGatewayControllerTests",
-          "CODE_SIGNING_ALLOWED=YES",
-          "CODE_SIGN_IDENTITY=-",
-          "CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES",
-        ]),
+      ).toEqual(["build-for-testing", "-showBuildSettings", "test-without-building"]);
+      const build = xcodeCommands.find((command) => !command.args.includes("-showBuildSettings"));
+      const settingsQuery = xcodeCommands.find((command) =>
+        command.args.includes("-showBuildSettings"),
       );
       expect(
-        command.args.some((arg) =>
-          /^(DEVELOPMENT_TEAM|CODE_SIGN_STYLE|CODE_SIGN_ENTITLEMENTS|PROVISIONING_PROFILE_SPECIFIER)=/.test(
-            arg,
+        settingsQuery?.args.filter((arg) => arg !== "-showBuildSettings" && arg !== "-json"),
+      ).toEqual(build?.args);
+      for (const command of xcodeCommands.filter(
+        (entry) =>
+          entry.args.includes("build-for-testing") || entry.args.includes("test-without-building"),
+      )) {
+        expect(command.args).toEqual(
+          expect.arrayContaining([
+            "OpenClawWatchApp",
+            "Debug",
+            "platform=watchOS Simulator,id=watch-fixture",
+            "-parallel-testing-enabled",
+            "NO",
+            "-only-testing:OpenClawWatchTests/WatchInboxStoreOperationTests",
+            "-only-testing:OpenClawWatchTests/WatchRealtimeMediaTests",
+            "-only-testing:OpenClawWatchTests/WatchGatewayConfigurationTests",
+            "-only-testing:OpenClawWatchTests/WatchDirectConversationTests",
+            "-only-testing:OpenClawWatchTests/WatchGatewayControllerTests",
+            "CODE_SIGNING_ALLOWED=YES",
+            "CODE_SIGN_IDENTITY=-",
+            "CODE_SIGN_INJECT_BASE_ENTITLEMENTS=YES",
+          ]),
+        );
+        expect(
+          command.args.some((arg) =>
+            /^(DEVELOPMENT_TEAM|CODE_SIGN_STYLE|CODE_SIGN_ENTITLEMENTS|PROVISIONING_PROFILE_SPECIFIER)=/.test(
+              arg,
+            ),
           ),
-        ),
-      ).toBe(false);
-    }
-    const installIndex = commands.findIndex((command) => command.args.includes("install"));
-    expect(
-      commands.slice(0, installIndex).filter((command) => command.tool === "codesign"),
-    ).toEqual([
-      { tool: "codesign", args: ["--verify", "--strict", product] },
-      { tool: "codesign", args: ["--verify", "--strict", testProduct] },
-    ]);
-    const extraction = commands.find(
-      (command) => command.tool === "xcrun" && command.args[0] === "segedit",
-    );
-    expect(extraction?.args.slice(0, 5)).toEqual([
-      "segedit",
-      path.join(product, "OpenClawWatchApp"),
-      "-extract",
-      "__TEXT",
-      "__entitlements",
-    ]);
-    const plistPath = extraction?.args[5];
-    assert(plistPath, "Expected an extracted entitlement plist");
-    expect(plistPath).not.toBe("-");
-    expect(path.dirname(path.dirname(plistPath))).toBe(temporaryRoot);
-    expect(commands.slice(0, installIndex).filter((command) => command.tool === "plutil")).toEqual([
-      { tool: "plutil", args: ["-convert", "json", "-o", "-", path.join(product, "Info.plist")] },
-      {
-        tool: "plutil",
-        args: [
-          "-convert",
-          "json",
-          "-o",
-          "-",
-          path.join(
-            root,
-            "project intermediates",
-            "Watch Product.build",
-            "Watch Product.app-Simulated.xcent",
-          ),
-        ],
-      },
-      { tool: "plutil", args: ["-convert", "json", "-o", "-", plistPath] },
-    ]);
-    expect(readdirSync(temporaryRoot)).toEqual([]);
-    expect(result.stderr.split("\n")[0]).toBe(
-      '{"watchBuildSettings":{"OpenClawWatchApp":1,"OpenClawWatchTests":1}}',
-    );
-    expect(result.stderr).toContain('"team":"TEAMFIX123"');
-    expect(result.stderr).toContain('"applicationID":"SEEDFIX123.org.example.watch"');
-    expect(result.stderr).toContain('"style":"Manual"');
-    expect(result.stderr).toContain('"entitlementsFile":"Fixture/Watch.entitlements"');
-    expect(result.stderr).toContain('"entitlementsSource":"__TEXT,__entitlements"');
-    expect(result.stderr).toContain('"keychainAccessGroups":null');
-    expect(
-      xcodeCommands.find((command) => command.args.includes("test-without-building"))?.args,
-    ).toContain("apps/ios/build/LifecycleTestResults/OpenClawWatchOperationTests.xcresult");
-  });
+        ).toBe(false);
+      }
+      const installIndex = commands.findIndex((command) => command.args.includes("install"));
+      expect(
+        commands.slice(0, installIndex).filter((command) => command.tool === "codesign"),
+      ).toEqual([
+        { tool: "codesign", args: ["--verify", "--strict", product] },
+        { tool: "codesign", args: ["--verify", "--strict", testProduct] },
+      ]);
+      const extraction = commands.find(
+        (command) => command.tool === "xcrun" && command.args[0] === "segedit",
+      );
+      expect(extraction?.args.slice(0, 5)).toEqual([
+        "segedit",
+        path.join(product, "OpenClawWatchApp"),
+        "-extract",
+        "__TEXT",
+        "__entitlements",
+      ]);
+      const plistPath = extraction?.args[5];
+      assert(plistPath, "Expected an extracted entitlement plist");
+      expect(plistPath).not.toBe("-");
+      expect(path.dirname(path.dirname(plistPath))).toBe(temporaryRoot);
+      expect(
+        commands.slice(0, installIndex).filter((command) => command.tool === "plutil"),
+      ).toEqual([
+        { tool: "plutil", args: ["-convert", "json", "-o", "-", path.join(product, "Info.plist")] },
+        {
+          tool: "plutil",
+          args: [
+            "-convert",
+            "json",
+            "-o",
+            "-",
+            path.join(
+              root,
+              "project intermediates",
+              "Watch Product.build",
+              "Watch Product.app-Simulated.xcent",
+            ),
+          ],
+        },
+        { tool: "plutil", args: ["-convert", "json", "-o", "-", plistPath] },
+      ]);
+      expect(readdirSync(temporaryRoot)).toEqual([]);
+      expect(result.stderr.split("\n")[0]).toBe(
+        '{"watchBuildSettings":{"OpenClawWatchApp":1,"OpenClawWatchTests":1}}',
+      );
+      expect(result.stderr).toContain('"team":"TEAMFIX123"');
+      expect(result.stderr).toContain('"applicationID":"SEEDFIX123.org.example.watch"');
+      expect(result.stderr).toContain('"style":"Manual"');
+      expect(result.stderr).toContain('"entitlementsFile":"Fixture/Watch.entitlements"');
+      expect(result.stderr).toContain('"entitlementsSource":"__TEXT,__entitlements"');
+      expect(result.stderr).toContain('"keychainAccessGroups":null');
+      expect(
+        xcodeCommands.find((command) => command.args.includes("test-without-building"))?.args,
+      ).toContain("apps/ios/build/LifecycleTestResults/OpenClawWatchOperationTests.xcresult");
+    },
+  );
 
   it.each([
     "missing-product",
@@ -1496,7 +1497,7 @@ describe("Watch build command diagnostics", () => {
   it.skipIf(process.platform === "win32")(
     "retains leader exit facts when held output rejects before close",
     { timeout: 20000 },
-    async () => {
+    async ({ signal }) => {
       vi.spyOn(console, "log").mockImplementation(() => {});
       // This fixture owns the deliberate failed join and releases its held pipes afterward.
       const directory = mkdtempSync(path.join(realpathSync(tmpdir()), "watch-held-output-"));
@@ -1553,7 +1554,7 @@ child.once("message", () => {
           const firstFailure = structuredClone(report.failedChild);
           expect(() => owner.assertReleased()).toThrow("Unreleased Vitest resource claim");
           writeFileSync(file("release"), "release");
-          await waitForFile(file("closed"), 2000);
+          await waitForFile(file("closed"), signal);
           expect(report.child).toMatchObject({ code: 7, outputBytes: Buffer.byteLength(output) });
           await command("", report, 2000, "watch-delete");
           expect(report.failedChild).toEqual(firstFailure);
@@ -1563,7 +1564,7 @@ child.once("message", () => {
           await completion;
           for (const name of ["leader.pid", "leaf.pid"]) {
             if (existsSync(file(name))) {
-              await waitForDead(await waitForPidFile(file(name), 2000), 2000);
+              await waitForDead(await waitForPidFile(file(name), signal), signal);
             }
           }
           rmSync(directory, { recursive: true, force: true });
