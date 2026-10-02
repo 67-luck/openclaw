@@ -130,7 +130,8 @@ function observe() {
   const fixture = read(path.join(out,'fixture.json'));
   const snapshot = {phase, installedPackage, installedBuild, records,
     stubSha256:digest(stubPath), canonicalHashes:canonicalHashes(),
-    configuredStub:config.plugins?.entries?.[stubId], loadPaths:config.plugins?.load?.paths,
+    configuredStub:config.plugins?.entries?.[stubId], allowedPlugins:config.plugins?.allow,
+    loadPaths:config.plugins?.load?.paths, configSha256:digest(configPath),
     candidateInstalled:JSON.stringify(installedBuild) === JSON.stringify(read(path.join(suiteOut,'candidate-build-info.json'))),
     fixtureStubSha256:fixture.stubSha256};
   write(path.join(out,`${phase}.json`),snapshot);
@@ -140,11 +141,35 @@ function assertPreserved(snapshot) {
   const fixture = read(path.join(out,'fixture.json'));
   assert.equal(snapshot.stubSha256,fixture.stubSha256,'The declaration stub bytes changed');
   assert.deepEqual(snapshot.canonicalHashes,fixture.canonicalHashes,'Canonical plugin source bytes changed');
-  assert.equal(snapshot.configuredStub?.enabled,true,'The configured stub was silently removed or disabled');
   assert(snapshot.loadPaths.includes(stubRoot),'The authored stub load path was silently removed');
   assert(snapshot.loadPaths.includes(canonicalRoot),'Canonical plugin load path disappeared');
   assert.equal(snapshot.records[canonicalId].source,'path');
   assert.equal(snapshot.records[canonicalId].sourcePath,canonicalRoot);
+}
+function assertConfiguredStub(snapshot) {
+  assert.equal(snapshot.configuredStub?.enabled,true,'Configured stub enablement disappeared');
+  assert(snapshot.allowedPlugins.includes(stubId),'Configured stub allow entry disappeared');
+}
+function assertRetiredStubCleanup(snapshot) {
+  const before = read(path.join(out,'before-update.json'));
+  const backupPath = `${configPath}.pre-update`;
+  const backupBytes = fs.readFileSync(backupPath);
+  assert.deepEqual(backupBytes,fs.readFileSync(path.join(out,'config-before-update.json')),
+    'Pre-update backup does not preserve the exact authored configuration bytes');
+  assert.equal(digest(backupPath),before.configSha256,'Pre-update backup identity differs');
+  const backup = JSON.parse(backupBytes.toString('utf8'));
+  assert.deepEqual(backup.plugins.entries[stubId],before.configuredStub,'Pre-update backup lost the stub entry');
+  assert.deepEqual(backup.plugins.allow,before.allowedPlugins,'Pre-update backup lost the allow policy');
+  assert.equal(snapshot.configuredStub,undefined,'Doctor retained the retired stub entry');
+  assert.equal(snapshot.allowedPlugins.includes(stubId),false,'Doctor retained the retired stub allow entry');
+  assert(snapshot.allowedPlugins.includes(canonicalId),'Doctor removed the canonical plugin allow entry');
+  const diagnostics = fs.readFileSync(path.join(out,'update.err'),'utf8');
+  assert(diagnostics.includes(`plugins.entries: removed 1 stale plugin entry (${stubId})`),
+    'Doctor did not announce the retired stub entry removal');
+  assert(diagnostics.includes(`plugins.allow: removed 1 stale plugin id (${stubId})`),
+    'Doctor did not announce the retired stub allow entry removal');
+  assert(diagnostics.includes('pre-update backup:'),'Updater did not report the recovery backup');
+  fs.writeFileSync(path.join(out,'config-pre-update-backup.json'),backupBytes,{mode:0o600});
 }
 function assertCandidate(snapshot) {
   assert.deepEqual(snapshot.installedPackage,read(path.join(suiteOut,'candidate-package.json')),'Candidate package was not installed');
@@ -154,9 +179,11 @@ function assertRecordOutcome(snapshot) {
   const before = read(path.join(out,'before-update.json'));
   if (path.basename(out) === 'direct') {
     assert.equal(Object.hasOwn(snapshot.records,stubId),false,'Direct update installed the retired stub');
+    assertRetiredStubCleanup(snapshot);
   } else {
-    assert(before.records[stubId],'Bridge has no old-Doctor installation to preserve');
-    assert(snapshot.records[stubId],'Update lost the plugin installed by published Doctor');
+    assertConfiguredStub(snapshot);
+    assert(before.records[stubId],'Bridge has no published manual installation to preserve');
+    assert(snapshot.records[stubId],'Update lost the plugin installed by the published CLI');
     for (const key of ['source','spec','version','resolvedName','resolvedVersion','resolvedSpec','integrity']) {
       assert.deepEqual(snapshot.records[stubId][key],before.records[stubId][key],`Bridge install ${key} changed`);
     }
@@ -194,17 +221,19 @@ if (mode === 'stub-package') {
 } else if (mode === 'assert-before') {
   const snapshot = observe();
   assertPreserved(snapshot);
+  assertConfiguredStub(snapshot);
+  fs.copyFileSync(configPath,path.join(out,'config-before-update.json'));
   assert.equal(snapshot.installedPackage.version,'2026.9.7','Installed updater is not published 2026.9.7');
   if (path.basename(out) === 'direct') {
     assert.equal(Object.hasOwn(snapshot.records,stubId),false,'Direct input was repaired before update');
   } else {
     const record = snapshot.records[stubId];
-    assert(record,'Published Doctor did not install the stub package');
+    assert(record,'Published CLI did not install the stub package');
     assert.equal(record.source,'npm');
     assert.equal(record.version,'1.0.0');
     assert.equal(read(path.join(record.installPath,'openclaw.plugin.json')).id,stubId);
-    write(path.join(out,'bridge-behavior.json'),{kind:'published-doctor-installed-stub-before-update',record,
-      directUpdateProof:false,description:'The published 2026.9.7 Doctor installed the synthetic package before the updater ran.'});
+    write(path.join(out,'bridge-behavior.json'),{kind:'published-manual-install-bridge',record,
+      directUpdateProof:false,description:'The published 2026.9.7 plugins install command installed the synthetic package with explicit capability consent; published Doctor then ran before the updater.'});
   }
 } else if (mode === 'assert-first-hop' || mode === 'assert-after-doctor') {
   const snapshot = read(path.join(out,`${phase}.json`));
@@ -248,7 +277,7 @@ if (mode === 'stub-package') {
     return [name,{exit,status:exit===0?'passed':'failed',firstHopObserved:Boolean(first),
       candidateInstalled:first?.candidateInstalled ?? false,
       stubInstalled:first ? Boolean(first.records[stubId]) : null,
-      publishedDoctorBridge:name==='bridge',directUpdateProof:name==='direct'&&exit===0}];
+      publishedManualInstallBridge:name==='bridge',directUpdateProof:name==='direct'&&exit===0}];
   }));
   const summary = {status:Object.values(cells).every(cell=>cell.exit===0)?'passed':'failed',
     baseline:'openclaw@2026.9.7',sourceHead:fs.readFileSync(path.join(suiteOut,'candidate-head.txt'),'utf8').trim(),
@@ -326,6 +355,7 @@ lg_phase baseline-doctor lg_run node "$lg_entry" doctor --fix --yes --non-intera
 lg_phase baseline-canonical-cli lg_run node "$lg_entry" lgcanonical ping
 lg_phase seed-stub lg_fixture seed-stub
 if [[ "$lg_cell" == bridge ]]; then
+  lg_phase published-manual-install lg_run node "$lg_entry" plugins install 'npm:@openclaw/lg-npm-retired-stub@1.0.0' --accept-capabilities
   lg_phase published-doctor-bridge lg_run node "$lg_entry" doctor --fix --yes --non-interactive --no-workspace-suggestions
 fi
 lg_phase before-update lg_fixture assert-before before-update
