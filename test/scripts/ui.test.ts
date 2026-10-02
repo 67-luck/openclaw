@@ -1,5 +1,6 @@
 // Ui tests cover ui script behavior.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +11,8 @@ import {
   resolveUiBuildEnvironment,
   resolvePnpmSpawnCall,
 } from "../../scripts/ui.mts";
+import { CONTROL_UI_ASSET_MANIFEST_FILENAME } from "../../src/gateway/control-ui-asset-manifest.js";
+import { createRetentionManifest } from "../../src/gateway/control-ui-asset-retention.test-support.js";
 import { CONTROL_UI_BUILD_ID_ATTRIBUTE } from "../../src/gateway/control-ui-root-assets.js";
 import { inspectControlUiRootAssets } from "../../src/infra/control-ui-assets.js";
 import { mergeProcessEnv } from "../../src/infra/process-env.js";
@@ -707,13 +710,26 @@ require("node:module").syncBuiltinESMExports();
       path.join(staging, "index.html"),
       '<script src="./assets/index.js"></script><link href="./assets/index.css">',
     );
-    for (const name of ["index.js", "index.css"]) {
+    const assets = ["index.js", "index.css"].flatMap((name) => {
       const bytes = Buffer.from("/* synthetic asset */");
-      const file = path.join(staging, "assets", name);
-      fs.writeFileSync(file, bytes);
-      fs.writeFileSync(`${file}.gz`, gzipSync(bytes));
-      fs.writeFileSync(`${file}.br`, brotliCompressSync(bytes));
-    }
+      return Object.entries({
+        "": bytes,
+        ".gz": gzipSync(bytes),
+        ".br": brotliCompressSync(bytes),
+      }).map(([suffix, source]) => {
+        const assetPath = `assets/${name}${suffix}`;
+        fs.writeFileSync(path.join(staging, assetPath), source);
+        return {
+          path: assetPath,
+          sha256: createHash("sha256").update(source).digest("hex"),
+          size: source.length,
+        };
+      });
+    });
+    fs.writeFileSync(
+      path.join(staging, CONTROL_UI_ASSET_MANIFEST_FILENAME),
+      JSON.stringify(createRetentionManifest(assets)),
+    );
     for (const [script, ...args] of [
       ["check-control-ui-precompressed-assets.mts", staging],
       ["check-control-ui-performance.mts", "--report-only", "--dist", staging],
