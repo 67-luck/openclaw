@@ -1,0 +1,21 @@
+name: Retired FRV Flake Classification Compatibility
+run-name: Retired FRV flake classification compatibility
+
+# Pinned FRV parents before ca0159f1c2e still enumerate this exact default-branch
+# workflow path. Keep this inert tombstone until no such parent remains rerunnable.
+# The retired producer and recorder both required refs/heads/main plus the exact
+# main workflow SHA, so selecting a historical branch or tag cannot issue a receipt.
+on:
+  workflow_call: {}
+
+permissions: {}
+
+jobs:
+  retired:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Refuse retired flake classification
+        run: |
+          echo "::error::FRV flake classification is retired; failed validation jobs remain blocking."
+          exit 1

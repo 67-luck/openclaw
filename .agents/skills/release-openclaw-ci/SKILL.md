@@ -41,6 +41,13 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
 - Use trusted `main` workflow revisions as immutable dispatch sources. Do not
   adopt newer main code, repair unrelated main CI, wait for broad main health,
   or expand a release fix because the workflow source lives on `main`.
+- When pinned release tooling queries a workflow by its default-branch path,
+  retain an inert non-writing tombstone at that exact path until no parent using
+  the older Tooling SHA remains active or rerunnable. Deleting the path turns an
+  empty compatibility lookup into a GitHub API 404 and corrupts the drain.
+  Before using this pattern, verify the retired workflow and its writer both
+  reject execution from historical non-default refs; otherwise ref-selected
+  dispatch can outlive the default-branch retirement.
 - Once publication binds the Tooling SHA to an exact protected lightweight
   `release-publish/<12sha>-<provenance-run>` tag, that live tag-to-SHA mapping
   remains authoritative when `main` advances. The suffix records tag-creation

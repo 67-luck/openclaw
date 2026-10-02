@@ -32,6 +32,7 @@ const DOCKER_RELEASE = ".github/workflows/docker-release.yml";
 const DOCKER_PREPARE = ".github/workflows/docker-release-prepare.yml";
 const UPDATE_MIGRATION = ".github/workflows/update-migration.yml";
 const PERFORMANCE = ".github/workflows/openclaw-performance.yml";
+const RETIRED_FLAKE_CLASSIFICATION = ".github/workflows/full-release-flake-classification.yml";
 const LIVE_BUILD = "scripts/test-live-build-docker.sh";
 const DOCKER_E2E_IMAGE_HELPER = "scripts/lib/docker-e2e-image.sh";
 const RELEASE_FILTER_VALIDATOR = resolve("scripts/github/validate-release-suite-filters.sh");
@@ -127,6 +128,7 @@ type WorkflowStep = {
 type WorkflowJob = {
   "continue-on-error"?: boolean | string;
   "runs-on"?: string;
+  "timeout-minutes"?: number;
   environment?: string;
   env?: Record<string, string>;
   if?: string;
@@ -409,6 +411,28 @@ function runnerSandbox(context: Record<string, unknown>) {
 }
 
 describe("release validation no-push transport", () => {
+  it("keeps retired flake classification enumerable without restoring the bypass", () => {
+    const workflow = readWorkflow(RETIRED_FLAKE_CLASSIFICATION);
+    const retired = job(workflow, "retired");
+    const source = readFileSync(RETIRED_FLAKE_CLASSIFICATION, "utf8");
+
+    expect(workflow.on?.workflow_call).toEqual({});
+    expect(workflow.on?.workflow_dispatch).toBeUndefined();
+    expect(workflow.permissions).toEqual({});
+    expect(Object.keys(workflow.jobs ?? {})).toEqual(["retired"]);
+    expect(retired["runs-on"]).toBe("ubuntu-24.04");
+    expect(retired["timeout-minutes"]).toBe(1);
+    expect(retired.steps).toHaveLength(1);
+    expect(retired.steps?.[0]?.uses).toBeUndefined();
+    expect(retired.steps?.[0]?.run).toContain("FRV flake classification is retired");
+    expect(retired.steps?.[0]?.run).toContain("exit 1");
+    expect(source).not.toContain("actions/checkout");
+    expect(source).not.toContain("upload-artifact");
+    expect(source).not.toContain("full-release-flake-classification.mjs");
+    expect(source).not.toContain("workflow_dispatch");
+    expect(source).not.toContain("job_url:");
+  });
+
   it.each(["github", "hybrid", ""])(
     "keeps the QA Lab runtime-pair lane on Blacksmith when the backend is %j",
     (backend) => {
