@@ -31,6 +31,7 @@ import {
   applySessionEntryLifecycleMutation,
   loadSessionEntry,
   loadTranscriptEvents,
+  markSessionAbortTarget,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import {
@@ -3280,46 +3281,37 @@ describe("runReplyAgent pending final delivery capture", () => {
       restartRecoveryDeliverySourceRunId: "control-ui-run",
       status: "running",
     });
-    const replyOperation = createReplyOperation({
-      sessionKey: "main",
-      sessionId: "session",
-      resetTriggered: false,
-    });
-    replyOperation.setPhase("running");
     state.runEmbeddedAgentMock.mockImplementationOnce(async () => {
+      const replyOperation = getSessionControllerOperation("main");
+      if (!replyOperation) {
+        throw new Error("expected admitted reply operation");
+      }
       expect(replyOperation.abortByUser()).toBe(true);
-      const current = await readStoredMainSession(storePath);
-      await replaceSessionEntry(
-        { agentId: "main", storePath, sessionKey: "main" },
-        { ...current, abortedLastRun: true, status: "killed", updatedAt: Date.now() },
-      );
+      await markSessionAbortTarget({
+        scope: { agentId: "main", storePath, sessionKey: "main" },
+      });
       throw new Error("cancelled");
     });
 
-    try {
-      const { run } = createMinimalRun({
-        replyOperation,
-        sessionCtx: {
-          Provider: "webchat",
-          OriginatingChannel: "webchat",
-        },
-        runOverrides: { messageProvider: "webchat" },
-        sessionEntry,
-        sessionStore,
-        sessionKey: "main",
-        storePath,
-      });
+    const { run } = createMinimalRun({
+      sessionCtx: {
+        Provider: "webchat",
+        OriginatingChannel: "webchat",
+      },
+      runOverrides: { messageProvider: "webchat" },
+      sessionEntry,
+      sessionStore,
+      sessionKey: "main",
+      storePath,
+    });
 
-      await run();
+    await run();
 
-      const stored = await readStoredMainSession(storePath);
-      expect(stored.abortedLastRun).toBe(true);
-      expect(stored.restartRecoveryDeliveryRunId).toBeUndefined();
-      expect(stored.restartRecoveryDeliverySourceRunId).toBeUndefined();
-      expect(stored.restartRecoveryTerminalRunIds).toEqual(["control-ui-run"]);
-    } finally {
-      replyOperation.complete();
-    }
+    const stored = await readStoredMainSession(storePath);
+    expect(stored.abortedLastRun).toBe(true);
+    expect(stored.restartRecoveryDeliveryRunId).toBeUndefined();
+    expect(stored.restartRecoveryDeliverySourceRunId).toBeUndefined();
+    expect(stored.restartRecoveryTerminalRunIds).toEqual(["control-ui-run"]);
   });
 
   it("fires onAdopted after restart recovery delivery context persist completes", async () => {
@@ -5443,7 +5435,6 @@ describe("runReplyAgent typing (heartbeat)", () => {
           activeModel: "deepinfra/moonshotai/Kimi-K2.5",
           reason: "rate limit",
         };
-        expect(sessionEntry.fallbackNotice).toEqual(activeFallback);
         expect(requireStoredSessionEntry(storePath).fallbackNotice).toEqual(activeFallback);
         const second = await run();
         const third = await run();
@@ -5461,7 +5452,6 @@ describe("runReplyAgent typing (heartbeat)", () => {
         }
         expect(countMatching(phases, (phase) => phase === "fallback")).toBe(1);
         expect(countMatching(phases, (phase) => phase === "fallback_cleared")).toBe(1);
-        expect(sessionEntry.fallbackNotice).toBeUndefined();
         expect(requireStoredSessionEntry(storePath).fallbackNotice).toBeUndefined();
       } finally {
         fallbackSpy.mockRestore();
@@ -5875,7 +5865,6 @@ describe("runReplyAgent typing (heartbeat)", () => {
     await run();
 
     const stored = requireStoredSessionEntry(storePath);
-    expect(sessionEntry.fallbackNotice).toBeUndefined();
     expect(stored.fallbackNotice).toBeUndefined();
     expect(stored.modelProvider).toBe("claude-cli");
     expect(stored.model).toBe("claude-opus-4-7");
