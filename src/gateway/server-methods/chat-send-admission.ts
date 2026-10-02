@@ -266,6 +266,10 @@ export async function admitChatSend(
       }
     }
     if (lifecycleGeneration !== getAgentEventLifecycleGeneration()) {
+      if (admittedRunAbort.entry) {
+        admittedRunAbort.entry.adapter.abortStopReason = "restart";
+      }
+      admittedRunAbort.controller.abort(createAgentRunRestartAbortError());
       writePreRegisteredChatAbort({
         context,
         runId: clientRunId,
@@ -278,6 +282,10 @@ export async function admitChatSend(
       !pendingReservation ||
       !isFutureDateTimestampMs(pendingReservation.payload.expiresAtMs, { nowMs: Date.now() })
     ) {
+      if (admittedRunAbort.entry) {
+        admittedRunAbort.entry.adapter.abortStopReason = "timeout";
+      }
+      admittedRunAbort.controller.abort();
       writePreRegisteredChatAbort({
         context,
         runId: clientRunId,
@@ -439,6 +447,18 @@ export async function admitChatSend(
         }
       },
     });
+    if (
+      admittedRunAbort.controller.signal.aborted &&
+      !readChatSendDedupeResponse(context.dedupe, clientRunId)
+    ) {
+      writePreRegisteredChatAbort({
+        context,
+        runId: clientRunId,
+        stopReason: admittedRunAbort.entry?.adapter.abortStopReason ?? "rpc",
+        attemptId: pendingAttemptId,
+      });
+    }
+    admittedRunAbort.controller.signal.throwIfAborted();
     params.assertCurrent?.();
   } catch (err) {
     clearPendingChatSendReservation();
