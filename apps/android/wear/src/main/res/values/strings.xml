@@ -129,8 +129,8 @@
     <string name="reply_previous_page" tools:ignore="MissingTranslation">Previous part</string>
     <string name="reply_next_page" tools:ignore="MissingTranslation">Next part</string>
     <string name="reply_loading" tools:ignore="MissingTranslation">Loading full reply…</string>
-    <string name="reply_unsupported" tools:ignore="MissingTranslation">Update the phone app and Gateway to read full replies.</string>
-    <string name="reply_too_large" tools:ignore="MissingTranslation">This reply is too large to read here. Open it on your phone.</string>
+    <string name="reply_unsupported" tools:ignore="MissingTranslation">Update OpenClaw and the Gateway to read full replies.</string>
+    <string name="reply_too_large" tools:ignore="MissingTranslation">This reply is too large to read here. Open it in Gateway chat.</string>
     <string name="reply_changed" tools:ignore="MissingTranslation">The reply or connection changed. Retry from the beginning.</string>
     <string name="reply_unavailable" tools:ignore="MissingTranslation">Full text is no longer available.</string>
     <string name="reply_failed" tools:ignore="MissingTranslation">Could not load the full reply. Try again.</string>

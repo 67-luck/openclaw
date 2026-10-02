@@ -1,7 +1,5 @@
 package ai.openclaw.wear
 
-import ai.openclaw.wear.shared.WearReplyTextPage
-import ai.openclaw.wear.shared.WearReplyTextStatus
 import android.app.Activity
 import android.app.RemoteInput
 import android.content.Intent
@@ -89,7 +87,7 @@ private fun WearDirectContent(
   var inputOwner by remember { mutableStateOf<WearInputOwner?>(null) }
   var enterSetup by remember { mutableStateOf(false) }
   var setupCode by remember { mutableStateOf("") }
-  var openReply by remember(state.selected?.stableId, state.sessionKey) { mutableStateOf<WearChatMessage?>(null) }
+  var openReply by remember(state.selected?.stableId, state.sessionKey) { mutableStateOf<WearDirectReply?>(null) }
   var now by remember { mutableStateOf(System.currentTimeMillis()) }
   LaunchedEffect(review?.id) {
     while (review != null) {
@@ -163,10 +161,11 @@ private fun WearDirectContent(
     }
   val setupLabel = stringResource(R.string.watch_setup_code)
   val messageLabel = stringResource(R.string.message)
-  openReply?.let { message ->
+  openReply?.let { reply ->
+    val message = reply.message
     ReplyReader(
-      WearOpenReply(message = message, target = null, localText = message.text, supported = false),
-      readReply = { _, _, _ -> WearReplyTextPage(WearReplyTextStatus.Unsupported) },
+      WearOpenReply(message = message, target = null, localText = message.text.takeIf { message.textTruncated == false }, supported = true),
+      readReply = reply.readPage,
       onDismiss = { openReply = null },
     )
     return
@@ -298,7 +297,7 @@ private fun WearDirectContent(
       item { SecondaryButton(stringResource(R.string.watch_sessions), state.connected) { page = "sessions" } }
       item { SecondaryButton(stringResource(R.string.watch_approvals), state.connected) { page = "approvals" } }
       state.messages.forEach { message ->
-        item { MessageBubble(message.chatRole, message.text, truncated = false, onOpenReply = { openReply = message }) }
+        item { MessageBubble(message.chatRole, message.text, truncated = message.textTruncated == true, onOpenReply = { openReply = runtime.openReply(message, state) }) }
       }
       state.streamText?.let { text -> item { StreamingBubble(text) } }
       state.pendingSend?.let { pending ->

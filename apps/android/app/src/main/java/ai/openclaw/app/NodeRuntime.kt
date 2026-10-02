@@ -121,7 +121,6 @@ import ai.openclaw.app.wear.WearProxyGatewayException
 import ai.openclaw.app.wear.WearRealtimeAttemptOwner
 import ai.openclaw.app.wear.WearRealtimeTalkController
 import ai.openclaw.app.wear.projectWearAgentPulse
-import ai.openclaw.app.wear.projectWearFullReply
 import ai.openclaw.app.wear.wearConnectionFailure
 import ai.openclaw.wear.shared.WearMessage
 import ai.openclaw.wear.shared.WearRealtimeTalkCodec
@@ -129,6 +128,7 @@ import ai.openclaw.wear.shared.WearRealtimeTalkSnapshot
 import ai.openclaw.wear.shared.WearReplyText
 import ai.openclaw.wear.shared.WearReplyTextPage
 import ai.openclaw.wear.shared.WearReplyTextStatus
+import ai.openclaw.wear.shared.projectWearFullReply
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager

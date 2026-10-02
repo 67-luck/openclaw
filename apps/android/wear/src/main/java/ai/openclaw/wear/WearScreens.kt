@@ -370,7 +370,14 @@ internal fun OpenClawWearScreens(
     }
     if (selectedReply != null && replyStillPresent) {
       key(selectedReply) {
-        ReplyReader(selectedReply, readReply, onDismiss = { openReply = null })
+        ReplyReader(
+          selectedReply,
+          readReply = { offset, revision ->
+            selectedReply.target?.let { readReply(it, offset, revision) }
+              ?: WearReplyTextPage(WearReplyTextStatus.Unavailable)
+          },
+          onDismiss = { openReply = null },
+        )
       }
     }
   }

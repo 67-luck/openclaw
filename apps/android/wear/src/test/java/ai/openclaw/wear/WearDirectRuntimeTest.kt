@@ -5,6 +5,8 @@ import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.app.gateway.GatewayRegistryEntry
 import ai.openclaw.app.gateway.GatewayRegistryEntryKind
 import ai.openclaw.app.gateway.GatewayRegistryStore
+import ai.openclaw.wear.shared.WearReplyText
+import ai.openclaw.wear.shared.WearReplyTextStatus
 import android.content.Context
 import android.content.SharedPreferences
 import kotlinx.coroutines.CoroutineScope
@@ -12,9 +14,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.joinAll
@@ -26,6 +30,8 @@ import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
@@ -1800,6 +1806,124 @@ class WearDirectRuntimeTest {
       assertTrue("A retired Stop must not enqueue on either socket", gateway.stops.tryReceive().isFailure)
     }
 
+  @Test
+  fun directReplyRecoversEveryTextPartThroughTheCanonicalMessageLookup() =
+    conversationTest {
+      val parts = (1..22).map { "Part $it: " + "x".repeat(240) }
+      val full =
+        buildJsonObject {
+          put("role", "assistant")
+          put("__openclaw", buildJsonObject { put("id", "stored-entry") })
+          put(
+            "content",
+            buildJsonArray {
+              parts.forEach {
+                add(
+                  buildJsonObject {
+                    put("type", "text")
+                    put("text", it)
+                  },
+                )
+              }
+            },
+          )
+        }
+      val refresh = operation(runtime::refresh)
+      next(gateway.histories).reply(buildJsonObject { put("messages", JsonArray(listOf(full))) })
+      finish(refresh)
+      val preview =
+        runtime.state.value.messages
+          .single()
+      assertEquals(true, preview.textTruncated)
+      assertFalse(preview.text.contains("Part 22:"))
+      val reader = runtime.openReply(preview, runtime.state.value)
+      var offset = 0
+      var revision: String? = null
+      val recovered = StringBuilder()
+      do {
+        val page =
+          coroutineScope {
+            val pending = async { reader.readPage(offset, revision) }
+            val request = next(gateway.replyReads)
+            assertEquals(
+              buildJsonObject {
+                put("sessionKey", "agent:main:main")
+                put("agentId", "main")
+                put("messageId", "stored-entry")
+                put("maxChars", WearReplyText.MAX_TEXT_LENGTH)
+              },
+              request.params,
+            )
+            request.reply(
+              buildJsonObject {
+                put("ok", true)
+                put("message", full)
+              },
+            )
+            pending.await()
+          }
+        assertEquals(WearReplyTextStatus.Ready, page.status)
+        assertTrue(page.text.length <= WearReplyText.PAGE_LENGTH)
+        recovered.append(page.text)
+        revision = page.revision
+        offset = page.nextOffset ?: break
+      } while (true)
+      assertEquals(parts.joinToString("\n"), recovered.toString())
+    }
+
+  @Test
+  fun directReplyCannotPublishOrRebindAfterConversationReplacement() =
+    conversationTest {
+      val reader = runtime.openReply(WearChatMessage("display-id", "assistant", "Preview", null, entryId = "stored-entry", textTruncated = true), runtime.state.value)
+      coroutineScope {
+        val pending = async { reader.readPage(0, null) }
+        val held = next(gateway.replyReads)
+        runtime.selectSession("agent:main:replacement")
+        held.reply(
+          buildJsonObject {
+            put("ok", true)
+            put(
+              "message",
+              buildJsonObject {
+                put("role", "assistant")
+                put("content", "Retired text")
+                put("__openclaw", buildJsonObject { put("id", "stored-entry") })
+              },
+            )
+          },
+        )
+        next(gateway.histories).reply(history("Replacement history"))
+        assertEquals(WearReplyTextStatus.Changed, pending.await().status)
+      }
+      assertEquals(WearReplyTextStatus.Changed, reader.readPage(0, null).status)
+      assertTrue("The old reader cannot issue a new request on the replacement", gateway.replyReads.tryReceive().isFailure)
+    }
+
+  @Test
+  fun directReplyWithoutAdvertisedLookupIsExplicitlyUnsupported() =
+    conversationTest {
+      gateway.replyTextSupported = false
+      runtime.reconnect()
+      next(gateway.histories).reply(history("Reconnected"))
+      await { runtime.state.value.takeIf { it.messages.singleOrNull()?.text == "Reconnected" } }
+      val reader = runtime.openReply(WearChatMessage("display-id", "assistant", "Preview", null, entryId = "stored-entry", textTruncated = true), runtime.state.value)
+      assertEquals(WearReplyTextStatus.Unsupported, reader.readPage(0, null).status)
+      assertTrue(gateway.replyReads.tryReceive().isFailure)
+    }
+
+  @Test
+  fun directReplyOpenedFromARetiredScreenCannotReadTheReplacement() =
+    conversationTest {
+      val selection = runtime.state.value
+      val message = WearChatMessage("display-id", "assistant", "Preview", null, entryId = "stored-entry", textTruncated = true)
+      runtime.selectSession("agent:main:replacement")
+      next(gateway.histories).reply(history("Replacement history"))
+      await { runtime.state.value.takeIf { it.messages.singleOrNull()?.text == "Replacement history" } }
+      val reader = runtime.openReply(message, selection)
+      assertEquals(WearReplyTextStatus.Unavailable, reader.readPage(0, null).status)
+      assertTrue(gateway.replyReads.tryReceive().isFailure)
+    }
+
   private fun conversationTest(
     savedGateway: WearGatewaySetup? = null,
     block: suspend Conversation.() -> Unit,
@@ -2022,6 +2146,7 @@ class WearDirectRuntimeTest {
     val operatorSockets = Channel<WebSocket>(Channel.UNLIMITED)
     val terminatedOperatorSockets = Channel<Pair<WebSocket, String>>(Channel.UNLIMITED)
     val histories = Channel<HeldRequest>(Channel.UNLIMITED)
+    val replyReads = Channel<HeldRequest>(Channel.UNLIMITED)
     val approvalReplays = Channel<HeldRequest>(Channel.UNLIMITED)
     val approvalGets = Channel<HeldRequest>(Channel.UNLIMITED)
     val approvalResolves = Channel<HeldRequest>(Channel.UNLIMITED)
@@ -2045,6 +2170,8 @@ class WearDirectRuntimeTest {
     @Volatile var holdSessionList = false
 
     @Volatile var historyMessage: String? = null
+
+    @Volatile var replyTextSupported = true
 
     @Volatile var agentId = "main"
     val server =
@@ -2080,13 +2207,19 @@ class WearDirectRuntimeTest {
                             operatorSocket.set(webSocket)
                             operatorSockets.trySend(webSocket)
                           }
-                          Json.parseToJsonElement(
-                            if (node) {
-                              """{"auth":{"role":"node","deviceToken":"watch-node","scopes":[],"deviceTokens":[{"role":"operator","deviceToken":"watch-operator","scopes":["operator.read","operator.write","operator.approvals","operator.questions","operator.talk.secrets"]}]},"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:main:main"}}}"""
-                            } else {
-                              """{"auth":{"role":"operator","deviceToken":"watch-operator","scopes":["operator.read","operator.write","operator.approvals"]},"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:main:main"}}}"""
-                            },
-                          )
+                          val hello =
+                            Json.parseToJsonElement(
+                              if (node) {
+                                """{"auth":{"role":"node","deviceToken":"watch-node","scopes":[],"deviceTokens":[{"role":"operator","deviceToken":"watch-operator","scopes":["operator.read","operator.write","operator.approvals","operator.questions","operator.talk.secrets"]}]},"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:main:main"}}}"""
+                              } else {
+                                """{"auth":{"role":"operator","deviceToken":"watch-operator","scopes":["operator.read","operator.write","operator.approvals"]},"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:main:main"}}}"""
+                              },
+                            )
+                          if (node || !replyTextSupported) {
+                            hello
+                          } else {
+                            JsonObject(hello.jsonObject + ("features" to buildJsonObject { put("methods", JsonArray(listOf(JsonPrimitive("chat.message.get")))) }))
+                          }
                         }
 
                         "sessions.list" -> {
@@ -2130,6 +2263,11 @@ class WearDirectRuntimeTest {
                               ),
                             )
                           }
+                        }
+
+                        "chat.message.get" -> {
+                          replyReads.trySend(held)
+                          return
                         }
 
                         "chat.send" -> {

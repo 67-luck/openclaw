@@ -18,6 +18,14 @@ import ai.openclaw.app.gateway.GatewayTlsTrustDecision
 import ai.openclaw.app.gateway.decideGatewayTlsTrust
 import ai.openclaw.app.gateway.isGatewayTlsSystemTrustCandidate
 import ai.openclaw.app.gateway.probeGatewayTlsFingerprint
+import ai.openclaw.wear.shared.WearReplyText
+import ai.openclaw.wear.shared.WearReplyTextPage
+import ai.openclaw.wear.shared.WearReplyTextStatus
+import ai.openclaw.wear.shared.projectWearFullReply
+import ai.openclaw.wear.shared.wearReplyEntryId
+import ai.openclaw.wear.shared.wearReplyIsSynthetic
+import ai.openclaw.wear.shared.wearReplyIsTruncated
+import ai.openclaw.wear.shared.wearReplyText
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
@@ -32,9 +40,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import java.util.UUID
 
@@ -55,6 +61,11 @@ internal data class WearDirectSession(
   val key: String,
   val title: String,
   val agentId: String?,
+)
+
+internal data class WearDirectReply(
+  val message: WearChatMessage,
+  val readPage: suspend (Int, String?) -> WearReplyTextPage,
 )
 
 internal data class WearTrustPrompt(
@@ -703,6 +714,62 @@ internal class WearDirectRuntime(
     }
   }
 
+  fun openReply(
+    message: WearChatMessage,
+    selection: WearDirectState,
+  ): WearDirectReply {
+    val captured = capture()
+    var selected: JsonObject? = null
+    if (captured != null) {
+      commit(captured) {
+        val state = mutableState.value
+        if (selection.selected?.stableId != state.selected?.stableId ||
+          selection.sessionKey != state.sessionKey || selection.sessionAgentId != state.sessionAgentId
+        ) {
+          return@commit
+        }
+        val key = state.sessionKey ?: return@commit
+        val entry = message.entryId ?: return@commit
+        selected =
+          buildJsonObject {
+            put("sessionKey", key)
+            state.sessionAgentId?.let { put("agentId", it) }
+            put("messageId", entry)
+            put("maxChars", WearReplyText.MAX_TEXT_LENGTH)
+          }
+      }
+    }
+    val params = selected
+    // A reader retains its physical lease and conversation, never a fresh route on each page.
+    return WearDirectReply(message) { offset, revision ->
+      when {
+        captured == null || params == null -> {
+          WearReplyTextPage(WearReplyTextStatus.Unavailable)
+        }
+
+        !commit(captured) {} -> {
+          WearReplyTextPage(WearReplyTextStatus.Changed)
+        }
+
+        !captured.lease.supportsMethod("chat.message.get") -> {
+          WearReplyTextPage(WearReplyTextStatus.Unsupported)
+        }
+
+        else -> {
+          val result =
+            try {
+              request(captured, "chat.message.get", params)
+            } catch (error: Exception) {
+              if (error is CancellationException || commit(captured) {}) throw error
+              return@WearDirectReply WearReplyTextPage(WearReplyTextStatus.Changed)
+            }
+          val page = projectWearFullReply(result, checkNotNull(message.entryId), captured.intent.toString() + ":" + captured.conversation + ":" + params, offset, revision)
+          if (commit(captured) {}) page else WearReplyTextPage(WearReplyTextStatus.Changed)
+        }
+      }
+    }
+  }
+
   fun send(
     message: String,
     input: WearInputOwner,
@@ -1008,15 +1075,15 @@ internal class WearDirectRuntime(
 internal fun directChatMessage(value: kotlinx.serialization.json.JsonElement?): WearChatMessage? {
   val obj = value as? JsonObject ?: return null
   val role = obj.text("role")?.takeIf { it in setOf("user", "assistant", "system") } ?: return null
-  val content = obj["content"]
-  val text =
-    if (content is JsonPrimitive) {
-      content.contentOrNull
-    } else {
-      (content as? JsonArray)
-        ?.take(20)
-        ?.mapNotNull { (it as? JsonObject)?.takeIf { part -> part.text("type") == "text" }?.text("text") }
-        ?.joinToString("\n")
-    }
-  return text?.takeIf { it.isNotBlank() }?.let { WearChatMessage(obj.text("id"), role, it.take(4000), obj.number("timestamp")) }
+  val text = wearReplyText(obj, maxChars = 4001)
+  if (text.isBlank()) return null
+  val preview = text.take(4000).let { if (it.lastOrNull()?.isHighSurrogate() == true) it.dropLast(1) else it }
+  return WearChatMessage(
+    obj.text("id"),
+    role,
+    preview,
+    obj.number("timestamp"),
+    entryId = wearReplyEntryId(obj)?.takeIf { it.length <= 512 && !wearReplyIsSynthetic(obj) },
+    textTruncated = preview != text || wearReplyIsTruncated(obj, 2000),
+  )
 }

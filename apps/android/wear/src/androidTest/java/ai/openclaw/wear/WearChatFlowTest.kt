@@ -1,5 +1,7 @@
 package ai.openclaw.wear
 
+import ai.openclaw.app.gateway.DeviceIdentityStore
+import ai.openclaw.app.gateway.GatewayEndpoint
 import ai.openclaw.wear.shared.WearDecodeResult
 import ai.openclaw.wear.shared.WearEventType
 import ai.openclaw.wear.shared.WearMessage
@@ -10,6 +12,7 @@ import ai.openclaw.wear.shared.WearRpcMethod
 import android.app.Activity
 import android.app.Instrumentation
 import android.app.RemoteInput
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
@@ -22,22 +25,37 @@ import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okhttp3.mockwebserver.Dispatcher
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
-/** Real launcher, input-result callback, ViewModel and wire decoder; only Phone IO is controlled. */
+/** Real launcher, input callback and readers; Phone IO or the Direct WebSocket peer is controlled. */
 @RunWith(AndroidJUnit4::class)
 class WearChatFlowTest {
   private val instrumentation = InstrumentationRegistry.getInstrumentation()
@@ -45,6 +63,53 @@ class WearChatFlowTest {
   private val failures = mutableListOf<String>()
   private val output by lazy {
     File(instrumentation.targetContext.getExternalFilesDir(null), "chat-flow").apply { mkdirs() }
+  }
+
+  @Test
+  fun directReplyPagesReachTheCanonicalTailThroughTheRealLauncher() {
+    val full =
+      "DIRECT HEAD SENTINEL\n" +
+        (1..22).joinToString("\n") {
+          "Direct reply paragraph $it. " + "Canonical reply text remains available beyond the displayed preview. ".repeat(3)
+        } + "\nDIRECT TRAILING SENTINEL"
+    val gateway = ControlledDirectGateway(full)
+    val app = instrumentation.targetContext.applicationContext as WearApplication
+    val preferenceName = "direct-reply-proof-" + UUID.randomUUID()
+    val store = WearGatewayStore(app.getSharedPreferences(preferenceName, Context.MODE_PRIVATE))
+    val endpoint = GatewayEndpoint.manual("127.0.0.1", gateway.server.port, false).copy(name = "Direct reply fixture")
+    store.replace(WearGatewaySetup(endpoint, "fixture-bootstrap"), DeviceIdentityStore.withPrefs(app, store).loadOrCreate().deviceId)
+    val job = SupervisorJob()
+    val runtime = WearDirectRuntime(app, CoroutineScope(job + Dispatchers.Default), store)
+    val field = WearApplication::class.java.getDeclaredField("directRuntime\$delegate").apply { isAccessible = true }
+    val previous = field.get(app)
+    field.set(app, lazyOf(runtime))
+    var activity: MainActivity? = null
+    try {
+      activity = instrumentation.startActivitySync(Intent(app, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as MainActivity
+      awaitState("Direct history") { runtime.state.value.messages.size == 1 }
+      reveal("Read full reply")
+      capture("direct-01-preview")
+      clickAction("Read full reply")
+      assertTrue(device.wait(Until.hasObject(By.text("DIRECT HEAD SENTINEL")), 10_000))
+      capture("direct-02-first-page")
+      assertEquals("The reader must fetch the canonical message, not present its preview as complete", 1, gateway.replyReads.get())
+      reveal(app.getString(R.string.reply_next_page))
+      clickAction(app.getString(R.string.reply_next_page))
+      awaitState("second Direct reply page") { gateway.replyReads.get() == 2 }
+      reveal("DIRECT TRAILING SENTINEL")
+      capture("direct-03-tail")
+      assertTrue(device.hasObject(By.text("DIRECT TRAILING SENTINEL")))
+      device.pressBack()
+      assertTrue(device.wait(Until.hasObject(By.text("Read full reply")), 5_000))
+    } finally {
+      activity?.let { current -> instrumentation.runOnMainSync { current.finish() } }
+      instrumentation.waitForIdleSync()
+      runtime.disconnect()
+      runBlocking { withTimeout(15_000) { job.cancelAndJoin() } }
+      field.set(app, previous)
+      app.deleteSharedPreferences(preferenceName)
+      gateway.server.shutdown()
+    }
   }
 
   @Test
@@ -287,6 +352,120 @@ class WearChatFlowTest {
     assertTrue(label, predicate())
     instrumentation.waitForIdleSync()
     SystemClock.sleep(300)
+  }
+
+  private class ControlledDirectGateway(
+    fullReply: String,
+  ) {
+    val replyReads = AtomicInteger()
+
+    private fun message(
+      text: String,
+      truncated: Boolean,
+    ) = buildJsonObject {
+      put("role", "assistant")
+      put(
+        "content",
+        JsonArray(
+          text.split('\n').map { paragraph ->
+            buildJsonObject {
+              put("type", "text")
+              put("text", paragraph)
+            }
+          },
+        ),
+      )
+      put(
+        "__openclaw",
+        buildJsonObject {
+          put("id", "stored-native-reply")
+          put("truncated", truncated)
+        },
+      )
+    }
+
+    val server =
+      MockWebServer().apply {
+        dispatcher =
+          object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+              MockResponse().withWebSocketUpgrade(
+                object : WebSocketListener() {
+                  override fun onOpen(
+                    webSocket: WebSocket,
+                    response: Response,
+                  ) {
+                    webSocket.send("""{"type":"event","event":"connect.challenge","payload":{"nonce":"direct-reply-fixture","ts":1700000000123}}""")
+                  }
+
+                  override fun onMessage(
+                    webSocket: WebSocket,
+                    text: String,
+                  ) {
+                    val frame = Json.parseToJsonElement(text).jsonObject
+                    val params = frame["params"]!!.jsonObject
+                    val payload =
+                      when (frame["method"]!!.jsonPrimitive.content) {
+                        "connect" -> {
+                          Json.parseToJsonElement(
+                            if (params["role"]!!.jsonPrimitive.content == "node") {
+                              """{"auth":{"role":"node","deviceToken":"fixture-node","scopes":[],"deviceTokens":[{"role":"operator","deviceToken":"fixture-operator","scopes":["operator.read","operator.write","operator.approvals"]}]},"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:main:main"}}}"""
+                            } else {
+                              """{"features":{"methods":["chat.message.get"]},"auth":{"role":"operator","deviceToken":"fixture-operator","scopes":["operator.read","operator.write","operator.approvals"]},"snapshot":{"sessionDefaults":{"mainSessionKey":"agent:main:main"}}}"""
+                            },
+                          )
+                        }
+
+                        "sessions.list" -> {
+                          Json.parseToJsonElement("""{"sessions":[{"key":"agent:main:main","displayName":"Direct reply fixture"}]}""")
+                        }
+
+                        "sessions.messages.subscribe" -> {
+                          Json.parseToJsonElement("""{"subscribed":true,"key":"agent:main:main","agentId":"main","approvalReplay":{"sessionKey":"agent:main:main","updatedAtMs":1,"truncated":false,"approvals":[]}}""")
+                        }
+
+                        "chat.history" -> {
+                          buildJsonObject { put("messages", JsonArray(listOf(message(fullReply.take(2000), true)))) }
+                        }
+
+                        "chat.message.get" -> {
+                          assertEquals("agent:main:main", params["sessionKey"]!!.jsonPrimitive.content)
+                          assertEquals("main", params["agentId"]!!.jsonPrimitive.content)
+                          assertEquals("stored-native-reply", params["messageId"]!!.jsonPrimitive.content)
+                          assertEquals(WearReplyText.MAX_TEXT_LENGTH.toString(), params["maxChars"]!!.jsonPrimitive.content)
+                          replyReads.incrementAndGet()
+                          buildJsonObject {
+                            put("ok", true)
+                            put("message", message(fullReply, false))
+                          }
+                        }
+
+                        else -> {
+                          error("Unexpected Direct fixture method")
+                        }
+                      }
+                    webSocket.send(
+                      buildJsonObject {
+                        put("type", "res")
+                        put("id", frame.getValue("id"))
+                        put("ok", true)
+                        put("payload", payload)
+                      }.toString(),
+                    )
+                  }
+
+                  override fun onClosing(
+                    webSocket: WebSocket,
+                    code: Int,
+                    reason: String,
+                  ) {
+                    webSocket.close(code, reason)
+                  }
+                },
+              )
+          }
+        start()
+      }
   }
 
   private class ControlledPhone(
