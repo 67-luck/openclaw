@@ -16,20 +16,23 @@ export function startFollowupRunPreAdoptionHeartbeat(
   abortSignal?: AbortSignal,
 ): (() => void) | undefined {
   const lifecycle = run.turnAdoptionLifecycle;
-  const state = custody(run);
-  const intervalMs = lifecycle?.deferredHeartbeatIntervalMs;
-  const heartbeat = lifecycle?.onDeferredHeartbeat;
+  if (!lifecycle) {
+    return undefined;
+  }
+  const intervalMs = lifecycle.deferredHeartbeatIntervalMs;
+  const heartbeat = lifecycle.onDeferredHeartbeat;
   if (
-    !lifecycle ||
     !heartbeat ||
     !intervalMs ||
     !Number.isFinite(intervalMs) ||
     intervalMs <= 0 ||
     lifecycle.abortSignal?.aborted ||
-    abortSignal?.aborted ||
-    state.adopted ||
-    state.completed
+    abortSignal?.aborted
   ) {
+    return undefined;
+  }
+  const state = custody(run);
+  if (state.adopted || state.completed) {
     return undefined;
   }
   state.stopHeartbeat?.();
