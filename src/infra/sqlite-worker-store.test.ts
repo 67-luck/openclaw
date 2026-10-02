@@ -12,7 +12,6 @@ import {
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import { runNodeScript } from "../../test/helpers/run-node-script.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -20,10 +19,7 @@ import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.j
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { createNodeEvalArgs } from "../test-utils/node-process.js";
 import { initializeSqliteRuntimeCapabilities } from "./bun-sqlite-library.js";
-import {
-  SQLITE_WORKER_MAX_RESULT_BYTES,
-  type SqliteWorkerReply,
-} from "./sqlite-worker-contract.js";
+import { SQLITE_WORKER_MAX_RESULT_BYTES } from "./sqlite-worker-contract.js";
 import {
   useSqliteWorkerStoreFixture,
   appendWorkerRow as append,

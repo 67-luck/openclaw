@@ -21,6 +21,79 @@ import {
   waitForSessionTranscriptIndexReconcilesInStateDir,
 } from "./session-transcript-reconcile.js";
 
+const warnings = vi.hoisted(() => vi.fn());
+vi.mock("../../logging/subsystem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../logging/subsystem.js")>();
+  return {
+    ...actual,
+    createSubsystemLogger(name: string) {
+      const logger = actual.createSubsystemLogger(name);
+      return name === "sessions/transcript-index" ? { ...logger, warn: warnings } : logger;
+    },
+  };
+});
+
+it.for(["operation", "release", "same", "independent"] as const)(
+  "joins reconciliation release and records the complete %s failure",
+  async (mode, { signal }) => {
+    await withOpenClawTestState({ label: "reconcile-release-failure" }, async (state) => {
+      const options = { agentId: "main", env: state.env };
+      openOpenClawAgentDatabase(options);
+      const primary = new Error("reconciliation authority retired");
+      const cleanup = mode === "same" ? primary : new Error("reconciliation release failed");
+      const releasing = createDeferred();
+      const released = createDeferred();
+      const originalCapture = agentExecution.captureOpenClawAgentDatabaseExecution;
+      const capture = vi
+        .spyOn(agentExecution, "captureOpenClawAgentDatabaseExecution")
+        .mockImplementation((input) => {
+          const execution = originalCapture(input);
+          const release = execution.release.bind(execution);
+          if (mode !== "release") {
+            vi.spyOn(execution, "assertCurrent").mockImplementation(() => {
+              throw primary;
+            });
+          }
+          vi.spyOn(execution, "release").mockImplementation(async () => {
+            releasing.resolve();
+            await released.promise;
+            await release();
+            if (mode !== "operation") {
+              throw cleanup;
+            }
+          });
+          return execution;
+        });
+      let completion: Promise<void> | undefined;
+      warnings.mockClear();
+      try {
+        startSessionTranscriptIndexReconcile(options);
+        completion = waitForSessionTranscriptIndexReconcile(options);
+        await withinTest(releasing.promise, signal);
+        expect(isSessionTranscriptIndexReconcileRunning(options)).toBe(true);
+        expect(warnings).not.toHaveBeenCalled();
+        released.resolve();
+        await withinTest(completion, signal);
+        expect(isSessionTranscriptIndexReconcileRunning(options)).toBe(false);
+        expect(warnings).toHaveBeenCalledExactlyOnceWith(
+          `session transcript reconcile failed agent=main error=${
+            mode === "independent"
+              ? `Transcript reconciliation and release failed | ${primary.message} | ${cleanup.message}`
+              : mode === "release"
+                ? cleanup.message
+                : primary.message
+          }`,
+        );
+      } finally {
+        released.resolve();
+        await completion;
+        await waitForSessionTranscriptIndexReconcile(options);
+        capture.mockRestore();
+      }
+    });
+  },
+);
+
 it.for(["final", "superseded"] as const)(
   "joins late waits and successor demand while a %s borrow is releasing",
   { timeout: 30_000 },

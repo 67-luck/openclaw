@@ -269,6 +269,7 @@ export function createAgentDatabaseDomainOwner(context: {
       }
     },
     async preparePublication(
+      this: void,
       input: AgentDatabaseDomainOperations["database.domain.publish"]["input"],
     ) {
       bind(input, context.assertCurrent());
@@ -277,7 +278,7 @@ export function createAgentDatabaseDomainOwner(context: {
       await Promise.resolve();
       await prepareCommand(input);
     },
-    cleanupPublication(id: string) {
+    cleanupPublication(this: void, id: string) {
       if (binding?.id === id) {
         context.assertCleanupCurrent();
         closeBinding();

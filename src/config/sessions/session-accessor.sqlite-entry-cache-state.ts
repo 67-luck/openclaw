@@ -82,8 +82,15 @@ export function retainPreparedSessionSharingFacts(params: SessionSharingRetentio
     preparedSharingReads.set(key, reads);
     return { key, reads };
   });
-  const pendingPublications = () =>
-    keys.flatMap((key) => [...(pendingSessionEntryPublications.get(key) ?? [])]);
+  const pendingPublications = () => {
+    const publications: PendingSessionEntryPublication[] = [];
+    for (const key of keys) {
+      for (const publication of pendingSessionEntryPublications.get(key) ?? []) {
+        publications.push(publication);
+      }
+    }
+    return publications;
+  };
   let active = true;
   return {
     initialize: (snapshot: CommittedSessionSharingFacts) => {

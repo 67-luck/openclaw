@@ -33,7 +33,7 @@ export const SQLITE_SESSION_WRITER_QUEUES = admission.queues;
 type WriteTarget = {
   pathname: string;
   identity: DatabasePathIdentity;
-  assertCurrent(): void;
+  assertCurrent(this: void): void;
 };
 type WriteTargetScope = { target: WriteTarget; active: boolean; parent?: WriteTargetScope };
 const writeTargets = resolveGlobalSingleton(

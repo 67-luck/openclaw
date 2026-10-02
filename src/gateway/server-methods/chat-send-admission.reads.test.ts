@@ -71,11 +71,14 @@ it("loads fresh admission metadata once after preparing the session", async () =
         sql.restore();
       }
     } finally {
-      if (admitted?.ok) {
-        admitted.value.cleanupAdmittedRun();
+      try {
+        if (admitted?.ok) {
+          await admitted.value.cleanupAdmittedRun();
+        }
+      } finally {
+        session.releaseSessionTarget();
+        clearAgentRunContext(runId);
       }
-      session.releaseSessionTarget();
-      clearAgentRunContext(runId);
     }
   });
 });

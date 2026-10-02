@@ -56,7 +56,7 @@ const counter = vi.hoisted(() => ({
 }));
 vi.mock("../infra/worker-cpu.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../infra/worker-cpu.js")>();
-  const { setEnvironmentData } = await import("node:worker_threads");
+  const { setEnvironmentData: setWorkerEnvironmentData } = await import("node:worker_threads");
   const preload = `
     import { DatabaseSync } from "node:sqlite";
     import { getEnvironmentData, workerData } from "node:worker_threads";
@@ -89,7 +89,7 @@ vi.mock("../infra/worker-cpu.js", async (importOriginal) => {
       const injected = ["--import", `data:text/javascript,${encodeURIComponent(preload)}`];
       if (options?.workerData?.carrierUrl) {
         // SERVICE copies this snapshot to DATA at construction; DATA owns the SQL.
-        setEnvironmentData(counter.key, { path: counter.path, checks: counter.checks });
+        setWorkerEnvironmentData(counter.key, { path: counter.path, checks: counter.checks });
         return actual.createCpuTrackedWorker(filename, {
           ...options,
           workerData: {

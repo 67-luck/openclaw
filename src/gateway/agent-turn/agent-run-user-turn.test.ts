@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import * as execApprovalState from "../../agents/bash-tools.exec-approval-followup-state.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { SessionPendingInputSettlementUnknownError } from "../../config/sessions/session-accessor.sqlite-pending-inputs.js";
 import * as userTurnTranscript from "../../sessions/user-turn-transcript.js";
+import { registerChatAbortController } from "../chat-abort.js";
 import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
+import { createAgentRunAdmissionRevalidator } from "./agent-run-admission-revalidation.js";
 import {
   prepareAgentRunUserTurn,
   reconcileAgentRunUserTurnCompletion,
@@ -53,6 +55,115 @@ vi.mock("../../config/sessions/session-accessor.js", async () => {
 });
 
 describe("prepareAgentRunUserTurn", () => {
+  it.for(["success", "primary", "cleanup", "both", "unknown"] as const)(
+    "joins revalidation cleanup without losing admission failure or custody (%s)",
+    async (mode, { signal }) => {
+      const primary = new Error("preaccept cleanup failed");
+      const cleanup =
+        mode === "unknown"
+          ? new SessionPendingInputSettlementUnknownError(new Error("native receipt lost"))
+          : new Error("pending input cleanup failed");
+      const failsAdmission = ["primary", "both", "unknown"].includes(mode);
+      const failsCleanup = ["cleanup", "both", "unknown"].includes(mode);
+      const releasing = createDeferred();
+      const released = createDeferred();
+      const prepared = {
+        message: "retained input",
+        senderIsOwner: false,
+        suppressPromptPersistence: false,
+        claimedExecApprovalFollowupHandoffId: "handoff",
+        execApprovalFollowupHandoffClaimId: "claim",
+      };
+      const finish = vi
+        .spyOn(userTurnTranscript, "finishUserTurnPendingInput")
+        .mockImplementation(async (_recorder, disposition) => {
+          expect(disposition).toBe("interrupted");
+          releasing.resolve();
+          await released.promise;
+          if (failsCleanup) {
+            throw cleanup;
+          }
+        });
+      const handoff = vi
+        .spyOn(execApprovalState, "releaseExecApprovalFollowupRuntimeHandoff")
+        .mockReturnValue(true);
+      const activeRunAbort = registerChatAbortController({
+        chatAbortControllers: new Map(),
+        runId: "revalidation",
+        sessionId: "revalidation",
+        timeoutMs: 30_000,
+      });
+      let rejected = false;
+      const revalidate = createAgentRunAdmissionRevalidator({
+        source: {
+          context: {} as AgentTurnContext,
+          getOwnedAgentDedupeKeys: () => [],
+          admissionAgentId: () => "main",
+          runId: "revalidation",
+          assertGatewayWorkAdmissionAllowed: () => {},
+          client: null,
+          cfg: {},
+          getAdmittedSessionId: () => "revalidation",
+          respondToGatewayAdmissionOutcome: () => rejected,
+        },
+        activeRunAbort,
+        parentResume: undefined,
+        rejectPreaccept: async () => undefined,
+        cleanupPreaccept: async () => {
+          if (failsAdmission) {
+            throw primary;
+          }
+        },
+      });
+      let completion: Promise<{ value: true | undefined } | { error: unknown }> | undefined;
+      try {
+        expect(revalidate(prepared)).toBe(true);
+        expect(finish).not.toHaveBeenCalled();
+        rejected = true;
+        let settled = false;
+        completion = Promise.resolve(revalidate(prepared)).then(
+          (value) => {
+            settled = true;
+            return { value };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { error };
+          },
+        );
+        await withinTest(releasing.promise, signal);
+        expect(settled).toBe(false);
+        expect(handoff).not.toHaveBeenCalled();
+        released.resolve();
+        const outcome = await withinTest(completion, signal);
+        if (failsAdmission && failsCleanup) {
+          expect(outcome).toMatchObject({ error: { errors: [primary, cleanup] } });
+          if (!("error" in outcome) || !(outcome.error instanceof AggregateError)) {
+            throw new Error("revalidation lost its combined failure");
+          }
+          expect(outcome.error.errors[0]).toBe(primary);
+          expect(outcome.error.errors[1]).toBe(cleanup);
+        } else if (failsAdmission || failsCleanup) {
+          expect(outcome).toEqual({ error: failsAdmission ? primary : cleanup });
+          if (!("error" in outcome)) {
+            throw new Error("revalidation lost its failure");
+          }
+          expect(outcome.error).toBe(failsAdmission ? primary : cleanup);
+        } else {
+          expect(outcome).toEqual({ value: undefined });
+        }
+        expect(finish).toHaveBeenCalledOnce();
+        expect(handoff).toHaveBeenCalledTimes(mode === "unknown" ? 0 : 1);
+      } finally {
+        released.resolve();
+        await completion;
+        activeRunAbort.cleanup();
+        finish.mockRestore();
+        handoff.mockRestore();
+      }
+    },
+  );
+
   it.each(
     (["sync", "async"] as const).flatMap((delivery) =>
       (["primary", "cleanup", "unknown"] as const).map((failure) => ({ delivery, failure })),

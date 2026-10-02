@@ -79,7 +79,7 @@ export function createSessionToolResultPending() {
           }
         }
       },
-      rollback() {
+      rollback(this: void) {
         // Inverse only this operation. Another physical store can commit while
         // its predecessor is pending; restoring a whole Set would erase that work.
         for (const call of added) {
@@ -176,7 +176,7 @@ export function createSessionToolResultPending() {
         call(token: number) {
           return calls[token];
         },
-        token(call: PendingToolResult) {
+        token(this: void, call: PendingToolResult) {
           const token = calls.indexOf(call);
           if (token < 0) {
             return conflict();

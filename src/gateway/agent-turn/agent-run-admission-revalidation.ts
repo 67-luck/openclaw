@@ -8,6 +8,7 @@ import { assertParentSubagentResumeCurrent } from "../session-subagent-resume.js
 import { setAbortedAgentDedupeEntries } from "./agent-dedupe.js";
 import {
   releasePreparedAgentRunUserTurn,
+  releasePreparedAgentRunUserTurnAfterFailure,
   type PreparedAgentRunUserTurn,
 } from "./agent-run-user-turn.js";
 import type { AgentTurnContext, AgentTurnPrincipal } from "./types.js";
@@ -83,6 +84,14 @@ export function createAgentRunAdmissionRevalidator(options: {
     const result = revalidate();
     return result === true || !userTurn
       ? result
-      : result.finally(() => releasePreparedAgentRunUserTurn(userTurn, "interrupted"));
+      : result.then(
+          async () => {
+            await releasePreparedAgentRunUserTurn(userTurn, "interrupted");
+            return undefined;
+          },
+          async (error: unknown) => {
+            throw await releasePreparedAgentRunUserTurnAfterFailure(userTurn, error, "interrupted");
+          },
+        );
   };
 }

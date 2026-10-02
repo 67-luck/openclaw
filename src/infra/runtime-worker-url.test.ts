@@ -238,9 +238,10 @@ describe("resolveRuntimeProcessEntrypointUrl", () => {
     try {
       const { registerSealedRuntimeProcessEntrypoint, resolveRuntimeProcessEntrypointUrl } =
         await import("./runtime-process-url.js");
-      const { runtimeProcessEntrypoints } = await import("./runtime-process-entrypoints.js");
+      const { runtimeProcessEntrypoints: freshEntrypoints } =
+        await import("./runtime-process-entrypoints.js");
       expect(resolveRuntimeProcessEntrypointUrl("githubExec")).toEqual(
-        resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.githubExec),
+        resolveRuntimeWorkerUrl(freshEntrypoints.githubExec),
       );
       const sqliteUrl = resolveRuntimeProcessEntrypointUrl("sqliteReadOnly");
       const transportUrl = resolveRuntimeProcessEntrypointUrl("sqliteTransport");

@@ -80,15 +80,15 @@ export function createAgentDatabaseCommandOwner(context: {
     databasePath: options.path,
     getPreparedDatabase: context.getPreparedDatabase,
     assertCurrent: () => context.assertCurrent().db,
-    assertCleanupCurrent: context.assertCleanupCurrent,
+    assertCleanupCurrent: () => context.assertCleanupCurrent(),
     takePreparation() {
       if (!request || request.domainTaken) {
         throw new Error("Agent domain preparation is unavailable");
       }
       request.domainTaken = true;
-      const domain = request.domain;
+      const preparation = request.domain;
       request.domain = undefined;
-      return domain;
+      return preparation;
     },
     admit: (stage, admission) =>
       admit(stage, { domain: admission?.facts }, admission?.requestAdmission),

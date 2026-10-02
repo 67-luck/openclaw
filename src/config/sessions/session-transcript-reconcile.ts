@@ -5,6 +5,8 @@ import path from "node:path";
 import { setImmediate as yieldToGateway, setTimeout as delay } from "node:timers/promises";
 import { computeBackoffSchedule } from "../../../packages/retry/src/index.js";
 import { createAbortError, racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import { formatErrorMessage } from "../../infra/errors.js";
+import { throwSqliteLifecycleErrors } from "../../infra/sqlite-lifecycle-errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { readOpenClawAgentDatabaseOwnerEnvironment } from "../../state/openclaw-agent-db-lifecycle.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
@@ -81,7 +83,7 @@ type ScheduledReconcileRequest = {
   params: PreparedReconcileParams;
   memory: ReturnType<typeof captureMemorySource>;
   execution?: OpenClawAgentDatabaseExecution;
-  assertCurrent(): void;
+  assertCurrent(this: void): void;
   release(): Promise<void>;
 };
 
@@ -188,7 +190,7 @@ function startPreparedSessionTranscriptIndexReconcile(params: PreparedReconcileP
   }
   const reportFailure = (error: unknown) => {
     log.warn(
-      `session transcript reconcile failed agent=${params.agentId} error=${error instanceof Error ? error.message : String(error)}`,
+      `session transcript reconcile failed agent=${params.agentId} error=${formatErrorMessage(error)}`,
     );
   };
   const key = reconcileKey(params);
@@ -238,6 +240,7 @@ function startPreparedSessionTranscriptIndexReconcile(params: PreparedReconcileP
   const pending = (async () => {
     let current = request;
     let reconciledSessions = 0;
+    const failures: unknown[] = [];
     try {
       while (isSessionTranscriptReconcileGenerationCurrent(current.params.generation)) {
         current.assertCurrent();
@@ -315,7 +318,8 @@ function startPreparedSessionTranscriptIndexReconcile(params: PreparedReconcileP
         await current.release();
         current = next;
       }
-      return { reconciledSessions };
+    } catch (error) {
+      failures.push(error);
     } finally {
       // Remove the slot without a yield after the final pending check. New demand
       // owns a new scheduler; this owner still joins every discarded borrow.
@@ -328,10 +332,12 @@ function startPreparedSessionTranscriptIndexReconcile(params: PreparedReconcileP
         state.pending = undefined;
       }
       await Promise.all(releases);
-      if (releaseFailure) {
-        throw releaseFailure.error;
-      }
     }
+    if (releaseFailure && !failures.includes(releaseFailure.error)) {
+      failures.push(releaseFailure.error);
+    }
+    throwSqliteLifecycleErrors(failures, "Transcript reconciliation and release failed");
+    return { reconciledSessions };
   })()
     .catch((error: unknown) => {
       reportFailure(error);

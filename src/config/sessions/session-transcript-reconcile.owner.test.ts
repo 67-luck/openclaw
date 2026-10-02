@@ -242,11 +242,11 @@ it.for([
         assert(typeof canonicalLeaseId === "string");
         expect(canonicalLeaseId).not.toBe(task.input.leaseId);
         expect(baseline).not.toContainEqual({ lease_id: canonicalLeaseId });
-        const writerLeases = [...baseline, { lease_id: canonicalLeaseId }].sort((a, b) =>
+        const writerLeases = [...baseline, { lease_id: canonicalLeaseId }].toSorted((a, b) =>
           String(a.lease_id).localeCompare(String(b.lease_id)),
         );
         expect(readLeases()).toEqual(
-          [...writerLeases, { lease_id: task.input.leaseId }].sort((a, b) =>
+          [...writerLeases, { lease_id: task.input.leaseId }].toSorted((a, b) =>
             String(a.lease_id).localeCompare(String(b.lease_id)),
           ),
         );
