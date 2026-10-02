@@ -17,11 +17,7 @@ import {
   isReplyOperationAbortable,
   type SessionControllerEntry,
 } from "./session-controller.state.js";
-import {
-  captureSessionControllerStop,
-  stopSession,
-  type SessionStopChildrenResult,
-} from "./session-controller.stop.js";
+import type { SessionStopChildrenResult } from "./session-controller.stop.js";
 import type { SessionTarget } from "./session-controller.target.js";
 
 export type SessionMutationKind = "reset" | "delete" | "compaction";
@@ -113,7 +109,8 @@ function didMutationCancellationCommit(target: SessionControllerInput | ReplyOpe
 }
 
 /** Captures and starts the exact Stop operation selected by a mutation. */
-export function prepareSessionMutationPreemption(params: {
+function prepareSessionMutationPreemption(params: {
+  stop: typeof import("./session-controller.stop.js");
   options: SessionMutationPreemptOptions;
   claims: readonly import("./session-controller.mailbox.js").SessionControllerMailboxClaim[];
   entries: readonly SessionControllerEntry[];
@@ -123,6 +120,7 @@ export function prepareSessionMutationPreemption(params: {
   kind: SessionMutationKind;
 }): SessionMutationPreemption | undefined {
   const { options } = params;
+  const { captureSessionControllerStop, stopSession } = params.stop;
   if (options.shouldPreempt?.() === false) {
     return undefined;
   }
@@ -190,7 +188,11 @@ export async function prepareSessionMutationCompetition(params: {
   signal?: AbortSignal;
 }): Promise<{ waitForCompetitors: boolean; preemption?: SessionMutationPreemption }> {
   if (params.policy.policy === "preempt") {
+    // Stop reaches the mailbox and reply queue; storage modules import the lifecycle,
+    // so a static edge here would close an import cycle back into the session accessor.
+    const stop = await import("./session-controller.stop.js");
     const preemption = prepareSessionMutationPreemption({
+      stop,
       options: params.policy.preempt,
       claims: params.claims,
       entries: params.entries,
