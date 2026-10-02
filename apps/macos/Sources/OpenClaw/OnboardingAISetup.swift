@@ -13,7 +13,12 @@ import OpenClawProtocol
 @Observable
 final class OnboardingAISetupModel {
     private(set) var phase: Phase = .idle {
-        didSet { OnboardingController.shared.busyReason = self.busyReason }
+        didSet {
+            OnboardingController.shared.busyReason = self.busyReason
+            #if DEBUG
+            self._test_recordCancellationOrder("phase.changed")
+            #endif
+        }
     }
 
     private(set) var candidates: [Candidate] = []
@@ -82,6 +87,10 @@ final class OnboardingAISetupModel {
     @ObservationIgnored private var authRequestID: UUID?
     /// Only a just-completed provider flow may trust setupComplete without re-probing.
     @ObservationIgnored private var providerAuthReconciliationPending: ProviderAuthReconciliation?
+    #if DEBUG
+    @ObservationIgnored var _test_cancellationOrderObserver: ((CancellationOrderSnapshot) -> Void)?
+    @ObservationIgnored private var _test_cancellationSequence = 0
+    #endif
 
     init(
         gateway: GatewayConnection = .shared,
@@ -555,7 +564,13 @@ final class OnboardingAISetupModel {
         self.manualTesting = false
         self.showManualEntry = false
         if let authSessionToCancel, let authServerLease {
+            #if DEBUG
+            self._test_recordCancellationOrder("reset.begin")
+            #endif
             Task {
+                #if DEBUG
+                defer { self._test_recordCancellationOrder("reset.finished") }
+                #endif
                 await self.gateway.cancelWizardSession(authSessionToCancel, on: authServerLease)
             }
         }
@@ -1010,6 +1025,12 @@ extension OnboardingAISetupModel {
     }
 
     private func finishActivationWizard(_ result: Result<ActivateResult, Error>) {
+        #if DEBUG
+        switch result {
+        case .success: self._test_recordCancellationOrder("activation.success")
+        case .failure: self._test_recordCancellationOrder("activation.failure")
+        }
+        #endif
         let continuation = self.activationWizardCompletion
         self.activationWizardCompletion = nil
         continuation?.resume(with: result)
@@ -1184,9 +1205,15 @@ extension OnboardingAISetupModel {
         requestParams["sessionId"] = AnyCodable(authSessionID)
         let requestID = UUID()
         self.authRequestID = requestID
+        #if DEBUG
+        self._test_recordCancellationOrder("start.begin", requestID: requestID, authID: authAttemptID, token: token)
+        #endif
         return Task {
             defer {
                 if self.authRequestID == requestID { self.authRequestID = nil }
+                #if DEBUG
+                self._test_recordCancellationOrder("start.retired", authID: authAttemptID, token: token)
+                #endif
             }
             do {
                 let data = try await self.gateway.request(
@@ -1195,6 +1222,10 @@ extension OnboardingAISetupModel {
                     timeoutMs: 600_000,
                     ifCurrentServerLease: serverLease)
                 let result = try JSONDecoder().decode(WizardStartResult.self, from: data)
+                #if DEBUG
+                self._test_recordCancellationOrder(
+                    "start.consumed", requestID: requestID, authID: authAttemptID, token: token)
+                #endif
                 guard token == self.attemptToken, authAttemptID == self.authAttemptID else {
                     // A route reset can race the start response. Cancel the
                     // decoded server session so the discarded flow cannot commit.
@@ -1202,6 +1233,9 @@ extension OnboardingAISetupModel {
                     return
                 }
                 if self.providerAuthCancellation != nil {
+                    #if DEBUG
+                    self._test_recordCancellationOrder("start.cancel-late-session")
+                    #endif
                     // Cancel can race admission before the Gateway registers the requested id.
                     // Redeem the late response only to release its exact admitted session.
                     self.authSessionID = result.sessionid
@@ -1270,16 +1304,44 @@ extension OnboardingAISetupModel {
         self.providerAuthCancellation = .requesting
         self.authError = nil
         self.authBusy = true
+        #if DEBUG
+        if self._test_cancellationOrderObserver != nil { self._test_cancellationSequence += 1 }
+        let diagnosticID = self._test_cancellationSequence
+        self._test_recordCancellationOrder("cancel.begin", cancellationID: diagnosticID)
+        #endif
         return Task {
+            #if DEBUG
+            defer { self._test_recordCancellationOrder("cancel.finished", cancellationID: diagnosticID) }
+            #endif
             let cancellation = await self.gateway.cancelWizardSession(
                 sessionID,
                 on: authServerLease)
+            #if DEBUG
+            let outcome: String = switch cancellation {
+            case .absent: "absent"
+            case .unresolved: "unresolved"
+            case .cancelled: "cancelled"
+            }
+            self._test_recordCancellationOrder(
+                "cancel.consumed.\(outcome)",
+                authID: context.authID,
+                token: context.token,
+                cancellationID: diagnosticID)
+            if context.token != self.attemptToken || context.authID != self.authAttemptID {
+                self._test_recordCancellationOrder("cancel.stale", cancellationID: diagnosticID)
+            }
+            #endif
             // A stale cancellation reply must not close or hand off a replacement wizard.
             guard context.token == self.attemptToken, context.authID == self.authAttemptID else { return }
             // Absence can precede admission or follow a purged terminal result.
             // Keep the exact pending request alive; absence alone cannot settle it.
             let awaitingResult = cancellation == .absent && self.authRequestID != nil
             if cancellation == .unresolved || awaitingResult {
+                #if DEBUG
+                self._test_recordCancellationOrder(
+                    awaitingResult ? "cancel.awaiting-start" : "cancel.unresolved",
+                    cancellationID: diagnosticID)
+                #endif
                 if self.authRequestID == nil, self.authStep == nil {
                     self.advanceProviderAuth(stepID: nil, value: nil)
                 }
@@ -1288,6 +1350,9 @@ extension OnboardingAISetupModel {
                 return
             }
             if self.activationWizardCompletion != nil {
+                #if DEBUG
+                self._test_recordCancellationOrder("cancel.activation-failure", cancellationID: diagnosticID)
+                #endif
                 self.finishActivationWizard(.failure(cancellation == .cancelled
                         ? OnboardingAISetupError.activationCancelled
                         : OnboardingAISetupError.activationOutcomeUnavailable))
@@ -1325,10 +1390,16 @@ extension OnboardingAISetupModel {
         let authAttemptID = self.authAttemptID
         let requestID = UUID()
         self.authRequestID = requestID
+        #if DEBUG
+        self._test_recordCancellationOrder("next.begin", requestID: requestID, authID: authAttemptID, token: token)
+        #endif
         return Task {
             var requestLease = serverLease
             defer {
                 if self.authRequestID == requestID { self.authRequestID = nil }
+                #if DEBUG
+                self._test_recordCancellationOrder("next.retired", authID: authAttemptID, token: token)
+                #endif
             }
             do {
                 let data: Data
@@ -1356,6 +1427,10 @@ extension OnboardingAISetupModel {
                 }
                 guard token == self.attemptToken, authAttemptID == self.authAttemptID else { return }
                 let result = try JSONDecoder().decode(WizardNextResult.self, from: data)
+                #if DEBUG
+                self._test_recordCancellationOrder(
+                    "next.consumed", requestID: requestID, authID: authAttemptID, token: token)
+                #endif
                 self.applyAuthWizardResult(
                     done: result.done,
                     step: result.step,
@@ -1550,6 +1625,10 @@ extension OnboardingAISetupModel {
     }
 
     private func retireProviderAuthSession() {
+        #if DEBUG
+        let diagnosticAuthID = self.authAttemptID
+        self._test_recordCancellationOrder("auth.retire.begin", authID: diagnosticAuthID)
+        #endif
         // Settled sessions revoke outstanding replies even while their terminal
         // error remains visible for inspection and dismissal.
         self.authAttemptID = UUID()
@@ -1557,6 +1636,9 @@ extension OnboardingAISetupModel {
         self.authSessionID = nil
         self.providerAuthCancellation = nil
         self.authStep = nil
+        #if DEBUG
+        self._test_recordCancellationOrder("auth.retire.end", authID: diagnosticAuthID)
+        #endif
     }
 
     private func clearProviderAuth() {
@@ -1569,6 +1651,55 @@ extension OnboardingAISetupModel {
     }
 
     #if DEBUG
+    // Diagnostic-ref only: synchronous, synthetic snapshots; never a shipping test API.
+    struct CancellationOrderSnapshot: Encodable, Sendable {
+        let event: String
+        let requestPresent: Bool
+        let requestMatches: Bool?
+        let attemptMatches: Bool?
+        let tokenMatches: Bool?
+        let cancellationID: Int
+        let cancellation: String
+        let activationPending: Bool
+        let authPresent: Bool
+        let connected: Bool
+        let phase: String
+    }
+
+    private func _test_recordCancellationOrder(
+        _ event: String,
+        requestID: UUID? = nil,
+        authID: UUID? = nil,
+        token: UUID? = nil,
+        cancellationID: Int = 0)
+    {
+        guard let observer = self._test_cancellationOrderObserver else { return }
+        let phase: String = switch self.phase {
+        case .idle: "idle"
+        case .detecting: "detecting"
+        case .ready: "ready"
+        case .testing: "testing"
+        case .connected: "connected"
+        }
+        let cancellation: String = switch self.providerAuthCancellation {
+        case .none: "none"
+        case .requesting: "requesting"
+        case .unconfirmed: "unconfirmed"
+        }
+        observer(CancellationOrderSnapshot(
+            event: event,
+            requestPresent: self.authRequestID != nil,
+            requestMatches: requestID.map { self.authRequestID == $0 },
+            attemptMatches: authID.map { self.authAttemptID == $0 },
+            tokenMatches: token.map { self.attemptToken == $0 },
+            cancellationID: cancellationID,
+            cancellation: cancellation,
+            activationPending: self.activationWizardCompletion != nil,
+            authPresent: self.activeAuthOption != nil,
+            connected: self.connected,
+            phase: phase))
+    }
+
     var _test_authSessionID: String? {
         self.authSessionID
     }

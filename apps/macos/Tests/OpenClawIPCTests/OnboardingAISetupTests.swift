@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import ConcurrencyExtras
 import CryptoKit
+import Darwin
 import Foundation
 import ObjectiveC
 @testable import OpenClaw
@@ -177,6 +178,167 @@ private actor AISetupRequestGate {
         released = true
         releaseWaiters.forEach { $0.resume() }
         releaseWaiters.removeAll()
+    }
+}
+
+private final class C99AISetupDiagnostic: Sendable {
+    private struct Event: Encodable {
+        let schedule: String
+        let sequence: Int
+        let elapsedMilliseconds: Int64
+        let event: String
+        let request: Int?
+        let method: String?
+        let reply: String?
+        let model: OnboardingAISetupModel.CancellationOrderSnapshot?
+    }
+
+    private struct State: Sendable {
+        var events = Set<String>()
+        var requests: [String: Int] = [:]
+        var count = 0
+        var bytes = 0
+        var failed = false
+        var activeTasks = 0
+        var startConsumed = false
+        var startRetired = false
+        var absentConsumed = false
+    }
+
+    let startFirst: Bool
+    let startArrived = AsyncTestGate()
+    let releaseStart = AsyncTestGate()
+    let firstCancelArrived = AsyncTestGate()
+    let releaseFirstCancel = AsyncTestGate()
+    let releaseLaterCancels = AsyncTestGate()
+    let scheduleFinished = AsyncTestGate()
+    private let started = ContinuousClock.now
+    private let state = LockIsolated(State())
+    private let changed = AsyncTestSignal()
+
+    init(startFirst: Bool) {
+        self.startFirst = startFirst
+    }
+
+    func record(
+        _ event: String,
+        requestID: String? = nil,
+        method: String? = nil,
+        reply: String? = nil,
+        model: OnboardingAISetupModel.CancellationOrderSnapshot? = nil)
+    {
+        self.state.withValue { state in
+            guard !state.failed else { return }
+            if let requestID, state.requests[requestID] == nil {
+                state.requests[requestID] = state.requests.count + 1
+            }
+            let elapsed = self.started.duration(to: .now).components
+            let entry = Event(
+                schedule: self.startFirst ? "start-before-absent" : "absent-before-start",
+                sequence: state.count + 1,
+                elapsedMilliseconds: elapsed.seconds * 1000 + elapsed.attoseconds / 1_000_000_000_000_000,
+                event: event, request: requestID.flatMap { state.requests[$0] },
+                method: method, reply: reply, model: model)
+            do {
+                let encoded = try JSONEncoder().encode(entry)
+                // Each of the two schedules owns half the 64 KiB trace allowance.
+                guard state.count < 252, state.bytes + encoded.count < 31 * 1024 else {
+                    state.failed = true
+                    FileHandle.standardError.write(Data("C99_DIAGNOSTIC trace-overflow\n".utf8))
+                    Issue.record("C99 diagnostic trace overflow")
+                    return
+                }
+                state.count += 1
+                state.bytes += encoded.count + 16
+                state.events.insert(event)
+                if ["start.begin", "cancel.begin", "next.begin", "reset.begin"].contains(event) {
+                    state.activeTasks += 1
+                }
+                if ["start.retired", "cancel.finished", "next.retired", "reset.finished"].contains(event) {
+                    state.activeTasks -= 1
+                }
+                if let model, model.attemptMatches == true, model.tokenMatches == true {
+                    if event == "start.consumed", model.requestMatches == true { state.startConsumed = true }
+                    if event == "start.retired", !model.requestPresent { state.startRetired = true }
+                    if event == "cancel.consumed.absent", model.cancellationID == 1 { state.absentConsumed = true }
+                }
+                FileHandle.standardError.write(Data("C99_DIAGNOSTIC ".utf8) + encoded + Data([10]))
+            } catch {
+                state.failed = true
+                Issue.record("C99 diagnostic encoding failed")
+            }
+        }
+        self.changed.notify()
+    }
+
+    func waitFor(_ event: String) async throws {
+        try await self.changed.wait("C99 \(event)") {
+            self.state.withValue { $0.failed || $0.events.contains(event) }
+        }
+        try #require(!self.state.value.failed)
+    }
+
+    func waitForTaskRetirement() async throws {
+        try await self.changed.wait("C99 task retirement") {
+            self.state.withValue { $0.failed || $0.activeTasks == 0 }
+        }
+        try #require(!self.state.value.failed)
+        #expect(self.state.value.activeTasks == 0)
+    }
+
+    func requireStartConsumption() throws {
+        try #require(self.state.value.startConsumed && self.state.value.startRetired)
+    }
+
+    func requireAbsentConsumption() throws {
+        try #require(self.state.value.absentConsumed)
+    }
+
+    func releaseAll() {
+        self.startArrived.open()
+        self.releaseStart.open()
+        self.firstCancelArrived.open()
+        self.releaseFirstCancel.open()
+        self.releaseLaterCancels.open()
+    }
+
+    static func stopForDeadline(_ stage: String) -> Never {
+        let message = "C99_DIAGNOSTIC \(stage); native launcher retains cleanup custody\n"
+        FileHandle.standardError.write(Data(message.utf8))
+        Darwin._exit(124)
+    }
+
+    func recordReply(_ event: String, request: AISetupRequest, data: Data) throws {
+        let object = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let payload = object["payload"] as? [String: Any]
+        let status = payload?["status"] as? String
+        let error = object["error"] as? [String: Any]
+        let reply: String
+        if object["ok"] as? Bool == false {
+            reply = error?["code"] as? String == "INVALID_REQUEST"
+                && error?["message"] as? String == "wizard not found"
+                ? "INVALID_REQUEST:wizard not found" : "error.other"
+        } else {
+            reply = switch status {
+            case "running": "running"
+            case "cancelled": "cancelled"
+            case "done": "done"
+            default: "other"
+            }
+        }
+        self.record(event, requestID: request.id, method: Self.methodCategory(request.method), reply: reply)
+    }
+
+    func recordRequest(_ request: AISetupRequest) {
+        self.record("request.received", requestID: request.id, method: Self.methodCategory(request.method))
+    }
+
+    private static func methodCategory(_ method: String) -> String {
+        switch method {
+        case "openclaw.setup.detect", "openclaw.setup.activate", "openclaw.setup.activate.start",
+             "wizard.cancel", "wizard.next": method
+        default: "other"
+        }
     }
 }
 
@@ -612,6 +774,7 @@ private struct AISetupHarness {
         token: String? = nil,
         password: String? = nil,
         preparationKind: String? = nil,
+        diagnostic: C99AISetupDiagnostic? = nil,
         handler: @escaping AISetupHarnessHandler = { _, _, _ in nil },
         receiveHook: GatewayTestWebSocketTask.ReceiveHook? = nil
     ) {
@@ -621,8 +784,11 @@ private struct AISetupHarness {
             recorder: recorder,
             preparationKind: preparationKind,
             handler: { task, request in
+                diagnostic?.recordRequest(request)
                 if let response = try await handler(task, request, recorder) {
+                    try diagnostic?.recordReply("reply.emit.begin", request: request, data: response)
                     task.emitReceiveSuccess(.data(response))
+                    try diagnostic?.recordReply("reply.emit.end", request: request, data: response)
                 }
             },
             receiveHook: receiveHook
@@ -1825,12 +1991,69 @@ struct OnboardingAISetupTests {
     func `setup cancel before admission observes the late session`(
         commitLocked: Bool, kind: OnboardingAISetupModel.ProviderWizardKind
     ) async throws {
+        try await self.runLateAdmissionCancellation(commitLocked: commitLocked, kind: kind)
+    }
+
+    @Test(.timeLimit(.minutes(2)), arguments: [false, true])
+    func c99CancellationReplyOrderDiagnostic(startFirst: Bool) async throws {
+        let diagnostic = C99AISetupDiagnostic(startFirst: startFirst)
+        diagnostic.record("schedule.begin")
+        let operation = Task {
+            try await self.runLateAdmissionCancellation(commitLocked: true, kind: .activation, diagnostic: diagnostic)
+        }
+        let hardDeadline = Task.detached {
+            try await Task.sleep(for: .seconds(90))
+            C99AISetupDiagnostic.stopForDeadline("schedule-and-cleanup.deadline")
+        }
+        let deadline = Task {
+            let expired = await withTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    do {
+                        try await Task.sleep(for: .seconds(60))
+                        return true
+                    } catch { return false }
+                }
+                group.addTask {
+                    await diagnostic.scheduleFinished.wait()
+                    return false
+                }
+                let first = await group.next() ?? false
+                group.cancelAll()
+                return first
+            }
+            if expired {
+                diagnostic.record("schedule.deadline")
+                Issue.record("C99 diagnostic exceeded its 60-second schedule budget")
+                operation.cancel()
+                diagnostic.releaseAll()
+            }
+        }
+        let result = await withTaskCancellationHandler {
+            await operation.result
+        } onCancel: {
+            operation.cancel()
+            diagnostic.releaseAll()
+        }
+        deadline.cancel()
+        await deadline.value
+        hardDeadline.cancel()
+        _ = await hardDeadline.result
+        diagnostic.record("schedule.end")
+        try result.get()
+    }
+
+    private func runLateAdmissionCancellation(
+        commitLocked: Bool,
+        kind: OnboardingAISetupModel.ProviderWizardKind,
+        diagnostic: C99AISetupDiagnostic? = nil) async throws
+    {
         let startGate = AISetupRequestGate()
         let cancelCount = LockIsolated(0)
         let detections = AISetupSocketGeneration()
         let url = try #require(URL(string: "ws://example.invalid"))
         let harness = AISetupHarness(
             url: url,
+            diagnostic: diagnostic,
             handler: { _, request, _ in
                 switch request.method {
                 case "openclaw.setup.detect":
@@ -1841,7 +2064,13 @@ struct OnboardingAISetupTests {
                         ? detectedSetupResponse(id: request.id)
                         : persistedDetectedSetupResponse(id: request.id)
                 case kind.startMethod:
-                    await startGate.wait()
+                    if let diagnostic {
+                        diagnostic.record("start.received")
+                        diagnostic.startArrived.open()
+                        try await diagnostic.releaseStart.wait("C99 release start")
+                    } else {
+                        await startGate.wait()
+                    }
                     let sessionID = try #require(request.params["sessionId"] as? String)
                     return wizardStartResponse(id: request.id, sessionID: sessionID)
                 case "wizard.cancel":
@@ -1850,12 +2079,21 @@ struct OnboardingAISetupTests {
                         return value
                     }
                     if attempt == 1 {
+                        if let diagnostic {
+                            diagnostic.record("cancel.first.received")
+                            diagnostic.firstCancelArrived.open()
+                            try await diagnostic.releaseFirstCancel.wait("C99 release absent")
+                        }
                         return try JSONSerialization.data(withJSONObject: [
                             "type": "res",
                             "id": request.id,
                             "ok": false,
                             "error": ["code": "INVALID_REQUEST", "message": "wizard not found"],
                         ])
+                    }
+                    if let diagnostic {
+                        diagnostic.record("cancel.later.received")
+                        try await diagnostic.releaseLaterCancels.wait("C99 release running")
                     }
                     return try JSONSerialization.data(withJSONObject: [
                         "type": "res",
@@ -1895,6 +2133,9 @@ struct OnboardingAISetupTests {
         )
         let defaults = try #require(isolatedAISetupDefaults(prefix: "ActivationLateAdmissionCancel"))
         let model = harness.model(defaults: defaults)
+        if let diagnostic {
+            model._test_cancellationOrderObserver = { diagnostic.record($0.event, model: $0) }
+        }
         let activation = Task {
             await model.detectConnections()
             if kind == .activation {
@@ -1914,12 +2155,41 @@ struct OnboardingAISetupTests {
             activation.cancel()
         }
 
-        await startGate.waitUntilStarted()
-        model.cancelProviderAuth()
-        try #require(model.activeAuthOption != nil)
+        var firstCancellation: Task<Void, Never>?
+        var outcome: Result<Void, Error> = .success(())
         do {
-            _ = try await waitForAISetupRequests(harness.recorder, count: 3)
-            await startGate.release()
+            if let diagnostic {
+                try await diagnostic.startArrived.wait("C99 start received")
+            } else {
+                await startGate.waitUntilStarted()
+            }
+            firstCancellation = model.cancelProviderAuth()
+            try #require(model.activeAuthOption != nil)
+            if let diagnostic {
+                let cancellation = try #require(firstCancellation)
+                try await diagnostic.firstCancelArrived.wait("C99 first cancellation received")
+                if diagnostic.startFirst {
+                    diagnostic.releaseStart.open()
+                    try await diagnostic.waitFor("start.retired")
+                    try diagnostic.requireStartConsumption()
+                    diagnostic.releaseFirstCancel.open()
+                    try await TestWait.value(of: cancellation, "C99 absent consumed after start")
+                    try diagnostic.requireAbsentConsumption()
+                    diagnostic.record("checkpoint.start-consumed-before-absent")
+                } else {
+                    diagnostic.releaseFirstCancel.open()
+                    try await TestWait.value(of: cancellation, "C99 absent consumed before start")
+                    try diagnostic.requireAbsentConsumption()
+                    diagnostic.releaseStart.open()
+                    try await diagnostic.waitFor("start.retired")
+                    try diagnostic.requireStartConsumption()
+                    diagnostic.record("checkpoint.absent-consumed-before-start")
+                }
+                diagnostic.releaseLaterCancels.open()
+            } else {
+                _ = try await waitForAISetupRequests(harness.recorder, count: 3)
+                await startGate.release()
+            }
             try await TestWait.observed("settled provider auth") { model.activeAuthOption == nil }
             try #require(model.activeAuthOption == nil)
             await activation.value
@@ -1933,13 +2203,43 @@ struct OnboardingAISetupTests {
             #expect(requests.filter { $0 == "wizard.cancel" }.count == (commitLocked ? 3 : 2))
             #expect(requests.filter { $0 == "wizard.next" }.count == (commitLocked ? 1 : 0))
         } catch {
+            outcome = .failure(error)
+        }
+        if let diagnostic {
+            diagnostic.scheduleFinished.open()
+            diagnostic.record("schedule.assertions-ended")
+            let cleanup = Task {
+                diagnostic.releaseAll()
+                model.resetForGatewayChange()
+                firstCancellation?.cancel()
+                activation.cancel()
+                await firstCancellation?.value
+                await activation.value
+                try await diagnostic.waitForTaskRetirement()
+                await harness.gateway.shutdown()
+                model._test_cancellationOrderObserver = nil
+                diagnostic.record("cleanup.finished")
+            }
+            let cleanupDeadline = Task.detached {
+                try await Task.sleep(for: .seconds(30))
+                // Only this disposable test subprocess stops; the native launcher owns resource cleanup.
+                C99AISetupDiagnostic.stopForDeadline("cleanup.deadline")
+            }
+            let cleanupResult = await cleanup.result
+            if case .failure = cleanupResult {
+                C99AISetupDiagnostic.stopForDeadline("cleanup.unverified")
+            }
+            cleanupDeadline.cancel()
+            _ = await cleanupDeadline.result
+            try cleanupResult.get()
+        } else if case .failure = outcome {
             await startGate.release()
             model.resetForGatewayChange()
             activation.cancel()
             await activation.value
             await harness.gateway.shutdown()
-            throw error
         }
+        try outcome.get()
     }
 
     @Test func `active activation wizard retains candidate ownership`() async throws {
