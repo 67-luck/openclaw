@@ -38,6 +38,8 @@ import { isProcessAlive, waitForDead } from "./process-wait.js";
 import { awaitGateBeforeSettlement, createDeferred, withinTest } from "./promise.js";
 import { runQaGatewayFixture } from "./qa-gateway-cleanup.js";
 
+const WRITER_CLEANUP_HANG_GUARD_MS = 5_000;
+const RESISTANT_PROCESS_CLEANUP_HANG_GUARD_MS = 500;
 const MIGRATION_CONVERGENCE_REFUSAL =
   "OpenClaw plugin migration inputs changed during startup convergence;";
 const RESTART_MARKER =
@@ -108,7 +110,8 @@ afterEach(async () => {
             if (writerPidPath) {
               const pid = Number(await fs.readFile(writerPidPath, "utf8"));
               expect(Number.isSafeInteger(pid) && pid > 1).toBe(true);
-              await waitForDead(pid, 5_000);
+              // Cleanup hang guard after the owner released the writer, not a readiness race.
+              await waitForDead(pid, AbortSignal.timeout(WRITER_CLEANUP_HANG_GUARD_MS));
             }
           },
         );
@@ -644,17 +647,17 @@ describe("openclaw test instance", () => {
     }
   });
 
-  it.each(["held-unrelated", "late-unrelated"])(
+  it.for(["held-unrelated", "late-unrelated"])(
     "preserves the refusal when reacquiring the same port fails (%s)",
-    async (action) => {
+    async (action, { signal }) => {
       const control = await createGatewayControl();
-      const { instance } = await createFakeGateway(action, 1_000, 1_500, control);
+      const { instance } = await createFakeGateway(action, 1_000, 1_500, control, { signal });
       const exited = createDeferred();
       control.observers.onLaunch = () => {
         instance.child?.once("exit", () => exited.resolve());
       };
       const competitor = net.createServer((socket) => socket.destroy());
-      const startup = trackOperation(instance.startGateway());
+      const startup = startGatewayForPortLifecycle(instance, signal);
       const outcome = startup.catch((error: unknown) => error);
       try {
         await Promise.race([control.reached, startup]);
@@ -942,7 +945,8 @@ describe("openclaw test instance", () => {
       observed.restore();
       await Promise.allSettled([command]);
       if (writerPid !== undefined) {
-        await waitForDead(writerPid, 5_000);
+        // Cleanup hang guard after the owner released the writer, not a readiness race.
+        await waitForDead(writerPid, AbortSignal.timeout(WRITER_CLEANUP_HANG_GUARD_MS));
       }
     }
   });
@@ -1946,7 +1950,11 @@ describe("openclaw test instance", () => {
           }
           await closed;
           if (resistantPid) {
-            await waitForDead(resistantPid, 500);
+            // Cleanup hang guard after the owner sent SIGKILL, not a readiness race.
+            await waitForDead(
+              resistantPid,
+              AbortSignal.timeout(RESISTANT_PROCESS_CLEANUP_HANG_GUARD_MS),
+            );
           }
           expect(inspectManagedProcessGroup(leader, { errorPolicy: "indeterminate" })).toBe("dead");
         };

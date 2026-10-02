@@ -90,6 +90,7 @@ import ai.openclaw.app.node.TalkHandler
 import ai.openclaw.app.node.asObjectOrNull
 import ai.openclaw.app.node.asStringOrNull
 import ai.openclaw.app.node.invokeErrorFromThrowable
+import ai.openclaw.app.node.parseJsonParamsObject
 import ai.openclaw.app.node.readAndroidPermissionSnapshot
 import ai.openclaw.app.node.resolveGatewayAccentArgb
 import ai.openclaw.app.node.resolveGatewayThemeFamily
@@ -375,23 +376,13 @@ internal fun canApproveGatewayDevicePairing(
       .map(String::trim)
       .filter(String::isNotEmpty)
       .toSet()
-  if (scopes.any { scope -> roles.none { role -> roleAllowsScope(role, scope) } }) return false
+  if (scopes.any { scope -> roles.none { role -> scope.startsWith("$role.") } }) return false
 
   val grantedScopes = callerScopes.map(String::trim).filter(String::isNotEmpty).toSet()
   if (OperatorAdminScope in grantedScopes) return true
   if (roles.any { it != "operator" }) return false
   return scopes.all { scope -> operatorScopeAllowed(scope, grantedScopes) }
 }
-
-private fun roleAllowsScope(
-  role: String,
-  scope: String,
-): Boolean =
-  if (role == "operator") {
-    scope.startsWith("operator.")
-  } else {
-    scope.startsWith("$role.")
-  }
 
 private fun operatorScopeAllowed(
   requestedScope: String,
@@ -418,55 +409,28 @@ data class GatewayDevicePairingMutation(
   val targetId: String,
 )
 
-internal sealed interface GatewayDevicePairingMutationOutcome {
-  data object Approved : GatewayDevicePairingMutationOutcome
-
-  data object Rejected : GatewayDevicePairingMutationOutcome
-
-  data object Removed : GatewayDevicePairingMutationOutcome
-
-  data object NotVerified : GatewayDevicePairingMutationOutcome
-}
-
 internal fun verifyGatewayDevicePairingMutation(
   mutation: GatewayDevicePairingMutation,
   expectedDeviceId: String,
   mutationAccepted: Boolean,
   pending: List<GatewayPendingDeviceSummary>,
   paired: List<GatewayPairedDeviceSummary>,
-): GatewayDevicePairingMutationOutcome =
-  if (!mutationAccepted) {
-    GatewayDevicePairingMutationOutcome.NotVerified
-  } else {
+): Boolean =
+  mutationAccepted &&
     when (mutation.action) {
       GatewayDevicePairingAction.Approve -> {
-        if (
-          pending.none { it.requestId == mutation.targetId } &&
+        pending.none { it.requestId == mutation.targetId } &&
           paired.any { it.deviceId == expectedDeviceId }
-        ) {
-          GatewayDevicePairingMutationOutcome.Approved
-        } else {
-          GatewayDevicePairingMutationOutcome.NotVerified
-        }
       }
 
       GatewayDevicePairingAction.Reject -> {
-        if (pending.none { it.requestId == mutation.targetId }) {
-          GatewayDevicePairingMutationOutcome.Rejected
-        } else {
-          GatewayDevicePairingMutationOutcome.NotVerified
-        }
+        pending.none { it.requestId == mutation.targetId }
       }
 
       GatewayDevicePairingAction.Remove -> {
-        if (paired.none { it.deviceId == mutation.targetId }) {
-          GatewayDevicePairingMutationOutcome.Removed
-        } else {
-          GatewayDevicePairingMutationOutcome.NotVerified
-        }
+        paired.none { it.deviceId == mutation.targetId }
       }
     }
-  }
 
 internal fun buildGatewayDevicePairingMutationParams(mutation: GatewayDevicePairingMutation): JsonObject = buildJsonObject { put(mutation.action.idKey, JsonPrimitive(mutation.targetId)) }
 
@@ -2613,18 +2577,12 @@ class NodeRuntime private constructor(
     problem: GatewayConnectionProblem? = null,
     operation: GatewayConnectionOperation? = null,
   ) {
-    synchronized(gatewayStatusLock) {
+    updateStatus(preserveStandalone = true) {
       // Accepted TLS can finish behind a newer UI request; retain its result below that request's progress.
       if (operation == null || gatewayConnectionOperation == null || gatewayConnectionOperation === operation) {
         gatewayRetirementDisplay = null
       }
-      val standalone = GatewayConnectionDisplay(operatorConnected, statusText, problem)
-      gatewayStandaloneDisplay = standalone
-      val display = gatewayRetirementDisplay ?: standalone
-      _gatewayConnectionDisplay.value = display
-      _isConnected.value = display.isConnected
-      _statusText.value = display.statusText
-      _gatewayConnectionProblem.value = display.problem
+      gatewayStandaloneDisplay = GatewayConnectionDisplay(operatorConnected, statusText, problem)
     }
   }
 
@@ -3078,16 +3036,10 @@ class NodeRuntime private constructor(
 
   fun refreshHealthLogs() = launchGatewayRefresh { refreshHealthLogsFromGateway() }
 
-  val instanceId: StateFlow<String> = prefs.instanceId
-  val displayName: StateFlow<String> = prefs.displayName
   val cameraEnabled: StateFlow<Boolean> = prefs.cameraEnabled
   val locationMode: StateFlow<LocationMode> = prefs.locationMode
   val locationPreciseEnabled: StateFlow<Boolean> = prefs.locationPreciseEnabled
-  val preventSleep: StateFlow<Boolean> = prefs.preventSleep
-  val manualHost: StateFlow<String> = prefs.manualHost
-  val manualPort: StateFlow<Int> = prefs.manualPort
   val manualTls: StateFlow<Boolean> = prefs.manualTls
-  val onboardingCompleted: StateFlow<Boolean> = prefs.onboardingCompleted
 
   /** Clears setup credentials plus paired device tokens for both Android gateway roles. */
   suspend fun resetGatewaySetupAuth(stableId: String): Boolean =
@@ -3154,16 +3106,6 @@ class NodeRuntime private constructor(
   val activeGatewayStableId: StateFlow<String?> = prefs.gatewayRegistry.activeStableId
   val connectedGatewayStableIds: StateFlow<List<String>> = prefs.gatewayRegistry.connectedStableIds
   val installedAppsSharingEnabled: StateFlow<Boolean> = prefs.installedAppsSharingEnabled
-  val notificationForwardingEnabled: StateFlow<Boolean> = prefs.notificationForwardingEnabled
-  val notificationForwardingMode: StateFlow<NotificationPackageFilterMode> =
-    prefs.notificationForwardingMode
-  val notificationForwardingPackages: StateFlow<Set<String>> = prefs.notificationForwardingPackages
-  val notificationForwardingQuietHoursEnabled: StateFlow<Boolean> =
-    prefs.notificationForwardingQuietHoursEnabled
-  val notificationForwardingQuietStart: StateFlow<String> = prefs.notificationForwardingQuietStart
-  val notificationForwardingQuietEnd: StateFlow<String> = prefs.notificationForwardingQuietEnd
-  val notificationForwardingMaxEventsPerMinute: StateFlow<Int> =
-    prefs.notificationForwardingMaxEventsPerMinute
 
   private var didAutoConnect = false
 
@@ -4200,9 +4142,6 @@ class NodeRuntime private constructor(
 
   val speakerEnabled: StateFlow<Boolean>
     get() = prefs.speakerEnabled
-
-  val preferredAudioInputDevice: StateFlow<String?>
-    get() = prefs.preferredAudioInputDevice
 
   fun setSpeakerEnabled(value: Boolean) {
     prefs.setSpeakerEnabled(value)
@@ -6090,9 +6029,7 @@ class NodeRuntime private constructor(
       payloadJson
         ?.let { json.parseToJsonElement(it).asObjectOrNull() }
         ?.get("id")
-        ?.let { it as? JsonPrimitive }
-        ?.takeIf { it.isString }
-        ?.content
+        .asJsonStringOrNull()
         ?.takeIf(::isWellFormedGatewayApprovalId)
     } catch (_: Throwable) {
       null
@@ -8094,8 +8031,6 @@ class NodeRuntime private constructor(
         } catch (err: GatewayRequestDefinitiveFailure) {
           definitiveFailure = verbatimText(err.message ?: "Gateway request failed.")
           false
-        } catch (_: GatewayRequestOutcomeUnknown) {
-          false
         } catch (_: Throwable) {
           false
         }
@@ -8113,8 +8048,8 @@ class NodeRuntime private constructor(
       val paired = parsePairedDevices(devicesRoot?.get("paired") as? JsonArray)
       val hasCanonicalList =
         devicesRoot?.get("pending") is JsonArray && devicesRoot["paired"] is JsonArray
-      val outcome =
-        if (hasCanonicalList) {
+      val verified =
+        hasCanonicalList &&
           verifyGatewayDevicePairingMutation(
             mutation = mutation,
             expectedDeviceId = expectedDeviceId,
@@ -8122,9 +8057,6 @@ class NodeRuntime private constructor(
             pending = pending,
             paired = paired,
           )
-        } else {
-          GatewayDevicePairingMutationOutcome.NotVerified
-        }
       publishGatewayData(gatewayScope) {
         if (hasCanonicalList) {
           // Claim the generation only with the canonical post-mutation list in hand and only
@@ -8144,7 +8076,7 @@ class NodeRuntime private constructor(
         }
         if (definitiveFailure != null) {
           _nodesDevicesErrorText.value = definitiveFailure
-        } else if (outcome == GatewayDevicePairingMutationOutcome.NotVerified) {
+        } else if (!verified) {
           _nodesDevicesErrorText.value = nativeText("Could not verify the device pairing change. Refresh and try again.")
         } else {
           _nodesDevicesNoticeText.value = mutation.action.successNotice
@@ -8534,7 +8466,7 @@ class NodeRuntime private constructor(
               gatewayScope.stableId,
               id,
               decision,
-              currentRows.firstOrNull { it.id == id }?.createdAtMs,
+              selected.createdAtMs,
               selected.kind,
               selected.sessionKey,
             )
@@ -9136,11 +9068,7 @@ class NodeRuntime private constructor(
   private fun parseMaybeJsonObject(value: String?): JsonObject? {
     val trimmed = value?.trim().orEmpty()
     if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return null
-    return try {
-      json.parseToJsonElement(trimmed).asObjectOrNull()
-    } catch (_: Throwable) {
-      null
-    }
+    return parseJsonParamsObject(trimmed)
   }
 
   private fun normalizeLogLevel(value: String?): String? {

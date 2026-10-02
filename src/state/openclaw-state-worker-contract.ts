@@ -2,7 +2,10 @@ import type {
   SandboxRegistryInsert,
   SandboxRegistryWrite,
 } from "../agents/sandbox/registry.kernel.js";
-import type { SubagentRegistryWrite } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
+import type {
+  SubagentRegistryWrite,
+  SubagentRegistryWriteReceipt,
+} from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import type {
   WorkspaceAttestation,
   WorkspaceAttestationInput,
@@ -23,15 +26,8 @@ import type {
   SessionGroupCatalogMutation,
   SessionGroupCatalogMutationResult,
 } from "../gateway/session-group-catalog.types.js";
-import type { WorkerInferenceStoreOperations } from "../gateway/worker-environments/inference-store.worker-contract.js";
-import type { WorkerPlacementDispatchStoreOperations } from "../gateway/worker-environments/placement-record.js";
-import type { PlacementSessionToolWorkerOperations } from "../gateway/worker-environments/placement-session-tool-operations.worker-contract.js";
-import type { PlacementTurnClaimWorkerOperations } from "../gateway/worker-environments/placement-turn-claims.worker-contract.js";
-import type { WorkspaceJournalWorkerOperations } from "../gateway/worker-environments/placement-workspace-journal.worker-contract.js";
-import type { WorkerEnvironmentWorkerOperations } from "../gateway/worker-environments/store-worker-contract.js";
 import type * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import type { DeviceIdentity } from "../infra/device-identity-store.js";
-import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.kernel.js";
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
 import type {
   SqliteWalPeriodicRequest,
@@ -47,7 +43,6 @@ import type { UpdateRunWriteOperations } from "../infra/update-run-mutation.type
 import type { UpdateRunReconciliationOperations } from "../infra/update-run-reconciliation.types.js";
 import type { PluginStateWorkerOperations } from "../plugin-state/plugin-state-worker-contract.js";
 import type { PluginMetadataStateSelector } from "../plugins/installed-plugin-index-row.js";
-import type { ProjectRegistryWorkerOperations } from "../projects/project-registry.worker-contract.js";
 import type { CaptureWorkerOperations } from "../proxy-capture/store.worker-contract.js";
 import type { SecretStoreConfigRefWrite } from "../secrets/store/secret-store-config-ref.kernel.js";
 import type { SecretStoreExpiryCutoffs } from "../secrets/store/secret-store-expiry.kernel.js";
@@ -67,7 +62,6 @@ import type {
 import type { OpenClawAgentDatabaseWorkerLeaseReceipt } from "./openclaw-agent-db-lease.js";
 import type { OpenClawStateLeaseLifecycleOperations } from "./openclaw-state-lease-context.js";
 import type { RegisteredStateWorkerOperations } from "./openclaw-state-worker-registry.js";
-import type { RepositoryWorkspaceWorkerOperations } from "./session-repository-workspaces.types.js";
 import type { UserPreferenceWorkerOperations } from "./user-preferences.types.js";
 
 export type OpenClawStateWorkerOpenPreparation = { type: "deviceIdentity"; identityKey: string };
@@ -76,7 +70,6 @@ export type OpenClawStateWorkerOpenPreparation = { type: "deviceIdentity"; ident
 export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
   UpdateRunReconciliationOperations &
   UpdateRunWriteOperations &
-  RepositoryWorkspaceWorkerOperations &
   CaptureWorkerOperations &
   TuiLastSessionWorkerOperations &
   SessionStateWorkerOperations &
@@ -84,13 +77,6 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
   PluginStateWorkerOperations &
   UserPreferenceWorkerOperations &
   CronStateWorkerOperations &
-  ProjectRegistryWorkerOperations &
-  WorkerEnvironmentWorkerOperations &
-  WorkerInferenceStoreOperations &
-  PlacementTurnClaimWorkerOperations &
-  WorkspaceJournalWorkerOperations &
-  PlacementSessionToolWorkerOperations &
-  WorkerPlacementDispatchStoreOperations &
   TranscriptReadOperations &
   OpenClawStateLeaseLifecycleOperations & {
     "database.walMaintenance": { input: SqliteWalPeriodicRequest; output: SqliteWalPeriodicResult };
@@ -165,7 +151,10 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
       input: SecretStoreConfigRefWrite;
       output: { name: string };
     };
-    "subagents.persistChanges": { input: SubagentRegistryWrite; output: { writeId: string } };
+    "subagents.persistChanges": {
+      input: SubagentRegistryWrite;
+      output: SubagentRegistryWriteReceipt;
+    };
     "sessionUpstream.listWatched": { input: undefined; output: SessionUpstreamLink[] };
     "backup.recordOutcome": { input: PreparedBackupRunRecord; output: void };
     "sessionGroups.mutate": {
@@ -188,14 +177,6 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
         expected: ConfigHealthEntryBasis | null | undefined;
         updatedAtMs: number;
       };
-      output: boolean;
-    };
-    "diagnostic.register": {
-      input: { scope: string; maxEntries: number; record: PreparedSqliteAuditRecord };
-      output: void;
-    };
-    "config.snapshot.upsert": {
-      input: { record: PreparedSqliteAuditRecord; expectedPayloadJson?: string | null };
       output: boolean;
     };
   };
