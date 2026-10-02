@@ -44,6 +44,12 @@ jobs:
           source scripts/lib/swift-toolchain.sh
           select_xcode_toolchain 27.0
 
+      - name: Install and verify Metal compiler
+        run: |
+          set -euo pipefail
+          xcodebuild -downloadComponent MetalToolchain
+          xcrun --sdk macosx metal --version
+
       - name: Verify exact clean source
         env:
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha || inputs.target_ref || github.sha }}
