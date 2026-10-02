@@ -2,7 +2,7 @@ import Testing
 @testable import OpenClawChatUI
 
 struct ChatStreamingRevealTests {
-    @Test(arguments: [
+    private static let revealWindowCases: [(String, [Range<Int>])] = [
         ("", []),
         (" \n\t", []),
         ("\r\n one\t", [2..<5]),
@@ -11,7 +11,9 @@ struct ChatStreamingRevealTests {
         (String(repeating: "a ", count: 24), (0..<24).map { (2 * $0)..<(2 * $0 + 1) }),
         (String(repeating: "a ", count: 26), (2..<26).map { (2 * $0)..<(2 * $0 + 1) }),
         (String(repeating: "a", count: 64), [0..<64]),
-    ])
+    ]
+
+    @Test(arguments: ChatStreamingRevealTests.revealWindowCases)
     func `reveal window keeps whole trailing words and original character offsets`(
         text: String,
         expected: [Range<Int>])
