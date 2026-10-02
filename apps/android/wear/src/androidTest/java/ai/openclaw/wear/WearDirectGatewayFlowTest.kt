@@ -218,7 +218,7 @@ class WearDirectGatewayFlowTest {
       }
       findText(input.historyMarker, contains = true)
       capture(input.phase, "02-history")
-      if (previous == null) exerciseHelpAndDeny(activity, runtime, input, savedGrant.deviceIdSha256)
+      if (previous == null) exerciseHelpAndApproval(activity, runtime, input, savedGrant.deviceIdSha256)
       // pressHome waits for a content-change event that the Wear launcher may not emit.
       // Verify key injection here; lifecycle and server closure prove the Home outcome.
       assertTrue("native Home key accepted", device.pressKeyCode(KeyEvent.KEYCODE_HOME))
@@ -365,7 +365,7 @@ class WearDirectGatewayFlowTest {
     }
   }
 
-  private fun exerciseHelpAndDeny(
+  private fun exerciseHelpAndApproval(
     activity: MainActivity,
     runtime: WearDirectRuntime,
     input: ProofInput,
@@ -442,30 +442,42 @@ class WearDirectGatewayFlowTest {
       runtime.state.value.approvals
         .single { it.id == request.id }
     assertTrue(
-      "only the provisioned session-bound command approval is denied",
+      "only the provisioned session-bound command approval is reviewed",
       approval.sourceSessionKey == input.sessionKey && approval.status == "pending" && approval.kind == "exec" &&
         approval.presentation["commandText"] == JsonPrimitive(input.approvalCommand) &&
-        approval.decisions == listOf("allow-once", "deny") && approval.reviewIssue == null && approval.canResolve("deny", System.currentTimeMillis()),
+        approval.decisions == listOf("allow-once", "deny") && approval.reviewIssue == null && approval.canResolve(input.approvalDecision, System.currentTimeMillis()),
     )
     clickAction(activity, app.getString(R.string.watch_approvals))
     clickAction(activity, "${app.getString(R.string.watch_command_approval)}: pending")
     findText(input.sessionKey)
     findText(input.approvalCommand)
-    clickAction(activity, app.getString(R.string.watch_deny))
-    findText(app.getString(R.string.watch_confirm_decision, app.getString(R.string.watch_deny))).recycle()
+    val decisionLabel = app.getString(if (input.approvalDecision == "deny") R.string.watch_deny else R.string.watch_allow_once)
+    val terminalStatus = if (input.approvalDecision == "deny") "denied" else "allowed"
+    clickAction(activity, decisionLabel)
+    findText(app.getString(R.string.watch_confirm_decision, decisionLabel)).recycle()
     capture(input.phase, "04-pending")
-    clickAction(activity, app.getString(R.string.watch_confirm_decision, app.getString(R.string.watch_deny)))
-    awaitState("canonical deny acknowledgement is settled") {
+    clickAction(activity, app.getString(R.string.watch_confirm_decision, decisionLabel))
+    awaitState("canonical approval acknowledgement is settled") {
       val state = runtime.state.value
       state.sessionKey == input.sessionKey && request.id !in state.resolving &&
-        state.approvals.any { it.id == request.id && it.status == "denied" && it.decision == "deny" }
+        state.approvals.any { it.id == request.id && it.status == terminalStatus && it.decision == input.approvalDecision }
     }
-    findText("denied")
-    capture(input.phase, "04-denied")
+    findText(terminalStatus)
+    capture(input.phase, "04-$terminalStatus")
     // The observer must match terminal approval.get to this watch's device and operator decision.
     writeProof(
       File(app.filesDir, "wear-direct-approval-confirmed.json"),
-      ApprovalConfirmed(input.runId, input.nonce, request.id, "deny"),
+      ApprovalConfirmed(input.runId, input.nonce, request.id, input.approvalDecision),
+    )
+    // An approval row is not command-effect proof. Keep the reviewer connected until
+    // the isolated Gateway observer verifies the terminal run and its filesystem effect.
+    val effectFile = File(app.filesDir, "wear-direct-approval-effect.json")
+    awaitState("Gateway observer confirms the terminal command effect") { effectFile.exists() }
+    val effect = consumePrivate<ApprovalEffect>(effectFile, 8192)
+    assertTrue(
+      "terminal effect belongs to this watch decision",
+      effect.runId == input.runId && effect.nonce == input.nonce && effect.id == request.id &&
+        effect.decision == input.approvalDecision && effect.executed == (input.approvalDecision == "allow-once"),
     )
     device.pressBack()
     device.pressBack()
@@ -528,6 +540,7 @@ class WearDirectGatewayFlowTest {
       assertTrue("private native input names one bounded run", it.runId.matches(Regex("[a-zA-Z0-9_-]{1,80}")) && it.nonce.matches(Regex("[a-f0-9]{64}")))
       assertTrue("private native input has not expired", it.expiresAtMs - System.currentTimeMillis() in 1..900_000)
       assertTrue("private native input names an explicit phase", it.phase in setOf("bootstrap", "reopen"))
+      assertTrue("private native input names an explicit approval decision", it.approvalDecision in setOf("deny", "allow-once"))
       assertTrue("private native input binds build digests", listOf(it.apkSha256, it.testApkSha256).all { value -> value.matches(Regex("[a-f0-9]{64}")) })
       assertTrue("private native input declares exact source", listOf(it.sourceCommit, it.sourceTree).all { value -> value.matches(Regex("[a-f0-9]{40}")) })
     }
@@ -1070,6 +1083,15 @@ class WearDirectGatewayFlowTest {
   )
 
   @Serializable
+  private class ApprovalEffect(
+    val runId: String,
+    val nonce: String,
+    val id: String,
+    val decision: String,
+    val executed: Boolean,
+  )
+
+  @Serializable
   private class BackgroundReady(
     val runId: String,
     val nonce: String,
@@ -1146,6 +1168,7 @@ class WearDirectGatewayFlowTest {
     val helpMarker: String,
     val approvalCommand: String,
     val approvalPrompt: String,
+    val approvalDecision: String,
     val setupCode: String? = null,
     val previousNonce: String? = null,
   )
