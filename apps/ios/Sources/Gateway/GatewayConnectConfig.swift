@@ -27,6 +27,7 @@ struct GatewayConnectConfig: Sendable {
 
     struct ControlUIInputs: Hashable, Sendable {
         let ingressRevision: UInt64?
+        let ingressRegistrationID: UUID?
         let url: URL
         let stableID: ExactOpaqueIdentifierKey
         let tlsRequired: Bool?
@@ -47,6 +48,7 @@ struct GatewayConnectConfig: Sendable {
     var controlUIInputs: ControlUIInputs {
         ControlUIInputs(
             ingressRevision: self.ingressAuthorization?.revision,
+            ingressRegistrationID: self.ingressAuthorization?.registrationID,
             url: self.url,
             stableID: ExactOpaqueIdentifierKey(self.effectiveStableID),
             tlsRequired: self.tls?.required,
@@ -76,6 +78,7 @@ struct GatewayConnectConfig: Sendable {
             self.password == other.password &&
             self.ingressAuthorization?.origin == other.ingressAuthorization?.origin &&
             self.ingressAuthorization?.revision == other.ingressAuthorization?.revision &&
+            self.ingressAuthorization?.registrationID == other.ingressAuthorization?.registrationID &&
             Self.sameOptions(self.nodeOptions, other.nodeOptions)
     }
 

@@ -442,7 +442,7 @@ func waitForIngress(_ condition: () -> Bool) async throws {
     }
 }
 
-@Suite(.serialized)
+@Suite(.serialized, .testWaitLimit)
 struct GatewayIngressControllerTests {
     @Test @MainActor
     func `registry isolation suspends waiters until snapshots are restored`() async {
@@ -3349,7 +3349,7 @@ struct GatewayIngressControllerTests {
         }
     }
 
-    @Test(arguments: ["ordinary", "invalidated-before", "invalidated-during"]) @MainActor
+    @Test(arguments: ["ordinary", "ordinary-canceled", "invalidated-before", "invalidated-during"]) @MainActor
     func `ordinary admission joins media from its retired managed revision`(transition: String) async throws {
         let fixture = try IngressTestHarness()
         fixture.persisted = try String(data: JSONEncoder().encode(fixture.nextSession), encoding: .utf8)
@@ -3406,14 +3406,33 @@ struct GatewayIngressControllerTests {
         }
         #expect(!admitted)
         #expect(!old.isCurrent())
+        if transition == "ordinary-canceled" { admission.cancel() }
         media.release()
-        if transition == "invalidated-during" {
+        if transition == "invalidated-during" || transition == "ordinary-canceled" {
             await #expect(throws: CancellationError.self) { try await admission.value }
             #expect(!admitted)
         } else {
             #expect(try await admission.value == nil)
         }
         await #expect(throws: CancellationError.self) { try await download.value }
+        if transition == "ordinary-canceled" {
+            fixture.preauthenticated = false
+            fixture.probeGate = nil
+            let current = try #require(try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+            #expect(current.isCurrent())
+            #expect(current.origin == old.origin)
+            #expect(current.revision == old.revision)
+            let oldConfig = try fixture.config(old)
+            let currentConfig = try fixture.config(current)
+            #expect(!oldConfig.hasSameConnectionInputs(as: currentConfig))
+            #expect(!oldConfig.hasSameControlUIInputs(as: currentConfig))
+            let repeated = try #require(try await ingress.prepare(
+                route: fixture.route, userInitiated: false, admissionCheckpoint: ingress.admissionCheckpoint()))
+            let repeatedConfig = try fixture.config(repeated)
+            #expect(currentConfig.hasSameConnectionInputs(as: repeatedConfig))
+            #expect(currentConfig.hasSameControlUIInputs(as: repeatedConfig))
+        }
         #expect(fixture.browser.presented.isEmpty)
     }
 

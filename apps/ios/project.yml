@@ -426,7 +426,11 @@ targets:
       - path: Tests
         excludes:
           - Logic
+      - path: ../macos/Tests/OpenClawIPCTests/AsyncTestGate.swift
+        group: Tests
       - path: ../macos/Tests/OpenClawIPCTests/DashboardHTTPFixture.swift
+        group: Tests
+      - path: ../macos/Tests/OpenClawIPCTests/TestWait.swift
         group: Tests
       - path: build/TestTLS/GatewayIngressIdentity.p12
         buildPhase: resources

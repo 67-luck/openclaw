@@ -7,6 +7,7 @@ struct GatewayIngressAuthorization: Sendable {
     typealias Request = @Sendable (URLRequest) async throws -> (Data, URLResponse)
     let origin: CloudflareAccessOrigin
     let revision: UInt64
+    let registrationID: UUID
     let headers: @Sendable (URL) async throws -> [String: String]
     let isCurrent: @MainActor @Sendable () -> Bool
     let checkResponse: @Sendable (HTTPURLResponse) async throws -> Void
@@ -652,6 +653,7 @@ final class GatewayIngressController {
         return GatewayIngressAuthorization(
             origin: origin,
             revision: revision,
+            registrationID: registration.id,
             headers: { [weak self] url in
                 guard let self else { throw CancellationError() }
                 return try await self.headers(for: url, registration: registration, origin: origin, revision: revision)
