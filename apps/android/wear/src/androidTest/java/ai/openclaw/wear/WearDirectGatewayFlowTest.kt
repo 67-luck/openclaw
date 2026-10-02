@@ -12,6 +12,7 @@ import android.os.PowerManager
 import android.os.Process
 import android.os.SystemClock
 import android.view.Display
+import android.view.KeyEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import androidx.lifecycle.Lifecycle
@@ -19,6 +20,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.BySelector
+import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.UiObject2
 import androidx.test.uiautomator.Until
@@ -32,6 +34,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
@@ -215,8 +218,10 @@ class WearDirectGatewayFlowTest {
       }
       findText(input.historyMarker, contains = true)
       capture(input.phase, "02-history")
-      if (previous == null) exerciseHelpAndDeny(activity, runtime, input)
-      assertTrue("native Home action succeeded", device.pressHome())
+      if (previous == null) exerciseHelpAndDeny(activity, runtime, input, savedGrant.deviceIdSha256)
+      // pressHome waits for a content-change event that the Wear launcher may not emit.
+      // Verify key injection here; lifecycle and server closure prove the Home outcome.
+      assertTrue("native Home key accepted", device.pressKeyCode(KeyEvent.KEYCODE_HOME))
       awaitPaused(runtime, activity, finishing = false)
       assertTrue("Home preserves the application coroutine owner", processJob.isActive)
       writeProof(
@@ -264,7 +269,8 @@ class WearDirectGatewayFlowTest {
       findText("Connected directly")
       findText(closure.freshHistoryMarker, contains = true)
       capture(input.phase, "05-resumed")
-      clickAction(activity, app.getString(R.string.watch_disconnect))
+      // Disconnect follows history; retain the viewport that just exposed the fresh marker.
+      clickAction(activity, app.getString(R.string.watch_disconnect), rewind = false)
       awaitState("foreground Disconnect retires its connection before Activity finish") {
         val state = runtime.state.value
         !state.connected && !state.busy && state.status == "Disconnected" && state.error == null
@@ -363,6 +369,7 @@ class WearDirectGatewayFlowTest {
     activity: MainActivity,
     runtime: WearDirectRuntime,
     input: ProofInput,
+    deviceIdSha256: String,
   ) {
     assertTrue(
       "help evidence is not preseeded",
@@ -397,14 +404,30 @@ class WearDirectGatewayFlowTest {
       val state = runtime.state.value
       state.connected && state.sessionKey == input.sessionKey && state.approvalsReady
     }
-    // The external owner calls plugin.approval.request(twoPhase=true) only after this signal,
-    // verifies accepted/pending, and returns the server-generated ID. No event is fabricated here.
+    // The real chat turn binds this watch as reviewer. The external observer verifies
+    // the runtime-produced request before returning its ID; it cannot create the approval.
     writeProof(
       File(app.filesDir, "wear-direct-approval-ready.json"),
-      ApprovalReady(input.runId, input.nonce, input.sessionKey),
+      ApprovalReady(input.runId, input.nonce, input.sessionKey, deviceIdSha256),
     )
+    clickAction(activity, app.getString(R.string.message))
+    val approvalMessage = uniqueEditor(password = false)
+    setAccessibleText(approvalMessage, input.approvalPrompt)
+    assertTrue("real input submits the approval-producing turn", approvalMessage.accessibilityNodeInfo.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id))
+    awaitState("approval-producing input reaches its captured conversation") {
+      val state = runtime.state.value
+      state.connected && (state.pendingSend?.message == input.approvalPrompt || state.messages.any { it.role == "user" && it.text == input.approvalPrompt })
+    }
+    if (runtime.state.value.pendingSend != null && !runtime.state.value.sending) {
+      assertTrue(
+        "only this approval-producing message is pending",
+        runtime.state.value.pendingSend
+          ?.message == input.approvalPrompt,
+      )
+      clickAction(activity, app.getString(R.string.retry))
+    }
     val approvalFile = File(app.filesDir, "wear-direct-approval-input.json")
-    awaitState("canonical request owner supplies its accepted server ID") { approvalFile.exists() }
+    awaitState("Gateway observer supplies the runtime-produced approval ID") { approvalFile.exists() }
     val request = consumePrivate<ApprovalInput>(approvalFile, 8192)
     assertTrue(
       "canonical request input belongs to this phase and has not expired",
@@ -419,13 +442,15 @@ class WearDirectGatewayFlowTest {
       runtime.state.value.approvals
         .single { it.id == request.id }
     assertTrue(
-      "only the provisioned session-bound deny-only approval is exercised",
-      approval.sourceSessionKey == input.sessionKey && approval.status == "pending" && approval.title == input.approvalTitle &&
-        approval.decisions == listOf("deny") && approval.reviewIssue == null && approval.canResolve("deny", System.currentTimeMillis()),
+      "only the provisioned session-bound command approval is denied",
+      approval.sourceSessionKey == input.sessionKey && approval.status == "pending" && approval.kind == "exec" &&
+        approval.presentation["commandText"] == JsonPrimitive(input.approvalCommand) &&
+        approval.decisions == listOf("allow-once", "deny") && approval.reviewIssue == null && approval.canResolve("deny", System.currentTimeMillis()),
     )
     clickAction(activity, app.getString(R.string.watch_approvals))
-    clickAction(activity, "${input.approvalTitle}: pending")
+    clickAction(activity, "${app.getString(R.string.watch_command_approval)}: pending")
     findText(input.sessionKey)
+    findText(input.approvalCommand)
     clickAction(activity, app.getString(R.string.watch_deny))
     findText(app.getString(R.string.watch_confirm_decision, app.getString(R.string.watch_deny))).recycle()
     capture(input.phase, "04-pending")
@@ -437,7 +462,7 @@ class WearDirectGatewayFlowTest {
     }
     findText("denied")
     capture(input.phase, "04-denied")
-    // The external request owner must match this with waitDecision=deny and terminal approval.get.
+    // The observer must match terminal approval.get to this watch's device and operator decision.
     writeProof(
       File(app.filesDir, "wear-direct-approval-confirmed.json"),
       ApprovalConfirmed(input.runId, input.nonce, request.id, "deny"),
@@ -498,7 +523,7 @@ class WearDirectGatewayFlowTest {
       assertTrue(
         "private native input has bounded nonempty expectations",
         (it.setupCode == null || it.setupCode.length in 1..16_384) &&
-          listOf(it.sessionKey, it.sessionTitle, it.historyMarker, it.helpMarker, it.approvalTitle).all { value -> value.isNotBlank() && value.length <= 1024 },
+          listOf(it.sessionKey, it.sessionTitle, it.historyMarker, it.helpMarker, it.approvalCommand, it.approvalPrompt).all { value -> value.isNotBlank() && value.length <= 1024 },
       )
       assertTrue("private native input names one bounded run", it.runId.matches(Regex("[a-zA-Z0-9_-]{1,80}")) && it.nonce.matches(Regex("[a-f0-9]{64}")))
       assertTrue("private native input has not expired", it.expiresAtMs - System.currentTimeMillis() in 1..900_000)
@@ -718,6 +743,7 @@ class WearDirectGatewayFlowTest {
     activity: MainActivity,
     label: String,
     allowScroll: Boolean = true,
+    rewind: Boolean = true,
     beforeClick: () -> Unit = {},
   ) {
     var firstMatch: JsonObject? = null
@@ -858,47 +884,52 @@ class WearDirectGatewayFlowTest {
           }
         }
 
-        var exposed = actionPoint() != null
-        if (!exposed && allowScroll) {
-          repeat(8) {
-            scroll(down = false)
-            scrollIndex++
+        fun stableActionPoint(): Point? {
+          assertTrue("application stability root is current", root.refresh())
+          // UiAutomator 2.4.0 crops Y to zero: use only a zero-origin full window.
+          // This is library visual stability, not Compose idle or a hard end-to-end deadline.
+          val stable =
+            root.waitForStable(
+              requireStableScreenshot = true,
+              stableTimeoutMs = 3_000,
+              stableIntervalMs = 500,
+              stablePollIntervalMs = 50,
+            )
+          try {
+            val bitmap = stable.screenshot
+            val stableBounds = Rect().also { stable.node.getBoundsInScreen(it) }
+            assertTrue(
+              "full application window became visually stable",
+              !stable.isTimeout && bitmap != null && stable.node.packageName?.toString() == app.packageName &&
+                stable.node.windowId == window.id && stableBounds == windowBounds &&
+                bitmap.width == windowBounds.width() && bitmap.height == windowBounds.height(),
+            )
+          } finally {
+            stable.screenshot?.recycle()
+          }
+          // Settling can move a lazy-list item out of view. Discover the target only afterward.
+          return actionPoint()
+        }
+
+        var point = stableActionPoint()
+        if (point == null && allowScroll) {
+          if (rewind) {
+            repeat(8) {
+              scroll(down = false)
+              scrollIndex++
+            }
           }
           repeat(20) {
-            if (!exposed) {
-              exposed = actionPoint() != null
-              if (!exposed) {
+            if (point == null) {
+              point = stableActionPoint()
+              if (point == null) {
                 scroll(down = true)
                 scrollIndex++
               }
             }
           }
         }
-        assertTrue("one eligible native action is exposed", exposed)
-        assertTrue("application stability root is current", root.refresh())
-        // UiAutomator 2.4.0 crops Y to zero: use only a zero-origin full window.
-        // This is library visual stability, not Compose idle or a hard end-to-end deadline.
-        val stable =
-          root.waitForStable(
-            requireStableScreenshot = true,
-            stableTimeoutMs = 3_000,
-            stableIntervalMs = 500,
-            stablePollIntervalMs = 50,
-          )
-        try {
-          val bitmap = stable.screenshot
-          val stableBounds = Rect().also { stable.node.getBoundsInScreen(it) }
-          assertTrue(
-            "full application window became visually stable",
-            !stable.isTimeout && bitmap != null && stable.node.packageName?.toString() == app.packageName &&
-              stable.node.windowId == window.id && stableBounds == windowBounds &&
-              bitmap.width == windowBounds.width() && bitmap.height == windowBounds.height(),
-          )
-        } finally {
-          stable.screenshot?.recycle()
-        }
-        // No scrolling or retained UiObject2 after stability (including after proof capture).
-        val point = requireNotNull(actionPoint()) { "native action is no longer eligible after stability" }
+        val target = requireNotNull(point) { "one eligible native action is exposed after stability" }
         beforeClick()
         val resumed = activity.lifecycle.currentState == Lifecycle.State.RESUMED
         val focused = activity.hasWindowFocus()
@@ -907,7 +938,7 @@ class WearDirectGatewayFlowTest {
         val showing = keyguard.isKeyguardLocked
         val locked = keyguard.isDeviceLocked
         assertTrue("native action requires resumed, focused, awake and unlocked application", resumed && focused && interactive && !showing && !locked)
-        assertTrue("stock native action click was accepted", device.click(point.x, point.y))
+        assertTrue("stock native action click was accepted", device.click(target.x, target.y))
       } finally {
         @Suppress("DEPRECATION")
         window.recycle()
@@ -955,11 +986,20 @@ class WearDirectGatewayFlowTest {
   private fun visible(selector: BySelector): UiObject2? = device.findObjects(selector).firstOrNull { it.isEnabled && it.visibleBounds.height() > 12 }
 
   private fun scroll(down: Boolean) {
-    val x = device.displayWidth / 2
-    val top = device.displayHeight * 3 / 10
-    val bottom = device.displayHeight * 7 / 10
-    device.swipe(x, if (down) bottom else top, x, if (down) top else bottom, 12)
-    device.waitForIdle()
+    val lists = device.findObjects(By.pkg(app.packageName).scrollable(true))
+    try {
+      val list =
+        lists.single { node ->
+          node.accessibilityNodeInfo.actionList.any { action ->
+            action.id == AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id ||
+              action.id == AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id
+          }
+        }
+      // UiAutomator pauses before lifting so a fling cannot skip an eligible control.
+      list.scroll(if (down) Direction.DOWN else Direction.UP, if (down) 0.3f else 1f)
+    } finally {
+      lists.forEach { it.recycle() }
+    }
   }
 
   private fun capture(
@@ -1009,6 +1049,7 @@ class WearDirectGatewayFlowTest {
     val runId: String,
     val nonce: String,
     val sessionKey: String,
+    val deviceIdSha256: String,
   )
 
   @Serializable
@@ -1103,7 +1144,8 @@ class WearDirectGatewayFlowTest {
     val sessionTitle: String,
     val historyMarker: String,
     val helpMarker: String,
-    val approvalTitle: String,
+    val approvalCommand: String,
+    val approvalPrompt: String,
     val setupCode: String? = null,
     val previousNonce: String? = null,
   )
