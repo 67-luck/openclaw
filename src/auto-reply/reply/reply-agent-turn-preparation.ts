@@ -24,7 +24,8 @@ import {
 } from "./compaction-notice.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { refreshActiveGoalContext } from "./inbound-meta.js";
-import { isFollowupRunAborted, resolveFollowupAbortSignal, type FollowupRun } from "./queue.js";
+import type { FollowupRun } from "./queue.js";
+import { isFollowupRunAborted, resolveFollowupAbortSignal } from "./queue/types.js";
 import { admitReplyTurn } from "./reply-turn-admission.js";
 import { prepareReplyTurnContext } from "./reply-turn-preflight.js";
 import type { createReplyTurnRotationEvidence } from "./reply-turn-rotation.js";
