@@ -22,7 +22,7 @@ test("shutdown settles an unpolled startup rejection before draining connection 
   );
   const delivery = vi.spyOn(GatewayOperatorHttpTransport.prototype, "sendWithContext");
   const rejectedTransport = () => {
-    const index = delivery.mock.calls.findIndex(([, , context]) => context?.rejectedHandshake);
+    const index = delivery.mock.calls.findIndex((args) => args[2]?.rejectedHandshake);
     const transport = delivery.mock.contexts[index];
     return transport instanceof GatewayOperatorHttpTransport ? transport : undefined;
   };
