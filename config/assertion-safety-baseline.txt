@@ -224,7 +224,7 @@ extensions/discord/src/accounts.ts	2
 extensions/discord/src/actions/handle-action.ts	2
 extensions/discord/src/actions/runtime.guild.ts	1
 extensions/discord/src/actions/runtime.messaging.send.ts	2
-extensions/discord/src/actions/runtime.messaging.shared.ts	6
+extensions/discord/src/actions/runtime.messaging.shared.ts	4
 extensions/discord/src/actions/runtime.presence.ts	1
 extensions/discord/src/actions/runtime.shared.ts	1
 extensions/discord/src/activities/discord-api.ts	1
