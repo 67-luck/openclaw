@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { assert, expect, it, onTestFinished, vi, type Mock } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { SESSION_TOTAL_TOKENS_VERSION } from "../../config/sessions.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import {
   loadSessionEntry,
@@ -223,6 +224,9 @@ export function registerReplyAdmissionCases({
       const replacement: SessionEntry = {
         ...sessionEntry,
         ...expected,
+        totalTokens: 0,
+        totalTokensFresh: true,
+        totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
         updatedAt: sessionEntry.updatedAt + 1,
         ...(orphanedRecovery
           ? {
