@@ -117,6 +117,12 @@ surface while its stated reader or migration condition remains unmet.
 | `plugin-provider-manifest-compat-aliases`     | Move kind/setup/catalog ownership to manifests and model-catalog registration.                          | 2026-10-01    |
 | `plugin-sdk-session-agent-resolution-aliases` | Move published plugins to strict session-agent resolution with an explicit or prepared owner.           | 2026-11-29    |
 
+The October 1 annotation families and `media-legacy-projection` are now
+`removal-pending`: they await verification of reader migrations and
+published-plugin clearance. Their original review dates remain unchanged, and each registry
+record names the condition that blocks removal. This metadata change does not
+remove or change any plugin API.
+
 `pnpm plugins:boundary-report` reports `removal-pending` records separately
 from deprecated records. A due `removal-pending` record remains blocked until
 its reported migration condition is satisfied and its reader references are

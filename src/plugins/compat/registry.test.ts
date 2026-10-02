@@ -56,7 +56,7 @@ describe("plugin compatibility registry", () => {
     for (const record of listPluginCompatRecords()) {
       expect(record.introduced, record.code).toMatch(datePattern);
       expect(record.docsPath, record.code).toMatch(/^\//u);
-      if (record.status === "deprecated") {
+      if (record.status === "deprecated" || record.status === "removal-pending") {
         expect(record.deprecated, record.code).toMatch(datePattern);
         expect(record.warningStarts, record.code).toMatch(datePattern);
         if (record.removalGate !== undefined) {
@@ -164,7 +164,7 @@ describe("plugin compatibility registry", () => {
     }
   });
 
-  it("tracks the deprecation-marking families through the approved window", () => {
+  it("keeps reader-blocked annotation families pending after their review date", () => {
     const records = new Map(listPluginCompatRecords().map((record) => [record.code, record]));
 
     expect(deprecationMarkingCodes.map((code) => records.get(code)?.code)).toEqual(
@@ -172,13 +172,23 @@ describe("plugin compatibility registry", () => {
     );
     for (const code of deprecationMarkingCodes) {
       expect(records.get(code)).toMatchObject({
-        status: "deprecated",
+        status: "removal-pending",
         deprecated: "2026-07-25",
         warningStarts: "2026-07-25",
         removeAfter: "2026-10-01",
       });
       expect(records.get(code)?.surfaces, code).toHaveLength(deprecationMarkingSurfaceCounts[code]);
+      expect(records.get(code)?.replacement, code).toContain("; retain until ");
     }
+    expect(records.get("media-legacy-projection")).toMatchObject({
+      status: "removal-pending",
+      deprecated: "2026-07-24",
+      warningStarts: "2026-07-24",
+      removeAfter: "2026-10-01",
+      replacement: expect.stringContaining(
+        "retain until a clean published-plugin artifact sweep verifies migration",
+      ),
+    });
     expect(records.get("plugin-sdk-broad-runtime-barrels")?.surfaces).toEqual(
       expect.arrayContaining([
         "openclaw/plugin-sdk/agent-runtime",
