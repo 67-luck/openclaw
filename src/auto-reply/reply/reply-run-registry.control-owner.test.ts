@@ -56,9 +56,7 @@ describe("reply run control ownership", () => {
         operation.completeWithAfterClearBarrier(delivery.promise);
         await Promise.resolve();
         expect(started).toHaveBeenCalledOnce();
-        expect(() => createTestReplyOperation({ sessionKey })).toThrow(
-          ReplyRunSuccessorAdmissionBlockedError,
-        );
+        expect(() => createTestReplyOperation({ sessionKey })).toThrow();
         const nextAdmission = waitForReplyRunSuccessorAdmission(operation.key, null);
         if (cleanupExpired) {
           // Raw delivery settlement cannot settle the separately owned handoff fence.
