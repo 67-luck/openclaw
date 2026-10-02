@@ -260,7 +260,6 @@ function captureHistoryRequest(request: SessionHistoryWorkerRequest): SessionHis
     const params = request.params;
     const captured = {
       encodeResponse: params.encodeResponse,
-      compactionMetrics: params.compactionMetrics?.map((metric) => ({ ...metric })),
       entry: capturedEntry,
       provider: params.provider,
       sessionId: params.sessionId,

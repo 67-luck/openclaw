@@ -294,7 +294,6 @@ export async function handleChatHistoryRequest({
           messages: new SerializedJsonArray(historyPage.encodedResponse.messages),
         }
       : prepareChatHistoryResponsePage(historyPage, {
-          entry: historyEntry,
           maxHistoryBytes,
           messageId,
         });
