@@ -12,6 +12,7 @@ import {
   type SqliteTranscriptStorageRow,
 } from "./session-accessor.sqlite-read.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
+import { readTranscriptIdentityRows } from "./session-accessor.sqlite-transcript-raw-rows.js";
 import {
   pruneTranscriptReactionsInTransaction,
   readTranscriptMutationStateInTransaction,
@@ -438,14 +439,9 @@ export function replaceSqliteTranscriptSuffixInTransaction(
     !sessionTranscriptIndexNeedsReconcile(database.db, resolved.sessionId);
   const suffixIdentityKeys = new Map(
     plan.incremental?.suffixIdentityKeys ??
-      executeSqliteQuerySync(
-        database.db,
-        db
-          .selectFrom("transcript_event_identities")
-          .select(["event_id", "message_idempotency_key"])
-          .where("session_id", "=", resolved.sessionId)
-          .where("seq", ">=", plan.startSeq),
-      ).rows.map((row) => [row.event_id, row.message_idempotency_key] as const),
+      readTranscriptIdentityRows(database, resolved.sessionId, { startSeq: plan.startSeq }).map(
+        (row) => [row.event_id, row.message_idempotency_key] as const,
+      ),
   );
   const insertEvents = plan.incremental ? plan.next : plan.next.slice(plan.prefixLength);
   const insertCreatedAt = plan.incremental

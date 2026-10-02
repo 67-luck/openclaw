@@ -12,8 +12,11 @@ import {
 import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import { readTranscriptEventId } from "./session-accessor.sqlite-read.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
+import {
+  readSelectedTranscriptPayloads,
+  readTranscriptIdentityRows,
+} from "./session-accessor.sqlite-transcript-raw-rows.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
-import { projectSessionEntryAdmissionSql } from "./session-model-context-projection.js";
 import {
   hasTranscriptMessage,
   shouldProjectActiveEvent,
@@ -22,7 +25,6 @@ import {
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import {
-  transcriptEventJsonSql,
   transcriptEventModelNavigationSql,
   transcriptEventNavigationSql,
 } from "./transcript-payload.js";
@@ -39,13 +41,7 @@ export function readTranscriptRawSnapshotInTransaction(
   const db = getSessionKysely(database.db);
   const navigation = transcriptEventNavigationSql("event");
   const identities = new Map(
-    executeSqliteQuerySync(
-      database.db,
-      db
-        .selectFrom("transcript_event_identities")
-        .select(["event_id", "seq", "parent_id", "message_idempotency_key"])
-        .where("session_id", "=", resolved.sessionId),
-    ).rows.map((row) => [row.event_id, row]),
+    readTranscriptIdentityRows(database, resolved.sessionId).map((row) => [row.event_id, row]),
   );
   const rows = executeSqliteQuerySync(
     database.db,
@@ -140,40 +136,16 @@ export function readTranscriptRawSnapshotInTransaction(
     );
   }
   // Payload acquisition stays synchronous on the caller's admitted connection/version.
-  const readEntries = (sequences: readonly number[], admission = false) =>
-    new Map<number, TranscriptEvent>(
-      (sequences.length
-        ? executeSqliteQuerySync(
-            database.db,
-            db
-              .selectFrom("transcript_events")
-              .select([
-                "seq",
-                (admission
-                  ? projectSessionEntryAdmissionSql(transcriptEventJsonSql(database.db))
-                  : transcriptEventJsonSql(database.db)
-                ).as("event_json"),
-              ])
-              .where("session_id", "=", resolved.sessionId)
-              .where(
-                "seq",
-                "in",
-                /* kysely-allow-raw: one bound numeric set avoids SQLite parameter limits for an admitted view. */
-                sql<number>`(SELECT value FROM json_each(${JSON.stringify(sequences)}))`,
-              )
-              .orderBy("seq", "asc"),
-          ).rows
-        : []
-      ).map((row) => [row.seq, JSON.parse(row.event_json)]),
-    );
   return {
     rows,
     tree,
     active,
     anchors,
     version,
-    readPayloads: (sequences: readonly number[]) => readEntries(sequences),
-    readAdmissionEntries: (sequences: readonly number[]) => readEntries(sequences, true),
+    readPayloads: (sequences: readonly number[]) =>
+      readSelectedTranscriptPayloads(database, resolved.sessionId, sequences, "full"),
+    readAdmissionEntries: (sequences: readonly number[]) =>
+      readSelectedTranscriptPayloads(database, resolved.sessionId, sequences, "admission"),
   };
 }
 

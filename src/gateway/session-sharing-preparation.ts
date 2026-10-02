@@ -1,7 +1,5 @@
 import path from "node:path";
-import { isDeepStrictEqual } from "node:util";
 import { ok } from "@openclaw/normalization-core/result";
-import { listAgentIds } from "../agents/agent-scope-config.js";
 import {
   assertSessionEntryCreationPublication,
   isPreparedSessionSharingChange,
@@ -17,10 +15,7 @@ import {
   retainWorkerSessionEntrySource,
 } from "../config/sessions/session-entry-execution.js";
 import { readSessionEntriesFromStoreInWorker } from "../config/sessions/session-entry-read-runtime.js";
-import {
-  captureSessionStoreReadCandidate,
-  type SessionStoreReadCandidate,
-} from "../config/sessions/session-store-read-candidates.js";
+import type { SessionStoreReadCandidate } from "../config/sessions/session-store-read-candidates.js";
 import {
   prepareSessionStoreTargetInventory,
   type SessionStoreTargetInventoryRequest,
@@ -45,6 +40,10 @@ import {
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { SessionMutationFactsUnavailableError } from "./session-mutation-authorization-error.js";
 import type { PreparedSessionMutationFacts } from "./session-sharing-policy.js";
+import {
+  assertSessionSharingSourcesCurrent,
+  captureSessionMutationRouting,
+} from "./session-sharing-source.js";
 import type {
   ExistingSessionMutationFacts,
   SessionMutationWorkerRead,
@@ -62,24 +61,6 @@ type PreparedSessionSourceFacts = PreparedSessionMutationFacts & {
   sourcePath?: string;
   sourceAgentId?: string;
 };
-
-function routeFacts(cfg: OpenClawConfig) {
-  return {
-    agents: listAgentIds(cfg),
-    store: cfg.session?.store,
-    mainKey: cfg.session?.mainKey,
-    scope: cfg.session?.scope,
-  };
-}
-
-export function captureSessionMutationRouting(cfg: OpenClawConfig) {
-  const route = routeFacts(cfg);
-  return (current: OpenClawConfig) => {
-    if (!isDeepStrictEqual(routeFacts(current), route)) {
-      throw new SessionMutationFactsUnavailableError();
-    }
-  };
-}
 
 type SessionFactsRequest = {
   cfg: OpenClawConfig;
@@ -657,22 +638,8 @@ export async function prepareSessionMutationFacts(
         };
       }
       assertRetainedSource = () => assertRegistry?.();
-      assertSource = () => {
-        for (const { candidate, identity } of candidateIdentities) {
-          if (
-            captureSessionStoreReadCandidate(candidate.path, candidate.scope).physicalPath !==
-              candidate.physicalPath ||
-            !isDeepStrictEqual(readDatabasePathIdentitySync(candidate.path), identity)
-          ) {
-            throw new SessionMutationFactsUnavailableError();
-          }
-        }
-        for (const read of members.values()) {
-          if (readDatabasePathIdentitySync(read.source.path).key !== read.databaseIdentity) {
-            throw new SessionMutationFactsUnavailableError();
-          }
-        }
-      };
+      assertSource = () =>
+        assertSessionSharingSourcesCurrent(candidateIdentities, members.values());
       assertRetainedReads = () => {
         for (const read of retainedReads.values()) {
           if (!read.readCurrent()) {

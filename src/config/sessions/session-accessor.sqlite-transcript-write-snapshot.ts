@@ -42,6 +42,15 @@ export type TranscriptWriteViewGuard = {
   onPendingTransaction: (database: DatabaseSync) => void;
 };
 
+export type TranscriptSnapshotOwnership<T> = {
+  view?: TranscriptWriteViewGuard;
+  continuation?: {
+    enter: (database: OpenClawAgentDatabase, nested: boolean) => () => void;
+    complete: (snapshot: Result<T, TranscriptAppendRefusal>) => void;
+    retainPublication: (publish: () => void) => void;
+  };
+};
+
 export function runTranscriptWriteSnapshotSync<T>(
   scope: SessionTranscriptWriteScope,
   operation: (
@@ -52,25 +61,47 @@ export function runTranscriptWriteSnapshotSync<T>(
   expectedMutationAt?: number | null,
   view?: TranscriptWriteViewGuard,
 ): Result<TranscriptWriteSnapshot<T>, TranscriptAppendRefusal> {
-  const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
-  const resolved = resolveSqliteTranscriptScope(fencedScope);
-  let connection: DatabaseSync | undefined;
-  const result = runOpenClawAgentWriteTransaction<
-    Result<TranscriptWriteSnapshot<T>, TranscriptAppendRefusal>
-  >(
-    (database) => {
-      connection = database.db;
-      return runTranscriptWriteSnapshotInTransaction(
+  return runTranscriptSnapshotTransaction(
+    scope,
+    (database, fencedScope) =>
+      runTranscriptWriteSnapshotInTransaction(
         database,
         fencedScope,
         operation,
         beforeCommitInTransaction,
         expectedMutationAt,
         view,
-      );
+      ),
+    { view },
+  );
+}
+
+/** Join native continuation state before COMMIT and keep publication with its transaction owner. */
+export function runTranscriptSnapshotTransaction<T>(
+  scope: SessionTranscriptWriteScope,
+  operation: (
+    database: OpenClawAgentDatabase,
+    fencedScope: SessionTranscriptWriteScope,
+  ) => Result<T, TranscriptAppendRefusal>,
+  ownership?: TranscriptSnapshotOwnership<T>,
+): Result<T, TranscriptAppendRefusal> {
+  const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
+  const resolved = resolveSqliteTranscriptScope(fencedScope);
+  const { view, continuation } = ownership ?? {};
+  let connection: DatabaseSync | undefined;
+  const result = runOpenClawAgentWriteTransaction(
+    (database) => {
+      connection = database.db;
+      const snapshot = operation(database, fencedScope);
+      continuation?.complete(snapshot);
+      return snapshot;
     },
     toDatabaseOptions(resolved),
-    { operationLabel: "session.transcript.write-snapshot" },
+    {
+      operationLabel: "session.transcript.write-snapshot",
+      enter: continuation?.enter,
+      retainPublication: continuation?.retainPublication,
+    },
   );
   // A savepoint can return while its enclosing transaction still owns rollback.
   if (result.ok && connection && hasSqlitePostCommitScope(connection)) {

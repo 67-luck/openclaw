@@ -16,9 +16,7 @@ import { normalizeAgentId } from "../routing/session-key.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { captureAgentDatabaseAdmission } from "./agent-database-admission.js";
-import { getAgentDeletionDatabaseCleanup } from "./agent-deletion-cleanup.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
-import { hasAgentDatabaseMaintenanceAuthority } from "./openclaw-agent-db-lease.js";
 import { agentDatabaseLifecycle } from "./openclaw-agent-db-lifecycle.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "./openclaw-agent-db-resources.js";
 import {
@@ -27,21 +25,21 @@ import {
 } from "./openclaw-agent-db.paths.js";
 import type {
   AgentDatabaseExecutionFileIdentity,
-  AgentDatabaseGenerationClaim,
+  AgentDatabaseExecutionOwner,
   AgentDatabaseRequestExecutionSource,
+  OpenClawAgentDatabaseExecution,
 } from "./openclaw-agent-execution-contract.js";
 import {
   createAgentDatabaseNativeGeneration,
   type AgentDatabaseExecutionScope,
   type AgentDatabaseNativeGeneration,
 } from "./openclaw-agent-execution-native.js";
+import { supportsOpenClawAgentDatabaseExecution } from "./openclaw-agent-execution-support.js";
 import {
   createVolatileAgentDatabaseGeneration,
   retainGatewayAgentDatabaseExecution,
-  type AgentDatabaseReadyOperation,
 } from "./openclaw-agent-execution-volatile.js";
 import {
-  getOpenClawDatabaseMaintenanceScope,
   observeOpenClawDatabaseMaintenanceResource,
   runOutsideOpenClawDatabaseMaintenanceScope,
 } from "./openclaw-state-db-async-lifecycle.js";
@@ -52,63 +50,18 @@ import {
   captureOpenClawStateWorkerContext,
 } from "./openclaw-state-worker-context.js";
 
-export type AgentDatabaseExecutionBinding = {
-  readonly incarnation: object;
-  readonly backend: "durable" | "volatile";
-  readonly agentId: string;
-  readonly path: string;
-  assertCurrent(this: void): void;
-  borrow(this: void): OpenClawAgentDatabaseExecution;
-};
-
-export type OpenClawAgentDatabaseExecution = {
-  readonly binding: AgentDatabaseExecutionBinding;
-  readonly backend: "durable" | "volatile";
-  readonly agentId: string;
-  readonly path: string;
-  /** The accepted native receipt; reading this never adopts the current pathname. */
-  readonly fileIdentity: AgentDatabaseExecutionFileIdentity | undefined;
-  assertCurrent(): void;
-  retainReadyOperation?: (
-    source: AgentDatabaseRequestExecutionSource,
-    options?: { createIfMissing?: boolean },
-  ) => AgentDatabaseReadyOperation;
-  captureGenerationClaim(): AgentDatabaseGenerationClaim;
-  /** Initialize first-use storage through the same admitted native owner. */
-  prepare(source: AgentDatabaseRequestExecutionSource, signal?: AbortSignal): Promise<void>;
-  /** Admit a write against existing storage; a missing store remains missing. */
-  runExisting<T>(
-    source: AgentDatabaseRequestExecutionSource,
-    operation: (scope: AgentDatabaseExecutionScope) => Promise<T>,
-    options?: { retireNativeOnFailure: true },
-  ): Promise<T | undefined>;
-  /**
-   * Join this reference's work; native cleanup failures remain with its resource owner.
-   * The owner may retain one bounded idle generation.
-   */
-  release(): Promise<void>;
-};
-
-type ExecutionOwner = {
-  readonly backend: "durable" | "volatile";
-  readonly agentId: string;
-  readonly sharedDatabaseKey: string;
-  readVolatileTarget(): { agentId: string; storePath: string } | undefined;
-  borrow(
-    pathname: string,
-    expectedIdentity?: AgentDatabaseExecutionFileIdentity,
-    expectedCreationIdentity?: DatabasePathIdentity,
-  ): OpenClawAgentDatabaseExecution;
-  closeIdle(): Promise<void>;
-  close(): Promise<void>;
-};
+export type {
+  AgentDatabaseExecutionBinding,
+  OpenClawAgentDatabaseExecution,
+} from "./openclaw-agent-execution-contract.js";
+export { supportsOpenClawAgentDatabaseExecution } from "./openclaw-agent-execution-support.js";
 
 const log = createSubsystemLogger("state/agent-db");
 // References are derived; the canonical agent and shared resource owners govern retirement.
 const executionState = resolveGlobalSingleton<{
-  owners: Map<string, ExecutionOwner>;
+  owners: Map<string, AgentDatabaseExecutionOwner>;
   // The slot stays occupied during eviction and after failed cleanup.
-  idle?: ExecutionOwner;
+  idle?: AgentDatabaseExecutionOwner;
 }>(Symbol.for("openclaw.agentDatabaseExecutionOwners"), () => ({ owners: new Map() }));
 const executions = executionState.owners;
 const runInExecutionOwnerContext = AsyncLocalStorage.snapshot();
@@ -141,25 +94,6 @@ export function retainGatewaySessionBroker() {
     }
     throwSqliteLifecycleErrors(errors, "Logical agent database cleanup failed");
   });
-}
-
-function supportsAgentDatabaseExecutionScope(options: OpenClawAgentDatabaseOptions): boolean {
-  return (
-    getOpenClawDatabaseMaintenanceScope()?.ownsSchemaMaintenance !== true &&
-    !hasAgentDatabaseMaintenanceAuthority() &&
-    !getAgentDeletionDatabaseCleanup(options)
-  );
-}
-
-/** These native-only scopes still need their complete owning caller cutover. */
-export function supportsOpenClawAgentDatabaseExecution(
-  options: OpenClawAgentDatabaseOptions,
-): boolean {
-  return (
-    (!isIncognitoOpenClawAgentSqlitePath(resolveOpenClawAgentSqlitePath(options), options) ||
-      agentDatabaseLifecycle.gatewayExecution?.phase === "ready") &&
-    supportsAgentDatabaseExecutionScope(options)
-  );
 }
 
 /** Borrow before callers yield; native opening stays lazy and release joins owned work. */
@@ -449,7 +383,7 @@ function createAgentDatabaseExecution(
       throw error;
     }
   }
-  const owner: ExecutionOwner = {
+  const owner: AgentDatabaseExecutionOwner = {
     backend: volatile ? "volatile" : "durable",
     agentId,
     get sharedDatabaseKey() {

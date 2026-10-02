@@ -7,7 +7,7 @@ import { deserialize } from "node:v8";
 import type { Worker } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
-import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import * as logging from "../logging/logger.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { drainGlobalSingletonLifecycleState } from "../shared/global-singleton.js";
@@ -52,20 +52,27 @@ const {
 
 const { explicitSqliteCloseReleasesNativeResources } = await initializeSqliteRuntimeCapabilities();
 const poolIt = explicitSqliteCloseReleasesNativeResources ? it : it.skip;
+const nodeIt = it.skipIf(Boolean(process.versions.bun));
 
 poolIt("keeps an independent database responsive while another worker is at capacity", async () => {
   const held = createDeferredCore();
   let release: (() => void) | undefined;
-  let busyThread: number | undefined;
+  const busyThread: { id?: number } = {};
   const createTransport = sqliteTransport.createSqliteWorkerTransport;
   const messages = vi.spyOn(sqliteTransport, "createSqliteWorkerTransport");
   messages.mockImplementation((options) =>
     createTransport({
       ...options,
       reply(reply, pumping) {
-        if (busyThread !== undefined && !release && reply.ok && !reply.transfer && !reply.input) {
+        if (
+          busyThread.id !== undefined &&
+          !release &&
+          reply.ok &&
+          !reply.transfer &&
+          !reply.input
+        ) {
           const value: unknown = deserialize(reply.value);
-          if (isRecord(value) && value.threadId === busyThread) {
+          if (isRecord(value) && value.threadId === busyThread.id) {
             release = () => options.reply(reply, pumping);
             held.resolve();
             return;
@@ -77,7 +84,7 @@ poolIt("keeps an independent database responsive while another worker is at capa
   );
   const busy = await open(databasePath());
   const independent = await open(databasePath());
-  busyThread = (await append(busy, "before saturation")).threadId;
+  busyThread.id = (await append(busy, "before saturation")).threadId;
   const accepted = Promise.allSettled(
     Array.from({ length: 128 }, (_, index) => append(busy, String(index))),
   );
@@ -313,7 +320,7 @@ it("does not expose ready execution on a durable store", async () => {
   }
 });
 
-nodeIt("keeps one ready deadline while native result frames continue", async () => {
+nodeIt("keeps one ready deadline while native result frames continue", async ({ signal }) => {
   const posts: Array<{ id: number; actor: number; atNs: bigint }> = [];
   const frames: Array<{
     id: number;
@@ -459,11 +466,7 @@ nodeIt("keeps one ready deadline while native result frames continue", async () 
     expect(observed).toHaveBeenCalledOnce();
     expect(posts).toHaveLength(1);
     // Explicit close retires a failed slot; observe its accepted result before cleanup.
-    await withTestTimeout(
-      nativeCompleted.promise,
-      5_000,
-      "Native result transfer did not finish before fixture cleanup",
-    );
+    await withinTest(nativeCompleted.promise, signal);
   } catch (error) {
     failures.push(error);
   } finally {
@@ -544,7 +547,7 @@ nodeIt.each(["predecessor", "ready"] as const)(
   },
 );
 
-nodeIt("drains a real committed reply before using the child exit witness", async () => {
+nodeIt("drains a real committed reply before using the child exit witness", async ({ signal }) => {
   const initial = workerCpu.getTrackedWorkerCpuSources();
   let nativeStopped: Promise<void> | undefined;
   const store = await openVolatileAgentDatabaseSqliteWorkerStore<FixtureOperations>({
@@ -568,11 +571,7 @@ nodeIt("drains a real committed reply before using the child exit witness", asyn
     ).toMatchObject({ writes: 1, threadId: expect.any(Number) });
     assert(nativeStopped, "Expected the original native-stop promise");
     // Observe native stop before cleanup can dispatch a close command.
-    await withTestTimeout(
-      nativeStopped,
-      5_000,
-      "Native DATA stop was not observed before fixture cleanup",
-    );
+    await withinTest(nativeStopped, signal);
   } catch (error) {
     failures.push(error);
   } finally {
@@ -594,7 +593,7 @@ nodeIt("drains a real committed reply before using the child exit witness", asyn
 });
 
 nodeIt(
-  "accounts for a pooled volatile pair as two native workers and samples the real child",
+  "accounts for both pooled CPU sources and samples only the direct service heap",
   async () => {
     vi.spyOn(os, "availableParallelism").mockReturnValue(1);
     const broker = new SqliteWorkerBroker();
@@ -644,11 +643,12 @@ nodeIt(
       }
       await vi.waitFor(() => {
         const memory = workerCpu.sampleTrackedWorkerMemory();
-        expect(memory.workerHeapSampledCount).toBe(initialMemory.workerHeapSampledCount + 2);
+        expect(memory.workerMemoryScope).toBe("direct");
+        expect(memory.workerCount).toBe(initialMemory.workerCount + 1);
+        expect(memory.workerHeapSampledCount).toBe(initialMemory.workerHeapSampledCount + 1);
         expect(memory.workerHeaps.map(({ script }) => script)).toEqual([
           ...initialMemory.workerHeaps.map(({ script }) => script),
           "sqlite-worker-transport.worker.js",
-          "sqlite-store.worker.js",
         ]);
       });
     } finally {

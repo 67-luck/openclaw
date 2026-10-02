@@ -4,7 +4,6 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { clearAgentRunContext } from "../infra/agent-run-registry.js";
-import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
@@ -15,6 +14,7 @@ import { createGatewayWorkerPlacementReclaimBarriers } from "./server-worker-pla
 import {
   admitWorkerStopChat,
   createWorkerStopChatContext,
+  createWorkerReclaimFixture as fixture,
 } from "./server-worker-placement.test-harness.js";
 import { coordinateWorkerPlacementDispatch } from "./worker-environments/placement-dispatch-coordinator.js";
 import { REQUEST } from "./worker-environments/placement-dispatch-test-fixtures.js";
@@ -37,58 +37,6 @@ afterEach(async () => {
   lookup.value = undefined;
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
-
-function fixture(name: string, state: "active" | "failed" | "local" | "reclaimed" = "active") {
-  const request = {
-    sessionId: `session-${name}`,
-    sessionKey: `agent:main:${name}`,
-    agentId: "main",
-  };
-  const entry = { sessionId: request.sessionId, lifecycleRevision: "original", updatedAt: 1 };
-  const target = {
-    storePath: `/fixture/reclaim-preparation-${name}.sqlite`,
-    canonicalKey: request.sessionKey,
-    storeKeys: [request.sessionKey],
-    agentId: request.agentId,
-    store: { [request.sessionKey]: entry },
-  };
-  const placement = {
-    ...request,
-    state,
-    generation: 4,
-    environmentId: "worker",
-    activeOwnerEpoch: 7,
-  };
-  const cancel = vi.fn(async (input: { assertCurrent: () => void }) => input.assertCurrent());
-  const barriers = createGatewayWorkerPlacementReclaimBarriers({
-    placements: { get: () => ({ ...placement }) as never, waitForTurnClaimRelease: async () => {} },
-    loadSessionRuntime: async () => ({
-      managedWorktrees: { findLiveByOwner: () => undefined },
-      resolveGatewaySessionStoreTargetWithStore: () => target,
-      resolveCanonicalSessionEntryFromStoreKeys: () => entry,
-    }),
-    cancelSessionWork: cancel,
-    revokeSessionAuthority: vi.fn(),
-  });
-  const run = vi.fn(async () => ({ ...placement, state: "reclaimed" as const }) as never);
-  const admit = (onInterrupt?: () => void) =>
-    beginSessionWorkAdmission({
-      scope: target.storePath,
-      identities: [request.sessionKey, request.sessionId],
-      assertAllowed: () => {},
-      onInterrupt,
-    });
-  return {
-    ...request,
-    entry,
-    placement,
-    cancel,
-    run,
-    admit,
-    prepare: (options: Partial<Parameters<typeof barriers.runReclaimPreparation>[0]> = {}) =>
-      barriers.runReclaimPreparation({ ...request, run, ...options }),
-  };
-}
 
 it("one failed Stop cannot reopen ingress while another Stop still owns its closure", async () => {
   const f = fixture("overlap");

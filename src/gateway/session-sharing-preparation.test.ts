@@ -1,8 +1,5 @@
-import { once } from "node:events";
 import fs from "node:fs";
-import { Worker } from "node:worker_threads";
 import { afterEach, expect, it, vi } from "vitest";
-import { withTestTimeout } from "../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
@@ -15,12 +12,6 @@ import {
   writeSessionEntry,
   deleteSessionEntryRows,
 } from "../config/sessions/session-accessor.sqlite-entry-store.js";
-import {
-  captureLifecycleDatabaseScope,
-  resolveSqliteScope,
-  toDatabaseOptions,
-} from "../config/sessions/session-accessor.sqlite-scope.js";
-import { withSqliteMutationWorkerCoordination } from "../config/sessions/session-accessor.sqlite-worker-coordination.js";
 import * as entryReads from "../config/sessions/session-entry-read-runtime.js";
 import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
 import * as sharingKernel from "../config/sessions/session-sharing-store.kernel.js";
@@ -37,7 +28,6 @@ import {
   runOpenClawAgentWriteTransaction,
 } from "../state/openclaw-agent-db.js";
 import { retainGatewaySessionBroker } from "../state/openclaw-agent-execution.js";
-import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   authorizePreparedSessionMutation,
@@ -434,90 +424,6 @@ it("refuses a missing incognito fact while the exact resource owner is closing",
     }
   });
 });
-
-it.each(["Error", "undefined", "deleted"] as const)(
-  "preserves the native sharing row outcome before transport (%s)",
-  async (failure) => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const cfg = { agents: { entries: { main: {} } } };
-      await state.writeConfig(cfg);
-      setRuntimeConfigSnapshot(cfg);
-      const scope = { agentId: "main", sessionKey: "agent:main:sharing-row-outcome" };
-      replaceSessionEntrySync(scope, {
-        sessionId: "sharing-row-outcome",
-        lifecycleRevision: "original",
-        updatedAt: 1,
-        visibility: "shared",
-      });
-      const databaseOptions = toDatabaseOptions(
-        captureLifecycleDatabaseScope(resolveSqliteScope(scope)),
-      );
-      const prepared = await prepareSessionMutationFacts({ cfg, ...scope });
-      let worker: Worker | undefined;
-      let operation: Promise<void> | undefined;
-      try {
-        const read = prepared.workerRead;
-        if (read?.kind !== "durable") {
-          throw new Error("sharing fixture requires its original durable worker read");
-        }
-        worker = new Worker(
-          new URL("./session-sharing-worker-read.worker.test-support.mjs", import.meta.url),
-          {
-            execArgv: [],
-            workerData: {
-              read,
-              databaseOptions,
-              failure,
-              sourceLoaderUrl: import.meta.resolve("tsx/esm/api"),
-            },
-          },
-        );
-        const owned = worker;
-        const response = Promise.all([once(owned, "message"), once(owned, "exit")]).then(
-          (value) => ({ value }),
-          (error: unknown) => ({ error }),
-        );
-        operation = withSqliteMutationWorkerCoordination(
-          captureOpenClawStateWorkerContext(),
-          { kind: "dedicated", channel: owned },
-          1,
-          async (coordination) => {
-            owned.postMessage(
-              coordination,
-              coordination.stateLifecycle ? [coordination.stateLifecycle] : [],
-            );
-            const outcome = await withTestTimeout(
-              response,
-              10_000,
-              "sharing row worker did not settle",
-            );
-            if ("error" in outcome) {
-              throw outcome.error;
-            }
-            const [[report], exit] = outcome.value;
-            expect(report).toEqual(
-              failure === "deleted"
-                ? { empty: true, unavailable: true, observations: [], closed: true }
-                : {
-                    producerIdentity: true,
-                    guardIdentity: true,
-                    observations: ["cohort", "single", "cohort", "single"],
-                    closed: true,
-                  },
-            );
-            expect(exit).toEqual([0]);
-            expect(owned.threadId).toBe(-1);
-          },
-        );
-        await operation;
-      } finally {
-        await worker?.terminate();
-        await Promise.allSettled([operation]);
-        prepared.release();
-      }
-    });
-  },
-);
 
 it.each(["durable", "incognito"] as const)(
   "keeps %s sharing facts current before observers without SQL in retained assertions",

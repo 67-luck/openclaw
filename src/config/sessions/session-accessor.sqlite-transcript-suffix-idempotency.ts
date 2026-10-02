@@ -8,6 +8,7 @@ import {
   type SqliteTranscriptStorageRow,
 } from "./session-accessor.sqlite-read.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
+import { readTranscriptIdentityRows } from "./session-accessor.sqlite-transcript-raw-rows.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 import { transcriptEventNavigationSql } from "./transcript-payload.js";
 
@@ -25,16 +26,11 @@ export function prepareIncrementalSuffixIdempotencyMutation(params: {
   startSeq: number;
 }): IncrementalSuffixIdempotencyMutation {
   const db = getSessionKysely(params.database.db);
-  const suffixIdentityKeys = executeSqliteQuerySync(
-    params.database.db,
-    db
-      .selectFrom("transcript_event_identities")
-      .select(["event_id", "message_idempotency_key"])
-      .where("session_id", "=", params.resolved.sessionId)
-      .where("seq", ">=", params.startSeq)
-      .orderBy("seq", "asc")
-      .limit(params.expectedRows.length + 1),
-  ).rows.map((row) => [row.event_id, row.message_idempotency_key] as const);
+  const suffixIdentityKeys = readTranscriptIdentityRows(
+    params.database,
+    params.resolved.sessionId,
+    { startSeq: params.startSeq, limit: params.expectedRows.length + 1 },
+  ).map((row) => [row.event_id, row.message_idempotency_key] as const);
   if (suffixIdentityKeys.length > params.expectedRows.length) {
     throw new Error(
       `SQLite transcript changed while preparing suffix removal for ${params.resolved.sessionId}`,

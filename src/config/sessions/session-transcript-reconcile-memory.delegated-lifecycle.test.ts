@@ -34,7 +34,7 @@ describe("incognito transcript reconciliation", () => {
   it.skipIf(Boolean(process.versions.bun))(
     "drains later logical owners after the original DATA close exits",
     async ({ signal }) => {
-      const probe = observeDelegatedReconcile(["drain-logical-a"], signal, "logical close");
+      const probe = observeDelegatedReconcile(["drain-logical-a"], signal);
       const { observe } = probe;
       const failures: unknown[] = [];
       const executions: ReturnType<typeof captureOpenClawAgentDatabaseExecution>[] = [];
@@ -169,12 +169,9 @@ describe("incognito transcript reconciliation", () => {
       }
       try {
         assert(probe.admitted[0] && probe.sourceRead[0]);
-        await observe(
-          reconcilePool.closeSessionTranscriptReconcileWorkerPool(),
-          "initial pool close",
-        );
+        await observe(reconcilePool.closeSessionTranscriptReconcileWorkerPool());
         broker = retainGatewaySessionBroker();
-        await observe(broker.ready, "broker readiness");
+        await observe(broker.ready);
         const owner = agentDatabaseLifecycle.gatewayExecution;
         assert(owner?.store);
         const store = owner.store;
@@ -237,8 +234,8 @@ describe("incognito transcript reconciliation", () => {
           execution.assertCurrent();
         }
         a.dirty();
-        const row = await observe(probe.admitted[0].promise, "original DATA projection");
-        await observe(probe.sourceRead[0].promise, "original compute source-read");
+        const row = await observe(probe.admitted[0].promise);
+        await observe(probe.sourceRead[0].promise);
         const compute = row.worker;
         assert(compute);
         expect(nativeWorkers).toHaveLength(1);
@@ -251,7 +248,7 @@ describe("incognito transcript reconciliation", () => {
           (value): PromiseFulfilledResult<void> => ({ status: "fulfilled", value }),
           (reason: unknown): PromiseRejectedResult => ({ status: "rejected", reason }),
         );
-        const stopped = await observe(firstStop, "first broker rejection");
+        const stopped = await observe(firstStop);
         assert(stopped.status === "rejected");
         // These witnesses precede the regression oracle, so setup/refusal is not a valid red.
         expect(Atomics.load(fault, 1)).toBe(1);
@@ -260,26 +257,24 @@ describe("incognito transcript reconciliation", () => {
         const originalClose = closeCommands[0];
         assert(originalClose);
         expect(originalClose).toMatchObject({ id: aEnrollment.target.id, path: aPath });
-        const closeOutcome = await observe(originalClose.outcome, "original close-command failure");
+        const closeOutcome = await observe(originalClose.outcome);
         assert(closeOutcome.status === "rejected");
         expect(isSqliteWorkerError(closeOutcome.reason, "outcome-unknown")).toBe(true);
         expect(stopped.reason).toBe(closeOutcome.reason);
-        expect(
-          Number.isInteger(await observe(service.exited.promise, "original service exit")),
-        ).toBe(true);
+        expect(Number.isInteger(await observe(service.exited.promise))).toBe(true);
         expect(service.worker.threadId).toBe(-1);
         expect(owner.dataClosed).toBe(true);
         expect(projectionCloses).toHaveLength(1);
-        await observe(Promise.all(projectionCloses), "original projection close");
+        await observe(Promise.all(projectionCloses));
         expect(compute.threadId).toBe(-1);
         expect(row.order).toContain("native-exit");
         expect(row.dispatches).toBe(1);
-        expect((await observe(row.result, "cancelled original compute")).status).toBe("rejected");
+        expect((await observe(row.result)).status).toBe("rejected");
         expect(aRegistration.unregisters).toBe(0);
         expect(bRegistration.unregisters).toBe(1);
         expect(closeCommands.filter((command) => command.path === bPath)).toEqual([]);
         expect(agentDatabaseLifecycle.gatewayExecution).toBe(owner);
-        await observe(broker.stop(), "explicit retained A retry");
+        await observe(broker.stop());
         expect(aRegistration.unregisters).toBe(1);
         expect(bRegistration.unregisters).toBe(1);
         expect(closeCommands).toHaveLength(1);
@@ -352,7 +347,7 @@ describe("incognito transcript reconciliation", () => {
   it.skipIf(Boolean(process.versions.bun))(
     "joins delegated host compute after the original DATA child exits",
     async ({ signal }) => {
-      const probe = observeDelegatedReconcile(["delegated-data-exit"], signal, "DATA exit");
+      const probe = observeDelegatedReconcile(["delegated-data-exit"], signal);
       const { observe } = probe;
       const key = "openclaw.test.delegatedDataExit";
       const previous = getEnvironmentData(key);
@@ -454,18 +449,15 @@ describe("incognito transcript reconciliation", () => {
       signal.addEventListener("abort", abort, { once: true });
       try {
         assert(probe.admitted[0] && probe.sourceRead[0]);
-        await observe(
-          reconcilePool.closeSessionTranscriptReconcileWorkerPool(),
-          "initial pool close",
-        );
+        await observe(reconcilePool.closeSessionTranscriptReconcileWorkerPool());
         broker = retainGatewaySessionBroker();
-        await observe(broker.ready, "broker readiness");
+        await observe(broker.ready);
         const owner = agentDatabaseLifecycle.gatewayExecution;
         assert(owner);
         const seeded = seedDelegatedManager("delegated-data-exit");
         seeded.dirty();
-        const row = await observe(probe.admitted[0].promise, "DATA admission");
-        await observe(probe.sourceRead[0].promise, "source-read");
+        const row = await observe(probe.admitted[0].promise);
+        await observe(probe.sourceRead[0].promise);
         const compute = row.worker;
         assert(compute);
         compute.once("exit", () => computeExited.resolve());
@@ -501,7 +493,7 @@ describe("incognito transcript reconciliation", () => {
           (entry) => entry.transport === originalActor.slot.transport,
         );
         assert(originalTransport);
-        await observe(childExited.promise, "real DATA child exit");
+        await observe(childExited.promise);
         expect(originalTransport.exits).toEqual([19]);
         expect(originalTransport.transport.worker).toBe(actor.slot.worker);
         expect(row.dispatches).toBe(1);
@@ -515,7 +507,7 @@ describe("incognito transcript reconciliation", () => {
           .finally(() => {
             stopSettled = true;
           });
-        await observe(terminationEntered.promise, "compute termination after DATA loss");
+        await observe(terminationEntered.promise);
         expect(row.signal.aborted).toBe(true);
         expect(compute.threadId).toBeGreaterThan(0);
         expect(nativeCalls).toBe(0);
@@ -528,13 +520,13 @@ describe("incognito transcript reconciliation", () => {
         });
         probe.releaseGates();
         termination.resolve();
-        await observe(computeExited.promise, "compute native exit");
-        const stopResult = await observe(stopped, "broker stop after compute exit");
+        await observe(computeExited.promise);
+        const stopResult = await observe(stopped);
         expect(stopResult).toEqual({ status: "fulfilled", value: undefined });
         expect(owner.dataClosed).toBe(true);
         expect(compute.threadId).toBe(-1);
         expect(nativeCalls).toBe(1);
-        expect((await observe(row.result, "original task rejection")).status).toBe("rejected");
+        expect((await observe(row.result)).status).toBe("rejected");
         expect(row.dispatches).toBe(1);
         expect(probe.observations).toHaveLength(1);
         expect(reconcilePool.getSessionTranscriptReconcileWorkerPoolSnapshot()).toMatchObject({
@@ -571,7 +563,7 @@ describe("incognito transcript reconciliation", () => {
     "retains the original delegated borrow through ready deferral and the final DATA sweep",
     async ({ signal }) => {
       const id = "delegated-final-sweep";
-      const probe = observeDelegatedReconcile([id], signal, "ready and final sweep");
+      const probe = observeDelegatedReconcile([id], signal);
       const key = "openclaw.test.delegatedFinalSweep";
       const previous = getEnvironmentData(key);
       const control = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 8));
@@ -676,40 +668,30 @@ describe("incognito transcript reconciliation", () => {
       let broker: ReturnType<typeof retainGatewaySessionBroker> | undefined;
       try {
         assert(probe.admitted[0] && probe.sourceRead[0]);
-        await probe.observe(
-          reconcilePool.closeSessionTranscriptReconcileWorkerPool(),
-          "initial pool close",
-        );
+        await probe.observe(reconcilePool.closeSessionTranscriptReconcileWorkerPool());
         broker = retainGatewaySessionBroker();
-        await probe.observe(broker.ready, "broker readiness");
+        await probe.observe(broker.ready);
         const seeded = seedDelegatedManager(id);
         seeded.dirty();
         // The ready transport returned the real write before ordinary endpoint delivery.
         expect(probe.observations).toHaveLength(0);
-        const row = await probe.observe(probe.admitted[0].promise, "deferred endpoint admission");
-        await probe.observe(probe.sourceRead[0].promise, "source-read");
+        const row = await probe.observe(probe.admitted[0].promise);
+        await probe.observe(probe.sourceRead[0].promise);
         probe.release(0);
-        await probe.observe(
-          Promise.resolve(Atomics.waitAsync(control, 1, 0).value),
-          "DATA final-sweep FIFO blocker",
-        );
+        await probe.observe(Promise.resolve(Atomics.waitAsync(control, 1, 0).value));
         expect(Atomics.load(control, 1)).toBe(1);
         expect(Atomics.load(control, 2)).toBe(1);
-        await expect(probe.observe(row.result, "native result before DATA sweep")).resolves.toEqual(
-          {
-            status: "fulfilled",
-            value: undefined,
-          },
-        );
-        await probe.observe(row.joined.promise, "HOST task reply before DATA sweep");
+        await expect(probe.observe(row.result)).resolves.toEqual({
+          status: "fulfilled",
+          value: undefined,
+        });
+        await probe.observe(row.joined.promise);
         expect(row.finishReplies).toEqual([]);
         expect(Atomics.load(control, 4)).toBe(0);
         expect(Atomics.load(control, 6)).toBe(0);
         expect(row.worker?.threadId).toBeGreaterThan(0);
         releaseSweep();
-        await expect(
-          probe.observe(row.finished.promise, "DATA finish"),
-        ).resolves.not.toHaveProperty("error");
+        await expect(probe.observe(row.finished.promise)).resolves.not.toHaveProperty("error");
         expect(Atomics.load(control, 3)).toBe(1);
         expect(Atomics.load(control, 4)).toBe(1);
         expect(Atomics.load(control, 5)).toBe(1);
@@ -746,7 +728,7 @@ describe("incognito transcript reconciliation", () => {
     "retains delegated compute until owned close and counts cold and warm idle exits exactly",
     async ({ signal }) => {
       const sessions = ["delegated-idle-cold", "delegated-idle-warm", "delegated-idle-reuse"];
-      const probe = observeDelegatedReconcile(sessions, signal, "idle retention");
+      const probe = observeDelegatedReconcile(sessions, signal);
       const closeEntered = createDeferred();
       const releaseClose = createDeferred();
       const terminationEntered = createDeferred();
@@ -782,12 +764,9 @@ describe("incognito transcript reconciliation", () => {
         await close();
       };
       try {
-        await probe.observe(
-          reconcilePool.closeSessionTranscriptReconcileWorkerPool(),
-          "initial pool close",
-        );
+        await probe.observe(reconcilePool.closeSessionTranscriptReconcileWorkerPool());
         broker = retainGatewaySessionBroker();
-        await probe.observe(broker.ready, "broker readiness");
+        await probe.observe(broker.ready);
         const seeds = sessions.map(seedDelegatedManager);
         const baseline = counts();
         // This is the clock captured by the real pool constructor, not a sampled
@@ -795,8 +774,8 @@ describe("incognito transcript reconciliation", () => {
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
         assert(seeds[0] && probe.admitted[0] && probe.sourceRead[0]);
         seeds[0].dirty();
-        const cold = await probe.observe(probe.admitted[0].promise, "cold admission");
-        await probe.observe(probe.sourceRead[0].promise, "cold source-read");
+        const cold = await probe.observe(probe.admitted[0].promise);
+        await probe.observe(probe.sourceRead[0].promise);
         const worker = cold.worker;
         assert(worker);
         worker.once("exit", () => coldExit.resolve());
@@ -810,11 +789,11 @@ describe("incognito transcript reconciliation", () => {
         });
         restoreTerminate = () => terminateSpy.mockRestore();
         probe.release(0);
-        await expect(probe.observe(cold.result, "cold native result")).resolves.toEqual({
+        await expect(probe.observe(cold.result)).resolves.toEqual({
           status: "fulfilled",
           value: undefined,
         });
-        await probe.observe(closeEntered.promise, "owned close hold");
+        await probe.observe(closeEntered.promise);
         await vi.advanceTimersByTimeAsync(60_000);
         expect(cold.finishReplies).toEqual([]);
         expect(nativeCalls).toBe(0);
@@ -826,7 +805,7 @@ describe("incognito transcript reconciliation", () => {
           pendingTasks: 1,
         });
         releaseClose.resolve();
-        await probe.observe(cold.finished.promise, "cold DATA finish");
+        await probe.observe(cold.finished.promise);
         expect(reconcilePool.getSessionTranscriptReconcileWorkerPoolSnapshot()).toMatchObject({
           workers: 1,
           activeTasks: 0,
@@ -836,12 +815,12 @@ describe("incognito transcript reconciliation", () => {
         expect(nativeCalls).toBe(0);
         expect(counts().idle).toBe(baseline.idle);
         await vi.advanceTimersByTimeAsync(1);
-        await probe.observe(terminationEntered.promise, "cold idle retirement");
+        await probe.observe(terminationEntered.promise);
         expect(worker.threadId).toBeGreaterThan(0);
         expect(counts()).toEqual({ idle: baseline.idle, live: baseline.live + 1 });
         expect(reconcilePool.getSessionTranscriptReconcileWorkerPoolSnapshot().workers).toBe(1);
         releaseTermination.resolve();
-        await probe.observe(coldExit.promise, "cold real native exit");
+        await probe.observe(coldExit.promise);
         expect(worker.threadId).toBe(-1);
         expect(nativeCalls).toBe(1);
         expect(counts()).toEqual({ idle: baseline.idle + 1, live: baseline.live });
@@ -854,8 +833,8 @@ describe("incognito transcript reconciliation", () => {
           const source = probe.sourceRead[index];
           assert(seed && admitted && source);
           seed.dirty();
-          const row = await probe.observe(admitted.promise, `warm admission ${index}`);
-          await probe.observe(source.promise, `warm source-read ${index}`);
+          const row = await probe.observe(admitted.promise);
+          await probe.observe(source.promise);
           if (warm) {
             expect(row.worker).toBe(warm);
           } else {
@@ -864,11 +843,11 @@ describe("incognito transcript reconciliation", () => {
             warm.once("exit", () => warmExit.resolve());
           }
           probe.release(index);
-          await expect(probe.observe(row.result, `warm result ${index}`)).resolves.toEqual({
+          await expect(probe.observe(row.result)).resolves.toEqual({
             status: "fulfilled",
             value: undefined,
           });
-          await probe.observe(row.finished.promise, `warm DATA finish ${index}`);
+          await probe.observe(row.finished.promise);
           expect(row.dispatches).toBe(1);
           if (index === 1) {
             await vi.advanceTimersByTimeAsync(70_000);
@@ -884,7 +863,7 @@ describe("incognito transcript reconciliation", () => {
         expect(warm.threadId).toBeGreaterThan(0);
         expect(counts().idle).toBe(baseline.idle + 1);
         await vi.advanceTimersByTimeAsync(1);
-        await probe.observe(warmExit.promise, "warm real native exit");
+        await probe.observe(warmExit.promise);
         expect(warm.threadId).toBe(-1);
         expect(counts()).toEqual({ idle: baseline.idle + 2, live: baseline.live });
         expect(probe.observations).toHaveLength(3);

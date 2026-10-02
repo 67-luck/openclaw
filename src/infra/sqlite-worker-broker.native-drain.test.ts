@@ -1,7 +1,7 @@
 import { deserialize } from "node:v8";
 import { MessagePort, type Worker } from "node:worker_threads";
 import { assert, expect, it, vi, type MockInstance } from "vitest";
-import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import { SqliteWorkerBroker } from "./sqlite-worker-broker.js";
 import type { SqliteWorkerRequest, SqliteWorkerStore } from "./sqlite-worker-contract.js";
 import type { FixtureOperations } from "./sqlite-worker-store.test-support.js";
@@ -10,9 +10,9 @@ import * as workerCpu from "./worker-cpu.js";
 
 const nodeIt = process.versions.bun ? it.skip : it;
 
-nodeIt.each(["Error", "undefined"] as const)(
+nodeIt.for(["Error", "undefined"] as const)(
   "retains the first native exit-drain failure %s after later queued delivery",
-  async (kind) => {
+  async (kind, { signal }) => {
     const first = kind === "Error" ? new Error("Original native drain reply failure") : undefined;
     const later = new Error("Later native child exit failure");
     const broker = new SqliteWorkerBroker();
@@ -194,7 +194,7 @@ nodeIt.each(["Error", "undefined"] as const)(
           (value) => ({ status: "fulfilled", value }),
           (error: unknown) => ({ status: "rejected", error }),
         );
-      await withTestTimeout(drained.promise, 5_000, "Original service exit did not drain its port");
+      await withinTest(drained.promise, signal);
       pumpsDuringPause = pumpSpy.mock.calls.length;
     } catch (error) {
       failure = { error };

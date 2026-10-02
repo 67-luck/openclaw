@@ -38,7 +38,7 @@ import {
   assertPendingNavigation,
 } from "./session-manager-message.worker.test-support.js";
 import * as metadataRuntime from "./session-manager-metadata-runtime.js";
-import { isSqliteTranscriptMutationConflict } from "./session-manager-persistence.js";
+import { isSqliteTranscriptMutationConflict } from "./session-manager-persistence-contract.js";
 import {
   createScopedWorkerFixture,
   assistant,

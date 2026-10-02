@@ -39,7 +39,7 @@ describe("incognito transcript reconciliation", () => {
     "cancels original delegated memory work and ignores its stale cancellation (%s)",
     async (phase, { signal }) => {
       const sessions = ["delegated-a", "delegated-b", "delegated-successor"];
-      const probe = observeDelegatedReconcile(sessions, signal, phase);
+      const probe = observeDelegatedReconcile(sessions, signal);
       const {
         admitted,
         sourceRead,
@@ -87,12 +87,9 @@ describe("incognito transcript reconciliation", () => {
       try {
         assert(admitted[0] && admitted[1] && admitted[2]);
         assert(sourceRead[0] && sourceRead[1] && sourceRead[2]);
-        await observe(
-          reconcilePool.closeSessionTranscriptReconcileWorkerPool(),
-          "initial pool close",
-        );
+        await observe(reconcilePool.closeSessionTranscriptReconcileWorkerPool());
         broker = retainGatewaySessionBroker();
-        await observe(broker.ready, "broker readiness");
+        await observe(broker.ready);
         const hostPort = probe.hostPort;
         assert(hostPort);
         expect(endpointSpy).toHaveBeenCalledTimes(1);
@@ -102,8 +99,8 @@ describe("incognito transcript reconciliation", () => {
         expect(a.target.storePath).not.toBe(b.target.storePath);
         expect(a.execution.binding.incarnation).not.toBe(b.execution.binding.incarnation);
         a.dirty();
-        const originalA = await observe(admitted[0].promise, "A admission");
-        await observe(sourceRead[0].promise, "A source-read");
+        const originalA = await observe(admitted[0].promise);
+        await observe(sourceRead[0].promise);
         expect(originalA.owner).toMatchObject({
           agentId: a.target.agentId,
           path: a.target.storePath,
@@ -111,21 +108,21 @@ describe("incognito transcript reconciliation", () => {
         expect(originalA.dispatches).toBe(1);
         if (phase === "active") {
           release(0);
-          await expect(observe(originalA.result, "A result")).resolves.toEqual({
+          await expect(observe(originalA.result)).resolves.toEqual({
             status: "fulfilled",
             value: undefined,
           });
-          await observe(originalA.finished.promise, "A DATA finish");
+          await observe(originalA.finished.promise);
         }
         b.dirty();
-        const originalB = await observe(admitted[1].promise, "B admission");
+        const originalB = await observe(admitted[1].promise);
         expect(originalB.owner).toMatchObject({
           agentId: b.target.agentId,
           path: b.target.storePath,
         });
         expect(originalB.owner?.id).not.toBe(originalA.owner?.id);
         if (phase === "active") {
-          await observe(sourceRead[1].promise, "B source-read");
+          await observe(sourceRead[1].promise);
           expect(originalB.dispatches).toBe(1);
           expect(originalB.worker?.threadId).toBeGreaterThan(0);
         } else {
@@ -143,15 +140,15 @@ describe("incognito transcript reconciliation", () => {
           originalB.order.push("owner-closed");
         });
         void ownerClose.catch(() => undefined);
-        const rejected = await observe(originalB.result, "B cancellation result");
+        const rejected = await observe(originalB.result);
         expect(rejected.status).toBe("rejected");
         expect(originalB.signal.aborted).toBe(true);
-        await expect(observe(originalB.joined.promise, "B native join")).resolves.toHaveProperty(
+        await expect(observe(originalB.joined.promise)).resolves.toHaveProperty(
           "error",
           expect.any(String),
         );
-        await observe(originalB.finished.promise, "B DATA finish");
-        await observe(ownerClose, "B owner close");
+        await observe(originalB.finished.promise);
+        await observe(ownerClose);
         expect(() => b.execution.binding.assertCurrent()).toThrow();
         expect(originalB.order.at(-1)).toBe("owner-closed");
         expect(originalB.cancel).toMatchObject({
@@ -166,19 +163,17 @@ describe("incognito transcript reconciliation", () => {
             originalB.order.indexOf("native-joined"),
           );
         } else {
-          await observe(originalB.portClosed.promise, "queued B port close");
+          await observe(originalB.portClosed.promise);
           expect(originalB.dispatches).toBe(0);
           expect(originalA.signal.aborted).toBe(false);
           expect(originalA.status).toBe("pending");
           expect(originalA.worker?.threadId).toBeGreaterThan(0);
           release(0);
-          await expect(observe(originalA.result, "A result after B cancellation")).resolves.toEqual(
-            {
-              status: "fulfilled",
-              value: undefined,
-            },
-          );
-          await observe(originalA.finished.promise, "A DATA finish after B cancellation");
+          await expect(observe(originalA.result)).resolves.toEqual({
+            status: "fulfilled",
+            value: undefined,
+          });
+          await observe(originalA.finished.promise);
         }
         a.execution.assertCurrent();
         expect(
@@ -187,8 +182,8 @@ describe("incognito transcript reconciliation", () => {
         const successor = seed("delegated-b", "delegated-successor");
         expect(successor.execution.binding.incarnation).not.toBe(b.execution.binding.incarnation);
         successor.dirty();
-        const current = await observe(admitted[2].promise, "successor admission");
-        await observe(sourceRead[2].promise, "successor source-read");
+        const current = await observe(admitted[2].promise);
+        await observe(sourceRead[2].promise);
         expect(current.owner?.id).not.toBe(originalB.owner?.id);
         expect(current.owner?.incarnation).not.toBe(originalB.owner?.incarnation);
         expect(current.owner?.path).toBe(originalB.owner?.path);
@@ -206,17 +201,15 @@ describe("incognito transcript reconciliation", () => {
         expect(successorSignal.aborted).toBe(false);
         expect(current.status).toBe("pending");
         release(2);
-        await expect(observe(nativeResult, "successor native result")).resolves.toBeUndefined();
-        await expect(observe(result, "successor result")).resolves.toEqual({
+        await expect(observe(nativeResult)).resolves.toBeUndefined();
+        await expect(observe(result)).resolves.toEqual({
           status: "fulfilled",
           value: undefined,
         });
-        await expect(
-          observe(current.finished.promise, "successor DATA finish"),
-        ).resolves.not.toHaveProperty("error");
+        await expect(observe(current.finished.promise)).resolves.not.toHaveProperty("error");
         expect(current.dispatches).toBe(1);
         expect(observations).toHaveLength(3);
-        expect(await observe(originalB.result, "original B result identity")).toBe(rejected);
+        expect(await observe(originalB.result)).toBe(rejected);
         expect(
           SessionManager.readSessionContext(successor.target, (messages) => [...messages]),
         ).toMatchObject([{ role: "user", content: "root" }]);
@@ -285,11 +278,7 @@ describe("incognito transcript reconciliation", () => {
       failure: new Error(""),
     },
   ])("$title", async ({ failure }, { signal }) => {
-    const probe = observeDelegatedReconcile(
-      ["retry-enrollment", "retry-native-close"],
-      signal,
-      "native-close retry",
-    );
+    const probe = observeDelegatedReconcile(["retry-enrollment", "retry-native-close"], signal);
     const { observe } = probe;
     const controller = new AbortController();
     const termination = createDeferred();
@@ -321,12 +310,9 @@ describe("incognito transcript reconciliation", () => {
     try {
       assert(probe.admitted[0] && probe.admitted[1]);
       assert(probe.sourceRead[0] && probe.sourceRead[1]);
-      await observe(
-        reconcilePool.closeSessionTranscriptReconcileWorkerPool(),
-        "initial pool close",
-      );
+      await observe(reconcilePool.closeSessionTranscriptReconcileWorkerPool());
       broker = retainGatewaySessionBroker();
-      await observe(broker.ready, "broker readiness");
+      await observe(broker.ready);
       const target = {
         agentId: "delegated-close-retry",
         sessionId: "retry-enrollment",
@@ -348,16 +334,14 @@ describe("incognito transcript reconciliation", () => {
       expect(execution.backend).toBe("volatile");
       manager.branch(root);
       manager.appendCustomEntry("delegated-reconcile", { branch: root });
-      const seeded = await observe(probe.admitted[0].promise, "healthy DATA admission");
-      await observe(probe.sourceRead[0].promise, "healthy DATA source-read");
+      const seeded = await observe(probe.admitted[0].promise);
+      await observe(probe.sourceRead[0].promise);
       probe.release(0);
-      await expect(observe(seeded.result, "healthy DATA result")).resolves.toEqual({
+      await expect(observe(seeded.result)).resolves.toEqual({
         status: "fulfilled",
         value: undefined,
       });
-      await expect(
-        observe(seeded.finished.promise, "healthy DATA finish"),
-      ).resolves.not.toHaveProperty("error");
+      await expect(observe(seeded.finished.promise)).resolves.not.toHaveProperty("error");
       const owner = seeded.owner;
       assert(
         owner &&
@@ -398,8 +382,8 @@ describe("incognito transcript reconciliation", () => {
         (value): PromiseFulfilledResult<void> => ({ status: "fulfilled", value }),
         (reason: unknown): PromiseRejectedResult => ({ status: "rejected", reason }),
       );
-      const retained = await observe(probe.admitted[1].promise, "retry task admission");
-      await observe(probe.sourceRead[1].promise, "retry task source-read");
+      const retained = await observe(probe.admitted[1].promise);
+      await observe(probe.sourceRead[1].promise);
       expect(retained.owner).toEqual(descriptor);
       expect(retained.dispatches).toBe(1);
       const worker = retained.worker;
@@ -425,15 +409,15 @@ describe("incognito transcript reconciliation", () => {
       const reason = new Error("cancel original delegated task");
       controller.abort(reason);
       expect(task.controller.signal.reason).toBe(reason);
-      const originalResult = await observe(retained.result, "original native rejection");
+      const originalResult = await observe(retained.result);
       expect(originalResult.status).toBe("rejected");
       expect(retained.signal.aborted).toBe(true);
-      const taskReply = await observe(retained.joined.promise, "failed HOST close");
+      const taskReply = await observe(retained.joined.promise);
       expect(retained.closes).toHaveLength(1);
       const firstClose = retained.closes[0];
       assert(firstClose);
-      await expect(observe(firstClose, "original HOST close rejection")).rejects.toBe(failure);
-      const rejectedTask = await observe(taskOutcome, "encoded task failure");
+      await expect(observe(firstClose)).rejects.toBe(failure);
+      const rejectedTask = await observe(taskOutcome);
       expect(rejectedTask.status).toBe("rejected");
       assert(rejectedTask.status === "rejected");
       expect(rejectedTask.reason).toBeInstanceOf(Error);
@@ -441,9 +425,7 @@ describe("incognito transcript reconciliation", () => {
       expect(rejectedTask.reason.message).toBe(failureMessage);
       expect(taskReply).toMatchObject({ kind: "task", error: failureMessage });
       const firstFinish = operation.close();
-      await expect(observe(firstFinish, "first delegate finish rejection")).rejects.toThrow(
-        "Transcript compute cleanup did not join",
-      );
+      await expect(observe(firstFinish)).rejects.toThrow("Transcript compute cleanup did not join");
       expect(retained.finishReplies).toEqual([
         expect.objectContaining({
           kind: "finish",
@@ -476,7 +458,7 @@ describe("incognito transcript reconciliation", () => {
         },
       );
       expect(operation.close()).toBe(retry);
-      await observe(retryEntered.promise, "second native termination attempt");
+      await observe(retryEntered.promise);
       expect(attempts).toBe(2);
       expect(nativeCalls).toBe(0);
       expect(retained.closes).toHaveLength(2);
@@ -491,13 +473,10 @@ describe("incognito transcript reconciliation", () => {
       assert(secondClose);
       expect(settled).toBe(false);
       termination.resolve();
-      await observe(exited.promise, "original worker exit");
-      await observe(retry, "second delegate finish");
-      await observe(secondClose, "second HOST close");
-      await observe(
-        Promise.all([task.closed, task.leaseRelease]),
-        "delegate task port and lease join",
-      );
+      await observe(exited.promise);
+      await observe(retry);
+      await observe(secondClose);
+      await observe(Promise.all([task.closed, task.leaseRelease]));
       expect(retained.finishReplies).toHaveLength(2);
       expect(retained.finishReplies[1]).toMatchObject({ kind: "finish", attempt: 2 });
       expect(retained.finishReplies[1]).not.toHaveProperty("error");
@@ -514,8 +493,8 @@ describe("incognito transcript reconciliation", () => {
       expect(nativeCalls).toBe(1);
       expect(retained.dispatches).toBe(1);
       expect(probe.observations).toHaveLength(2);
-      expect(await observe(retained.result, "unchanged native failure")).toBe(originalResult);
-      expect(await observe(taskOutcome, "unchanged delegate failure")).toBe(rejectedTask);
+      expect(await observe(retained.result)).toBe(originalResult);
+      expect(await observe(taskOutcome)).toBe(rejectedTask);
       expect(operation.close()).toBe(retry);
       expect(probe.hostOpen).not.toHaveBeenCalled();
       execution.assertCurrent();
@@ -558,11 +537,7 @@ describe("incognito transcript reconciliation", () => {
   it.skipIf(Boolean(process.versions.bun)).for(["enrollment", "endpoint"] as const)(
     "joins all delegated operations after a recorded close failure (%s)",
     async (mode, { signal }) => {
-      const probe = observeDelegatedReconcile(
-        ["outer-enrollment", "outer-a", "outer-b"],
-        signal,
-        `${mode} drainage`,
-      );
+      const probe = observeDelegatedReconcile(["outer-enrollment", "outer-a", "outer-b"], signal);
       const { observe } = probe;
       const controllers = [new AbortController(), new AbortController()];
       type Operation = ReturnType<reconcileDelegation.SessionReconcileTaskDelegate["begin"]>;
@@ -604,12 +579,9 @@ describe("incognito transcript reconciliation", () => {
       try {
         assert(probe.admitted[0] && probe.admitted[1] && probe.admitted[2]);
         assert(probe.sourceRead[0] && probe.sourceRead[1]);
-        await observe(
-          reconcilePool.closeSessionTranscriptReconcileWorkerPool(),
-          "initial pool close",
-        );
+        await observe(reconcilePool.closeSessionTranscriptReconcileWorkerPool());
         broker = retainGatewaySessionBroker();
-        await observe(broker.ready, "broker readiness");
+        await observe(broker.ready);
         const target = {
           agentId: "delegated-outer-drain",
           sessionId: "outer-enrollment",
@@ -630,16 +602,14 @@ describe("incognito transcript reconciliation", () => {
         });
         manager.branch(root);
         manager.appendCustomEntry("delegated-reconcile", { branch: root });
-        const seeded = await observe(probe.admitted[0].promise, "healthy DATA admission");
-        await observe(probe.sourceRead[0].promise, "healthy source-read");
+        const seeded = await observe(probe.admitted[0].promise);
+        await observe(probe.sourceRead[0].promise);
         probe.release(0);
-        expect(await observe(seeded.result, "healthy result")).toEqual({
+        expect(await observe(seeded.result)).toEqual({
           status: "fulfilled",
           value: undefined,
         });
-        expect(await observe(seeded.finished.promise, "healthy DATA finish")).not.toHaveProperty(
-          "error",
-        );
+        expect(await observe(seeded.finished.promise)).not.toHaveProperty("error");
         const owner = seeded.owner;
         assert(
           owner &&
@@ -679,8 +649,8 @@ describe("incognito transcript reconciliation", () => {
         const aTask = aOperation.startTask({ mode: "memory", sessionIds: ["outer-a"] });
         tasks.push(aTask);
         const aTaskOutcome = Promise.allSettled([aTask.completion]);
-        const a = await observe(probe.admitted[1].promise, "A admission");
-        await observe(probe.sourceRead[1].promise, "A source-read");
+        const a = await observe(probe.admitted[1].promise);
+        await observe(probe.sourceRead[1].promise);
         const worker = a.worker;
         assert(worker);
         worker.once("exit", () => exited.resolve());
@@ -702,11 +672,11 @@ describe("incognito transcript reconciliation", () => {
         });
         restoreTerminate = () => terminateSpy.mockRestore();
         aController.abort(new Error("cancel A before recorded retirement failure"));
-        await observe(a.joined.promise, "A failed HOST close");
+        await observe(a.joined.promise);
         assert(a.closes[0]);
-        await expect(observe(a.closes[0], "A original close")).rejects.toBe(failure);
-        expect((await observe(aTaskOutcome, "A task failure"))[0]?.status).toBe("rejected");
-        await expect(observe(aOperation.close(), "A original finish")).rejects.toThrow(
+        await expect(observe(a.closes[0])).rejects.toBe(failure);
+        expect((await observe(aTaskOutcome))[0]?.status).toBe("rejected");
+        await expect(observe(aOperation.close())).rejects.toThrow(
           "Transcript compute cleanup did not join",
         );
         const bOperation = delegate.begin(logicalTarget, bController);
@@ -726,7 +696,7 @@ describe("incognito transcript reconciliation", () => {
         const bTask = bOperation.startTask({ mode: "memory", sessionIds: ["outer-b"] });
         tasks.push(bTask);
         const bTaskOutcome = Promise.allSettled([bTask.completion]);
-        const b = await observe(probe.admitted[2].promise, "queued B admission");
+        const b = await observe(probe.admitted[2].promise);
         expect(b.dispatches).toBe(0);
         expect(b.worker).toBeUndefined();
         const host = probe.hostPort;
@@ -741,9 +711,7 @@ describe("incognito transcript reconciliation", () => {
         host.on("message", finished);
         removeFinishObserver = () => host.off("message", finished);
         bController.abort(new Error("cancel queued B without native dispatch"));
-        expect((await observe(bTaskOutcome, "queued B task cancellation"))[0]?.status).toBe(
-          "rejected",
-        );
+        expect((await observe(bTaskOutcome))[0]?.status).toBe("rejected");
         const retainedEndpoint = endpoint;
         const drain =
           mode === "enrollment" ? joinEnrollment : retainedEndpoint.close.bind(retainedEndpoint);
@@ -763,13 +731,13 @@ describe("incognito transcript reconciliation", () => {
               return { status: "rejected", reason };
             },
           );
-        await observe(retryEntered.promise, "outer A retry");
+        await observe(retryEntered.promise);
         assert(a.closes[1]);
-        await expect(observe(a.closes[1], "actual A retry-close rejection")).rejects.toBe(failure);
-        await observe(nextTurn(), "native turn before B finish");
+        await expect(observe(a.closes[1])).rejects.toBe(failure);
+        await observe(nextTurn());
         const bFinish = bOperation.close();
-        await observe(bFinish, "B original finish");
-        const result = await observe(outerOutcome, "outer drainage");
+        await observe(bFinish);
+        const result = await observe(outerOutcome);
         expect(atSettlement).toEqual({ finished: true, taskClosed: true });
         assert(result.status === "rejected" && result.reason instanceof AggregateError);
         expect(result.reason.message).toBe("Transcript compute cleanup did not join");
@@ -787,19 +755,17 @@ describe("incognito transcript reconciliation", () => {
         });
         allowNative = true;
         const retry = aOperation.close();
-        await observe(nativeEntered.promise, "explicit original A retry");
+        await observe(nativeEntered.promise);
         probe.releaseGates();
         termination.resolve();
-        await observe(exited.promise, "A real native exit");
-        await observe(retry, "A successful finish retry");
-        await observe(drain(), "outer retry");
+        await observe(exited.promise);
+        await observe(retry);
+        await observe(drain());
         expect(attempts).toBe(3);
         expect(nativeCalls).toBe(1);
         expect(a.dispatches).toBe(1);
         expect(b.dispatches).toBe(0);
-        expect((await observe(aTaskOutcome, "unchanged A task outcome"))[0]?.status).toBe(
-          "rejected",
-        );
+        expect((await observe(aTaskOutcome))[0]?.status).toBe("rejected");
         expect(reconcilePool.getSessionTranscriptReconcileWorkerPoolSnapshot()).toMatchObject({
           workers: 0,
           activeTasks: 0,

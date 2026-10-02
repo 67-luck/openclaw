@@ -7,7 +7,7 @@ import {
   type WorkspaceInspectionInput,
   type WorkspaceInspectionResult,
 } from "../../worker/workspace-inspection-protocol.js";
-import { captureSessionMutationRouting } from "../session-sharing-preparation.js";
+import { captureSessionMutationRouting } from "../session-sharing-source.js";
 import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
 import type { GatewayRequestContext } from "./types.js";
 

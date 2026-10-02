@@ -1,7 +1,7 @@
 import { MessageChannel, type MessagePort, Worker } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { vi } from "vitest";
-import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import * as agentDatabase from "../../state/openclaw-agent-db.js";
 import * as reconcileDelegation from "./session-transcript-reconcile-delegation.js";
 import type { useReconcileWorkerObserver } from "./session-transcript-reconcile.test-support.js";
@@ -39,11 +39,7 @@ type DelegatedObservation = DelegatedAllocation & {
 export function createDelegatedReconcileProbe(
   observer: ReturnType<typeof useReconcileWorkerObserver>,
 ) {
-  return function observeDelegatedReconcile(
-    sessions: string[],
-    signal: AbortSignal,
-    label: string,
-  ) {
+  return function observeDelegatedReconcile(sessions: string[], signal: AbortSignal) {
     const admitted = sessions.map(() => createDeferred<DelegatedObservation>());
     const sourceRead = sessions.map(() => createDeferred());
     const gates = new Int32Array(
@@ -70,38 +66,9 @@ export function createDelegatedReconcileProbe(
         release(index);
       }
     };
-    const aborted = createDeferred<never>();
-    void aborted.promise.catch(() => undefined);
-    const abort = () => {
-      releaseGates();
-      aborted.reject(signal.reason);
-    };
-    // Each awaited observation unwinds this callback, not a detached body race.
-    // Leave the rest of the runner's 120s budget for the original cleanup joins.
-    const now = performance.now.bind(performance);
-    const observationDeadline = now() + 30_000;
-    // The idle-retention row advances only its pool clock. This real deadline still
-    // releases native gates and unwinds the fixture before generic worker teardown.
-    const clearDeadline = clearTimeout;
-    const deadline = setTimeout(() => {
-      releaseGates();
-      aborted.reject(new Error(`Delegated ${label} observation deadline exceeded`));
-    }, 30_000);
-    const observe = <T>(pending: PromiseLike<T>, phase: string): Promise<T> => {
-      const result = Promise.race([pending, aborted.promise]);
-      const remaining = Math.min(10_000, observationDeadline - now());
-      if (signal.aborted || remaining <= 0) {
-        void result.catch(() => undefined);
-        // The fixture observes the original caller abort reason without replacing raw values.
-        // oxlint-disable-next-line typescript/prefer-promise-reject-errors
-        return Promise.reject(
-          signal.aborted
-            ? signal.reason
-            : new Error(`Delegated ${label} observation deadline exceeded: ${phase}`),
-        );
-      }
-      return withTestTimeout(result, remaining, `Delegated ${label} did not observe ${phase}`);
-    };
+    // Test abort releases native gates and unwinds each observation; the retained
+    // fixture body still joins its original cleanup before observer teardown.
+    const observe = <T>(pending: PromiseLike<T>) => withinTest(pending, signal);
     observer.beforeCreate = (filename, workerOptions) => {
       // Forward the real source request first; proof traffic must not enter the pool's reply port.
       const proof = new MessageChannel();
@@ -281,9 +248,9 @@ export function createDelegatedReconcileProbe(
     const hostOpen = vi.spyOn(agentDatabase, "openOpenClawAgentDatabase").mockImplementation(() => {
       throw new Error("Delegated memory fixture opened agent SQLite on the host");
     });
-    signal.addEventListener("abort", abort, { once: true });
+    signal.addEventListener("abort", releaseGates, { once: true });
     if (signal.aborted) {
-      abort();
+      releaseGates();
     }
     return {
       admitted,
@@ -302,7 +269,6 @@ export function createDelegatedReconcileProbe(
       release,
       releaseGates,
       restore() {
-        clearDeadline(deadline);
         for (const port of ports) {
           port.close();
         }
@@ -313,7 +279,7 @@ export function createDelegatedReconcileProbe(
         dispatchSpy.mockRestore();
         endpointSpy.mockRestore();
         observer.beforeCreate = undefined;
-        signal.removeEventListener("abort", abort);
+        signal.removeEventListener("abort", releaseGates);
       },
     };
   };

@@ -1,4 +1,61 @@
 import { vi } from "vitest";
+import { beginSessionWorkAdmission } from "../sessions/session-lifecycle-admission.js";
+import { createGatewayWorkerPlacementReclaimBarriers } from "./server-worker-placement-reclaim.js";
+
+export function createWorkerReclaimFixture(
+  name: string,
+  state: "active" | "failed" | "local" | "reclaimed" = "active",
+) {
+  const request = {
+    sessionId: `session-${name}`,
+    sessionKey: `agent:main:${name}`,
+    agentId: "main",
+  };
+  const entry = { sessionId: request.sessionId, lifecycleRevision: "original", updatedAt: 1 };
+  const target = {
+    storePath: `/fixture/reclaim-preparation-${name}.sqlite`,
+    canonicalKey: request.sessionKey,
+    storeKeys: [request.sessionKey],
+    agentId: request.agentId,
+    store: { [request.sessionKey]: entry },
+  };
+  const placement = {
+    ...request,
+    state,
+    generation: 4,
+    environmentId: "worker",
+    activeOwnerEpoch: 7,
+  };
+  const cancel = vi.fn(async (input: { assertCurrent: () => void }) => input.assertCurrent());
+  const barriers = createGatewayWorkerPlacementReclaimBarriers({
+    placements: { get: () => ({ ...placement }) as never, waitForTurnClaimRelease: async () => {} },
+    loadSessionRuntime: async () => ({
+      managedWorktrees: { findLiveByOwner: () => undefined },
+      resolveGatewaySessionStoreTargetWithStore: () => target,
+      resolveCanonicalSessionEntryFromStoreKeys: () => entry,
+    }),
+    cancelSessionWork: cancel,
+    revokeSessionAuthority: vi.fn(),
+  });
+  const run = vi.fn(async () => ({ ...placement, state: "reclaimed" as const }) as never);
+  const admit = (onInterrupt?: () => void) =>
+    beginSessionWorkAdmission({
+      scope: target.storePath,
+      identities: [request.sessionKey, request.sessionId],
+      assertAllowed: () => {},
+      onInterrupt,
+    });
+  return {
+    ...request,
+    entry,
+    placement,
+    cancel,
+    run,
+    admit,
+    prepare: (options: Partial<Parameters<typeof barriers.runReclaimPreparation>[0]> = {}) =>
+      barriers.runReclaimPreparation({ ...request, run, ...options }),
+  };
+}
 import type { SessionEntry } from "../config/sessions/types.js";
 import { admitChatSend } from "./server-methods/chat-send-admission.js";
 import { createChatAbortContext } from "./server-methods/chat.abort.test-helpers.js";

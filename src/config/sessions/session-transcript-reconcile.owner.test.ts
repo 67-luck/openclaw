@@ -3,9 +3,9 @@ import path from "node:path";
 import { setImmediate as checkpoint } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, assert, expect, it, vi } from "vitest";
-import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import * as admission from "../../infra/sqlite-worker-operation-admission.js";
 import { readActiveOpenClawAgentDatabaseLeasesReadOnly } from "../../state/openclaw-agent-db-lease.js";
 import {
   closeOpenClawAgentDatabaseByPath,
@@ -104,11 +104,7 @@ it.for([
         forwardRelease = undefined;
         forward?.();
       };
-      const observe = <T>(promise: Promise<T>) =>
-        racePromiseWithAbortSignal(
-          withTestTimeout(promise, 10_000, `${trigger} owner observation did not settle`),
-          signal,
-        );
+      const observe = <T>(promise: Promise<T>) => withinTest(promise, signal);
       signal.addEventListener("abort", release, { once: true });
       try {
         signal.throwIfAborted();
@@ -142,6 +138,29 @@ it.for([
         const baseline = readLeases();
         expect(baseline).toHaveLength(1);
         expect(fs.readdirSync(ambientStateDir)).toEqual([]);
+        let canonicalLeaseId: string | undefined;
+        const createAdmission = admission.createSqliteWorkerOperationAdmission;
+        const admissionSpy = vi
+          .spyOn(admission, "createSqliteWorkerOperationAdmission")
+          .mockImplementation((admit, attachment, ownerScope) =>
+            createAdmission(
+              (request, grant) => {
+                if (
+                  request.stage === "open" &&
+                  isRecord(request.facts) &&
+                  request.facts.databasePath === databasePath &&
+                  typeof request.facts.leaseId === "string"
+                ) {
+                  expect(request.facts.stateDatabasePath).toBe(state.path);
+                  canonicalLeaseId = request.facts.leaseId;
+                }
+                admit(request, grant);
+              },
+              attachment,
+              ownerScope,
+            ),
+          );
+        restores.push(() => admissionSpy.mockRestore());
 
         env.OPENCLAW_STATE_DIR = ambientStateDir;
         delete env.OPENCLAW_SUPERVISOR_MODE;
@@ -220,8 +239,24 @@ it.for([
           stateDir,
           externallySupervised,
         });
-        expect(readLeases()).toHaveLength(baseline.length + 1);
-        expect(readLeases()).toContainEqual({ lease_id: task.input.leaseId });
+        assert(typeof canonicalLeaseId === "string");
+        expect(canonicalLeaseId).not.toBe(task.input.leaseId);
+        expect(baseline).not.toContainEqual({ lease_id: canonicalLeaseId });
+        const writerLeases = [...baseline, { lease_id: canonicalLeaseId }].sort((a, b) =>
+          String(a.lease_id).localeCompare(String(b.lease_id)),
+        );
+        expect(readLeases()).toEqual(
+          [...writerLeases, { lease_id: task.input.leaseId }].sort((a, b) =>
+            String(a.lease_id).localeCompare(String(b.lease_id)),
+          ),
+        );
+        expect(
+          state.db
+            .prepare(
+              "SELECT agent_id, path, owner_pid FROM agent_database_leases WHERE lease_id = ?",
+            )
+            .get(canonicalLeaseId),
+        ).toEqual({ agent_id: options.agentId, path: databasePath, owner_pid: process.pid });
         expect(fs.readdirSync(ambientStateDir)).toEqual([]);
         expect(messages).toContain("done");
         expect(messages).not.toContain("lease-released");
@@ -241,7 +276,9 @@ it.for([
         await observe(Promise.all(ports));
         expect(messages.filter((type) => type === "lease-released")).toHaveLength(1);
         expect(closedPorts).toBe(1);
-        expect(readLeases()).toEqual(baseline);
+        // Planner settlement releases its deletion fence, not the bounded warm writer.
+        // The original database close below owns that writer's final retirement.
+        expect(readLeases()).toEqual(writerLeases);
         expect(readLeases()).not.toContainEqual({ lease_id: task.input.leaseId });
         expect(getSessionTranscriptReconcileWorkerPoolSnapshot()).toMatchObject({
           activeTasks: 0,

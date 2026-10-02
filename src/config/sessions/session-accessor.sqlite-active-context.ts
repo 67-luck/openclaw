@@ -27,11 +27,11 @@ import {
   resolveTranscriptBoundaryWindow,
 } from "./session-accessor.sqlite-reset-window.js";
 import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
+import { readSelectedTranscriptPayloads } from "./session-accessor.sqlite-transcript-raw-rows.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
 import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 import {
-  transcriptEventJsonSql,
   transcriptEventNavigationSql,
   transcriptEventResetNavigationSql,
 } from "./transcript-payload.js";
@@ -336,22 +336,13 @@ export function readSessionTranscriptBoundedActiveContextCore(
         },
         activeLeafEntryId: fence ? fence.admission.effectiveParentId : projection.state.leafEventId,
         totalEvents: projection.state.activeEventCount,
-        readPayloads: (payloadSequences) => {
-          return new Map<number, TranscriptEvent>(
-            (payloadSequences.length === 0
-              ? []
-              : executeSqliteQuerySync(
-                  projection.database.db,
-                  transcript
-                    .select([
-                      "seq",
-                      transcriptEventJsonSql(projection.database.db).as("event_json"),
-                    ])
-                    .where("seq", "in", payloadSequences),
-                ).rows
-            ).map((row) => [row.seq, JSON.parse(row.event_json)]),
-          );
-        },
+        readPayloads: (payloadSequences) =>
+          readSelectedTranscriptPayloads(
+            projection.database,
+            projection.resolved.sessionId,
+            payloadSequences,
+            "full",
+          ),
         readParents: (contextSequences, payloads) => {
           // Retain logical ancestry across the byte cutoff without loading parent payloads.
           // Raw parent_id can point into an abandoned branch after a leaf control.

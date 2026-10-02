@@ -26,10 +26,10 @@ import {
 import { createSessionManagerMessageRuntime } from "./session-manager-message-runtime.js";
 import type { SessionMetadataWorkerOperations } from "./session-manager-metadata-contract.js";
 import {
-  SessionManagerPersistence,
   isSqliteTranscriptMutationConflict,
   type PersistRecordResult,
-} from "./session-manager-persistence.js";
+} from "./session-manager-persistence-contract.js";
+import { SessionManagerPersistence } from "./session-manager-persistence.js";
 import type { ModelChangeEntry, ThinkingLevelChangeEntry } from "./session-manager-types.js";
 import type {
   PreparedSessionTranscriptReload,

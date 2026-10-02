@@ -341,7 +341,9 @@ function discardUnsafeConnection(db: TransactionDatabase, error: unknown): void 
   try {
     discardSqliteTransactionState(db, poison.error);
   } catch (failure) {
-    failures.push(failure);
+    // The journal already includes the original error with every failed inverse.
+    // Preserve that first aggregate instead of wrapping the primary twice.
+    poison.error = failure;
   }
   try {
     clearNodeSqliteKyselyCacheForDatabase(db);

@@ -120,6 +120,7 @@ const reviewed = new Map([
   ],
 ]);
 const workerModules = new Set([
+  "src/state/openclaw-agent-execution-commands.ts", // Only execution.worker.ts and execution-volatile.worker.ts dispatch these commands.
   "extensions/memory-core/src/memory-entry-origin-reads.ts", // Memory search worker origin-read commands only.
   "extensions/memory-core/src/memory-entry-origins-delete.ts", // Memory origin worker delete command only.
   "extensions/memory-core/src/memory-forget-index-read.ts", // Memory search worker forget-index-plan command only.

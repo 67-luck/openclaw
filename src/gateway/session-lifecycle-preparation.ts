@@ -14,10 +14,8 @@ import type {
   CreateGatewaySessionParams,
   PreparedGatewaySessionLifecycle,
 } from "./session-create-service.types.js";
-import {
-  captureSessionMutationRouting,
-  prepareSessionMutationFacts,
-} from "./session-sharing-preparation.js";
+import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
+import { captureSessionMutationRouting } from "./session-sharing-source.js";
 import type { GatewaySessionStoreTarget } from "./session-utils-store.types.js";
 
 /** Retain the canonical targets across asynchronous authority preparation and mutation. */

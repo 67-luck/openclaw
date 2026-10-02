@@ -2,7 +2,6 @@ import type { DatabaseSync } from "node:sqlite";
 import {
   ensureSessionEntrySync,
   readTranscriptMutationAtSync,
-  type TranscriptEntryAnchor,
 } from "../../config/sessions/session-accessor.js";
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import { publishCommittedSessionIdentity } from "../../config/sessions/session-accessor.sqlite-identity.js";
@@ -51,63 +50,18 @@ import { isIndexedSessionEntry, parseOpaqueLeafEntry } from "./session-manager-c
 import { SessionManagerCore } from "./session-manager-core.js";
 import type { SessionMetadataWorkerOperations } from "./session-manager-metadata-contract.js";
 import { withReadySessionMetadata } from "./session-manager-metadata-runtime.js";
-import {
-  type AppendPersistenceOptions,
-  type SessionEntry,
-  sessionTranscriptAppendPublication,
-} from "./session-manager-types.js";
+import type {
+  NativeMessageAppendContinuation,
+  PersistRecordOptions,
+  PersistRecordResult,
+} from "./session-manager-persistence-contract.js";
+import { type SessionEntry, sessionTranscriptAppendPublication } from "./session-manager-types.js";
 import type {
   PreparedSessionTranscriptReload,
   SessionManagerPersistenceTarget,
 } from "./session-manager-view-types.js";
 import { withSessionManagerReadyWrite } from "./session-manager-write-admission.js";
 import type { SessionMessageCommitFacts } from "./session-message-append-receipt.js";
-
-export type PersistRecordResult =
-  | undefined
-  | {
-      anchor?: TranscriptEntryAnchor;
-      lifecycleRevision?: string;
-      appended: boolean;
-      adoptedMessageId?: string;
-      effectiveParentId: string | null;
-      reloadAfterAppend?: boolean;
-      reload?: PreparedSessionTranscriptReload;
-      [sessionTranscriptAppendPublication]?: (observer: () => void) => void;
-    };
-
-type NativeMessageAppendContinuation = {
-  enter: (
-    ...args: [
-      ...Parameters<
-        NonNullable<
-          NonNullable<Parameters<typeof appendTranscriptMessageSnapshotSync>[4]>["continuation"]
-        >["enter"]
-      >,
-      initialized: boolean,
-    ]
-  ) => () => void;
-  assertCurrent: () => void;
-  enterPublicFresh: () => () => void;
-  complete: (result: PersistRecordResult) => void;
-  retainPublication: (publish: () => void) => void;
-};
-
-type PersistRecordOptions = AppendPersistenceOptions & {
-  /** Retry fence captured from the durable snapshot that passed validation. */
-  expectedMutationAt?: number | null;
-};
-
-export function isSqliteTranscriptMutationConflict(error: unknown): boolean {
-  let current = error;
-  for (let depth = 0; depth < 3 && current instanceof Error; depth += 1) {
-    if (current.name === "SqliteTranscriptMutationConflictError") {
-      return true;
-    }
-    current = current.cause;
-  }
-  return false;
-}
 
 export class SessionManagerPersistence extends SessionManagerCore {
   #initialWriter: InitialSessionTranscriptWriter | undefined;

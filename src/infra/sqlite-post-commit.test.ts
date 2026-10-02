@@ -361,17 +361,13 @@ describe("runSqliteImmediateTransactionSync", () => {
       expect(failure).toBeInstanceOf(AggregateError);
       expect(failure).toMatchObject({
         cause: primary,
-        errors: [primary, { cause: primary, errors: [primary, cleanup] }],
+        errors: [primary, cleanup],
       });
       const poisonError = failure as AggregateError;
-      const inverseError = poisonError.errors[1] as AggregateError;
       expect(poisonError.cause).toBe(primary);
       expect(poisonError.errors).toHaveLength(2);
       expect(poisonError.errors[0]).toBe(primary);
-      expect(inverseError.cause).toBe(primary);
-      expect(inverseError.errors).toHaveLength(2);
-      expect(inverseError.errors[0]).toBe(primary);
-      expect(inverseError.errors[1]).toBe(cleanup);
+      expect(poisonError.errors[1]).toBe(cleanup);
       expect(nativeLosses).toBe(1);
       expect(knownCommits).toBe(committedSibling ? 1 : 0);
       expect(order).toEqual([

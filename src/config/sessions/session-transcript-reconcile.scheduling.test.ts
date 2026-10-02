@@ -1,6 +1,6 @@
 import { setImmediate as checkpoint } from "node:timers/promises";
 import { expect, it, vi, type MockInstance } from "vitest";
-import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   closeOpenClawAgentDatabasesAsync,
@@ -21,9 +21,10 @@ import {
   waitForSessionTranscriptIndexReconcilesInStateDir,
 } from "./session-transcript-reconcile.js";
 
-it.each(["final", "superseded"] as const)(
+it.for(["final", "superseded"] as const)(
   "joins late waits and successor demand while a %s borrow is releasing",
-  async (mode) => {
+  { timeout: 30_000 },
+  async (mode, { signal }) => {
     await withOpenClawTestState({ label: "reconcile-borrow-retirement" }, async (state) => {
       const options = {
         agentId: "main",
@@ -71,7 +72,7 @@ it.each(["final", "superseded"] as const)(
           startSessionTranscriptIndexReconcile(options);
           startSessionTranscriptIndexReconcile(options);
         }
-        await withTestTimeout(retiring.promise, 10_000, "Original borrow did not retire");
+        await withinTest(retiring.promise, signal);
         await checkpoint();
         expect(isSessionTranscriptIndexReconcileRunning(options)).toBe(true);
         waits.push(
@@ -86,13 +87,13 @@ it.each(["final", "superseded"] as const)(
         expect([keyDrained, rootDrained]).toEqual([false, false]);
 
         startSessionTranscriptIndexReconcile(options);
-        await withTestTimeout(successorRetiring.promise, 10_000, "Successor demand was lost");
+        await withinTest(successorRetiring.promise, signal);
         previous.resolve();
         await checkpoint();
         expect(isSessionTranscriptIndexReconcileRunning(options)).toBe(true);
         expect([keyDrained, rootDrained]).toEqual([false, false]);
         successor.resolve();
-        await withTestTimeout(Promise.all(waits), 10_000, "Accepted owners did not drain");
+        await withinTest(Promise.all(waits), signal);
         expect([keyDrained, rootDrained]).toEqual([true, true]);
         expect(isSessionTranscriptIndexReconcileRunning(options)).toBe(false);
         expect(releases).toHaveLength(successorIndex + 1);
@@ -109,7 +110,6 @@ it.each(["final", "superseded"] as const)(
       }
     });
   },
-  30_000,
 );
 
 it("drains deferred reconciliation after the caller retires its timer queue", async ({

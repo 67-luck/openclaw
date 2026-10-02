@@ -23,7 +23,7 @@ import {
 import {
   isSqliteTranscriptMutationConflict,
   type PersistRecordResult,
-} from "./session-manager-persistence.js";
+} from "./session-manager-persistence-contract.js";
 import { SessionManagerSuffixPersistence } from "./session-manager-suffix-persistence.js";
 import {
   sessionTranscriptAppendPublication,

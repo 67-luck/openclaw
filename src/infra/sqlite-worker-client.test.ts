@@ -1,7 +1,7 @@
 import { deserialize, serialize } from "node:v8";
 import { MessageChannel, receiveMessageOnPort, type MessagePort } from "node:worker_threads";
-import { expect, it, vi } from "vitest";
-import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
+import { assert, expect, it, vi } from "vitest";
+import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import { dispatchSqliteWorkerJob } from "./sqlite-worker-broker-dispatch.js";
 import { settleSqliteWorkerJob } from "./sqlite-worker-broker-reply.js";
 import type { Actor, Job, OperationScope, Slot } from "./sqlite-worker-broker.types.js";
@@ -28,9 +28,9 @@ import { createSqliteWorkerScopedTransfer } from "./sqlite-worker-transfer.js";
 type Operations = { write: { input: string; output: string } };
 const closedError = { code: "closed", message: "SQLite worker store is closed" };
 
-it.each(["Error", "undefined", "null"] as const)(
+it.for(["Error", "undefined", "null"] as const)(
   "retains the first scoped transfer callback failure %s through later native port close",
-  async (kind) => {
+  async (kind, { signal }) => {
     const sentinel =
       kind === "Error"
         ? new Error("Original transfer callback failure")
@@ -86,13 +86,13 @@ it.each(["Error", "undefined", "null"] as const)(
     };
     try {
       peer.post({ accepted: "original native transfer" });
-      await withTestTimeout(failed.promise, 5_000, "Original transfer callback did not fail");
+      await withinTest(failed.promise, signal);
       expect(values).toEqual([{ accepted: "original native transfer" }]);
       expect(failures).toHaveLength(1);
       expect(failures[0]).toBe(sentinel);
       assertFirstFailure();
       peer.close();
-      await withTestTimeout(peerClosed.promise, 5_000, "Original peer close was not delivered");
+      await withinTest(peerClosed.promise, signal);
       expect(failures).toHaveLength(2);
       expect(failures[1]).toBe(sentinel);
       assertFirstFailure();
@@ -523,7 +523,15 @@ function terminalFixture(outcome: TerminalCase, nested: boolean) {
     }
     return true;
   });
-  const service = vi.spyOn(host, "service");
+  const serviceAfterTerminal = vi.fn();
+  const service = host.service.bind(host);
+  vi.spyOn(host, "service").mockImplementation((...args) => {
+    // Native delivery may follow valid servicing, but terminal custody cannot reopen.
+    if (jobs[0]?.terminal) {
+      serviceAfterTerminal();
+    }
+    return service(...args);
+  });
   const admission = createSqliteWorkerOperationAdmission(
     (_request, grant) => grant(),
     undefined,
@@ -555,13 +563,18 @@ function terminalFixture(outcome: TerminalCase, nested: boolean) {
     },
     transport: {
       post(request: Job["request"]) {
-        if (!request.operationAdmission) {
-          return;
-        }
+        const job = jobs.find((entry) => entry.request.id === request.id);
+        assert(job);
+        assert(request.operationAdmission);
         const attachment = receiveMessageOnPort(request.operationAdmission)?.message as {
           kind: string;
           scope: MessagePort;
         };
+        if (!job.createAdmission) {
+          // Plain jobs retain database authority without a domain or host-scope attachment.
+          expect(attachment).toBeUndefined();
+          return;
+        }
         expect(attachment.kind).toBe("sqlite-operation-attachment");
         const peer = createSqliteWorkerScopedTransfer(attachment.scope, (value, transferred) => {
           frames.push(value);
@@ -651,7 +664,7 @@ function terminalFixture(outcome: TerminalCase, nested: boolean) {
     client,
     operation,
     host,
-    service,
+    serviceAfterTerminal,
     settle,
     jobs,
     caught,
@@ -695,7 +708,7 @@ it.each(terminalCases)(
       if ("error" in observed) {
         expect(observed.error).toBe(fixture.expectedError);
       }
-      expect(fixture.service).not.toHaveBeenCalled();
+      expect(fixture.serviceAfterTerminal).not.toHaveBeenCalled();
       expect(fixture.jobs[0]?.terminal?.settlement).toEqual({ kind: "completed" });
       expect(fixture.jobs[0]?.ready?.result).toBeUndefined();
       expect(fixture.settle).toHaveBeenCalledOnce();
@@ -748,6 +761,7 @@ it.each(
         expect(fixture.caught[0]).toBe(fixture.expectedError);
       }
       expect(fixture.host.hostFailure).toBeUndefined();
+      expect(fixture.serviceAfterTerminal).not.toHaveBeenCalled();
       expect(fixture.childAdmission).toHaveBeenCalledOnce();
       expect(fixture.frames).toHaveLength(1);
       expect(fixture.settle).toHaveBeenCalledOnce();

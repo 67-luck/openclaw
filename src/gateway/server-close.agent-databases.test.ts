@@ -8,7 +8,7 @@ import { type MessagePort, Worker } from "node:worker_threads";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, it, type TestContext, vi } from "vitest";
-import { withTestTimeout } from "../../test/helpers/promise.js";
+import { withinTest } from "../../test/helpers/promise.js";
 import { isAgentRunRestartAbortReason } from "../agents/run-termination.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import {
@@ -48,7 +48,6 @@ import {
   OpenClawAgentDatabaseLeaseActiveError,
 } from "../state/openclaw-agent-db-lease.js";
 import { agentDatabaseLifecycle } from "../state/openclaw-agent-db-lifecycle.js";
-import { registerOpenClawAgentDatabaseAsyncResource } from "../state/openclaw-agent-db-resources.js";
 import * as schema from "../state/openclaw-agent-db-schema.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -173,19 +172,13 @@ it.skipIf(Boolean(process.versions.bun))(
     const terminationEntered = createDeferredCore();
     const nativeExited = createDeferredCore();
     const dataFinished = createDeferredCore<Record<string, unknown>>();
-    const aborted = createDeferredCore<never>();
-    void aborted.promise.catch(() => undefined);
     const releaseGates = () => {
       releaseTask.resolve();
       releaseTermination.resolve();
     };
-    const abort = () => {
-      releaseGates();
-      aborted.reject(signal.reason);
-    };
-    signal.addEventListener("abort", abort, { once: true });
+    signal.addEventListener("abort", releaseGates, { once: true });
     if (signal.aborted) {
-      abort();
+      releaseGates();
     }
     type Start = Parameters<
       typeof reconcileDelegation.createSessionReconcileHostEndpoint
@@ -211,8 +204,8 @@ it.skipIf(Boolean(process.versions.bun))(
     const retainMetadata = pluginMetadataLifecycle.retainGatewayPluginMetadata;
     const metadataSpy = vi
       .spyOn(pluginMetadataLifecycle, "retainGatewayPluginMetadata")
-      .mockImplementation(() => {
-        const owner = retainMetadata();
+      .mockImplementation((...args) => {
+        const owner = retainMetadata(...args);
         metadataOwners.push(owner);
         return owner;
       });
@@ -303,17 +296,7 @@ it.skipIf(Boolean(process.versions.bun))(
       await racePromiseWithAbortSignal(initialPoolClose, signal);
       const first = await racePromiseWithAbortSignal(startGateway(), signal);
       const last = await racePromiseWithAbortSignal(startGateway(), signal);
-      // This budget measures delegated drain, not real Gateway startup.
-      const deadline = performance.now() + 30_000;
-      const observe = <T>(promise: PromiseLike<T>, phase: string) => {
-        const remaining = Math.min(10_000, deadline - performance.now());
-        const result = Promise.race([promise, aborted.promise]);
-        if (remaining <= 0) {
-          void result.catch(() => undefined);
-          return Promise.reject(new Error(`Gateway delegated observation deadline: ${phase}`));
-        }
-        return withTestTimeout(result, remaining, `Gateway did not observe ${phase}`);
-      };
+      const observe = <T>(promise: PromiseLike<T>) => withinTest(promise, signal);
       expect(metadataOwners).toHaveLength(2);
       const finalMetadata = metadataOwners[1];
       assert(finalMetadata);
@@ -337,14 +320,14 @@ it.skipIf(Boolean(process.versions.bun))(
       manager.branch(root);
       intendedSessionId = target.sessionId;
       manager.appendCustomEntry("delegated-reconcile", { branch: root });
-      await observe(closeEntered.promise, "completed task held before close");
+      await observe(closeEntered.promise);
       assert(row?.native && row.worker);
       const original = row;
       const task = row.native;
       const controller = row.signal;
       const worker = row.worker;
       const result = task.result;
-      await expect(observe(result, "actual native result")).resolves.toBeUndefined();
+      await expect(observe(result)).resolves.toBeUndefined();
       let computeExited = false;
       const teardownOrder: string[] = [];
       const teardownObservations: {
@@ -392,7 +375,7 @@ it.skipIf(Boolean(process.versions.bun))(
         activeTasks: 1,
         pendingTasks: 1,
       });
-      await observe(first.close({ reason: "sibling stopping" }), "sibling close");
+      await observe(first.close({ reason: "sibling stopping" }));
       expect(agentDatabaseLifecycle.gatewayExecution).toBe(broker);
       expect(broker.projection).toBe(endpoint);
       expect(broker.phase).toBe("ready");
@@ -420,16 +403,13 @@ it.skipIf(Boolean(process.versions.bun))(
             controller.addEventListener("abort", () => resolve(), { once: true });
           }
         }),
-        "final logical-owner revocation",
       );
       expect(finalSettled).toBe(false);
       expect(row.closes).toBe(1);
       expect(nativeCalls).toBe(0);
       releaseTask.resolve();
-      await expect(observe(dataFinished.promise, "actual DATA finish")).resolves.not.toHaveProperty(
-        "error",
-      );
-      await observe(terminationEntered.promise, "final compute pool retirement");
+      await expect(observe(dataFinished.promise)).resolves.not.toHaveProperty("error");
+      await observe(terminationEntered.promise);
       // DATA can already be closed here. Only the final Gateway joins the idle
       // compute pool before registry retirement and release of database leases.
       expect(finalSettled).toBe(false);
@@ -445,13 +425,13 @@ it.skipIf(Boolean(process.versions.bun))(
         OpenClawAgentDatabaseLeaseActiveError,
       );
       releaseTermination.resolve();
-      await observe(finalClose, "final Gateway close");
+      await observe(finalClose);
       expect(teardownOrder).toEqual(["compute-exit", "registry-retirement", "final-close"]);
       expect(teardownObservations).toEqual([
         { boundary: "registry-retirement", computeExited: true, threadId: -1 },
         { boundary: "final-close", computeExited: true, threadId: -1 },
       ]);
-      await observe(nativeExited.promise, "real compute worker exit");
+      await observe(nativeExited.promise);
       expect(worker.threadId).toBe(-1);
       expect(nativeCalls).toBe(1);
       expect(row.dispatches).toBe(1);
@@ -504,7 +484,7 @@ it.skipIf(Boolean(process.versions.bun))(
         dispatchSpy.mockRestore();
         endpointSpy.mockRestore();
         metadataSpy.mockRestore();
-        signal.removeEventListener("abort", abort);
+        signal.removeEventListener("abort", releaseGates);
       }
     }
     if (failures.length === 1) {

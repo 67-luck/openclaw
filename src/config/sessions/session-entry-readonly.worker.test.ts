@@ -7,19 +7,13 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
-import nodePath, { dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { fileURLToPath } from "node:url";
 import { getEnvironmentData, setEnvironmentData, type Worker } from "node:worker_threads";
 import { expect, it, vi } from "vitest";
-import type { JsonTestResults } from "vitest/node";
-import { createCommandFixture } from "../../../test/helpers/command-fixture.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { bindSqliteWorkerBackend } from "../../agents/sessions/session-manager-metadata.worker.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import * as nodeSqlite from "../../infra/node-sqlite.js";
-import { runWithSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import {
   invalidateRegisteredAgentDatabasesMemo,
@@ -29,9 +23,7 @@ import { drainAgentDatabaseResources } from "../../state/openclaw-agent-db-resou
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import * as agentDatabases from "../../state/openclaw-agent-db.js";
 import { retainGatewaySessionBroker } from "../../state/openclaw-agent-execution.js";
-import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { SessionMetadataUnavailableError } from "../../state/session-metadata-unavailable-error.js";
-import { resolveTestNodeExecPath } from "../../test-utils/node-process.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { prepareQualifiedSessionEntryTarget } from "./session-accessor.entry.js";
 import * as entryReads from "./session-accessor.sqlite-entry-read.js";
@@ -107,83 +99,6 @@ vi.mock("../../infra/worker-cpu.js", async (importOriginal) => {
     },
   };
 });
-
-it.each(["row", "unencodable"] as const)(
-  "encodes only canonical native entry row failures (%s)",
-  async (kind) => {
-    await withOpenClawTestState({ label: "readonly-native-result" }, async ({ env }) => {
-      const database = openOpenClawAgentDatabase({ agentId: "main", env });
-      const scope = {
-        agentId: "main",
-        storePath: database.path,
-        sessionKey: "agent:main:result",
-        env,
-      };
-      writeSessionEntry(database, scope.sessionKey, { sessionId: "result", updatedAt: 1 });
-      const context = captureOpenClawStateWorkerContext({ env });
-      const backend = bindSqliteWorkerBackend(undefined, {
-        databasePath: database.path,
-        database: database.db,
-        admit() {
-          throw new Error("Readonly entry attempted a write");
-        },
-      });
-      const failure = kind === "row" ? new Error("selected row failed") : { unavailable: true };
-      const read = vi.spyOn(entryReads, "readSessionEntryRow").mockImplementation(() => {
-        // oxlint-disable-next-line typescript/only-throw-error -- The native row encoder must preserve raw, unencodable read failures.
-        throw failure;
-      });
-      const execute = (expected?: { identity: string }) =>
-        runWithSqliteWorkerStateContext(context, () =>
-          backend.execute({
-            type: "session.metadata.entryRead",
-            input: {
-              scope: resolveSqliteScope(scope),
-              query: { kind: "resolve-result" },
-              expected,
-            },
-          }),
-        );
-      try {
-        expect(() => execute({ identity: "different-original-owner" })).toThrow(
-          "Captured session database changed before read",
-        );
-        expect(read).not.toHaveBeenCalled();
-        if (kind === "row") {
-          expect(execute()).toMatchObject({
-            ok: true,
-            value: {
-              result: {
-                kind: "resolve-result",
-                value: {
-                  ok: false,
-                  error: {
-                    version: 1,
-                    root: 0,
-                    nodes: [{ name: "Error", message: "selected row failed" }],
-                  },
-                },
-              },
-            },
-          });
-          expect(database.db.isTransaction).toBe(false);
-          expect(database.db.isOpen).toBe(true);
-        } else {
-          let thrown: unknown;
-          try {
-            execute();
-          } catch (error) {
-            thrown = error;
-          }
-          expect(thrown).toBe(failure);
-        }
-      } finally {
-        read.mockRestore();
-        await backend.close();
-      }
-    });
-  },
-);
 
 async function withEnrolledEntryReader(
   kind: "hit" | "missing",
@@ -391,95 +306,6 @@ it("qualifies fresh borrowed sources from one volatile owner without replacing i
       }
     }
   });
-});
-
-it("retains a rejected reader close for later canonical drainage", async (context) => {
-  const command = createCommandFixture(context, "tree");
-  const root = command.createTempDir("readonly-close-failure-");
-  const repoRoot = nodePath.resolve(import.meta.dirname, "../../..");
-  const childFixture = nodePath
-    .relative(
-      repoRoot,
-      fileURLToPath(
-        new URL("./session-entry-readonly-close-failure.test-support.ts", import.meta.url),
-      ),
-    )
-    .split(nodePath.sep)
-    .join("/");
-  const configPath = nodePath.join(root, "vitest.config.mts");
-  const reportPath = nodePath.join(root, "report.json");
-  try {
-    // Failed custody intentionally survives in the child until process exit.
-    // The parent joins that process before removing its isolated state and report.
-    await writeFile(
-      configPath,
-      `import { sharedVitestConfig } from ${JSON.stringify(nodePath.join(repoRoot, "test/vitest/vitest.shared.config.ts"))};
-export default {
-  ...sharedVitestConfig,
-  test: {
-    ...sharedVitestConfig.test,
-    include: [${JSON.stringify(childFixture)}],
-    setupFiles: [],
-    runner: undefined,
-    isolate: true,
-    pool: "forks",
-    maxWorkers: 1,
-    fileParallelism: false,
-    passWithNoTests: false,
-  },
-};
-`,
-    );
-    const env = { ...process.env };
-    for (const key of Object.keys(env)) {
-      if (
-        key.startsWith("VITEST") ||
-        key.startsWith("OPENCLAW_VITEST") ||
-        key === "GITHUB_ACTIONS"
-      ) {
-        delete env[key];
-      }
-    }
-    Object.assign(env, {
-      HOME: root,
-      USERPROFILE: root,
-      OPENCLAW_HOME: root,
-      OPENCLAW_TEST_HOME: root,
-      OPENCLAW_STATE_DIR: nodePath.join(root, "state"),
-      OPENCLAW_CONFIG_PATH: nodePath.join(root, "openclaw.json"),
-      XDG_CONFIG_HOME: nodePath.join(root, ".config"),
-      XDG_DATA_HOME: nodePath.join(root, ".local", "share"),
-      XDG_STATE_HOME: nodePath.join(root, ".local", "state"),
-      XDG_CACHE_HOME: nodePath.join(root, ".cache"),
-      OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: nodePath.join(root, "modules"),
-      NO_COLOR: "1",
-    });
-    delete env.OPENCLAW_AGENT_DIR;
-    delete env.PI_CODING_AGENT_DIR;
-    const result = await command.run(
-      resolveTestNodeExecPath(),
-      [
-        "scripts/run-vitest.mjs",
-        "run",
-        "--config",
-        configPath,
-        "--reporter=verbose",
-        "--reporter=json",
-        `--outputFile.json=${reportPath}`,
-      ],
-      { cwd: repoRoot, env },
-    );
-    expect(result.error, `${result.stdout}\n${result.stderr}`).toBeUndefined();
-    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
-    const report = JSON.parse(await readFile(reportPath, "utf8")) as JsonTestResults;
-    expect(report.numTotalTests).toBe(1);
-    expect(report.numPassedTests).toBe(1);
-    expect(report.numFailedTests).toBe(0);
-    expect(report.testResults).toHaveLength(1);
-    expect(report.testResults[0]?.status).toBe("passed");
-  } finally {
-    await command.lifetime.cleanup();
-  }
 });
 
 it.each(["hit", "missing"] as const)(

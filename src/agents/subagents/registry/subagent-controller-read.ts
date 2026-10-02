@@ -11,10 +11,8 @@ import { withSessionEntriesFromStoreInWorker } from "../../../config/sessions/se
 import { captureSessionStoreReadCandidates } from "../../../config/sessions/session-store-target-inventory.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { SessionMutationFactsUnavailableError } from "../../../gateway/session-mutation-authorization-error.js";
-import {
-  captureSessionMutationRouting,
-  prepareSessionMutationFacts,
-} from "../../../gateway/session-sharing-preparation.js";
+import { prepareSessionMutationFacts } from "../../../gateway/session-sharing-preparation.js";
+import { captureSessionMutationRouting } from "../../../gateway/session-sharing-source.js";
 import { readDatabasePathIdentitySync } from "../../../infra/sqlite-worker-identity.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../../../routing/session-key.js";
 import { onSessionIdentityMutation } from "../../../sessions/session-lifecycle-events.js";

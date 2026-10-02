@@ -1,7 +1,7 @@
 import { Worker } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
-import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import {
   prepareUsageCostWorker,
   runUsageCostWorker,
@@ -164,7 +164,7 @@ describe("incognito transcript reconciliation", () => {
     }
   });
 
-  it("joins the final memory sweep after the pooled task completes", async () => {
+  it("joins the final memory sweep after the pooled task completes", async ({ signal }) => {
     const { scope, options } = target(explicit.env);
     await replaceTranscriptEvents(scope, [message("seed")]);
     const database = openOpenClawAgentDatabase(options);
@@ -209,8 +209,8 @@ describe("incognito transcript reconciliation", () => {
       },
     );
     try {
-      await withTestTimeout(blocked.promise, 10_000, "memory final sweep did not reach its fence");
-      await withTestTimeout(completed.promise, 10_000, "memory task did not complete");
+      await withinTest(blocked.promise, signal);
+      await withinTest(completed.promise, signal);
       expect(worker?.threadId).toBeGreaterThan(0);
       expect(settled).toBe(false);
     } finally {
@@ -222,7 +222,9 @@ describe("incognito transcript reconciliation", () => {
     expectNoDiskState();
   }, 20_000);
 
-  it("hands a successor's scheduled work over after active old-task cancellation", async () => {
+  it("hands a successor's scheduled work over after active old-task cancellation", async ({
+    signal,
+  }) => {
     const { scope, options } = target(ambient.env);
     await replaceTranscriptEvents(scope, [message("old-owner")]);
     const database = openOpenClawAgentDatabase(options);
@@ -265,7 +267,7 @@ describe("incognito transcript reconciliation", () => {
     startSessionTranscriptIndexReconcile(options);
     const pending = waitForSessionTranscriptIndexReconcile(options);
     try {
-      await withTestTimeout(joined.promise, 10_000, "old memory worker did not settle");
+      await withinTest(joined.promise, signal);
       expect(state()).toEqual({ needs_rebuild: 0 });
       await runExclusiveSqliteSessionWrite(
         options,
@@ -301,9 +303,10 @@ describe("incognito transcript reconciliation", () => {
     expectNoDiskState();
   }, 20_000);
 
-  it.each(["handoff", "initial"] as const)(
+  it.for(["handoff", "initial"] as const)(
     "retains captured native demand through independent usage retirement (%s)",
-    async (admission) => {
+    { timeout: 20_000 },
+    async (admission, { signal }) => {
       const { scope, options } = target(ambient.env);
       await replaceTranscriptEvents(scope, [message("old-owner")]);
       const database = openOpenClawAgentDatabase(options);
@@ -425,7 +428,7 @@ describe("incognito transcript reconciliation", () => {
       try {
         startSessionTranscriptIndexReconcile(options);
         pending = waitForSessionTranscriptIndexReconcile(options);
-        await withTestTimeout(taskJoined.promise, 10_000, "native reconciliation did not complete");
+        await withinTest(taskJoined.promise, signal);
         await runExclusiveSqliteSessionWrite(
           options,
           async () => undefined,
@@ -453,7 +456,7 @@ describe("incognito transcript reconciliation", () => {
           .finally(() => {
             usageSettled = true;
           });
-        await withTestTimeout(hostEffectEntered.promise, 10_000, "usage host effect did not enter");
+        await withinTest(hostEffectEntered.promise, signal);
         expect(originalResponse).toMatchObject({ input: { ok: true } });
         expect(usageWorker?.threadId).toBeGreaterThan(0);
         expect(usageTasks).toBe(1);
@@ -479,12 +482,8 @@ describe("incognito transcript reconciliation", () => {
           expect(operations[0]?.retirement).toBeInstanceOf(Promise);
           await operations[0]?.retirement;
         }
-        const blocked = await withTestTimeout(
-          admissionBlocked.promise,
-          10_000,
-          "successor did not encounter the independent retirement",
-        );
-        await withTestTimeout(usageExited.promise, 10_000, "original usage worker did not exit");
+        const blocked = await withinTest(admissionBlocked.promise, signal);
+        await withinTest(usageExited.promise, signal);
         expect(usageWorker?.threadId).toBe(-1);
         expect(blocked.retirements).toHaveLength(1);
         expect(blocked.retirements?.[0]).not.toBe(operations[0]?.retirement);
@@ -529,12 +528,12 @@ describe("incognito transcript reconciliation", () => {
         }
       }
     },
-    20_000,
   );
 
-  it.each(["live", "disposed", "replaced", "stopped", "failed retirement", "same owner"] as const)(
+  it.for(["live", "disposed", "replaced", "stopped", "failed retirement", "same owner"] as const)(
     "keeps scheduled owner authority after native task completion (%s)",
-    async (ending) => {
+    { timeout: 20_000 },
+    async (ending, { signal }) => {
       const { scope, options } = target(ambient.env);
       await replaceTranscriptEvents(scope, [message("old-owner")]);
       const database = openOpenClawAgentDatabase(options);
@@ -626,7 +625,7 @@ describe("incognito transcript reconciliation", () => {
       const pending = waitForSessionTranscriptIndexReconcile(options);
       const failures: unknown[] = [];
       try {
-        await withTestTimeout(taskJoined.promise, 10_000, "native memory task did not join");
+        await withinTest(taskJoined.promise, signal);
         await runExclusiveSqliteSessionWrite(
           options,
           async () => undefined,
@@ -660,7 +659,7 @@ describe("incognito transcript reconciliation", () => {
         }
         expect(state()).toEqual({ needs_rebuild: 1 });
         forwardRelease.resolve();
-        await withTestTimeout(retirementEntered.promise, 10_000, "old operation did not retire");
+        await withinTest(retirementEntered.promise, signal);
         expect(forwardedReceipt).toBe(originalReceipt);
         expect(isSessionTranscriptIndexReconcileRunning(options)).toBe(true);
         expect(tasks).toBe(1);
@@ -758,6 +757,5 @@ describe("incognito transcript reconciliation", () => {
         throw new AggregateError(failures, "Scheduled reconciliation cleanup failed");
       }
     },
-    20_000,
   );
 });

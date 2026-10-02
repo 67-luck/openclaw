@@ -1,6 +1,4 @@
-import type { DatabaseSync } from "node:sqlite";
 import { ok, type Result } from "@openclaw/normalization-core/result";
-import { hasSqlitePostCommitScope } from "../../infra/sqlite-post-commit.js";
 import {
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
@@ -64,9 +62,11 @@ import {
   assertLockedTranscriptWriteAllowed,
 } from "./session-accessor.sqlite-transcript-write-guard.js";
 import {
+  runTranscriptSnapshotTransaction,
   runTranscriptWriteSnapshotSync,
   runTranscriptWriteSnapshotInTransaction,
   SqliteTranscriptMutationConflictError,
+  type TranscriptSnapshotOwnership,
   type TranscriptWriteSnapshot,
   type TranscriptWriteViewGuard,
 } from "./session-accessor.sqlite-transcript-write-snapshot.js";
@@ -522,46 +522,21 @@ export function appendTranscriptMessageSnapshotSync<TMessage>(
     onProjectionReconcileNeeded?: () => void;
     preparePending?: import("./session-accessor.sqlite-transcript-message-append.js").TranscriptMessageAppendPreparation;
   },
-  ownership?: {
-    view?: TranscriptWriteViewGuard;
-    continuation?: {
-      enter: (database: OpenClawAgentDatabase, nested: boolean) => () => void;
-      complete: (
-        snapshot: Result<TranscriptMessageWriteSnapshot<TMessage>, TranscriptAppendRefusal>,
-      ) => void;
-      retainPublication: (publish: () => void) => void;
-    };
-  },
+  ownership?: TranscriptSnapshotOwnership<TranscriptMessageWriteSnapshot<TMessage>>,
 ): Result<TranscriptMessageWriteSnapshot<TMessage>, TranscriptAppendRefusal> {
-  const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
-  const resolved = resolveSqliteTranscriptScope(fencedScope);
-  const { continuation, view } = ownership ?? {};
-  let connection: DatabaseSync | undefined;
-  const result = runOpenClawAgentWriteTransaction(
-    (database) => {
-      connection = database.db;
-      const snapshot = appendTranscriptMessageSnapshotInTransaction(
+  return runTranscriptSnapshotTransaction(
+    scope,
+    (database, fencedScope) =>
+      appendTranscriptMessageSnapshotInTransaction(
         database,
         fencedScope,
         options,
         preparedMessage,
         workerOptions,
-        view,
-      );
-      continuation?.complete(snapshot);
-      return snapshot;
-    },
-    toDatabaseOptions(resolved),
-    {
-      operationLabel: "session.transcript.write-snapshot",
-      enter: continuation?.enter,
-      retainPublication: continuation?.retainPublication,
-    },
+        ownership?.view,
+      ),
+    ownership,
   );
-  if (result.ok && connection && hasSqlitePostCommitScope(connection)) {
-    view?.onPendingTransaction(connection);
-  }
-  return result;
 }
 
 /** Runs read/append transcript work under one SQLite writer-queue critical section. */
