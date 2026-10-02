@@ -152,11 +152,6 @@ function getVolumeSessionFixtures(spec) {
   }));
 }
 
-function assertVolumeModelMetadata(entry, index) {
-  assert(entry?.modelProvider === "openai", `volume model provider changed: ${index}`);
-  assert(entry?.model === "gpt-5.5", `volume model changed: ${index}`);
-}
-
 function assertVolumeSessionStores(stores, fixtures, context) {
   for (const agentId of VOLUME_AGENT_IDS) {
     const expectedCount = [...fixtures, ...PREEXISTING_SESSION_FIXTURES].filter(
@@ -174,7 +169,8 @@ function assertVolumeSessionStores(stores, fixtures, context) {
       `${context} session row changed: ${fixture.index}`,
     );
     assert(entry?.label === fixture.label, `${context} session label changed: ${fixture.index}`);
-    assertVolumeModelMetadata(entry, fixture.index);
+    assert(entry?.modelProvider === "openai", `volume model provider changed: ${fixture.index}`);
+    assert(entry?.model === "gpt-5.5", `volume model changed: ${fixture.index}`);
     assert(
       fixture.metadataOnly === !Object.hasOwn(entry, "sessionFile"),
       `${context} session transcript ownership changed: ${fixture.index}`,
@@ -388,7 +384,11 @@ export function assertUpgradeVolumeMigrated(stateDir, stage) {
         const entry = JSON.parse(row?.entry_json ?? "null");
         assert(entry?.sessionId === fixture.sessionId, `volume entry changed: ${fixture.index}`);
         assert(entry?.label === fixture.label, `volume label changed: ${fixture.index}`);
-        assertVolumeModelMetadata(entry, fixture.index);
+        assert(
+          entry?.modelProvider === "openai",
+          `volume model provider changed: ${fixture.index}`,
+        );
+        assert(entry?.model === "gpt-5.5", `volume model changed: ${fixture.index}`);
         assert(
           !Object.hasOwn(entry, "sessionFile"),
           `volume session retained retired sessionFile metadata: ${fixture.index}`,
