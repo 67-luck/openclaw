@@ -11,8 +11,11 @@ import {
   resolveUiBuildEnvironment,
   resolvePnpmSpawnCall,
 } from "../../scripts/ui.mts";
-import { CONTROL_UI_ASSET_MANIFEST_FILENAME } from "../../src/gateway/control-ui-asset-manifest.js";
-import { createRetentionManifest } from "../../src/gateway/control-ui-asset-retention.test-support.js";
+import {
+  CONTROL_UI_ASSET_MANIFEST_FILENAME,
+  CONTROL_UI_ASSET_MANIFEST_VERSION,
+  hashControlUiAssetManifestEntries,
+} from "../../src/gateway/control-ui-asset-manifest.js";
 import { CONTROL_UI_BUILD_ID_ATTRIBUTE } from "../../src/gateway/control-ui-root-assets.js";
 import { inspectControlUiRootAssets } from "../../src/infra/control-ui-assets.js";
 import { mergeProcessEnv } from "../../src/infra/process-env.js";
@@ -710,25 +713,32 @@ require("node:module").syncBuiltinESMExports();
       path.join(staging, "index.html"),
       '<script src="./assets/index.js"></script><link href="./assets/index.css">',
     );
-    const assets = ["index.js", "index.css"].flatMap((name) => {
+    for (const name of ["index.js", "index.css"]) {
       const bytes = Buffer.from("/* synthetic asset */");
-      return Object.entries({
-        "": bytes,
-        ".gz": gzipSync(bytes),
-        ".br": brotliCompressSync(bytes),
-      }).map(([suffix, source]) => {
-        const assetPath = `assets/${name}${suffix}`;
-        fs.writeFileSync(path.join(staging, assetPath), source);
+      const file = path.join(staging, "assets", name);
+      fs.writeFileSync(file, bytes);
+      fs.writeFileSync(`${file}.gz`, gzipSync(bytes));
+      fs.writeFileSync(`${file}.br`, brotliCompressSync(bytes));
+    }
+    // Vite inventories the finalized assets and sidecars before either validator runs.
+    const assets = fs
+      .readdirSync(path.join(staging, "assets"))
+      .toSorted((left, right) => left.localeCompare(right))
+      .map((name) => {
+        const bytes = fs.readFileSync(path.join(staging, "assets", name));
         return {
-          path: assetPath,
-          sha256: createHash("sha256").update(source).digest("hex"),
-          size: source.length,
+          path: `assets/${name}`,
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+          size: bytes.byteLength,
         };
       });
-    });
     fs.writeFileSync(
       path.join(staging, CONTROL_UI_ASSET_MANIFEST_FILENAME),
-      JSON.stringify(createRetentionManifest(assets)),
+      JSON.stringify({
+        version: CONTROL_UI_ASSET_MANIFEST_VERSION,
+        generation: hashControlUiAssetManifestEntries(assets),
+        assets,
+      }),
     );
     for (const [script, ...args] of [
       ["check-control-ui-precompressed-assets.mts", staging],
