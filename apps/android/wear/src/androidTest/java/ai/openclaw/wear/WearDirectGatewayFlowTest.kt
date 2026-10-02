@@ -34,6 +34,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assume.assumeTrue
 import org.junit.Test
@@ -478,10 +479,17 @@ class WearDirectGatewayFlowTest {
     assertTrue("production connection saved its identity", identity != null)
     val grant = DeviceAuthStore(store).loadEntry(gatewayId, requireNotNull(identity).deviceId, "operator")
     assertTrue(
-      "handoff saves only the required limited operator grant",
-      grant != null && grant.token.isNotBlank() && grant.scopes.toSet() == setOf("operator.read", "operator.write", "operator.approvals"),
+      "handoff saves a durable operator token",
+      grant != null && grant.token.isNotBlank(),
     )
-    return SavedGrant(sha256(identity.deviceId.toByteArray()), sha256(requireNotNull(grant).token.toByteArray()))
+    // The closed limited setup profile is broader than this watch's three requested
+    // socket scopes. Reconnecting must not narrow the reusable grant's metadata.
+    assertEquals(
+      "handoff preserves the closed limited setup profile",
+      setOf("operator.read", "operator.write", "operator.approvals", "operator.questions", "operator.talk.secrets"),
+      requireNotNull(grant).scopes.toSet(),
+    )
+    return SavedGrant(sha256(identity.deviceId.toByteArray()), sha256(grant.token.toByteArray()))
   }
 
   private fun consumeInput(): ProofInput {
