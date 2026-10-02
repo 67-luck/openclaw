@@ -18,7 +18,6 @@ import {
   buildGatewayReloadPlan,
   listConfigReloadRefinementPrefixes,
 } from "./config-reload-plan.js";
-import { createGatewayOperatorHttpRuntime } from "./operator-http.js";
 import {
   indexPluginNodeCapabilitySurfaces,
   reconcileClientPluginNodeCapabilities,
@@ -155,6 +154,10 @@ export async function finishGatewayStartup(params: {
     "gateway.ws-imports",
     () => import("./server/ws-connection.js"),
   );
+  const { createGatewayOperatorHttpRuntime } = await startupTrace.measure(
+    "gateway.operator-http-imports",
+    () => import("./operator-http.js"),
+  );
   const connectionOptions: GatewayConnectionOptions = {
     clients,
     connectionWork: runtime.connectionWork,
@@ -196,7 +199,8 @@ export async function finishGatewayStartup(params: {
     preauthConnectionBudget,
   });
   runtime.operatorHttpRequestHandler.current = operatorHttp.handleRequest;
-  registerGatewayLifetimeSidecars({ stop: operatorHttp.close });
+  // Unpolled handshake delivery owns tracked work; retire it before the drain.
+  registerConnectionDependentSidecars({ stop: operatorHttp.close });
   await startupTrace.measure("http.listen", () => startListening());
   kernel.setDispatchReady(true);
   startupTrace.mark("http.bound");
