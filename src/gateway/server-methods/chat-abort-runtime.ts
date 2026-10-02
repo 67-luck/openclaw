@@ -10,6 +10,7 @@ import {
   getLatestLiveSubagentRunByChildSessionKey,
   isSubagentRunQueued,
 } from "../../agents/subagents/registry/subagent-registry-read.js";
+import { inputMatchesSessionId } from "../../sessions/session-controller.lifecycle-projections.js";
 import type { SessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { captureSessionControllerSourceSettlement } from "../../sessions/session-controller.mailbox.js";
 import {
@@ -77,6 +78,7 @@ export function abortQueuedCollectorSession(
       ok: false,
       error: errorShape(ErrorCodes.UNAVAILABLE, "Queued collector cancellation was not published."),
     };
+    let failure: { error: unknown } | undefined;
     try {
       params.assertCurrent?.();
       const projection = getSessionRowProjection(params.context);
@@ -188,12 +190,24 @@ export function abortQueuedCollectorSession(
         },
       );
     } catch (error) {
+      failure = { error };
       outcome = { ok: false, error: errorShapeFromError(ErrorCodes.INVALID_REQUEST, error) };
     }
     if (plan) {
-      const warning = await plan.finish(plan.result);
-      if (warning) {
-        outcome = withQueuedCollectorWarning(outcome, warning);
+      try {
+        const warning = await plan.finish(plan.result);
+        if (warning) {
+          outcome = withQueuedCollectorWarning(outcome, warning);
+        }
+      } catch (error) {
+        if (outcome.ok) {
+          throw error;
+        }
+        throw new AggregateError(
+          [failure?.error ?? outcome.error, error],
+          "Queued collector cancellation and persistence failed",
+          { cause: error },
+        );
       }
     }
     return outcome;
@@ -394,7 +408,7 @@ export function prepareChatSessionAbort(
       if (!target) {
         if (controllerStop?.inputs.includes(input)) {
           params.assertCurrent?.();
-          return cancel();
+          return inputMatchesSessionId(input, params.requiredSessionId) && cancel();
         }
         return false;
       }
@@ -438,12 +452,7 @@ export function prepareChatSessionAbort(
       throw new Error(`Stop source ${params.stopSource} requires command hook context`);
     }
     const cancelUnrepresentedWorker = () => {
-      if (
-        !hasControllerRepresentedWorkerRun &&
-        params.requester.isAdmin &&
-        canCancelWorkerSession &&
-        workerCancellation?.runIds.length
-      ) {
+      if (params.requester.isAdmin && canCancelWorkerSession && workerCancellation?.runIds.length) {
         cancelWorker();
       }
     };
