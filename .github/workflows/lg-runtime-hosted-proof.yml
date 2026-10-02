@@ -1,0 +1,135 @@
+name: Runtime cleanup focused proof
+
+on:
+  push:
+    branches: [proof/lg-runtime-hosted-evidence]
+    paths:
+      - .github/workflows/lg-runtime-hosted-proof.yml
+      - .github/proof/lg-runtime/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lg-runtime-hosted-proof
+  cancel-in-progress: false
+
+jobs:
+  focused-proof:
+    if: github.repository == 'openclaw/openclaw' && github.ref == 'refs/heads/proof/lg-runtime-hosted-evidence'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      NODE_VERSION: "24.21.0"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      LG_PROOF_BASE: a4ad0b67b100308b25dae459f79b52d8b40fbdc5
+    steps:
+      - name: Checkout reviewed proof carrier
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Validate carrier scope and required source pins
+        id: pins
+        env:
+          LG_PROOF_EVIDENCE_ROOT: ${{ runner.temp }}/lg-runtime-hosted-evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$GITHUB_WORKFLOW_SHA" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$LG_PROOF_BASE" HEAD
+          git diff --quiet HEAD --
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess
+          changed = subprocess.check_output([
+              'git', 'diff', '--name-only', '-z', os.environ['LG_PROOF_BASE'], 'HEAD'
+          ]).decode().split('\0')
+          for name in filter(None, changed):
+              assert name == '.github/workflows/lg-runtime-hosted-proof.yml' or name.startswith('.github/proof/lg-runtime/'), name
+          pins = json.loads(pathlib.Path('.github/proof/lg-runtime/pins.json').read_text())
+          for lane in ('usage', 'npm'):
+              for field in ('head', 'tree'):
+                  value = pins[lane][field]
+                  assert isinstance(value, str) and re.fullmatch('[0-9a-f]{40}', value), f'{lane}.{field} needs its reviewed final pin'
+          assert pins['npm']['head'] == '2f7a5c015cfa00861f6eb097c6265f2b79c3005b'
+          assert pins['npm']['tree'] == 'dd7f0bea86a4a7bf91a083f941d0cefc4239b8af'
+          out = pathlib.Path(os.environ['LG_PROOF_EVIDENCE_ROOT'])
+          out.mkdir(mode=0o700)
+          (out / 'source-pins.json').write_text(json.dumps({
+              'provider': 'github-hosted', 'workflowSha': os.environ['GITHUB_SHA'],
+              'workflowBase': os.environ['LG_PROOF_BASE'], 'runId': os.environ['GITHUB_RUN_ID'],
+              'attempt': os.environ['GITHUB_RUN_ATTEMPT'], 'sourcePins': pins
+          }, indent=2) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as target:
+              for lane in ('usage', 'npm'):
+                  for field in ('head', 'tree'):
+                      target.write(f'{lane}_{field}={pins[lane][field]}\n')
+          PY
+
+      - name: Set up the repository toolchain
+        id: toolchain
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          install-bun: "false"
+          install-deps: "false"
+          cache-mode: "off"
+
+      - name: Checkout exact Usage source
+        id: usage_checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pins.outputs.usage_head }}
+          path: proof-source-usage
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prove Usage controls and six focused suites
+        id: usage
+        working-directory: proof-source-usage
+        env:
+          LG_PROOF_ARTIFACTS: ${{ runner.temp }}/lg-runtime-hosted-evidence/usage
+          LG_USAGE_HEAD: ${{ steps.pins.outputs.usage_head }}
+          LG_USAGE_TREE: ${{ steps.pins.outputs.usage_tree }}
+        run: bash "$GITHUB_WORKSPACE/.github/proof/lg-runtime/usage.sh" "$LG_USAGE_HEAD" "$LG_USAGE_TREE"
+
+      - name: Checkout exact Npm source
+        id: npm_checkout
+        if: ${{ !cancelled() && steps.toolchain.outcome == 'success' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ steps.pins.outputs.npm_head }}
+          path: proof-source-npm
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Prove published 2026.9.7 Npm update
+        id: npm
+        if: ${{ !cancelled() && steps.npm_checkout.outcome == 'success' }}
+        working-directory: proof-source-npm
+        env:
+          LG_PROOF_EVIDENCE_ROOT: ${{ runner.temp }}/lg-runtime-hosted-evidence
+        run: bash "$GITHUB_WORKSPACE/.github/proof/lg-runtime/npm.sh"
+
+      - name: Record independently observed outcomes
+        if: always()
+        env:
+          LG_PROOF_EVIDENCE_ROOT: ${{ runner.temp }}/lg-runtime-hosted-evidence
+          USAGE_OUTCOME: ${{ steps.usage.outcome }}
+          NPM_OUTCOME: ${{ steps.npm.outcome }}
+        run: |
+          mkdir -p "$LG_PROOF_EVIDENCE_ROOT"
+          printf 'usage=%s\nnpm=%s\n' "$USAGE_OUTCOME" "$NPM_OUTCOME" > "$LG_PROOF_EVIDENCE_ROOT/step-outcomes.txt"
+          printf 'Usage: %s\n\nNpm published-driver cell: %s\n' "$USAGE_OUTCOME" "$NPM_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload synthetic proof evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lg-runtime-focused-proof-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/lg-runtime-hosted-evidence
+          if-no-files-found: error
+          retention-days: 14
