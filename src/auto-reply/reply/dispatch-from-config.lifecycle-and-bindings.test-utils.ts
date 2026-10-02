@@ -9,6 +9,7 @@ import { registerPluginCommand } from "../../plugins/commands.js";
 import type { PluginTargetedInboundClaimOutcome } from "../../plugins/hooks.test-fixtures.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import {
+  hasSessionControllerQueuedWork,
   interruptSessionControllerEffects,
   isSessionControllerWorkActive,
   runSessionMutation,
@@ -991,7 +992,7 @@ describe("dispatchReplyFromConfig", () => {
     expect(replyResolver).not.toHaveBeenCalled();
   });
 
-  it.each(["fresh owner", "hook-only admission"] as const)(
+  it.each(["fresh owner", "source-owned preparation"] as const)(
     "retains cancelled plugin media staging until cleanup settles with %s",
     async (ownership) => {
       setNoAbort();
@@ -1016,10 +1017,21 @@ describe("dispatchReplyFromConfig", () => {
       const sessionKey = "agent:main:imessage:direct:staging-cancellation";
       const sessionId = "staging-cancellation-session";
       sessionStoreMocks.currentEntry = { sessionId, updatedAt: Date.now() };
-      const existingOperation =
-        ownership === "hook-only admission"
-          ? createReplyOperation({ sessionKey, sessionId, resetTriggered: false })
+      const existingAdmission =
+        ownership === "source-owned preparation"
+          ? await dispatchHarness.admitReplyTurn({
+              sessionKey,
+              sessionId,
+              expectedSessionId: sessionId,
+              storePath: "/tmp/mock-sessions.json",
+              kind: "visible",
+              resetTriggered: false,
+            })
           : undefined;
+      if (existingAdmission?.status === "skipped") {
+        throw new Error("expected active owner admission");
+      }
+      const existingOperation = existingAdmission?.operation;
       const abort = new AbortController();
       const cancellation = new Error("attachment request cancelled");
       const cleanup = createDeferred();
@@ -1082,12 +1094,11 @@ describe("dispatchReplyFromConfig", () => {
           runSessionMutation({
             scope: "/tmp/mock-sessions.json",
             identities: [sessionKey, sessionId],
+            kind: "reset",
+            policy: "preempt",
+            preempt: { activeRun: "abort", waitingInputs: "cancel" },
             prepare: async () => {
               mutationPrepared = true;
-              await interruptSessionControllerEffects({
-                scope: "/tmp/mock-sessions.json",
-                identities: [sessionKey, sessionId],
-              });
             },
             run: async () => {
               mutationRan = true;
@@ -1106,7 +1117,7 @@ describe("dispatchReplyFromConfig", () => {
         expect(cleanupFinished).toBe(false);
         expect(mutationRan).toBe(false);
         expect(
-          isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
+          hasSessionControllerQueuedWork("/tmp/mock-sessions.json", [sessionKey, sessionId]),
         ).toBe(true);
         expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBe(
           existingOperation ? undefined : operation,
@@ -1218,7 +1229,7 @@ describe("dispatchReplyFromConfig", () => {
     externalLifecycleRequest.emitDestroy();
   });
 
-  it("holds a lifecycle lease for plugin claims behind an active reply operation", async () => {
+  it("holds source custody for plugin claims behind an active reply operation", async () => {
     const resolveClaim = mockPendingPluginClaim({
       bindingId: "binding-active-lifecycle-race",
       targetSessionKey: "plugin-binding:test:active-race",
@@ -1227,11 +1238,18 @@ describe("dispatchReplyFromConfig", () => {
     const sessionKey = "agent:main:discord:channel:active-lifecycle-race";
     const sessionId = "plugin-active-lifecycle-session";
     sessionStoreMocks.currentEntry = { sessionId, updatedAt: Date.now() };
-    const existingOperation = createReplyOperation({
+    const existingAdmission = await dispatchHarness.admitReplyTurn({
       sessionKey,
       sessionId,
+      expectedSessionId: sessionId,
+      storePath: "/tmp/mock-sessions.json",
+      kind: "visible",
       resetTriggered: false,
     });
+    if (existingAdmission.status !== "owned") {
+      throw new Error("expected active owner admission");
+    }
+    const existingOperation = existingAdmission.operation;
     const dispatcher = createDispatcher();
     const externalLifecycleRequest = new AsyncResource("external-active-lifecycle-request");
     const ctx = buildTestCtx({
@@ -1261,12 +1279,11 @@ describe("dispatchReplyFromConfig", () => {
         await runSessionMutation({
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
+          kind: "reset",
+          policy: "preempt",
+          preempt: { activeRun: "abort", waitingInputs: "cancel" },
           prepare: async () => {
             mutationPrepared = true;
-            await interruptSessionControllerEffects({
-              scope: "/tmp/mock-sessions.json",
-              identities: [sessionKey, sessionId],
-            });
           },
           run: async () => {
             mutationRan = true;
