@@ -171,15 +171,17 @@ describe("SQLite transaction diagnostics", () => {
 
       const run =
         mode === "immediate" ? runSqliteImmediateTransactionSync : runSqliteDeferredTransactionSync;
+      const diagnosticContext = { sessionId: "session-diagnostics", rows: 0 };
       withSqliteReaderOwner({ operation: "worker.entries", ownerKind: "worker" }, () =>
         run(
           db,
           () => {
             db.prepare("INSERT INTO entries VALUES ('committed', 'value')").run();
+            diagnosticContext.rows = 1;
             now += 1_500;
             return "committed";
           },
-          { busyTimeoutMs: 5_000, logger, slowTransactionHoldMs: 0 },
+          { busyTimeoutMs: 5_000, logger, slowTransactionHoldMs: 0, diagnosticContext },
         ),
       );
       expect(readEntries(db)).toEqual(["committed"]);
@@ -202,6 +204,7 @@ describe("SQLite transaction diagnostics", () => {
             : {}),
           isMainThread,
           operation: "worker.entries",
+          context: { sessionId: "session-diagnostics", rows: 0 },
           pid: process.pid,
           step: "begin",
           threadId,
@@ -214,6 +217,7 @@ describe("SQLite transaction diagnostics", () => {
         elapsedMs: 1_500,
         isMainThread,
         operation: "worker.entries",
+        context: { sessionId: "session-diagnostics", rows: 1 },
         pid: process.pid,
         step: "commit",
         threadId,
@@ -227,6 +231,7 @@ describe("SQLite transaction diagnostics", () => {
           isMainThread,
           mode,
           operation: "worker.entries",
+          context: { sessionId: "session-diagnostics", rows: 1 },
           pid: process.pid,
           threadId,
         }),

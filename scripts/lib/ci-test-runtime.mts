@@ -77,8 +77,40 @@ const bunCompatibleConfigs = new Set([
   "test/vitest/vitest.extension-memory.config.ts",
   gatewayClientConfig,
 ]);
-// Measured whole-file admission; the rest of agents-support retains Node.
-const bunCompatibleAgentSupportFiles = ["src/agents/worktrees/service.removal-recovery.test.ts"];
+// Whole-file qualification keeps mixed and broad scoped-owner envelopes on Node.
+const bunCompatibleScopedOwners = new Map([
+  [
+    agentVitestProjectOwners.support.config,
+    {
+      dir: agentVitestProjectOwners.support.dir,
+      files: ["src/agents/worktrees/service.removal-recovery.test.ts"],
+    },
+  ],
+  [
+    "test/vitest/vitest.extension-provider-openai.config.ts",
+    {
+      dir: "extensions",
+      files: ["extensions/openai/realtime-quicksilver-peer-worker.test.ts"],
+    },
+  ],
+  [
+    "test/vitest/vitest.plugins.config.ts",
+    {
+      dir: "src/plugins",
+      files: ["src/plugins/plugin-module-generation.interop.test.ts"],
+    },
+  ],
+  [
+    "test/vitest/vitest.tooling.config.ts",
+    {
+      dir: "",
+      files: [
+        "test/scripts/oxlint-config.test.ts",
+        "test/scripts/upgrade-survivor-timeout-diagnostics.test.ts",
+      ],
+    },
+  ],
+]);
 const embeddedRunOwner = agentVitestProjectOwners.embeddedRun;
 // src/state/openclaw-state-lease.retention.test.ts stays with its default Node owner:
 // cold fs-safe native initialization roots the caller's ALS through custom_gc.
@@ -98,8 +130,13 @@ const runtimePartitions = new Map<
         globSync("src/process/**/*.test.ts", { cwd, exclude: databaseWorkerCoreTestFiles })
           .map((file) => file.replaceAll("\\", "/"))
           .toSorted(),
-      // Only this native-Bun contract is qualified; process siblings retain Node.
-      nodeRequired: (file) => file !== "src/process/terminal-pty-bun.test.ts",
+      // Only qualified complete process contracts run on Bun.
+      nodeRequired: (file) =>
+        ![
+          "src/process/spawn-broker/event-order.test.ts",
+          "src/process/spawn-broker/group-custody.test.ts",
+          "src/process/terminal-pty-bun.test.ts",
+        ].includes(file),
     },
   ],
   [
@@ -173,7 +210,15 @@ const runtimePartitions = new Map<
         globSync(controlUiTestGlobs, { cwd, exclude: controlUiE2eTestGlobs })
           .map((file) => file.replaceAll("\\", "/"))
           .toSorted(),
-      nodeRequired: new Set(),
+      // collectGarbageForTest needs V8's precise collection: JavaScriptCore's
+      // conservative stack scanning can retain unreachable WeakRef targets.
+      nodeRequired: new Set([
+        "ui/src/components/desktop/desktop-mobile-keyboard.test.ts",
+        "ui/src/pages/chat/chat-pane-retention.test.ts",
+        "ui/src/pages/chat/chat-thread-retention.test.ts",
+        "ui/src/pages/chat/session-snapshot-store.test.ts",
+        "ui/src/pages/usage/usage-page-retention.test.ts",
+      ]),
       includeAfterShard: true,
     },
   ],
@@ -350,13 +395,15 @@ export function resolveCiTestRuntimeSelections(
     if (plans.every((plan) => bunCompatibleConfigs.has(plan.config))) {
       return completeBun();
     }
+    const config = plans[0]!.config;
+    const scopedOwner = bunCompatibleScopedOwners.get(config);
     if (
-      plans.every((plan) => plan.config === agentVitestProjectOwners.support.config) &&
-      selection.targets.every((file) => bunCompatibleAgentSupportFiles.includes(file))
+      scopedOwner &&
+      plans.every((plan) => plan.config === config) &&
+      selection.targets.every((file) => scopedOwner.files.includes(file))
     ) {
       return completeBun();
     }
-    const config = plans[0]!.config;
     const partition = runtimePartitions.get(config);
     if (
       !partition ||
@@ -408,13 +455,13 @@ export function resolveCiTestRuntimeSelections(
   if (bunCompatibleConfigs.has(config)) {
     return completeBun();
   }
-  if (config === agentVitestProjectOwners.support.config) {
-    const owner = agentVitestProjectOwners.support;
+  const scopedOwner = bunCompatibleScopedOwners.get(config);
+  if (scopedOwner) {
     const includePatterns = selection.includePatterns?.length ? selection.includePatterns : null;
-    const qualifiedPatterns = relativizeScopedPatterns(bunCompatibleAgentSupportFiles, owner.dir);
+    const qualifiedPatterns = relativizeScopedPatterns(scopedOwner.files, scopedOwner.dir);
     if (
       includePatterns &&
-      relativizeScopedPatterns(includePatterns, owner.dir).every((pattern) =>
+      relativizeScopedPatterns(includePatterns, scopedOwner.dir).every((pattern) =>
         qualifiedPatterns.includes(pattern),
       )
     ) {
@@ -422,8 +469,15 @@ export function resolveCiTestRuntimeSelections(
     }
     const bunFiles =
       policy === "dual"
-        ? bunCompatibleAgentSupportFiles.filter((file) =>
-            matchesVitestCliSelection(file, owner.include, [], owner.dir, {}, includePatterns),
+        ? scopedOwner.files.filter((file) =>
+            matchesVitestCliSelection(
+              file,
+              scopedOwner.files,
+              [],
+              scopedOwner.dir,
+              {},
+              includePatterns,
+            ),
           )
         : [];
     return bunFiles.length ? [...node, { runtime: "bun", includePatterns: bunFiles }] : node;

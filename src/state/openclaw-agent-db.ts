@@ -73,7 +73,6 @@ import {
   resolveAgentDatabaseIntegrityGateReason,
   closeCachedOpenClawAgentDatabase,
   closeMaintenanceAgentDatabase,
-  closeOpenClawAgentDatabaseByPath,
   closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabases,
   refreshAgentDatabaseIdleTimer,
@@ -85,10 +84,7 @@ import {
 } from "./openclaw-agent-db-lifecycle.js";
 import { ensureOpenClawAgentDatabasePermissions } from "./openclaw-agent-db-permissions.js";
 import { closeIdleOpenClawAgentDatabaseReadOnly } from "./openclaw-agent-db-readonly-scope.js";
-import {
-  registerOpenClawAgentDatabase,
-  unregisterOpenClawAgentDatabase,
-} from "./openclaw-agent-db-registry.js";
+import { registerOpenClawAgentDatabase } from "./openclaw-agent-db-registry.js";
 import {
   matchesAgentDatabaseReadCandidatePath,
   type OpenClawAgentDatabaseReadCandidateResource,
@@ -254,6 +250,14 @@ function* openOpenClawAgentDatabaseSteps(
     // and no directory, lease, registry row, WAL sidecar, or file write may be created.
     const db = openNodeSqliteDatabase(":memory:", { allowExtension });
     db.enableLoadExtension(false);
+    if (!isMainThread) {
+      // Worker-owned incognito must never spill SQLite temporary content to disk.
+      db.exec("PRAGMA temp_store=MEMORY");
+      // sqlite-allow-raw -- Admit the memory-only policy before schema work can use temporary pages.
+      if (db.prepare("PRAGMA temp_store").get()?.temp_store !== 2) {
+        throw new Error("Incognito actor requires memory-only SQLite temporary storage");
+      }
+    }
     configureSqlitePreSchemaPragmas(db, {
       busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
     });
@@ -564,6 +568,7 @@ function* openOpenClawAgentDatabaseSteps(
           path: pathname,
           walMaintenance: openedWalMaintenance ?? {
             checkpoint: () => false,
+            stop: async () => {},
             reclaimFreePages: createSqliteWalReclamationResult,
             close: () => false,
           },
@@ -702,51 +707,6 @@ export function retainOpenClawAgentDatabaseReadCandidates(
   }
 }
 
-/** Close and unregister one unambiguous transient agent database by filesystem identity. */
-export function disposeOpenClawAgentDatabaseByPath(
-  pathname: string,
-  options: { env?: NodeJS.ProcessEnv } = {},
-): boolean {
-  const resolvedPath = path.resolve(pathname);
-  for (const pendingPath of cache.pending.keys()) {
-    if (isSameOpenClawAgentDatabasePath(pendingPath, resolvedPath)) {
-      revokePendingAgentDatabaseOpen(pendingPath);
-    }
-  }
-  for (const retained of cache.retainedCloses) {
-    if (isSameOpenClawAgentDatabasePath(retained.path, resolvedPath)) {
-      retained.close();
-    }
-  }
-  // Disposal can be followed by file deletion or recreation, so revalidate next open.
-  invalidateOpenClawAgentDatabaseValidation(resolvedPath);
-  const matchingDatabases = [...cache.databases.values()].filter((candidate) =>
-    isSameOpenClawAgentDatabasePath(candidate.path, resolvedPath),
-  );
-  if (matchingDatabases.length > 1) {
-    return false;
-  }
-  const database = matchingDatabases[0];
-  if (database && cache.incognito.has(database)) {
-    return closeOpenClawAgentDatabaseByPath(database.path);
-  }
-  if (!database) {
-    return false;
-  }
-  try {
-    unregisterOpenClawAgentDatabase({
-      agentId: database.agentId,
-      path: database.path,
-      ...(options.env ? { env: options.env } : {}),
-    });
-  } finally {
-    // Secret-bearing transient DBs must close even when registry maintenance
-    // fails; Windows otherwise cannot remove the file during caller cleanup.
-    closeOpenClawAgentDatabaseByPath(database.path);
-  }
-  return true;
-}
-
 /** Release fixture handles and pathname trust before a test root is recreated. */
 export function closeOpenClawAgentDatabasesForTest(rootPath?: string): void {
   closeOpenClawAgentDatabases(rootPath);
@@ -759,6 +719,7 @@ export {
   closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabases,
   closeOpenClawAgentDatabasesAsync,
+  disposeOpenClawAgentDatabaseByPath,
   inspectOpenClawAgentDatabaseOwner,
   isIncognitoOpenClawAgentDatabase,
   listOpenIncognitoAgentDatabases,

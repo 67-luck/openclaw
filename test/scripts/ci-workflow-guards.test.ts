@@ -1676,7 +1676,16 @@ AFTER_CD
       [{ eventName: "push", runnerBackend: "github" }, 2],
       [{ eventName: "push", runnerBackend: "blacksmith", runAttempt: 2 }, 2],
       [{ eventName: "workflow_dispatch", runnerBackend: "blacksmith" }, 2],
-      [{ eventName: "pull_request", headRepository: "contributor/openclaw" }, 2],
+      [{ eventName: "pull_request", headRepository: "contributor/openclaw" }, 4],
+      [{ eventName: "schedule", runnerBackend: "blacksmith" }, 2],
+      [
+        {
+          eventName: "workflow_dispatch",
+          runnerBackend: "hybrid",
+          preflightOutputs: { ci_qualification: "true", qualification_runner_backend: "hybrid" },
+        },
+        2,
+      ],
       [{ eventName: "push", repository: "contributor/openclaw" }, 2],
     ] as const) {
       expect(
@@ -1688,6 +1697,62 @@ AFTER_CD
         JSON.stringify(context),
       ).toBe(expected);
     }
+    for (const runnerBackend of ["", "blacksmith", "hybrid", "runson", "github"] as const) {
+      for (const runAttempt of [1, 2]) {
+        const context = {
+          eventName: "pull_request" as const,
+          repository: "openclaw/openclaw",
+          headRepository: "contributor/openclaw",
+          authorAssociation: "FIRST_TIME_CONTRIBUTOR",
+          runnerBackend,
+          runAttempt,
+        };
+        const runner = evaluateWorkflowExpression(workflow.jobs.android["runs-on"], context);
+        const parallel = evaluateWorkflowExpression(
+          workflow.jobs.android.strategy["max-parallel"],
+          context,
+        );
+        const hosted = runnerBackend === "github" || runAttempt > 1;
+        expect(runner, JSON.stringify(context)).toBe(
+          hosted ? "ubuntu-24.04" : "blacksmith-8vcpu-ubuntu-2404",
+        );
+        expect(parallel, JSON.stringify(context)).toBe(hosted ? 2 : 4);
+      }
+    }
+  });
+
+  it("lets a PR label disable both fail-fast owners", () => {
+    const workflow = readCiWorkflow();
+    const preflight = workflow.jobs.preflight;
+    const nodeStrategy = workflow.jobs["checks-node-core-test-nondist-shard"].strategy;
+    const monitor = workflow.jobs["pr-fail-fast"];
+
+    expect(preflight.outputs.disable_fail_fast).toBe(
+      "${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:no-fail-fast') && 'true' || 'false' }}",
+    );
+
+    const foreignPr = {
+      eventName: "pull_request" as const,
+      repository: "contributor/openclaw",
+      runAttempt: 1,
+      preflightOutputs: { disable_fail_fast: "false", run_checks_node_core_nondist: "true" },
+    };
+    expect(evaluateWorkflowExpression(nodeStrategy["fail-fast"], foreignPr)).toBe(true);
+    expect(
+      evaluateWorkflowExpression(nodeStrategy["fail-fast"], {
+        ...foreignPr,
+        preflightOutputs: { ...foreignPr.preflightOutputs, disable_fail_fast: "true" },
+      }),
+    ).toBe(false);
+
+    const canonicalPr = { ...foreignPr, repository: "openclaw/openclaw" };
+    expect(evaluateWorkflowExpression(monitor.if, canonicalPr)).toBe(true);
+    expect(
+      evaluateWorkflowExpression(monitor.if, {
+        ...canonicalPr,
+        preflightOutputs: { ...canonicalPr.preflightOutputs, disable_fail_fast: "true" },
+      }),
+    ).toBe(false);
   });
 
   it("runs the Docker seed tier with the published updater and a checked main/PR smoke package", () => {
@@ -2289,14 +2354,14 @@ require("node:fs").writeFileSync("scheduler-restart", process.env.OPENCLAW_UPGRA
     );
 
     expect(restoreStep.with?.key).toBe(
-      "${{ runner.os }}-android-sdk-v2-cmdline-16111833-platform-37.0-build-tools-36.0.0-${{ inputs.install-screenshot-emulators == 'true' && 'screenshot-emulators' || 'base' }}",
+      "${{ runner.os }}-android-sdk-v2-cmdline-15859902-platform-37.0-build-tools-36.0.0-${{ inputs.install-screenshot-emulators == 'true' && 'screenshot-emulators' || 'base' }}",
     );
     expect(String(restoreStep.with?.["restore-keys"]).trim().split("\n")).toEqual([
-      "${{ inputs.install-screenshot-emulators == 'true' && format('{0}-android-sdk-v2-cmdline-16111833-platform-37.0-build-tools-36.0.0-base', runner.os) || '' }}",
+      "${{ inputs.install-screenshot-emulators == 'true' && format('{0}-android-sdk-v2-cmdline-15859902-platform-37.0-build-tools-36.0.0-base', runner.os) || '' }}",
     ]);
-    expect(setupStep.run).toContain('CMDLINE_TOOLS_VERSION="16111833"');
+    expect(setupStep.run).toContain('CMDLINE_TOOLS_VERSION="15859902"');
     expect(setupStep.run).toContain(
-      'CMDLINE_TOOLS_SHA256="0877a1d048fe4a24efe2eff536ca4223f7adeb58648bb81909d33c446918cfa8"',
+      'CMDLINE_TOOLS_SHA256="4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583"',
     );
     expect(setupStep.run).toContain("curl -fsSL --connect-timeout 10 --max-time 300");
     expect(setupStep.run).toContain("sha256sum --check -");
@@ -5168,7 +5233,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       frozenTarget: false,
       compatibilityTarget: false,
       policy: "bun-compatible",
-      runtimes: ["bun"],
+      runtimes: ["bun", "node"],
       shards: [1, 2, 3],
     },
     {
@@ -5351,18 +5416,31 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
                 expect(childEnv.OPENCLAW_VITEST_INCLUDE_FILE).toBeUndefined();
               }
               const includeFile = childEnv.OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE;
-              if (childEnv.OPENCLAW_VITEST_RUNTIME === "bun") {
+              if (
+                childEnv.OPENCLAW_VITEST_RUNTIME === "bun" ||
+                scenario.policy === "bun-compatible"
+              ) {
                 expect(includeFile).toBeTruthy();
                 const included = JSON.parse(readFileSync(includeFile!, "utf8"));
-                const retentionFiles = [
+                const nodeFiles = [
+                  "ui/src/components/desktop/desktop-mobile-keyboard.test.ts",
                   "ui/src/pages/chat/chat-pane-retention.test.ts",
                   "ui/src/pages/chat/chat-thread-retention.test.ts",
+                  "ui/src/pages/chat/session-snapshot-store.test.ts",
                   "ui/src/pages/usage/usage-page-retention.test.ts",
                 ];
-                expect(included.length).toBeGreaterThan(1000);
-                expect(included).toEqual(expect.arrayContaining(retentionFiles));
-                if (uiGroups[0]?.includePatterns) {
-                  expect(included.toSorted()).toEqual(uiGroups[0].includePatterns.toSorted());
+                if (childEnv.OPENCLAW_VITEST_RUNTIME === "node") {
+                  expect(included.toSorted()).toEqual(nodeFiles);
+                } else {
+                  expect(included.length).toBeGreaterThan(1000);
+                  expect(included.filter((file: string) => nodeFiles.includes(file))).toEqual([]);
+                  if (uiGroups[0]?.includePatterns) {
+                    expect(included.toSorted()).toEqual(
+                      uiGroups[0].includePatterns
+                        .filter((file) => !nodeFiles.includes(file))
+                        .toSorted(),
+                    );
+                  }
                 }
               } else {
                 expect(includeFile).toBeUndefined();
