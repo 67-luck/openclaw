@@ -5,7 +5,7 @@ import type {
 } from "openclaw/plugin-sdk/plugin-entry";
 import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
 import type { OAuthCredential } from "openclaw/plugin-sdk/provider-auth";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import snowflakePlugin from "./index.js";
 import "./oauth.js";
 
@@ -137,11 +137,14 @@ describe("Snowflake registered auth flow", () => {
       expect(startCallback).toHaveBeenCalledOnce();
     });
     const result = await login(ctx);
-    const authorization = new URL(vi.mocked(ctx.openUrl).mock.calls[0][0]);
+    const [openUrlCall] = vi.mocked(ctx.openUrl).mock.calls;
+    assert(openUrlCall);
+    const authorization = new URL(openUrlCall[0]);
     expect(authorization.origin + authorization.pathname).toBe(`${ISSUER}/oauth/authorize`);
     expect(authorization.searchParams.get("client_id")).toBe("LOCAL_APPLICATION");
     expect(authorization.searchParams.get("scope")).toBe("refresh_token");
     expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
+    assert(fetchGuard.mock.calls[0]);
     const request = fetchGuard.mock.calls[0][0];
     const form = new URLSearchParams(request.init.body);
     expect(request.url).toBe(`${ISSUER}/oauth/token-request`);
@@ -155,10 +158,12 @@ describe("Snowflake registered auth flow", () => {
     expect(authorization.searchParams.get("code_challenge")).toBe(
       createHash("sha256").update(form.get("code_verifier")!).digest("base64url"),
     );
+    assert(startCallback.mock.calls[0]);
     expect(startCallback.mock.calls[0][0]).toMatchObject({
       expectedState: authorization.searchParams.get("state"),
       bindOnlyHostname: "127.0.0.1",
     });
+    assert(result.profiles[0]);
     expect(result.profiles[0].credential).toMatchObject({
       type: "oauth",
       provider: "snowflake",
@@ -176,10 +181,20 @@ describe("Snowflake registered auth flow", () => {
     "rejects unsupported %s setup before opening a browser",
     async (failure) => {
       const ctx = context();
-      if (failure === "remote") ctx.isRemote = true;
-      if (failure === "hosted") ctx.oauth.authorize = vi.fn();
-      if (failure === "endpoint") ctx.config = {};
-      if (failure === "explicit-key") ctx.config.models!.providers!.snowflake.apiKey = "test-key";
+      if (failure === "remote") {
+        ctx.isRemote = true;
+      }
+      if (failure === "hosted") {
+        ctx.oauth.authorize = vi.fn();
+      }
+      if (failure === "endpoint") {
+        ctx.config = {};
+      }
+      if (failure === "explicit-key") {
+        const configuredProvider = ctx.config.models?.providers?.snowflake;
+        assert(configuredProvider);
+        configuredProvider.apiKey = "test-key";
+      }
       await expect(login(ctx)).rejects.toThrow(/Snowflake|snowflake/);
       expect(startCallback).not.toHaveBeenCalled();
       expect(ctx.openUrl).not.toHaveBeenCalled();
@@ -197,6 +212,7 @@ describe("Snowflake registered auth flow", () => {
   it("prepares the saved OAuth credential only for its original Cortex account", async () => {
     const registered = await provider();
     const result = await login();
+    assert(result.profiles[0]);
     const apiKey = registered.formatApiKey!(result.profiles[0].credential);
     const prepared = await registered.prepareRuntimeAuth!(runtimeContext(apiKey));
     expect(prepared?.apiKey).toBe("test-access-token");
@@ -209,6 +225,7 @@ describe("Snowflake registered auth flow", () => {
   ])("rejects a changed runtime endpoint %s before releasing the token", async (baseUrl) => {
     const registered = await provider();
     const result = await login();
+    assert(result.profiles[0]);
     const credential = result.profiles[0].credential;
     if (credential.type !== "oauth") {
       throw new Error("Expected an OAuth login result");
@@ -232,7 +249,9 @@ describe("Snowflake registered auth flow", () => {
     const ctx = context();
     let current = true;
     ctx.assertCurrent = () => {
-      if (!current) throw new Error("Login authority revoked");
+      if (!current) {
+        throw new Error("Login authority revoked");
+      }
     };
     ctx.openUrl = async () => {
       current = false;
@@ -298,6 +317,7 @@ describe("Snowflake registered auth flow", () => {
       expect(refreshed.refresh).toBe(rotate ? "rotated-test-refresh" : "previous-test-refresh");
       expect(refreshed.accountId).toBe("test-account");
       expect(refreshed.access).toBe("test-access-token");
+      assert(fetchGuard.mock.calls[0]);
       const form = new URLSearchParams(fetchGuard.mock.calls[0][0].init.body);
       expect(form.get("grant_type")).toBe("refresh_token");
       expect(form.get("refresh_token")).toBe("previous-test-refresh");
