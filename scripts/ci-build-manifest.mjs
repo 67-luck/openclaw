@@ -1158,6 +1158,7 @@ const nodeTestShards = targetNodeTestShards
               "src/agents/sessions/tools/index.test.ts",
               "src/agents/sessions/tools/grep.byte-path.test.ts",
               "src/agents/filesystem-tools-output-contract.test.ts",
+              "test/scripts/check-database-worker-ratchet.test.ts",
             ].some((test) => matchesGlob(test, pattern)),
           );
         }
@@ -1332,15 +1333,6 @@ const checkTasks = [
     : narrowCheckScope.checkTasks.includes(row.task);
 });
 
-// Move dependencies only when the preflight-only family is admitted.
-if (runCheckPlan && runNodeFull && !releaseFastLane) {
-  const index = checkTasks.findIndex(({ task }) => task === "dependencies");
-  if (index >= 0) {
-    const { task, ...row } = checkTasks.splice(index, 1)[0];
-    additionalChecks.push({ ...row, group: task });
-  }
-}
-
 // The selected guards row owns the same coercion scan; fast-only plans retain its row.
 if (
   !frozenTarget &&
@@ -1351,6 +1343,17 @@ if (
   const coercionTask = checksFastCoreTasks.findIndex(({ task }) => task === "coercion-helpers");
   if (coercionTask >= 0) {
     checksFastCoreTasks.splice(coercionTask, 1);
+  }
+}
+
+// These rows need no compiler plan; retain their existing full-check placement.
+if (runCheckPlan && runNodeFull && !releaseFastLane) {
+  for (const task of ["guards", "dependencies"]) {
+    const index = checkTasks.findIndex((row) => row.task === task);
+    if (index >= 0) {
+      const { task: group, ...row } = checkTasks.splice(index, 1)[0];
+      additionalChecks.push({ ...row, group });
+    }
   }
 }
 
@@ -1590,9 +1593,10 @@ if (hybridHostedEligible) {
         "dependencies",
       ].includes(row.group) || !row.runner.startsWith("blacksmith-"),
   ).length;
-  const hostedControlJobs =
-    process.env.OPENCLAW_CI_RUNNER_BACKEND === "runson" ||
-    nodeRunnerBackend === "runson" ||
+  const hostedPlanner =
+    process.env.OPENCLAW_CI_RUNNER_BACKEND === "runson" || nodeRunnerBackend === "runson";
+  const hostedRatchets =
+    hostedPlanner ||
     (workflowEventName === "pull_request" &&
       process.env.OPENCLAW_CI_HEAD_REPOSITORY !== process.env.OPENCLAW_CI_REPOSITORY);
   // Include control jobs, every emitted matrix row and native hosted jobs.
@@ -1601,7 +1605,7 @@ if (hybridHostedEligible) {
   // Qualification authenticates on hosted preflight before paid admission.
   hybridHostedBaseRows = Object.values({
     preflight: count(ciQualification),
-    "check-plan": count(hostedControlJobs && runCheckPlan),
+    "check-plan": count(hostedPlanner && runCheckPlan),
     "pr-fail-fast": count(
       workflowEventName === "pull_request" &&
         manifest.run_checks_node_core_nondist &&
@@ -1611,7 +1615,7 @@ if (hybridHostedEligible) {
     "published-driver-update": count(manifest.run_published_driver_update),
     "native-i18n": count(manifest.run_native_i18n),
     "control-ui-i18n": count(manifest.run_control_ui_i18n),
-    "checks-baseline-ratchets": count(hostedControlJobs && manifest.run_baseline_ratchets),
+    "checks-baseline-ratchets": count(hostedRatchets && manifest.run_baseline_ratchets),
     "checks-fast-core": count(
       manifest.run_checks_fast_core,
       manifest.checks_fast_core_matrix.include.length,

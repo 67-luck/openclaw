@@ -46,7 +46,6 @@ export function isUpdateRunReportInProgress(markdown: string): boolean {
   return markdown.startsWith(IN_PROGRESS_REPORT_PREFIX);
 }
 
-export type UpdateRunNoticeKind = "ack" | "parking" | "activating" | "verifying" | "finished";
 type ReportInput = Pick<
   UpdateRunRecord,
   | "status"
@@ -157,37 +156,13 @@ export function formatUpdateRunRecovery(
     : `not serving (${code})`;
 }
 
-/** The four conversation milestones share the run's recorded versions and final report. */
-export function renderUpdateRunNotice(
-  run: UpdateRunRecord,
-  kind: UpdateRunNoticeKind,
-  options: { currentHealth?: UpdateRunReportHealth } = {},
-): string | null {
-  if (kind === "finished") {
-    return run.status === "running" ? null : renderUpdateRunReport(run, options).markdown;
-  }
-  // Managed parking precedes updater staging; its notice must not advance the ledger phase.
-  const noticePhase = kind === "ack" || kind === "parking" ? "requested" : kind;
-  if (run.status !== "running" || run.phase !== noticePhase) {
-    return null;
-  }
-  const from = run.before.version ? bounded(run.before.version, 120) : undefined;
-  const target = run.after.version ?? run.target.version;
-  const to = target ? bounded(target, 120) : undefined;
-  if (kind === "ack") {
-    return `⬆️ Updating OpenClaw ${from ?? "the current version"} → ${to ?? "the latest release"}. The gateway stays available while the update is validated; you'll get a message here when it finishes.`;
-  }
-  if (kind === "activating" || kind === "parking") {
-    return `⏳ Restarting the gateway now${from && to ? ` (v${from} → v${to})` : ""}…`;
-  }
-  const running = run.verification.runningVersion
-    ? bounded(run.verification.runningVersion, 120)
-    : to;
-  return `🔁 Back${running ? ` on v${running}` : ""}, verifying…`;
-}
-
 function bounded(text: string, limit: number): string {
   return text.length <= limit ? text : `${sliceUtf16Safe(text, 0, limit - 1)}…`;
+}
+
+function formatUpdateVersion(identity: UpdateRunRecord["after"]): string | undefined {
+  const sha = identity.sha?.slice(0, 8);
+  return identity.version ? `${identity.version}${sha ? ` (${sha})` : ""}` : sha;
 }
 
 function recoveryHints(run: ReportInput, nextAction?: string): string[] {
@@ -239,9 +214,9 @@ export function renderUpdateRunReport(
     run.origin.nextAction
       ? { kind: "unavailable" }
       : undefined);
-  // Git updates can change commits without changing the package version.
-  const before = run.before.sha?.slice(0, 8) ?? run.before.version;
-  const after = run.after.sha?.slice(0, 8) ?? run.after.version;
+  // Keep the version visible and distinguish Git updates within the same version.
+  const before = formatUpdateVersion(run.before);
+  const after = formatUpdateVersion(run.after);
   const reason = bounded(
     run.reason?.trim() ||
       (run.status === "failed" &&
@@ -363,6 +338,9 @@ export function renderUpdateRunReport(
   )) {
     const failure = `Failed: ${step.step}${step.detail ? ` — ${step.detail}` : ""}`;
     lines.push(bounded(failure, 300));
+    if (step.termination === "signal" && step.stderrTail) {
+      lines.push(`Stderr (${step.signal ?? "unknown signal"}):\n${step.stderrTail}`);
+    }
     lines.push(
       ...(step.failureFacts ?? []).slice(0, 5).map((fact) =>
         formatUpdateFailureFact({

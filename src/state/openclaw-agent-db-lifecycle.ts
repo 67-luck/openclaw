@@ -41,6 +41,7 @@ import {
   releaseOpenClawAgentDatabaseLease,
   type OpenClawAgentDatabaseWorkerLeaseReceipt,
 } from "./openclaw-agent-db-lease.js";
+import { unregisterOpenClawAgentDatabase } from "./openclaw-agent-db-registry.js";
 import {
   drainAgentDatabaseResources,
   matchesAgentDatabaseClose,
@@ -53,8 +54,10 @@ import {
 } from "./openclaw-agent-db-schema-helpers.js";
 import {
   hasRevokedOpenClawAgentDatabaseValidation,
+  invalidateOpenClawAgentDatabaseValidation,
   type OpenClawAgentDatabaseValidation,
 } from "./openclaw-agent-db-validation-cache.js";
+import { isSameOpenClawAgentDatabasePath } from "./openclaw-agent-db.paths.js";
 import {
   clearOpenClawAgentIntegrityVerification,
   type OpenClawAgentIntegrityVerification,
@@ -327,7 +330,10 @@ export function refreshAgentDatabaseIdleTimer(database: OpenClawAgentDatabase): 
 }
 
 /** Dispose only this publication; a later admission at the same path is independent. */
-export function closeMaintenanceAgentDatabase(database: OpenClawAgentDatabase): void {
+export async function closeMaintenanceAgentDatabase(
+  database: OpenClawAgentDatabase,
+): Promise<void> {
+  await database.walMaintenance.stop();
   if (cache.databases.get(database.path) !== database) {
     return;
   }
@@ -429,6 +435,51 @@ export function closeOpenClawAgentDatabaseByPath(
     cache.generation += 1;
   }
   unregisterUnusedAgentDatabaseExitClose();
+  return true;
+}
+
+/** Close and unregister one unambiguous transient agent database by filesystem identity. */
+export function disposeOpenClawAgentDatabaseByPath(
+  pathname: string,
+  options: { env?: NodeJS.ProcessEnv } = {},
+): boolean {
+  const resolvedPath = path.resolve(pathname);
+  for (const pendingPath of cache.pending.keys()) {
+    if (isSameOpenClawAgentDatabasePath(pendingPath, resolvedPath)) {
+      revokePendingAgentDatabaseOpen(pendingPath);
+    }
+  }
+  for (const retained of cache.retainedCloses) {
+    if (isSameOpenClawAgentDatabasePath(retained.path, resolvedPath)) {
+      retained.close();
+    }
+  }
+  // Disposal can be followed by file deletion or recreation, so revalidate next open.
+  invalidateOpenClawAgentDatabaseValidation(resolvedPath);
+  const matchingDatabases = [...cache.databases.values()].filter((candidate) =>
+    isSameOpenClawAgentDatabasePath(candidate.path, resolvedPath),
+  );
+  if (matchingDatabases.length > 1) {
+    return false;
+  }
+  const database = matchingDatabases[0];
+  if (database && cache.incognito.has(database)) {
+    return closeOpenClawAgentDatabaseByPath(database.path);
+  }
+  if (!database) {
+    return false;
+  }
+  try {
+    unregisterOpenClawAgentDatabase({
+      agentId: database.agentId,
+      path: database.path,
+      ...(options.env ? { env: options.env } : {}),
+    });
+  } finally {
+    // Secret-bearing transient DBs must close even when registry maintenance
+    // fails; Windows otherwise cannot remove the file during caller cleanup.
+    closeOpenClawAgentDatabaseByPath(database.path);
+  }
   return true;
 }
 
@@ -571,6 +622,11 @@ export async function closeOpenClawAgentDatabasesAsync(rootPath?: string): Promi
   }
   await drainAgentDatabaseResources({ rootPath }, async () => {
     await drainPendingAgentDatabaseOpens({ rootPath });
+    await Promise.all(
+      [...cache.databases.values()]
+        .filter((database) => rootPath === undefined || isPathInside(rootPath, database.path))
+        .map((database) => database.walMaintenance.stop()),
+    );
     closeOpenClawAgentDatabases(rootPath);
   });
 }
@@ -584,6 +640,10 @@ export async function closeOpenClawAgentDatabaseByPathAsync(
   revokePendingAgentDatabaseOpen(selection.path, expectedAgentId);
   return drainAgentDatabaseResources(selection, async () => {
     await drainPendingAgentDatabaseOpens(selection);
+    const database = cache.databases.get(selection.path);
+    if (database && (expectedAgentId === undefined || database.agentId === expectedAgentId)) {
+      await database.walMaintenance.stop();
+    }
     return closeOpenClawAgentDatabaseByPath(selection.path, expectedAgentId);
   });
 }

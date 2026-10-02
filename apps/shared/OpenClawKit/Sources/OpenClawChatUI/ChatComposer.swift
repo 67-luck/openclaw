@@ -569,7 +569,6 @@ struct OpenClawChatComposer: View {
                 if let voiceNoteControl, !voiceNoteControl.isTalkActive {
                     OpenClawVoiceNoteButton(
                         control: voiceNoteControl,
-                        compact: false,
                         isComposerEnabled: self.isComposerEnabled,
                         isAttachmentInputEnabled: self.isAttachmentInputEnabled)
                 }
@@ -889,7 +888,10 @@ struct OpenClawChatComposer: View {
                 onHistoryUp: {
                     !self.isSlashPopoverPresented && self.inputModel?.recallPreviousInput(caretOnFirstLine: $0) == true
                 },
-                onHistoryDown: { !self.isSlashPopoverPresented && self.inputModel?.recallNextInput() == true })
+                onHistoryDown: { !self.isSlashPopoverPresented && self.inputModel?.recallNextInput() == true },
+                onPasteImageAttachment: self.isAttachmentInputEnabled
+                    ? { self.viewModel.addImageAttachment(data: $0, fileName: $1, mimeType: $2) }
+                    : nil)
                 .padding(.horizontal, self.cleanFieldTextInset)
                 .padding(.vertical, self.composerChrome == .clean ? 0 : 6)
                 .onChange(of: self.viewModel.input) { _, _ in

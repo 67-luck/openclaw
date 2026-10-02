@@ -5,6 +5,7 @@ import type { ChatQueueItem } from "./chat-types.ts";
 import { outboxStorageScope } from "./outbox-payload-store.runtime.ts";
 import {
   captureChatOutboxRecoveryDestination,
+  discardChatOutboxRecovery,
   readChatOutboxRecovery,
   restoreChatOutboxRecovery,
 } from "./outbox-recovery.ts";
@@ -44,6 +45,47 @@ afterEach(() => {
 });
 
 describe("stored outbox summaries", () => {
+  it("enumerates metadata-only badges for every stored session", () => {
+    const target = storageTargetForGateway("ws://sidebar-facts.test", "summary-owner");
+    sessionStorage.setItem(
+      target.key,
+      JSON.stringify({
+        version: 4,
+        gatewayOwner: target.gatewayOwner,
+        recovery: {},
+        sessions: {
+          "agent:main:a\u0000agent:main": { draft: "private draft", updatedAt: 1 },
+          "agent:work:b\u0000agent:work": {
+            updatedAt: 2,
+            queue: ownedQueue(target.gatewayOwner, [
+              { id: "held", text: "private queue", createdAt: 1, sendState: "held" },
+              { id: "failed", text: "private queue", createdAt: 2, sendState: "failed" },
+              {
+                id: "unconfirmed",
+                text: "private queue",
+                createdAt: 3,
+                sendState: "unconfirmed",
+              },
+            ]),
+          },
+        },
+      }),
+    );
+    expect(createStoredChatOutboxReader().read(ownedState(target.gatewayOwner)).sessions).toEqual([
+      {
+        agentId: "main",
+        sessionKey: "agent:main:a",
+        hasComposerDraft: true,
+        outboxAttentionCount: 0,
+      },
+      {
+        agentId: "work",
+        sessionKey: "agent:work:b",
+        hasComposerDraft: false,
+        outboxAttentionCount: 3,
+      },
+    ]);
+  });
   it.each(["raw", "cleared"])(
     "keeps newer legacy bytes published during %s source retirement",
     (input) => {
@@ -226,6 +268,50 @@ describe("stored outbox summaries", () => {
       expect(readStoredOutboxStore(sessionStorage, target)).toEqual(migrated);
     },
   );
+
+  it("admits real legacy input when recovery is full of clear fences without replaying its source", () => {
+    const target = storageTargetForGateway("ws://recovery-fence-capacity.test");
+    const state = ownedState(target.gatewayOwner);
+    const scopeKey = "global\u0000agent:main";
+    const fence = { draftRevision: 100, updatedAt: 100 };
+    sessionStorage.setItem(
+      target.key,
+      JSON.stringify({
+        version: 4,
+        gatewayOwner: target.gatewayOwner,
+        sessions: { [scopeKey]: fence },
+        recovery: Object.fromEntries(
+          Array.from({ length: 80 }, (_, index) => [
+            "empty-" + index,
+            {
+              sourceVersion: 3,
+              sourceScopeKey: "old-" + index + "\u0000agent:main",
+              session: { draftRevision: index + 1, updatedAt: index + 1 },
+            },
+          ]),
+        ),
+      }),
+    );
+    const source = JSON.stringify({
+      version: 3,
+      gatewayOwner: target.gatewayOwner,
+      sessions: {
+        [scopeKey]: { draft: "real saved input", draftRevision: 101, updatedAt: 101 },
+        "main\u0000agent:main": { draftRevision: 99, updatedAt: 99 },
+      },
+    });
+    sessionStorage.setItem(target.blobKey, source);
+    const recovery = readChatOutboxRecovery(state);
+    expect(recovery.blocked).toBe(false);
+    expect(recovery.entries.map((entry) => entry.session.draft)).toEqual(["real saved input"]);
+    expect(Object.keys(readStoredOutboxStore(sessionStorage, target).recovery)).toHaveLength(1);
+    expect(readStoredOutboxStore(sessionStorage, target).sessions[scopeKey]).toEqual(fence);
+    expect(discardChatOutboxRecovery(state, recovery.entries[0]!)).toBe("discarded");
+    // A failed old-source deletion or downgraded writer cannot replay acknowledged bytes.
+    sessionStorage.setItem(target.blobKey, source);
+    expect(readChatOutboxRecovery(state)).toEqual({ entries: [], blocked: false });
+    expect(readStoredOutboxStore(sessionStorage, target).sessions[scopeKey]).toEqual(fence);
+  });
 
   it("retires private recovery input and rejects private destinations before roster metadata", () => {
     const target = storageTargetForGateway("ws://private-recovery.test");
