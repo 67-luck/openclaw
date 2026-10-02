@@ -956,8 +956,7 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
       meta: {},
     });
 
-    const executeAgentTurn = await getExecuteAgentTurnForTest();
-    const runPromise = executeAgentTurn(createMinimalRunAgentTurnParams());
+    const runPromise = execution.executeAgentTurn(createMinimalRunAgentTurnParams());
 
     expect(registerAgentRunContext).toHaveBeenCalledWith(
       expect.any(String),
@@ -989,9 +988,8 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
       });
       state.resolveCurrentTurnImagesMock.mockRejectedValueOnce(new Error("invalid image metadata"));
 
-      const executeAgentTurn = await getExecuteAgentTurnForTest();
       await expect(
-        executeAgentTurn(
+        execution.executeAgentTurn(
           createMinimalRunAgentTurnParams({
             followupRun,
             opts: { runId: "preflight-failure" },
@@ -1009,7 +1007,7 @@ describe("executeAgentTurn: run lifecycle and ownership", () => {
         await admission.admit("embedded");
         return { payloads: [{ text: "ok" }], meta: {} };
       });
-      await executeAgentTurn(
+      await execution.executeAgentTurn(
         createMinimalRunAgentTurnParams({
           followupRun,
           opts: { runId: "preflight-success" },

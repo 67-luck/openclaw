@@ -14,6 +14,7 @@ import {
   type TestModelFallbackRunnerParams,
 } from "../../agents/test-helpers/model-fallback-runner.test-support.js";
 import type { ModelDefinitionConfig } from "../../config/types.models.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import type { ReplyOperation } from "../../sessions/session-controller.js";
 import {
   createUserTurnTranscriptRecorder,
@@ -28,6 +29,7 @@ import type {
   mintReplyMessageActionTurnCapability,
 } from "./agent-runner-utils.js";
 import type { FollowupRun } from "./queue.js";
+import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
 import type { TypingSignaler } from "./typing-mode.js";
 
 type RunEntryParams = Parameters<typeof runEmbeddedAgentEntry<EmbeddedAgentRunResult>>[0];
@@ -336,10 +338,29 @@ vi.mock("./reply-media-paths.runtime.js", () => ({
   createReplyMediaPathNormalizer: () => (payload: unknown) => payload,
 }));
 
+/** Returns the execution entry point with controller admission for sessionful fixtures. */
 export async function getExecuteAgentTurnForTest() {
   const execute = (await import("./agent-runner-execution.js")).executeAgentTurn;
   return async (...args: Parameters<typeof execute>) => {
-    const execution = await execute(...args);
+    const [params] = args;
+    const sessionKey = params.sessionKey ?? params.followupRun.run.sessionKey;
+    const execution =
+      params.replyOperation || !sessionKey
+        ? await execute(...args)
+        : await withSessionTurn(
+            {
+              sessionKey,
+              sessionId: params.followupRun.run.sessionId,
+              storePath: params.storePath,
+              agentId: params.followupRun.run.agentId,
+            },
+            async (replyOperation) => {
+              replyOperation?.bindToolAuthoritySnapshot(
+                prepareReplyToolAuthority(params.followupRun),
+              );
+              return await execute({ ...params, replyOperation });
+            },
+          );
     const outcome = execution.outcome;
     if (outcome.kind === "settled") {
       return {

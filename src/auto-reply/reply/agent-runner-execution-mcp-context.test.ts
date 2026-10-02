@@ -4,6 +4,7 @@ import { buildCurrentInboundPrompt } from "../../agents/embedded-agent-runner/ru
 import { updateMcpAppModelContext } from "../../agents/mcp-app-model-context.js";
 import {
   createFollowupRun,
+  getExecuteAgentTurnForTest,
   createMinimalRunAgentTurnParams,
   initialFallbackAttemptOptions,
   setupAgentRunnerExecutionTestState,
@@ -12,7 +13,7 @@ import {
 } from "./agent-runner-execution.test-support.js";
 
 const state = await setupAgentRunnerExecutionTestState();
-const { executeAgentTurn } = await import("./agent-runner-execution.js");
+const executeAgentTurn = await getExecuteAgentTurnForTest();
 
 describe("executeAgentTurn MCP App context", () => {
   it("injects pending MCP App context exactly once without changing transcript text", async () => {
