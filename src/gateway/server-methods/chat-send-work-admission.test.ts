@@ -5,10 +5,8 @@ import {
   captureGatewayDeviceRevocation,
   retainGatewayDeviceRevocation,
 } from "../device-revocation.js";
-import {
-  createChatSendRunCleanup,
-  createChatSendWorkAdmission,
-} from "./chat-send-work-admission.js";
+import { createChatSendRunCleanup } from "./chat-send-work-admission.js";
+import { createChatSendWorkAdmission } from "./chat-send-work-lifetime.js";
 
 describe("retained chat work admission", () => {
   it.each(["resolve", "reject"] as const)(

@@ -23,7 +23,7 @@ import {
 } from "../../config/sessions/session-transcript-execution.js";
 import { captureSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import { captureGatewayDeviceRevocation } from "../../gateway/device-revocation.js";
-import { createChatSendWorkAdmission } from "../../gateway/server-methods/chat-send-work-admission.js";
+import { createChatSendWorkAdmission } from "../../gateway/server-methods/chat-send-work-lifetime.js";
 import {
   bindGatewayRequestHandlerMutationAuthority,
   bindWebSocketRequestMutationAuthority,

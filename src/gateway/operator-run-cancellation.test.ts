@@ -20,7 +20,7 @@ import {
 } from "./chat-queued-turns.js";
 import { retainGatewayOperatorRun } from "./operator-run-cancellation.js";
 import { createChatRunState } from "./server-chat-state.js";
-import { createChatSendWorkAdmission } from "./server-methods/chat-send-work-admission.js";
+import { createChatSendWorkAdmission } from "./server-methods/chat-send-work-lifetime.js";
 
 async function withCancellationFixture(
   run: (fixture: Awaited<ReturnType<typeof createCancellationFixture>>) => Promise<void>,

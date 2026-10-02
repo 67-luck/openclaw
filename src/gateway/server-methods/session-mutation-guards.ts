@@ -30,7 +30,7 @@ import type { PreparedSessionMutationFacts } from "../session-sharing-policy.js"
 import {
   assertChatSendInputLifetime,
   type RetainedChatSendInputLifetime,
-} from "./chat-send-work-admission.js";
+} from "./chat-send-work-lifetime.js";
 import type {
   GatewayRequestHandlerOptions,
   GatewayRequestOptions,

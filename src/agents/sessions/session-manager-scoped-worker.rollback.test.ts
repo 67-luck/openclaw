@@ -8,7 +8,7 @@ import {
 } from "../../config/sessions/transcript-write-context.js";
 import { captureGatewayDeviceRevocation } from "../../gateway/device-revocation.js";
 import { createExpectedProfileBinding } from "../../gateway/expected-profile.js";
-import { createChatSendWorkAdmission } from "../../gateway/server-methods/chat-send-work-admission.js";
+import { createChatSendWorkAdmission } from "../../gateway/server-methods/chat-send-work-lifetime.js";
 import {
   bindGatewayRequestHandlerMutationAuthority,
   bindWebSocketRequestMutationAuthority,

@@ -62,9 +62,11 @@ import {
   createChatSendRunCleanup,
   admitChatSendUploads,
   assertChatSendExclusiveAdmission,
+} from "./chat-send-work-admission.js";
+import {
   createChatSendWorkAdmission,
   type RetainedChatSendInputLifetime,
-} from "./chat-send-work-admission.js";
+} from "./chat-send-work-lifetime.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 /** Reserve the session lifecycle and register the abortable run before attachment work. */
