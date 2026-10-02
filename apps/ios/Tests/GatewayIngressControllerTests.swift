@@ -446,15 +446,17 @@ func waitForIngress(_ condition: () -> Bool) async throws {
 struct GatewayIngressControllerTests {
     @Test @MainActor
     func `registry isolation suspends waiters until snapshots are restored`() async {
-        let defaults = UserDefaults.standard
-        let key = "gateway.last.host"
+        let service = GatewaySettingsStore._testGatewayService
+        let account = "preferredStableID"
+        let restored = "manual|restored.example.com|443"
+        let held = "manual|held.example.com|443"
         await GatewayPersistenceTestGate.shared.acquire()
-        let previous = defaults.object(forKey: key)
-        defaults.set("restored.example.com", forKey: key)
+        let previous = GenericPasswordKeychainStore.loadString(service: service, account: account)
+        #expect(GenericPasswordKeychainStore.saveString(restored, service: service, account: account))
         GatewayPersistenceTestGate.shared.release()
 
         let holder = await GatewayRegistryTestIsolation()
-        defaults.set("held.example.com", forKey: key)
+        #expect(GenericPasswordKeychainStore.saveString(held, service: service, account: account))
         let attempting = IngressTestGate()
         var entered = false
         let contender = Task { @MainActor in
@@ -462,25 +464,27 @@ struct GatewayIngressControllerTests {
             let isolation = await GatewayRegistryTestIsolation()
             defer { isolation.restore() }
             entered = true
-            #expect(defaults.object(forKey: key) == nil)
+            #expect(GenericPasswordKeychainStore.loadString(service: service, account: account) == nil)
         }
 
         // The contender queues its acquisition before this actor can resume the suspended holder.
         await attempting.wait()
         #expect(!entered)
-        #expect(defaults.string(forKey: key) == "held.example.com")
+        #expect(GenericPasswordKeychainStore.loadString(service: service, account: account) == held)
         holder.restore()
         await contender.value
 
         await GatewayPersistenceTestGate.shared.acquire()
         defer {
-            defaults.removeObject(forKey: key)
-            if let previous { defaults.set(previous, forKey: key) }
+            #expect(GenericPasswordKeychainStore.delete(service: service, account: account))
+            if let previous {
+                #expect(GenericPasswordKeychainStore.saveString(previous, service: service, account: account))
+            }
             GatewayPersistenceTestGate.shared.release()
         }
         #expect(entered)
         // The contender must snapshot the holder's restored value, never its temporary mutation.
-        #expect(defaults.string(forKey: key) == "restored.example.com")
+        #expect(GenericPasswordKeychainStore.loadString(service: service, account: account) == restored)
     }
 
     @Test @MainActor
