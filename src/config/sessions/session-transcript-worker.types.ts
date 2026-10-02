@@ -297,6 +297,20 @@ type SessionUsageCacheWorkerInput = {
   env: NodeJS.ProcessEnv;
 };
 
+type SessionTranscriptAccountingWorkerInput = {
+  kind: "transcript-accounting";
+  database: { agentId: string; path: string };
+  scope: Omit<SessionTranscriptReadScope, "storePath">;
+  includeStats: boolean;
+  maxEvents?: number;
+};
+
+export type SessionTranscriptAccountingRead = {
+  kind: "transcript-accounting";
+  stats?: { eventCount: number; sizeBytes: number };
+  events?: TranscriptEvent[];
+};
+
 type SessionEntryReadWorkerInput = {
   kind: "session-entry-read";
   database: { agentId: string; path: string };
@@ -479,6 +493,7 @@ export type SessionHistoryWorkerInput =
   | SessionTargetInventoryWorkerInput
   | SessionIdentityEvidenceWorkerInput
   | SessionUsageCacheWorkerInput
+  | SessionTranscriptAccountingWorkerInput
   | SessionTranscriptSearchWorkerInput
   | SessionTranscriptMatchWorkerInput;
 
@@ -546,6 +561,7 @@ export type SessionTranscriptWorkerValues = {
   "session-target-inventory": SessionStoreTargetInventoryResult;
   "session-identity-evidence": SessionIdentityEvidenceWorkerResult;
   "usage-cache": SessionCostUsageCacheReadResult;
+  "transcript-accounting": SessionTranscriptAccountingRead;
   "model-context": ReturnType<typeof readSessionTranscriptModelContext>;
   "session-reset-recall": {
     cutoff: import("../../../packages/memory-host-sdk/src/host/session-reset-recall.js").SessionResetRecallCutoff;
@@ -664,4 +680,7 @@ export type SessionHistoryWorkerDatabase = {
   readUsageCache: (
     input: Omit<SessionUsageCacheWorkerInput, "kind" | "database">,
   ) => Promise<SessionCostUsageCacheReadResult>;
+  readTranscriptAccounting: (
+    input: Omit<SessionTranscriptAccountingWorkerInput, "kind" | "database">,
+  ) => Promise<SessionTranscriptAccountingRead>;
 };

@@ -17,7 +17,11 @@ import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-d
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { resolveStateDir } from "../state-dir.js";
 import { loadSessionEntryReadOnlyInScope } from "./session-accessor.sqlite-entry.js";
-import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
+import {
+  resolveSqliteReadScope,
+  resolveSqliteScope,
+  toDatabaseOptions,
+} from "./session-accessor.sqlite-scope.js";
 import type {
   CapturedSessionEntryReadSource,
   SessionAccessScope,
@@ -52,6 +56,7 @@ import type {
   SessionHistoryWorkerDatabase,
   SessionHistoryWorkerInput,
   SessionRowPresenceWorkerInput,
+  SessionTranscriptAccountingRead,
 } from "./session-transcript-worker.types.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
@@ -365,6 +370,30 @@ export function withSessionHistoryWorkerDatabase<T>(
     [options],
     (owners) => operation(expectDefined(owners[0], "retained session history reader")),
     lane,
+  );
+}
+
+/** Read transcript accounting through the retained read-only database owner. */
+export async function readSessionTranscriptAccountingInWorker(
+  scope: import("./session-accessor.sqlite-contract.js").SessionTranscriptReadScope,
+  options: { includeStats: boolean; maxEvents?: number },
+): Promise<SessionTranscriptAccountingRead> {
+  const resolved = resolveSqliteReadScope(scope);
+  const databaseOptions = toDatabaseOptions(resolved);
+  const databasePath = resolveOpenClawAgentSqlitePath(databaseOptions);
+  return await withSessionHistoryWorkerDatabase(
+    { ...databaseOptions, path: databasePath },
+    (owner) =>
+      owner.readTranscriptAccounting({
+        scope: {
+          agentId: resolved.agentId,
+          sessionId: scope.sessionId,
+          sessionKey: resolved.sessionKey,
+          env: captureSessionTranscriptStorageEnvironment(scope.env ?? process.env),
+        },
+        includeStats: options.includeStats,
+        maxEvents: options.maxEvents,
+      }),
   );
 }
 

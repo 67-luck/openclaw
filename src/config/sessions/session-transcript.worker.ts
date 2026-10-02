@@ -384,6 +384,19 @@ serveOwnedWorkerTasks(
           readSessionCostUsageCache({ ...request.database, env: request.env }, request.request),
         );
       }
+      if (request.kind === "transcript-accounting") {
+        const { readRecentSessionTranscriptActiveEvents, readSessionTranscriptActiveStats } =
+          await import("./session-accessor.sqlite-active-events.js");
+        const scope = { ...request.scope, storePath: request.database.path };
+        return await withHistoryDatabase(request.database, request.kind, () => ({
+          kind: "transcript-accounting" as const,
+          stats: request.includeStats ? readSessionTranscriptActiveStats(scope) : undefined,
+          events:
+            request.maxEvents === undefined
+              ? undefined
+              : readRecentSessionTranscriptActiveEvents(scope, request.maxEvents),
+        }));
+      }
       if (request.kind === "branch-summaries") {
         const { readSessionBranchSummariesInWorker } =
           await import("./session-accessor.sqlite-branches.js");
