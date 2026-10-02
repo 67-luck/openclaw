@@ -47,7 +47,11 @@ function installedPlugin() {
   return {
     status: "found" as const,
     pluginId: "audit",
-    record: { source: "clawhub" as const, integrity: "sha256:audit", installedAt: 1 },
+    record: {
+      source: "clawhub" as const,
+      integrity: "sha256:audit",
+      installedAt: "1970-01-01T00:00:00.001Z",
+    },
     installedVersion: "1.0.0",
   };
 }
@@ -182,7 +186,7 @@ describe("Claw package removal", () => {
         },
       );
       if (phase === "compensation claim") {
-        const error = await pending.catch((error: unknown) => error);
+        const error = await pending.catch((cause: unknown) => cause);
         expect(error).toMatchObject({ code: "outcome-unknown" });
         expect(collectNestedErrorCandidates(error)).toEqual(
           expect.arrayContaining([cleanupError, unknown]),
@@ -223,7 +227,7 @@ describe("Claw package removal", () => {
         },
       );
       if (aggregate) {
-        const error = await pending.catch((error: unknown) => error);
+        const error = await pending.catch((cause: unknown) => cause);
         expect(error).toMatchObject({ code: "outcome-unknown" });
         expect(collectNestedErrorCandidates(error)).toContain(failure);
       } else {
