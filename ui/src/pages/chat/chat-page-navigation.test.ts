@@ -9,6 +9,8 @@ vi.mock("../../app/native-gateways.runtime.ts", () => ({
   nativeGatewaysCapability: () => null,
 }));
 
+import { prepareSessionNavigationHandoff } from "../../lib/sessions/navigation-handoff.ts";
+import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { createStorageMock } from "../../test-helpers/storage.ts";
 import { navigateChatPage, ownedChatPaneSessionKey } from "./chat-page-navigation.ts";
@@ -19,6 +21,12 @@ import {
   stubMatchMedia,
 } from "./chat-page.test-support.ts";
 import { ChatPage } from "./chat-page.ts";
+import { loadChatRoute } from "./route-loader.ts";
+import {
+  createSessionRouteContext,
+  createSessionRouteRow,
+  sessionRouteListResult,
+} from "./route-resolution.test-support.ts";
 
 type DraftRecipient = HTMLElement & {
   active: boolean;
@@ -213,4 +221,153 @@ describe("chat page navigation", () => {
       window.history.replaceState(null, "", previousHref);
     }
   });
+
+  it.each(
+    (["cached short without row", "resolved row canonicalization"] as const).flatMap((source) =>
+      (["unchanged", "client", "hello"] as const).map((connection) => ({ source, connection })),
+    ),
+  )(
+    "keeps acknowledged $source cleanup bound to its $connection connection",
+    async ({ source, connection }) => {
+      const previousHref = window.location.href;
+      const oldRow = createSessionRouteRow({
+        key: "agent:roboclaw:thread:12345678-0aaa-4000-8000-000000000001",
+        displayName: "Deploy monitor",
+      });
+      const currentRow = createSessionRouteRow({
+        key: "agent:roboclaw:thread:12345678-0bbb-4000-8000-000000000002",
+        displayName: "Deploy monitor",
+      });
+      const resolver = createSessionRouteContext(
+        { ok: true, ...oldRow, agentId: "roboclaw" },
+        source === "resolved row canonicalization" ? [oldRow] : [],
+      );
+      const page = new ChatPage();
+      const navigation = setNavigationContext(page);
+      Object.assign(navigation.context, {
+        gateway: resolver.context.gateway,
+        sessions: resolver.context.sessions,
+        lifecycleAbortSignal: resolver.context.lifecycleAbortSignal,
+      });
+      Object.assign(navigation.context.gateway, { setSessionKey: vi.fn() });
+      navigation.context.gateway.snapshot.hello = gatewayHelloForMethods([]);
+      navigation.context.agentSelection.set("roboclaw");
+      const location = {
+        pathname:
+          source === "cached short without row"
+            ? "/chat/roboclaw/deploy-monitor-12345678"
+            : "/chat/roboclaw/old-name-12345678",
+        search: "?__openclawComposerFocus=1&panel=details",
+        hash: "#pane",
+      };
+      window.history.replaceState({}, "", `${location.pathname}${location.search}${location.hash}`);
+      page.data = { sessionKey: oldRow.key };
+      document.body.append(page);
+      await page.updateComplete;
+      const recipient = expectDefined(
+        page.querySelector<DraftRecipient>("openclaw-chat-pane"),
+        "acknowledging pane",
+      );
+      const accepted = createDeferred();
+      recipient.updateComplete = accepted.promise;
+      try {
+        if (source === "cached short without row") {
+          prepareSessionNavigationHandoff(
+            navigation.context.gateway,
+            location.pathname,
+            oldRow.key,
+          );
+        }
+        let loaded = await loadChatRoute(
+          navigation.context,
+          location,
+          "chat",
+          new AbortController().signal,
+        );
+        if (!("kind" in loaded) || loaded.kind !== "session") {
+          throw new Error("Expected the confirmed session route");
+        }
+        page.data = loaded;
+        await page.updateComplete;
+        if (source === "resolved row canonicalization") {
+          const canonical = expectDefined(loaded.canonicalLocation, "resolved canonical location");
+          expect(navigation.replace).toHaveBeenCalledExactlyOnceWith("chat", canonical);
+          window.history.replaceState(
+            {},
+            "",
+            `${canonical.pathname}${canonical.search}${canonical.hash}`,
+          );
+          // The router consumes the initial handoff and installs fresh loader data.
+          // Cleanup must prepare its own handoff after the pane acknowledges it.
+          loaded = await loadChatRoute(
+            navigation.context,
+            canonical,
+            "chat",
+            new AbortController().signal,
+          );
+          if (!("kind" in loaded) || loaded.kind !== "session") {
+            throw new Error("Expected the canonical session route");
+          }
+          page.data = loaded;
+          await page.updateComplete;
+          navigation.replace.mockClear();
+        }
+        expect(loaded).toMatchObject({ sessionKey: oldRow.key, focusComposer: true });
+        expect(page.querySelector("openclaw-chat-pane")).toBe(recipient);
+        const resolutionCalls = () =>
+          resolver.request.mock.calls.filter(([method]) => method === "sessions.resolve");
+        const callsBeforeCleanup = resolutionCalls().length;
+        resolver.request.mockImplementation(async (method) => {
+          if (method === "sessions.resolve") {
+            return { ok: true, ...currentRow, agentId: "roboclaw" };
+          }
+          if (method === "sessions.subscribe") {
+            return { subscribed: true };
+          }
+          if (method === "sessions.list") {
+            return sessionRouteListResult([currentRow]);
+          }
+          throw new Error(`Unexpected gateway request: ${method}`);
+        });
+        if (connection === "client") {
+          resolver.publishGateway({
+            client: createTestGatewayClient(resolver.request),
+          });
+        } else if (connection === "hello") {
+          resolver.publishGateway({ hello: gatewayHelloForMethods([]) });
+        }
+        page.requestUpdate();
+        await page.updateComplete;
+        page.presented = false;
+        await page.updateComplete;
+        page.presented = true;
+        await page.updateComplete;
+        expect(page.data).toBe(loaded);
+        expect(navigation.replace).not.toHaveBeenCalled();
+        accepted.resolve();
+        await accepted.promise;
+        await page.updateComplete;
+        const cleaned = {
+          pathname: window.location.pathname,
+          search: "?panel=details",
+          hash: "#pane",
+        };
+        expect(navigation.replace).toHaveBeenCalledExactlyOnceWith("chat", cleaned);
+        await expect(
+          loadChatRoute(navigation.context, cleaned, "chat", new AbortController().signal),
+        ).resolves.toMatchObject({
+          kind: "session",
+          sessionKey: connection === "unchanged" ? oldRow.key : currentRow.key,
+        });
+        expect(resolutionCalls()).toHaveLength(
+          callsBeforeCleanup + (connection === "unchanged" ? 0 : 1),
+        );
+      } finally {
+        page.remove();
+        accepted.resolve();
+        await accepted.promise;
+        window.history.replaceState(null, "", previousHref);
+      }
+    },
+  );
 });

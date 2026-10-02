@@ -247,6 +247,16 @@ export class ChatPageRetainedSessions {
     }
   };
 
+  findActiveBoundPane(sessionKey: string) {
+    const layout = this.bindings.layout();
+    const pane = findPane(layout, layout.activePaneId)?.pane;
+    return pane &&
+      !this.unbound.has(pane.id) &&
+      areUiSessionKeysEquivalent(pane.sessionKey, sessionKey)
+      ? this.findPane(pane.id, pane.sessionKey)
+      : undefined;
+  }
+
   findPane(
     paneId: string,
     sessionKey: string,
