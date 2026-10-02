@@ -29,11 +29,11 @@ function descendants(pid) {
   }
   return [...ids];
 }
-function deadline(p, deadlineLabel) {
+function deadline(p, deadlineLabel, milliseconds = 5000) {
   return Promise.race([
     p,
     new Promise((_, reject) => {
-      const timer = setTimeout(() => reject(new Error(deadlineLabel + " timed out")), 5000);
+      const timer = setTimeout(() => reject(new Error(deadlineLabel + " timed out")), milliseconds);
       timer.unref();
     }),
   ]);
@@ -59,6 +59,7 @@ function deadline(p, deadlineLabel) {
     nativeEffects = new Set(),
     nativeRejectedBeforeEffect = new Set();
   let startupFailure;
+  const startup = { beganAt: Date.now() };
   let nextPing;
   let nativeRouteRetired = false;
   const observed = new Set();
@@ -68,6 +69,7 @@ function deadline(p, deadlineLabel) {
   const record = { mode, checks: [] };
   server.on("connection", (socket) => {
     ws = socket;
+    startup.gatewayConnectedAfterMs = Date.now() - startup.beganAt;
     socket.on("ping", (data) => {
       if (nextPing) {
         const pending = nextPing;
@@ -171,6 +173,7 @@ function deadline(p, deadlineLabel) {
         }
         const row = JSON.parse(line);
         if (row.ready) {
+          startup.readyAfterMs = Date.now() - startup.beganAt;
           resolve();
         }
         if (row.nativeCancelled) {
@@ -196,6 +199,8 @@ function deadline(p, deadlineLabel) {
         }
         if (row.startupFailure) {
           startupFailure = row.startupFailure;
+          startup.failure = row.startupFailure;
+          startup.failedAfterMs = Date.now() - startup.beganAt;
         }
       }
     });
@@ -250,7 +255,9 @@ function deadline(p, deadlineLabel) {
   /** @type {Error | undefined} */
   let cleanupError;
   try {
-    await deadline(ready, "startup");
+    // GatewayChannel owns a 30-second connect budget, including bundled verification.
+    // Allow that result to settle before the fixture expires; application checks stay at five seconds.
+    await deadline(ready, "startup", 35000);
     if (process.env.RFC54_EXPECT_STARTUP_REJECTION) {
       throw new Error("expected helper rejection before Gateway connection");
     }
@@ -656,6 +663,7 @@ function deadline(p, deadlineLabel) {
       await delay(20);
       remaining = remaining.filter(live);
     }
+    record.startup = startup;
     record.mediaResultsReceived = [...mediaResultsReceived];
     record.mediaResultsValidated = [...mediaResultsValidated];
     record.nativeCancelEvents = Object.fromEntries(cancelEvents);
