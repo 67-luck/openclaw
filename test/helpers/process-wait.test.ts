@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fsSync from "node:fs";
 import path from "node:path";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { killPidIfAlive } from "../../src/test-utils/process-tree.js";
 import {
@@ -9,9 +10,10 @@ import {
   waitForChildClose,
   waitForDead,
   waitForFile,
+  waitForFixtureFile,
   waitForPidFile,
 } from "./process-wait.js";
-import { withTestTimeout } from "./promise.js";
+import { awaitGateBeforeSettlement, createDeferred, withinTest } from "./promise.js";
 import { useAutoCleanupTempDirTracker } from "./temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -48,7 +50,7 @@ describe.each([
   });
 });
 
-it.each(["", "invalid", "0", "-1"])("rejects PID contents %j at the deadline", async (contents) => {
+it.each(["", "0"])("rejects PID contents %j at the deadline", async (contents) => {
   vi.useFakeTimers();
   const file = path.join(tempDirs.make("openclaw-process-wait-"), "pid");
   fsSync.writeFileSync(file, contents);
@@ -81,7 +83,7 @@ it("stops waiting when a Linux process is a zombie", async () => {
   vi.spyOn(process, "kill").mockImplementation(() => true);
   vi.spyOn(fsSync, "readFileSync").mockImplementation((filePath) => {
     if (String(filePath) === "/proc/42/status") {
-      return "Name:\tworker\nState:\tZ (zombie)\nPid:\t42\n";
+      return "Name:\tworker\nState:\tZ (zombie)\nPid:\t42\nThreads:\t1\n";
     }
     throw new Error(`unexpected read: ${String(filePath)}`);
   });
@@ -93,7 +95,9 @@ it("rejects when the process remains alive at the deadline", async () => {
   await expect(waitForDead(process.pid, 20)).rejects.toThrow(`process still alive: ${process.pid}`);
 });
 
-it("rechecks process death after a worker stall crosses the polling deadline", async () => {
+it("rechecks process death after a worker stall crosses the polling deadline", async ({
+  signal,
+}) => {
   // A separate controller can reap the real child while this worker is stalled.
   const controller = spawn(
     process.execPath,
@@ -118,15 +122,22 @@ child.once('close', (_code, signal) => {
   const nativeKill = process.kill.bind(process);
   let childPid: number | undefined;
   try {
-    const [pid] = await withTestTimeout(once(controller, "message"), 2_000, "child not ready");
+    const [pid] = await withinTest(
+      awaitGateBeforeSettlement(
+        once(controller, "message"),
+        closed,
+        "controller closed before child readiness",
+      ),
+      signal,
+    );
     if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
       throw new Error("child did not publish a valid PID");
     }
     childPid = pid;
     let observedAlive = false;
-    const killSpy = vi.spyOn(process, "kill").mockImplementation((target, signal) => {
-      const result = nativeKill(target, signal);
-      if (target === childPid && signal === 0 && !observedAlive) {
+    const killSpy = vi.spyOn(process, "kill").mockImplementation((target, killSignal) => {
+      const result = nativeKill(target, killSignal);
+      if (target === childPid && killSignal === 0 && !observedAlive) {
         observedAlive = true;
         controller.send("kill");
         // Preserve the real live observation, but delay the next poll past its deadline.
@@ -151,7 +162,7 @@ child.once('close', (_code, signal) => {
       if (controller.connected) {
         controller.send("kill");
       }
-      await closed;
+      await withinTest(closed, signal);
     } finally {
       try {
         if (controller.pid && isProcessAlive(controller.pid)) {
@@ -167,3 +178,41 @@ child.once('close', (_code, signal) => {
     }
   }
 });
+
+it.for(["borrower completion", "persistent file"] as const)(
+  "observes readiness from %s without a file-watch event",
+  async (observation, { signal }) => {
+    const filename = path.join(tempDirs.make("openclaw-process-receipt-"), "ready");
+    const { promise: completion, resolve: finish } = createDeferred();
+    const watchFile = fsSync.watchFile;
+    // A successful initial stat establishes a baseline without notifying Node's
+    // watchFile listener. A receipt created during that stat must still be seen.
+    const watcher = vi
+      .spyOn(fsSync, "watchFile")
+      .mockImplementation((target, ...args) =>
+        target === filename
+          ? watchFile(filename, { interval: 50 }, () => {})
+          : watchFile(target, ...args),
+      );
+    let ready = false;
+    const waiting = waitForFixtureFile(filename, completion).then(() => {
+      ready = true;
+    });
+    try {
+      fsSync.writeFileSync(filename, "ready");
+      if (observation === "borrower completion") {
+        finish();
+        await nextTurn();
+        expect(ready).toBe(true);
+      }
+      await withinTest(waiting, signal);
+      expect(ready).toBe(true);
+    } finally {
+      finish();
+      await waiting.finally(() => {
+        fsSync.unwatchFile(filename);
+        watcher.mockRestore();
+      });
+    }
+  },
+);

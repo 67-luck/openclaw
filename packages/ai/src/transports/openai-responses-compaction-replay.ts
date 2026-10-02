@@ -8,7 +8,6 @@ import type {
   BaseOpenAIStreamOptions,
   OpenAIResponsesCompactionRejection,
 } from "../provider-options.js";
-import { shortHash } from "../utils/hash.js";
 import {
   isOpenAIResponsesCompactionOutput,
   readOpenAIResponsesCompactionWindow,
@@ -20,11 +19,15 @@ import {
   OPENAI_RESPONSES_REPLAY_ITEM_ID_MAX_LENGTH,
   type OpenAIResponsesCompactionReplayState,
   type OpenAIResponsesReasoningReplayMetadata,
-  type OpenAIResponsesReplayContext,
   type ReplayableResponseCompactionItem,
 } from "./openai-responses-contracts.js";
 import { log } from "./openai-transport-shared.js";
-import { providerReplayContextMatches } from "./provider-replay-context.js";
+import {
+  buildProviderReplayContext,
+  isProviderReplayContext,
+  providerReplayContextMatches,
+  type ProviderReplayContext,
+} from "./provider-replay-context.js";
 
 const OPENAI_RESPONSES_COMPACTION_SUPPRESSION_TYPE = "openai-responses-compaction-suppression";
 const OPENAI_RESPONSES_COMPACTION_SUPPRESSION_DATA = "rejected";
@@ -34,43 +37,8 @@ type OpenAIResponsesCompactionSuppressionState = ProviderReplayState & {
   baseUrlHash: string;
 };
 
-function hashOptionalReplayContextValue(value: string | undefined): string | undefined {
-  const normalized = value?.trim();
-  return normalized ? shortHash(normalized) : undefined;
-}
-
-export function buildOpenAIResponsesReplayContext(
-  model: Model,
-  options?: Pick<BaseOpenAIStreamOptions, "authProfileId" | "sessionId">,
-): OpenAIResponsesReplayContext {
-  return {
-    provider: model.provider,
-    api: model.api,
-    model: model.id,
-    baseUrlHash: hashOptionalReplayContextValue(model.baseUrl),
-    sessionHash: hashOptionalReplayContextValue(options?.sessionId),
-    authProfileHash: hashOptionalReplayContextValue(options?.authProfileId),
-  };
-}
-
-export function isOpenAIResponsesReplayContext(
-  value: unknown,
-): value is OpenAIResponsesReplayContext {
-  if (!isRecord(value)) {
-    return false;
-  }
-  return (
-    typeof value.provider === "string" &&
-    typeof value.api === "string" &&
-    typeof value.model === "string" &&
-    (value.baseUrlHash === undefined || typeof value.baseUrlHash === "string") &&
-    (value.sessionHash === undefined || typeof value.sessionHash === "string") &&
-    (value.authProfileHash === undefined || typeof value.authProfileHash === "string")
-  );
-}
-
 function isOpenAIResponsesCompactionState(
-  state: OpenAIResponsesReplayContext & Record<string, unknown>,
+  state: ProviderReplayContext & Record<string, unknown>,
 ): state is Record<string, unknown> &
   (OpenAIResponsesCompactionReplayState | OpenAIResponsesCompactionSuppressionState) {
   if (typeof state.baseUrlHash !== "string" || state.v !== 1) {
@@ -103,7 +71,7 @@ function readOpenAIResponsesCompactionReplayState(
   value: unknown,
 ): OpenAIResponsesCompactionReplayState | OpenAIResponsesCompactionSuppressionState | undefined {
   return isRecord(value) &&
-    isOpenAIResponsesReplayContext(value) &&
+    isProviderReplayContext(value) &&
     isOpenAIResponsesCompactionState(value)
     ? value
     : undefined;
@@ -165,7 +133,7 @@ export function suppressOpenAIResponsesCompaction(
   options?: Pick<BaseOpenAIStreamOptions, "authProfileId" | "onCompactionRejected" | "sessionId">,
   rejectedCheckpoint?: OpenAIResponsesCompactionRejection,
 ): void {
-  const context = buildOpenAIResponsesReplayContext(model, options);
+  const context = buildProviderReplayContext(model, options);
   if (!context.baseUrlHash) {
     return;
   }
@@ -249,7 +217,7 @@ export function resolveNewestOpenAIResponsesCompactionReplay(
     }
   | { owner: AssistantMessage; mode: "refresh-required" }
   | undefined {
-  const context = buildOpenAIResponsesReplayContext(model, options);
+  const context = buildProviderReplayContext(model, options);
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
     if (message?.role !== "assistant") {
@@ -373,6 +341,6 @@ export function buildOpenAIResponsesReasoningReplayMetadata(
   return {
     v: 1,
     source: "openai-responses",
-    ...buildOpenAIResponsesReplayContext(model, options),
+    ...buildProviderReplayContext(model, options),
   };
 }

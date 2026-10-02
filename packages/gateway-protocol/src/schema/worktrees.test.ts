@@ -24,6 +24,7 @@ describe("managed worktree protocol schemas", () => {
     expect(validateSessionsCreateParams({ agentId: "main", thinkingLevel: "high" })).toBe(true);
     expect(validateSessionsCreateParams({ agentId: "main", fastMode: true })).toBe(true);
     expect(validateSessionsCreateParams({ agentId: "main", fastMode: "auto" })).toBe(true);
+    expect(validateSessionsCreateParams({ agentId: "main", fastMode: "ultrafast" })).toBe(true);
     expect(validateSessionsCreateParams({ agentId: "main", fastMode: "fast" })).toBe(false);
     expect(validateSessionsCreateParams({ agentId: "main", incognito: true })).toBe(true);
     expect(validateSessionsCreateParams({ agentId: "main", incognito: "true" })).toBe(false);
@@ -70,6 +71,7 @@ describe("managed worktree protocol schemas", () => {
         defaultBranch: "main",
         headBranch: "feature",
         repositoryStatus: "git",
+        branchesUnavailable: true,
       }),
     ).toBe(true);
     expect(

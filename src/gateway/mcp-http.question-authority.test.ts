@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { runQaGatewayFixture } from "../../test/helpers/qa-gateway-cleanup.js";
 import {
   createOperationalRunInstanceRef,
   prepareAgentRunAdmission,
@@ -10,6 +11,7 @@ import {
   buildDefaultTestCliBackend,
   createCliRunnerPrepareFixture,
 } from "../agents/cli-runner.test-helpers.js";
+import { createCliRunCurrentAssertion } from "../agents/cli-runner/execution-target.js";
 import { prepareCliRunContext } from "../agents/cli-runner/prepare.js";
 import {
   resetCliRunnerPrepareTestDeps,
@@ -22,6 +24,8 @@ import { resetPendingAskUserQuestionsForTest } from "../agents/tools/ask-user-to
 import type { ReplyToolAuthorityOverlay } from "../auto-reply/reply/reply-run-registry.contracts.js";
 import { getRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import {
   activateMcpLoopbackClientGrantCapture,
@@ -33,7 +37,7 @@ import {
   revokeMcpLoopbackClientGrant,
   transferMcpLoopbackClientGrant,
 } from "./mcp-grant-store.js";
-import { ensureMcpLoopbackServer } from "./mcp-http.js";
+import { closeMcpLoopbackServer, ensureMcpLoopbackServer } from "./mcp-http.js";
 import * as toolResolution from "./tool-resolution.js";
 
 vi.mock("../plugins/hook-runner-global.js", () => ({ getGlobalHookRunner: () => null }));
@@ -65,6 +69,8 @@ const caller: ReplyToolAuthorityOverlay = {
   disableTools: false,
   traceAuthorized: false,
 };
+let fixtureSignal: AbortSignal;
+const fixtureRuns = new Set<Promise<void>>();
 let nativeToolProjector: ((tools: readonly string[]) => readonly string[]) | undefined;
 
 type McpResponse = {
@@ -75,7 +81,10 @@ type McpResponse = {
   };
 };
 
-beforeEach(() => {
+beforeEach(({ signal }) => {
+  fixtureSignal = signal;
+  // Shared channel stubs otherwise load bundled message adapters in this webchat-only fixture.
+  setActivePluginRegistry(createEmptyPluginRegistry());
   nativeToolProjector = undefined;
   cliBackendsTesting.setDepsForTest({
     resolvePluginSetupCliBackend: () => undefined,
@@ -100,7 +109,9 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // A timed-out fixture must finish before shared state belongs to the next test.
+  await Promise.allSettled(fixtureRuns);
   resetPendingAskUserQuestionsForTest();
   resetCliRunnerPrepareTestDeps();
   cliBackendsTesting.resetDepsForTest();
@@ -130,144 +141,199 @@ async function withCliQuestionLoopback(
     answer: (overlay?: ReplyToolAuthorityOverlay) => Promise<boolean>;
     retire: (id: string) => void;
     manager: Parameters<Parameters<typeof withQuestionGateway>[0]>[0]["manager"];
+    holdNextHello: Parameters<Parameters<typeof withQuestionGateway>[0]>[0]["holdNextHello"];
     runtimeOwnerToken: string;
     resolutionCount: () => number;
     resolveRequestCount: () => number;
     persist: ReturnType<typeof vi.fn>;
   }) => Promise<void>,
+  signal = fixtureSignal,
 ) {
+  signal.throwIfAborted();
   const cli = createCliRunnerPrepareFixture(prepareCliRunContext);
   const { dir } = cli.session;
-  try {
-    await withQuestionGateway(async (gateway) => {
-      const config: OpenClawConfig = {
-        ...expectDefined(getRuntimeConfigSnapshot(), "isolated question gateway config"),
-        agents: { defaults: { workspace: dir }, entries: { main: { default: true } } },
-        plugins: { enabled: false },
-        tools: { profile: "full" },
-      };
-      // Config identity is stable: tools/list must seed the same cache used by tools/call.
-      setRuntimeConfigSnapshot(config);
-      const server = await ensureMcpLoopbackServer();
-      const { getActiveMcpLoopbackRuntime } = await import("./mcp-http.loopback-runtime.js");
-      const runtime = expectDefined(getActiveMcpLoopbackRuntime(), "loopback runtime");
-      const resolutions = vi.spyOn(toolResolution, "resolveGatewayScopedTools");
-      const contexts: PreparedCliRunContext[] = [];
-      const admissions: PreparedAgentRunAdmission[] = [];
-      const requests: Promise<McpResponse>[] = [];
-      const persist = vi.fn(async () => {});
-      const request = async (
-        token: string,
-        method: "tools/list" | "tools/call",
-        attached = false,
-      ) => {
-        const response = await fetch(`http://127.0.0.1:${server.port}/mcp`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${token}`,
-            "content-type": "application/json",
-            ...(attached ? {} : { "x-openclaw-cli-capture-key": captureKey }),
-          },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method,
-            ...(method === "tools/call"
-              ? { params: { name: "ask_user", arguments: questionArgs } }
-              : {}),
-          }),
-        });
-        expect(response.status).toBe(200);
-        return (await response.json()) as McpResponse;
-      };
-      try {
-        await run({
-          prepare: async (runId = "mcp-question-run", target = { sessionKey }) => {
-            const source = new AbortController();
-            const admission = prepareAgentRunAdmission({
-              cfg: config,
-              facts: {
-                runId,
-                agentId: "main",
-                ingress: { kind: "system", boundary: "mcp-question-test", state: "present" },
-              },
-              operationalRunInstance: createOperationalRunInstanceRef(runId),
-            });
-            admissions.push(admission);
-            const originalToolsAllow = ["ask_user"];
-            const context = await cli.prepare({
-              config,
-              preparedRunAdmission: admission,
-              sessionKey: target.sessionKey,
-              runId,
-              timeoutMs: 60_000,
-              abortSignal: source.signal,
-              messageProvider: "webchat",
-              senderIsOwner: true,
-              toolsAllow: originalToolsAllow,
-            });
-            contexts.push(context);
-            const token = expectDefined(
-              context.preparedBackend.env?.OPENCLAW_MCP_TOKEN,
-              "prepared CLI grant",
-            );
-            context.preparedBackend.mcpClientGrantCapture?.activate(captureKey);
-            expect(
-              resolveMcpLoopbackClientGrant({
-                token,
-                runtimeOwnerToken: runtime.ownerToken,
-                captureKey,
-              })?.isCurrent(),
-            ).toBe(true);
-            return { token, context, source, admission, originalToolsAllow };
-          },
-          list: (token, attached) => request(token, "tools/list", attached),
-          ask: async (token, attached) => {
-            const response = request(token, "tools/call", attached);
-            requests.push(response);
-            void response.catch(() => {});
-            await vi.waitFor(() => expect(gateway.manager.list()).toHaveLength(1));
-            const question = expectDefined(
-              gateway.manager.list()[0],
-              "registered ask_user question",
-            );
-            return { id: question.id, response };
-          },
-          answer: (overlay = caller) =>
-            claimPendingAgentQuestionAnswerFromCaller({
-              sessionKey,
-              text: "Staging",
-              caller: overlay,
-              persist,
-              assertSourceCurrent: () => {},
+  const fixtureRun = runQaGatewayFixture(
+    async () =>
+      await withQuestionGateway(async (gateway) => {
+        const config: OpenClawConfig = {
+          ...expectDefined(getRuntimeConfigSnapshot(), "isolated question gateway config"),
+          agents: { defaults: { workspace: dir }, entries: { main: { default: true } } },
+          plugins: { enabled: false },
+          tools: { profile: "full" },
+        };
+        // Config identity is stable: tools/list must seed the same cache used by tools/call.
+        setRuntimeConfigSnapshot(config);
+        await ensureMcpLoopbackServer();
+        const { getActiveMcpLoopbackRuntime } = await import("./mcp-http.loopback-runtime.js");
+        const runtime = expectDefined(getActiveMcpLoopbackRuntime(), "loopback runtime");
+        const toolCalls = new Set<Promise<unknown>>();
+        const resolveTools = toolResolution.resolveGatewayScopedTools;
+        const resolutions = vi
+          .spyOn(toolResolution, "resolveGatewayScopedTools")
+          .mockImplementation((...args) => {
+            const scoped = resolveTools(...args);
+            for (const tool of scoped.tools) {
+              const execute = tool.execute;
+              vi.spyOn(tool, "execute").mockImplementation(async (...executeArgs) => {
+                const pending = execute(...executeArgs);
+                toolCalls.add(pending);
+                try {
+                  return await pending;
+                } finally {
+                  toolCalls.delete(pending);
+                }
+              });
+            }
+            return scoped;
+          });
+        const requestController = new AbortController();
+        const requestSignal = AbortSignal.any([signal, requestController.signal]);
+        const contexts: PreparedCliRunContext[] = [];
+        const admissions: PreparedAgentRunAdmission[] = [];
+        const requests: Promise<McpResponse>[] = [];
+        const persist = vi.fn(async () => {});
+        const request = async (
+          token: string,
+          method: "tools/list" | "tools/call",
+          attached = false,
+        ) => {
+          const response = await fetch(`http://127.0.0.1:${runtime.port}/mcp`, {
+            method: "POST",
+            signal: requestSignal,
+            headers: {
+              authorization: `Bearer ${token}`,
+              "content-type": "application/json",
+              ...(attached ? {} : { "x-openclaw-cli-capture-key": captureKey }),
+            },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: 1,
+              method,
+              ...(method === "tools/call"
+                ? { params: { name: "ask_user", arguments: questionArgs } }
+                : {}),
             }),
-          retire: (id) => gateway.manager.cancel(id, "test-cleanup"),
-          manager: gateway.manager,
-          runtimeOwnerToken: runtime.ownerToken,
-          resolutionCount: () => resolutions.mock.calls.length,
-          resolveRequestCount: () =>
-            gateway.requests.filter((frame) => frame.method === "question.resolve").length,
-          persist,
-        });
-      } finally {
-        for (const question of gateway.manager.list()) {
-          gateway.manager.cancel(question.id, "test-cleanup");
-        }
-        await Promise.allSettled(requests);
-        for (const context of contexts) {
-          await context.preparedBackend.cleanup?.();
-        }
-        for (const admission of admissions) {
-          admission.close();
-        }
-        await server.close();
-        resolutions.mockRestore();
-      }
-    });
-  } finally {
-    closeOpenClawStateDatabaseForTest();
-    cli.cleanup();
-  }
+          });
+          expect(response.status).toBe(200);
+          return (await response.json()) as McpResponse;
+        };
+        await runQaGatewayFixture(
+          async () => {
+            signal.throwIfAborted();
+            await run({
+              prepare: async (runId = "mcp-question-run", target = { sessionKey }) => {
+                signal.throwIfAborted();
+                const source = new AbortController();
+                const admission = prepareAgentRunAdmission({
+                  cfg: config,
+                  facts: {
+                    runId,
+                    agentId: "main",
+                    ingress: { kind: "system", boundary: "mcp-question-test", state: "present" },
+                  },
+                  operationalRunInstance: createOperationalRunInstanceRef(runId),
+                });
+                admissions.push(admission);
+                const originalToolsAllow = ["ask_user"];
+                const context = await cli.prepare({
+                  config,
+                  preparedRunAdmission: admission,
+                  sessionKey: target.sessionKey,
+                  runId,
+                  timeoutMs: 60_000,
+                  abortSignal: AbortSignal.any([signal, source.signal]),
+                  messageProvider: "webchat",
+                  senderIsOwner: true,
+                  toolsAllow: originalToolsAllow,
+                });
+                contexts.push(context);
+                signal.throwIfAborted();
+                const token = expectDefined(
+                  context.preparedBackend.env?.OPENCLAW_MCP_TOKEN,
+                  "prepared CLI grant",
+                );
+                context.preparedBackend.mcpClientGrantCapture?.activate(
+                  captureKey,
+                  createCliRunCurrentAssertion(context.params),
+                );
+                expect(
+                  resolveMcpLoopbackClientGrant({
+                    token,
+                    runtimeOwnerToken: runtime.ownerToken,
+                    captureKey,
+                  })?.isCurrent(),
+                ).toBe(true);
+                return { token, context, source, admission, originalToolsAllow };
+              },
+              list: (token, attached) => request(token, "tools/list", attached),
+              ask: async (token, attached) => {
+                const registration = gateway.holdRegistration();
+                const response = request(token, "tools/call", attached);
+                requests.push(response);
+                void response.catch(() => {});
+                try {
+                  await Promise.race([
+                    registration.entered,
+                    response.then((result) => {
+                      throw new Error("ask_user completed before question registration", {
+                        cause: result,
+                      });
+                    }),
+                  ]);
+                  expect(gateway.manager.list()).toHaveLength(1);
+                  const question = expectDefined(
+                    gateway.manager.list()[0],
+                    "registered ask_user question",
+                  );
+                  return { id: question.id, response };
+                } finally {
+                  registration.release();
+                }
+              },
+              answer: (overlay = caller) =>
+                claimPendingAgentQuestionAnswerFromCaller({
+                  sessionKey,
+                  text: "Staging",
+                  caller: overlay,
+                  persist,
+                  assertSourceCurrent: () => {},
+                }),
+              retire: (id) => gateway.manager.cancel(id, "test-cleanup"),
+              manager: gateway.manager,
+              holdNextHello: gateway.holdNextHello,
+              runtimeOwnerToken: runtime.ownerToken,
+              resolutionCount: () => resolutions.mock.calls.length,
+              resolveRequestCount: () =>
+                gateway.requests.filter((frame) => frame.method === "question.resolve").length,
+              persist,
+            });
+          },
+          () => {
+            // Acquisition can fail before registration. Abort that transport first,
+            // then join tool cancellation RPCs before the question Gateway is reset.
+            requestController.abort();
+            for (const question of gateway.manager.list()) {
+              gateway.manager.cancel(question.id, "test-cleanup");
+            }
+          },
+          () => Promise.allSettled(requests),
+          () => closeMcpLoopbackServer(),
+          () => Promise.allSettled(toolCalls),
+          () =>
+            runQaGatewayFixture(
+              async () => {},
+              ...contexts.map((context) => () => context.preparedBackend.cleanup?.()),
+              ...admissions.map((admission) => () => admission.close()),
+            ),
+          () => resolutions.mockRestore(),
+        );
+      }),
+    () => closeOpenClawStateDatabaseForTest(),
+    () => cli.cleanup(),
+  );
+  fixtureRuns.add(fixtureRun);
+  void fixtureRun.finally(() => fixtureRuns.delete(fixtureRun)).catch(() => {});
+  return fixtureRun;
 }
 
 function expectAnswered(response: McpResponse) {
@@ -283,7 +349,7 @@ function expectAnswered(response: McpResponse) {
 describe("CLI loopback question creator authority", () => {
   it("answers a real cached ask_user with the CLI creator's original frozen policy", async () => {
     await withCliQuestionLoopback(async (fixture) => {
-      const owner = await fixture.prepare();
+      const owner = await fixture.prepare(undefined, { sessionKey: "main" });
       const beforeList = fixture.resolutionCount();
       expect((await fixture.list(owner.token)).result.tools?.map((tool) => tool.name)).toEqual([
         "ask_user",
@@ -304,13 +370,10 @@ describe("CLI loopback question creator authority", () => {
     });
   });
 
-  it.each([
-    { name: "explicit main alias", supplied: "main", native: sessionKey },
-    { name: "omitted session key", supplied: undefined, native: undefined },
-  ])("binds the actual MCP registration target for $name", async ({ supplied, native }) => {
+  it("binds an omitted native session key to the actual MCP registration target", async () => {
     await withCliQuestionLoopback(async (fixture) => {
-      const owner = await fixture.prepare(undefined, { sessionKey: supplied });
-      expect(owner.context.params.sessionKey).toBe(native);
+      const owner = await fixture.prepare(undefined, { sessionKey: undefined });
+      expect(owner.context.params.sessionKey).toBeUndefined();
       const grant = expectDefined(
         resolveMcpLoopbackClientGrant({
           token: owner.token,
@@ -325,7 +388,7 @@ describe("CLI loopback question creator authority", () => {
         owner.context.bindQuestionAnswerAuthority,
         "native question binder",
       )(() => {});
-      expect(nativeAuthority.sessionKey).toBe(native ?? owner.context.params.sessionId);
+      expect(nativeAuthority.sessionKey).toBe(owner.context.params.sessionId);
       await fixture.list(owner.token);
       const question = await fixture.ask(owner.token);
       expect(fixture.manager.get(question.id)?.sessionKey).toBe(sessionKey);
@@ -352,8 +415,8 @@ describe("CLI loopback question creator authority", () => {
               token: owner.token,
               runtimeOwnerToken: fixture.runtimeOwnerToken,
               captureKey,
-            })?.isCurrent(),
-          ).toBe(true);
+            }),
+          ).toBeUndefined();
         } else {
           owner.admission.close();
         }
@@ -368,7 +431,7 @@ describe("CLI loopback question creator authority", () => {
     },
   );
 
-  it.each(["reactivate", "rebind", "deactivate-reactivate", "native-publication"] as const)(
+  it.each(["rebind", "deactivate-reactivate", "native-publication"] as const)(
     "rematerializes cached questions after same-token and same-capture %s",
     async (change) => {
       if (change === "native-publication") {
@@ -410,9 +473,7 @@ describe("CLI loopback question creator authority", () => {
             }),
           ).toBe(true);
         } else {
-          if (change === "deactivate-reactivate") {
-            expect(deactivateMcpLoopbackClientGrantCapture(binding)).toBe(true);
-          }
+          expect(deactivateMcpLoopbackClientGrantCapture(binding)).toBe(true);
           expect(activateMcpLoopbackClientGrantCapture(binding)).toBeTruthy();
         }
         await expect(fixture.answer()).rejects.toThrow();
@@ -466,6 +527,85 @@ describe("CLI loopback question creator authority", () => {
       expectAnswered(await fresh.response);
     });
   });
+
+  it.for([
+    { stage: "after", ending: "failure" },
+    { stage: "before", ending: "cancellation" },
+  ] as const)(
+    "joins a question request on fixture $ending $stage registration",
+    async ({ stage, ending }, { onTestFinished, signal }) => {
+      const cancellation = new AbortController();
+      const expectedError = new Error(`fixture stopped ${stage} question registration`);
+      let releaseHello = () => {};
+      let asking: Promise<{ id: string; response: Promise<McpResponse> }> | undefined;
+      let requestSettled = false;
+      let manager: Parameters<Parameters<typeof withQuestionGateway>[0]>[0]["manager"] | undefined;
+      const run = withCliQuestionLoopback(
+        async (fixture) => {
+          // Timed-out setup must not start a late request.
+          signal.throwIfAborted();
+          manager = fixture.manager;
+          const grant = mintAttachGrant({ sessionKey });
+          const hello = stage === "before" ? fixture.holdNextHello() : undefined;
+          if (hello) {
+            releaseHello = hello.release;
+          }
+          try {
+            asking = fixture.ask(grant.token, true);
+            void asking.catch(() => {});
+            const request = hello ? asking : (await asking).response;
+            void request.then(
+              () => {
+                requestSettled = true;
+              },
+              () => {
+                requestSettled = true;
+              },
+            );
+            if (hello) {
+              await Promise.race([hello.entered, asking]);
+            }
+            expect(fixture.manager.list()).toHaveLength(stage === "before" ? 0 : 1);
+            expect(requestSettled).toBe(false);
+            if (ending === "cancellation") {
+              cancellation.abort(expectedError);
+              await request;
+            } else {
+              throw expectedError;
+            }
+          } finally {
+            revokeAttachGrant(grant.token);
+          }
+        },
+        AbortSignal.any([signal, cancellation.signal]),
+      );
+      onTestFinished(() =>
+        runQaGatewayFixture(
+          async () => {
+            // Also unblock recovery if Vitest times out a regressed join.
+            releaseHello();
+          },
+          () => asking?.catch(() => {}),
+          () => {
+            for (const question of manager?.list() ?? []) {
+              manager?.cancel(question.id, "test-cleanup");
+            }
+          },
+          () =>
+            run.catch((error: unknown) => {
+              if (error === expectedError || (signal.aborted && error === signal.reason)) {
+                return;
+              }
+              throw error;
+            }),
+        ),
+      );
+      // Keep hello held until the fixture has joined the aborted request.
+      await expect(run).rejects.toBe(expectedError);
+      expect(requestSettled).toBe(true);
+      expect(manager?.list()).toEqual([]);
+    },
+  );
 
   it("keeps attach questions answerable through structured controls without inventing a caller snapshot", async () => {
     await withCliQuestionLoopback(async (fixture) => {

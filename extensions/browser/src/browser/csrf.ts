@@ -5,8 +5,8 @@
  * contexts while allowing CLI, Gateway, and local service clients.
  */
 import type { NextFunction, Request, Response } from "express";
+import { isLoopbackHost } from "openclaw/plugin-sdk/ssrf-runtime";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { isLoopbackHost } from "../gateway/net.js";
 
 function firstHeader(value: string | string[] | undefined): string {
   return Array.isArray(value) ? (value[0] ?? "") : (value ?? "");
@@ -18,16 +18,7 @@ function isMutatingMethod(method: string): boolean {
 }
 
 function isLoopbackUrl(value: string): boolean {
-  const v = value.trim();
-  if (!v || v === "null") {
-    return false;
-  }
-  try {
-    const parsed = new URL(v);
-    return isLoopbackHost(parsed.hostname);
-  } catch {
-    return false;
-  }
+  return isLoopbackHost(URL.parse(value.trim())?.hostname ?? "");
 }
 
 /** Return true when a request should be rejected as browser-originated CSRF. */

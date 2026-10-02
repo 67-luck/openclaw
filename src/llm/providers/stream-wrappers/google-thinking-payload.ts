@@ -1,3 +1,8 @@
+import {
+  isGoogleGemini3FlashModel,
+  isGoogleGemini3ProModel,
+  isGoogleGemini3ThinkingLevelModel,
+} from "@openclaw/ai/internal/google-model-family";
 import { googleFlashSupportsMinimalThinking } from "@openclaw/ai/transports";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 
@@ -26,23 +31,6 @@ export function isGoogleGemini25ThinkingBudgetModel(modelId: string): boolean {
   return /(?:^|\/)gemini-2\.5-/.test(normalizeLowercaseStringOrEmpty(modelId));
 }
 
-/** @deprecated Google provider-owned stream helper; do not use from third-party plugins. */
-export function isGoogleGemini3ProModel(modelId: string): boolean {
-  const normalized = normalizeLowercaseStringOrEmpty(modelId);
-  return /(?:^|\/)gemini-(?:3(?:\.\d+)?-pro|pro-latest)(?:-|$)/.test(normalized);
-}
-
-/** @deprecated Google provider-owned stream helper; do not use from third-party plugins. */
-export function isGoogleGemini3FlashModel(modelId: string): boolean {
-  const normalized = normalizeLowercaseStringOrEmpty(modelId);
-  return /(?:^|\/)gemini-(?:3(?:\.\d+)?-flash|flash(?:-lite)?-latest)(?:-|$)/.test(normalized);
-}
-
-/** @deprecated Google provider-owned stream helper; do not use from third-party plugins. */
-export function isGoogleGemini3ThinkingLevelModel(modelId: string): boolean {
-  return isGoogleGemini3ProModel(modelId) || isGoogleGemini3FlashModel(modelId);
-}
-
 /**
  * Maps legacy numeric/semantic thinking input onto Gemini 3's provider enum.
  * @deprecated Google provider-owned stream helper; do not use from third-party plugins.
@@ -55,34 +43,12 @@ export function resolveGoogleGemini3ThinkingLevel(params: {
   if (typeof params.modelId !== "string") {
     return undefined;
   }
-  if (isGoogleGemini3ProModel(params.modelId)) {
-    switch (params.thinkingLevel) {
-      case "off":
-      case "minimal":
-      case "low":
-        return "LOW";
-      case "medium":
-      case "high":
-      case "max":
-      case "xhigh":
-        return "HIGH";
-      case "adaptive":
-        return undefined;
-      case undefined:
-        break;
-    }
-    if (typeof params.thinkingBudget === "number") {
-      if (params.thinkingBudget < 0) {
-        return undefined;
-      }
-      return params.thinkingBudget <= 2048 ? "LOW" : "HIGH";
-    }
+  const isPro = isGoogleGemini3ProModel(params.modelId);
+  if (!isPro && !isGoogleGemini3FlashModel(params.modelId)) {
     return undefined;
   }
-  if (!isGoogleGemini3FlashModel(params.modelId)) {
-    return undefined;
-  }
-  const minimalLevel = googleFlashSupportsMinimalThinking(params.modelId) ? "MINIMAL" : "LOW";
+  const minimalLevel =
+    !isPro && googleFlashSupportsMinimalThinking(params.modelId) ? "MINIMAL" : "LOW";
   switch (params.thinkingLevel) {
     case "off":
     case "minimal":
@@ -90,7 +56,7 @@ export function resolveGoogleGemini3ThinkingLevel(params: {
     case "low":
       return "LOW";
     case "medium":
-      return "MEDIUM";
+      return isPro ? "HIGH" : "MEDIUM";
     case "high":
     case "max":
     case "xhigh":
@@ -100,11 +66,11 @@ export function resolveGoogleGemini3ThinkingLevel(params: {
     case undefined:
       break;
   }
-  if (typeof params.thinkingBudget !== "number") {
+  if (typeof params.thinkingBudget !== "number" || params.thinkingBudget < 0) {
     return undefined;
   }
-  if (params.thinkingBudget < 0) {
-    return undefined;
+  if (isPro) {
+    return params.thinkingBudget <= 2048 ? "LOW" : "HIGH";
   }
   if (params.thinkingBudget <= 0) {
     return minimalLevel;

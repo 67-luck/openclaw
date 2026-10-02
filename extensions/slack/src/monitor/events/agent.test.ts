@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { WebClient } from "@slack/web-api";
@@ -17,10 +15,12 @@ import {
   patchSessionEntry as patchStoredSessionEntry,
   upsertSessionEntry,
 } from "openclaw/plugin-sdk/session-store-runtime";
-import * as sessionStoreRuntime from "openclaw/plugin-sdk/session-store-runtime";
 // Slack tests cover Agent View lifecycle handling.
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useSessionStoreTempDirs } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { getSlackListenerWriteClient } from "../../client.js";
 import { appendSlackStream, markSlackStreamsStopped, startSlackStream } from "../../streaming.js";
+import * as sessionEventRouting from "../message-handler/prepare-routing.js";
 import { deliverSlackSlashReplies } from "../replies.js";
 import { getSlackSessionRuns, registerSlackSessionRun } from "../session-run-targets.js";
 import { getSlackSlashMocks, resetSlackSlashMocks } from "../slash.test-harness.js";
@@ -31,10 +31,19 @@ const { patchSessionEntry } = vi.hoisted(() => ({
   patchSessionEntry: vi.fn<PluginRuntime["agent"]["session"]["patchSessionEntry"]>(),
 }));
 
-vi.mock("../../runtime.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../runtime.js")>()),
-  getSlackRuntime: () => ({ agent: { session: { patchSessionEntry } } }),
-}));
+vi.mock("../../runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../runtime.js")>();
+  return {
+    ...actual,
+    getSlackRuntime: () => {
+      const runtime = actual.getSlackRuntime();
+      return {
+        ...runtime,
+        agent: { ...runtime.agent, session: { ...runtime.agent.session, patchSessionEntry } },
+      };
+    },
+  };
+});
 
 vi.mock("../../streaming.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../streaming.js")>();
@@ -44,6 +53,7 @@ vi.mock("../../streaming.js", async (importOriginal) => {
 const slashMocks = getSlackSlashMocks();
 
 let tempDir: string;
+const sessionDirs = useSessionStoreTempDirs(afterAll, "slack-session-events-");
 
 function createSessionEventHarness(channelType: "im" | "channel" | "mpim" = "im") {
   const harness = createSlackSystemEventTestHarness({ channelType, allowFrom: ["*"] });
@@ -57,7 +67,7 @@ function createSessionEventHarness(channelType: "im" | "channel" | "mpim" = "im"
     ok: true,
     messages: [],
   });
-  const setSlackSessionStatus = vi.fn(async () => {});
+  const setSlackSessionStatus = vi.fn(async () => true);
   const recordSlackSessionTitle = vi.fn();
   const storePath = path.join(tempDir, "sessions.sqlite");
   Object.assign(harness.ctx, {
@@ -116,7 +126,7 @@ function createSessionEventHarness(channelType: "im" | "channel" | "mpim" = "im"
 
 describe("registerSlackAgentEvents", () => {
   beforeEach(() => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "slack-session-events-"));
+    tempDir = sessionDirs.make();
     vi.clearAllMocks();
     clearRuntimeConfigSnapshot();
     resetSlackSlashMocks();
@@ -124,10 +134,6 @@ describe("registerSlackAgentEvents", () => {
     slashMocks.deliverSlackSlashRepliesMock.mockImplementation(async (params: unknown) => {
       await deliverSlackSlashReplies(params as Parameters<typeof deliverSlackSlashReplies>[0]);
     });
-  });
-
-  afterEach(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it("records Agent View for app_context_changed", async () => {
@@ -277,9 +283,16 @@ describe("registerSlackAgentEvents", () => {
       harness.ctx.allowFrom = ["U_OWNER"];
       harness.ctx.useAccessGroups = true;
       const client = harness.ctx.app.client;
-      vi.spyOn(client.chat, "startStream").mockResolvedValue({ ok: true, ts: "1712345678.000002" });
+      const writeClient = expectDefined(
+        getSlackListenerWriteClient({ listenerClient: client }),
+        "derived Slack listener write client",
+      );
+      vi.spyOn(writeClient.chat, "startStream").mockResolvedValue({
+        ok: true,
+        ts: "1712345678.000002",
+      });
       const appendError = new Error("Slack rejected the append");
-      vi.spyOn(client.chat, "appendStream").mockRejectedValue(appendError);
+      vi.spyOn(writeClient.chat, "appendStream").mockRejectedValue(appendError);
       const session = await startSlackStream({
         client,
         channel,
@@ -669,13 +682,14 @@ describe("registerSlackAgentEvents", () => {
         },
       });
       await moving.promise;
-      const readOwner = sessionStoreRuntime.getConversationSession;
+      const resolveRouting = sessionEventRouting.resolveSlackSessionEventRoutingContext;
       const lookup = vi
-        .spyOn(sessionStoreRuntime, "getConversationSession")
-        .mockImplementationOnce((params) => {
-          const owner = readOwner(params);
+        .spyOn(sessionEventRouting, "resolveSlackSessionEventRoutingContext")
+        .mockImplementationOnce(async (params) => {
+          const owner = await resolveRouting(params);
           if (phase === "admission") {
             releaseMove.resolve();
+            await move;
           }
           return owner;
         });

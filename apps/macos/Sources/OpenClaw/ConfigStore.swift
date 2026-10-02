@@ -2,6 +2,22 @@ import Foundation
 import OpenClawKit
 import OpenClawProtocol
 
+struct ConfigSnapshot: Codable {
+    struct Issue: Codable {
+        let path: String
+        let message: String
+    }
+
+    let path: String?
+    let exists: Bool?
+    let raw: String?
+    let hash: String?
+    let parsed: AnyCodable?
+    let valid: Bool?
+    let config: [String: AnyCodable]?
+    let issues: [Issue]?
+}
+
 enum ConfigStore {
     /// A revision token is useful only with the document and Gateway that issued it.
     @MainActor
@@ -29,13 +45,13 @@ enum ConfigStore {
             self.gateway = gateway
             self.revision = gateway.selectedEndpointRevision
             self.mode = AppStateStore.shared.connectionMode
-            self.localURL = OpenClawConfigFile.url()
+            self.localURL = OpenClawPaths.configURL
             self.allowsLocalFallback = self.mode != .remote
         }
 
         var selectionIsCurrent: Bool {
             self.gateway.selectedEndpointRevision == self.revision &&
-                AppStateStore.shared.connectionMode == self.mode && OpenClawConfigFile.url() == self.localURL
+                AppStateStore.shared.connectionMode == self.mode && OpenClawPaths.configURL == self.localURL
         }
 
         var isCurrent: Bool {
@@ -104,21 +120,6 @@ enum ConfigStore {
             origin.lease = nil
             return Document(root: OpenClawConfigFile.loadDict(), origin: origin, hash: nil, readError: nil)
         }
-    }
-
-    @MainActor
-    static func document(
-        snapshot: ConfigSnapshot,
-        gateway: GatewayConnection,
-        lease: GatewayConnection.ServerLease) -> Document
-    {
-        let origin = Origin(gateway: gateway)
-        origin.lease = lease
-        return Document(
-            root: snapshot.config?.mapValues { $0.foundationValue } ?? [:],
-            origin: origin,
-            hash: snapshot.hash,
-            readError: nil)
     }
 
     @MainActor

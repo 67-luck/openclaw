@@ -1,13 +1,23 @@
 import net from "node:net";
 import type { Duplex } from "node:stream";
-import { WebSocket, type ClientOptions, type RawData } from "ws";
+import type { ClientOptions, RawData, WebSocket } from "ws";
 import {
   buildCloudflareAccessHeaders,
   type CloudflareAccessCredentials,
 } from "../../packages/gateway-client/src/cloudflare-access.js";
 import { applyGatewayWebSocketTlsPin } from "../../packages/gateway-client/src/websocket-transport.js";
+import { createLoopbackConnectOptions } from "../infra/loopback-connect.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { createDeferredCore } from "../shared/deferred.js";
+import { createLazyRuntimeNamedExport } from "../shared/lazy-runtime.js";
 
+const loadWebSocketConstructor = createLazyRuntimeNamedExport(
+  () => import("../../packages/gateway-client/src/websocket.js"),
+  "WebSocket",
+);
+
+const WEBSOCKET_CONNECTING = 0;
+const WEBSOCKET_OPEN = 1;
 const MAX_PAYLOAD_BYTES = 1024 * 1024;
 const PAUSE_BUFFERED_BYTES = 4 * 1024 * 1024;
 const RESUME_CHECK_MS = 25;
@@ -146,7 +156,7 @@ function createNodeStreamSplice(params: {
     params.ws.on("message", onMessage);
     params.socket.on("drain", resumeWebSocket);
     params.socket.on("data", (chunk) => {
-      if (params.ws.readyState !== WebSocket.OPEN) {
+      if (params.ws.readyState !== WEBSOCKET_OPEN) {
         return;
       }
       params.ws.send(chunk, { binary: true }, (error) => error && finish("send-error", error));
@@ -168,7 +178,7 @@ function createNodeStreamSplice(params: {
     params.socket.once("close", () => {
       params.diagnostics.trigger ??= "target-close";
       stopInbound();
-      if (params.socket.readableEnded && params.ws.readyState === WebSocket.OPEN) {
+      if (params.socket.readableEnded && params.ws.readyState === WEBSOCKET_OPEN) {
         // Let the Gateway receive the last frames and close acknowledgement before
         // the control-channel invocation can retire its desktop/portal stream.
         params.ws.close();
@@ -182,7 +192,7 @@ function createNodeStreamSplice(params: {
   return {
     done,
     start() {
-      if (params.socket.destroyed || params.ws.readyState !== WebSocket.OPEN) {
+      if (params.socket.destroyed || params.ws.readyState !== WEBSOCKET_OPEN) {
         finish("splice-unavailable");
         return;
       }
@@ -211,10 +221,7 @@ export async function runNodeStreamTransport(params: {
   const diagnostics: NodeStreamDiagnostics = {};
   let ws: WebSocket | undefined;
   let aborted: boolean = params.signal.aborted;
-  let resolveAbort!: () => void;
-  const abort = new Promise<void>((resolve) => {
-    resolveAbort = resolve;
-  });
+  const { promise: abort, resolve: resolveAbort } = createDeferredCore();
   const onAbort = () => {
     diagnostics.trigger ??= "owner-abort";
     aborted = true;
@@ -230,7 +237,11 @@ export async function runNodeStreamTransport(params: {
     if (aborted) {
       return;
     }
-    ws = new WebSocket(
+    const NpmWebSocket = await Promise.race([loadWebSocketConstructor(), abort]);
+    if (aborted || !NpmWebSocket) {
+      return;
+    }
+    ws = new NpmWebSocket(
       attachWebSocketUrl(params),
       websocketOptions(params.gatewayTlsFingerprint, params.gatewayCloudflareAccess),
     );
@@ -251,7 +262,7 @@ export async function runNodeStreamTransport(params: {
     }
     if ("port" in params.target && socket instanceof net.Socket) {
       // Portals attach first so a refused target closes the claimed ticket.
-      socket.connect({ port: params.target.port, host: "localhost", autoSelectFamily: true });
+      socket.connect(createLoopbackConnectOptions(params.target.port));
       await Promise.race([waitForSocketConnect(socket), abort]);
     }
     if (aborted) {
@@ -279,7 +290,7 @@ export async function runNodeStreamTransport(params: {
   } finally {
     params.signal.removeEventListener("abort", onAbort);
     socket.destroy();
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    if (ws && (ws.readyState === WEBSOCKET_OPEN || ws.readyState === WEBSOCKET_CONNECTING)) {
       ws.close();
     }
   }

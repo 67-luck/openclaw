@@ -1,13 +1,12 @@
 // A real grammY bot and HTTP Bot API prove model callbacks across the active router.
-import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bot } from "grammy";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { listSessionEntries } from "openclaw/plugin-sdk/session-store-runtime";
-import { afterEach, describe, expect, it } from "vitest";
+import { useSessionStoreTempDirs } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { defaultTelegramBotDeps, type TelegramBotDeps } from "./bot-deps.js";
 import type { TelegramCallbackMessageRuntime } from "./bot-handlers.callback-router-controls.js";
 import { createTelegramCallbackRouter } from "./bot-handlers.callback-router.js";
@@ -21,6 +20,7 @@ const TOKEN = "123456:loopback-token";
 const CHAT_ID = 1234;
 const PROVIDER = "ollama";
 const MODEL = "xentriom/gemma-4-12B-agentic-fable5-composer2.5-v2:latest";
+const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-telegram-model-loopback-");
 
 type TelegramApiRequest = { method: string; payload: Record<string, unknown> };
 
@@ -33,7 +33,8 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
 }
 
 function sendJson(response: ServerResponse, result: unknown): void {
-  response.writeHead(200, { "content-type": "application/json" });
+  // Same-process model selection can stall past the loopback socket's idle timeout.
+  response.writeHead(200, { "content-type": "application/json", connection: "close" });
   response.end(JSON.stringify({ ok: true, result }));
 }
 
@@ -43,7 +44,7 @@ describe("Telegram model callback loopback", () => {
   });
 
   it("sends, authorizes, resolves, persists, answers, and edits an opaque callback", async () => {
-    const stateDir = await mkdtemp(join(tmpdir(), "openclaw-telegram-model-loopback-"));
+    const stateDir = sessionDirs.make();
     const requests: TelegramApiRequest[] = [];
     let sentMessage: Record<string, unknown> | undefined;
 
@@ -188,17 +189,12 @@ describe("Telegram model callback loopback", () => {
         },
       } as unknown as TelegramHandlerAuthorization;
       const message = {
-        buildSyntheticTextMessage: () => {
-          throw new Error("model callback must not enter generic callback dispatch");
-        },
-        buildSyntheticContext: () => {
-          throw new Error("model callback must not enter generic callback dispatch");
-        },
         processMessageWithReplyChain: async () => {
           throw new Error("model callback must not enter generic callback dispatch");
         },
-        resolveTelegramSessionState: () => ({
+        resolveTelegramSessionState: async () => ({
           agentId: "main",
+          bindingMode: { kind: "none" },
           sessionEntry: undefined,
           sessionKey: "agent:main:telegram:direct:1234",
           storePath,
@@ -249,7 +245,6 @@ describe("Telegram model callback loopback", () => {
       server.close();
       server.closeAllConnections();
       server.unref();
-      await rm(stateDir, { recursive: true, force: true });
     }
   });
 });

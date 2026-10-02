@@ -14,6 +14,10 @@ import {
 import { QuestionManager, QuestionManagerError } from "../../gateway/question-manager.js";
 import { createDeferredCore as deferred, type Deferred } from "../../shared/deferred.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../../test-utils/gateway-scheduler-clock.js";
 // Collect the real transport before test deadlines; production still imports it lazily.
 export { callGatewayTool } from "../tools/gateway.js";
 
@@ -22,6 +26,7 @@ export { callGatewayTool } from "../tools/gateway.js";
 export async function withQuestionGateway(
   run: (fixture: {
     manager: QuestionManager;
+    clock: ReturnType<typeof createGatewaySchedulerClock>;
     backingRun: AbortController;
     requests: RequestFrame[];
     waitStarted: Promise<void>;
@@ -57,7 +62,8 @@ export async function withQuestionGateway(
           auth: { mode: "token", token: "synthetic-question-test" },
         },
       });
-      const manager = new QuestionManager();
+      const clock = createGatewaySchedulerClock(Date.now());
+      const manager = new QuestionManager(createTestGatewayScheduler(clock.clock));
       const backingRun = new AbortController();
       const requests: RequestFrame[] = [];
       const waitStarted = deferred();
@@ -95,33 +101,33 @@ export async function withQuestionGateway(
             return;
           }
           requests.push(frame);
-          if (frame.method === "question.request") {
-            const request = frame.params as QuestionRequestParams;
-            const record = manager.request({
-              ...request,
-              timeoutMs: request.timeoutMs ?? 60_000,
-              isRequesterActive: () => !backingRun.signal.aborted,
-            });
-            registrationHold?.entered.resolve();
-            void (registrationHold?.release.promise ?? Promise.resolve()).then(() =>
-              respond(record),
-            );
-          } else if (frame.method === "question.waitAnswer") {
-            const request = frame.params as QuestionWaitAnswerParams;
-            void manager
-              .waitAnswer(request.id, undefined, request.includeResolutionId)
-              .then(async (result) => {
-                answerHold?.entered.resolve();
-                if ((await answerHold?.release.promise) === false) {
-                  socket.terminate();
-                } else {
-                  respond(result);
-                }
+          try {
+            if (frame.method === "question.request") {
+              const request = frame.params as QuestionRequestParams;
+              const record = manager.request({
+                ...request,
+                timeoutMs: request.timeoutMs ?? 60_000,
+                isRequesterActive: () => !backingRun.signal.aborted,
               });
-            waitStarted.resolve();
-          } else if (frame.method === "question.resolve") {
-            const request = frame.params as QuestionResolveParams;
-            try {
+              registrationHold?.entered.resolve();
+              void (registrationHold?.release.promise ?? Promise.resolve()).then(() =>
+                respond(record),
+              );
+            } else if (frame.method === "question.waitAnswer") {
+              const request = frame.params as QuestionWaitAnswerParams;
+              void manager
+                .waitAnswer(request.id, undefined, request.includeResolutionId)
+                .then(async (result) => {
+                  answerHold?.entered.resolve();
+                  if ((await answerHold?.release.promise) === false) {
+                    socket.terminate();
+                  } else {
+                    respond(result);
+                  }
+                });
+              waitStarted.resolve();
+            } else if (frame.method === "question.resolve") {
+              const request = frame.params as QuestionResolveParams;
               const result =
                 "cancel" in request
                   ? manager.cancel(request.id, request.resolvedBy)
@@ -135,33 +141,34 @@ export async function withQuestionGateway(
               } else {
                 respond(result);
               }
-            } catch (error) {
-              if (!(error instanceof QuestionManagerError)) {
-                throw error;
-              }
-              socket.send(
-                JSON.stringify({
-                  type: "res",
-                  id: frame.id,
-                  ok: false,
-                  error: {
-                    code: "INVALID_REQUEST",
-                    message: error.message,
-                    details: { reason: error.code },
-                  },
-                }),
-              );
+            } else if (frame.method === "question.list") {
+              respond({ questions: manager.list() });
+            } else {
+              throw new Error(`unexpected question fixture RPC: ${frame.method}`);
             }
-          } else if (frame.method === "question.list") {
-            respond({ questions: manager.list() });
-          } else {
-            throw new Error(`unexpected question fixture RPC: ${frame.method}`);
+          } catch (error) {
+            if (!(error instanceof QuestionManagerError)) {
+              throw error;
+            }
+            socket.send(
+              JSON.stringify({
+                type: "res",
+                id: frame.id,
+                ok: false,
+                error: {
+                  code: "INVALID_REQUEST",
+                  message: error.message,
+                  details: { reason: error.code },
+                },
+              }),
+            );
           }
         });
       });
       try {
         await run({
           manager,
+          clock,
           backingRun,
           requests,
           waitStarted: waitStarted.promise,

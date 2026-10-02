@@ -10,8 +10,9 @@ import {
 import { classifyProviderRuntimeFailureKind } from "../embedded-agent-helpers/provider-runtime-failure.js";
 import { resolveFailoverReasonFromError } from "../failover-error.js";
 import { makeAssistantMessageFixture } from "../test-helpers/assistant-message-fixtures.js";
+import { PROVIDER_SCHEMA_REJECTION_USER_TEXT } from "./assistant-request-failure-copy.js";
 import { classifyFailoverSignal } from "./classify.js";
-import { formatBillingErrorMessage, PROVIDER_SCHEMA_REJECTION_USER_TEXT } from "./user-copy.js";
+import { formatBillingErrorMessage } from "./user-copy.js";
 
 const providerRuntimeMocks = vi.hoisted(() => ({
   classifyProviderFailoverSignalWithPlugin: vi.fn(),
@@ -24,6 +25,18 @@ describe("provider failover hook structured signals", () => {
     providerRuntimeMocks.classifyProviderFailoverSignalWithPlugin.mockReset();
   });
 
+  it("explains a saved misalignment code without newer refusal diagnostics", () => {
+    const message = makeAssistantMessageFixture({
+      errorMessage: "This request was blocked by our safety systems.",
+      errorCode: "misalignment_policy_violation",
+      errorType: "invalid_request_error",
+      errorBody: '{"misalignment":{"detailed_explanation":"PRIVATE_FINDINGS ... [truncated]',
+    });
+    expect(formatUserFacingAssistantErrorText(message)).toBe(
+      "The provider stopped this request as a safety precaution (misalignment).",
+    );
+  });
+
   it.each([
     {
       errorMessage: MALFORMED_STREAMING_FRAGMENT_ERROR_MESSAGE,
@@ -32,12 +45,12 @@ describe("provider failover hook structured signals", () => {
     },
     {
       errorMessage: "opaque provider refusal",
-      copy: "⚠️ openai/test-model request failed.",
+      copy: "⚠️ Agent run failed (model: openai/test-model).",
       runtimeKind: "unclassified",
     },
     {
       errorMessage: "model input limit reached",
-      copy: "⚠️ openai/test-model request failed.",
+      copy: "⚠️ Agent run failed (model: openai/test-model).",
       runtimeKind: "unclassified",
     },
     {
@@ -77,7 +90,7 @@ describe("provider failover hook structured signals", () => {
       const message = makeAssistantMessageFixture({
         provider: "custom-route",
         errorMessage: "403 fixture refusal",
-        errorCode: "PROVIDER_CODE",
+        errorCode: "unknown_parameter",
         errorType: "PROVIDER_TYPE",
       });
       const copies = {
@@ -102,7 +115,7 @@ describe("provider failover hook structured signals", () => {
       expect(matchesContextOverflowError).toHaveBeenCalledWith({
         provider: "prepared-owner",
         status: 403,
-        code: "PROVIDER_CODE",
+        code: "unknown_parameter",
         errorType: "PROVIDER_TYPE",
         errorMessage: message.errorMessage,
       });
@@ -113,7 +126,7 @@ describe("provider failover hook structured signals", () => {
           expect.objectContaining({
             provider: "prepared-owner",
             status: 403,
-            code: "PROVIDER_CODE",
+            code: "unknown_parameter",
             errorType: "PROVIDER_TYPE",
           }),
         );

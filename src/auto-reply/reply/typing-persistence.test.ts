@@ -25,23 +25,6 @@ describe("typing persistence bug fix", () => {
     vi.useRealTimers();
   });
 
-  it("should NOT restart typing after markRunComplete is called", async () => {
-    // Start typing normally
-    await controller.startTypingLoop();
-    expect(onReplyStartSpy).toHaveBeenCalledTimes(1);
-
-    // Mark run as complete (but not yet dispatch idle)
-    controller.markRunComplete();
-
-    // Advance time to trigger the typing interval (6 seconds)
-    vi.advanceTimersByTime(6000);
-
-    // BUG: The typing loop should NOT call onReplyStart again
-    // because the run is already complete
-    expect(onReplyStartSpy).toHaveBeenCalledTimes(1);
-    expect(onReplyStartSpy).not.toHaveBeenCalledTimes(2);
-  });
-
   it("keeps typing alive while keepalive ticks continue during long runs", async () => {
     const longRunCleanupSpy = vi.fn();
     const longRunController = createTypingController({
@@ -82,6 +65,36 @@ describe("typing persistence bug fix", () => {
     vi.advanceTimersByTime(6000);
     expect(onReplyStartSpy).toHaveBeenCalledTimes(1); // Still only the initial call
   });
+
+  it.each(["cleanup", "run-first", "idle-first"] as const)(
+    "disposes typing when %s closes the controller before start settles",
+    async (completion) => {
+      const starting = controller.startTypingLoop();
+      if (completion === "cleanup") {
+        controller.cleanup();
+      } else if (completion === "run-first") {
+        controller.markRunComplete();
+        controller.markDispatchIdle();
+      } else {
+        controller.markDispatchIdle();
+        controller.markRunComplete();
+      }
+      await starting;
+      await controller.onReplyStart();
+      await controller.startTypingLoop();
+      await controller.startTypingOnText("late text");
+      controller.refreshTypingTtl();
+      controller.markRunComplete();
+      controller.markDispatchIdle();
+      controller.cleanup();
+
+      expect(controller.isActive()).toBe(false);
+      expect(onCleanupSpy).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(12_000);
+      expect(onReplyStartSpy).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("should prevent typing restart even if cleanup is delayed", async () => {
     // Start typing

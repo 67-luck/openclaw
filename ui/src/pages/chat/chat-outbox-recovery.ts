@@ -1,7 +1,9 @@
 import { html, LitElement, nothing, type PropertyValues } from "lit";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import { t } from "../../i18n/index.ts";
+import "../../styles/chat/outbox-recovery.css";
 import type { DurableComposerRecoveryEntry } from "../../lib/chat/composer-draft-store.runtime.ts";
+import { observeOutboxRecoveryOwner } from "../../lib/chat/outbox-payload-store.runtime.ts";
 import {
   captureChatOutboxRecoveryDestination,
   readChatOutboxRecovery,
@@ -49,17 +51,12 @@ class ChatOutboxRecovery extends LitElement {
   }
   private owner() {
     const host = this.host;
-    if (
-      !host?.connected ||
-      host.selectedChatSessionIncognito ||
-      !host.client?.recoveryScopeReady ||
-      !host.client.recoveryScope
-    ) {
+    if (!host || host.selectedChatSessionIncognito || !observeOutboxRecoveryOwner(host)) {
       return null;
     }
     return {
       gatewayOwner: storageTargetForGateway(host.settings.gatewayUrl).gatewayOwner,
-      recoveryScope: host.client.recoveryScope,
+      recoveryScope: observeOutboxRecoveryOwner(host)!,
     };
   }
   private async refresh() {
@@ -67,6 +64,12 @@ class ChatOutboxRecovery extends LitElement {
     const host = this.host;
     const owner = this.owner();
     this.drafts = [];
+    if (!owner) {
+      this.entries = [];
+      this.error = "";
+      this.requestUpdate();
+      return;
+    }
     try {
       const recovery = host ? readChatOutboxRecovery(host) : null;
       this.entries = recovery?.entries ?? [];
@@ -82,6 +85,9 @@ class ChatOutboxRecovery extends LitElement {
         this.drafts = result.entries;
       }
     } catch {
+      if (generation !== this.generation || !this.isConnected) {
+        return;
+      }
       this.error = t("chat.outboxRecoveryStorageFailed");
     }
     this.requestUpdate();
@@ -106,6 +112,7 @@ class ChatOutboxRecovery extends LitElement {
       JSON.stringify(this.owner()) === JSON.stringify(owner) &&
       !host.chatMessage &&
       !host.chatGoalDraftMode &&
+      !host.chatReplyTarget &&
       !host.chatAttachments.length &&
       !host.chatQueue.length;
     this.busy = true;
@@ -183,43 +190,48 @@ class ChatOutboxRecovery extends LitElement {
       return nothing;
     }
     const rows = [...this.entries, ...this.drafts];
-    return html`<details
-      class="callout warn chat-outbox-recovery"
-      style="max-height: 40vh; overflow: auto"
-    >
-      <summary>${t("chat.outboxRecoveryTitle")} (${rows.length})</summary>
-      <p>${t("chat.outboxRecoveryDescription")}</p>
-      ${this.error ? html`<p role="alert">${this.error}</p>` : nothing}
-      ${rows.map(
-        (entry) => html`<div class="chat-outbox-recovery-row">
-          <p>
-            ${
-              "id" in entry
-                ? [entry.session.draft, ...(entry.session.queue ?? []).map((item) => item.text)]
-                    .filter(Boolean)
-                    .join(" · ")
-                    .slice(0, 240)
-                : entry.text.slice(0, 240)
-            }
-          </p>
-          <p>
-            ${
-              "id" in entry
-                ? t("chat.outboxRecoveryMessages", {
-                    count: String(entry.session.queue?.length ?? 0),
-                  })
-                : entry.attachmentNames.join(", ").slice(0, 240)
-            }
-          </p>
-          <button
-            class="btn"
-            ?disabled=${this.busy || !this.owner()}
-            @click=${() => void this.recover(entry)}
-          >
-            ${t("chat.outboxRecoveryRestore")}
-          </button>
-        </div>`,
-      )}
+    return html`<details class="chat-outbox-recovery">
+      <summary>
+        ${rows.length ? t("chat.outboxRecoveryTitle") : t("chat.outboxRecoveryFailedTitle")}${
+          rows.length
+            ? html` <span class="chat-outbox-recovery__count">${rows.length}</span>`
+            : nothing
+        }
+      </summary>
+      <div class="chat-outbox-recovery__content">
+        ${rows.length ? html`<p>${t("chat.outboxRecoveryDescription")}</p>` : nothing}
+        ${this.error ? html`<p class="chat-outbox-recovery__error" role="alert">${this.error}</p>` : nothing}
+        ${rows.map(
+          (entry) => html`<div class="chat-outbox-recovery-row">
+            <p>
+              ${
+                "id" in entry
+                  ? [entry.session.draft, ...(entry.session.queue ?? []).map((item) => item.text)]
+                      .filter(Boolean)
+                      .join(" · ")
+                      .slice(0, 240)
+                  : entry.text.slice(0, 240)
+              }
+            </p>
+            <p>
+              ${
+                "id" in entry
+                  ? t("chat.outboxRecoveryMessages", {
+                      count: String(entry.session.queue?.length ?? 0),
+                    })
+                  : entry.attachmentNames.join(", ").slice(0, 240)
+              }
+            </p>
+            <button
+              class="btn"
+              ?disabled=${this.busy || !this.owner()}
+              @click=${() => void this.recover(entry)}
+            >
+              ${t("chat.outboxRecoveryRestore")}
+            </button>
+          </div>`,
+        )}
+      </div>
     </details>`;
   }
 }

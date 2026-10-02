@@ -3,10 +3,7 @@ import path from "node:path";
 import { Value } from "typebox/value";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import {
-  applySessionStoreProjection,
-  replaceSessionEntrySync,
-} from "../../config/sessions/session-accessor.js";
+import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { callGateway as gatewayCall } from "../../gateway/call.js";
 import { createSessionVisibilityChecker } from "../../plugin-sdk/session-visibility.js";
@@ -40,6 +37,7 @@ function createTool(params: {
   requests?: CallGatewayRequest[];
   sessionLinkBase?: string;
   indexing?: boolean;
+  archivedTranscriptsExcluded?: number;
   truncated?: boolean;
 }) {
   const config = params.config ?? { tools: { sessions: { visibility: "self" } } };
@@ -94,6 +92,9 @@ function createTool(params: {
           (row) => Array.isArray(sessionKeys) && sessionKeys.includes(row.sessionKey),
         ),
         ...(params.indexing ? { indexing: true } : {}),
+        ...(params.archivedTranscriptsExcluded
+          ? { archivedTranscriptsExcluded: params.archivedTranscriptsExcluded }
+          : {}),
         ...(params.truncated ? { truncated: true } : {}),
       } as T;
     },
@@ -149,25 +150,47 @@ describe("sessions_search tool", () => {
     expect(error.details).toMatchObject({ status: "error", error: expect.any(String) });
     expect(Value.Check(tool.outputSchema!, error.details)).toBe(true);
     expect(compactToolOutputHint(tool.outputSchema)).toBe(
-      '{ results: Array<{ role: "assistant" | "user"; score: number; sessionKey: string; snippet: string; timestamp: number; messageId?: string; sessionId?: string }>; indexing?: true; sessionLinkRule?: string; truncated?: true; warning?: string } | { error: string; status: "error" | "forbidden" }',
+      '{ results: Array<{ role: "assistant" | "user"; score: number; sessionKey: string; snippet: string; timestamp: number; messageId?: string; sessionId?: string }>; archivedTranscriptsExcluded?: number; indexing?: true; sessionLinkRule?: string; truncated?: true; warning?: string } | { error: string; status: "error" | "forbidden" }',
     );
   });
 
-  it("warns that indexing makes search results incomplete", async () => {
-    const result = await createTool({
-      results: [hit()],
-      indexing: true,
-    }).execute("indexing-warning", { query: "text" });
+  it.each([
+    { indexing: true, archivedTranscriptsExcluded: undefined },
+    { indexing: false, archivedTranscriptsExcluded: 2 },
+    { indexing: true, archivedTranscriptsExcluded: 2 },
+  ])(
+    "reports incomplete search with $archivedTranscriptsExcluded archived transcripts and indexing=$indexing",
+    async (state) => {
+      const result = await createTool({
+        results: [hit()],
+        ...state,
+      }).execute("indexing-warning", { query: "text" });
 
-    expect(result.details).toMatchObject({
-      indexing: true,
-      warning:
-        "Transcript indexing is in progress; results may be incomplete. Retry sessions_search shortly.",
-    });
-  });
+      expect(result.details).toMatchObject({
+        ...(state.indexing ? { indexing: true } : {}),
+        ...(state.archivedTranscriptsExcluded ? { archivedTranscriptsExcluded: 2 } : {}),
+        warning: [
+          ...(state.indexing
+            ? [
+                "Transcript indexing is in progress; results may be incomplete. Retry sessions_search shortly.",
+              ]
+            : []),
+          ...(state.archivedTranscriptsExcluded
+            ? [
+                "Search excludes 2 archived transcripts. Restore a transcript to include it in search.",
+              ]
+            : []),
+        ].join(" "),
+      });
+      expect(Value.Check(createTool({}).outputSchema!, result.details)).toBe(true);
+    },
+  );
 
   it("rejects empty queries and invalid limits", async () => {
     const tool = createTool({});
+    expect(tool.parameters).toMatchObject({
+      properties: { limit: { description: expect.stringContaining("Maximum search results: 25") } },
+    });
     await expect(tool.execute("call-1", { query: "   " })).rejects.toThrow(
       "query must not be empty",
     );
@@ -461,14 +484,10 @@ describe("sessions_search tool", () => {
     const targetSessionKey = "agent:main:main";
     const expectedSessionId = "old-incarnation";
     const storePath = path.join(tempDirs.make("openclaw-sessions-search-"), "sessions.sqlite");
-    await applySessionStoreProjection({
-      storePath,
-      skipMaintenance: true,
-      update: (store) => {
-        store[targetSessionKey] = { sessionId: expectedSessionId, updatedAt: 1 };
-        return { persist: true, result: undefined };
-      },
-    });
+    replaceSessionEntrySync(
+      { storePath, sessionKey: targetSessionKey },
+      { sessionId: expectedSessionId, updatedAt: 1 },
+    );
     const requests: CallGatewayRequest[] = [];
     const unregister = createSessionVisibilityChecker.registerScopedAccessProvider((request) => {
       if (

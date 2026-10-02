@@ -14,10 +14,8 @@ import {
   type ConfigAuditRecord,
 } from "../../config/io.audit.js";
 import { consumeRootOptionToken, FLAG_TERMINATOR } from "../../infra/cli-root-options.js";
-import {
-  createSqliteAuditRecordStore,
-  type SequencedSqliteAuditRecordEntry,
-} from "../../infra/sqlite-audit-record-store.js";
+import { createSqliteAuditRecordStore } from "../../infra/sqlite-audit-record-store.js";
+import type { SequencedSqliteAuditRecordEntry } from "../../infra/sqlite-audit-record.kernel.js";
 import {
   SYSTEM_AGENT_AUDIT_MAX_ENTRIES,
   SYSTEM_AGENT_AUDIT_SCOPE,
@@ -117,10 +115,6 @@ function transitionKey(before: string | null | undefined, after: string | null |
   return JSON.stringify([before ?? null, after ?? null]);
 }
 
-function recordTime(value: string, fallback: number): number {
-  return parseDateStringTimestampMs(value) ?? fallback;
-}
-
 function classifyConfigWriteSource(record: Extract<ConfigAuditRecord, { event: "config.write" }>) {
   if (record.origin) {
     return record.origin;
@@ -187,7 +181,7 @@ function toSystemAgentCandidate(
   return {
     entry: {
       id: `${SYSTEM_AGENT_AUDIT_SCOPE}:${record.sequence}`,
-      at: recordTime(record.value.timestamp, record.createdAt),
+      at: parseDateStringTimestampMs(record.value.timestamp) ?? record.createdAt,
       kind: "operation",
       source: "system-agent",
       summary: record.value.summary,
@@ -210,7 +204,7 @@ function toConfigCandidate(
     return {
       entry: {
         id: `${CONFIG_AUDIT_SCOPE}:${record.sequence}`,
-        at: recordTime(value.ts, record.createdAt),
+        at: parseDateStringTimestampMs(value.ts) ?? record.createdAt,
         kind: "external-edit",
         source: "external",
         summary: summarizePaths("Configuration edited outside OpenClaw", changedPaths),
@@ -231,7 +225,7 @@ function toConfigCandidate(
   return {
     entry: {
       id: `${CONFIG_AUDIT_SCOPE}:${record.sequence}`,
-      at: recordTime(value.ts, record.createdAt),
+      at: parseDateStringTimestampMs(value.ts) ?? record.createdAt,
       kind: "config-write",
       source,
       summary: configWriteSummary(source, changedPaths),

@@ -53,7 +53,7 @@ function findWindowsUnsupportedToken(command: string): string | null {
   return null;
 }
 
-export function tokenizeWindowsSegment(segment: string): string[] | null {
+function tokenizeWindowsSegment(segment: string): string[] | null {
   const tokens: string[] = [];
   let buf = "";
   let inDouble = false;
@@ -188,7 +188,7 @@ export function analyzeWindowsShellCommand(params: {
 }
 
 export function isWindowsPlatform(platform?: string | null): boolean {
-  const normalized = normalizeLowercaseStringOrEmpty(platform);
+  const normalized = normalizeLowercaseStringOrEmpty(platform ?? process.platform);
   return normalized.startsWith("win");
 }
 

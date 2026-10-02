@@ -1,361 +1,188 @@
+import { setImmediate as nextTask } from "node:timers/promises";
 // Subagent registry persistence-resume tests cover restoring SQLite-backed child runs.
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
-import { isPathInside } from "../../../infra/path-guards.js";
-import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
-import { listOpenClawAgentDatabasesForTest as listSeedAgentDatabases } from "../../../state/openclaw-agent-db.js";
-import "./subagent-registry.mocks.shared.js";
-import { closeOpenClawStateDatabaseForTest as closeSeedStateDatabase } from "../../../state/openclaw-state-db.js";
+import "./subagent-registry.persistence.mocks.test-support.js";
+// Preserve module setup before modules that consume it.
+// oxfmt-ignore
 import {
-  createSubagentRegistryTestDeps,
+  activateSubagentPersistenceRegistry,
+  announceSpy,
+  closeSubagentPersistenceFixtureDatabases,
+  createSubagentPersistenceRuntime,
+  resetSubagentPersistenceGatewayCalls,
+} from "./subagent-registry.persistence-fixture.test-support.js";
+import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
+import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../../config/config.js";
+import { createDeferredCore } from "../../../shared/deferred.js";
+import { closeOpenClawStateDatabaseForTest as closeSeedStateDatabase } from "../../../state/openclaw-state-db.js";
+import "./subagent-registry.mocks.shared.js";
+import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
+import type { maybeWakeRequesterAfterAllChildrenSettled } from "../announce/subagent-announce.requester-settle-wake.js";
+import { registerSubagentDismissedRetentionCases } from "./subagent-registry.persistence.retention.test-support.js";
+import {
   gateSubagentRequesterSettlement,
+  observeSubagentRequesterWake,
   settleSubagentRegistryPersistenceWork,
   withSubagentRegistryPersistenceState,
-  writeSubagentSessionEntry,
+  createDeliveredWake,
+  createRestoredRequesterWakeRuns,
+  createOrphanedRequiredDelivery,
+  writeChildSession,
 } from "./subagent-registry.persistence.test-support.js";
-import {
-  loadSubagentRegistryFromSqlite,
-  saveSubagentRegistryToSqlite,
-} from "./subagent-registry.store.sqlite.js";
+import { registerStaleRequesterWakeBatchTests } from "./subagent-registry.persistence.wake.test-support.js";
+import { loadSubagentRegistryFromSqlite } from "./subagent-registry.store.sqlite.js";
+import { saveSubagentRegistryToSqlite } from "./subagent-registry.store.test-support.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
-const { announceSpy } = vi.hoisted(() => ({
-  announceSpy: vi.fn(async () => "delivered" as const),
-}));
+type WakeRequester = typeof maybeWakeRequesterAfterAllChildrenSettled;
+type WakeParams = Parameters<WakeRequester>[0];
+
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-vi.mock("../announce/subagent-announce.js", () => ({
-  runSubagentAnnounceFlow: announceSpy,
-}));
 let mod: typeof import("./subagent-registry.test-helpers.js");
 let callGatewayModule: typeof import("../../../gateway/call.js");
 let agentEventsModule: typeof import("../../../infra/agent-events.js");
-let registryDepsModule: typeof import("./subagent-registry-deps.js");
+let requesterSettleModule: typeof import("../announce/subagent-announce.requester-settle-wake.js");
+let registryConfigModule: typeof import("../../../config/config.js");
 let registrySessionCleanupModule: typeof import("../../../test-utils/session-state-cleanup.js");
-let registryAgentDbModule: typeof import("../../../state/openclaw-agent-db.js");
+let registryAgentDbTestModule: typeof import("../../../state/openclaw-agent-db.test-support.js");
 let registryStateDbModule: typeof import("../../../state/openclaw-state-db.js");
+let bindGatewayContextResolver: typeof import("../../../plugins/runtime/gateway-request-scope.js").bindGatewayContextResolver;
+let getGatewayContextResolver: typeof import("../../../plugins/runtime/gateway-request-scope.js").getGatewayContextResolver;
+let getGatewayToolCallerIdentity: typeof import("../../tools/gateway-caller-context.js").getGatewayToolCallerIdentity;
+let withGatewayToolCallerIdentity: typeof import("../../tools/gateway-caller-context.js").withGatewayToolCallerIdentity;
+let observeRootWork: typeof import("./subagent-registry.browser-cleanup.test-support.js").observeRootWork;
+let settleOwnedWork: ReturnType<typeof observeRootWork> | undefined;
 
-function listFixtureAgentDatabases(listDatabases: typeof listSeedAgentDatabases, stateDir: string) {
-  return listDatabases().filter((database) => isPathInside(stateDir, database.path));
-}
-
-function activateRegistry() {
-  const recoveryRuntime = {
-    dispatchAgent: (params: Record<string, unknown>, timeoutMs?: number) =>
-      callGatewayModule.callGateway({ method: "agent", params, timeoutMs }),
-    waitForAgent: (params: Record<string, unknown>, timeoutMs?: number) =>
-      callGatewayModule.callGateway({ method: "agent.wait", params, timeoutMs }),
-    sendRecoveryNotice: vi.fn(),
-  };
-  mod.activateSubagentRegistry(() => ({ recoveryRuntime }) as never);
-}
-
-function createOrphanedRequiredDelivery(
-  status: "pending" | "suspended" | "in_progress",
-): SubagentRunRecord {
-  const now = Date.now();
-  const runId = `run-orphan-${status}-delivery`;
-  const childSessionKey = `agent:main:subagent:orphan-${status}-delivery`;
-  const terminalReply = { disposition: "visible" as const, text: "durable final reply" };
-  return {
-    runId,
-    childSessionKey,
-    requesterSessionKey: "agent:main:main",
-    requesterDisplayKey: "main",
-    task: "deliver after restart",
-    cleanup: "delete",
-    createdAt: now - 100,
-    expectsCompletionMessage: true,
-    cleanupHandled: false,
-    execution: {
-      status: "terminal",
-      startedAt: now - 50,
-      endedAt: now,
-      outcome: { status: "ok" },
-    },
-    completion: {
-      required: true,
-      resultText: "canonical final reply",
-      capturedAt: now,
-      terminalReply,
-    },
-    delivery: {
-      status,
-      ...(status === "suspended" ? { suspendedAt: now, suspendedReason: "expiry" as const } : {}),
-      ...(status === "in_progress"
-        ? { disposition: "session_queued" as const, queueId: "queue-1" }
-        : {}),
-      payload: {
-        requesterSessionKey: "agent:main:main",
-        requesterDisplayKey: "main",
-        childSessionKey,
-        childRunId: runId,
-        task: "deliver after restart",
-        startedAt: now - 50,
-        endedAt: now,
-        outcome: { status: "ok" },
-        expectsCompletionMessage: true,
-        terminalReply,
-      },
-    },
-  };
-}
+const readPersistedRun = (runId: string) => loadSubagentRegistryFromSqlite().get(runId);
 
 describe("subagent registry persistence resume", () => {
   beforeAll(async () => {
     vi.resetModules();
+    ({ bindGatewayContextResolver, getGatewayContextResolver } =
+      await import("../../../plugins/runtime/gateway-request-scope.js"));
+    ({ getGatewayToolCallerIdentity, withGatewayToolCallerIdentity } =
+      await import("../../tools/gateway-caller-context.js"));
     mod = await import("./subagent-registry.test-helpers.js");
     callGatewayModule = await import("../../../gateway/call.js");
     agentEventsModule = await import("../../../infra/agent-events.js");
     registryStateDbModule = await import("../../../state/openclaw-state-db.js");
-    registryDepsModule = await import("./subagent-registry-deps.js");
-    registryAgentDbModule = await import("../../../state/openclaw-agent-db.js");
+    requesterSettleModule = await import("../announce/subagent-announce.requester-settle-wake.js");
+    registryConfigModule = await import("../../../config/config.js");
+    registryAgentDbTestModule = await import("../../../state/openclaw-agent-db.test-support.js");
     registrySessionCleanupModule = await import("../../../test-utils/session-state-cleanup.js");
+    ({ observeRootWork } = await import("./subagent-registry.browser-cleanup.test-support.js"));
   });
 
   beforeEach(() => {
+    settleOwnedWork = observeRootWork();
+    setRuntimeConfigSnapshot({});
+    registryConfigModule.setRuntimeConfigSnapshot({});
     announceSpy.mockClear();
-    vi.mocked(callGatewayModule.callGateway).mockReset().mockResolvedValue({
-      status: "ok",
-      startedAt: 111,
-      endedAt: 222,
-    });
-    mod.testing.setDepsForTest({
-      ...createSubagentRegistryTestDeps({
-        callGateway: vi.mocked(callGatewayModule.callGateway),
-        captureSubagentCompletionReply: vi.fn(async () => undefined),
-      }),
-    });
+    resetSubagentPersistenceGatewayCalls(callGatewayModule.callGateway);
     mod.resetSubagentRegistryForTests({ persist: false });
     vi.mocked(agentEventsModule.onAgentEvent)
       .mockReset()
       .mockReturnValue(() => undefined);
   });
 
-  const withRegistryState = <T>(stateDir: string, run: () => Promise<T>) =>
-    withSubagentRegistryPersistenceState(
+  afterEach(async () => {
+    try {
+      await settleOwnedWork?.();
+    } finally {
+      settleOwnedWork = undefined;
+      vi.restoreAllMocks();
+      clearRuntimeConfigSnapshot();
+      registryConfigModule.clearRuntimeConfigSnapshot();
+    }
+  });
+
+  const withRegistryState = <T>(run: (stateDir: string) => Promise<T>) => {
+    const stateDir = tempDirs.make("openclaw-subagent-");
+    return withSubagentRegistryPersistenceState(
       {
         stateDir,
         resetRegistry: () => mod.resetSubagentRegistryForTests({ persist: false }),
-        resetDeps: () => mod.testing.setDepsForTest(),
-        closeDatabases: async () => {
-          // The resumed registry owns a separate agent-DB cache after resetModules.
-          // Agent cleanup releases leases through state DB writes, so close state DBs last.
-          await registrySessionCleanupModule.cleanupSessionStateForTest({ stateDir });
-          expect(
-            listFixtureAgentDatabases(listSeedAgentDatabases, stateDir),
-            "seed agent handles closed before fixture removal",
-          ).toEqual([]);
-          expect(
-            listFixtureAgentDatabases(
-              registryAgentDbModule.listOpenClawAgentDatabasesForTest,
-              stateDir,
-            ),
-            "post-reset agent handles closed before fixture removal",
-          ).toEqual([]);
-          closeSeedStateDatabase();
-          registryStateDbModule.closeOpenClawStateDatabaseForTest();
-        },
+        settleOwnedWork: () => settleOwnedWork?.(true),
+        closeDatabases: () =>
+          closeSubagentPersistenceFixtureDatabases({
+            stateDir,
+            cleanupSessionState: registrySessionCleanupModule.cleanupSessionStateForTest,
+            listAgentDatabases: registryAgentDbTestModule.listOpenClawAgentDatabasesForTest,
+            closeStateDatabase: registryStateDbModule.closeOpenClawStateDatabaseForTest,
+          }),
       },
-      run,
+      () => run(stateDir),
     );
+  };
 
-  it.each([
-    { name: "announcing", expectsCompletionMessage: true },
-    { name: "nonannouncing", expectsCompletionMessage: false },
-    { name: "unspecified completion" },
-    { name: "collector", expectsCompletionMessage: false, collect: true },
-  ])("preserves the registered parent turn through SQLite reopen: $name", async (options) => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
-    await withRegistryState(stateDir, async () => {
-      vi.mocked(callGatewayModule.callGateway).mockImplementation(() => new Promise(() => {}));
-      const { name, ...registration } = options;
-      const childSessionKey = "agent:main:subagent:parent-association";
-      mod.registerSubagentRun({
-        runId: "child-parent-association",
-        childSessionKey,
-        requesterSessionKey: "agent:main:main",
-        requesterTurnRunId: "  parent-turn  ",
-        requesterDisplayKey: "main",
-        task: name,
-        cleanup: "keep",
-        ...registration,
-      });
-      const expected = {
-        requesterTurnRunId: "parent-turn",
-        completion: { required: registration.expectsCompletionMessage === true },
-        delivery: {
-          status: registration.expectsCompletionMessage === false ? "not_required" : "pending",
-        },
-      };
-      const registered = mod.getSubagentRunByChildSessionKey(childSessionKey);
-      expect(registered).toMatchObject(expected);
-      expect(registered?.expectsCompletionMessage).toBe(registration.expectsCompletionMessage);
-      registryStateDbModule.closeOpenClawStateDatabaseForTest();
-      const restored = loadSubagentRegistryFromSqlite().get("child-parent-association");
-      expect(restored).toMatchObject(expected);
-      expect(restored?.expectsCompletionMessage).toBe(registration.expectsCompletionMessage);
-    });
-  });
-
-  it("resumes a persisted run from canonical SQLite state", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
-    await withRegistryState(stateDir, async () => {
-      const run: SubagentRunRecord = {
-        runId: "run-1",
-        childSessionKey: "agent:main:subagent:test",
-        requesterSessionKey: "agent:main:main",
-        requesterOrigin: { channel: "whatsapp", accountId: "acct-main" },
-        requesterDisplayKey: "main",
-        task: "do the thing",
-        cleanup: "keep",
-        createdAt: Date.now(),
-        execution: { status: "running" },
-        completion: { required: false },
-        delivery: { status: "not_required" },
-      };
-      saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
-      await writeSubagentSessionEntry({
-        stateDir,
-        agentId: "main",
-        sessionKey: run.childSessionKey,
-        sessionId: "sess-test",
-        defaultSessionId: "sess-test",
-      });
-
-      mod.initSubagentRegistry();
-      activateRegistry();
-
-      await vi.waitFor(() => expect(announceSpy).toHaveBeenCalled(), {
-        timeout: 1_000,
-        interval: 10,
-      });
-      const announce = (announceSpy.mock.calls as unknown as Array<[unknown]>).at(-1)?.[0] as
-        | {
-            childRunId?: string;
-            requesterOrigin?: { channel?: string; accountId?: string };
-            outcome?: { status?: string };
-          }
-        | undefined;
-      expect(announce).toMatchObject({
-        childRunId: "run-1",
-        requesterOrigin: { channel: "whatsapp", accountId: "acct-main" },
-        outcome: { status: "ok" },
-      });
-      expect(mod.listSubagentRunsForRequester("agent:main:main")[0]).toMatchObject({
-        childSessionKey: run.childSessionKey,
-        requesterOrigin: { channel: "whatsapp", accountId: "acct-main" },
-      });
-      await settleSubagentRegistryPersistenceWork();
-      expect(
-        listFixtureAgentDatabases(listSeedAgentDatabases, stateDir),
-        "seed session write acquired an agent handle",
-      ).toHaveLength(1);
-      expect(
-        listFixtureAgentDatabases(
-          registryAgentDbModule.listOpenClawAgentDatabasesForTest,
-          stateDir,
-        ),
-        "resumed completion timing acquired a post-reset agent handle",
-      ).toHaveLength(1);
-    });
-  });
-
-  it.each([
-    { label: "successful", status: "ok" as const },
-    { label: "timed-out", status: "timeout" as const },
-  ])("retries pending $label child delivery after restart", async ({ label, status }) => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
-    await withRegistryState(stateDir, async () => {
-      const runId = `run-pending-${label}-delivery`;
-      const childSessionKey = `agent:main:subagent:pending-${label}-delivery`;
-      const run: SubagentRunRecord = {
-        runId,
-        requesterTurnRunId: "run-requester",
-        childSessionKey,
-        requesterSessionKey: "agent:main:main",
-        requesterDisplayKey: "main",
-        task: "deliver before waking requester",
-        cleanup: "keep",
-        createdAt: 100,
-        endedReason: "subagent-complete",
-        execution: {
-          status: "terminal",
+  it.each([{ label: "timed-out", status: "timeout" as const }])(
+    "retries pending $label child delivery after restart",
+    async ({ label, status }) => {
+      await withRegistryState(async (stateDir) => {
+        const runId = `run-pending-${label}-delivery`;
+        const childSessionKey = `agent:main:subagent:pending-${label}-delivery`;
+        const run = createSubagentRunRecord({
+          runId,
+          requesterTurnRunId: "run-requester",
+          childSessionKey,
+          task: "deliver before waking requester",
+          createdAt: 100,
+          endedReason: "subagent-complete",
           startedAt: 110,
           endedAt: 200,
           outcome: { status },
-        },
-        expectsCompletionMessage: true,
-        completion: { required: true, resultText: "done", capturedAt: 200 },
-        delivery: {
-          status: "pending",
-          payload: {
-            requesterSessionKey: "agent:main:main",
-            requesterDisplayKey: "main",
-            childSessionKey,
-            childRunId: runId,
-            task: "deliver before waking requester",
-            startedAt: 110,
-            endedAt: 200,
-            outcome: { status },
-            expectsCompletionMessage: true,
+          expectsCompletionMessage: true,
+          completion: { required: true, resultText: "done", capturedAt: 200 },
+          delivery: {
+            status: "pending",
+            payload: {
+              requesterSessionKey: "agent:main:main",
+              requesterDisplayKey: "main",
+              childSessionKey,
+              childRunId: runId,
+              task: "deliver before waking requester",
+              startedAt: 110,
+              endedAt: 200,
+              outcome: { status },
+              expectsCompletionMessage: true,
+            },
           },
-        },
-        cleanupHandled: false,
-      };
-      saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
-      await writeSubagentSessionEntry({
-        stateDir,
-        agentId: "main",
-        sessionKey: run.childSessionKey,
-        sessionId: `sess-pending-${label}-delivery`,
-        defaultSessionId: `sess-pending-${label}-delivery`,
-      });
+          cleanupHandled: false,
+        });
+        saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
+        await writeChildSession(stateDir, run.childSessionKey, `sess-pending-${label}-delivery`);
 
-      mod.initSubagentRegistry();
-      activateRegistry();
+        await mod.initSubagentRegistry();
+        await activateSubagentPersistenceRegistry(mod, callGatewayModule.callGateway);
 
-      await vi.waitFor(() => expect(announceSpy).toHaveBeenCalled(), {
-        timeout: 1_000,
-        interval: 10,
+        await settleSubagentRegistryPersistenceWork(() => settleOwnedWork?.(true));
+        expect(announceSpy).toHaveBeenCalled();
+        expect(announceSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ childRunId: runId, outcome: { status } }),
+        );
+        expect(mod.getSubagentRunByRunId(runId)?.execution.outcome).toEqual({ status });
       });
-      expect(announceSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ childRunId: runId, outcome: { status } }),
-      );
-      expect(mod.getSubagentRunByRunId(runId)?.execution.outcome).toEqual({ status });
-    });
-  });
+    },
+  );
 
   it("replays one required completion after restart without the child session", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
-    await withRegistryState(stateDir, async () => {
+    await withRegistryState(async () => {
       const run = createOrphanedRequiredDelivery("pending");
       saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
       const settlement = gateSubagentRequesterSettlement(
-        registryDepsModule.subagentRegistryDeps.maybeWakeRequesterAfterAllChildrenSettled,
+        requesterSettleModule.maybeWakeRequesterAfterAllChildrenSettled,
       );
-      mod.testing.setDepsForTest({
-        ...registryDepsModule.subagentRegistryDeps,
-        maybeWakeRequesterAfterAllChildrenSettled: settlement.run,
-      });
+      vi.spyOn(
+        requesterSettleModule,
+        "maybeWakeRequesterAfterAllChildrenSettled",
+      ).mockImplementation(settlement.run);
       try {
-        mod.initSubagentRegistry();
-        activateRegistry();
-        await vi.waitFor(
-          () =>
-            expect(settlement.run, "replay reached requester settlement").toHaveBeenCalledOnce(),
-          {
-            timeout: 5_000,
-            interval: 10,
-          },
-        );
+        await mod.initSubagentRegistry();
+        await activateSubagentPersistenceRegistry(mod, callGatewayModule.callGateway);
+        await settlement.waitForCalls(1);
+        expect(settlement.run, "replay reached requester settlement").toHaveBeenCalledOnce();
         expect(announceSpy, "replayed announcement delivered").toHaveBeenCalledOnce();
-        expect(
-          loadSubagentRegistryFromSqlite().get(run.runId),
-          "delivered row awaits real settlement",
-        ).toMatchObject({
+        expect(readPersistedRun(run.runId), "delivered row awaits real settlement").toMatchObject({
           delivery: { status: "delivered" },
           requesterSettleWake: { retireAfterSettle: true },
         });
@@ -375,12 +202,12 @@ describe("subagent registry persistence resume", () => {
           loadSubagentRegistryFromSqlite().has(run.runId),
           "settlement retired delivered row",
         ).toBe(false);
-        await settleSubagentRegistryPersistenceWork();
+        await settleSubagentRegistryPersistenceWork(() => settleOwnedWork?.(true));
 
         mod.resetSubagentRegistryForTests({ persist: false });
-        mod.initSubagentRegistry();
-        activateRegistry();
-        await settleSubagentRegistryPersistenceWork();
+        await mod.initSubagentRegistry();
+        await activateSubagentPersistenceRegistry(mod, callGatewayModule.callGateway);
+        await settleSubagentRegistryPersistenceWork(() => settleOwnedWork?.(true));
         expect(announceSpy, "retired completion is not replayed again").toHaveBeenCalledOnce();
       } finally {
         await settlement.release();
@@ -388,81 +215,323 @@ describe("subagent registry persistence resume", () => {
     });
   });
 
-  it("settles a restored delivered wake rejected before attempt admission", async () => {
-    const stateDir = tempDirs.make("openclaw-subagent-");
-    await withRegistryState(stateDir, async () => {
-      const endedAt = Date.now();
-      const run: SubagentRunRecord = {
-        runId: "run-rejected-requester-wake",
-        childSessionKey: "agent:main:subagent:rejected-requester-wake",
-        requesterSessionKey: "agent:main:main",
-        requesterDisplayKey: "main",
-        task: "settle one rejected requester wake",
-        cleanup: "keep",
-        createdAt: endedAt - 1_000,
-        endedReason: "subagent-complete",
-        execution: {
-          status: "terminal",
-          startedAt: endedAt - 500,
-          endedAt,
-          outcome: { status: "ok" },
-        },
-        expectsCompletionMessage: true,
-        completion: { required: true, resultText: "done", capturedAt: endedAt },
-        delivery: { status: "delivered", deliveredAt: endedAt },
-        cleanupHandled: true,
-        cleanupCompletedAt: endedAt,
-        requesterSettleWake: {
-          status: "pending",
-          attemptCount: 0,
+  it.each([
+    "inactive drain error",
+    "restart admission",
+    "restart before deadline",
+    "restart before activation",
+    "restart throwing source",
+  ] as const)("settles or preserves a delivered wake after %s", async (failure) => {
+    const admission = await import("../../../process/gateway-work-admission.js");
+    const restarting = failure.startsWith("restart");
+    const waitingForActivation = failure === "restart before activation";
+    let firstGatewayOpen = true;
+    const firstGateway = {
+      resolveGatewayContext: () => (firstGatewayOpen ? (firstGateway as never) : undefined),
+    };
+    const replacementGateway = { resolveGatewayContext: () => replacementGateway as never };
+    if (restarting) {
+      vi.useFakeTimers();
+    }
+    try {
+      await withRegistryState(async () => {
+        const endedAt = Date.now();
+        const run = createDeliveredWake("run-rejected-requester-wake", {
+          status: restarting && !waitingForActivation ? "dispatching" : "pending",
+          attemptCount: waitingForActivation ? 2 : restarting ? 1 : 0,
+          ...(restarting ? { replayCount: 1, nextAttemptAt: endedAt + 30_000 } : {}),
           batchRunIds: ["run-rejected-requester-wake"],
           requesterYieldBatch: true,
           afterRequesterYield: true,
           rearmGeneration: 1,
-        },
-      };
-      const wakeRequester = vi.fn(async () => {
-        throw new Error("requester wake rejected before attempt admission");
-      });
-      mod.testing.setDepsForTest({
-        ...createSubagentRegistryTestDeps({
-          callGateway: vi.mocked(callGatewayModule.callGateway),
-          maybeWakeRequesterAfterAllChildrenSettled: wakeRequester,
-        }),
-      });
-      saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
+        });
+        const wakeRequester = vi.fn<WakeRequester>(async (params) => {
+          if (!restarting) {
+            throw new admission.GatewayDrainingError();
+          }
+          expect(getGatewayContextResolver(params.settledEntry!)?.()).toBe(replacementGateway);
+          await params.completeBatch(
+            [params.settledEntry],
+            run.requesterSettleWake?.rearmGeneration,
+            {
+              delivered: true,
+              path: "direct",
+            },
+          );
+          return true;
+        });
+        vi.spyOn(
+          requesterSettleModule,
+          "maybeWakeRequesterAfterAllChildrenSettled",
+        ).mockImplementation(wakeRequester);
+        saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
 
-      mod.initSubagentRegistry();
-      activateRegistry();
+        await mod.initSubagentRegistry();
+        if (restarting) {
+          await mod.activateSubagentRegistry(() => firstGateway as never);
+        } else {
+          await activateSubagentPersistenceRegistry(mod, callGatewayModule.callGateway);
+        }
+        if (failure === "restart throwing source") {
+          bindGatewayContextResolver(
+            mod.getSubagentRunByRunId(run.runId)!,
+            await withGatewayToolCallerIdentity(
+              {
+                agentId: "main",
+                sessionKey: run.requesterSessionKey,
+                gatewayContextResolver: () => {
+                  if (!firstGatewayOpen) {
+                    throw new Error("retired source");
+                  }
+                  return firstGateway as never;
+                },
+              },
+              () => getGatewayToolCallerIdentity()?.gatewayContextResolver,
+            ),
+          );
+        }
 
-      await vi.waitFor(() => expect(wakeRequester).toHaveBeenCalledOnce());
-      await vi.waitFor(() => {
-        const restored = loadSubagentRegistryFromSqlite().get(run.runId);
+        if (restarting) {
+          // The earlier delivery released its root; the real deadline timer must
+          // cross fresh admission rather than inheriting live requester authority.
+          const previousWork = settleOwnedWork;
+          settleOwnedWork = undefined;
+          await previousWork?.();
+          admission.markGatewayRestartDraining();
+          if (failure !== "restart before deadline" && !waitingForActivation) {
+            await vi.advanceTimersByTimeAsync(30_000);
+          }
+          expect(wakeRequester).not.toHaveBeenCalled();
+          expect(mod.getSubagentRunByRunId(run.runId)?.requesterSettleWake).toEqual(
+            run.requesterSettleWake,
+          );
+          registryStateDbModule.closeOpenClawStateDatabaseForTest();
+          closeSeedStateDatabase();
+          const persisted = readPersistedRun(run.runId);
+          expect(persisted?.requesterSettleWake).toEqual(run.requesterSettleWake);
+          expect(persisted?.requesterTurnRunId).toBeUndefined();
+
+          const retiredRun = mod.getSubagentRunByRunId(run.runId)!;
+          const retiredResolver = getGatewayContextResolver(retiredRun);
+          firstGatewayOpen = false;
+          if (failure === "restart admission") {
+            mod.resetSubagentRegistryForTests({ persist: false });
+          }
+          admission.resetGatewayWorkAdmission();
+          settleOwnedWork = observeRootWork();
+          if (waitingForActivation) {
+            await vi.advanceTimersByTimeAsync(30_000);
+            expect(wakeRequester).not.toHaveBeenCalled();
+            expect(readPersistedRun(run.runId)?.requesterSettleWake).toEqual(
+              run.requesterSettleWake,
+            );
+          }
+          await mod.initSubagentRegistry();
+          await mod.activateSubagentRegistry(() => replacementGateway as never);
+          const recoveredRun = mod.getSubagentRunByRunId(run.runId);
+          expect(recoveredRun).not.toBe(retiredRun);
+          await mod.activateSubagentRegistry(() => replacementGateway as never);
+          expect(mod.getSubagentRunByRunId(run.runId)).toBe(recoveredRun);
+          expect(retiredResolver?.()).toBeUndefined();
+          await mod.testing.runSweeperTickForTests();
+          await vi.advanceTimersByTimeAsync(failure === "restart before deadline" ? 30_000 : 0);
+        }
+        await settleSubagentRegistryPersistenceWork(() => settleOwnedWork?.(true));
+        expect(wakeRequester).toHaveBeenCalledOnce();
+        const restored = readPersistedRun(run.runId);
         expect(restored?.delivery).toMatchObject({ status: "delivered" });
         expect(restored?.requesterSettleWake).toBeUndefined();
+        await mod.testing.sweepOnceForTests();
+        expect(wakeRequester).toHaveBeenCalledOnce();
       });
-      await mod.testing.sweepOnceForTests();
-      expect(wakeRequester).toHaveBeenCalledOnce();
-    });
+    } finally {
+      admission.resetGatewayWorkAdmission();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    { order: "old-finally-first", runCount: 1 },
+    { order: "before-activation", runCount: 1 },
+    { order: "replacement-first", runCount: 3 },
+  ] as const)(
+    "fences outstanding wake work across forced restart: $order / $runCount rows",
+    async ({ order, runCount }) => {
+      const admission = await import("../../../process/gateway-work-admission.js");
+      const oldDone = createDeferredCore<boolean>();
+      const replacementDone = createDeferredCore();
+      const oldParams: WakeParams[] = [];
+      const initialTransitions: Promise<void>[] = [];
+      let oldFinished = 0;
+      let firstGatewayOpen = true;
+      const firstGateway = {
+        resolveGatewayContext: () => (firstGatewayOpen ? (firstGateway as never) : undefined),
+      };
+      const replacementGateway = { resolveGatewayContext: () => replacementGateway as never };
+      vi.useFakeTimers();
+      try {
+        await withRegistryState(async () => {
+          try {
+            const runs = Array.from({ length: runCount }, (_, index) => {
+              const runId = `run-outstanding-wake-${index}`;
+              return {
+                ...createDeliveredWake(runId, {
+                  status: "pending",
+                  attemptCount: 2,
+                  batchRunIds: [runId],
+                  requesterYieldBatch: true,
+                  afterRequesterYield: true,
+                  rearmGeneration: 1,
+                }),
+                requesterSessionKey: `agent:main:requester-${index}`,
+              };
+            });
+            const { run: wakeRequester, waitForCalls } = observeSubagentRequesterWake(
+              async (params) => {
+                if (getGatewayContextResolver(params.settledEntry!)?.() === firstGateway) {
+                  oldParams.push(params);
+                  const transition = Promise.resolve(
+                    params.transitionBatch([params.settledEntry], {
+                      ...params.settledEntry.requesterSettleWake!,
+                      status: "dispatching",
+                      attemptCount: 3,
+                    }),
+                  );
+                  initialTransitions.push(transition);
+                  await transition;
+                  const result = await oldDone.promise;
+                  await params.completeBatch([params.settledEntry], 1, {
+                    delivered: false,
+                    path: "direct",
+                    disposition: "retryable",
+                    error: "completion agent did not produce a visible reply",
+                  });
+                  oldFinished++;
+                  return result;
+                }
+                await replacementDone.promise;
+                expect(getGatewayContextResolver(params.settledEntry!)?.()).toBe(
+                  replacementGateway,
+                );
+                await params.completeBatch([params.settledEntry], 1, {
+                  delivered: true,
+                  path: "direct",
+                });
+                return true;
+              },
+            );
+            vi.spyOn(
+              requesterSettleModule,
+              "maybeWakeRequesterAfterAllChildrenSettled",
+            ).mockImplementation(wakeRequester);
+            saveSubagentRegistryToSqlite(new Map(runs.map((run) => [run.runId, run])));
+            await mod.initSubagentRegistry();
+            await mod.activateSubagentRegistry(() => firstGateway as never);
+            const oldActiveCount = Math.min(runCount, 2);
+            await waitForCalls(oldActiveCount);
+            expect(wakeRequester).toHaveBeenCalledTimes(oldActiveCount);
+            const oldWork = Promise.all(wakeRequester.mock.results.map((result) => result.value));
+            expect(initialTransitions).toHaveLength(oldActiveCount);
+            await Promise.all(initialTransitions);
+            const retiredRuns = runs.map((run) => mod.getSubagentRunByRunId(run.runId)!);
+            const retiredResolvers = retiredRuns.map(getGatewayContextResolver);
+            const expectedWakes = retiredRuns.map((run) =>
+              structuredClone(run.requesterSettleWake),
+            );
+
+            // A forced restart retires admission before old async chains return.
+            admission.markGatewayRestartDraining();
+            firstGatewayOpen = false;
+            admission.resetGatewayWorkAdmission();
+            if (order === "before-activation") {
+              oldDone.resolve(false);
+              await oldWork;
+              await vi.advanceTimersByTimeAsync(0);
+              expect(runs.map((run) => readPersistedRun(run.runId)?.requesterSettleWake)).toEqual(
+                expectedWakes,
+              );
+            }
+            await mod.activateSubagentRegistry(() => replacementGateway as never);
+            const recoveredRuns = runs.map((run) => mod.getSubagentRunByRunId(run.runId)!);
+            recoveredRuns.forEach((run, index) => {
+              expect(run).not.toBe(retiredRuns[index]);
+              expect(retiredResolvers[index]?.()).toBeUndefined();
+            });
+            for (const params of oldParams) {
+              await params.transitionBatch([params.settledEntry], {
+                ...params.settledEntry.requesterSettleWake!,
+                attemptCount: 99,
+              });
+            }
+            expect(recoveredRuns.map((run) => run.requesterSettleWake)).toEqual(expectedWakes);
+
+            await mod.testing.runSweeperTickForTests();
+            await waitForCalls(oldActiveCount * 2);
+            expect(wakeRequester).toHaveBeenCalledTimes(oldActiveCount * 2);
+            if (order === "replacement-first") {
+              replacementDone.resolve();
+              await waitForCalls(oldActiveCount + runCount);
+              await Promise.all(
+                wakeRequester.mock.results.slice(oldActiveCount).map((result) => result.value),
+              );
+              await vi.advanceTimersByTimeAsync(0);
+              expect(recoveredRuns.every((run) => run.requesterSettleWake === undefined)).toBe(
+                true,
+              );
+              expect(oldFinished).toBe(0);
+            }
+            oldDone.resolve(false);
+            await oldWork;
+            await vi.advanceTimersByTimeAsync(0);
+            await mod.testing.runSweeperTickForTests();
+            expect(wakeRequester).toHaveBeenCalledTimes(oldActiveCount + runCount);
+            expect(oldParams).toHaveLength(oldActiveCount);
+            if (order !== "replacement-first") {
+              expect(recoveredRuns.map((run) => run.requesterSettleWake)).toEqual(expectedWakes);
+              replacementDone.resolve();
+            }
+            await waitForCalls(oldActiveCount + runCount);
+            await Promise.all(
+              wakeRequester.mock.results.slice(oldActiveCount).map((result) => result.value),
+            );
+            await vi.advanceTimersByTimeAsync(0);
+            for (const run of recoveredRuns) {
+              expect(readPersistedRun(run.runId)?.requesterSettleWake).toBeUndefined();
+              expect(run.delivery?.status).toBe("delivered");
+            }
+          } finally {
+            oldDone.resolve(false);
+            replacementDone.resolve();
+            await vi.advanceTimersByTimeAsync(0);
+          }
+        });
+      } finally {
+        admission.resetGatewayWorkAdmission();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  registerStaleRequesterWakeBatchTests({
+    getModules: () => ({ mod, requesterSettleModule, bindGatewayContextResolver }),
+    withRegistryState,
+    settleOwnedWork: () => settleOwnedWork?.(true),
   });
 
   it.each([
     { status: "suspended" as const, disposition: undefined, queueId: undefined },
     { status: "in_progress" as const, disposition: "session_queued" as const, queueId: "queue-1" },
   ])("retains $status required delivery with its owner after restart", async (expected) => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
-    await withRegistryState(stateDir, async () => {
+    await withRegistryState(async () => {
       const run = createOrphanedRequiredDelivery(expected.status);
       saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
 
-      mod.initSubagentRegistry();
-      activateRegistry();
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
+      await mod.initSubagentRegistry();
+      await activateSubagentPersistenceRegistry(mod, callGatewayModule.callGateway);
+      await nextTask();
 
       expect(announceSpy).not.toHaveBeenCalled();
-      expect(loadSubagentRegistryFromSqlite().get(run.runId)?.delivery).toMatchObject({
+      expect(readPersistedRun(run.runId)?.delivery).toMatchObject({
         status: expected.status,
         ...(expected.disposition ? { disposition: expected.disposition } : {}),
         ...(expected.queueId ? { queueId: expected.queueId } : {}),
@@ -471,76 +540,51 @@ describe("subagent registry persistence resume", () => {
   });
 
   it("keeps restored recovery dormant until the Gateway lifecycle activates it", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
     const wakeRequester = vi.fn(async () => false);
-    mod.testing.setDepsForTest({
-      ...createSubagentRegistryTestDeps({
-        callGateway: vi.mocked(callGatewayModule.callGateway),
-        maybeWakeRequesterAfterAllChildrenSettled: wakeRequester,
-      }),
-    });
+    vi.spyOn(requesterSettleModule, "maybeWakeRequesterAfterAllChildrenSettled").mockImplementation(
+      wakeRequester,
+    );
 
-    await withRegistryState(stateDir, async () => {
+    await withRegistryState(async (stateDir) => {
       const endedAt = Date.now();
-      const yieldedRun: SubagentRunRecord = {
-        runId: "run-hydrated-yield",
+      const yieldedRun = createDeliveredWake("run-hydrated-yield", undefined, {
         taskRunId: "run-hydrated-yield",
         requesterTurnRunId: "run-requester",
         requesterTurnYielded: true,
         childSessionKey: "agent:main:subagent:hydrated-yield",
-        requesterSessionKey: "agent:main:main",
-        requesterDisplayKey: "main",
         task: "wake only after lifecycle activation",
-        cleanup: "keep",
         createdAt: endedAt - 1_000,
         endedReason: "subagent-complete",
-        execution: {
-          status: "terminal",
-          startedAt: endedAt - 500,
-          endedAt,
-          outcome: { status: "ok" },
-        },
-        expectsCompletionMessage: true,
-        completion: { required: true, resultText: "done", capturedAt: endedAt },
-        delivery: { status: "delivered", deliveredAt: endedAt },
-        cleanupHandled: true,
+        startedAt: endedAt - 500,
+        endedAt,
         cleanupCompletedAt: endedAt,
-      };
-      const queuedCollector: SubagentRunRecord = {
+      });
+      const queuedCollector = createSubagentRunRecord({
         runId: "run-hydrated-collector",
         childSessionKey: "agent:main:subagent:hydrated-collector",
-        requesterSessionKey: "agent:main:main",
-        requesterDisplayKey: "main",
         task: "clean only after lifecycle activation",
-        cleanup: "keep",
         createdAt: endedAt - 500,
         collect: true,
         swarmRequesterSessionKey: "agent:main:main",
         groupId: "hydrated-group",
         archiveAtMs: endedAt - 1,
-        execution: {
-          status: "terminal",
-          startedAt: endedAt - 400,
-          endedAt,
-          outcome: { status: "error", error: "launch failed" },
-        },
+        startedAt: endedAt - 400,
+        endedAt,
+        outcome: { status: "error", error: "launch failed" },
         completion: { required: true },
         delivery: { status: "pending" },
         collectorCompletion: { status: "failed" },
         collectorLaunchCleanupPending: true,
-      };
-      const runningRun: SubagentRunRecord = {
+      });
+      const runningRun = createSubagentRunRecord({
         runId: "run-hydrated-running",
         childSessionKey: "agent:main:subagent:hydrated-running",
-        requesterSessionKey: "agent:main:main",
-        requesterDisplayKey: "main",
         task: "wait through the activated instance",
-        cleanup: "keep",
         createdAt: endedAt,
         execution: { status: "running", startedAt: endedAt },
         completion: { required: false },
         delivery: { status: "not_required" },
-      };
+      });
       saveSubagentRegistryToSqlite(
         new Map([
           [yieldedRun.runId, yieldedRun],
@@ -548,33 +592,17 @@ describe("subagent registry persistence resume", () => {
           [runningRun.runId, runningRun],
         ]),
       );
-      await writeSubagentSessionEntry({
+      await writeChildSession(stateDir, yieldedRun.childSessionKey, "sess-hydrated-yield");
+      await writeChildSession(
         stateDir,
-        agentId: "main",
-        sessionKey: yieldedRun.childSessionKey,
-        sessionId: "sess-hydrated-yield",
-        defaultSessionId: "sess-hydrated-yield",
-      });
-      await writeSubagentSessionEntry({
-        stateDir,
-        agentId: "main",
-        sessionKey: queuedCollector.childSessionKey,
-        sessionId: "sess-hydrated-collector",
-        defaultSessionId: "sess-hydrated-collector",
-        lifecycleRevision: "revision-hydrated-collector",
-      });
-      await writeSubagentSessionEntry({
-        stateDir,
-        agentId: "main",
-        sessionKey: runningRun.childSessionKey,
-        sessionId: "sess-hydrated-running",
-        defaultSessionId: "sess-hydrated-running",
-      });
+        queuedCollector.childSessionKey,
+        "sess-hydrated-collector",
+        "revision-hydrated-collector",
+      );
+      await writeChildSession(stateDir, runningRun.childSessionKey, "sess-hydrated-running");
 
-      mod.initSubagentRegistry();
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
+      await mod.initSubagentRegistry();
+      await nextTask();
 
       expect(mod.getSubagentRunByRunId(yieldedRun.runId)).toBeDefined();
       expect(mod.getSubagentRunByRunId(queuedCollector.runId)).toBeDefined();
@@ -585,9 +613,9 @@ describe("subagent registry persistence resume", () => {
       );
 
       const recoveryRuntime = {
+        ...createSubagentPersistenceRuntime(callGatewayModule.callGateway),
         dispatchAgent: vi.fn(),
         waitForAgent: vi.fn(async () => ({ status: "pending" })),
-        sendRecoveryNotice: vi.fn(),
       };
       let firstLifecycleOpen = true;
       const gatewayContext = {
@@ -598,8 +626,8 @@ describe("subagent registry persistence resume", () => {
         firstLifecycleOpen ? (gatewayContext as never) : undefined,
       );
       const resolveGatewayContext = vi.fn(() => gatewayContext as never);
-      mod.activateSubagentRegistry(resolveGatewayContext);
-      mod.activateSubagentRegistry(resolveGatewayContext);
+      await mod.activateSubagentRegistry(resolveGatewayContext);
+      await mod.activateSubagentRegistry(resolveGatewayContext);
       const restoredRun = mod.getSubagentRunByRunId(runningRun.runId);
       expect(restoredRun).toBeDefined();
       const restoredGatewayContextResolver = getGatewayContextResolver(restoredRun!);
@@ -616,24 +644,14 @@ describe("subagent registry persistence resume", () => {
         expect.objectContaining({ method: "agent.wait" }),
       );
 
-      firstLifecycleOpen = false;
-      expect(resolveGatewayContext()).toBe(gatewayContext);
-      expect(gatewayContext.resolveGatewayContext()).toBeUndefined();
-      expect(restoredGatewayContextResolver?.()).toBeUndefined();
-      const replacementRuntime = {
-        dispatchAgent: vi.fn(),
-        waitForAgent: vi.fn(async () => ({ status: "pending" })),
-        sendRecoveryNotice: vi.fn(),
-      };
-      const resolveReplacementContext = () => ({ recoveryRuntime: replacementRuntime }) as never;
-      mod.activateSubagentRegistry(resolveReplacementContext);
-      mod.activateSubagentRegistry(resolveReplacementContext);
-      expect(getGatewayContextResolver(restoredRun!)).toBe(restoredGatewayContextResolver);
-      expect(wakeRequester).toHaveBeenCalledOnce();
-      expect(recoveryRuntime.waitForAgent).toHaveBeenCalledOnce();
-      expect(replacementRuntime.waitForAgent).not.toHaveBeenCalled();
-
+      const sweptWake = createDeferredCore<boolean>();
+      wakeRequester.mockImplementationOnce(() => {
+        sweptWake.resolve(false);
+        return sweptWake.promise;
+      });
       await mod.testing.runSweeperTickForTests();
+      await sweptWake.promise;
+      wakeRequester.mockClear();
       expect(callGatewayModule.callGateway).toHaveBeenCalledTimes(1);
       expect(callGatewayModule.callGateway).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -644,203 +662,137 @@ describe("subagent registry persistence resume", () => {
           }),
         }),
       );
+
+      firstLifecycleOpen = false;
+      expect(resolveGatewayContext()).toBe(gatewayContext);
+      expect(gatewayContext.resolveGatewayContext()).toBeUndefined();
+      expect(restoredGatewayContextResolver?.()).toBeUndefined();
+      const replacementRuntime = {
+        ...createSubagentPersistenceRuntime(callGatewayModule.callGateway),
+        dispatchAgent: vi.fn(),
+        waitForAgent: vi.fn(async () => ({ status: "pending" })),
+      };
+      const resolveReplacementContext = () =>
+        ({ resolveGatewayContext: () => ({ recoveryRuntime: replacementRuntime }) }) as never;
+      await mod.activateSubagentRegistry(resolveReplacementContext);
+      await mod.activateSubagentRegistry(resolveReplacementContext);
+      expect(getGatewayContextResolver(restoredRun!)).toBe(restoredGatewayContextResolver);
+      expect(wakeRequester).not.toHaveBeenCalled();
+      expect(recoveryRuntime.waitForAgent).toHaveBeenCalledOnce();
+      expect(replacementRuntime.waitForAgent).not.toHaveBeenCalled();
+
+      await mod.testing.runSweeperTickForTests();
+      expect(callGatewayModule.callGateway).toHaveBeenCalledTimes(1);
     });
   });
 
-  it.each([
-    { activationSettlement: false, requesterYielded: undefined, label: "persisted" },
-    {
-      activationSettlement: true,
-      requesterYielded: undefined,
-      label: "activation-created normal",
-    },
-    { activationSettlement: true, requesterYielded: true, label: "activation-created yielded" },
-  ] as const)(
-    "bounds restored $label requester-settle wakes after Gateway activation",
-    async ({ activationSettlement, requesterYielded }) => {
-      const stateDir = tempDirs.make("openclaw-subagent-");
+  it.each(["activation-created normal", "activation-created yielded"] as const)(
+    "bounds restored %s requester-settle wakes after Gateway activation",
+    async (mode) => {
+      const requesterYielded = mode === "activation-created yielded" ? true : undefined;
       let activeWakes = 0;
       let maxActiveWakes = 0;
+      let releaseFutureWakes = false;
       const wakeResolvers: Array<() => void> = [];
-      const wakeRequester = vi.fn(
-        () =>
-          new Promise<boolean>((resolve) => {
-            activeWakes += 1;
-            maxActiveWakes = Math.max(maxActiveWakes, activeWakes);
-            wakeResolvers.push(() => {
-              activeWakes -= 1;
-              resolve(false);
+      const { run: wakeRequester, waitForCalls } = observeSubagentRequesterWake(async (params) => {
+        activeWakes += 1;
+        maxActiveWakes = Math.max(maxActiveWakes, activeWakes);
+        try {
+          if (!releaseFutureWakes) {
+            await new Promise<void>((resolve) => {
+              wakeResolvers.push(resolve);
             });
-          }),
-      );
-      mod.testing.setDepsForTest({
-        ...createSubagentRegistryTestDeps({
-          callGateway: vi.mocked(callGatewayModule.callGateway),
-          maybeWakeRequesterAfterAllChildrenSettled: wakeRequester,
-        }),
+          }
+          await params.completeBatch(
+            [params.settledEntry],
+            params.settledEntry.requesterSettleWake?.rearmGeneration,
+          );
+          return false;
+        } finally {
+          activeWakes -= 1;
+        }
       });
+      vi.spyOn(
+        requesterSettleModule,
+        "maybeWakeRequesterAfterAllChildrenSettled",
+      ).mockImplementation(wakeRequester);
 
-      await withRegistryState(stateDir, async () => {
+      await withRegistryState(async (stateDir) => {
         const endedAt = Date.now();
-        const restoredRuns = Array.from({ length: 3 }, (_, index): SubagentRunRecord => {
-          const runId = `run-restored-wake-${index}`;
-          return {
-            runId,
-            childSessionKey: `agent:main:subagent:restored-wake-${index}`,
-            requesterSessionKey: `agent:main:requester-${index}`,
-            requesterDisplayKey: `requester-${index}`,
-            task: "resume a durable requester wake",
-            cleanup: "keep",
-            createdAt: endedAt - 1_000,
-            endedReason: "subagent-complete",
-            execution: {
-              status: "terminal",
-              startedAt: endedAt - 500,
-              endedAt,
-              outcome: { status: "ok" },
-            },
-            expectsCompletionMessage: true,
-            completion: { required: true, resultText: "done", capturedAt: endedAt },
-            delivery: { status: "delivered", deliveredAt: endedAt },
-            cleanupHandled: true,
-            cleanupCompletedAt: endedAt,
-            ...(activationSettlement
-              ? {
-                  requesterTurnRunId: `requester-turn-${index}`,
-                  requesterTurnYielded: requesterYielded ?? undefined,
-                  taskRunId: runId,
-                }
-              : { requesterSettleWake: { status: "pending", attemptCount: 0 } }),
-          };
+        const restoredRuns = createRestoredRequesterWakeRuns({
+          activationSettlement: true,
+          requesterYielded,
+          endedAt,
         });
-        saveSubagentRegistryToSqlite(
-          new Map(restoredRuns.map((entry) => [entry.runId, entry] as const)),
+        saveSubagentRegistryToSqlite(new Map(restoredRuns.map((entry) => [entry.runId, entry])));
+
+        await Promise.all(
+          restoredRuns.map((entry, index) =>
+            writeChildSession(stateDir, entry.childSessionKey, `sess-restored-wake-${index}`),
+          ),
         );
 
-        if (activationSettlement) {
-          await Promise.all(
-            restoredRuns.map((entry, index) =>
-              writeSubagentSessionEntry({
-                stateDir,
-                agentId: "main",
-                sessionKey: entry.childSessionKey,
-                sessionId: `sess-restored-wake-${index}`,
-                defaultSessionId: `sess-restored-wake-${index}`,
-              }),
-            ),
-          );
-        }
-
-        mod.initSubagentRegistry();
-        await new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        });
+        await mod.initSubagentRegistry();
+        await nextTask();
         expect(wakeRequester).not.toHaveBeenCalled();
 
-        activateRegistry();
+        await activateSubagentPersistenceRegistry(mod, callGatewayModule.callGateway);
         try {
-          await vi.waitFor(() => expect(wakeRequester).toHaveBeenCalledTimes(2));
+          // Restoration can await task projection and a lazy import before admission.
+          await waitForCalls(2);
+          expect(wakeRequester).toHaveBeenCalledTimes(2);
           expect(activeWakes).toBe(2);
           expect(maxActiveWakes).toBe(2);
 
           wakeResolvers.shift()?.();
-          await vi.waitFor(() => expect(wakeRequester).toHaveBeenCalledTimes(3));
+          await waitForCalls(3);
+          expect(wakeRequester).toHaveBeenCalledTimes(3);
           expect(maxActiveWakes).toBe(2);
         } finally {
-          while (wakeResolvers.length > 0) {
-            while (wakeResolvers.length > 0) {
-              wakeResolvers.shift()?.();
-            }
-            await new Promise<void>((resolve) => {
-              setImmediate(resolve);
-            });
-            if (activeWakes === 0) {
-              break;
-            }
+          // Also release callbacks that have not reached the mock when an assertion fails.
+          releaseFutureWakes = true;
+          for (const release of wakeResolvers.splice(0)) {
+            release();
           }
-          await vi.waitFor(() => expect(activeWakes).toBe(0));
+          await settleSubagentRegistryPersistenceWork(() => settleOwnedWork?.(true));
+          expect(activeWakes).toBe(0);
         }
+        await mod.testing.runSweeperTickForTests();
+        await settleSubagentRegistryPersistenceWork(() => settleOwnedWork?.(true));
+        expect(wakeRequester).toHaveBeenCalledTimes(3);
       });
     },
   );
 
-  it("keeps dismissed terminal delivery dormant and TTL-eligible after restore", async () => {
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
-    await withRegistryState(stateDir, async () => {
-      const now = Date.now();
-      const run: SubagentRunRecord = {
-        runId: "run-dismissed-delivery",
-        childSessionKey: "agent:main:subagent:dismissed-delivery",
-        requesterSessionKey: "agent:main:main",
-        requesterDisplayKey: "main",
-        task: "retain no delivery obligation",
-        cleanup: "keep",
-        createdAt: now - 10 * 60_000,
-        endedReason: "subagent-complete",
-        execution: {
-          status: "terminal",
-          startedAt: now - 9 * 60_000,
-          endedAt: now - 8 * 60_000,
-          outcome: { status: "ok" },
-        },
-        expectsCompletionMessage: true,
-        completion: { required: true, resultText: "done", capturedAt: now - 8 * 60_000 },
-        delivery: {
-          status: "discarded",
-          disposition: "intentional_non_delivery",
-          dismissedAt: now - 6 * 60_000,
-        },
-        cleanupHandled: true,
-        cleanupCompletedAt: now - 6 * 60_000,
-      };
-      saveSubagentRegistryToSqlite(new Map([[run.runId, run]]));
-
-      mod.initSubagentRegistry();
-      await mod.testing.sweepOnceForTests();
-
-      expect(announceSpy).not.toHaveBeenCalled();
-      expect(mod.getSubagentRunByRunId(run.runId)).toBeUndefined();
-    });
+  registerSubagentDismissedRetentionCases({
+    getRegistry: () => mod,
+    withRegistryState,
+    announceSpy,
   });
 
   it.each([false, true])(
     "settles a restored steered requester turn (yielded: %s)",
     async (requesterYielded) => {
-      const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-subagent-"));
       const wakeRequester = vi.fn(async () => false);
-      mod.testing.setDepsForTest({
-        ...createSubagentRegistryTestDeps({
-          callGateway: vi.mocked(callGatewayModule.callGateway),
-          maybeWakeRequesterAfterAllChildrenSettled: wakeRequester,
-        }),
-      });
+      vi.spyOn(
+        requesterSettleModule,
+        "maybeWakeRequesterAfterAllChildrenSettled",
+      ).mockImplementation(wakeRequester);
 
-      await withRegistryState(stateDir, async () => {
+      await withRegistryState(async (stateDir) => {
         const endedAt = Date.now();
-        const run: SubagentRunRecord = {
-          runId: "run-steered",
+        const run = createDeliveredWake("run-steered", undefined, {
           taskRunId: "run-original",
           requesterTurnRunId: "run-requester",
           ...(requesterYielded ? { requesterTurnYielded: true } : {}),
           childSessionKey: "agent:main:subagent:steered",
-          requesterSessionKey: "agent:main:main",
-          requesterDisplayKey: "main",
           task: "deliver the steered result",
-          cleanup: "keep",
           createdAt: endedAt - 1_000,
           endedReason: "subagent-complete",
-          execution: {
-            status: "terminal",
-            startedAt: endedAt - 500,
-            endedAt,
-            outcome: { status: "ok" },
-          },
-          expectsCompletionMessage: true,
-          completion: { required: true, resultText: "done", capturedAt: endedAt },
-          delivery: { status: "delivered", deliveredAt: endedAt },
-          cleanupHandled: true,
+          startedAt: endedAt - 500,
+          endedAt,
           cleanupCompletedAt: endedAt,
-        };
+        });
         const nonannouncing: SubagentRunRecord[] = [];
         for (const collect of [false, true]) {
           nonannouncing.push({
@@ -860,22 +812,16 @@ describe("subagent registry persistence resume", () => {
           new Map([run, ...nonannouncing].map((entry) => [entry.runId, entry])),
         );
         for (const entry of [run, ...nonannouncing]) {
-          await writeSubagentSessionEntry({
-            stateDir,
-            agentId: "main",
-            sessionKey: entry.childSessionKey,
-            sessionId: `sess-${entry.runId}`,
-            defaultSessionId: `sess-${entry.runId}`,
-          });
+          await writeChildSession(stateDir, entry.childSessionKey, `sess-${entry.runId}`);
         }
 
-        mod.initSubagentRegistry();
-        activateRegistry();
+        await mod.initSubagentRegistry();
+        await activateSubagentPersistenceRegistry(mod, callGatewayModule.callGateway);
 
         const restored = mod.getSubagentRunByRunId(run.runId);
         expect(restored).toMatchObject({ runId: run.runId, taskRunId: run.taskRunId });
         expect(restored?.requesterTurnRunId).toBeUndefined();
-        expect(loadSubagentRegistryFromSqlite().get(run.runId)?.requesterTurnRunId).toBeUndefined();
+        expect(readPersistedRun(run.runId)?.requesterTurnRunId).toBeUndefined();
         for (const sibling of nonannouncing) {
           expect(mod.getSubagentRunByRunId(sibling.runId)).toMatchObject({
             requesterTurnRunId: "run-requester",
@@ -890,13 +836,15 @@ describe("subagent registry persistence resume", () => {
             requesterYieldBatch: true,
             afterRequesterYield: true,
           });
+          await vi.waitFor(() => expect(wakeRequester).toHaveBeenCalledOnce(), {
+            timeout: 1_000,
+            interval: 10,
+          });
         } else {
           expect(restored?.requesterSettleWake).toBeUndefined();
+          await nextTask();
+          expect(wakeRequester).not.toHaveBeenCalled();
         }
-        await vi.waitFor(() => expect(wakeRequester).toHaveBeenCalledOnce(), {
-          timeout: 1_000,
-          interval: 10,
-        });
       });
     },
   );

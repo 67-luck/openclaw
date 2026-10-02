@@ -1,12 +1,15 @@
 /** Command-registry facade for native specs, text aliases, argument parsing, and menus. */
 import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
+import { resolveAgentConfig } from "../agents/agent-scope-config.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import {
   buildConfiguredModelCatalog,
   resolveConfiguredModelRef,
 } from "../agents/model-selection.js";
 import { getChannelPlugin, getLoadedChannelPlugin } from "../channels/plugins/index.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
+import { loadSessionEntryReadOnly } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.js";
 import type { SkillCommandSpec } from "../skills/types.js";
 import type { CommandTurnContext } from "./command-turn-context.js";
@@ -21,7 +24,6 @@ import type {
   CommandArgs,
   NativeCommandSpec,
 } from "./commands-registry.types.js";
-import type { ThinkingCatalogEntry } from "./thinking.shared.js";
 
 export {
   isCommandEnabled,
@@ -80,7 +82,7 @@ function createNativeCommandNameMapper(
   };
 }
 
-function supportsNativeProvider(command: ChatCommandDefinition, provider?: string): boolean {
+export function supportsNativeProvider(command: ChatCommandDefinition, provider?: string): boolean {
   if (!command.nativeProviders?.length) {
     return true;
   }
@@ -104,8 +106,8 @@ function listNativeSpecsFromCommands(
       (command) =>
         command.scope !== "text" && command.nativeName && supportsNativeProvider(command, provider),
     )
-    .flatMap((command) => {
-      return mapNativeCommandNames(command).map(({ name }, index) => {
+    .flatMap((command) =>
+      mapNativeCommandNames(command).map(({ name }, index) => {
         const nativeSpec: NativeCommandSpec = {
           name,
           description: command.description,
@@ -122,8 +124,8 @@ function listNativeSpecsFromCommands(
           nativeSpec.descriptionLocalizations = command.descriptionLocalizations;
         }
         return nativeSpec;
-      });
-    });
+      }),
+    );
 }
 
 /** Lists native command specs registered for a provider, including skill commands. */
@@ -230,7 +232,10 @@ export function isActiveRunSafeCommandTurn(params: {
             ? resolveTextCommand(`/${commandTurn.commandName}`, params.cfg)
             : null)
         )?.command;
-  return command?.activeRunSafe === true;
+  return (
+    command?.activeRunSafe === true ||
+    (command?.key === "login" && /^\/login\s+cancel$/iu.test(commandTurn.body?.trim() ?? ""))
+  );
 }
 
 /** Formats a command and optional raw argument string as slash-command text. */
@@ -272,12 +277,7 @@ function formatPositionalArgs(
     if (value == null) {
       continue;
     }
-    let rendered: string;
-    if (typeof value === "string") {
-      rendered = value.trim();
-    } else {
-      rendered = String(value);
-    }
+    const rendered = typeof value === "string" ? value.trim() : String(value);
     if (!rendered) {
       continue;
     }
@@ -355,57 +355,62 @@ function resolveDefaultCommandContext(cfg?: OpenClawConfig): {
 export type ResolvedCommandArgChoice = { value: string; label: string };
 
 /** Resolves static or context-aware choices for one command argument. */
-export function resolveCommandArgChoices(params: {
-  command: ChatCommandDefinition;
-  arg: CommandArgDefinition;
-  cfg?: OpenClawConfig;
-  provider?: string;
-  model?: string;
-  agentRuntime?: string;
-  catalog?: ThinkingCatalogEntry[];
-}): ResolvedCommandArgChoice[] {
-  const { command, arg, cfg } = params;
-  if (!arg.choices) {
+export function resolveCommandArgChoices(
+  params: CommandArgChoiceContext,
+): ResolvedCommandArgChoice[] {
+  const { arg, cfg } = params;
+  let choices = arg.choices;
+  if (!choices) {
     return [];
   }
-  const provided = arg.choices;
-  const raw = Array.isArray(provided)
-    ? provided
-    : (() => {
-        const defaults = resolveDefaultCommandContext(cfg);
-        const context: CommandArgChoiceContext = {
-          cfg,
-          provider: params.provider ?? defaults.provider,
-          model: params.model ?? defaults.model,
-          agentRuntime: params.agentRuntime,
-          catalog: params.catalog ?? (cfg ? buildConfiguredModelCatalog({ cfg }) : undefined),
-          command,
-          arg,
-        };
-        return provided(context);
-      })();
-  return raw.map((choice) =>
+  if (typeof choices === "function") {
+    const defaults = resolveDefaultCommandContext(cfg);
+    choices = choices({
+      cfg,
+      command: params.command,
+      arg,
+      provider: params.provider ?? defaults.provider,
+      model: params.model ?? defaults.model,
+      agentRuntime: params.agentRuntime,
+      catalog: params.catalog ?? (cfg ? buildConfiguredModelCatalog({ cfg }) : undefined),
+    });
+  }
+  return choices.map((choice) =>
     typeof choice === "string" ? { value: choice, label: choice } : choice,
   );
 }
 
+/** Argument-only check for whether a command can still offer an argument menu. */
+export function canResolveCommandArgMenu<
+  T extends { command: ChatCommandDefinition; args?: CommandArgs },
+>(
+  params: T,
+): params is T & {
+  command: ChatCommandDefinition & Required<Pick<ChatCommandDefinition, "args" | "argsMenu">>;
+} {
+  const { command, args } = params;
+  if (!command.args || !command.argsMenu || command.argsParsing === "none") {
+    return false;
+  }
+  if (args?.raw && !args.values) {
+    return false;
+  }
+  return command.argsMenu === "auto"
+    ? command.args.some((arg) => args?.values?.[arg.name] == null)
+    : args?.values?.[command.argsMenu.arg] == null;
+}
+
 /** Resolves the next argument menu to show for commands with selectable choices. */
-export function resolveCommandArgMenu(params: {
-  command: ChatCommandDefinition;
-  args?: CommandArgs;
-  cfg?: OpenClawConfig;
-  provider?: string;
-  model?: string;
-  agentRuntime?: string;
-  catalog?: ThinkingCatalogEntry[];
-}): { arg: CommandArgDefinition; choices: ResolvedCommandArgChoice[]; title?: string } | null {
+export function resolveCommandArgMenu(
+  params: Omit<CommandArgChoiceContext, "arg"> & {
+    args?: CommandArgs;
+    session?: { agentId: string; sessionKey: string };
+  },
+): { arg: CommandArgDefinition; choices: ResolvedCommandArgChoice[]; title?: string } | null {
+  if (!canResolveCommandArgMenu(params)) {
+    return null;
+  }
   const { command, args, cfg, provider, model, agentRuntime, catalog } = params;
-  if (!command.args || !command.argsMenu) {
-    return null;
-  }
-  if (command.argsParsing === "none") {
-    return null;
-  }
   const resolvedCatalog = catalog ?? (cfg ? buildConfiguredModelCatalog({ cfg }) : undefined);
   const argSpec = command.argsMenu;
   const argName =
@@ -429,9 +434,6 @@ export function resolveCommandArgMenu(params: {
   if (args?.values && args.values[argName] != null) {
     return null;
   }
-  if (args?.raw && !args.values) {
-    return null;
-  }
   const arg = command.args.find((entry) => entry.name === argName);
   if (!arg) {
     return null;
@@ -448,8 +450,19 @@ export function resolveCommandArgMenu(params: {
   if (choices.length === 0) {
     return null;
   }
-  const title = argSpec !== "auto" ? argSpec.title : undefined;
-  return { arg, choices, title };
+  const menu = { arg, choices, title: argSpec !== "auto" ? argSpec.title : undefined };
+  if (command.key === "verbose" && cfg && params.session) {
+    // Native menus bypass directive dispatch; keep its status tied to the same target session.
+    const { agentId, sessionKey } = params.session;
+    const entry = loadSessionEntryReadOnly({
+      agentId,
+      storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId }),
+      sessionKey,
+    });
+    const level = entry?.verboseLevel ?? resolveAgentConfig(cfg, agentId)?.verboseDefault ?? "off";
+    menu.title = `Current verbose level: ${level}.\n${formatCommandArgMenuTitle({ command, menu })}`;
+  }
+  return menu;
 }
 
 /** Formats the prompt title shown before an argument-choice menu. */

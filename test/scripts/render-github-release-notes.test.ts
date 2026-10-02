@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { splitChangelog } from "../../scripts/lib/release-changelog.mjs";
 import {
   GITHUB_RELEASE_BODY_MAX_BYTES,
   GITHUB_RELEASE_BODY_MAX_CHARACTERS,
@@ -11,10 +15,12 @@ import {
   renderGithubReleaseNotes,
   verifyGithubReleaseNotes,
 } from "../../scripts/render-github-release-notes.mts";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const repository = "openclaw/openclaw";
 const tag = "v2026.7.1-beta.3";
 const version = "2026.7.1";
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function changelogFor(record: string): string {
   return [
@@ -42,6 +48,100 @@ function changelogFor(record: string): string {
 }
 
 describe("GitHub release-note rendering", () => {
+  it("refuses docs-mirror source in the initial renderer", () => {
+    expect(() =>
+      renderGithubReleaseNotes({
+        changelog: `## ${version}\n\n<!-- openclaw-docs-mirror-v1 {} -->\n\nPublished reader prose.\n`,
+        version,
+        tag,
+        repository,
+      }),
+    ).toThrow("docs-publication renderer");
+  });
+
+  it.each([false, true])(
+    "renders pinned legacy and split sources through the CLI (compact=%s)",
+    (compact) => {
+      const rootDir = tempDirs.make("openclaw-release-render-");
+      const git = (...args: string[]) =>
+        execFileSync("git", args, { cwd: rootDir, encoding: "utf8" }).trim();
+      git("init", "-q");
+      git("config", "user.name", "Release Fixture");
+      git("config", "user.email", "release-fixture@openclaw.invalid");
+      git("config", "commit.gpgsign", "false");
+      const changelog = changelogFor(
+        `- **PR #123** ${compact ? "record ".repeat(20_000) : "fix: example."}`,
+      );
+      writeFileSync(join(rootDir, "CHANGELOG.md"), changelog);
+      git("add", ".");
+      git("commit", "-qm", "legacy release");
+      const legacy = git("rev-parse", "HEAD");
+      splitChangelog({ rootDir });
+      git("add", ".");
+      git("commit", "-qm", "split release");
+      const split = git("rev-parse", "HEAD");
+      writeFileSync(
+        join(rootDir, `CHANGELOG/${version}.md`),
+        `## ${version}\n\nUncommitted drift.\n`,
+      );
+      const render = (ref: string) =>
+        execFileSync(
+          process.execPath,
+          [
+            resolve("scripts/render-github-release-notes.mts"),
+            "--root",
+            rootDir,
+            "--ref",
+            ref,
+            "--tag",
+            tag,
+            "--repository",
+            repository,
+          ],
+          { encoding: "utf8" },
+        );
+      const legacyBody = render(legacy);
+      const splitBody = render(split);
+      const bodyPath = join(rootDir, "release-body.md");
+      writeFileSync(bodyPath, splitBody);
+      const verify = () =>
+        execFileSync(
+          process.execPath,
+          [
+            resolve("scripts/render-github-release-notes.mts"),
+            "--root",
+            rootDir,
+            "--ref",
+            split,
+            "--tag",
+            tag,
+            "--repository",
+            repository,
+            "--verify-body",
+            bodyPath,
+          ],
+          { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+        );
+      expect(verify()).toBe("");
+      writeFileSync(bodyPath, `${splitBody}\nUnapproved appended prose.\n`);
+      expect(verify).toThrow("Release body does not match canonical release notes.");
+      expect(legacyBody).not.toContain("Uncommitted drift");
+      expect(splitBody).not.toContain("Uncommitted drift");
+      if (compact) {
+        expect(legacyBody).toContain(`/blob/${tag}/CHANGELOG.md#complete-contribution-record`);
+        expect(splitBody).toContain(
+          `/blob/${tag}/CHANGELOG/records/${version}.md#complete-contribution-record`,
+        );
+        expect(splitBody).toBe(
+          legacyBody.replace("/CHANGELOG.md#", `/CHANGELOG/records/${version}.md#`),
+        );
+      } else {
+        expect(splitBody).toBe(legacyBody);
+        expect(splitBody).toBe(extractChangelogSection(changelog, version));
+      }
+    },
+  );
+
   it("round-trips canonical contribution provenance and accepts published legacy lines", () => {
     const target = "a".repeat(40);
     const singular = formatContributionRecordProvenance({
@@ -129,6 +229,52 @@ describe("GitHub release-note rendering", () => {
         "- **PR #123** fix: example. Thanks @contributor.",
       ].join("\n"),
     );
+  });
+
+  it("prefixes extended-stable notes with immutable regular-stable context", () => {
+    const extendedVersion = "2026.7.35";
+    const extendedTag = `v${extendedVersion}`;
+    const regularStableVersion = "2026.9.5";
+    const changelog = changelogFor("- **PR #123** fix: example.").replaceAll(
+      version,
+      extendedVersion,
+    );
+    const rendered = renderGithubReleaseNotes({
+      changelog,
+      version: extendedVersion,
+      tag: extendedTag,
+      repository,
+      regularStableVersion,
+    });
+
+    expect(
+      rendered.body.startsWith(
+        "This is a gateway-only `extended-stable` release, which is our current equivalent to LTS. " +
+          "This release is OpenClaw from the end of July 2026, plus critical security updates, " +
+          "reliability and performance fixes, and features like new model support. " +
+          "The latest version of OpenClaw at the time of this release is " +
+          "[2026.9.5](https://github.com/openclaw/openclaw/releases#release-v2026.9.5)\n\n" +
+          "## 2026.7.35",
+      ),
+    ).toBe(true);
+    expect(
+      verifyGithubReleaseNotes({
+        body: rendered.body,
+        changelog,
+        version: extendedVersion,
+        tag: extendedTag,
+        repository,
+        regularStableVersion,
+      }).matches,
+    ).toBe(true);
+    expect(() =>
+      renderGithubReleaseNotes({
+        changelog,
+        version: extendedVersion,
+        tag: extendedTag,
+        repository,
+      }),
+    ).toThrow("regular stable version must be a string");
   });
 
   it("replaces an oversized contribution record with a tag-pinned link", () => {
@@ -431,6 +577,134 @@ describe("GitHub release-note rendering", () => {
         repository,
       }).matches,
     ).toBe(false);
+  });
+
+  it("renders and verifies advisory failures from bound release evidence", () => {
+    const receipt = {
+      schema: "openclaw.frv-flake-classification.v1",
+      parentRunId: "123",
+      parentRunAttempt: 2,
+      child: "normalCi",
+      childRunId: "456",
+      childRunAttempt: 1,
+      targetSha: "a".repeat(40),
+      jobId: "457",
+      jobName: "checks-node-test-2",
+      jobUrl: "https://github.com/openclaw/openclaw/actions/runs/456/job/457",
+      conclusion: "failure",
+      trackingUrl: "https://github.com/openclaw/openclaw/issues/789",
+      reason: "Shared fixture cleanup races; fixed in parallel on main.",
+      classifiedBy: "release-operator",
+      receiptRunId: "890",
+      receiptRunAttempt: 1,
+    };
+    const advisory = {
+      class: "recorded-flake",
+      child: "normalCi",
+      job: receipt.jobName,
+      conclusion: receipt.conclusion,
+      runId: receipt.childRunId,
+      url: receipt.jobUrl,
+      jobId: receipt.jobId,
+      trackingUrl: receipt.trackingUrl,
+      reason: receipt.reason,
+      receiptRunId: receipt.receiptRunId,
+    };
+    const windows = {
+      class: "windows-node-ci",
+      child: "normalCi",
+      job: "checks-windows-node-test-2",
+      conclusion: "failure",
+      runId: "456",
+      url: "https://github.com/openclaw/openclaw/actions/runs/456/job/459",
+    };
+    const validationManifest = {
+      runId: "123",
+      sourceParentRunAttempt: 2,
+      targetSha: receipt.targetSha,
+      childRuns: { normalCi: "456" },
+      childEvidence: {
+        normalCi: {
+          runId: "456",
+          status: "completed",
+          conclusion: "failure",
+          jobs: [advisory, windows]
+            .map((job) => ({
+              name: job.job,
+              status: "completed",
+              conclusion: "failure",
+              acceptedRunAttempt: 1,
+              url: job.url,
+            }))
+            .concat([
+              {
+                name: "openclaw/ci-gate",
+                status: "completed",
+                conclusion: "failure",
+                acceptedRunAttempt: 1,
+                url: "https://github.com/openclaw/openclaw/actions/runs/456/job/458",
+              },
+            ]),
+          flakeClassifications: [receipt],
+          gateEntries: [
+            { name: "preflight", result: "success", selected: true },
+            { name: "checks-node", result: "failure", selected: true },
+            { name: "checks-windows", result: "failure", selected: true },
+            { name: "pr-fail-fast", result: "skipped", selected: false },
+          ],
+        },
+      },
+      advisoryJobs: [advisory, windows],
+    };
+    const target = {
+      changelog: changelogFor("- **PR #123** fix: example."),
+      version,
+      tag,
+      repository,
+      validationManifest,
+    };
+    const rendered = renderGithubReleaseNotes({
+      ...target,
+      verification: "### Release verification\n\n- release SHA: `abc123`",
+    });
+    expect(rendered.body).toContain(
+      `- Advisory job (recorded-flake): normalCi / checks-node-test-2 (failure): ${receipt.jobUrl}; ${receipt.reason}; tracking: ${receipt.trackingUrl}`,
+    );
+    expect(rendered.body).toContain(
+      "- Advisory job (windows-node-ci): normalCi / checks-windows-node-test-2 (failure)",
+    );
+    expect(verifyGithubReleaseNotes({ ...target, body: rendered.body }).matches).toBe(true);
+    const advisoryOnly = renderGithubReleaseNotes(target);
+    expect(advisoryOnly.body).toContain(
+      "### Release verification\n- Advisory job (recorded-flake)",
+    );
+    expect(verifyGithubReleaseNotes({ ...target, body: advisoryOnly.body }).matches).toBe(true);
+    for (const body of [
+      rendered.body.replace(receipt.reason, "Unrecorded reason."),
+      rendered.body.replace(receipt.trackingUrl, "https://github.com/openclaw/openclaw/issues/999"),
+      rendered.body
+        .split("\n")
+        .filter((line) => !line.includes("Advisory job (recorded-flake)"))
+        .join("\n"),
+    ]) {
+      expect(verifyGithubReleaseNotes({ ...target, body }).matches).toBe(false);
+    }
+    expect(() =>
+      renderGithubReleaseNotes({
+        ...target,
+        validationManifest: {
+          ...validationManifest,
+          advisoryJobs: [{ ...advisory, reason: "Forged reason." }, windows],
+        },
+      }),
+    ).toThrow("advisory jobs differ");
+    const heading = `## ${version}\n\n`;
+    const nearLimitBody = heading + "x".repeat(GITHUB_RELEASE_BODY_MAX_BYTES - heading.length);
+    const nearLimitTarget = { ...target, changelog: nearLimitBody };
+    expect(() => renderGithubReleaseNotes(nearLimitTarget)).toThrow("required advisory evidence");
+    expect(() => verifyGithubReleaseNotes({ ...nearLimitTarget, body: nearLimitBody })).toThrow(
+      "required advisory evidence",
+    );
   });
 
   it("does not treat fenced verification headings as appended proof", () => {

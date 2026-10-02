@@ -111,6 +111,10 @@ enum GatewayEnvironment {
         return self.profilePortReservation.conflict
     }
 
+    static var gatewayPortRequiresRestart: Bool {
+        AppProfile.current.isActive && self.profilePortReservation.port != self.selectedGatewayPort()
+    }
+
     private static func selectedGatewayPort(root: [String: Any] = OpenClawConfigFile.loadDict()) -> Int {
         self.resolvedGatewayPort(
             environment: ProcessInfo.processInfo.environment,
@@ -151,12 +155,25 @@ enum GatewayEnvironment {
             isDebug: CLIInstallBuild.isDebug)
     }
 
-    /// Exposed for tests so we can inject fake version checks without rewriting bundle metadata.
-    static func expectedGatewayVersion(from versionString: String?) -> Semver? {
-        Semver.parse(versionString)
-    }
-
     static func check() async -> GatewayEnvironmentStatus {
+        if BundledRuntime.isBundledApp {
+            do {
+                _ = try BundledRuntime.resolve(bundle: .main)
+                return GatewayEnvironmentStatus(
+                    kind: .ok,
+                    nodeVersion: nil,
+                    gatewayVersion: self.appVersionString(),
+                    requiredGateway: self.appVersionString(),
+                    message: "Bundled Bun runtime; Gateway \(self.appVersionString() ?? "unknown")")
+            } catch {
+                return GatewayEnvironmentStatus(
+                    kind: .error(error.localizedDescription),
+                    nodeVersion: nil,
+                    gatewayVersion: nil,
+                    requiredGateway: self.appVersionString(),
+                    message: error.localizedDescription)
+            }
+        }
         let searchPaths = await CommandResolver.preferredPathsAsync()
         return await self.resolveEnvironment(searchPaths: searchPaths)
     }
@@ -223,19 +240,15 @@ enum GatewayEnvironment {
                     requiredGateway: expectedText,
                     message: """
                     Gateway version \(installedRaw) is incompatible with app \(expectedText);
-                    install or update the global package.
+                    open Connection settings to update or set up the Gateway.
                     """)
             }
 
             let gatewayLabel = gatewayBin != nil ? "global" : "local"
             let gatewayVersionText = installedRaw ?? "unknown"
-            // Avoid repeating "(local)" twice; if using the local entrypoint, show the path once.
-            let localPathHint = gatewayBin == nil && projectEntrypoint != nil
-                ? " (local: \(projectEntrypoint ?? "unknown"))"
-                : ""
             let gatewayLabelText = gatewayBin != nil
                 ? "(\(gatewayLabel))"
-                : localPathHint.isEmpty ? "(\(gatewayLabel))" : localPathHint
+                : " (local: \(projectEntrypoint ?? "unknown"))"
             return GatewayEnvironmentStatus(
                 kind: .ok,
                 nodeVersion: runtime.version.description,

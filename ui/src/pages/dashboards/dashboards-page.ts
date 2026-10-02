@@ -2,11 +2,18 @@ import { consume } from "@lit/context";
 import type { PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
 import { applicationContext, type ApplicationContext } from "../../app/context.ts";
+import {
+  DASHBOARD_DOCUMENT_ELEMENT,
+  ensureCustomElementDefined,
+} from "../../app/lazy-custom-element.ts";
+import { completePanelRefresh, failPanelRefresh } from "../../components/panel-refresh-status.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { fetchPagedSessionRows } from "../../lib/sessions/paged-session-rows.ts";
+import { dashboardSessionListQuery } from "../../lib/sessions/session-requests.ts";
+import { GatewayPageController } from "../../lit/gateway-page-controller.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
-import { dashboardSessionListQuery, dashboardsRouteData } from "./route.ts";
+import { dashboardsRouteData } from "./route.ts";
 import {
   renderDashboards,
   type DashboardGalleryFilters,
@@ -24,12 +31,16 @@ class DashboardsPage extends OpenClawLightDomElement {
     ownerId: "",
     sort: "updated",
   };
+  @state() private previewError: string | null = null;
 
   private observedSessions?: ApplicationContext["sessions"];
   private observedScopeId?: string | null;
   private unsubscribeList?: () => void;
   private data?: DashboardsRouteData;
   private listGeneration = 0;
+  private readonly gateway = new GatewayPageController(this, {
+    getGateway: () => this.context?.gateway,
+  });
   private readonly subscriptions = new SubscriptionsController(this).effect(
     () => this.context?.agentSelection,
     (agentSelection) => {
@@ -37,6 +48,18 @@ class DashboardsPage extends OpenClawLightDomElement {
       return agentSelection.subscribe(() => this.bindList());
     },
   );
+
+  override connectedCallback() {
+    super.connectedCallback();
+    void ensureCustomElementDefined(
+      DASHBOARD_DOCUMENT_ELEMENT.tagName,
+      DASHBOARD_DOCUMENT_ELEMENT.loadModule,
+    )
+      .then(() => this.requestUpdate())
+      .catch((error: unknown) => {
+        this.previewError = formatUiError(error);
+      });
+  }
 
   override disconnectedCallback() {
     this.listGeneration += 1;
@@ -68,13 +91,13 @@ class DashboardsPage extends OpenClawLightDomElement {
     this.unsubscribeList?.();
     this.observedSessions = sessions;
     this.observedScopeId = scopeId;
-    const query = dashboardSessionListQuery(context);
+    const query = dashboardSessionListQuery(context.agentSelection.state.scopeId);
     const apply = (snapshot: ReturnType<typeof sessions.listSnapshot>) => {
       if (
         this.context !== context ||
         this.observedSessions !== sessions ||
         this.observedScopeId !== scopeId ||
-        (!snapshot.result && !snapshot.error)
+        (!snapshot.result && !snapshot.error && this.data?.result)
       ) {
         return;
       }
@@ -99,14 +122,16 @@ class DashboardsPage extends OpenClawLightDomElement {
   ): void {
     const initialResult = snapshot.result;
     const generation = ++this.listGeneration;
-    if (!initialResult?.hasMore) {
+    const gatewayScope = this.gateway.capture();
+    if (!initialResult?.hasMore || snapshot.loading || snapshot.error || !gatewayScope) {
       return;
     }
     const isCurrent = () =>
       this.context === context &&
       this.observedSessions === sessions &&
       this.observedScopeId === scopeId &&
-      this.listGeneration === generation;
+      this.listGeneration === generation &&
+      this.gateway.isCurrent(gatewayScope);
     void fetchPagedSessionRows({
       initialResult,
       list: (offset) => sessions.list({ ...query, offset }),
@@ -135,7 +160,8 @@ class DashboardsPage extends OpenClawLightDomElement {
         if (!isCurrent()) {
           return;
         }
-        this.data = dashboardsRouteData(context, { ...snapshot, error: formatUiError(error) });
+        const status = failPanelRefresh(completePanelRefresh(), error, context.gateway.snapshot);
+        this.data = dashboardsRouteData(context, { ...snapshot, error: status.error });
         this.requestUpdate();
       });
   }
@@ -143,12 +169,6 @@ class DashboardsPage extends OpenClawLightDomElement {
   override render() {
     return renderDashboards(
       this.data,
-      () => {
-        const context = this.context;
-        if (context?.gateway.snapshot.phase === "connected") {
-          void context.sessions.refreshList({ ...dashboardSessionListQuery(context), force: true });
-        }
-      },
       this.filters,
       {
         onQueryChange: (query) => {
@@ -160,7 +180,10 @@ class DashboardsPage extends OpenClawLightDomElement {
         onSortChange: (sort) => {
           this.filters = { ...this.filters, sort };
         },
+        onNavigate: this.context?.navigate,
       },
+      this.context?.gateway.snapshot,
+      this.previewError,
     );
   }
 }

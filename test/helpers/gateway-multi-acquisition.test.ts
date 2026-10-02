@@ -2,6 +2,7 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import "../../src/test-utils/prepare-compiled-subprocesses.js";
 import { createDeferred } from "./promise.js";
 
 afterEach(() => {
@@ -38,14 +39,141 @@ async function createAcquiredOwner() {
 }
 
 describe("multi-Gateway suite acquisition ownership", () => {
-  it.each([
-    { boundary: "server", order: "before rejection" },
-    { boundary: "server", order: "after rejection" },
-    { boundary: "node", order: "before rejection" },
-    { boundary: "node", order: "after rejection" },
-  ] as const)(
-    "retains the $boundary acquired $order through actual afterAll",
-    async ({ boundary, order }) => {
+  it.each(["none", "gateway", "both"] as const)(
+    "stops every acquired Gateway and preserves state ownership (cleanup failure: %s)",
+    async (failure) => {
+      const clientFails = failure === "both";
+      const gatewayFails = failure === "gateway" || failure === "both";
+      const owners = await Promise.all([
+        createAcquiredOwner(),
+        createAcquiredOwner(),
+        createAcquiredOwner(),
+      ]);
+      const clientError = new Error("client close failed");
+      const gatewayError = new Error("Gateway close failed");
+      const bodyError = new Error("scheduler setup failed");
+      const events: string[] = [];
+      const heldClient = createDeferred();
+      const clientStarted = createDeferred();
+      const instances = owners.map((owner, index) => {
+        const stopGateway = async () => {
+          events.push(`stop-${index}`);
+          await owner.close();
+          if (gatewayFails && index !== 1) {
+            throw gatewayError;
+          }
+        };
+        return {
+          port: owner.port,
+          hookToken: "synthetic-hook",
+          startGateway: async () => {},
+          stopGateway,
+          cleanup: async () => {
+            await stopGateway();
+            events.push(`remove-state-${index}`);
+          },
+        };
+      });
+      const stopClient = async () => {
+        clientStarted.resolve();
+        await heldClient.promise;
+        events.push("client-settled");
+        if (clientFails) {
+          throw clientError;
+        }
+      };
+      const bodies: Array<{ name: string; run: () => Promise<void> }> = [];
+      const cleanups: Array<() => Promise<void>> = [];
+      vi.doMock("vitest", () => ({
+        afterAll: (cleanup: () => Promise<void>) => cleanups.push(cleanup),
+        describe: (_name: string, run: () => void) => run(),
+        it: (name: string, _options: unknown, run: () => Promise<void>) =>
+          bodies.push({ name, run }),
+        expect,
+      }));
+      let nextInstance = 0;
+      vi.doMock("./gateway-e2e-harness.js", () => ({
+        spawnGatewayInstance: async () => instances[nextInstance++],
+        stopGatewayInstance: (instance: { cleanup: () => Promise<void> }) => instance.cleanup(),
+        postJson: async () => ({ status: 200, json: { ok: true } }),
+        connectNode: async () => ({
+          nodeId: "synthetic-node",
+          client: { stopAndWait: stopClient },
+        }),
+        waitForNodeStatus: async () => {},
+        connectGatewayStatusClient: async () => ({
+          request: async () => {
+            throw bodyError;
+          },
+          stopAndWait: stopClient,
+        }),
+      }));
+      vi.doMock("./openclaw-test-instance.js", () => ({
+        createOpenClawTestInstance: async () => instances[2],
+      }));
+      let passive: Promise<unknown> | undefined;
+      let cleanup: Promise<unknown> | undefined;
+      try {
+        await import("../gateway.multi.e2e.test.js");
+        const acquisitionBody = bodies.find(
+          (body) => body.name === "spins up two gateways and exercises WS + HTTP + node pairing",
+        );
+        const passiveBody = bodies.find(
+          (body) =>
+            body.name === "preserves scheduler runtime across a scheduler-disabled Gateway edit",
+        );
+        expect(acquisitionBody).toBeDefined();
+        expect(passiveBody).toBeDefined();
+        await acquisitionBody!.run();
+        // Preserve the suite's two bodies and final afterAll order. The second
+        // body fails before spawning its scheduler but still owns a Gateway.
+        passive = passiveBody!.run().catch((error: unknown) => error);
+        await clientStarted.promise;
+        expect(events).toEqual([]);
+        heldClient.resolve();
+        const passiveError = await passive;
+        cleanup = cleanups[0]!().catch((error: unknown) => error);
+        const cleanupError = await cleanup;
+        expect(events.filter((event) => event.startsWith("stop-"))).toEqual([
+          "stop-2",
+          "stop-0",
+          "stop-1",
+        ]);
+        expect(owners.every((owner) => owner.isJoined())).toBe(true);
+        expect(events.filter((event) => event.startsWith("remove-state-"))).toEqual(
+          clientFails
+            ? []
+            : gatewayFails
+              ? ["remove-state-1"]
+              : ["remove-state-2", "remove-state-0", "remove-state-1"],
+        );
+        const errors = (error: unknown): unknown[] =>
+          error instanceof AggregateError ? error.errors.flatMap(errors) : [error];
+        expect(errors(passiveError)).toContain(bodyError);
+        for (const error of [passiveError, cleanupError]) {
+          if (clientFails) {
+            expect(errors(error)).toContain(clientError);
+          }
+          if (gatewayFails) {
+            expect(errors(error)).toContain(gatewayError);
+          }
+        }
+        if (failure === "none") {
+          expect(passiveError).toBe(bodyError);
+          expect(cleanupError).toBeUndefined();
+        }
+      } finally {
+        heldClient.resolve();
+        await passive;
+        await cleanup;
+        await Promise.all(owners.map((owner) => owner.close()));
+      }
+    },
+  );
+
+  it.each(["server", "node"] as const)(
+    "retains the %s acquired after rejection through actual afterAll",
+    async (boundary) => {
       const owner = await createAcquiredOwner();
       const acquisitionError = new Error(`${boundary} acquisition failed`);
       const sibling = createDeferred();
@@ -53,7 +181,12 @@ describe("multi-Gateway suite acquisition ownership", () => {
       const started = createDeferred();
       const resource =
         boundary === "server"
-          ? { port: owner.port, hookToken: "synthetic-hook", cleanup: owner.close }
+          ? {
+              port: owner.port,
+              hookToken: "synthetic-hook",
+              stopGateway: owner.close,
+              cleanup: owner.close,
+            }
           : {
               nodeId: "synthetic-node",
               client: {
@@ -67,8 +200,18 @@ describe("multi-Gateway suite acquisition ownership", () => {
       // Observe both promises before injecting rejection, even if the suite drops them.
       const acquisitions = Promise.allSettled([siblingAcquisition, failure.promise]);
       const servers = [
-        { port: owner.port, hookToken: "synthetic-a", cleanup: async () => {} },
-        { port: owner.port, hookToken: "synthetic-b", cleanup: async () => {} },
+        {
+          port: owner.port,
+          hookToken: "synthetic-a",
+          stopGateway: async () => {},
+          cleanup: async () => {},
+        },
+        {
+          port: owner.port,
+          hookToken: "synthetic-b",
+          stopGateway: async () => {},
+          cleanup: async () => {},
+        },
       ];
       const bodies: Array<{ name: string; timeout: number; run: () => Promise<void> }> = [];
       const cleanups: Array<() => Promise<void>> = [];
@@ -119,10 +262,6 @@ describe("multi-Gateway suite acquisition ownership", () => {
           (error: unknown) => error,
         );
         await started.promise;
-        if (order === "before rejection") {
-          sibling.resolve();
-          await siblingAcquisition;
-        }
         failure.reject(acquisitionError);
         await setImmediate();
         let cleanupSettled = false;
@@ -145,9 +284,7 @@ describe("multi-Gateway suite acquisition ownership", () => {
         const cleanupError = await cleanupResult;
         expect(bodyError).toBe(acquisitionError);
         expect(cleanupError).toBeUndefined();
-        if (order === "after rejection") {
-          expect(cleanupSettledBeforeLateAcquisition).toBe(false);
-        }
+        expect(cleanupSettledBeforeLateAcquisition).toBe(false);
         expect(ownerJoinedAtCleanupSettlement).toBe(true);
       } finally {
         // Settle late acquisitions and close their independently retained native
