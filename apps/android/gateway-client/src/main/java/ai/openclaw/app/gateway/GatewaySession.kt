@@ -79,6 +79,18 @@ data class GatewayClientInfo(
   val modelIdentifier: String?,
 )
 
+internal fun GatewayClientInfo.toJsonObject(): JsonObject =
+  buildJsonObject {
+    put("id", JsonPrimitive(id))
+    displayName?.let { put("displayName", JsonPrimitive(it)) }
+    put("version", JsonPrimitive(version))
+    put("platform", JsonPrimitive(platform))
+    put("mode", JsonPrimitive(mode))
+    instanceId?.let { put("instanceId", JsonPrimitive(it)) }
+    deviceFamily?.let { put("deviceFamily", JsonPrimitive(it)) }
+    modelIdentifier?.let { put("modelIdentifier", JsonPrimitive(it)) }
+  }
+
 data class GatewayLoadedImage(
   val bytes: ByteArray,
   val mimeType: String,
@@ -623,8 +635,7 @@ class GatewaySession(
       val fingerprint =
         connection.tlsConfig
           ?.effectiveFingerprintSha256
-          ?.let(::normalizeGatewayTlsFingerprint)
-          ?.takeIf { it.length == 64 }
+          ?.let(::normalizeGatewayTlsFingerprintInput)
       GatewayCanvasHostRoute(
         url = url,
         tlsFingerprintSha256 =
@@ -1935,18 +1946,6 @@ class GatewaySession(
     ): JsonObject {
       val client = target.options.client
       val locale = Locale.getDefault().toLanguageTag()
-      val clientObj =
-        buildJsonObject {
-          put("id", JsonPrimitive(client.id))
-          client.displayName?.let { put("displayName", JsonPrimitive(it)) }
-          put("version", JsonPrimitive(client.version))
-          put("platform", JsonPrimitive(client.platform))
-          put("mode", JsonPrimitive(client.mode))
-          client.instanceId?.let { put("instanceId", JsonPrimitive(it)) }
-          client.deviceFamily?.let { put("deviceFamily", JsonPrimitive(it)) }
-          client.modelIdentifier?.let { put("modelIdentifier", JsonPrimitive(it)) }
-        }
-
       val authJson =
         when {
           selectedAuth.authToken != null -> {
@@ -2008,7 +2007,7 @@ class GatewaySession(
       return buildJsonObject {
         put("minProtocol", JsonPrimitive(GATEWAY_MIN_PROTOCOL_VERSION))
         put("maxProtocol", JsonPrimitive(GATEWAY_PROTOCOL_VERSION))
-        put("client", clientObj)
+        put("client", client.toJsonObject())
         if (target.options.caps.isNotEmpty()) put("caps", JsonArray(target.options.caps.map(::JsonPrimitive)))
         if (target.options.commands.isNotEmpty()) put("commands", JsonArray(target.options.commands.map(::JsonPrimitive)))
         if (target.options.permissions.isNotEmpty()) {

@@ -94,16 +94,6 @@ internal data class WearLaunchState(
   }
 }
 
-@Composable
-internal fun WearLaunchContent(
-  launchState: WearLaunchState,
-  content: @Composable (WearHomePage, WearNavigationRequest?) -> Unit,
-) {
-  // Warm launches are pager events. Keeping this composition identity stable preserves
-  // pending-reply, autospeak, and real-time UI state owned below this boundary.
-  content(launchState.initialTarget.initialPage, launchState.navigationRequest)
-}
-
 internal fun shouldRecreateForScreenshotMode(
   currentScene: WearScreenshotScene?,
   intent: Intent?,
@@ -129,17 +119,15 @@ class MainActivity : ComponentActivity() {
     setContent {
       val scene = screenshotScene
       if (scene == null) {
-        WearLaunchContent(launchState) { initialPage, navigationRequest ->
-          WearConnectionHost(
-            app = application as WearApplication,
-            initialPage = initialPage,
-            navigationRequest = navigationRequest,
-            onMessageSubmitted = { launchState = launchState.navigate(WearLaunchTarget.Chat) },
-            onNavigationRequestHandled = { requestId ->
-              launchState = launchState.handled(requestId)
-            },
-          )
-        }
+        WearConnectionHost(
+          app = application as WearApplication,
+          initialPage = launchState.initialTarget.initialPage,
+          navigationRequest = launchState.navigationRequest,
+          onMessageSubmitted = { launchState = launchState.navigate(WearLaunchTarget.Chat) },
+          onNavigationRequestHandled = { requestId ->
+            launchState = launchState.handled(requestId)
+          },
+        )
       } else {
         OpenClawWearScreenshotApp(scene)
       }

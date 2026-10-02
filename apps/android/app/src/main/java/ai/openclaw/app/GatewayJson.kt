@@ -1,8 +1,13 @@
 package ai.openclaw.app
 
 import ai.openclaw.app.node.asStringOrNull
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+
+internal fun JsonElement?.asLongOrNull(): Long? = (this as? JsonPrimitive)?.content?.toLongOrNull()
+
+internal fun JsonElement?.asBooleanOrNull(): Boolean? = (this as? JsonPrimitive)?.content?.toBooleanStrictOrNull()
 
 internal fun JsonObject?.nonBlankString(key: String): String? =
   this
