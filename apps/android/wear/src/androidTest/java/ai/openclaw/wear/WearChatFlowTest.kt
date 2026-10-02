@@ -100,7 +100,10 @@ class WearChatFlowTest {
       capture("direct-03-tail")
       assertTrue(device.hasObject(By.text("DIRECT TRAILING SENTINEL")))
       device.pressBack()
-      assertTrue(device.wait(Until.hasObject(By.text("Read full reply")), 5_000))
+      assertTrue("Back returns to Direct chat", device.wait(Until.hasObject(By.text("CHAT")), 5_000))
+      capture("direct-04-return")
+      reveal("Read full reply")
+      assertTrue(device.hasObject(By.text("Read full reply")))
     } finally {
       activity?.let { current -> instrumentation.runOnMainSync { current.finish() } }
       instrumentation.waitForIdleSync()
