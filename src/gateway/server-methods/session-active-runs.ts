@@ -15,7 +15,7 @@ import { resolveSessionRunProgressState } from "../../sessions/session-controlle
 import {
   getRpcSourceIdentity,
   getRpcSourceProjectSessionActive,
-  isRpcSourceProjectedActive,
+  isRpcSourceActive,
   listRpcSourceEntries,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
@@ -51,10 +51,7 @@ function collectTrackedActiveSessionRuns(
       includeTerminalPersistence &&
       getRpcSourceProjectSessionActive(ref) === false &&
       active.projectSessionTerminalPending === true;
-    if (
-      (isRpcSourceProjectedActive(ref) || terminalPersistence) &&
-      active.controlUiVisible !== false
-    ) {
+    if ((isRpcSourceActive(ref) || terminalPersistence) && active.controlUiVisible !== false) {
       const sessionKey = identity.sessionKey.trim();
       const sessionId = identity.sessionId.trim();
       if (!sessionKey && !sessionId) {

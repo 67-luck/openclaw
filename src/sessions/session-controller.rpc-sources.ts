@@ -194,16 +194,6 @@ export function isRpcSourceActive(ref: RpcSourceRef | undefined): boolean {
   return isRpcSourceExecuting(ref) && getRpcSourceProjectSessionActive(ref) !== false;
 }
 
-/** Projects live source ownership before and during execution. */
-export function isRpcSourceProjectedActive(ref: RpcSourceRef | undefined): boolean {
-  return (
-    ref !== undefined &&
-    !ref.input.retirementRequested &&
-    !ref.input.abortSignal.aborted &&
-    getRpcSourceProjectSessionActive(ref) !== false
-  );
-}
-
 /** Reads the active-session presentation fact from the exact controller attachment. */
 export function getRpcSourceProjectSessionActive(
   ref: RpcSourceRef | undefined,
