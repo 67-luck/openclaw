@@ -1070,6 +1070,22 @@ mod tests {
             }
             Err("invocation delivery missing")
         }
+        // Prepare immutable peer bytes before timing runtime work. This exercises retention
+        // behavior; these fixture allocations are not a process-memory measurement.
+        let frames: Vec<_> = (0..6u8)
+            .map(|index| {
+                let raw =
+                    json!({"data": char::from(b'a' + index).to_string().repeat(24 * 1024 * 1024)})
+                        .to_string();
+                let frame = json!({"type":"event", "event":"node.invoke.request", "payload":{
+                    "id":format!("hold-{index}"), "nodeId":"node-1", "command":"benchmark.hold",
+                    "paramsJSON":raw, "timeoutMs":0
+                }})
+                .to_string();
+                assert!(frame.len() < GATEWAY_PAYLOAD_LIMIT);
+                bytes::Bytes::from(frame)
+            })
+            .collect();
         let (incoming, incoming_rx) = mpsc::channel(128);
         let (outgoing, mut queued) = mpsc::channel(usize::from(MAX_IN_FLIGHT));
         let (transport_outgoing, mut writes) = mpsc::channel(1);
@@ -1114,24 +1130,16 @@ mod tests {
             step = "native hello".into();
             let hello = queued.recv().await.ok_or("native hello missing")?;
             if hello["frame"]["ok"] != true { return Err("native hello failed"); }
-            for index in 0..6 {
-                step = format!("invocation {index} encoding");
-                // Reach NodeClient's real paramsJSON parser; NodeInvocation::new has no raw bytes.
-                let raw = json!({"data": char::from(b'a' + index).to_string().repeat(24 * 1024 * 1024)}).to_string();
-                let frame = json!({"type":"event", "event":"node.invoke.request", "payload":{
-                    "id":format!("hold-{index}"), "nodeId":"node-1", "command":"benchmark.hold",
-                    "paramsJSON":raw, "timeoutMs":0
-                }}).to_string();
-                if frame.len() >= GATEWAY_PAYLOAD_LIMIT { return Err("fixture exceeds per-frame limit"); }
+            for (index, frame) in frames.into_iter().enumerate() {
                 step = format!("invocation {index} receipt");
                 // Real duplex heartbeats share this socket; acknowledge writes and serialize
                 // their responses behind the outstanding frame's actual receive receipt.
                 deliver_with_progress(
                     &native_input, &mut writes, &mut receipts, &mut peer_responses,
-                    bytes::Bytes::from(frame),
+                    frame,
                 ).await?;
                 step = format!("invocation {index} forwarding");
-                while queued.len() < usize::from(index + 1) && !task.is_finished() {
+                while queued.len() < index + 1 && !task.is_finished() {
                     tokio::task::yield_now().await;
                 }
                 if index < 5 && task.is_finished() { return Err("valid backlog retired early"); }
