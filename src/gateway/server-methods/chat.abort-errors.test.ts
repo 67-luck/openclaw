@@ -153,9 +153,13 @@ it.each(["exact", "session cascade", "typed stop", "channel stop", "embedded sto
       cancel: () => requestRpcSourceCancellation(parent),
     });
     const context = createChatAbortContext({ getRuntimeConfig: () => cfg });
-    const embedded = createEmbeddedRunHandle({
+    let embedded!: ReturnType<typeof createEmbeddedRunHandle>;
+    embedded = createEmbeddedRunHandle({
       runId: "parent",
-      abort: () => requestRpcSourceCancellation(parent),
+      abort: () => {
+        requestRpcSourceCancellation(parent);
+        clearActiveEmbeddedRun("parent-session", embedded, sessionKey);
+      },
     });
     if (boundary === "embedded stop") {
       setActiveEmbeddedRun("parent-session", embedded, sessionKey);

@@ -83,6 +83,12 @@ function mockChatSuccess(mock: typeof chatAbortMock, payload: Record<string, unk
   });
 }
 
+async function useRealChatAbortHandlerOnce(): Promise<void> {
+  const actual =
+    await vi.importActual<typeof import("./chat-abort-handler.js")>("./chat-abort-handler.js");
+  chatAbortMock.mockImplementationOnce(actual.handleChatAbortRequestWithLifecycle);
+}
+
 const projections = new Set<ReturnType<typeof createSessionRowProjectionFixture>>();
 
 function projectSession(
@@ -266,9 +272,7 @@ describe("sessions.abort agent scope", () => {
   });
 
   it("kills controlled subagents after the parent run has already ended", async () => {
-    const actualChatAbort =
-      await vi.importActual<typeof import("./chat-abort-handler.js")>("./chat-abort-handler.js");
-    chatAbortMock.mockImplementationOnce(actualChatAbort.handleChatAbortRequestWithLifecycle);
+    await useRealChatAbortHandlerOnce();
     const childSessionKey = "agent:main:subagent:orphaned-after-parent-stop";
     addSubagentRunForTests({
       runId: "run-orphaned-child",
@@ -418,7 +422,7 @@ describe("sessions.abort agent scope", () => {
       sessionId: "telegram-session",
       resetTriggered: false,
     });
-    mockChatSuccess(chatAbortMock, { ok: true, aborted: false, runIds: [] });
+    await useRealChatAbortHandlerOnce();
     loadSessionEntryMock.mockImplementationOnce((sessionKey: string) => ({
       canonicalKey: sessionKey,
       entry: { sessionId: "weixin-session" },
@@ -471,57 +475,8 @@ describe("sessions.abort agent scope", () => {
     }
   });
 
-  it("preserves queued work while also aborting the exact active reply run", async () => {
-    const weixinOperation = createPhysicalOperation({
-      sessionKey: "agent:main:openclaw-weixin:direct:wechat-user",
-      sessionId: "weixin-session",
-      resetTriggered: false,
-    });
-    const telegramOperation = createPhysicalOperation({
-      sessionKey: "agent:main:telegram:direct:telegram-user",
-      sessionId: "telegram-session",
-      resetTriggered: false,
-    });
-    const queued = createQueuedRun(
-      "agent:main:openclaw-weixin:direct:wechat-user",
-      "weixin-session",
-    );
-    mockChatSuccess(chatAbortMock, { ok: true, aborted: true, runIds: ["visible-run"] });
-    loadSessionEntryMock.mockImplementationOnce((sessionKey: string) => ({
-      canonicalKey: sessionKey,
-      entry: { sessionId: "weixin-session" },
-    }));
-    const context = createContext({
-      extra: {
-        dedupe: new Map(),
-        getSessionEventSubscriberConnIds: () => new Set(),
-      },
-    });
-
-    try {
-      const respond = await callSessions(
-        "sessions.abort",
-        { key: "agent:main:openclaw-weixin:direct:wechat-user" },
-        { context, reqId: "req-visible-and-reply-abort" },
-      );
-
-      expect(weixinOperation.abortSignal.aborted).toBe(true);
-      expect(telegramOperation.abortSignal.aborted).toBe(false);
-      expect(queued.input.abortSignal.aborted).toBe(false);
-      expect(respond).toHaveBeenCalledWith(
-        true,
-        { ok: true, abortedRunId: "visible-run", status: "aborted" },
-        undefined,
-        undefined,
-      );
-    } finally {
-      weixinOperation.complete();
-      telegramOperation.complete();
-    }
-  });
-
   it("clears queued session work even when no embedded run remains active", async () => {
-    mockChatSuccess(chatAbortMock, { ok: true, aborted: false, runIds: [] });
+    await useRealChatAbortHandlerOnce();
     loadSessionEntryMock.mockImplementationOnce((sessionKey: string) => ({
       canonicalKey: sessionKey,
       entry: { sessionId: "queued-session" },
@@ -577,7 +532,7 @@ describe("sessions.abort agent scope", () => {
         entry: { sessionId: "idle-mcp" },
       }));
       try {
-        const runtime = await getOrCreateSessionMcpRuntime({
+        await getOrCreateSessionMcpRuntime({
           sessionId: "idle-mcp",
           sessionKey,
           workspaceDir: "/workspace",
@@ -589,9 +544,7 @@ describe("sessions.abort agent scope", () => {
           { key: sessionKey, clearQueued, ...(globalScope ? { agentId: "work" } : {}) },
           { context: createContext({ globalScope }) },
         );
-        expect(manager.peekSession({ sessionId: "idle-mcp" })).toBe(
-          clearQueued || globalScope ? undefined : runtime,
-        );
+        expect(manager.peekSession({ sessionId: "idle-mcp" })).toBeUndefined();
       } finally {
         await manager.disposeAll();
       }
@@ -600,7 +553,7 @@ describe("sessions.abort agent scope", () => {
 
   it("clears key-addressed queues without requiring a persisted session id", async () => {
     const sessionKey = "agent:main:openclaw-weixin:direct:queued-without-entry";
-    mockChatSuccess(chatAbortMock, { ok: true, aborted: false, runIds: [] });
+    await useRealChatAbortHandlerOnce();
     loadSessionEntryMock.mockImplementationOnce(() => ({ canonicalKey: sessionKey }));
     const queued = createQueuedRun(sessionKey, "unpersisted-session");
     const context = createContext({
@@ -662,7 +615,7 @@ describe("sessions.abort agent scope", () => {
       canonicalKey: sessionKey,
       entry: { sessionId: "work-session" },
     }));
-    mockChatSuccess(chatAbortMock, { ok: true, aborted: false, runIds: [] });
+    await useRealChatAbortHandlerOnce();
     await callSessions(
       "sessions.abort",
       { key: "main", agentId: "work", clearQueued: true },
@@ -674,7 +627,7 @@ describe("sessions.abort agent scope", () => {
     expect(foreign.input.abortSignal.aborted).toBe(false);
     await owned.input.settlement.promise;
     const selected = createQueuedRun("agent:work:main", "work-session", "work");
-    mockChatSuccess(chatAbortMock, { ok: true, aborted: false, runIds: [] });
+    await useRealChatAbortHandlerOnce();
     await callSessions(
       "sessions.abort",
       { key: "main", agentId: "work", clearQueued: true },

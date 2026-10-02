@@ -314,18 +314,10 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     };
     // Controller-backed runs must keep the requester checks and lifecycle cleanup below.
     if (embeddedRun && !activeRun) {
-      assertAbortCurrent();
-      const aborted = embeddedRun.stop() === "aborted";
+      let aborted = false;
+      let parentStatus: ReturnType<ActiveEmbeddedRunOwner["stop"]> = "unchanged";
       let descendants: Awaited<ReturnType<typeof abortControlledSubagents>> | undefined;
-      if (aborted) {
-        descendants = await abortControlledSubagents({
-          cfg,
-          sessionKey: embeddedRun.sessionKey ?? canonicalKey,
-          agentId: targetAgentId,
-          requesterTurnRunId: embeddedRun.runId,
-        });
-      }
-      await stopSession({
+      const stopped = stopSession({
         source: "client-run",
         capture: captureSessionControllerStop({}),
         assertCurrent: assertAbortCurrent,
@@ -337,9 +329,37 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
           commandSource: "gateway:sessions.abort",
           senderId: requester.deviceId ?? requester.connId,
         },
-      }).completed;
+        externalParents: [
+          {
+            phase: "active",
+            stop: () => {
+              assertAbortCurrent();
+              parentStatus = embeddedRun.stop();
+              aborted = parentStatus === "aborted";
+              return parentStatus;
+            },
+            settled: embeddedRun.waitForSettlement(),
+          },
+        ],
+        stopChildren: async (applyParentStop) => {
+          descendants = await abortControlledSubagents({
+            cfg,
+            sessionKey: embeddedRun.sessionKey ?? canonicalKey,
+            agentId: targetAgentId,
+            requesterTurnRunId: embeddedRun.runId,
+            beforeKill: applyParentStop,
+          });
+          return {
+            stopped: descendants?.killed ?? 0,
+            failed: descendants?.status === "error" ? descendants.failed : 0,
+          };
+        },
+        continueChildStop: () => parentStatus !== "unchanged",
+      });
+      const outcome = await stopped.completed;
+      aborted = outcome.aborted;
       if (aborted) {
-        await persistSessionAbort(embeddedRun);
+        await Promise.all([persistSessionAbort(embeddedRun), embeddedRun.waitForSettlement()]);
       }
       const error = descendantAbortError(descendants, "Parent run");
       if (error) {
@@ -409,7 +429,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
             startedAtMs: sessionEntry.startedAt,
           }
         : undefined;
-    const settleAbortPersistence = async (runIds: readonly string[]) => {
+    const settleAbortPersistence = async (runIds: readonly string[], stopSucceeded: boolean) => {
       try {
         await Promise.all(
           runIds.flatMap((runId) => {
@@ -420,7 +440,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         if (aborted && sessionEmbeddedRun && !preAbortRuns.has(sessionEmbeddedRun.runId)) {
           await persistSessionAbort(sessionEmbeddedRun);
         }
-        if (aborted && persistedSessionId) {
+        if (stopSucceeded && !requestedRunId && persistedSessionId) {
           assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
           await retireSessionMcpRuntime({
             sessionId: persistedSessionId,
@@ -464,7 +484,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       if (result.ok) {
         abortWarning = result.value.warning;
       }
-      await settleAbortPersistence(result.ok ? result.value.runIds : []);
+      await settleAbortPersistence(result.ok ? result.value.runIds : [], result.ok);
       if (!result.ok) {
         respond(false, undefined, result.error);
       } else {
@@ -559,7 +579,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         },
       },
     );
-    await settleAbortPersistence(abortedRunIds);
+    await settleAbortPersistence(abortedRunIds, chatAbortSucceeded);
     if (!chatAbortSucceeded) {
       if (failedResponse) {
         respond(...failedResponse);
