@@ -39,6 +39,44 @@ function withJsonFixture<T>(name: string, contents: unknown, fn: (file: string) 
   }
 }
 
+type BaselineFixture = {
+  args?: Record<string, string | undefined>;
+  releases?: string[];
+  versions?: string[];
+  tags?: Record<string, string | undefined>;
+};
+
+function resolveFixture({ args = {}, releases, versions, tags }: BaselineFixture) {
+  return withJsonFixture("fixture.json", null, (file) => {
+    const params = new Map<string, string>();
+    for (const [key, value] of Object.entries(args)) {
+      if (value !== undefined) {
+        params.set(key, value);
+      }
+    }
+    for (const [key, value] of [
+      [
+        "releases-json",
+        releases?.map((version, index) => ({
+          tagName: `v${version}`,
+          publishedAt: new Date(Date.UTC(2026, 8, 30 - index)).toISOString(),
+          isPrerelease: version.includes("-beta."),
+        })),
+      ],
+      ["npm-versions-json", versions],
+      ["npm-dist-tags-json", tags],
+    ] as const) {
+      if (value === undefined) {
+        continue;
+      }
+      const metadata = path.join(path.dirname(file), `${key}.json`);
+      writeFileSync(metadata, JSON.stringify(value));
+      params.set(key, metadata);
+    }
+    return resolveBaselines(params);
+  });
+}
+
 describe("scripts/resolve-upgrade-survivor-baselines", () => {
   it.each([false, true])(
     "discovers all release pages before publishing baselines (API failure: %s)",

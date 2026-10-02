@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { parse as parseYaml } from "yaml";
 import {
   assertTrustedWorkflowHarness,
   dispatchInputsDigest,

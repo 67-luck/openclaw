@@ -1561,7 +1561,6 @@ export function classifyReleaseSnapshot({
       ),
       runId: child.runId,
       url: job.html_url ?? job.url ?? child.url,
-    })),
   );
   const childJobBlockerKeys = new Set(
     childJobBlockers.map((blocker) => `${blocker.child}:${blocker.runId}`),
