@@ -12,6 +12,11 @@ export const updateExecutorNativeEntrypoints = {
     sourceWorkerName: "../../infra/update-database-generations",
     distWorkerPath: "infra/update-database-generations.js",
   },
+  sqliteTransaction: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/sqlite-transaction",
+    distWorkerPath: "infra/sqlite-transaction.js",
+  },
   postUpdate: {
     currentModuleUrl,
     sourceWorkerName: "update-command-post-update",

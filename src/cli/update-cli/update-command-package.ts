@@ -144,6 +144,7 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
         context.databaseBackup,
         doctorResult?.databaseWrites,
         doctorStep,
+        context.runId,
       );
     }
     try {
@@ -299,6 +300,7 @@ export async function runPackageUpdateDoctor(params: PackageDoctorOptions) {
       advisory: doctorStep.advisory,
       warnings: doctorStep.warnings,
       diagnostics: doctorStep.diagnostics,
+      databaseWrites: doctorStep.databaseWrites,
       failureFacts: doctorStep.failureFacts,
       doctorLintFindings: doctorStep.doctorLintFindings,
       configChanges: doctorStep.configChanges,

@@ -41,7 +41,7 @@ import { copyFileHandle, sameFileMutationFingerprint } from "./file-descriptor.j
 import { root as safeRoot } from "./fs-safe.js";
 import { SQLITE_SIDECAR_SUFFIXES } from "./sqlite-files.js";
 import { createPrivateSqliteDirectory } from "./sqlite-private-directory.js";
-import { readUpdateDatabaseGenerationsIsolated } from "./update-candidate-state.js";
+import { readUpdateDatabaseGenerationsIsolated } from "./update-candidate-state.inspection.js";
 import { isUpdateCapturePath, resolveUpdateCaptureRoot } from "./update-capture-paths.js";
 import {
   UPDATE_CAPTURE_PRIVACY_MARKER,

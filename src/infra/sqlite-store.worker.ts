@@ -96,6 +96,20 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
           actor: request.actor,
           context: { port: request.operationAdmission },
         };
+        if (request.updateMigrationRunId) {
+          const { createUpdateDatabaseMigrationObserver } =
+            await import("./update-database-migration-observation.js");
+          const context = operationAdmission.context;
+          context.updateMigrationObserver = createUpdateDatabaseMigrationObserver(
+            request.updateMigrationRunId,
+            (commit) => {
+              if (context.settled) {
+                throw new Error("SQLite migration admission is closed");
+              }
+              context.port.postMessage({ kind: "database-migration-commit", commit }, []);
+            },
+          );
+        }
       }
       if (request.stateContext) {
         stateContexts.set(request.actor, request.stateContext);

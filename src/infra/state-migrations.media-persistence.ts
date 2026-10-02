@@ -98,7 +98,16 @@ type MediaMigrationDatabase = Pick<OpenClawAgentKyselyDatabase, "schema_meta">;
 function refreshAgentDatabasePlannerStatistics(database: DatabaseSync): void {
   // Doctor owns a stopped-writer maintenance window here. Explicitly analyze every
   // table because the supported pre-3.46 SQLite floor lacks optimize's all-table bit.
-  database.exec("PRAGMA analysis_limit=1000; ANALYZE main;");
+  database.exec("PRAGMA analysis_limit=1000;");
+  runSqliteImmediateTransactionSync(
+    database,
+    () => {
+      assertAgentDatabaseMaintenanceAuthority();
+      database.exec("ANALYZE main;");
+      assertAgentDatabaseMaintenanceAuthority();
+    },
+    { operationLabel: "agent-planner-statistics" },
+  );
 }
 
 async function migrateAgentDatabase(params: {

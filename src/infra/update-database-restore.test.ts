@@ -21,10 +21,8 @@ import {
 import * as durability from "./directory-durability.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import * as sqliteCopy from "./sqlite-file-copy.js";
-import {
-  discoverUpdateStateSchemaInspectionInProcess,
-  readUpdateDatabaseGenerationsIsolated,
-} from "./update-candidate-state.js";
+import { readUpdateDatabaseGenerationsIsolated } from "./update-candidate-state.inspection.js";
+import { discoverUpdateStateSchemaInspectionInProcess } from "./update-candidate-state.js";
 import { createUpdateDatabaseBackupInProcess } from "./update-database-backup.js";
 import { readUpdateDatabaseGenerations } from "./update-database-generations.js";
 import { restoreUpdateDatabaseBackup } from "./update-database-restore.js";

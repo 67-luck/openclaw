@@ -1,12 +1,41 @@
 import type { Worker } from "node:worker_threads";
 import { createDeferredCore } from "../shared/deferred.js";
+import type { LeaseHeartbeatParentMessage } from "./openclaw-state-lease-heartbeat-shared.js";
 
 export type LeaseHeartbeatCleanup = {
   readonly pending: boolean;
   close(): Promise<void>;
 };
 
-export function createLeaseHeartbeatCleanup(params: { cancel: () => void }) {
+/** Acknowledgement follows the last native commit and every queued receipt on the same port. */
+export async function drainLeaseHeartbeatMigrationReceipts(
+  worker: Worker,
+  pathname: string,
+  acknowledgement: { promise: Promise<void>; reject(error: Error): void },
+): Promise<void> {
+  const { readSqliteInspectionBudget } = await import("../infra/sqlite-readonly-worker.js");
+  const budget = readSqliteInspectionBudget("migration receipt drainage", pathname);
+  const onExit = () =>
+    acknowledgement.reject(new Error("State lease exited without draining migration receipts"));
+  worker.once("exit", onExit);
+  const timeout = setTimeout(
+    () => acknowledgement.reject(new Error("State lease migration receipt drainage timed out")),
+    Math.min(2_147_483_647, 2 * budget.timeoutMs),
+  );
+  timeout.unref();
+  try {
+    worker.postMessage({ shutdown: "drain" } satisfies LeaseHeartbeatParentMessage, []);
+    await acknowledgement.promise;
+  } finally {
+    clearTimeout(timeout);
+    worker.removeListener("exit", onExit);
+  }
+}
+
+export function createLeaseHeartbeatCleanup(params: {
+  cancel: () => void;
+  drain?: (worker: Worker) => Promise<void>;
+}) {
   let worker: Worker | undefined;
   let exitCode: number | undefined;
   const exited = createDeferredCore<number>();
@@ -22,12 +51,24 @@ export function createLeaseHeartbeatCleanup(params: { cancel: () => void }) {
     cancel();
     if (!stopping) {
       stopping = Promise.resolve().then(async () => {
+        let drainFailure: unknown;
         if (worker && exitCode === undefined) {
-          await worker.terminate();
+          try {
+            await params.drain?.(worker);
+          } catch (error) {
+            drainFailure = error;
+          } finally {
+            if (exitCode === undefined) {
+              await worker.terminate();
+            }
+          }
           // A terminate result is not a substitute for the native exit event.
           await exited.promise;
         }
         await Promise.allSettled(startupRenewals);
+        if (drainFailure !== undefined) {
+          throw drainFailure;
+        }
         return exitCode ?? 0;
       });
       void stopping.catch(() => {

@@ -1,21 +1,40 @@
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { z } from "zod";
+import { z } from "zod";
+import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { runUtf8CommandWithTimeout } from "../process/exec.js";
+import {
+  getOpenClawDatabaseMaintenanceScope,
+  maintenanceOwnerHasSourceCustody,
+} from "../state/openclaw-state-maintenance-context.js";
 import {
   runtimeProcessEntrypoints,
   SQLITE_READONLY_CHILD_ARG,
 } from "./runtime-process-entrypoints.js";
 import { captureRuntimeWorkerSource } from "./runtime-worker-generation.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
+import { resolvePrivateSqliteSnapshotStagingRoot } from "./sqlite-private-directory.js";
+import { retainSnapshotWork } from "./sqlite-readonly-location-cleanup.js";
 import { resolveAggregateSqliteInspectionTimeoutMs } from "./sqlite-readonly-worker.js";
+import { createSqliteSnapshotStagingDirectory } from "./sqlite-snapshot-staging.js";
 import { withUpdateCandidateIoBudget } from "./update-candidate-io.js";
 import { createUpdateStateInspectionDiagnostics } from "./update-candidate-state.diagnostics.js";
-import { withUpdateStateInspectionWork } from "./update-candidate-state.process.js";
-import type { readUpdateStateDatabaseSizes } from "./update-candidate-state.sizes.js";
+import {
+  finishStateInspection,
+  withUpdateStateInspectionWork,
+} from "./update-candidate-state.process.js";
+import {
+  readUpdateStateDatabaseSizes,
+  readUpdateStateDatabaseSizesInProcess,
+} from "./update-candidate-state.sizes.js";
+import type {
+  UpdateDatabaseGenerations,
+  UpdateDatabaseObservations,
+} from "./update-database-generations.js";
+import type { UpdateRecoveryCaptureAcquisition } from "./update-recovery-capture-acquisition.js";
 
 export async function runUpdateStateInspectionWorker(params: {
   input: { stateDir: string; config: OpenClawConfig; env?: NodeJS.ProcessEnv } & Record<
@@ -155,4 +174,98 @@ export function parseUpdateStateInspectionWorker<T>(
   } catch (error) {
     throw result.inspection.failure(error);
   }
+}
+
+type UpdateDatabaseInspectionOptions = {
+  env?: NodeJS.ProcessEnv;
+  root?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  acquisition?: UpdateRecoveryCaptureAcquisition;
+};
+
+/** Raw fingerprint reads need their own process so descriptor closes cannot release caller locks. */
+export function readUpdateDatabaseGenerationsIsolated(
+  paths: readonly string[],
+  options: UpdateDatabaseInspectionOptions = {},
+): Promise<UpdateDatabaseGenerations> {
+  return readUpdateDatabaseInspectionIsolated(
+    paths,
+    options,
+    "database-generations",
+    z.record(z.string(), z.nullable(z.string().regex(/^[a-f0-9]{64}$/u))),
+  );
+}
+
+export function readUpdateDatabaseObservationsIsolated(
+  paths: readonly string[],
+  options: UpdateDatabaseInspectionOptions = {},
+): Promise<UpdateDatabaseObservations> {
+  const hash = z.string().regex(/^[a-f0-9]{64}$/u);
+  return readUpdateDatabaseInspectionIsolated(
+    paths,
+    options,
+    "database-observations",
+    z.record(
+      z.string(),
+      z.union([
+        z.strictObject({ generation: hash, contentVersion: hash }),
+        z.strictObject({ generation: z.null(), contentVersion: z.null() }),
+      ]),
+    ),
+  );
+}
+
+async function readUpdateDatabaseInspectionIsolated<T extends Record<string, unknown>>(
+  paths: readonly string[],
+  options: UpdateDatabaseInspectionOptions,
+  mode: "database-generations" | "database-observations",
+  schema: z.ZodType<T>,
+): Promise<T> {
+  const scope = getOpenClawDatabaseMaintenanceScope();
+  const maintenanceOwner =
+    options.acquisition?.mode === "maintenance-owner" &&
+    paths.every((pathname) => maintenanceOwnerHasSourceCustody(scope, pathname));
+  const { root, timeoutMs, env: sourceEnv = process.env, signal: caller } = options;
+  const controller = new AbortController();
+  const signal = caller ? AbortSignal.any([caller, controller.signal]) : controller.signal;
+  const stagingRoot = await createSqliteSnapshotStagingDirectory(
+    resolvePrivateSqliteSnapshotStagingRoot(sourceEnv),
+    root !== undefined,
+    signal,
+  );
+  const inspection = (async () => {
+    let outcome: { value: T } | { cause: unknown };
+    try {
+      const worker = { nodeRunner: process.execPath, sourceEnv, stagingRoot, timeoutMs, signal };
+      const observations = parseUpdateStateInspectionWorker(
+        await runUpdateStateInspectionWorker({
+          ...worker,
+          root,
+          ...(maintenanceOwner ? { ioBudget: "deadline" as const } : {}),
+          input: {
+            mode,
+            paths,
+            stateDir: resolveStateDir(sourceEnv),
+            config: {},
+          },
+          databases: maintenanceOwner
+            ? await readUpdateStateDatabaseSizesInProcess(paths, signal)
+            : await readUpdateStateDatabaseSizes(paths, worker),
+        }),
+        schema,
+      );
+      if (
+        Object.keys(observations).length !== new Set(paths).size ||
+        paths.some((pathname) => !Object.hasOwn(observations, pathname))
+      ) {
+        throw new Error("Database generation worker did not return the supplied inventory.");
+      }
+      outcome = { value: observations };
+    } catch (cause) {
+      outcome = { cause };
+    }
+    return finishStateInspection(stagingRoot, outcome);
+  })();
+  return retainSnapshotWork(inspection, () => controller.abort());
 }

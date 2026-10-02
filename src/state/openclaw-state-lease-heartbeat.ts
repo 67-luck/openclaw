@@ -11,11 +11,13 @@ import {
 } from "../infra/runtime-worker-url.js";
 import { formatSqliteErrorCodeSuffix } from "../infra/sqlite-error-diagnostics.js";
 import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
+import { captureUpdateDatabaseMigrationObserver } from "../infra/update-database-migration.js";
 import { createCpuTrackedWorker } from "../infra/worker-cpu.js";
 import { runInDetachedAsyncContext } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   createLeaseHeartbeatCleanup,
+  drainLeaseHeartbeatMigrationReceipts,
   type LeaseHeartbeatCleanup,
 } from "./openclaw-state-lease-heartbeat-cleanup.js";
 import {
@@ -136,6 +138,8 @@ export function startOpenClawStateLeaseHeartbeat(
     renewDuringStartup?: () => number | Promise<number>;
   },
 ) {
+  const migrationObserver = captureUpdateDatabaseMigrationObserver();
+  const migrationDrain = migrationObserver ? createDeferredCore<void>() : undefined;
   const { startupContext } = params;
   startupContext?.admission.assertCurrent();
   if (startupContext && params.path !== startupContext.admission.databasePath) {
@@ -186,7 +190,15 @@ export function startOpenClawStateLeaseHeartbeat(
     ready.reject(error);
     rejectPending(error);
   };
-  const lifecycle = createLeaseHeartbeatCleanup({ cancel: close });
+  const lifecycle = createLeaseHeartbeatCleanup({
+    cancel: close,
+    ...(migrationDrain
+      ? {
+          drain: (worker: Worker) =>
+            drainLeaseHeartbeatMigrationReceipts(worker, databasePath, migrationDrain),
+        }
+      : {}),
+  });
   const assertRunning = () => {
     // This checks only local lifetime; verify() owns the fresh durable check.
     if (Atomics.load(shared, state.status) !== state.ready) {
@@ -397,6 +409,7 @@ export function startOpenClawStateLeaseHeartbeat(
             processOwner: params.processOwner,
             shared: shared.buffer,
             renewalProgress: renewalProgress.buffer,
+            updateMigrationRunId: migrationObserver?.runId,
           } satisfies LeaseHeartbeatWorkerData,
           env: sourceTsconfig ? { TSX_TSCONFIG_PATH: sourceTsconfig } : {},
           execArgv,
@@ -443,6 +456,14 @@ export function startOpenClawStateLeaseHeartbeat(
   worker.on("message", (reply: LeaseHeartbeatReply | null) => {
     if (reply === null) {
       settleStartup("message");
+      return;
+    }
+    if ("migration" in reply) {
+      migrationObserver?.record(reply.migration);
+      return;
+    }
+    if ("shutdown" in reply) {
+      migrationDrain?.resolve();
       return;
     }
     if ("loss" in reply) {

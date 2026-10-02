@@ -10,6 +10,7 @@ import {
 import {
   UpdateDoctorConfigChangeSchema,
   UpdateDoctorConfigWriteRefusalSchema,
+  UpdateDoctorDatabaseWriteReceiptSchema,
 } from "./update-doctor-config-schema.js";
 import { updateRecoveryCaptureStateSchema } from "./update-recovery-receipt-schema.js";
 import { updateRecoverySchema } from "./update-recovery.js";
@@ -192,6 +193,8 @@ const UpdateRunStepSchema = z.object({
   signal: z.string().max(32).nullable().optional(),
   stderrTail: z.string().max(8192).optional(),
   detail: text.optional(),
+  databaseWrites: UpdateDoctorDatabaseWriteReceiptSchema.optional(),
+  databaseWriteReceiptId: text.optional(),
   failureFacts: z.array(UpdateFailureFactSchema).max(5).optional(),
   configChange: z
     .discriminatedUnion("kind", [

@@ -26,9 +26,9 @@ import { createSqliteSnapshotStagingDirectory } from "./sqlite-snapshot-staging.
 import { prepareVerifiedSqliteFile } from "./sqlite-snapshot.js";
 import {
   parseUpdateStateInspectionWorker,
+  readUpdateDatabaseGenerationsIsolated,
   runUpdateStateInspectionWorker,
 } from "./update-candidate-state.inspection.js";
-import { readUpdateDatabaseGenerationsIsolated } from "./update-candidate-state.js";
 import { readUpdateStateDatabaseSizes } from "./update-candidate-state.sizes.js";
 import type { UpdateDatabaseBackup } from "./update-database-backup.js";
 import type { UpdateDatabaseGenerations } from "./update-database-generations.js";

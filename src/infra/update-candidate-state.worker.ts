@@ -32,12 +32,16 @@ async function snapshotCandidateState(): Promise<unknown> {
     | (Parameters<
         typeof import("./update-database-restore-source.js").prepareUpdateDatabaseRestoreSourceInProcess
       >[0] & { mode: "database-restore-preparation" })
-    | { mode: "database-generations"; paths: string[] };
+    | { mode: "database-generations" | "database-observations"; paths: string[] };
   switch (input.mode) {
     case "database-restore-preparation": {
       const { prepareUpdateDatabaseRestoreSourceInProcess } =
         await import("./update-database-restore-source.js");
       return prepareUpdateDatabaseRestoreSourceInProcess(input);
+    }
+    case "database-observations": {
+      const { readUpdateDatabaseObservations } = await import("./update-database-generations.js");
+      return readUpdateDatabaseObservations(input.paths);
     }
     case "database-generations": {
       const { readUpdateDatabaseGenerations } = await import("./update-database-generations.js");

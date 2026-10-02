@@ -1,4 +1,5 @@
 import type { UpdateRecoveryStep } from "../shared/update-outcome.js";
+import type { UpdateDatabaseWriteReceipt } from "./update-database-generations.js";
 import type {
   UpdateDoctorConfigChange,
   UpdateDoctorConfigWriteRefusal,
@@ -30,6 +31,7 @@ export type UpdateStepResult = {
   warnings?: string[];
   /** Owner-selected informational messages, retained separately from warnings and raw output. */
   diagnostics?: string[];
+  databaseWrites?: UpdateDatabaseWriteReceipt;
   /** Suggested operator actions, distinct from executed update steps. */
   recoverySteps?: readonly UpdateRecoveryStep[];
   failureFacts?: UpdateFailureFact[];

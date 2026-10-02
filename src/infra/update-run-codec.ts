@@ -6,6 +6,7 @@ import { redactSensitiveText } from "../logging/redact.js";
 import { escapeRegExp } from "../shared/regexp.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db-contract.js";
 import type { UpdateRuns } from "../state/openclaw-state-db.generated.js";
+import { sha256Hex } from "./crypto-digest.js";
 import { resolveRequiredHomeDir } from "./home-dir.js";
 import { normalizeUpdateFailureFacts } from "./update-failure-facts.js";
 import { UPDATE_RUN_TEXT_LIMIT } from "./update-run-limits.js";
@@ -97,6 +98,8 @@ export function isRetainedStep(item: unknown): boolean {
     isRecord(item) &&
     typeof item.step === "string" &&
     (item.termination === "signal" ||
+      item.databaseWrites !== undefined ||
+      item.databaseWriteReceiptId !== undefined ||
       item.step.startsWith("finalize:") ||
       RETAINED_STEP_NAMES.some((name) => name === item.step))
   );
@@ -227,6 +230,20 @@ function boundedOriginJson(origin: UpdateRunRecord["origin"]): string {
   return `{${[identities.slice(1, -1), boundedDiagnostics.slice(1, -1)].filter(Boolean).join(",")}}`;
 }
 
+export function encodeUpdateDatabaseWriteReceipt(
+  runId: string,
+  step: UpdateRunRecord["steps"][number],
+): { id: string; reportJson: string } | undefined {
+  if (!step.databaseWrites) {
+    return undefined;
+  }
+  const receipt = UpdateRunRecordSchema.shape.steps.element.shape.databaseWrites.parse(
+    step.databaseWrites,
+  );
+  const reportJson = JSON.stringify({ runId, step: step.step, receipt });
+  return { id: `update-database-writes:${sha256Hex(reportJson)}`, reportJson };
+}
+
 export function encodeRun(input: UpdateRunRecord, options: UpdateRunLedgerOptions): UpdateRuns {
   const env = options.env ?? process.env;
   // Home-relative selectors remain actionable in reports. Other captured roots
@@ -271,6 +288,7 @@ export function encodeRun(input: UpdateRunRecord, options: UpdateRunLedgerOption
         origin: originDiagnostics,
         steps: input.steps.map((step) => ({
           ...step,
+          databaseWrites: undefined,
           ...(step.failureFacts
             ? { failureFacts: normalizeUpdateFailureFacts(step.failureFacts, env) }
             : {}),
@@ -285,6 +303,11 @@ export function encodeRun(input: UpdateRunRecord, options: UpdateRunLedgerOption
       },
     ),
   );
+  record.steps = record.steps.map((step, index) => {
+    const source = input.steps[index];
+    const receipt = source && encodeUpdateDatabaseWriteReceipt(input.runId, source);
+    return receipt ? { ...step, databaseWriteReceiptId: receipt.id } : step;
+  });
   record.origin = UpdateRunRecordSchema.shape.origin.parse({
     ...record.origin,
     driver,

@@ -7,6 +7,7 @@ export function recordUpdateDatabaseWrites(
   backup: UpdateDatabaseBackup,
   writes: UpdateDatabaseWriteReceipt | undefined,
   step: UpdateStepResult,
+  runId?: string,
 ) {
   const paths = Object.keys(backup.sourceGenerations).toSorted();
   let receipt: UpdateStepResult | undefined;
@@ -40,8 +41,42 @@ export function recordUpdateDatabaseWrites(
       exitCode: 0,
       diagnostics,
     };
+    step.databaseWrites = writes;
     step.diagnostics = [...(step.diagnostics ?? []), ...diagnostics];
-    if (!writes.unchanged || paths.some((file) => from[file] !== expected[file])) {
+    const attribution = writes.attribution;
+    const contentVersions = { ...attribution?.beforeContentVersions };
+    const attributedPaths = new Set<string>();
+    const attributed =
+      attribution !== undefined &&
+      runId === attribution.runId &&
+      attribution.unattributedPaths.length === 0 &&
+      Object.keys(attribution.beforeContentVersions).length === paths.length &&
+      Object.keys(attribution.afterContentVersions).length === paths.length &&
+      paths.every(
+        (file) =>
+          Object.hasOwn(attribution.beforeContentVersions, file) &&
+          Object.hasOwn(attribution.afterContentVersions, file),
+      ) &&
+      attribution.writes.length > 0 &&
+      attribution.writes.every((write) => {
+        if (
+          !Object.hasOwn(contentVersions, write.path) ||
+          contentVersions[write.path] !== write.fromContentVersion
+        ) {
+          return false;
+        }
+        contentVersions[write.path] = write.toContentVersion;
+        attributedPaths.add(write.path);
+        return true;
+      }) &&
+      paths.every(
+        (file) =>
+          contentVersions[file] === attribution.afterContentVersions[file] &&
+          (writes.generations[file] === from[file] || attributedPaths.has(file)),
+      );
+    const unchanged =
+      writes.unchanged && paths.every((file) => writes.generations[file] === from[file]);
+    if ((!unchanged && !attributed) || paths.some((file) => from[file] !== expected[file])) {
       backup.restoreRefusal ??= "databases changed after snapshot capture; the writer is unknown";
     } else if (!backup.restoreRefusal) {
       backup.migration = {
@@ -50,6 +85,12 @@ export function recordUpdateDatabaseWrites(
         from,
         to: writes.generations,
       };
+    }
+    if (attribution) {
+      // The run step links the persisted migration receipt, including refused chains.
+      receipt.diagnostics?.push(
+        `Update migration attribution: ${attribution.writes.length} transaction(s) for run ${attribution.runId}; restoration ${attributed ? "verified" : "refused"}.`,
+      );
     }
   }
   if (backup.restoreRefusal) {

@@ -127,14 +127,19 @@ Confirm no update is in progress and inspect the corresponding update report and
 recovery state before manual cleanup.
 If the Gateway was confirmed stopped during capture, a failed candidate
 that was never allowed to start can restore those databases before package
-rollback only when database write fingerprints remain unchanged through Doctor
-and restoration. Maintenance ownership cannot identify independent SQLite writers,
-so any change during Doctor, including Doctor's own writes or a newly created
-database, makes these snapshots available for manual recovery only. A change between
-capture and Doctor admission, during Doctor, or after Doctor finishes preserves the current
-databases and reports `state-migrated-no-rollback` with the snapshot location and
-Doctor recovery guidance. Without Doctor write evidence, rollback requires the
-last verified database generations to remain unchanged.
+rollback when database write fingerprints remain unchanged, or when a continuous
+receipt attributes every changed database to the admitted update's migration
+transactions. Doctor records the run ID, migration identity, database path, and
+pre/post committed-content fingerprints at the transaction owner. The existing
+SQLite migration receipt JSON retains that evidence privately; update history
+stores its receipt ID without truncating large database inventories.
+
+Maintenance ownership alone cannot identify independent SQLite writers. A write
+before admission, between recorded transactions, during their commit observation,
+or after Doctor finishes refuses automatic restoration. Missing attribution and
+receipts from another run also preserve the current databases and report
+`state-migrated-no-rollback` with recovery guidance. Without a complete attributed
+chain, rollback requires the last verified database generations to remain unchanged.
 Snapshot capture first settles local SQLite writers under maintenance ownership,
 so later writer shutdown is not mistaken for intervening writes. The installed
 updater owns this ordering; staging a newer candidate cannot change an

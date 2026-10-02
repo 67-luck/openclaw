@@ -357,6 +357,7 @@ async function runDelegatedDoctor(input: UpdateDoctorInput): Promise<void> {
         },
         {
           inputHash: input.configInputHash,
+          runId: input.runId,
           assertCurrent,
           commandAuthority,
           originalRecoveryCapture: {

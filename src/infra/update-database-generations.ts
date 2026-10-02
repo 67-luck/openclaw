@@ -13,10 +13,29 @@ import { truncateSqliteWal } from "./sqlite-wal-checkpoint.js";
 import { readDatabaseIdentityBirthtime } from "./sqlite-worker-identity.js";
 
 export type UpdateDatabaseGenerations = Record<string, string | null>;
+export type UpdateDatabaseObservation = {
+  generation: string | null;
+  contentVersion: string | null;
+};
+export type UpdateDatabaseObservations = Record<string, UpdateDatabaseObservation>;
 export type UpdateDatabaseWriteReceipt = {
   unchanged: boolean;
   fromGenerations?: UpdateDatabaseGenerations;
   generations: UpdateDatabaseGenerations;
+  attribution?: UpdateDatabaseWriteAttribution;
+};
+
+export type UpdateDatabaseWriteAttribution = {
+  runId: string;
+  beforeContentVersions: UpdateDatabaseGenerations;
+  afterContentVersions: UpdateDatabaseGenerations;
+  unattributedPaths: string[];
+  writes: Array<{
+    path: string;
+    migrationId: string;
+    fromContentVersion: string | null;
+    toContentVersion: string | null;
+  }>;
 };
 
 function readCommittedContent(pathname: string): string {
@@ -81,7 +100,9 @@ function readWalIndexHeader(pathname: string): Buffer | null {
 /** Run only in an isolated process, after all source handles drain, or under a
  * schema-maintenance owner before live reads are admitted: raw close
  * can release this process's SQLite locks. Inspect only the supplied inventory. */
-export function readUpdateDatabaseGenerations(paths: readonly string[]): UpdateDatabaseGenerations {
+export function readUpdateDatabaseObservations(
+  paths: readonly string[],
+): UpdateDatabaseObservations {
   return Object.fromEntries(
     paths.map((pathname) => {
       const entry = fs.lstatSync(pathname, { bigint: true, throwIfNoEntry: false });
@@ -93,7 +114,7 @@ export function readUpdateDatabaseGenerations(paths: readonly string[]): UpdateD
         ) {
           throw new Error(`Database is absent but retained journal data exists: ${pathname}`);
         }
-        return [pathname, null];
+        return [pathname, { generation: null, contentVersion: null }];
       }
       if (!entry.isFile()) {
         throw new Error(`Database generation requires a regular file: ${pathname}`);
@@ -114,19 +135,36 @@ export function readUpdateDatabaseGenerations(paths: readonly string[]): UpdateD
       // including TRUNCATE, which resets frame count and salts.
       // A reversed write leaving identical bytes and write evidence is
       // indistinguishable from no write; restoring loses no later data.
+      const identityAndContent = [
+        generation.database.dev.toString(),
+        generation.database.ino.toString(),
+        readDatabaseIdentityBirthtime(entry),
+        content,
+      ];
       return [
         pathname,
-        sha256Hex(
-          JSON.stringify([
-            generation.database.dev.toString(),
-            generation.database.ino.toString(),
-            readDatabaseIdentityBirthtime(entry),
-            content,
-            after?.subarray(8, 12).toString("hex") ?? null,
-            after?.subarray(24, 32).toString("hex") ?? null,
-          ]),
-        ),
+        {
+          generation: sha256Hex(
+            JSON.stringify([
+              ...identityAndContent,
+              after?.subarray(8, 12).toString("hex") ?? null,
+              after?.subarray(24, 32).toString("hex") ?? null,
+            ]),
+          ),
+          // Connection teardown can remove WAL-index write evidence without
+          // changing committed content. Attribution compares this stable form.
+          contentVersion: sha256Hex(JSON.stringify(identityAndContent)),
+        },
       ];
     }),
+  );
+}
+
+export function readUpdateDatabaseGenerations(paths: readonly string[]): UpdateDatabaseGenerations {
+  return Object.fromEntries(
+    Object.entries(readUpdateDatabaseObservations(paths)).map(([pathname, observation]) => [
+      pathname,
+      observation.generation,
+    ]),
   );
 }

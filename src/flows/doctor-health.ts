@@ -1,10 +1,12 @@
-import fs from "node:fs";
 import { intro as clackIntro, outro as clackOutro } from "@clack/prompts";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { stylePromptTitle } from "../../packages/terminal-core/src/prompt-style.js";
 import { measureGatewayBootstrapStep } from "../cli/startup-trace.js";
 import type { BackupSqliteSnapshotFact } from "../commands/backup-resource-inventory.js";
-import type { DoctorDatabasePreflight } from "../commands/doctor-database-preflight.js";
+import {
+  stateDirectoryExistsAtDoctorStart,
+  type DoctorDatabasePreflight,
+} from "../commands/doctor-database-preflight.js";
 import type { DoctorOptions } from "../commands/doctor-prompter.js";
 import {
   isDoctorUpdateRepairMode,
@@ -49,14 +51,6 @@ const intro = (message: string) => clackIntro(stylePromptTitle(message) ?? messa
 const outro = (message: string) => clackOutro(stylePromptTitle(message) ?? message);
 
 const loadConfigModule = createLazyRuntimeModule(() => import("../config/config.js"));
-
-function stateDirectoryExistsAtDoctorStart(): boolean {
-  try {
-    return fs.statSync(resolveStateDir()).isDirectory();
-  } catch {
-    return false;
-  }
-}
 
 /** Runs the full interactive doctor flow against the provided or default runtime. */
 export async function runDoctorHealthFlow(
@@ -201,6 +195,7 @@ async function runDoctorHealthFlowWithResult(
         root,
         runtime: repairRuntime,
         assertCurrent: writeAuthority?.assertCurrent,
+        runId: writeAuthority?.runId,
         databaseGenerations: writeAuthority?.databaseGenerations,
         beforeStateMutation: async ({ env, signal }) => {
           const [{ preserveDoctorOriginalState }, { getOpenClawDatabaseMaintenanceScope }] =

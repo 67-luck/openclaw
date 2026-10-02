@@ -16,7 +16,7 @@ import {
   autoMigrateLegacyStateDir,
   resetAutoMigrateLegacyStateDirForTest,
 } from "../infra/state-migrations.state-dir.js";
-import * as updateState from "../infra/update-candidate-state.js";
+import * as updateState from "../infra/update-candidate-state.inspection.js";
 import { readUpdateDatabaseGenerations } from "../infra/update-database-generations.js";
 import { readConfigMachineState } from "../state/config-machine-state.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cache.js";

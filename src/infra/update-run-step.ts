@@ -101,6 +101,7 @@ export function updateRunStepsFromResultStep(step: ResultStep): UpdateRunStep[] 
         step.failureFacts?.length && !step.advisory ? step.failureFacts.slice(0, 5) : undefined,
       configWriteRefusal,
       snapshotCapacity,
+      databaseWrites: step.databaseWrites,
       detail:
         failed || step.exitCode !== 0
           ? text(step.advisory?.message ?? summarizeUpdateStepFailure(step))

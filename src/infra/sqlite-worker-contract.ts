@@ -63,6 +63,7 @@ export type SqliteWorkerRequest = {
   actor: number;
   stateContext?: SqliteWorkerStateContext;
   operationAdmission?: MessagePort;
+  updateMigrationRunId?: string;
   stateDatabasePath?: string;
 } & (
   | {

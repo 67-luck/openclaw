@@ -18,6 +18,11 @@ import type {
   SqliteWorkerNativeSettlement,
   SqliteWorkerNativeSettlementOwner,
 } from "./sqlite-worker-operation-settlement.js";
+import {
+  captureUpdateDatabaseMigrationObserver,
+  withUpdateDatabaseMigrationObserver,
+  type UpdateMigrationObserver,
+} from "./update-database-migration.js";
 
 const REQUESTED = 0;
 const GRANTED = 1;
@@ -44,6 +49,7 @@ type AdmissionFailureSource = "authority" | "domain" | "protocol";
 
 export type SqliteWorkerOperationAdmission = SqliteWorkerNativeSettlementOwner & {
   readonly port: MessagePort;
+  readonly updateMigrationRunId?: string;
   readonly failure: unknown;
   readonly failureSource: AdmissionFailureSource | undefined;
   readonly cleanupFailures: readonly unknown[];
@@ -68,6 +74,7 @@ export function createSqliteWorkerOperationAdmission(
   admit: (request: SqliteWorkerAdmissionRequest, grant: () => boolean) => void,
   attachment?: unknown,
 ): SqliteWorkerOperationAdmission {
+  const migrationObserver = captureUpdateDatabaseMigrationObserver();
   const { port1, port2 } = new MessageChannel();
   if (attachment !== undefined) {
     try {
@@ -112,6 +119,35 @@ export function createSqliteWorkerOperationAdmission(
     }
   };
   const receive = (message: unknown) => {
+    if (isRecord(message) && message.kind === "database-migration-commit") {
+      const commit = message.commit;
+      if (
+        !migrationObserver ||
+        settlement ||
+        !isRecord(commit) ||
+        commit.runId !== migrationObserver.runId ||
+        typeof commit.path !== "string" ||
+        typeof commit.migrationId !== "string" ||
+        !(commit.fromContentVersion === null || typeof commit.fromContentVersion === "string") ||
+        !(commit.toContentVersion === null || typeof commit.toContentVersion === "string") ||
+        typeof commit.foreignWrite !== "boolean"
+      ) {
+        recordFailure(
+          new SqliteWorkerError("SQLite migration commit receipt is invalid", "outcome-unknown"),
+          "protocol",
+        );
+        return;
+      }
+      migrationObserver.record({
+        runId: migrationObserver.runId,
+        path: commit.path,
+        migrationId: commit.migrationId,
+        fromContentVersion: commit.fromContentVersion,
+        toContentVersion: commit.toContentVersion,
+        foreignWrite: commit.foreignWrite,
+      });
+      return;
+    }
     if (isRecord(message) && message.kind === "native-commit") {
       if (!isRecord(message.committed) || settlement) {
         recordFailure(
@@ -251,6 +287,7 @@ export function createSqliteWorkerOperationAdmission(
     }
   };
   return {
+    updateMigrationRunId: migrationObserver?.runId,
     port: port2,
     observeRequests(observer) {
       if (closed || observeRequest) {
@@ -339,6 +376,7 @@ export function createSqliteWorkerOperationAdmission(
 
 export type SqliteWorkerOperationContext = {
   port: MessagePort;
+  updateMigrationObserver?: UpdateMigrationObserver;
   refusal?: SqliteWorkerError;
   committed?: { facts: unknown };
   settled?: true;
@@ -364,7 +402,11 @@ export function withSqliteWorkerOperationAdmission<T>(
 ): T {
   const scope = { owner, port: owner.port, active: true };
   try {
-    return currentAdmission.run(scope, operation);
+    return currentAdmission.run(scope, () =>
+      owner.updateMigrationObserver
+        ? withUpdateDatabaseMigrationObserver(owner.updateMigrationObserver, operation)
+        : operation(),
+    );
   } finally {
     scope.active = false;
   }

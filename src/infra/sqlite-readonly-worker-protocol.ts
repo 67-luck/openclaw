@@ -7,6 +7,7 @@ import type {
   SqliteReadOnlyOperationResult,
 } from "./sqlite-readonly-operation-types.js";
 import { readDatabaseFileIdentity, type DatabaseFileIdentity } from "./sqlite-worker-identity.js";
+import type { UpdateDatabaseObservation } from "./update-database-generations.js";
 
 // Keep the one-shot execFile output limit when inspections use IPC.
 export const SQLITE_READONLY_WORKER_MAX_BUFFER = 1024 * 1024;
@@ -14,6 +15,7 @@ export const SQLITE_READONLY_WORKER_MAX_BUFFER = 1024 * 1024;
 export type SqliteReadOnlyWorkerMode =
   | "sync"
   | "content-version"
+  | "database-observation"
   | "async"
   | "consolidated"
   | "reclaim"
@@ -35,6 +37,7 @@ export function isSqliteSnapshotStagingMode(mode: unknown): boolean {
 export type SqliteReadOnlyWorkerResult =
   | { ok: true; location: string }
   | { ok: true; contentVersion: string }
+  | { ok: true; observation: UpdateDatabaseObservation }
   | { ok: true; warnings: string[] }
   | { ok: false; message: string };
 
@@ -97,8 +100,25 @@ export type SqliteReadOnlyWorkerValue =
   | string
   | string[]
   | SqliteAuthProfileRows
+  | UpdateDatabaseObservation
   | SqliteReadOnlyOperationResult;
 export const SQLITE_READONLY_STDERR_TAIL_CHARS = 4_000;
+
+function isUpdateDatabaseObservation(value: unknown): value is UpdateDatabaseObservation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  if (Object.keys(value).length !== 2 || !("generation" in value) || !("contentVersion" in value)) {
+    return false;
+  }
+  return (
+    (value.generation === null && value.contentVersion === null) ||
+    (typeof value.generation === "string" &&
+      /^[a-f0-9]{64}$/.test(value.generation) &&
+      typeof value.contentVersion === "string" &&
+      /^[a-f0-9]{64}$/.test(value.contentVersion))
+  );
+}
 
 export function isSqliteReadOnlyWorkerResult(value: unknown): value is SqliteReadOnlyWorkerResult {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -113,6 +133,9 @@ export function isSqliteReadOnlyWorkerResult(value: unknown): value is SqliteRea
       "contentVersion" in value &&
       typeof value.contentVersion === "string" &&
       /^(?:[a-f0-9]{64})?$/.test(value.contentVersion)) ||
+    (value.ok === true &&
+      "observation" in value &&
+      isUpdateDatabaseObservation(value.observation)) ||
     (value.ok === true &&
       "warnings" in value &&
       Array.isArray(value.warnings) &&
@@ -154,8 +177,16 @@ export function readSqliteReadOnlyWorkerValue(
 ): string;
 export function readSqliteReadOnlyWorkerValue(
   params: SqliteReadOnlyWorkerOutput,
+  mode: "database-observation",
+): UpdateDatabaseObservation;
+export function readSqliteReadOnlyWorkerValue(
+  params: SqliteReadOnlyWorkerOutput,
   mode: "reclaim",
 ): string[];
+export function readSqliteReadOnlyWorkerValue(
+  params: SqliteReadOnlyWorkerOutput,
+  mode: "sync" | "content-version" | "database-observation",
+): string | UpdateDatabaseObservation;
 export function readSqliteReadOnlyWorkerValue(
   params: SqliteReadOnlyWorkerOutput,
   mode: SqliteReadOnlyWorkerMode,
@@ -209,6 +240,9 @@ export function readSqliteReadOnlyWorkerValue(
   }
   if (mode === "content-version" && "contentVersion" in result) {
     return result.contentVersion;
+  }
+  if (mode === "database-observation" && "observation" in result) {
+    return result.observation;
   }
   if (mode === "reclaim" && "warnings" in result) {
     return result.warnings;

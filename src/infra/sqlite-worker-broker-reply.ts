@@ -149,6 +149,7 @@ function prepareSqliteWorkerOperationAdmission(
       () => retained.admission.service(),
     ),
   };
+  job.request.updateMigrationRunId = retained.admission.updateMigrationRunId;
   return retained.admission.port;
 }
 

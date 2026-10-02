@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import path from "node:path";
+import { resolveStateDir } from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PreparedAgentDatabaseMigrationDiscovery } from "../infra/state-migrations.media-persistence-targets.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
@@ -9,6 +11,15 @@ export type DoctorDatabasePreflight = OpenClawDatabaseSchemaPreflight & {
   agentDatabaseRecoveryConfigValid?: boolean;
   updateSchemaRehearsal?: { runId: string; updaterVersion: string };
 };
+
+/** Capture before config loading can initialize SQLite-backed state. */
+export function stateDirectoryExistsAtDoctorStart(): boolean {
+  try {
+    return fs.statSync(resolveStateDir()).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 /** Prepare fleet facts through the artifact-preserving schema readers. */
 export async function prepareDoctorDatabasePreflight(

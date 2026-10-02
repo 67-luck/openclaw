@@ -37,6 +37,7 @@ import {
   isSameSqliteReadOnlyWorkerLaunch,
   type SqliteReadOnlyWorkerLaunch,
 } from "./sqlite-readonly-worker-session.js";
+import type { UpdateDatabaseObservation } from "./update-database-generations.js";
 
 const SLOW_HARDWARE_HEADROOM = 10;
 const SQLITE_INSPECTION_TIMEOUT_MS = 30_000 * SLOW_HARDWARE_HEADROOM;
@@ -615,8 +616,18 @@ export function runOneShotSqliteInspection<T>(params: {
 export function runSqliteReadOnlyWorkerSync(
   pathname: string,
   stagingRoot: string | undefined,
-  mode: "sync" | "content-version" = "sync",
-): string {
+  mode: "database-observation",
+): UpdateDatabaseObservation;
+export function runSqliteReadOnlyWorkerSync(
+  pathname: string,
+  stagingRoot: string | undefined,
+  mode?: "sync" | "content-version",
+): string;
+export function runSqliteReadOnlyWorkerSync(
+  pathname: string,
+  stagingRoot: string | undefined,
+  mode: "sync" | "content-version" | "database-observation" = "sync",
+): string | UpdateDatabaseObservation {
   const { timeoutMs, size } = readSqliteInspectionBudget("read-only snapshot", pathname);
   const started = log.isEnabled("trace") ? performance.now() : undefined;
   const result = spawnSync(
@@ -640,8 +651,6 @@ export function runSqliteReadOnlyWorkerSync(
     : result.status === 0
       ? undefined
       : `exited with ${result.signal ? `signal ${result.signal}` : `code ${result.status}`}`;
-  return readSqliteReadOnlyWorkerValue(
-    { failure, stderr: result.stderr, stdout: result.stdout },
-    mode,
-  );
+  const output = { failure, stderr: result.stderr, stdout: result.stdout };
+  return readSqliteReadOnlyWorkerValue(output, mode);
 }

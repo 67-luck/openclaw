@@ -6,8 +6,17 @@ import type { DB } from "../state/openclaw-state-db.generated.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../state/openclaw-state-schema.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { extractSqliteTableSchema } from "./sqlite-schema-sql.js";
+import {
+  readLegacyMigrationRunFromDatabase,
+  recordLegacyMigrationRun,
+} from "./state-migrations.receipts.js";
 import { createUpdateErrorFact } from "./update-failure-facts.js";
-import { encodeRun, isRetainedStep, type UpdateRunLedgerOptions } from "./update-run-codec.js";
+import {
+  encodeRun,
+  encodeUpdateDatabaseWriteReceipt,
+  isRetainedStep,
+  type UpdateRunLedgerOptions,
+} from "./update-run-codec.js";
 import type { UpdateRunPhasePatch } from "./update-run-mutation.types.js";
 import { decodeRun, readUpdateRunRecord } from "./update-run-read.kernel.js";
 import {
@@ -113,6 +122,28 @@ export function persistRun(
   record: UpdateRunRecord,
   options: UpdateRunLedgerOptions,
 ): UpdateRunRecord {
+  for (const step of record.steps) {
+    const receipt = encodeUpdateDatabaseWriteReceipt(record.runId, step);
+    if (!receipt) {
+      continue;
+    }
+    const existing = readLegacyMigrationRunFromDatabase(db, receipt.id);
+    if (existing) {
+      if (existing.reportJson !== receipt.reportJson) {
+        throw new Error(
+          "Update database write receipt changed; preserve the existing migration evidence.",
+        );
+      }
+      continue;
+    }
+    recordLegacyMigrationRun(db, {
+      runId: receipt.id,
+      startedAt: record.createdAtMs,
+      finishedAt: Date.now(),
+      status: "completed",
+      reportJson: receipt.reportJson,
+    });
+  }
   record.updatedAtMs = Math.max(Date.now(), record.updatedAtMs + 1);
   const row = encodeRun(record, options);
   executeSqliteQuerySync(

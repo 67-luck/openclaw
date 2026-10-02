@@ -397,7 +397,7 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
         durationMs: 0,
         exitCode: 0,
       };
-      recordUpdateDatabaseWrites(params.databaseBackup, doctorResult?.databaseWrites, step);
+      recordUpdateDatabaseWrites(params.databaseBackup, doctorResult?.databaseWrites, step, runId);
       params.onDoctorStep?.(step);
     }
     if (doctorResult?.warnings?.length) {

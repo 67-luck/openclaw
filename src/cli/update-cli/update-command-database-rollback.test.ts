@@ -15,8 +15,8 @@ import { createConfigIO } from "../../config/io.js";
 import * as serviceMembership from "../../daemon/service-process-membership.js";
 import { swapStagedPackageInstall } from "../../infra/package-update-swap.js";
 import { createPackageSwapFixture } from "../../infra/package-update-swap.test-support.js";
-import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
+import { readLegacyMigrationRunFromDatabase } from "../../infra/state-migrations.receipts.js";
 import * as schemas from "../../infra/update-candidate-state.js";
 import type { UpdateDatabaseBackup } from "../../infra/update-database-backup.js";
 import {
@@ -30,8 +30,16 @@ import { updateGitCheckout } from "../../infra/update-runner-git.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
-import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  openOpenClawStateDatabase,
+} from "../../state/openclaw-state-db.js";
 import { acquireTestPortBlock, type TestPortClaim } from "../../test-utils/port-claims.js";
+import {
+  readDatabase,
+  writeDatabaseRollbackGitRuntime,
+  writeDatabaseRollbackPackage,
+} from "./update-command-database-rollback.test-support.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
 import type { PreManagedServiceStop } from "./update-command-service-context-types.js";
 
@@ -121,8 +129,9 @@ const { runUpdateFinalizationDoctorInFreshProcess } =
   await import("./update-command-fresh-doctor.js");
 const { withOwnedManagedUpdateEnv } = await import("./update-command-service-env.js");
 const gatewayLockUrl = resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.gatewayLock);
-const databaseGenerationsUrl = resolveRuntimeWorkerUrl(
-  updateExecutorNativeEntrypoints.databaseGenerations,
+const doctorResultUrl = resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.doctorResult);
+const sqliteTransactionUrl = resolveRuntimeWorkerUrl(
+  updateExecutorNativeEntrypoints.sqliteTransaction,
 );
 const sourceLoader = gatewayLockUrl.pathname.endsWith(".ts")
   ? `process.env.TSX_TSCONFIG_PATH=${JSON.stringify(fileURLToPath(new URL("../../../tsconfig.json", import.meta.url)))};
@@ -167,24 +176,8 @@ async function startService() {
   }
 }
 
-function readDatabase(file: string) {
-  const db = new DatabaseSync(file, { readOnly: true });
-  try {
-    return {
-      version: db.prepare("PRAGMA user_version").get()?.user_version,
-      rows: db.prepare("SELECT rowid, value FROM payload ORDER BY rowid").all(),
-      columns: db
-        .prepare("PRAGMA table_info(payload)")
-        .all()
-        .map((column) => column.name),
-    };
-  } finally {
-    db.close();
-  }
-}
-
 it.each([
-  "package",
+  "authority-refused",
   "git",
   "git-edited",
   "verification",
@@ -206,9 +199,16 @@ it.each([
       scenario === "post-migration-write" ||
       scenario === "schema-neutral-write";
     const preservesMigrated = outsideWrite && scenario !== "git-edited";
-    const migratedVersions = scenario === "schema-neutral-write" ? [15, 21] : [18, 23];
+    const authorityRefused = scenario === "authority-refused";
+    const candidateSchemas =
+      scenario === "schema-neutral-write" ? { state: 15, agent: 21 } : { state: 18, agent: 23 };
+    const migratedVersions = authorityRefused
+      ? [18, 21, 21]
+      : scenario === "schema-neutral-write"
+        ? [15, 21]
+        : [18, 23];
     const initialFailure =
-      scenario === "package" ||
+      authorityRefused ||
       gitInstall ||
       scenario === "verification" ||
       scenario === "serving" ||
@@ -223,6 +223,7 @@ it.each([
     const controlDir = path.join(base, "control-state");
     const shared = path.join(stateDir, "state/openclaw.sqlite");
     const agent = path.join(stateDir, "agents/main/agent/openclaw-agent.sqlite");
+    const secondAgent = path.join(stateDir, "agents/ops/agent/openclaw-agent.sqlite");
     const missing = path.join(stateDir, "agents/unused/agent/openclaw-agent.sqlite");
     for (const directory of [stateDir, controlDir, path.dirname(shared), path.dirname(agent)]) {
       await fs.mkdir(directory, { recursive: true });
@@ -264,6 +265,10 @@ it.each([
       db.close();
     }
     const before = { shared: readDatabase(shared), agent: readDatabase(agent) };
+    if (authorityRefused) {
+      await fs.mkdir(path.dirname(secondAgent), { recursive: true });
+      await fs.copyFile(agent, secondAgent);
+    }
     let retainedSnapshotDirectory = "";
     const doctorEvidence = path.join(base, "doctor-observed.json");
     const initialDoctor = path.join(base, "initial-doctor.json");
@@ -273,8 +278,7 @@ it.each([
     import fs from 'node:fs';
     import http from 'node:http';
     import { DatabaseSync } from 'node:sqlite';
-    import { isDeepStrictEqual } from 'node:util';
-    const files = ${JSON.stringify([shared, agent])};
+    const files = ${JSON.stringify([shared, agent, ...(authorityRefused ? [secondAgent] : [])])};
     const manifest=JSON.parse(fs.readFileSync(new URL('../package.json',import.meta.url),'utf8'));
     const acquireCustody = async (role, port) => {
       ${sourceLoader}
@@ -296,32 +300,37 @@ it.each([
       assert(input.executor && input.runId && input.root);
       assert.equal(fs.realpathSync(input.root),fs.realpathSync(new URL('../',import.meta.url)));
       ${sourceLoader}
-      const {readUpdateDatabaseGenerations}=await import(${JSON.stringify(databaseGenerationsUrl.href)});
+      const {createUpdateDoctorDatabaseWriteCapture}=await import(${JSON.stringify(doctorResultUrl.href)});
+      const {runSqliteImmediateTransactionSync}=await import(${JSON.stringify(sqliteTransactionUrl.href)});
       const custody=await acquireCustody('sqlite-maintenance');
+      const capture=createUpdateDoctorDatabaseWriteCapture(input.databaseGenerations,{
+        env:process.env,runId:input.runId,signal:new AbortController().signal,
+        assertCurrent:()=>custody.assertCurrent(),warn:message=>process.stderr.write(message+'\\n'),
+      });
       try {
-        const expected=input.databaseGenerations;
-        const fromGenerations=expected && readUpdateDatabaseGenerations(Object.keys(expected));
-        const unchanged=expected && isDeepStrictEqual(fromGenerations,expected);
+        await capture?.admit();
         let result;
         if (${!initialFailure} && !fs.existsSync(${JSON.stringify(initialDoctor)})) {
           fs.writeFileSync(${JSON.stringify(initialDoctor)},'completed without migration');
           result={status:'ok'};
         } else {
           for (const [index,file] of files.entries()) {
+            if (${authorityRefused} && index > 0) continue;
             const db = new DatabaseSync(file);
-            try { db.exec("BEGIN; ALTER TABLE payload ADD COLUMN migrated TEXT; UPDATE payload SET value='candidate' WHERE rowid IN (7,42); PRAGMA user_version=" + ${JSON.stringify(migratedVersions)}[index] + '; COMMIT;'); }
+            try {
+              const migrate=()=>runSqliteImmediateTransactionSync(db,()=>{
+                db.exec("ALTER TABLE payload ADD COLUMN migrated TEXT; UPDATE payload SET value='candidate' WHERE rowid IN (7,42); PRAGMA user_version=" + ${JSON.stringify(migratedVersions)}[index]);
+              },{operationLabel:index===0?'state-schema':'agent-schema',withCommit:commit=>{custody.assertCurrent();commit();}});
+              capture ? capture.run(migrate) : migrate();
+            }
             finally { db.close(); }
           }
-          if (${scenario !== "schema-neutral-write"}) {
-            fs.mkdirSync(${JSON.stringify(path.dirname(missing))},{recursive:true});
-            const created = new DatabaseSync(${JSON.stringify(missing)});
-            created.exec('PRAGMA user_version=23'); created.close();
-          }
           fs.writeFileSync(${JSON.stringify(doctorEvidence)},JSON.stringify(files.map(read)));
-          result=${JSON.stringify(scenario === "verification" ? { status: "ok" } : { status: "error", maintenanceRefusal: { kind: "data-at-risk", reason: "incomplete-migration" } })};
+          result=${JSON.stringify(scenario === "verification" ? { status: "ok" } : authorityRefused ? { status: "error", configWriteRefusal: { reason: "authority-check-failed", keys: [], message: "OpenClaw state is undergoing offline maintenance; retry when it finishes." } } : { status: "error", maintenanceRefusal: { kind: "data-at-risk", reason: "incomplete-migration" } })};
           process.exitCode=${scenario === "verification" ? 0 : 1};
         }
-        if(expected) result.databaseWrites={unchanged,fromGenerations,generations:readUpdateDatabaseGenerations(Object.keys(expected))};
+        await capture?.settle();
+        result.databaseWrites=capture?.receipt;
         fs.writeFileSync(process.env.OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH,JSON.stringify(result));
       } finally {
         await custody.release();
@@ -329,7 +338,7 @@ it.each([
     } else {
       const {version}=manifest;
       assert(version==='1.0.0'||${preservesMigrated},'only the compatible candidate may serve preserved writes');
-      assert.deepEqual(files.map(file=>read(file).version),version==='1.0.0'?[15,21]:${JSON.stringify(migratedVersions)},'runtime must match the retained state');
+      assert.deepEqual(files.map(file=>read(file).version),version==='1.0.0'?${JSON.stringify(authorityRefused ? [15, 21, 21] : [15, 21])}:${JSON.stringify(migratedVersions)},'runtime must match the retained state');
       const custody=await acquireCustody('gateway',Number(process.argv[3]));
       const server=http.createServer((request,response)=>{
         if(request.url==='/commit') for(const file of files) {const db=new DatabaseSync(file);db.exec("INSERT INTO payload(rowid,value) VALUES(99,'after-capture')");db.close();}
@@ -343,47 +352,11 @@ it.each([
   `;
     for (const [root, version, versions] of [
       [packageRoot, "1.0.0", { state: 15, agent: 21 }],
-      [swapFixture.params.stage.packageRoot, "2.0.0", { state: 18, agent: 23 }],
+      [swapFixture.params.stage.packageRoot, "2.0.0", candidateSchemas],
     ] as const) {
-      await fs.writeFile(
-        path.join(root, "package.json"),
-        JSON.stringify({
-          name: "openclaw",
-          packageManager: "pnpm@12.0.0",
-          type: "module",
-          version,
-          openclaw: { schemaVersions: versions },
-        }),
-      );
-      await fs.writeFile(path.join(root, "dist/index.js"), source);
-      const worker = path.join(
-        root,
-        "dist",
-        runtimeProcessEntrypoints.updateMigratedFinalize.distWorkerPath,
-      );
-      await fs.mkdir(path.dirname(worker), { recursive: true });
-      const entry = path
-        .relative(path.dirname(worker), path.join(root, "dist/index.js"))
-        .split(path.sep)
-        .join("/");
-      await fs.writeFile(worker, `import ${JSON.stringify(entry)};\n`);
+      await writeDatabaseRollbackPackage({ root, version, schemaVersions: versions, source });
     }
     let beforeGitSha: string | undefined;
-    const writeGitRuntime = async (root: string) => {
-      const sha = await git(root, "rev-parse", "HEAD");
-      const dist = path.join(root, "dist");
-      await fs.mkdir(path.join(dist, "control-ui"), { recursive: true });
-      await Promise.all([
-        fs.writeFile(
-          path.join(dist, "build-info.json"),
-          JSON.stringify({ commit: sha, buildId: sha }),
-        ),
-        fs.writeFile(path.join(dist, ".buildstamp"), JSON.stringify({ head: sha })),
-        fs.writeFile(path.join(dist, ".runtime-postbuildstamp"), JSON.stringify({ head: sha })),
-        fs.writeFile(path.join(dist, "control-ui", "index.html"), "ready"),
-        fs.writeFile(path.join(dist, "entry.js"), "import './index.js';\n"),
-      ]);
-    };
     if (gitInstall) {
       vi.stubEnv("GIT_CONFIG_COUNT", "0");
       for (const key of [
@@ -404,7 +377,7 @@ it.each([
       await git(packageRoot, "add", ".");
       await git(packageRoot, "commit", "-m", "previous installation");
       beforeGitSha = await git(packageRoot, "rev-parse", "HEAD");
-      await writeGitRuntime(packageRoot);
+      await writeDatabaseRollbackGitRuntime(packageRoot);
       const remote = path.join(base, "remote");
       await git(base, "clone", "--quiet", packageRoot, remote);
       await git(remote, "config", "user.name", "OpenClaw Test");
@@ -435,7 +408,7 @@ it.each([
                   path.join(options.cwd!, "dist"),
                   { recursive: true },
                 );
-                await writeGitRuntime(options.cwd!);
+                await writeDatabaseRollbackGitRuntime(options.cwd!);
               }
               return { code: 0, stdout: argv[1] === "--version" ? "12.0.0" : "", stderr: "" };
             },
@@ -496,7 +469,7 @@ it.each([
       steps: [],
       durationMs: 0,
       logTail: [],
-      candidateSchemaVersions: { state: 18, agent: 23 },
+      candidateSchemaVersions: candidateSchemas,
       doctorConfigWrites: true,
     });
     vi.spyOn(readiness, "verifyPreviousGatewayForUpdate").mockImplementation(async () => {
@@ -700,7 +673,7 @@ it.each([
           opts,
           startedAt: Date.now(),
           invocationCwd: base,
-          packageTargetSchemaVersions: { state: 18, agent: 23 },
+          packageTargetSchemaVersions: candidateSchemas,
           shouldRestart: scenario !== "serving",
         };
         const execution = await executeMutableUpdate(await bindExecutionGuards(params));
@@ -737,7 +710,7 @@ it.each([
         ).toBe(
           outsideWrite
             ? "state-migrated-no-rollback"
-            : scenario === "package" ||
+            : authorityRefused ||
                 gitInstall ||
                 scenario === "serving" ||
                 scenario === "config-refused"
@@ -861,7 +834,7 @@ it.each([
           return;
         }
         expect({ shared: readDatabase(shared), agent: readDatabase(agent) }).toEqual(before);
-        expect(execution.databaseBackup?.databases).toHaveLength(2);
+        expect(execution.databaseBackup?.databases).toHaveLength(authorityRefused ? 3 : 2);
         expect(execution.databaseBackup?.missingPaths).toContain(missing);
         expect(execution.result.steps.map((step) => step.name)).toEqual(
           expect.arrayContaining([
@@ -880,7 +853,7 @@ it.each([
           JSON.parse(await fs.readFile(doctorEvidence, "utf8")).map(
             (entry: { version: number }) => entry.version,
           ),
-        ).toEqual([18, 23]);
+        ).toEqual(migratedVersions);
         if (scenario === "config-refused") {
           expect(finishFailure).toBeInstanceOf(UpdateCommandFailure);
           assert(finishFailure instanceof UpdateCommandFailure);
@@ -966,11 +939,38 @@ it.each([
         const report = renderUpdateRunReport(record).lines.join("\n");
         expect(report).toContain("Databases snapshotted at");
         expect(report).toContain("Migrated database file retained");
+        if (authorityRefused) {
+          expect(readDatabase(secondAgent)).toEqual(before.agent);
+          expect(report).toContain("authority-check-failed");
+          expect(report).toContain("undergoing offline maintenance");
+          expect(await readServing()).toEqual(servedBefore);
+          const receiptId = record.steps.find(
+            (step) => step.databaseWriteReceiptId,
+          )?.databaseWriteReceiptId;
+          assert(receiptId);
+          const receipt = readLegacyMigrationRunFromDatabase(
+            openOpenClawStateDatabase({ env }).db,
+            receiptId,
+          );
+          assert(receipt);
+          expect(JSON.parse(receipt.reportJson).receipt.attribution).toMatchObject({
+            runId: run.runId,
+            unattributedPaths: [],
+            writes: [
+              {
+                path: shared,
+                migrationId: "state-schema",
+                fromContentVersion: expect.stringMatching(/^[a-f0-9]{64}$/),
+                toContentVersion: expect.stringMatching(/^[a-f0-9]{64}$/),
+              },
+            ],
+          });
+        }
         expect(await fs.readFile(swapFixture.launcher, "utf8")).toBe("old launcher\n");
         for (const entry of execution.databaseBackup!.databases) {
           expect(await fs.stat(entry.snapshotPath)).toMatchObject({ size: entry.sizeBytes });
           expect(readDatabase(`${entry.path}.migrated-${run.runId}`).version).toBe(
-            entry.path === shared ? 18 : 23,
+            entry.path === shared ? 18 : authorityRefused ? 21 : 23,
           );
         }
       });

@@ -40,6 +40,7 @@ export function createDoctorMaintenanceState(options: {
   let liveAuthorityReadsAdmitted = false;
   const capture = createUpdateDoctorDatabaseWriteCapture(params.databaseGenerations, {
     env,
+    runId: params.runId,
     root: params.root ?? undefined,
     signal: options.signal,
     assertCurrent: () => owner!.assertCurrent(options.assertCurrent),
@@ -108,7 +109,9 @@ export function createDoctorMaintenanceState(options: {
     },
     run<T>(operation: () => T): T {
       // Cancellation stops read-only inspections; admitted writers retain their resource scope.
-      return resources!.run(() => inspections!.run(operation));
+      return resources!.run(() =>
+        inspections!.run(() => (capture ? capture.run(operation) : operation())),
+      );
     },
     async acquire(relocatedMaintenanceOwner?: typeof owner) {
       if (resources) {
@@ -133,9 +136,7 @@ export function createDoctorMaintenanceState(options: {
     async prepareRepair() {
       const beforeStateMutation = params.beforeStateMutation;
       if (beforeStateMutation) {
-        await resources!.run(() =>
-          beforeStateMutation({ env: selectedEnv, signal: options.signal }),
-        );
+        await state.run(() => beforeStateMutation({ env: selectedEnv, signal: options.signal }));
         resources!.assertAdmission();
       }
       resources!.run(() =>

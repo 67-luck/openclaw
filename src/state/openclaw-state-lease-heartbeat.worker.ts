@@ -8,6 +8,7 @@ import {
   sqliteExtendedResultCode,
 } from "../infra/sqlite-error-diagnostics.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import { withUpdateDatabaseMigrationObserver } from "../infra/update-database-migration.js";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
 import { openTrackedStateDatabase, closeTrackedStateDatabase } from "./openclaw-state-db-handle.js";
 import { OpenClawStateLeaseError } from "./openclaw-state-lease-error.js";
@@ -30,6 +31,13 @@ import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js
 
 // SAFETY: The lease owner alone starts this private entry with its typed structured-clone payload.
 const params = workerData as LeaseHeartbeatWorkerData;
+const migrationObserver = params.updateMigrationRunId
+  ? (
+      await import("../infra/update-database-migration-observation.js")
+    ).createUpdateDatabaseMigrationObserver(params.updateMigrationRunId, (migration) =>
+      parentPort?.postMessage({ migration } satisfies LeaseHeartbeatReply, []),
+    )
+  : undefined;
 const shared = new BigInt64Array(params.shared);
 const renewalProgress = new BigInt64Array(params.renewalProgress);
 Atomics.store(shared, state.startupPhase, startupPhase["body-entry"]);
@@ -121,7 +129,7 @@ const renewInWorker = (explicit: boolean, path: LeaseHeartbeatLoss["path"]): num
               processOwner?.identity,
             );
           },
-          { logger: { warn() {} } },
+          { logger: { warn() {} }, operationLabel: "agent-maintenance-lease-renew" },
         ),
       { lockFailureReporting: "suppress" },
     );
@@ -195,7 +203,9 @@ const renew = (
   Atomics.add(renewalProgress, 0, 1n);
   Atomics.notify(shared, state.ack);
   try {
-    return renewInWorker(explicit, path);
+    return migrationObserver
+      ? withUpdateDatabaseMigrationObserver(migrationObserver, () => renewInWorker(explicit, path))
+      : renewInWorker(explicit, path);
   } finally {
     Atomics.add(renewalProgress, 0, 1n);
     Atomics.notify(shared, state.ack);
@@ -237,6 +247,15 @@ function activateHeartbeat(): void {
   }
 }
 parentPort?.on("message", (request: LeaseHeartbeatParentMessage) => {
+  if (request !== null && "shutdown" in request) {
+    // Message dispatch follows the last synchronous native renewal and its receipt.
+    Atomics.store(shared, state.status, state.closed);
+    clearTimeout(heartbeat);
+    closeTrackedStateDatabase(db);
+    parentPort?.postMessage({ shutdown: "drained" } satisfies LeaseHeartbeatReply, []);
+    parentPort?.close();
+    return;
+  }
   if (request !== null && "startup" in request) {
     if (params.deferActivation && Atomics.load(shared, state.status) === state.starting) {
       activateHeartbeat();

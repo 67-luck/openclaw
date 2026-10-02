@@ -10,7 +10,7 @@ import { collectNestedErrorCandidates } from "../infra/error-graph-internal.js";
 import { GATEWAY_SERVICE_STOP_TIMEOUT_MS } from "../infra/gateway-shutdown-budget.js";
 import { GatewayStateOwnerContentionError } from "../infra/gateway-state-owner.js";
 import { DoctorStateMigrationRefusalError } from "../infra/state-migrations.messages.js";
-import * as updateState from "../infra/update-candidate-state.js";
+import * as updateState from "../infra/update-candidate-state.inspection.js";
 import { readUpdateDatabaseGenerations } from "../infra/update-database-generations.js";
 import { DoctorMaintenanceRefusalError } from "../infra/update-doctor-result.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";

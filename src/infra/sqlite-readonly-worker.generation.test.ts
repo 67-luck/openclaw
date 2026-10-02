@@ -3,6 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import {
   runSqliteReadOnlyWorker,
   runSqliteReadOnlyWorkerSync,
@@ -79,4 +80,30 @@ if (process.argv[3] === "session") {
       expect(await fs.readFile(workerPath, "utf8")).toBe(worker);
     }
   });
+});
+
+it("keeps committed observations stable across checkpoint and reopen but detects later writes", () => {
+  const pathname = path.join(tempDirs.make("sqlite-update-observation-"), "source.sqlite");
+  const observe = () => runSqliteReadOnlyWorkerSync(pathname, undefined, "database-observation");
+  expect(observe()).toEqual({ generation: null, contentVersion: null });
+  let database = openNodeSqliteDatabase(pathname);
+  try {
+    database.exec(`
+      PRAGMA journal_mode=WAL;
+      PRAGMA wal_autocheckpoint=0;
+      CREATE TABLE messages(body TEXT);
+      INSERT INTO messages VALUES ('before migration');
+    `);
+    const before = observe();
+    expect(before.contentVersion).toMatch(/^[a-f0-9]{64}$/);
+    database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    database.close();
+    database = openNodeSqliteDatabase(pathname);
+    database.exec("BEGIN IMMEDIATE");
+    expect(observe().contentVersion).toBe(before.contentVersion);
+    database.exec("INSERT INTO messages VALUES ('independent write'); COMMIT");
+    expect(observe().contentVersion).not.toBe(before.contentVersion);
+  } finally {
+    database.close();
+  }
 });

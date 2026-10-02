@@ -22,6 +22,7 @@ import {
 import { discardSqliteTransactionState } from "./sqlite-post-commit.js";
 import { captureSqliteReaderOwner } from "./sqlite-reader-lifecycle.js";
 import { normalizeDatabasePath } from "./sqlite-worker-identity.js";
+import { captureUpdateDatabaseMigrationObserver } from "./update-database-migration.js";
 
 const DEFAULT_SLOW_BUSY_WAIT_MS = 1_000;
 const DEFAULT_SLOW_TRANSACTION_HOLD_MS = 1_000;
@@ -422,16 +423,25 @@ function runSqliteTransactionSync<T>(
   const transactionStartedAt = Date.now();
   let commitStarted = false;
   try {
+    const observedCommit =
+      mode === "immediate"
+        ? captureUpdateDatabaseMigrationObserver()?.begin(
+            db,
+            options?.operationLabel ?? "doctor-state-migration",
+          )
+        : undefined;
     const result = operation();
     assertSyncTransactionResult(result);
     assertTransactionUsable(db);
     commitStarted = true;
-    if (options?.withCommit) {
-      assertSyncTransactionResult(
-        options.withCommit(() => commitImmediateTransaction(db, options)),
-      );
-    } else {
+    const commit = () => {
       commitImmediateTransaction(db, options);
+      observedCommit?.();
+    };
+    if (options?.withCommit) {
+      assertSyncTransactionResult(options.withCommit(commit));
+    } else {
+      commit();
     }
     return result;
   } catch (error) {

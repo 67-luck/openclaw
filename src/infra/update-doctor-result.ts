@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
@@ -10,17 +11,26 @@ import { ConfigMutationConflictError } from "../config/mutation-conflict.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { collectNestedErrorCandidates } from "./error-graph-internal.js";
 import { formatErrorMessage } from "./errors.js";
+import { normalizeDatabasePath } from "./sqlite-worker-identity.js";
 import {
   resolvePreferredOpenClawTmpDir,
   type ResolvePreferredOpenClawTmpDirOptions,
 } from "./tmp-openclaw-dir.js";
 import type {
   UpdateDatabaseGenerations,
+  UpdateDatabaseObservations,
+  UpdateDatabaseWriteAttribution,
   UpdateDatabaseWriteReceipt,
 } from "./update-database-generations.js";
 import {
+  orderUpdateDatabaseMigrationWrites,
+  withUpdateDatabaseMigrationObserver,
+  type UpdateDatabaseMigrationCommit,
+} from "./update-database-migration.js";
+import {
   UpdateDoctorConfigChangeSchema,
   UpdateDoctorConfigWriteRefusalSchema,
+  UpdateDoctorDatabaseWriteReceiptSchema,
 } from "./update-doctor-config-schema.js";
 import type {
   UpdateDoctorConfigChange,
@@ -85,14 +95,7 @@ const doctorResultEvidence = {
   failureFacts: z.array(UpdateFailureFactSchema).catch([]).optional(),
   configChanges: z.array(UpdateDoctorConfigChangeSchema).optional(),
   configWriteRefusal: UpdateDoctorConfigWriteRefusalSchema.optional(),
-  databaseWrites: z
-    .object({
-      unchanged: z.boolean(),
-      fromGenerations: z.record(z.string(), z.string().nullable()).optional(),
-      generations: z.record(z.string(), z.string().nullable()),
-    })
-    .optional()
-    .catch(undefined),
+  databaseWrites: UpdateDoctorDatabaseWriteReceiptSchema.optional().catch(undefined),
 };
 const UpdatePostInstallDoctorResultSchema = z.discriminatedUnion("status", [
   z.object({ status: z.enum(["ok", "error"]), ...doctorResultEvidence }),
@@ -166,6 +169,7 @@ export type DoctorConfigCapture = {
   configWriteRefusal?: UpdateDoctorConfigWriteRefusal;
 };
 export type UpdateDoctorWriteAuthority = {
+  runId?: string;
   inputHash: string;
   assertCurrent: () => void;
   commandAuthority?: import("./update-managed-command-custody.js").ManagedCommandProcessAuthority;
@@ -178,12 +182,13 @@ export type UpdateDoctorWriteAuthority = {
   };
 };
 
-/** Receipts describe the caller's existing maintenance interval without owning its lifecycle. */
+/** Receipts describe the caller's admitted writes without owning maintenance or granting authority. */
 export function createUpdateDoctorDatabaseWriteCapture(
   input: UpdateDatabaseGenerations | undefined,
   options: {
     env: NodeJS.ProcessEnv;
     root?: string;
+    runId?: string;
     signal: AbortSignal;
     assertCurrent?: () => void;
     warn: (message: string) => void;
@@ -192,60 +197,161 @@ export function createUpdateDoctorDatabaseWriteCapture(
   if (!input) {
     return undefined;
   }
-  let expectedGenerations: UpdateDatabaseGenerations | undefined = { ...input };
+  const paths = Object.keys(input);
+  const inventory = new Map(paths.map((pathname) => [normalizeDatabasePath(pathname), pathname]));
   let fromGenerations: UpdateDatabaseGenerations | undefined;
+  let beforeContentVersions: UpdateDatabaseGenerations | undefined;
+  const writes: UpdateDatabaseWriteAttribution["writes"] = [];
+  const unattributedPaths = new Set<string>();
   let unchanged = true;
+  let unavailable = false;
   let receipt: UpdateDatabaseWriteReceipt | undefined;
-  const read = async () => {
-    if (!expectedGenerations) {
-      return undefined;
-    }
-    let generations: UpdateDatabaseGenerations;
-    try {
-      const { readUpdateDatabaseGenerationsIsolated } = await import("./update-candidate-state.js");
-      generations = await readUpdateDatabaseGenerationsIsolated(
-        Object.keys(expectedGenerations),
-        options,
-      );
-    } catch (error) {
-      if (hasCommandProcessCleanupError(error)) {
-        throw error;
-      }
-      options.assertCurrent?.();
-      expectedGenerations = undefined;
-      receipt = undefined;
-      options.warn(
-        `Database write verification is unavailable; automatic database restoration cannot be confirmed: ${formatErrorMessage(error)}`,
-      );
-      return undefined;
+  let beginObservation:
+    | typeof import("./update-database-migration-observation.js").beginUpdateDatabaseMigrationObservation
+    | undefined;
+  const refused = (error: unknown) => {
+    if (hasCommandProcessCleanupError(error)) {
+      throw error;
     }
     options.assertCurrent?.();
-    return generations;
+    unavailable = true;
+    receipt = undefined;
+    options.warn(
+      `Database write verification is unavailable; automatic database restoration cannot be confirmed: ${formatErrorMessage(error)}`,
+    );
+  };
+  const read = async (): Promise<UpdateDatabaseObservations | undefined> => {
+    if (unavailable) {
+      return undefined;
+    }
+    try {
+      const owner = await import("./update-candidate-state.inspection.js");
+      const observations = options.runId
+        ? await owner.readUpdateDatabaseObservationsIsolated(paths, options)
+        : Object.fromEntries(
+            Object.entries(await owner.readUpdateDatabaseGenerationsIsolated(paths, options)).map(
+              ([pathname, generation]) => [pathname, { generation, contentVersion: null }],
+            ),
+          );
+      options.assertCurrent?.();
+      return observations;
+    } catch (error) {
+      refused(error);
+      return undefined;
+    }
+  };
+  const generationsOf = (observations: UpdateDatabaseObservations) =>
+    Object.fromEntries(
+      Object.entries(observations).map(([pathname, observation]) => [
+        pathname,
+        observation.generation,
+      ]),
+    );
+  const contentVersionsOf = (observations: UpdateDatabaseObservations) =>
+    Object.fromEntries(
+      Object.entries(observations).map(([pathname, observation]) => [
+        pathname,
+        observation.contentVersion,
+      ]),
+    );
+  const observer = {
+    runId: options.runId ?? "",
+    record(commit: UpdateDatabaseMigrationCommit) {
+      const pathname = inventory.get(normalizeDatabasePath(commit.path));
+      if (!pathname || unavailable) {
+        return;
+      }
+      if (commit.runId !== options.runId || commit.foreignWrite) {
+        unattributedPaths.add(pathname);
+        return;
+      }
+      writes.push({
+        path: pathname,
+        migrationId: commit.migrationId,
+        fromContentVersion: commit.fromContentVersion,
+        toContentVersion: commit.toContentVersion,
+      });
+    },
+    begin(database: DatabaseSync, migrationId: string): (() => void) | undefined {
+      const location = database.location();
+      const pathname = location ? inventory.get(normalizeDatabasePath(location)) : undefined;
+      if (
+        !options.runId ||
+        unavailable ||
+        !beforeContentVersions ||
+        !pathname ||
+        !beginObservation
+      ) {
+        return undefined;
+      }
+      options.assertCurrent?.();
+      let committed: () => void;
+      try {
+        committed = beginObservation(database, migrationId, options.runId, observer.record);
+      } catch (error) {
+        refused(error);
+        return undefined;
+      }
+      options.assertCurrent?.();
+      return () => {
+        options.assertCurrent?.();
+        try {
+          committed();
+        } catch (error) {
+          refused(error);
+        }
+      };
+    },
   };
   return {
     get receipt() {
       return receipt;
     },
+    run<T>(operation: () => T): T {
+      return options.runId ? withUpdateDatabaseMigrationObserver(observer, operation) : operation();
+    },
     async admit() {
       receipt = undefined;
-      const generations = await read();
-      if (generations && expectedGenerations) {
+      if (options.runId) {
+        beginObservation ??= (await import("./update-database-migration-observation.js"))
+          .beginUpdateDatabaseMigrationObservation;
+      }
+      const observations = await read();
+      if (observations) {
+        const generations = generationsOf(observations);
         fromGenerations ??= generations;
-        // Earlier receipts or another process's writes must never become our baseline.
-        unchanged &&= Object.entries(expectedGenerations).every(
-          ([pathname, generation]) => generations[pathname] === generation,
-        );
+        beforeContentVersions ??= contentVersionsOf(observations);
+        unchanged &&= paths.every((pathname) => generations[pathname] === input[pathname]);
       }
     },
     async settle() {
-      const generations = await read();
-      if (generations && expectedGenerations) {
-        // Maintenance excludes Gateway writers, not independent SQLite writers.
-        // Without transaction attribution, even Doctor-time changes are unknown.
-        unchanged &&= Object.entries(expectedGenerations).every(
-          ([pathname, generation]) => generations[pathname] === generation,
+      const observations = await read();
+      if (observations) {
+        const generations = generationsOf(observations);
+        const afterContentVersions = contentVersionsOf(observations);
+        unchanged &&= paths.every((pathname) => generations[pathname] === input[pathname]);
+        const ordered = orderUpdateDatabaseMigrationWrites(
+          beforeContentVersions ?? {},
+          afterContentVersions,
+          writes,
         );
-        receipt = { unchanged, fromGenerations, generations };
+        ordered.unattributedPaths.forEach((pathname) => unattributedPaths.add(pathname));
+        receipt = {
+          unchanged,
+          fromGenerations,
+          generations,
+          ...(options.runId && beforeContentVersions
+            ? {
+                attribution: {
+                  runId: options.runId,
+                  beforeContentVersions,
+                  afterContentVersions,
+                  unattributedPaths: [...unattributedPaths],
+                  writes: ordered.writes,
+                },
+              }
+            : {}),
+        };
       }
     },
   };

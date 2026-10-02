@@ -104,7 +104,17 @@ export type UpdateRunRecord = z.infer<typeof UpdateRunRecordSchema>;
 export function toPublicUpdateRun(record: UpdateRunRecord): PublicUpdateRunRecord {
   const origin = { ...record.origin };
   delete origin.updateRecoveryCapture;
-  return { ...record, origin };
+  return {
+    ...record,
+    origin,
+    steps: record.steps.map(
+      ({
+        databaseWrites: _databaseWrites,
+        databaseWriteReceiptId: _databaseWriteReceiptId,
+        ...step
+      }) => step,
+    ),
+  };
 }
 export type UpdateRunPhase = UpdateRunRecord["phase"];
 export type UpdateRunStep = UpdateRunRecord["steps"][number];

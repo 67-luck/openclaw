@@ -1,4 +1,5 @@
 import type { StateLeaseProcessOwner } from "../infra/state-lease-process-owner.js";
+import type { UpdateDatabaseMigrationCommit } from "../infra/update-database-migration.js";
 import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease.types.js";
 import type { OpenClawStateWorkerErrorPayload } from "./openclaw-state-worker-error.js";
 
@@ -56,6 +57,7 @@ export type LeaseHeartbeatWorkerData = {
   shared: SharedArrayBuffer;
   /** Odd while native renewal is in flight; progress is never lease authority. */
   renewalProgress: SharedArrayBuffer;
+  updateMigrationRunId?: string;
 };
 
 export type LeaseHeartbeatRequest = {
@@ -63,10 +65,16 @@ export type LeaseHeartbeatRequest = {
   operation: "verify" | "renew";
 };
 
-export type LeaseHeartbeatParentMessage = LeaseHeartbeatRequest | { startup: "activate" } | null;
+export type LeaseHeartbeatParentMessage =
+  | LeaseHeartbeatRequest
+  | { startup: "activate" }
+  | { shutdown: "drain" }
+  | null;
 
 export type LeaseHeartbeatReply =
   | LeaseHeartbeatRenewalFailure
+  | { migration: UpdateDatabaseMigrationCommit }
+  | { shutdown: "drained" }
   | { loss: LeaseHeartbeatLoss }
   | { startup: "prepared" }
   | { id: number; ok: true; expiresAt: number }

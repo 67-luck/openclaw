@@ -54,6 +54,7 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
     (mode !== "sync" &&
       mode !== "async" &&
       mode !== "consolidated" &&
+      mode !== "database-observation" &&
       mode !== "reclaim" &&
       !isSqliteSnapshotStagingMode(mode)) ||
     !pathname
@@ -128,6 +129,10 @@ async function inspect(args: string[]): Promise<SqliteReadOnlyWorkerResult> {
         process.stdin.destroy();
       }
       return { ok: true, warnings };
+    }
+    if (mode === "database-observation") {
+      const { readUpdateDatabaseObservations } = await import("./update-database-generations.js");
+      return { ok: true, observation: readUpdateDatabaseObservations([pathname])[pathname] };
     }
     let prepared: PreparedSqliteReadOnlyLocation;
     if (mode === "consolidated") {

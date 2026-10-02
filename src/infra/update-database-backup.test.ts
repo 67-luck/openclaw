@@ -369,7 +369,7 @@ it("seals equivalent original bytes under isolated steps and one maintenance-own
 
   const worker = vi.spyOn(inspection, "runUpdateStateInspectionWorker");
   const parentDiscovery = vi.spyOn(candidateState, "discoverUpdateStateSchemaInspectionInProcess");
-  const isolatedGenerations = vi.spyOn(candidateState, "readUpdateDatabaseGenerationsIsolated");
+  const isolatedGenerations = vi.spyOn(inspection, "readUpdateDatabaseGenerationsIsolated");
   const isolatedSizes = vi.spyOn(databaseSizes, "readUpdateStateDatabaseSizes");
   const scope = createOpenClawDatabaseMaintenanceScope({
     schemaMaintenance: true,
@@ -431,7 +431,7 @@ it("keeps large maintenance-owned shared copies in the isolated discovery child"
   const f = await originalCaptureFixture();
   await fs.truncate(f.shared, 65 * 1024 * 1024);
   const worker = vi.spyOn(inspection, "runUpdateStateInspectionWorker");
-  const isolatedGenerations = vi.spyOn(candidateState, "readUpdateDatabaseGenerationsIsolated");
+  const isolatedGenerations = vi.spyOn(inspection, "readUpdateDatabaseGenerationsIsolated");
   const scope = createOpenClawDatabaseMaintenanceScope({
     schemaMaintenance: true,
     assertOwnerCurrent: () => {},
@@ -471,7 +471,7 @@ it("falls back to the isolated generation seal when live source reads were admit
     await fs.readFile(original.ref.manifestPath, "utf8"),
   );
   const worker = vi.spyOn(inspection, "runUpdateStateInspectionWorker");
-  const isolatedGenerations = vi.spyOn(candidateState, "readUpdateDatabaseGenerationsIsolated");
+  const isolatedGenerations = vi.spyOn(inspection, "readUpdateDatabaseGenerationsIsolated");
   const isolatedSizes = vi.spyOn(databaseSizes, "readUpdateStateDatabaseSizes");
   const scope = createOpenClawDatabaseMaintenanceScope({
     schemaMaintenance: true,
@@ -489,7 +489,10 @@ it("falls back to the isolated generation seal when live source reads were admit
     expect(maintainedManifest.entries).toEqual(originalManifest.entries);
     expect(isolatedGenerations).toHaveBeenCalledOnce();
     expect(isolatedSizes).toHaveBeenCalled();
-    expect(worker).toHaveBeenCalledTimes(3);
+    expect(worker.mock.calls.map(([request]) => request.input.mode)).toEqual([
+      "discover",
+      "database-backup",
+    ]);
   } finally {
     await scope.close();
   }
