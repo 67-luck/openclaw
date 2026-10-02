@@ -1137,7 +1137,7 @@ mod tests {
                                     let index = request["params"]["invokeId"].as_str()
                                         .and_then(|id| id.strip_prefix("hold-"))
                                         .and_then(|index| index.parse::<usize>().ok());
-                                    if !index.is_some_and(|index| index < 6)
+                                    if index.is_none_or(|index| index >= 6)
                                         || request["params"]["nodeId"] != "node-1"
                                         || request["params"]["chunk"] != ""
                                         || request["params"]["seq"].as_u64().is_none()
