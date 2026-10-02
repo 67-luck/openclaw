@@ -188,7 +188,16 @@ if (tool === "installer") {
 } else if (tool === "uname") {
   console.log("arm64");
 } else if (tool === "xcrun") {
-  if (args[0] === "segedit") {
+  if (args[0] === "lipo") {
+    if (args[1] === "-archs") {
+      console.log(mode.startsWith("universal") ? "x86_64 arm64" : "arm64");
+    } else {
+      writeFileSync(args[5], args[3]);
+    }
+  } else if (args[0] === "segedit") {
+    if (mode.startsWith("universal") && args[1] === path.join(productPath, "OpenClawWatchApp")) {
+      throw new Error("segedit only operates on thin Mach-O files");
+    }
     const output = args[5];
     if (output === "-" || !path.isAbsolute(output) ||
         (statSync(path.dirname(output)).mode & 0o777) !== 0o700) {
@@ -196,7 +205,8 @@ if (tool === "installer") {
     }
     if (mode === "missing-section") process.exit(26);
     const entitlements = mode === "missing-application-id" ? {} : {
-      "application-identifier": mode === "wrong-application-id" ?
+      "application-identifier": (mode === "wrong-application-id" ||
+        (mode === "universal-wrong-application-id" && args[1].endsWith("host-arm64"))) ?
         "SEEDFIX123.org.example.other" : mode === "wrong-compiled-seed" ?
         "TEAMFIX123.org.example.watch" : mode === "compiled-seed-case-mismatch" ?
         "seedfix123.org.example.watch" : applicationID
@@ -276,7 +286,7 @@ if (tool === "installer") {
 } else if (tool === "plutil") {
   const input = args.at(-1);
   const plist = JSON.parse(readFileSync(input === "-" ? 0 : input, "utf8"));
-  if (mode === "cleanup-failed" && path.basename(input) === "entitlements.plist" &&
+  if (mode === "cleanup-failed" && /^entitlements(?:-\w+)?\.plist$/.test(path.basename(input)) &&
       path.dirname(path.dirname(input)) === process.env.TMPDIR) {
     chmodSync(process.env.TMPDIR, 0o500);
   }
@@ -522,7 +532,7 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     },
   );
 
-  it.each(["ready", "unpaired"])(
+  it.each(["ready", "unpaired", "universal"])(
     "prepares the %s Watch and companion before testing the exact product",
     (mode) => {
       const { result, commands, product, testProduct, root, temporaryRoot } = runWatchStep(mode);
@@ -595,20 +605,17 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
         { tool: "codesign", args: ["--verify", "--strict", product] },
         { tool: "codesign", args: ["--verify", "--strict", testProduct] },
       ]);
-      const extraction = commands.find(
+      const extractions = commands.filter(
         (command) => command.tool === "xcrun" && command.args[0] === "segedit",
       );
-      expect(extraction?.args.slice(0, 5)).toEqual([
-        "segedit",
-        path.join(product, "OpenClawWatchApp"),
-        "-extract",
-        "__TEXT",
-        "__entitlements",
-      ]);
-      const plistPath = extraction?.args[5];
-      assert(plistPath, "Expected an extracted entitlement plist");
-      expect(plistPath).not.toBe("-");
-      expect(path.dirname(path.dirname(plistPath))).toBe(temporaryRoot);
+      expect(extractions).toHaveLength(mode === "universal" ? 2 : 1);
+      for (const extraction of extractions) {
+        expect(extraction.args.slice(2, 5)).toEqual(["-extract", "__TEXT", "__entitlements"]);
+        const plistPath = extraction.args[5];
+        assert(plistPath, "Expected an extracted entitlement plist");
+        expect(plistPath).not.toBe("-");
+        expect(path.dirname(path.dirname(plistPath))).toBe(temporaryRoot);
+      }
       expect(
         commands.slice(0, installIndex).filter((command) => command.tool === "plutil"),
       ).toEqual([
@@ -628,7 +635,10 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
             ),
           ],
         },
-        { tool: "plutil", args: ["-convert", "json", "-o", "-", plistPath] },
+        ...extractions.map(({ args }) => ({
+          tool: "plutil",
+          args: ["-convert", "json", "-o", "-", args[5]],
+        })),
       ]);
       expect(readdirSync(temporaryRoot)).toEqual([]);
       expect(result.stderr.split("\n")[0]).toBe(
@@ -659,6 +669,7 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     "malformed-section",
     "missing-application-id",
     "wrong-application-id",
+    "universal-wrong-application-id",
     "wrong-compiled-seed",
     "compiled-seed-case-mismatch",
     "missing-generated",
@@ -714,7 +725,13 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
       expect(result.stderr).toContain(
         "Expected a fully evaluated generated Watch application identifier for the configured bundle",
       );
-    } else if (mode === "wrong-compiled-seed" || mode === "compiled-seed-case-mismatch") {
+    } else if (
+      [
+        "wrong-compiled-seed",
+        "compiled-seed-case-mismatch",
+        "universal-wrong-application-id",
+      ].includes(mode)
+    ) {
       expect(result.stderr).toContain(
         "Simulated Watch host application identifier does not match its build identity",
       );
@@ -743,7 +760,8 @@ describe.skipIf(process.platform === "win32")("Watch simulator workflow", () => 
     expect(
       commands.some(
         (command) =>
-          command.tool === "plutil" && command.args.at(-1)?.endsWith("/entitlements.plist"),
+          command.tool === "plutil" &&
+          /\/entitlements(?:-\w+)?\.plist$/.test(command.args.at(-1) ?? ""),
       ),
     ).toBe(true);
     expect(commands.some((command) => command.args.includes("install"))).toBe(false);

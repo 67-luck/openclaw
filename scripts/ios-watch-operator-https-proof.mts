@@ -1116,6 +1116,11 @@ async function main(): Promise<void> {
   let httpsPassed = false;
   let voicePassed = false;
   try {
+    const sdkVersion = (
+      await runCommand("watch-sdk", "xcrun", ["--sdk", "watchsimulator", "--show-sdk-version"])
+    ).stdout.trim();
+    assert(/^\d+\.\d+(?:\.\d+)?$/.test(sdkVersion), "Invalid selected Watch simulator SDK version");
+    report.watchSDK = sdkVersion;
     const runtimes = JSON.parse(
       (await runCommand("watch-runtimes", "xcrun", ["simctl", "list", "runtimes", "--json"]))
         .stdout,
@@ -1123,10 +1128,10 @@ async function main(): Promise<void> {
     const runtime = runtimes.find(
       (value) =>
         value.isAvailable &&
-        value.version === "26.5" &&
+        value.version === sdkVersion &&
         value.identifier.startsWith("com.apple.CoreSimulator.SimRuntime.watchOS-"),
     );
-    assert(runtime, "Approved available watchOS 26.5 runtime is absent");
+    assert(runtime, `Available watchOS ${sdkVersion} runtime matching the selected SDK is absent`);
     const types = JSON.parse(
       (await runCommand("watch-device-types", "xcrun", ["simctl", "list", "devicetypes", "--json"]))
         .stdout,
@@ -1136,7 +1141,10 @@ async function main(): Promise<void> {
       minRuntimeVersion: number;
       maxRuntimeVersion: number;
     }[];
-    const version = 26 * 65536 + 5 * 256;
+    // simctl packs major, minor, and patch into successive bytes.
+    const version = sdkVersion
+      .split(".")
+      .reduce((total, part, index) => total + Number(part) * 256 ** (2 - index), 0);
     const device = types.find(
       (value) =>
         value.productFamily === "Apple Watch" &&

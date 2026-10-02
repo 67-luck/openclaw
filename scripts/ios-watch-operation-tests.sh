@@ -142,36 +142,47 @@ app_path="$(
       const extractionDirectory = mkdtempSync(path.join(tmpdir(), "openclaw-watch-entitlements-"));
       try {
         // Simulator identity lives in the executable section, not its code signature.
-        // Use a real file: segedit stdout formats a C string instead of exact section bytes.
-        const plistPath = path.join(extractionDirectory, "entitlements.plist");
-        execFileSync("xcrun", [
-          "segedit", tests.TEST_HOST, "-extract", "__TEXT", "__entitlements", plistPath,
-        ], { stdio: "pipe" });
-        const entitlements = readPlist(plistPath);
-        const applicationID = entitlements["application-identifier"];
-        if (applicationID !== expectedApplicationID) {
-          throw new Error("Simulated Watch host application identifier does not match its build identity");
+        // segedit accepts only thin Mach-O inputs. Check every slice without changing the signed product.
+        const architectures = execFileSync("xcrun", ["lipo", "-archs", tests.TEST_HOST],
+          { encoding: "utf8" }).trim().split(/\s+/);
+        for (const architecture of architectures) {
+          let executable = tests.TEST_HOST;
+          if (architectures.length > 1) {
+            executable = path.join(extractionDirectory, `host-${architecture}`);
+            execFileSync("xcrun", ["lipo", tests.TEST_HOST, "-thin", architecture, "-output", executable]);
+          }
+          // Use a real file: segedit stdout formats a C string instead of exact section bytes.
+          const plistPath = path.join(extractionDirectory, `entitlements-${architecture}.plist`);
+          execFileSync("xcrun", [
+            "segedit", executable, "-extract", "__TEXT", "__entitlements", plistPath,
+          ], { stdio: "pipe" });
+          const entitlements = readPlist(plistPath);
+          const applicationID = entitlements["application-identifier"];
+          if (applicationID !== expectedApplicationID) {
+            throw new Error("Simulated Watch host application identifier does not match its build identity");
+          }
+          // The application identifier supplies the private Keychain group when no
+          // explicit groups are present. Never manufacture a sharing entitlement.
+          const groups = entitlements["keychain-access-groups"];
+          if (groups !== undefined &&
+              (!Array.isArray(groups) || groups.some((group) => typeof group !== "string" || !group))) {
+            throw new Error("Malformed Watch host Keychain access groups");
+          }
+          console.error(JSON.stringify({
+            watchSigning: {
+              architecture,
+              team: app.DEVELOPMENT_TEAM,
+              style: app.CODE_SIGN_STYLE,
+              entitlementsFile: app.CODE_SIGN_ENTITLEMENTS ?? null,
+              entitlementsSource: "__TEXT,__entitlements",
+              applicationID,
+              keychainAccessGroups: groups ?? null,
+              testBundle: tests.PRODUCT_BUNDLE_IDENTIFIER,
+              testStyle: tests.CODE_SIGN_STYLE,
+              testEntitlementsFile: tests.CODE_SIGN_ENTITLEMENTS ?? null,
+            },
+          }));
         }
-        // The application identifier supplies the private Keychain group when no
-        // explicit groups are present. Never manufacture a sharing entitlement.
-        const groups = entitlements["keychain-access-groups"];
-        if (groups !== undefined &&
-            (!Array.isArray(groups) || groups.some((group) => typeof group !== "string" || !group))) {
-          throw new Error("Malformed Watch host Keychain access groups");
-        }
-        console.error(JSON.stringify({
-          watchSigning: {
-            team: app.DEVELOPMENT_TEAM,
-            style: app.CODE_SIGN_STYLE,
-            entitlementsFile: app.CODE_SIGN_ENTITLEMENTS ?? null,
-            entitlementsSource: "__TEXT,__entitlements",
-            applicationID,
-            keychainAccessGroups: groups ?? null,
-            testBundle: tests.PRODUCT_BUNDLE_IDENTIFIER,
-            testStyle: tests.CODE_SIGN_STYLE,
-            testEntitlementsFile: tests.CODE_SIGN_ENTITLEMENTS ?? null,
-          },
-        }));
       } finally {
         rmSync(extractionDirectory, { recursive: true, force: true });
       }
