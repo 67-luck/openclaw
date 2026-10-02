@@ -683,6 +683,7 @@ export function submitSessionControllerInput(
 export function retargetSessionControllerSource(
   input: SessionControllerInput,
   target: SessionTarget,
+  transfer: "same-store" | "command-target" = "same-store",
 ): void {
   const assertUnbound = () => {
     if (
@@ -706,7 +707,9 @@ export function retargetSessionControllerSource(
   const previous = input.mailbox;
   if (
     (input.sourceAdapter?.scope && input.sourceAdapter.scope !== target.storeScope) ||
-    (previous.owner.target && previous.owner.target.storeScope !== target.storeScope)
+    (transfer === "same-store" &&
+      previous.owner.target &&
+      previous.owner.target.storeScope !== target.storeScope)
   ) {
     throw new Error("Source cannot leave its admitted physical store");
   }

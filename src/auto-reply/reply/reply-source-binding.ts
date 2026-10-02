@@ -135,6 +135,7 @@ export function retargetReplySourceForExecution(params: {
       incarnation: params.sessionId,
       agentId: params.agentId,
     }),
+    "command-target",
   );
 }
 
