@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   beginReplyMessageInjectionTarget,
+  ReplyRunFollowupAdmissionBlockedError,
   ReplyRunSuccessorAdmissionBlockedError,
   waitForReplyRunSuccessorAdmission,
   createReplyOperation,
@@ -56,7 +57,9 @@ describe("reply run control ownership", () => {
         operation.completeWithAfterClearBarrier(delivery.promise);
         await Promise.resolve();
         expect(started).toHaveBeenCalledOnce();
-        expect(() => createTestReplyOperation({ sessionKey })).toThrow();
+        expect(() => createTestReplyOperation({ sessionKey })).toThrow(
+          ReplyRunFollowupAdmissionBlockedError,
+        );
         const nextAdmission = waitForReplyRunSuccessorAdmission(operation.key, null);
         if (cleanupExpired) {
           // Raw delivery settlement cannot settle the separately owned handoff fence.
