@@ -138,9 +138,12 @@ vi.mock("../../runtime.js", () => {
   };
 });
 
-vi.mock("./queue.js", () => {
+vi.mock("./queue.js", async () => {
+  const { completeFollowupRunLifecycle } =
+    await vi.importActual<typeof import("./queue/lifecycle.js")>("./queue/lifecycle.js");
   return {
     admitFollowupRunLifecycle: vi.fn(async () => {}),
+    completeFollowupRunLifecycle,
     enqueueFollowupRun: vi.fn(),
     reserveSteerCandidate: vi.fn(() => ({
       admit: async () => "steer",
@@ -225,7 +228,11 @@ vi.mock("./private-message-tool-final.js", async (importOriginal) => {
   return { ...actual, warnPrivateMessageToolFinal: warnPrivateFinalSpy };
 });
 
-type RunWithModelFallbackParams = TestModelFallbackRunnerParams;
+type RunWithModelFallbackParams = TestModelFallbackRunnerParams & {
+  prepareCandidateChain?: (
+    candidates: ReadonlyArray<{ provider: string; model: string }>,
+  ) => Promise<void> | void;
+};
 
 function setupAgentRunnerMocks(): void {
   rootDir = tempDirs.make("openclaw-run-reply-agent-");
@@ -258,12 +265,16 @@ function setupAgentRunnerMocks(): void {
   loadCronStoreMock.mockResolvedValue({ version: 1, jobs: [] });
 
   // Default: no provider switch; execute the chosen provider+model.
-  runWithModelFallbackMock.mockImplementation(async (params: RunWithModelFallbackParams) => ({
-    result: await runInitialModelFallbackAttempt(params),
-    provider: params.provider,
-    model: params.model,
-    attempts: [],
-  }));
+  runWithModelFallbackMock.mockImplementation(async (params: RunWithModelFallbackParams) => {
+    await params.prepareCandidateChain?.([{ provider: params.provider, model: params.model }]);
+    const result = await runInitialModelFallbackAttempt(params);
+    return {
+      result,
+      provider: params.provider,
+      model: params.model,
+      attempts: [],
+    };
+  });
 }
 
 export function setupAgentRunnerTestHooks(): void {

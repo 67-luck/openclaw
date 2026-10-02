@@ -212,6 +212,7 @@ export async function withLocalSessionPlacementTurnSettlement(
     | "admittedRunContext"
     | "preparedRunAdmission"
     | "isFinalFallbackAttempt"
+    | "replyOperation"
   > = {},
 ): Promise<EmbeddedAgentRunResult> {
   const provider = state.provider;
@@ -239,7 +240,7 @@ export async function withLocalSessionPlacementTurnSettlement(
   const releaseQueuedContext = retainQueuedAgentRunContext(claim.runId, lifecycleGeneration);
   try {
     return await withSessionTurn(
-      { ...claim, abortSignal: options.abortSignal },
+      { ...claim, abortSignal: options.abortSignal, replyOperation: options.replyOperation },
       async (operation) => {
         assertCurrent();
         operation?.markWaitingForDeferredMaintenance();

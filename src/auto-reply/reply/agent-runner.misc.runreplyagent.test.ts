@@ -74,7 +74,11 @@ function registerMemoryFlushPlanResolverForTest(resolver: MemoryFlushPlanResolve
   registerMemoryCapability("memory-core", { flushPlanResolver: resolver });
 }
 
-type RunWithModelFallbackParams = TestModelFallbackRunnerParams;
+type RunWithModelFallbackParams = TestModelFallbackRunnerParams & {
+  prepareCandidateChain?: (
+    candidates: ReadonlyArray<{ provider: string; model: string }>,
+  ) => Promise<void> | void;
+};
 
 type BaseRunOptions = {
   context?: Parameters<typeof createTestTemplateContext>[0];
@@ -89,8 +93,14 @@ type BaseRunOptions = {
 };
 
 function createBaseRun(options: BaseRunOptions = {}) {
-  const sessionKey = options.run?.sessionKey ?? "main";
+  const sessionKey = options.run?.sessionKey ?? options.reply?.sessionKey ?? "main";
   const messageProvider = options.run?.messageProvider ?? "whatsapp";
+  const runConfig = options.reply?.storePath
+    ? {
+        ...options.run?.config,
+        session: { ...options.run?.config?.session, store: options.reply.storePath },
+      }
+    : (options.run?.config ?? {});
   const typing = createMockTypingController();
   const sessionCtx = createTestTemplateContext(
     options.context ?? {
@@ -112,7 +122,7 @@ function createBaseRun(options: BaseRunOptions = {}) {
       messageProvider,
       sessionFile: path.join(rootDir, "session.jsonl"),
       workspaceDir: rootDir,
-      config: {},
+      config: runConfig,
       skillsSnapshot: {},
       provider: "anthropic",
       model: "claude",
@@ -134,12 +144,14 @@ function createBaseRun(options: BaseRunOptions = {}) {
       timeoutMs: 1_000,
       blockReplyBreak: "message_end",
       ...options.run,
+      config: runConfig,
     },
   });
   const replyParams = {
     commandBody: "hello",
     followupRun,
-    queueKey: "main",
+    queueKey: sessionKey,
+    sessionKey,
     resolvedQueue,
     shouldSteer: false,
     shouldFollowup: false,
@@ -160,6 +172,7 @@ function createBaseRun(options: BaseRunOptions = {}) {
     sessionCtx,
     resolvedQueue,
     followupRun,
+    replyParams,
     run: () => runReplyAgent(replyParams),
   };
 }
@@ -1835,7 +1848,6 @@ describe("runReplyAgent claude-cli routing", () => {
     });
 
     const result = await createRun();
-
     expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
     expect(runCliAgentMock).toHaveBeenCalledTimes(1);
     expectReplyText(result, "ok");
@@ -2110,7 +2122,9 @@ describe("runReplyAgent reminder commitment guard", () => {
         config: createCliBackendTestConfig(),
         thinkLevel: "low",
       },
-      reply: params?.omitSessionKey ? {} : { sessionKey: params?.sessionKey ?? "main" },
+      reply: params?.omitSessionKey
+        ? { sessionKey: undefined }
+        : { sessionKey: params?.sessionKey ?? "main" },
     }).run();
   }
 
@@ -2220,12 +2234,15 @@ describe("runReplyAgent fallback reasoning tags", () => {
       payloads: [{ text: "ok" }],
       meta: {},
     });
-    runWithModelFallbackMock.mockImplementationOnce(async (params: RunWithModelFallbackParams) => ({
-      result: await runFallbackModelAttempt(params, "google", "gemini-2.5-pro", "unknown"),
-      provider: "google",
-      model: "gemini-2.5-pro",
-      attempts: [],
-    }));
+    runWithModelFallbackMock.mockImplementationOnce(async (params: RunWithModelFallbackParams) => {
+      await params.prepareCandidateChain?.([{ provider: "google", model: "gemini-2.5-pro" }]);
+      return {
+        result: await runFallbackModelAttempt(params, "google", "gemini-2.5-pro", "unknown"),
+        provider: "google",
+        model: "gemini-2.5-pro",
+        attempts: [],
+      };
+    });
 
     const result = await createRun();
     const payloads = Array.isArray(result) ? result : [result];
@@ -2261,12 +2278,15 @@ describe("runReplyAgent fallback reasoning tags", () => {
     }));
     runEmbeddedAgentMock.mockResolvedValue({ payloads: [], meta: {} });
     runCliAgentMock.mockResolvedValueOnce({ payloads: [{ text: "ok" }], meta: {} });
-    runWithModelFallbackMock.mockImplementation(async (params: RunWithModelFallbackParams) => ({
-      result: await runFallbackModelAttempt(params, "google-gemini-cli", "gemini-3", "unknown"),
-      provider: "google-gemini-cli",
-      model: "gemini-3",
-      attempts: [],
-    }));
+    runWithModelFallbackMock.mockImplementation(async (params: RunWithModelFallbackParams) => {
+      await params.prepareCandidateChain?.([{ provider: "google-gemini-cli", model: "gemini-3" }]);
+      return {
+        result: await runFallbackModelAttempt(params, "google-gemini-cli", "gemini-3", "unknown"),
+        provider: "google-gemini-cli",
+        model: "gemini-3",
+        attempts: [],
+      };
+    });
     compactState.compactEmbeddedAgentSessionMock.mockResolvedValueOnce({
       ok: true,
       compacted: true,
@@ -2323,7 +2343,7 @@ describe("runReplyAgent response usage footer", () => {
         model: params.model ?? "claude",
         thinkLevel: "low",
       },
-      reply: { queueKey: "main", sessionEntry, sessionKey: params.sessionKey },
+      reply: { queueKey: params.sessionKey, sessionEntry, sessionKey: params.sessionKey },
     }).run();
   }
 
