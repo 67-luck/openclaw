@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { getRuntimeConfig } from "../../config/io.js";
 import { readPreparedGatewayIngressAttribution } from "../ingress-attribution.js";
+import { checkGatewayWsBrowserOrigin } from "../origin-check.js";
 import type { GatewayConnectionIngress } from "./connection-transport.js";
-import { checkGatewayWsBrowserOrigin } from "./ws-origin-policy.js";
 
 export type GatewayOperatorHttpIngress = GatewayConnectionIngress & { binding: string };
 

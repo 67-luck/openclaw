@@ -3,6 +3,7 @@ import { createServer, IncomingMessage, request as httpRequest } from "node:http
 import { Socket } from "node:net";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { GatewayConnectionWork } from "../server-connection-work.js";
+import { sendGatewayConnectionFrame } from "./connection-transport.js";
 import { OPERATOR_HTTP_LIMITS } from "./operator-http-contract.js";
 import type { OperatorHttpPollResponse } from "./operator-http-contract.js";
 import type { GatewayOperatorHttpIngress } from "./operator-http-ingress.js";
@@ -98,53 +99,62 @@ describe("operator HTTP delivery lifecycle", () => {
     }
   });
 
-  test("uses response finish for delivery, retains replay until ACK, and caps poll batches", async () => {
-    const { transport, ingress } = createTransport();
-    const callback = vi.fn();
-    const server = createServer((request, response) => {
-      response.setHeader("Cache-Control", "no-store");
-      void transport.pollFrames(response, ingress, 0);
-    });
-    server.listen(0, "127.0.0.1");
-    await once(server, "listening");
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected TCP listener");
-    }
-    const poll = async (): Promise<OperatorHttpPollResponse> =>
-      await (
-        await fetch(`http://127.0.0.1:${address.port}`, { signal: AbortSignal.timeout(5000) })
-      ).json();
-    try {
-      for (let index = 0; index < 65; index++) {
-        transport.send(
-          JSON.stringify({ type: "event", event: "tick", seq: 1000 + index }),
-          callback,
-        );
-      }
-      expect(callback).not.toHaveBeenCalled();
-      expect(transport.acknowledge(1)).toBe(false);
-      const first = await poll();
-      expect(first.frames).toHaveLength(64);
-      expect(first.frames[0]).toMatchObject({ cursor: 1, frame: { seq: 1000 } });
-      expect(callback).toHaveBeenCalledTimes(64);
-      expect((await poll()).frames).toEqual(first.frames);
-      expect(callback).toHaveBeenCalledTimes(64);
-      expect(transport.acknowledge(64)).toBe(true);
-      expect(transport.acknowledge(63)).toBe(false);
-      expect((await poll()).frames).toEqual([
-        { cursor: 65, frame: { type: "event", event: "tick", seq: 1064 } },
-      ]);
-      expect(callback).toHaveBeenCalledTimes(65);
-      expect(transport.acknowledge(65)).toBe(true);
-      expect(transport.bufferedAmount).toBe(0);
-    } finally {
-      transport.terminate();
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
+  test.each(["string", "buffer", "contextual-buffer"])(
+    "uses response finish for %s delivery, retains replay until ACK, and caps poll batches",
+    async (encoding) => {
+      const { transport, ingress } = createTransport();
+      const callback = vi.fn();
+      const server = createServer((request, response) => {
+        response.setHeader("Cache-Control", "no-store");
+        void transport.pollFrames(response, ingress, 0);
       });
-    }
-  });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Expected TCP listener");
+      }
+      const poll = async (): Promise<OperatorHttpPollResponse> =>
+        await (
+          await fetch(`http://127.0.0.1:${address.port}`, { signal: AbortSignal.timeout(5000) })
+        ).json();
+      try {
+        for (let index = 0; index < 65; index++) {
+          const frame = JSON.stringify({ type: "event", event: "tick", seq: 1000 + index });
+          if (encoding === "string") {
+            transport.send(frame, callback);
+          } else if (encoding === "buffer") {
+            transport.send(Buffer.from(frame), { binary: false }, callback);
+          } else {
+            sendGatewayConnectionFrame(transport, Buffer.from(frame), callback, {
+              isCurrent: () => true,
+            });
+          }
+        }
+        expect(callback).not.toHaveBeenCalled();
+        expect(transport.acknowledge(1)).toBe(false);
+        const first = await poll();
+        expect(first.frames).toHaveLength(64);
+        expect(first.frames[0]).toMatchObject({ cursor: 1, frame: { seq: 1000 } });
+        expect(callback).toHaveBeenCalledTimes(64);
+        expect((await poll()).frames).toEqual(first.frames);
+        expect(callback).toHaveBeenCalledTimes(64);
+        expect(transport.acknowledge(64)).toBe(true);
+        expect(transport.acknowledge(63)).toBe(false);
+        expect((await poll()).frames).toEqual([
+          { cursor: 65, frame: { type: "event", event: "tick", seq: 1064 } },
+        ]);
+        expect(callback).toHaveBeenCalledTimes(65);
+        expect(transport.acknowledge(65)).toBe(true);
+        expect(transport.bufferedAmount).toBe(0);
+      } finally {
+        transport.terminate();
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    },
+  );
 
   test("keeps aborted writes retryable without reporting delivery, then bounds retries", async () => {
     const { transport, ingress } = createTransport();

@@ -18,12 +18,12 @@ import {
   buildGatewayReloadPlan,
   listConfigReloadRefinementPrefixes,
 } from "./config-reload-plan.js";
+import { createGatewayOperatorHttpRuntime } from "./operator-http.js";
 import {
   indexPluginNodeCapabilitySurfaces,
   reconcileClientPluginNodeCapabilities,
 } from "./plugin-node-capability.js";
 import { collectGatewayProcessMemoryUsageMb, finishGatewayRestartTrace } from "./restart-trace.js";
-import { createGatewayOperatorHttpRuntime } from "./operator-http.js";
 import { activateGatewayAgentDatabaseStartup } from "./server-agent-database-startup.js";
 import type { GatewayKernelRuntime } from "./server-kernel-request-runtime.js";
 import { clearGatewayMaintenanceHandles } from "./server-maintenance-lifecycle.js";
@@ -156,28 +156,28 @@ export async function finishGatewayStartup(params: {
     () => import("./server/ws-connection.js"),
   );
   const connectionOptions: GatewayConnectionOptions = {
-      clients,
-      connectionWork: runtime.connectionWork,
-      bootId,
-      getPluginNodeCapabilities,
-      getResolvedAuth,
-      getRequiredSharedGatewaySessionGeneration: sharedGatewaySessionGenerationState.reader,
-      rateLimiter: authRateLimiter,
-      browserRateLimiter: browserAuthRateLimiter,
-      nodeReapprovalCoordinator,
-      isStartupPending: isGatewayStartupPending,
-      isPendingWorkerNodeSetup: workerEnvironmentService?.hasPendingNodeEnrollmentSetup,
-      admitsNodeSetupCompletion: workerEnvironmentService?.admitsNodeSetupCompletion,
-      gatewayMethods: runtimeState.gatewayMethods,
-      events: GATEWAY_EVENTS,
-      logGateway: log,
-      logHealth,
-      logWsControl,
-      extraHandlers: attachedGatewayExtraHandlers,
-      getMethodRegistry: () => getAttachedGatewayMethodRegistry(),
-      broadcast,
-      refreshHealthSnapshot: gatewayRequestContext.refreshHealthSnapshot,
-      buildRequestContext: () => gatewayRequestContext,
+    clients,
+    connectionWork: runtime.connectionWork,
+    bootId,
+    getPluginNodeCapabilities,
+    getResolvedAuth,
+    getRequiredSharedGatewaySessionGeneration: sharedGatewaySessionGenerationState.reader,
+    rateLimiter: authRateLimiter,
+    browserRateLimiter: browserAuthRateLimiter,
+    nodeReapprovalCoordinator,
+    isStartupPending: isGatewayStartupPending,
+    isPendingWorkerNodeSetup: workerEnvironmentService?.hasPendingNodeEnrollmentSetup,
+    admitsNodeSetupCompletion: workerEnvironmentService?.admitsNodeSetupCompletion,
+    gatewayMethods: runtimeState.gatewayMethods,
+    events: GATEWAY_EVENTS,
+    logGateway: log,
+    logHealth,
+    logWsControl,
+    extraHandlers: attachedGatewayExtraHandlers,
+    getMethodRegistry: () => getAttachedGatewayMethodRegistry(),
+    broadcast,
+    refreshHealthSnapshot: gatewayRequestContext.refreshHealthSnapshot,
+    buildRequestContext: () => gatewayRequestContext,
   };
   await startupTrace.measure("gateway.ws-attach", () =>
     attachGatewayWsConnectionHandler({

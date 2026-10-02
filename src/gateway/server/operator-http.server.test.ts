@@ -36,13 +36,13 @@ import {
   rpcReq,
   startConnectedServerWithClient,
 } from "../test-helpers.js";
+import { GatewayClientRegistry } from "./client-registry.js";
 import type {
   OperatorHttpBeginResponse,
   OperatorHttpPollResponse,
 } from "./operator-http-contract.js";
 import { createPreauthConnectionBudget } from "./preauth-connection-budget.js";
 import * as preauthBudget from "./preauth-connection-budget.js";
-import type { GatewayWsClient } from "./ws-types.js";
 
 installGatewayTestHooks({ scope: "suite" });
 await import("../server.js");
@@ -706,7 +706,7 @@ describe("paired operator HTTP transport", () => {
   });
 
   test("does not claim preauth capacity when shutdown starts during the begin body", async () => {
-    const clients = new Set<GatewayWsClient>();
+    const clients = new GatewayClientRegistry();
     const work = new GatewayConnectionWork();
     const budget = createPreauthConnectionBudget(1);
     const acquire = vi.spyOn(budget, "acquire");
