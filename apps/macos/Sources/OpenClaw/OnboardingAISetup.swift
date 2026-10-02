@@ -1317,7 +1317,7 @@ extension OnboardingAISetupModel {
                 sessionID,
                 on: authServerLease)
             #if DEBUG
-            let outcome: String = switch cancellation {
+            let outcome = switch cancellation {
             case .absent: "absent"
             case .unresolved: "unresolved"
             case .cancelled: "cancelled"
@@ -1651,7 +1651,7 @@ extension OnboardingAISetupModel {
     }
 
     #if DEBUG
-    // Diagnostic-ref only: synchronous, synthetic snapshots; never a shipping test API.
+    /// Diagnostic-ref only: synchronous, synthetic snapshots; never a shipping test API.
     struct CancellationOrderSnapshot: Encodable, Sendable {
         let event: String
         let requestPresent: Bool
@@ -1674,14 +1674,14 @@ extension OnboardingAISetupModel {
         cancellationID: Int = 0)
     {
         guard let observer = self._test_cancellationOrderObserver else { return }
-        let phase: String = switch self.phase {
+        let phase = switch self.phase {
         case .idle: "idle"
         case .detecting: "detecting"
         case .ready: "ready"
         case .testing: "testing"
         case .connected: "connected"
         }
-        let cancellation: String = switch self.providerAuthCancellation {
+        let cancellation = switch self.providerAuthCancellation {
         case .none: "none"
         case .requesting: "requesting"
         case .unconfirmed: "unconfirmed"
