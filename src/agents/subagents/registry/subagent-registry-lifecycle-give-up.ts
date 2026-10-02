@@ -142,7 +142,7 @@ export async function finishSubagentCleanup(
   }
   if (!isCurrent()) {
     if (cleanupGeneration !== undefined) {
-      await retireSupersededCleanupIfNeeded(context, runId, entry, cleanupGeneration);
+      await retireSupersededCleanupIfNeeded(context, entry, cleanupGeneration);
     }
     return;
   }
