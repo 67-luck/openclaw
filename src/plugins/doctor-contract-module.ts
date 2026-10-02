@@ -83,6 +83,11 @@ export type PluginDoctorStateMigrationContext = {
     namespace: string,
     entries: readonly PluginDoctorRawStateEntry[],
   ) => { deleted: number; changed: number };
+  /** Offline repair only: verified backup, exact row comparison, and one atomic update. */
+  repairPluginStateEntries?: (
+    namespace: string,
+    replacements: readonly { entry: PluginDoctorRawStateEntry; value: unknown }[],
+  ) => Promise<{ changes: string[]; warnings: string[] }>;
   /** Owner-bound ingress queue access, one entry per manifest-declared channel;
    *  the host fixes the channel identity and doctor state directory. Older test
    *  hosts may omit it. */
@@ -170,6 +175,13 @@ export type PluginDoctorStateMigration = {
   /** Import retired file state only during explicit `doctor --fix` repair. */
   doctorOnly?: boolean;
   phase?: "after-session-repair";
+  /** Presence-only retirement checks run before migration detection or writes. */
+  retiredStateFiles?: (
+    params: Pick<
+      PluginDoctorStateMigrationInput,
+      "config" | "env" | "stateDir" | "serviceWorkspaceDir"
+    >,
+  ) => readonly string[];
   /** Read-only recovery inventory. Never open or migrate a writable store here. */
   collectBackupResources?: (
     params: Pick<
@@ -272,6 +284,7 @@ function coercePluginDoctorStateMigrations(value: unknown): PluginDoctorStateMig
     label: migration.label.trim(),
     doctorOnly: migration.doctorOnly === true ? true : undefined,
     phase: migration.phase === "after-session-repair" ? migration.phase : undefined,
+    retiredStateFiles: migration.retiredStateFiles,
     collectBackupResources: migration.collectBackupResources,
     detectLegacyState: migration.detectLegacyState,
     migrateLegacyState: migration.migrateLegacyState,

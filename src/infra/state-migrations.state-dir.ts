@@ -5,7 +5,17 @@ import { probePathCaseInsensitiveSync, resolvePathPrefixSync } from "@openclaw/f
 import { isWithinDir, safeStatSync } from "@openclaw/fs-safe/path";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { resolveProfileStateDir } from "../cli/profile-utils.js";
-import { resolveLegacyStateDirs, resolveNewStateDir, resolveStateDir } from "../config/paths.js";
+import {
+  assertNoRetiredOAuthSidecarsBeforeConfigRecovery,
+  listLegacyOAuthSidecarPaths,
+} from "../commands/doctor-auth-legacy-paths.js";
+import { readCurrentConfigForResolution } from "../config/io.runtime.js";
+import {
+  resolveConfigPath,
+  resolveLegacyStateDirs,
+  resolveNewStateDir,
+  resolveStateDir,
+} from "../config/paths.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { inspectPersistedInstalledPluginIndexInstallRecordsSync } from "../plugins/installed-plugin-index-record-state.js";
 import {
@@ -16,6 +26,8 @@ import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-rea
 import { resolveIdentityPathViaExistingAncestorSync } from "./boundary-path.js";
 import { resolveUserPath } from "./home-dir.js";
 import { migrationFileExists } from "./state-migrations.fs.js";
+import { listRetiredDeliveryQueueFiles } from "./state-migrations.retired-delivery-files.js";
+import { assertNoRetiredStateFiles } from "./state-migrations.retired-files.js";
 import type { MigrationLogger } from "./state-migrations.types.js";
 
 let autoMigrateStateDirChecked = false;
@@ -305,8 +317,8 @@ export function prepareLegacyStateDirMigration(params: StateDirMigrationParams) 
   if (autoMigrateStateDirChecked) {
     return undefined;
   }
-  autoMigrateStateDirChecked = true;
   const result = migrateLegacyStateDirRoot(params);
+  autoMigrateStateDirChecked = true;
   return {
     stateDir: resolveStateDir(params.env ?? process.env, params.homedir ?? os.homedir),
     result,
@@ -328,6 +340,17 @@ function migrateLegacyStateDirRoot(params: StateDirMigrationParams): StateDirMig
   const notices: string[] = [];
   const hasCustomStateDir = Boolean(env.OPENCLAW_STATE_DIR?.trim());
   const targetDir = hasCustomStateDir ? resolveStateDir(env, homedir) : resolveNewStateDir(homedir);
+  assertNoRetiredStateFiles("JSON delivery queues", listRetiredDeliveryQueueFiles(targetDir));
+  const configPath = resolveConfigPath(env, resolveStateDir(env, homedir), homedir);
+  assertNoRetiredOAuthSidecarsBeforeConfigRecovery({ env, configPath });
+  const { env: inspectionEnv } = readCurrentConfigForResolution({
+    env,
+    configPath,
+  });
+  assertNoRetiredStateFiles(
+    "OAuth credential sidecars",
+    listLegacyOAuthSidecarPaths(inspectionEnv, undefined, targetDir),
+  );
   const finishMigration = (): StateDirMigrationResult => {
     const legacyIndexPath = resolveLegacyInstalledPluginIndexStorePath({ stateDir: targetDir });
     if (migrationFileExists(legacyIndexPath)) {
@@ -407,6 +430,11 @@ function migrateLegacyStateDirRoot(params: StateDirMigrationParams): StateDirMig
     return { migrated: false, skipped: false, changes, warnings };
   }
 
+  assertNoRetiredStateFiles("JSON delivery queues", listRetiredDeliveryQueueFiles(legacyDir));
+  assertNoRetiredStateFiles(
+    "OAuth credential sidecars",
+    listLegacyOAuthSidecarPaths(inspectionEnv, undefined, legacyDir),
+  );
   if (safeStatSync(targetDir)?.isDirectory()) {
     if (isLegacyDirSymlinkMirror(legacyDir, targetDir)) {
       return finishMigration();

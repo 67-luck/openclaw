@@ -84,10 +84,11 @@ export function findRetiredConfigUpgradeRequirement(
       checkQueueMode(mode, `messages.queue.byChannel.${channel}`);
     }
   }
+  checkKeys(config.talk, "talk", ["mode", "transport", "brain", "model", "voice"]);
   const channels = isRecord(config.channels) ? config.channels : {};
   checkKeys(config.gateway, "gateway", ["webchat"]);
   checkKeys(channels, "channels", ["webchat"]);
-  checkKeys(channels.telegram, "channels.telegram", ["requireMention"]);
+  checkKeys(channels.telegram, "channels.telegram", ["requireMention", "groupMentionsOnly"]);
   visitChannelEntries(config, "telegram", (scope, configPath) => {
     checkKeys(scope, configPath, [
       "streamMode",

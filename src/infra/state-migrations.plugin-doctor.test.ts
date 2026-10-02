@@ -1,14 +1,21 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  coercePluginDoctorContractModule,
+  type PluginDoctorContractModule,
+} from "../plugins/doctor-contract-module.js";
 import type { listPluginDoctorStateMigrationEntries } from "../plugins/doctor-contract-registry.js";
+import { preparePluginDoctorMigrationResources } from "../plugins/doctor-migration-resources.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { createOpenClawStateLeaseLostError } from "../state/openclaw-state-lease-error.js";
 import { createTrackedTempDirs } from "../test-utils/tracked-temp-dirs.js";
 import {
   autoMigrateLegacyPluginDoctorState,
+  collectPluginDoctorStateMigrationPlans,
   runPostSessionPluginDoctorStateRepairs,
 } from "./state-migrations.plugin-doctor.js";
 import { resetAutoMigrateLegacyStateDirForTest } from "./state-migrations.state-dir.js";
@@ -61,6 +68,76 @@ afterEach(async () => {
 });
 
 describe("plugin Doctor migrations", () => {
+  it.each(["default", "custom", "tilde"] as const)(
+    "refuses retired Voice Call logs at the %s store before detector or repair writes",
+    async (location) => {
+      const root = await tempDirs.make("openclaw-retired-voice-call-");
+      const stateDir = path.join(root, "state");
+      const home = path.join(root, "home$&d");
+      const store =
+        location === "default"
+          ? path.join(stateDir, "voice-calls")
+          : path.join(home, "custom-store");
+      const env = { ...process.env, HOME: home, OPENCLAW_STATE_DIR: stateDir };
+      const config =
+        location === "default"
+          ? {}
+          : {
+              plugins: {
+                entries: {
+                  "@openclaw/voice-call": {
+                    config: { store: location === "tilde" ? "~/custom-store" : store },
+                  },
+                },
+              },
+            };
+      const logPath = path.join(store, "calls.jsonl");
+      const bytes = Buffer.from("historical call bytes, including a torn final record\n{");
+      fs.mkdirSync(store, { recursive: true });
+      fs.writeFileSync(logPath, bytes);
+      const contract = coercePluginDoctorContractModule(
+        await vi.importActual<PluginDoctorContractModule>(
+          fileURLToPath(
+            new URL("../../extensions/voice-call/doctor-contract-api.ts", import.meta.url),
+          ),
+        ),
+      );
+      controls.entries = contract.stateMigrations.map((migration) => ({
+        pluginId: "voice-call",
+        channelIds: [],
+        migration,
+      }));
+      expect(controls.entries).toHaveLength(1);
+      const migration = controls.entries[0]!.migration;
+      const detect = vi.spyOn(migration, "detectLegacyState");
+      const resources = await preparePluginDoctorMigrationResources(controls.entries, {
+        config,
+        env,
+        stateDir,
+        warnings: [],
+      });
+      expect(resources.resources).toEqual([
+        { path: logPath, kind: "file" },
+        { path: path.join(store, "state", "openclaw.sqlite"), kind: "sqlite" },
+      ]);
+      const warnings: string[] = [];
+      try {
+        const result = await collectPluginDoctorStateMigrationPlans(
+          { config, env, stateDir, oauthDir: path.join(stateDir, "credentials") },
+          { includeDoctorOnly: true, warnings },
+        );
+        expect(result.plans).toEqual([]);
+        expect(result.inspectedPluginIds.has("voice-call")).toBe(false);
+        expect(warnings).toEqual([expect.stringContaining("2026.9.7")]);
+        expect(detect).not.toHaveBeenCalled();
+        expect(fs.readFileSync(logPath)).toEqual(bytes);
+        expect(fs.readdirSync(store)).toEqual(["calls.jsonl"]);
+      } finally {
+        detect.mockRestore();
+      }
+    },
+  );
+
   it("refuses pre-July shared schema before plugin migrations", async () => {
     const root = await tempDirs.make("openclaw-plugin-doctor-shared-schema-");
     const stateDir = path.join(root, ".openclaw");

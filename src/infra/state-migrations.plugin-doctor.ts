@@ -18,6 +18,7 @@ import { formatErrorMessage } from "./errors.js";
 import { acquireGatewayLock } from "./gateway-lock.js";
 import { formatStartupMigrationFailure } from "./state-migrations.messages.js";
 import { createPluginDoctorStateMigrationContext } from "./state-migrations.plugin-doctor-context.js";
+import { assertNoRetiredStateFiles } from "./state-migrations.retired-files.js";
 import { autoMigrateLegacyStateDir } from "./state-migrations.state-dir.js";
 import type {
   DetectedPluginDoctorStateMigrationPlan,
@@ -192,11 +193,18 @@ export async function collectPluginDoctorStateMigrationPlans(
     try {
       params.repairAuthority?.assertCurrent();
       collected.assertResourceScope();
-      detected = await entry.migration.detectLegacyState({
+      const migrationInput = {
         ...input,
         serviceWorkspaceDir:
           tryResolveConfiguredAgentWorkspaceDir(config, env) ??
           resolveDefaultAgentWorkspaceDir(env),
+      };
+      assertNoRetiredStateFiles(
+        entry.migration.label,
+        entry.migration.retiredStateFiles?.(migrationInput) ?? [],
+      );
+      detected = await entry.migration.detectLegacyState({
+        ...migrationInput,
         context: createPluginDoctorStateMigrationContext({
           pluginId: entry.pluginId,
           env,

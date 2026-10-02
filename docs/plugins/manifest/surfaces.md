@@ -78,6 +78,15 @@ warning is advisory and required state remains safe for later repairs. Doctor pr
 in its receipts and continues. Detection errors, thrown failures, and unclassified warnings from another
 migration still refuse the combined step.
 
+A retained state migration may declare `retiredStateFiles(input)`, returning
+absolute paths for formats outside the host's migration retention window.
+The plugin resolves its configured and default paths; the host checks presence
+before calling `detectLegacyState` and refuses with the supported bridge upgrade
+instead of parsing or changing those files. Include the same paths in
+`collectBackupResources` so update rehearsal inspects the copied state. Older
+hosts ignore this optional declaration; plugins must not import a new runtime
+helper to implement it.
+
 For `definePluginDoctorMigrationFromPlans`, a `plugin-state-import` plan may set
 `cleanupWarningDisposition: "recoverable"` when its retired source is an unused,
 rebuildable artifact. This applies only to cleanup failures after import succeeds.

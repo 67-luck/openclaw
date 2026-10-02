@@ -13,6 +13,8 @@ import {
 import { resolveChannelDefaultAccountId } from "../channels/plugins/helpers.js";
 import { getChannelPlugin } from "../channels/plugins/registry.js";
 import type { ChannelId } from "../channels/plugins/types.public.js";
+import { listLegacyOAuthSidecarPaths } from "../commands/doctor-auth-legacy-paths.js";
+import { createConfigRuntimeEnv } from "../config/config-env-vars.js";
 import { resolveSessionStoreCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import { resolveConfigPath, resolveOAuthDir, resolveStateDir } from "../config/paths.js";
 import { migrateLegacyMainSessionKeys } from "../config/sessions/legacy-main-session-migration.js";
@@ -48,7 +50,6 @@ import { inspectOpenClawRegisteredAgentDatabases } from "../state/openclaw-agent
 import { detectOpenClawStateDatabaseSchemaMigrations } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveIdentityPathViaExistingAncestorSync } from "./boundary-path.js";
-import { detectLegacyDeliveryQueueFiles } from "./delivery-queue-legacy-files.js";
 import { listLegacyPairingStoreFiles } from "./pairing-files.js";
 import { isPathInside } from "./path-guards.js";
 import {
@@ -162,6 +163,8 @@ import {
   detectLegacyRestartSentinel,
   migrateLegacyRestartSentinel,
 } from "./state-migrations.restart-sentinel.js";
+import { listRetiredDeliveryQueueFiles } from "./state-migrations.retired-delivery-files.js";
+import { assertNoRetiredStateFiles } from "./state-migrations.retired-files.js";
 import {
   migrateLegacyConfigHealth,
   migrateLegacyCurrentConversationBindings,
@@ -251,7 +254,11 @@ export async function detectLegacyStateMigrations(params: {
   const env = params.env ?? process.env;
   const homedir = params.homedir ?? os.homedir;
   const stateDir = resolveStateDir(env, homedir);
-  const oauthDir = resolveOAuthDir(env, stateDir);
+  assertNoRetiredStateFiles("JSON delivery queues", listRetiredDeliveryQueueFiles(stateDir));
+  const oauthDir = resolveOAuthDir(
+    createConfigRuntimeEnv(params.sourceConfigBeforeMigrations ?? params.cfg, env),
+    stateDir,
+  );
   const detectSessionFiles = params.mode !== "automatic";
   const { installAgentDir, migrationTarget, migrationAgentId, sessionMigrationAgentId } =
     resolveLegacyStateMigrationOwner({
@@ -390,7 +397,6 @@ export async function detectLegacyStateMigrations(params: {
     doctorOnlyStateMigrations: params.doctorOnlyStateMigrations,
     artifactPreservingReadOnly: params.artifactPreservingReadOnly,
   });
-  const deliveryQueues = detectLegacyDeliveryQueueFiles(stateDir);
   const pairingStoreFiles =
     params.mode === "automatic" ? [] : await listLegacyPairingStoreFiles(stateDir);
   const voiceWake = {
@@ -620,7 +626,6 @@ export async function detectLegacyStateMigrations(params: {
         ? `- Shared auth store skipped: store held: ${sharedAuthStore.sourcePath}`
         : "- Shared auth store: legacy main-agent rows → shared SQLite state",
     ],
-    [deliveryQueues.hasLegacy, "- Delivery queues: legacy JSON queue files → shared SQLite state"],
     [hasVoiceWake, "- Voice Wake settings: legacy JSON files → shared SQLite state"],
     [hasUpdateCheck, "- Update-check state: legacy JSON file → shared SQLite state"],
     [hasConfigHealth, "- Config health state: legacy JSON file → shared SQLite state"],
@@ -725,7 +730,6 @@ export async function detectLegacyStateMigrations(params: {
     },
     sharedAuthStore,
     worktrees,
-    deliveryQueues,
     pairingStores: { sourcePaths: pairingStoreFiles, hasLegacy: pairingStoreFiles.length > 0 },
     voiceWake: {
       ...voiceWake,
@@ -1176,13 +1180,7 @@ function buildLegacyStateMigrationSteps(
       ),
       detected.debugProxyCaptureSidecar.hasLegacy,
     ],
-    "delivery-queues": [
-      [
-        ...pathEndpoints(detected.deliveryQueues.outboundPath, detected.deliveryQueues.sessionPath),
-        stateDatabase,
-      ],
-      detected.deliveryQueues.hasLegacy ? true : "conditional",
-    ],
+    "delivery-queues": [[stateDatabase], "conditional"],
     "pairing-stores": [
       pathEndpoints(...detected.pairingStores.sourcePaths),
       detected.pairingStores.hasLegacy,
@@ -1671,6 +1669,10 @@ export async function planLegacyStateMigrationsReadOnly(params: {
     configPath: path.resolve(params.snapshot.configPath),
     stateDir: path.resolve(params.snapshot.stateDir),
   };
+  assertNoRetiredStateFiles(
+    "JSON delivery queues",
+    listRetiredDeliveryQueueFiles(requestedSnapshot.stateDir),
+  );
   const callerEnv = createLegacyStateMigrationCallerEnv({
     env: params.env,
     snapshot: requestedSnapshot,
@@ -2426,8 +2428,16 @@ export async function runLegacyStateMigrations(params: {
   }
 > {
   const detected = params.detected;
+  assertNoRetiredStateFiles(
+    "JSON delivery queues",
+    listRetiredDeliveryQueueFiles(detected.stateDir),
+  );
   const env = params.env ?? process.env;
   const config = params.config ?? ({} as OpenClawConfig);
+  assertNoRetiredStateFiles("OAuth credential sidecars", [
+    ...listLegacyOAuthSidecarPaths(env, config, detected.stateDir),
+    ...listLegacyOAuthSidecarPaths({ ...env, OPENCLAW_OAUTH_DIR: detected.oauthDir }),
+  ]);
   const legacySessionSurfaces = params.legacySessionSurfaces;
   const buildSteps = (pluginStateMigrationInventory?: PluginDoctorStateMigrationInventory) =>
     buildLegacyStateMigrationSteps({
@@ -2562,6 +2572,11 @@ async function executeLegacyStateMigrations(
     ),
   };
   const initialStateDir = resolveStateDir(env, homedir);
+  assertNoRetiredStateFiles("JSON delivery queues", listRetiredDeliveryQueueFiles(initialStateDir));
+  assertNoRetiredStateFiles(
+    "OAuth credential sidecars",
+    listLegacyOAuthSidecarPaths(env, params.cfg, initialStateDir),
+  );
   const checkKey = `${path.resolve(initialStateDir)}\0${mode}`;
   // An earlier attempt may leave post-session work or a refusal unresolved.
   // Explicit Doctor calls need fresh receipts and handoffs, not startup's once-cache.
@@ -3292,7 +3307,6 @@ async function executeLegacyStateMigrations(
     !detected.sharedAuthStore.hasLegacy &&
     !detected.worktrees.hasLegacy &&
     detected.worktrees.pathRewrites.length === 0 &&
-    !detected.deliveryQueues.hasLegacy &&
     !detected.voiceWake.hasLegacy &&
     !detected.updateCheck.hasLegacy &&
     !detected.configHealth.hasLegacy &&

@@ -31,15 +31,33 @@ untouched so Doctor can report and persist the repair.
 ## Retention policy
 
 OpenClaw supports migrations from formats written by shipped releases on or after
-July 1, 2026. Retain a transform whenever a release in that window can still write
+July 1, 2026. Publication date governs, including older-version extended-stable
+releases. Retain a transform whenever a release in that window can still write
 its input format. A supported release that preserves a legacy
 format when rewriting existing data also counts as a writer. A format last
-written before the cutoff may be retired only with a clear refusal naming an
-intermediate release to upgrade through before retrying. Retirement must never
-silently discard persisted data.
+written before the cutoff may be retired together with its Doctor checks.
+When Doctor refuses a retired input, it names an intermediate release to upgrade
+through before retrying. Retirement must leave persisted source data untouched.
+
+Extended-stable releases count by publication date, even when their version
+number names an earlier month.
 
 Legacy normalization belongs to Doctor and migration owners, with the existing
 backup and verification flow. Runtime readers consume canonical state.
+
+Telegram's pre-July bot-info, sticker, thread-binding, update-offset, message,
+sent-message, and topic-name JSON sidecars are no longer inspected or archived.
+Their last file writers shipped in May 2026. To recover state held only in those
+files, use a pre-update backup with OpenClaw `2026.9.5` Doctor before updating.
+See [legacy state migration](/cli/doctor/state-migrations).
+
+Telegram SQLite update-offset versions 1 and 2 remain supported because published
+July-era Doctor imports can still write them. Doctor normalizes those rows to
+version 3 after saving a verified SQLite backup. The cursor, row timestamps,
+expiry, and unrelated fields are preserved. Missing bot identity and token
+fingerprints remain null; account startup retains responsibility for token
+rotation and any required ingress purge. Updates run this repair before account
+startup. After a manual package replacement, run `openclaw doctor --fix` first.
 
 Old `openclaw.extension.json` npm declaration stubs are ignored by discovery and
 Doctor. They are not plugin manifests, and their files remain unchanged. Reinstall
@@ -47,6 +65,14 @@ the package with `openclaw plugins install npm:<package>` and update any explici
 `plugins.load.paths` entry to the installed plugin root. To use the old automatic
 stub repair, run `openclaw doctor --fix` on `2026.9.7` before upgrading. Current
 `openclaw.plugin.json` manifests and npm package installation remain supported.
+
+OAuth credential sidecars under `credentials/auth-profiles/` are retired. Their
+last writer shipped in `2026.5.16-beta.3` on May 16, 2026; `2026.5.16-beta.4`
+removed that writer. Doctor detects these files without reading credentials or
+accessing encryption keys. Upgrade through `2026.9.7` and run
+`openclaw doctor --fix` on the original host before retrying. The supported
+`auth.json`, `auth-profiles.json`, SQLite credential, and migration-recovery
+contracts remain unchanged.
 
 OpenClaw `v2026.9.7` can still write ownerless and mode-less cron jobs, and its
 migration/import writers can preserve null, `deliver`, or mixed-case delivery
@@ -63,6 +89,13 @@ live files and reports the upgrade requirement before activation, including when
 a published updater omits those files from its later rehearsal snapshot. Existing SQLite cron stores,
 including their owner and delivery repairs, keep their normal update path.
 
+Doctor refuses pre-July JSON delivery queue files and leaves them unchanged.
+Upgrade through `2026.9.7` and run its `openclaw doctor --fix` before retrying.
+Current SQLite queues remain supported. Updates driven by `2026.9.7` check these
+original files before stopping the running Gateway. The same early check reports
+the existing recovery guidance for a retired `plugins/installs.json` index. See
+[state migration recovery](/gateway/doctor/state-and-sessions).
+
 Doctor also refuses these retired config inputs:
 
 - `agents.defaults.llm`, agent `embeddedPi`, `embeddedHarness`, whole-agent
@@ -76,8 +109,11 @@ Doctor also refuses these retired config inputs:
 - Queue modes `queue`, `steer-backlog`, and `steer+backlog` in `messages.queue.mode`
   or `messages.queue.byChannel`.
 - Top-level `heartbeat`, `routing.allowFrom`, and `routing.groupChat`.
+- Top-level Talk realtime selectors `talk.mode`, `talk.transport`, `talk.brain`,
+  `talk.model`, and `talk.voice`.
 - `channels.telegram.requireMention`, `channels.feishu.accounts.<id>.botName`,
   and the retired `channels.webchat` section.
+- `channels.telegram.groupMentionsOnly`; use `channels.telegram.groups["*"].requireMention`.
 - `session.threadBindings.ttlHours` and Discord/LINE/Matrix/Telegram `threadBindings.ttlHours`,
   including per-account settings.
 - Telegram `dm`, `direct.*.threadReplies`, native draft preview settings, and scalar
@@ -89,6 +125,12 @@ succeed. Doctor preserves the config and stops with recovery guidance instead
 of stripping these settings or replacing them with a backup. For an older installation,
 [upgrade through `2026.9.5`](/install/updating#upgrading-very-old-versions)
 and run its Doctor migrations before installing the latest version.
+
+Voice Call `calls.jsonl` files are also retired. Their last runtime writer was
+removed on May 31, 2026. Doctor preserves a remaining log and refuses before
+repairing the plugin's SQLite state. Upgrade through OpenClaw `2026.9.7`, run
+`openclaw doctor --fix` against the original configured call store, then retry
+the update. The supported SQLite schema repair remains available.
 
 ## Cron ownership before roster migration
 
@@ -530,7 +572,7 @@ against the current SQLite owners before the import can rename profiles.
   <Accordion title="1. Config normalization">
     GitHub Copilot now requires explicit provider config, a saved Copilot auth profile, or `COPILOT_GITHUB_TOKEN`. Generic `GH_TOKEN` and `GITHUB_TOKEN` no longer activate it. Doctor reports this change once when only a generic GitHub token is present. Doctor removes the retired `plugins.entries.github-copilot.config.discovery.enabled` setting, including malformed values, before validating and saving the config. Ordinary config reads require the repaired config.
 
-    Doctor normalizes legacy value shapes into the current schema. Current Talk speech config is `talk.provider` + `talk.providers.<provider>`, with realtime voice config under `talk.realtime.*`. Doctor rewrites old `talk.voiceId` / `talk.voiceAliases` / `talk.modelId` / `talk.outputFormat` / `talk.apiKey` shapes into the provider map, and rewrites legacy top-level realtime selectors (`talk.mode`, `talk.transport`, `talk.brain`, `talk.model`, `talk.voice`) into `talk.realtime`.
+    Doctor normalizes legacy value shapes into the current schema. Current Talk speech config is `talk.provider` + `talk.providers.<provider>`, with realtime voice config under `talk.realtime.*`. Doctor rewrites old `talk.voiceId` / `talk.voiceAliases` / `talk.modelId` / `talk.outputFormat` / `talk.apiKey` shapes into the provider map. Top-level realtime selectors are retired under the retention policy above.
 
     Doctor also warns when `plugins.allow` is non-empty and tool policy uses wildcard or plugin-owned tool entries. `tools.allow: ["*"]` only matches tools from plugins that actually load; it does not bypass the exclusive plugin allowlist.
 
@@ -580,7 +622,6 @@ against the current SQLite owners before the import can rename profiles.
     | `tools.codeMode.runtime: "quickjs-wasi"` (global and per-agent)                                | `tools.codeMode.executor: "quickjs"` (an existing executor selection wins) |
     | `tools.codeMode.languages`, `agents.entries.*.tools.codeMode.languages`                         | removed (Code Mode executes JavaScript; activation and limits are preserved) |
     | legacy `talk.voiceId`/`talk.voiceAliases`/`talk.modelId`/`talk.outputFormat`/`talk.apiKey`        | `talk.provider` + `talk.providers.<provider>`                               |
-    | legacy top-level realtime Talk selectors (`talk.mode`/`talk.transport`/`talk.brain`/`talk.model`/`talk.voice`) | `talk.realtime`                                                              |
     | `messages.tts`                                                                                  | top-level `tts`                                                              |
     | `messages.tts.<provider>` (`openai`/`elevenlabs`/`microsoft`/`edge`)                             | `tts.providers.<provider>`                                                   |
     | `messages.tts.provider: "edge"` / `messages.tts.providers.edge`                                  | `tts.provider: "microsoft"` / `tts.providers.microsoft`                    |

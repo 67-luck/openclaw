@@ -984,7 +984,6 @@ extensions/telegram/src/telegram-ingress-supersede.ts	7
 extensions/telegram/src/telegram-ingress-worker.runtime.ts	3
 extensions/telegram/src/thread-bindings-store.ts	1
 extensions/telegram/src/topic-name-cache.ts	1
-extensions/telegram/src/update-offset-store.ts	1
 extensions/telegram/src/webhook.ts	1
 extensions/tencent/stream.ts	1
 extensions/tlon/src/channel.runtime.ts	3
@@ -1936,7 +1935,7 @@ src/commands/doctor/shared/legacy-config-migrations.runtime.models.catalog.ts	4
 src/commands/doctor/shared/legacy-config-migrations.runtime.models.codex.ts	4
 src/commands/doctor/shared/legacy-config-migrations.runtime.models.refs.ts	1
 src/commands/doctor/shared/legacy-config-state-migration-input.ts	2
-src/commands/doctor/shared/legacy-talk-config-normalizer.ts	2
+src/commands/doctor/shared/legacy-talk-config-normalizer.ts	1
 src/commands/doctor/shared/legacy-web-tools-migrate.ts	1
 src/commands/doctor/shared/open-policy-allowfrom.ts	2
 src/commands/doctor/shared/plugin-runtime-symlinks.ts	1
@@ -2423,7 +2422,6 @@ src/infra/state-migrations.runtime-state.ts	1
 src/infra/state-migrations.session-store.ts	6
 src/infra/state-migrations.shared-auth-store.ts	1
 src/infra/state-migrations.state-dir.ts	1
-src/infra/state-migrations.storage.ts	2
 src/infra/state-migrations.tui-last-session.ts	2
 src/infra/state-migrations.update-check.ts	2
 src/infra/state-migrations.workspace-setup-store.ts	2

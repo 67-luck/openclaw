@@ -12,15 +12,15 @@ import {
 // Persistent voice-call event store backed by plugin state chunk records.
 
 /** Plugin state namespace for call record event metadata. */
-export const CALL_RECORD_EVENTS_NAMESPACE = "call-record-events";
+const CALL_RECORD_EVENTS_NAMESPACE = "call-record-events";
 /** Plugin state namespace for base64 call record event chunks. */
-export const CALL_RECORD_EVENT_CHUNKS_NAMESPACE = "call-record-event-chunks";
+const CALL_RECORD_EVENT_CHUNKS_NAMESPACE = "call-record-event-chunks";
 /** Maximum retained call record events. */
 export const MAX_CALL_RECORD_EVENTS = 1000;
 /** Extra metadata entries retained so pruning can safely trim oldest rows. */
-export const CALL_RECORD_EVENT_META_MAX_ENTRIES = MAX_CALL_RECORD_EVENTS + 100;
+const CALL_RECORD_EVENT_META_MAX_ENTRIES = MAX_CALL_RECORD_EVENTS + 100;
 const MAX_CHUNKS_PER_CALL_RECORD_EVENT = 48;
-export const CALL_RECORD_CHUNK_MAX_ENTRIES =
+const CALL_RECORD_CHUNK_MAX_ENTRIES =
   MAX_CALL_RECORD_EVENTS * MAX_CHUNKS_PER_CALL_RECORD_EVENT + MAX_CHUNKS_PER_CALL_RECORD_EVENT;
 /** Raw UTF-8 bytes stored per call record chunk before base64 encoding. */
 const RAW_CALL_RECORD_CHUNK_BYTES = 47 * 1024;
@@ -28,7 +28,7 @@ const CALL_RECORD_READ_BATCH_KEYS = 128;
 let callRecordEventSequence = 0;
 
 /** Metadata row for a chunked call record event. */
-export type CallRecordEventMeta = {
+type CallRecordEventMeta = {
   chunkCount: number;
   byteLength: number;
   persistedAt?: number;
@@ -36,7 +36,7 @@ export type CallRecordEventMeta = {
 };
 
 /** One base64 chunk for a serialized call record event. */
-export type CallRecordEventChunk = {
+type CallRecordEventChunk = {
   index: number;
   dataBase64: string;
 };
@@ -99,7 +99,7 @@ function tryCreateCallRecordStateStores(
 }
 
 /** Build the stable storage key for one chunk of an event. */
-export function buildChunkKey(eventKey: string, index: number): string {
+function buildChunkKey(eventKey: string, index: number): string {
   return `${eventKey}:chunk:${String(index).padStart(4, "0")}`;
 }
 
@@ -176,7 +176,7 @@ function prepareVoiceCallRecordForStorage(call: CallRecord): CallRecord {
 }
 
 /** Encode one bounded record; chunks are produced only when requested by the writer. */
-export function encodeCallRecordEvent(call: CallRecord) {
+function encodeCallRecordEvent(call: CallRecord) {
   const serialized = JSON.stringify(prepareVoiceCallRecordForStorage(call));
   const buffer = Buffer.from(serialized, "utf8");
   const chunkCount = Math.max(1, Math.ceil(buffer.byteLength / RAW_CALL_RECORD_CHUNK_BYTES));

@@ -78,10 +78,17 @@ a standalone CLI runtime.
 analysis to the last N records (default 200). Output includes min/max/avg,
 p50, and p95 for turn latency and listen-wait times.
 
-Doctor imports older `calls.jsonl` records into SQLite, preserving call data and
-event ordering, and keeps the original log as `calls.jsonl.migrated`. Run
-`openclaw doctor --fix` before starting Voice Call with an older call log;
-runtime call-history reads use only canonical SQLite records.
+`calls.jsonl` predates the July 1, 2026 migration cutoff. If it remains in the
+configured call store, Doctor stops without changing it. Upgrade through
+OpenClaw 2026.9.7 and run `openclaw doctor --fix` to import and archive the log,
+then retry the update. Runtime call-history reads use canonical SQLite records;
+Doctor continues to repair the supported plugin-local SQLite schema.
+
+Calls retain the agent selected when they were created. Changing the configured
+agent affects new calls. Older active records without an explicit `agentId` are
+not resumed automatically, even if a session key names an agent. Their stored
+rows and transcripts remain unchanged; hang up any remaining call at the provider
+and start a new call. Completed history remains readable without an agent owner.
 
 ## Agent tool
 

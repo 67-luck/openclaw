@@ -33,6 +33,7 @@ describe("doctor config persistence", () => {
       const includePath = path.join(path.dirname(configPath), "channels.json");
       const channels = {
         telegram: {
+          groupMentionsOnly: false,
           dm: {},
           direct: { "42": { threadReplies: "always" } },
           accounts: {
@@ -68,6 +69,7 @@ describe("doctor config persistence", () => {
         expect.stringContaining("Install OpenClaw 2026.9.5"),
       );
       for (const field of [
+        "channels.telegram.groupMentionsOnly",
         "channels.telegram.dm",
         "channels.telegram.direct.42.threadReplies",
         "channels.telegram.accounts.native.streaming.preview.nativeToolProgress",
