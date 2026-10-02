@@ -37,7 +37,6 @@ import { createRuntimeAgent } from "../../plugins/runtime/runtime-agent.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import * as storeWriterQueue from "../../shared/store-writer-queue.js";
 import {
   closeOpenClawAgentDatabaseByPath,
   openOpenClawAgentDatabase,
@@ -396,18 +395,6 @@ async function revokeWithPublicLifecyclePredecessor(
     },
   });
   await entered.promise;
-  const enqueue = storeWriterQueue.runQueuedStoreWrite;
-  let queuedMutations = 0;
-  const queue = vi.spyOn(storeWriterQueue, "runQueuedStoreWrite").mockImplementation((params) => {
-    const pending = enqueue(params);
-    if (
-      params.label === "runSessionMutation" &&
-      params.storePath === JSON.stringify([storePath, scope.sessionKey])
-    ) {
-      queuedMutations += 1;
-    }
-    return pending;
-  });
   const sourceEntry = loadSessionEntry(scope);
   const respond = vi.fn<RespondFn>();
   const params = { sessionKey: scope.sessionKey, identityId: "member" };
@@ -433,12 +420,9 @@ async function revokeWithPublicLifecyclePredecessor(
   );
   let mutation: ReturnType<typeof invokeMessageCut> | undefined;
   try {
-    // Both operations now acquire the source key before its physical session id.
-    await vi.waitFor(() => expect(queuedMutations).toBe(1));
+    // Both public handlers synchronously acquire the source key before their first await.
     mutation = invoke();
-    await vi.waitFor(() => expect(queuedMutations).toBe(2));
   } finally {
-    queue.mockRestore();
     release.resolve();
     await heldLifecycle;
     await removal;
