@@ -11,6 +11,7 @@ import type {
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveProjectedAgentRunModel } from "../infra/agent-run-registry.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
+import type { SessionRepositoryWorkspaceRecord } from "../state/session-repository-workspaces.types.js";
 import type { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
 import { compareSessionEntryPairs } from "./session-list-order.js";
 import { readSessionListSelectionFacts } from "./session-list-target.js";
@@ -31,6 +32,7 @@ export type ProjectionOptions = {
 
 export type PreparedSessionRowDatabaseFacts = SessionRowDatabaseFacts & {
   acpMeta: SessionAcpMeta | null;
+  repositoryWorkspace: SessionRepositoryWorkspaceRecord | null;
 };
 
 export type SessionRowStore = {
@@ -50,9 +52,13 @@ export type Row = {
   storedEntry?: SessionEntry;
   /** Accepted under retained database custody; presentation consumes the whole snapshot. */
   pendingDatabaseFacts?: PreparedSessionRowDatabaseFacts;
+  /** Catalog changes reuse the accepted snapshot until a data publication or demotion. */
+  retainedDatabaseFacts?: PreparedSessionRowDatabaseFacts;
   /** Durable search metadata survives archive demotion, until its owner invalidates it. */
   preparedAcpMeta?: SessionAcpMeta | null;
   databaseFactsRevision: number;
+  /** Category uncertainty keeps identity resident; earlier structural uncertainty dominates. */
+  unresolvedDatabaseFacts?: true | "category";
   /** Current committed sharing facts remain usable while display materialization is dirty. */
   sharingEntry?: SessionEntry;
   entry?: SessionEntry;
@@ -71,6 +77,32 @@ export type Row = {
   parents: Set<string>;
   generation: string | symbol;
 };
+
+/** Sharing fences every publication; selection holds only unchanged metadata. */
+export function createSessionRowProjectionRevisions() {
+  let sharing: object | undefined;
+  let selection: object | undefined;
+  const invalidate = (metadataChanged = false) => {
+    sharing = undefined;
+    if (metadataChanged) {
+      selection = undefined;
+    }
+  };
+  return {
+    sharing: () => (sharing ??= {}),
+    selection: () => (selection ??= {}),
+    invalidate,
+    replace(previous: Row | undefined, row: Row) {
+      invalidate(
+        !previous ||
+          previous.generation !== row.generation ||
+          previous.hasBoard !== row.hasBoard ||
+          !isDeepStrictEqual(previous.entry, row.entry),
+      );
+    },
+  };
+}
+
 export type Query = {
   agentId?: string;
   storePath?: string;
@@ -83,7 +115,11 @@ export type Inputs = Parameters<typeof rowProjection.readSessionRowInputs>[0];
 export type SnapshotOptions = Pick<
   Inputs,
   "now" | "includeDerivedTitles" | "includeLastMessage" | "excludedChildKeys"
-> & { active?: boolean; subagentRuns?: SessionListRowContext["subagentRuns"] };
+> & {
+  active?: boolean;
+  subagentRuns?: SessionListRowContext["subagentRuns"];
+  preparedFacts?: ReturnType<NonNullable<Row["facts"]>["present"]>;
+};
 export type Lookup = { agentId: string; key: string; storePath?: string };
 type RowTarget = Pick<Row, "agentId" | "key" | "storeTarget">;
 export const identity = (row: RowTarget) =>
@@ -162,6 +198,7 @@ export function markAutomation(
 export function invalidateDatabaseFacts(row: Row) {
   row.databaseFactsRevision++;
   row.pendingDatabaseFacts = undefined;
+  row.retainedDatabaseFacts = undefined;
   row.preparedAcpMeta = undefined;
 }
 
@@ -206,11 +243,6 @@ export function seedSessionRowEntries(params: {
       const row = create(fields, entry);
       put(row);
       acquisitions.push({ row, entry });
-    } else {
-      const row = rows.get(id)!;
-      if (row.entry?.archivedAt !== undefined) {
-        acquisitions.push({ row, entry });
-      }
     }
   }
   for (const id of rows.keys()) {
@@ -227,7 +259,9 @@ export function renewGeneration(row: Row): Row {
     entry: undefined,
     storedEntry: undefined,
     pendingDatabaseFacts: undefined,
+    retainedDatabaseFacts: undefined,
     preparedAcpMeta: undefined,
+    unresolvedDatabaseFacts: undefined,
     sharingEntry: undefined,
     materialized: undefined,
     lastMessagePreview: undefined,
@@ -243,7 +277,11 @@ export function hasEntry(row: Row | undefined): row is EntryRow {
 }
 export function ready(row: Row | undefined): row is MaterializedRow {
   // Acquisition can advance metadata before rendering, including after pending facts expire.
-  return Boolean(row?.entry && row.materialized?.source.entry === row.entry);
+  return Boolean(
+    row?.entry &&
+    row.unresolvedDatabaseFacts !== "category" &&
+    row.materialized?.source.entry === row.entry,
+  );
 }
 
 export function publishTranscriptFields(
@@ -338,7 +376,7 @@ export function present(
     activeModel: active ? (live ?? undefined) : record.fallbackModel,
     excludedChildKeys: options.excludedChildKeys,
   });
-  Object.assign(row, record.facts?.present());
+  Object.assign(row, options.preparedFacts ?? record.facts?.present());
   // Undefined omits wire fields without converting each presented row to dictionary storage.
   if (!options.includeDerivedTitles) {
     row.derivedTitle = undefined;
@@ -465,6 +503,7 @@ export function dematerialize(row: Row): Row {
     materializedSequence: undefined,
     facts: undefined,
     pendingDatabaseFacts: undefined,
+    retainedDatabaseFacts: undefined,
     databaseFactsRevision: row.databaseFactsRevision + 1,
     membership: new Set<string>(),
     lastMessagePreview: undefined,
@@ -566,9 +605,10 @@ export function acquireSessionRowEntry(params: {
     ...row,
     storedEntry,
     pendingDatabaseFacts: undefined,
+    retainedDatabaseFacts: undefined,
     databaseFactsRevision: row.databaseFactsRevision + 1,
     ...lineage,
-    sharingEntry: entry,
+    sharingEntry: storedEntry,
     generation,
     fallbackModel: sameFallbackModelFacts(row.storedEntry, storedEntry)
       ? row.fallbackModel

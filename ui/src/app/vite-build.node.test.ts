@@ -9,6 +9,7 @@ import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { build, createLogger, type InlineConfig } from "vite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ControlUiAssetManifest } from "../../../src/gateway/control-ui-asset-manifest.ts";
+import { controlUiCodeSplitting } from "../../config/control-ui-chunking.ts";
 import controlUiViteConfig from "../../vite.config.ts";
 
 describe("Control UI Vite build", () => {
@@ -98,6 +99,161 @@ describe("Control UI Vite build", () => {
     expect(table).toContain(lazyName);
     expect(table).toMatch(/lazy-[^"/]+\.css/u);
     expect(await fs.readFile(path.join(outDir, "index.html"), "utf8")).toContain(sharedName);
+  });
+
+  it("keeps page styles separate from measured JavaScript boot groups", async () => {
+    const config = createConfig();
+    const pages = fileURLToPath(new URL("../pages/", import.meta.url));
+    const first = path.join(pages, "chunk-fixture-first", "view.ts");
+    const second = path.join(pages, "chunk-fixture-second", "view.ts");
+    const lazy = path.join(pages, "chunk-fixture-lazy", "view.ts");
+    const firstCss = fileURLToPath(new URL("../styles/new-session.css", import.meta.url));
+    const secondCss = fileURLToPath(
+      new URL("../styles/chat/composer-progress.css", import.meta.url),
+    );
+    const lazyCss = path.join(path.dirname(lazy), "view.css");
+    const modules = new Map([
+      [first, 'import "../../styles/new-session.css"; export const message = "first";'],
+      [
+        second,
+        'import "../../styles/chat/composer-progress.css"; export const message = "second";',
+      ],
+      [lazy, 'import "./view.css"; export const message = "lazy";'],
+      [firstCss, ".first-page { color: red; }"],
+      [secondCss, ".second-page { color: blue; }"],
+      [lazyCss, ".lazy-page { color: purple; }"],
+    ]);
+    await fs.writeFile(path.join(root, "initial.css"), ".initial-page { color: green; }");
+    await fs.writeFile(
+      path.join(root, "main.js"),
+      'import "./initial.css"; globalThis.loadFirst = () => import("fixture:first"); globalThis.loadSecond = () => import("fixture:second"); globalThis.loadLazy = () => import("fixture:lazy");',
+    );
+    config.plugins = [
+      {
+        name: "page-style-import-owners",
+        enforce: "pre",
+        resolveId(source, importer) {
+          if (source === "fixture:first") {
+            return first;
+          }
+          if (source === "fixture:second") {
+            return second;
+          }
+          if (source === "fixture:lazy") {
+            return lazy;
+          }
+          if (importer && source.startsWith(".")) {
+            const resolved = path.resolve(path.dirname(importer), source);
+            if (modules.has(resolved)) {
+              return resolved;
+            }
+          }
+          return null;
+        },
+        load(id) {
+          return modules.get(id);
+        },
+      },
+      ...(config.plugins ?? []),
+    ];
+    config.build = {
+      ...config.build,
+      rolldownOptions: {
+        ...config.build?.rolldownOptions,
+        output: {
+          strictExecutionOrder: true,
+          codeSplitting: {
+            ...controlUiCodeSplitting,
+            groups: controlUiCodeSplitting.groups.map((group) =>
+              group.name === "control-ui-boot-shared"
+                ? Object.assign({}, group, {
+                    test: (id: string) => [first, second, firstCss, secondCss].includes(id),
+                    minSize: 0,
+                  })
+                : group,
+            ),
+          },
+        },
+      },
+    };
+    const built = await build(config);
+    if (Array.isArray(built) || !("output" in built)) {
+      throw new Error("Expected one production bundle");
+    }
+    const lazyChunk = built.output.find((chunk) => chunk.type === "chunk" && lazy in chunk.modules);
+    expect(lazyChunk?.type === "chunk" && lazyCss in lazyChunk.modules).toBe(true);
+    const names = await fs.readdir(path.join(outDir, "assets"));
+    const styles = await Promise.all(
+      names
+        .filter((name) => name.endsWith(".css"))
+        .map(async (name) => ({
+          name,
+          source: await fs.readFile(path.join(outDir, "assets", name), "utf8"),
+        })),
+    );
+    const initial = styles.find(({ source }) => source.includes(".initial-page"))!;
+    const firstStyle = styles.find(({ source }) => source.includes(".first-page"))!;
+    const secondStyle = styles.find(({ source }) => source.includes(".second-page"))!;
+    expect(new Set([initial.name, firstStyle.name, secondStyle.name]).size).toBe(3);
+    const html = await fs.readFile(path.join(outDir, "index.html"), "utf8");
+    expect(html).toContain(initial.name);
+    expect(html).not.toContain(firstStyle.name);
+    expect(html).not.toContain(secondStyle.name);
+    const scripts = (
+      await Promise.all(
+        names
+          .filter((name) => name.endsWith(".js"))
+          .map((name) => fs.readFile(path.join(outDir, "assets", name), "utf8")),
+      )
+    ).join("\n");
+    expect(scripts).toContain(firstStyle.name);
+    expect(scripts).toContain(secondStyle.name);
+  });
+
+  it("prepares the sign-in gate offline without preloading it into ordinary chat navigation", async () => {
+    const config = createConfig();
+    const gate = fileURLToPath(new URL("../components/login-gate.ts", import.meta.url));
+    const feedback = fileURLToPath(
+      new URL("../components/login-offline-fixture.ts", import.meta.url),
+    );
+    const modules = new Map([
+      [gate, `import { message } from ${JSON.stringify(feedback)}; export const label = message;`],
+      [feedback, 'export const message = "Connect again when online";'],
+    ]);
+    await fs.writeFile(
+      path.join(root, "main.js"),
+      `globalThis.loadLogin = () => import(${JSON.stringify(gate)});`,
+    );
+    config.plugins = [
+      {
+        name: "offline-login-fixture",
+        enforce: "pre",
+        resolveId: (id) => (modules.has(id) ? id : null),
+        load: (id) => modules.get(id) ?? null,
+      },
+      ...(config.plugins ?? []),
+    ];
+    const built = await build(config);
+    if (Array.isArray(built) || !("output" in built)) {
+      throw new Error("Expected one production bundle");
+    }
+    const gateChunk = built.output.find(
+      (entry) => entry.type === "chunk" && entry.facadeModuleId === gate,
+    );
+    if (!gateChunk || gateChunk.type !== "chunk") {
+      throw new Error("Expected the dynamically imported sign-in gate");
+    }
+    const worker = await fs.readFile(path.join(outDir, "sw.js"), "utf8");
+    const boot = JSON.parse(/const OFFLINE_BOOT = (.+);/u.exec(worker)![1]!) as {
+      assets: Array<{ path: string }>;
+    };
+    const cached = new Set(boot.assets.map((asset) => asset.path));
+    expect(cached.has(gateChunk.fileName)).toBe(true);
+    for (const dependency of gateChunk.imports) {
+      expect(cached.has(dependency)).toBe(true);
+    }
+    const html = await fs.readFile(path.join(outDir, "index.html"), "utf8");
+    expect(html).not.toContain(gateChunk.fileName);
   });
 
   it("preserves an unresolved import diagnostic with a fresh output directory", async () => {

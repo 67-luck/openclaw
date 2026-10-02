@@ -1,5 +1,6 @@
 import { renameSync } from "node:fs";
 import { setImmediate } from "node:timers/promises";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import { callInProcessGatewayTool } from "../agents/tools/in-process-gateway.js";
@@ -11,12 +12,14 @@ import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { emitSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../state/openclaw-agent-db-lifecycle.js";
 import { registerOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import {
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
+import * as profileReader from "../state/user-profile-list.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createPluginGatewayMethodDescriptor } from "./methods/descriptor.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
@@ -31,6 +34,9 @@ import { createSessionRowProjection, type SessionRowProjection } from "./session
 const mocks = vi.hoisted(() => ({
   profileCurrent: true,
   prepare: vi.fn(),
+  prepareIdentity:
+    vi.fn<typeof import("../state/user-profile-list.js").prepareUserProfileIdentity>(),
+  profileLeases: new Set<object>(),
   toolAllowed: true,
   sandboxRequired: false,
   sandboxed: false,
@@ -70,7 +76,7 @@ function fixture(scopes = ["operator.write"], creator = "someone-else") {
     createdActor: { type: "human", source: "profile", id: creator },
     visibility: "shared",
   };
-  let generation = Symbol("database");
+  const generation = Symbol("database");
   const client = {
     connect: { role: "operator", scopes, client: { id: "test", mode: "webchat" } },
     authenticatedUserProfile: { profileId: "alice", displayName: "Alice" },
@@ -110,20 +116,48 @@ function fixture(scopes = ["operator.write"], creator = "someone-else") {
     setEntry(next: SessionEntry | undefined) {
       entry = next;
     },
-    replaceGeneration() {
-      generation = Symbol("replacement database");
-    },
-    prepare: async (ownSessionOnly = false) =>
+    prepare: async () =>
       hold(
         await prepareGatewaySessionAccessAuthority({
           policy: { mode: "write", requiredTool: "browser", allowOwnSessionScope: true },
           requestParams: { sessionKey: key, agentId: "main" },
           context,
           client,
-          ownSessionOnly,
+          ownSessionOnly: false,
         }),
       ),
   };
+}
+
+function dispatchSession(
+  test: ReturnType<typeof fixture>,
+  handler: GatewayRequestHandler,
+  options: Partial<
+    Pick<
+      Parameters<typeof handleGatewayRequest>[0],
+      "respond" | "sessionMutationCommitGuard" | "expectedProfileBinding"
+    >
+  > & { allowOwnSessionScope?: boolean } = {},
+) {
+  const { allowOwnSessionScope, ...request } = options;
+  const method = "fixture.session.open";
+  return handleGatewayRequest({
+    req: { type: "req", id: "session-access", method, params: { sessionKey: key } },
+    respond: vi.fn(),
+    client: test.client,
+    context: test.context,
+    methodRegistry: createGatewayMethodRegistry([
+      createPluginGatewayMethodDescriptor({
+        pluginId: "fixture",
+        name: method,
+        handler,
+        scope: "operator.write",
+        sessionAccess: { mode: "write", requiredTool: "browser", allowOwnSessionScope },
+      }),
+    ]),
+    isWebchatConnect: () => false,
+    ...request,
+  });
 }
 
 beforeEach(() => {
@@ -133,6 +167,28 @@ beforeEach(() => {
   mocks.sandboxed = false;
   mocks.ambient = undefined;
   mocks.assertAmbient.mockReset();
+  mocks.prepareIdentity.mockReset().mockImplementation(async (profileId) => {
+    const lease = {};
+    mocks.profileLeases.add(lease);
+    const readCurrentProfile = () => {
+      if (!mocks.profileLeases.has(lease)) {
+        throw new Error("Prepared profile lease was released");
+      }
+      return { profileId, assignedRole: null };
+    };
+    return {
+      readCurrentProfile,
+      emailBindingIds: [],
+      readCurrentFacts: () => ({
+        profile: { ...readCurrentProfile(), emails: [] },
+        aliases: new Set([profileId]),
+      }),
+      release: () => {
+        mocks.profileLeases.delete(lease);
+      },
+    };
+  });
+  vi.spyOn(profileReader, "prepareUserProfileIdentity").mockImplementation(mocks.prepareIdentity);
   mocks.prepare.mockReset().mockImplementation(async () => ({
     profileId: "alice",
     role: null,
@@ -145,11 +201,74 @@ afterEach(() => {
     authority.release();
   }
   setActivePluginRegistry(createEmptyPluginRegistry());
+  vi.restoreAllMocks();
+  expect(mocks.profileLeases.size).toBe(0);
 });
 
 describe("session resource admission", () => {
+  it.each(["grant", "profile", "scope"] as const)(
+    "refuses a replaced original %s during canonical profile preparation before route effects",
+    async (change) => {
+      const test = fixture();
+      const entered = createDeferredCore();
+      const resume = createDeferredCore();
+      const prepare = expectDefined(
+        mocks.prepareIdentity.getMockImplementation(),
+        "prepared profile fixture",
+      );
+      mocks.prepareIdentity.mockImplementationOnce(async (...args) => {
+        const profile = await prepare(...args);
+        entered.resolve();
+        await resume.promise;
+        return profile;
+      });
+      const effect = vi.fn();
+      const handler = vi.fn<GatewayRequestHandler>(({ sessionAccessAuthority, respond }) => {
+        expectDefined(sessionAccessAuthority, "registered session authority").assertCurrent();
+        effect();
+        respond(true, {});
+      });
+      const respond = vi.fn();
+      const pending = dispatchSession(test, handler, { respond });
+      const failure = pending.then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      try {
+        await Promise.race([entered.promise, pending]);
+        expect(mocks.profileLeases.size).toBe(1);
+        if (change === "grant") {
+          const internal = expectDefined(test.client.internal, "original client metadata");
+          internal.operatorAccessAuthority = {
+            ...expectDefined(internal.operatorAccessAuthority, "original access grant"),
+            signal: new AbortController().signal,
+            assertCurrent: () => {},
+          };
+        } else if (change === "profile") {
+          test.client.authenticatedUserProfile = {
+            ...expectDefined(test.client.authenticatedUserProfile, "original profile"),
+            profileId: "replacement-profile",
+          };
+        } else {
+          test.client.connect.scopes = ["operator.read"];
+        }
+        resume.resolve();
+        const thrown = await failure;
+        expect(handler).not.toHaveBeenCalled();
+        expect(effect).not.toHaveBeenCalled();
+        expect(
+          thrown instanceof Error ? thrown.message : respond.mock.calls[0]?.[2]?.message,
+        ).toMatch(/authority|Session access changed/);
+        expect(mocks.profileLeases.size).toBe(0);
+      } finally {
+        resume.resolve();
+        await failure;
+      }
+    },
+  );
+
   it.each(["identity", "scope"])(
-    "hydrates the profile before capture and fences a later operator %s change",
+    "captures the canonical profile before alias preparation and fences a later operator %s change",
     async (kind) => {
       const test = fixture();
       const profile = test.client.authenticatedUserProfile;
@@ -178,23 +297,7 @@ describe("session resource admission", () => {
         expect(() => resource.assertCurrent()).not.toThrow();
         respond(true, {});
       });
-      const method = "fixture.session.open";
-      await handleGatewayRequest({
-        req: { type: "req", id: "hydration", method, params: { sessionKey: key } },
-        respond: vi.fn(),
-        client: test.client,
-        context: test.context,
-        methodRegistry: createGatewayMethodRegistry([
-          createPluginGatewayMethodDescriptor({
-            pluginId: "fixture",
-            name: method,
-            handler,
-            scope: "operator.write",
-            sessionAccess: { mode: "write", requiredTool: "browser" },
-          }),
-        ]),
-        isWebchatConnect: () => false,
-      });
+      await dispatchSession(test, handler);
       expect(test.client.authenticatedGitHubIdentitySync).toHaveBeenCalledOnce();
       expect(handler).toHaveBeenCalledOnce();
       expect(effect).not.toHaveBeenCalled();
@@ -223,23 +326,10 @@ describe("session resource admission", () => {
         };
       });
     const handler = vi.fn<GatewayRequestHandler>();
-    const method = "fixture.session.open";
     const respond = vi.fn();
-    await handleGatewayRequest({
-      req: { type: "req", id: "final-denial", method, params: { sessionKey: key } },
+    await dispatchSession(test, handler, {
       respond,
-      client: test.client,
-      context: test.context,
-      methodRegistry: createGatewayMethodRegistry([
-        createPluginGatewayMethodDescriptor({
-          pluginId: "fixture",
-          name: method,
-          handler,
-          scope: "operator.write",
-          sessionAccess: { mode: "write", allowOwnSessionScope: true, requiredTool: "browser" },
-        }),
-      ]),
-      isWebchatConnect: () => false,
+      allowOwnSessionScope: true,
     });
     expect(capture).toHaveBeenCalledOnce();
     expect(handler).not.toHaveBeenCalled();
@@ -293,7 +383,7 @@ describe("session resource admission", () => {
   });
   it.each([
     { scopes: ["operator.write"], creator: "someone-else", allowed: true },
-    { scopes: ["operator.sessions.write"], creator: "alice", allowed: true },
+    { scopes: ["operator.sessions.write"], creator: "former-alice", allowed: true },
     { scopes: ["operator.sessions.write"], creator: "someone-else", allowed: false },
     { scopes: ["operator.read"], creator: "alice", allowed: false },
   ])(
@@ -307,25 +397,8 @@ describe("session resource admission", () => {
         resource = hold(admitted!.retainSession());
         respond(true, { ok: true });
       });
-      const method = "fixture.session.open";
-      const methodRegistry = createGatewayMethodRegistry([
-        createPluginGatewayMethodDescriptor({
-          pluginId: "fixture",
-          name: method,
-          handler,
-          scope: "operator.write",
-          sessionAccess: { mode: "write", allowOwnSessionScope: true, requiredTool: "browser" },
-        }),
-      ]);
       const respond = vi.fn();
-      await handleGatewayRequest({
-        req: { type: "req", id: "one", method, params: { sessionKey: key, agentId: "main" } },
-        respond,
-        client: test.client,
-        context: test.context,
-        methodRegistry,
-        isWebchatConnect: () => false,
-      });
+      await dispatchSession(test, handler, { respond, allowOwnSessionScope: true });
       expect(handler).toHaveBeenCalledTimes(allowed ? 1 : 0);
       expect(respond.mock.calls[0]?.[0]).toBe(allowed);
       if (allowed) {
@@ -343,7 +416,6 @@ describe("session resource admission", () => {
       let invocationActive = true;
       let viewer: ReturnType<Awaited<ReturnType<typeof test.prepare>>["retain"]> | undefined;
       let resource: typeof viewer;
-      const method = "fixture.session.open";
       const handler: GatewayRequestHandler = async ({ sessionAccessAuthority, respond }) => {
         const authority = sessionAccessAuthority!;
         viewer = hold(authority.retain());
@@ -357,22 +429,7 @@ describe("session resource admission", () => {
         expect(() => resource!.assertCurrent()).not.toThrow();
         respond(true, {});
       };
-      const methodRegistry = createGatewayMethodRegistry([
-        createPluginGatewayMethodDescriptor({
-          pluginId: "fixture",
-          name: method,
-          handler,
-          scope: "operator.write",
-          sessionAccess: { mode: "write", requiredTool: "browser" },
-        }),
-      ]);
-      await handleGatewayRequest({
-        req: { type: "req", id: "one", method, params: { sessionKey: key } },
-        respond: vi.fn(),
-        client: test.client,
-        context: test.context,
-        methodRegistry,
-        isWebchatConnect: () => false,
+      await dispatchSession(test, handler, {
         sessionMutationCommitGuard: () => {
           if (kind === "receipt" && !invocationActive) {
             throw new Error("receipt expired");
@@ -462,6 +519,7 @@ describe("session resource admission", () => {
         await projection.ensureMaterialized();
         await projection.prepareMembership();
         expect(() => resource.assertCurrent()).toThrow();
+        expect(resource.signal.aborted).toBe(true);
       } finally {
         projection.dispose();
       }
@@ -527,16 +585,6 @@ describe("session resource admission", () => {
     expect(prepare).toHaveBeenCalledTimes(2);
     expect(resource.signal.aborted).toBe(true);
   });
-  it("preserves broad shared-session writes while restricting the narrow scope to its creator", async () => {
-    await expect(fixture().prepare()).resolves.toBeDefined();
-    await expect(fixture(["operator.sessions.write"]).prepare(true)).rejects.toThrow(
-      "Session access changed",
-    );
-    await expect(
-      fixture(["operator.sessions.write"], "former-alice").prepare(true),
-    ).resolves.toBeDefined();
-  });
-
   it("keeps a session resource after request completion and actor revocation, without reviving that actor", async () => {
     const test = fixture();
     const authority = await test.prepare();
@@ -564,21 +612,12 @@ describe("session resource admission", () => {
     emitSessionIdentityMutation({
       kind: "reset",
       agentId: "main",
+      databaseIdentity: Symbol("session-access-fixture-database"),
       previous: { sessionId: "session-1", sessionKeys: [key] },
       current: { sessionId: "session-2", sessionKeys: [key] },
     });
     expect(resource.signal.aborted).toBe(true);
     expect(viewer.signal.aborted).toBe(true);
-  });
-
-  it("retires same-ID resources after a resident physical-store generation replacement", async () => {
-    const test = fixture();
-    const authority = await test.prepare();
-    const resource = hold(authority.retainSession());
-    test.replaceGeneration();
-    sessionChanges.emit({ agentId: "main", sessionKey: key });
-    expect(resource.signal.aborted).toBe(true);
-    expect(() => authority.assertCurrent()).toThrow();
   });
 
   it.each(["sandboxRequired", "sandboxed"] as const)(
@@ -620,18 +659,24 @@ describe("session resource admission", () => {
 
   it("rejects a renewed ingress grant that changes while profile preparation awaits", async () => {
     const test = fixture();
-    let finish!: (profile: unknown) => void;
-    mocks.prepare.mockReturnValueOnce(
-      new Promise((resolve) => {
-        finish = resolve;
-      }),
-    );
+    const entered = createDeferredCore();
+    const prepared = createDeferredCore<{
+      profileId: string;
+      role: null;
+      aliases: string[];
+      isCurrent: () => boolean;
+    }>();
+    mocks.prepare.mockImplementationOnce(() => {
+      entered.resolve();
+      return prepared.promise;
+    });
     const pending = test.prepare();
+    await Promise.race([entered.promise, pending]);
     test.client.internal!.operatorAccessAuthority = {
       signal: new AbortController().signal,
       assertCurrent: () => {},
     } as never;
-    finish({ profileId: "alice", role: null, aliases: ["alice"], isCurrent: () => true });
+    prepared.resolve({ profileId: "alice", role: null, aliases: ["alice"], isCurrent: () => true });
     await expect(pending).rejects.toThrow("Session access changed");
   });
 

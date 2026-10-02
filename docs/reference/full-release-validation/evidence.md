@@ -1,6 +1,6 @@
 ---
 doc-schema-version: 1
-summary: "Which Full Release Validation evidence to retain, advisory lane handling, and the backing workflow files"
+summary: "Which Full Release Validation evidence to retain, blocking lane outcomes, and the backing workflow files"
 title: "Evidence to keep"
 read_when:
   - Recording release evidence after a validation pass
@@ -14,6 +14,13 @@ harness/tooling/provenance, infrastructure/credential, or wrapper. Only a
 confirmed product failure changes the Code SHA. Use one diagnosis, one fix when
 needed, and one narrow retry, then reassess; do not automatically rerun `all`.
 Narrow evidence is not publish authorization by itself.
+
+Decide blocker or flake for every failed test. Retain `windows-node-ci` advisory
+failures and authenticated `recorded-flake` receipts for eligible `normalCi` jobs
+in the manifest. Recorded flakes retain their exact job URL/attempt, reason,
+tracking issue or PR, classifier run, and CI gate entries; step summaries and
+release verification notes expose the decision. Other children stay strict.
+See [record a flake](/reference/full-release-validation/continuation#record-a-flake).
 
 Linux, Windows, and macOS Gateway cross-OS install and upgrade lanes are
 required for beta, stable, and full validation. The manifest records their
@@ -56,6 +63,7 @@ limit and fail sealing; evidence is not truncated to fit.
 ## Workflow files
 
 - `.github/workflows/full-release-validation.yml`
+- `.github/workflows/full-release-flake-classification.yml`
 - `.github/workflows/full-release-candidate.yml`
 - `.github/workflows/openclaw-release-checks.yml`
 - `.github/workflows/openclaw-live-and-e2e-checks-reusable.yml`

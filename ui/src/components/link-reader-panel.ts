@@ -92,7 +92,7 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
   private nextTabId = 0;
   private requestAbort: AbortController | null = null;
   private returnFocus: HTMLElement | null = null;
-  private focusContent = false;
+  private scrollContent = false;
   private focusAddress = false;
   private refreshRequested = false;
   private readonly dockLayout = new DockLayoutController(this, {
@@ -102,7 +102,6 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
     // Embedded geometry belongs to the region, never the standalone dock store.
     isFullscreen: () => this.embedded,
   });
-  private readonly onToggleRequest = (event: Event) => this.handleToggleRequest(event);
   static override styles = linkReaderViewStyles;
 
   private get activeTab(): ReaderTab | undefined {
@@ -119,7 +118,7 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
   override connectedCallback(): void {
     super.connectedCallback();
     if (!this.embedded) {
-      window.addEventListener(LINK_READER_PANEL_TOGGLE_EVENT, this.onToggleRequest);
+      window.addEventListener(LINK_READER_PANEL_TOGGLE_EVENT, this.handleToggleRequest);
       this.dockLayout.setSuppressed(this.suppressed);
     }
   }
@@ -128,14 +127,14 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
     this.tabs = [];
     this.activeId = null;
     this.returnFocus = null;
-    window.removeEventListener(LINK_READER_PANEL_TOGGLE_EVENT, this.onToggleRequest);
+    window.removeEventListener(LINK_READER_PANEL_TOGGLE_EVENT, this.handleToggleRequest);
     super.disconnectedCallback();
   }
   override willUpdate(changed: PropertyValues<this>): void {
     if (changed.has("embedded")) {
-      window.removeEventListener(LINK_READER_PANEL_TOGGLE_EVENT, this.onToggleRequest);
+      window.removeEventListener(LINK_READER_PANEL_TOGGLE_EVENT, this.handleToggleRequest);
       if (!this.embedded && this.isConnected) {
-        window.addEventListener(LINK_READER_PANEL_TOGGLE_EVENT, this.onToggleRequest);
+        window.addEventListener(LINK_READER_PANEL_TOGGLE_EVENT, this.handleToggleRequest);
       }
     }
     if (changed.has("sessionKey") && changed.get("sessionKey") !== undefined) {
@@ -147,7 +146,7 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
       this.tabLimitUrl = null;
       this.returnFocus = null;
       this.focusAddress = false;
-      this.focusContent = false;
+      this.scrollContent = false;
     }
     if (this.embedded && !this.presented) {
       this.abortRequest();
@@ -213,6 +212,7 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
       )
     ) {
       this.createTab();
+      this.focusAddress = false;
     }
     if (this.isConnected && this.panelPresented && this.activeTab?.view.status === "idle") {
       void this.loadDetail();
@@ -245,17 +245,14 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
       this.renderRoot.querySelector<HTMLInputElement>(".lr-url")?.focus();
     }
     const content = this.renderRoot.querySelector<HTMLElement>(".lr-content:not([hidden])");
-    if (this.focusContent && content) {
-      content.focus();
-      if (this.activeTab?.view.status === "ready") {
-        this.focusContent = false;
-        content.scrollTop = 0;
-        const hash = this.target ? new URL(this.target.href).hash.slice(1) : "";
-        const anchor = [...content.querySelectorAll<HTMLElement>("[id]")].find(
-          (node) => node.id === hash,
-        );
-        anchor?.scrollIntoView?.({ block: "start" });
-      }
+    if (this.scrollContent && content && this.activeTab?.view.status === "ready") {
+      this.scrollContent = false;
+      content.scrollTop = 0;
+      const hash = this.target ? new URL(this.target.href).hash.slice(1) : "";
+      const anchor = [...content.querySelectorAll<HTMLElement>("[id]")].find(
+        (node) => node.id === hash,
+      );
+      anchor?.scrollIntoView?.({ block: "start" });
     }
   }
   private abortRequest(): void {
@@ -287,7 +284,7 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
     this.urlDraft = this.target?.href ?? "";
     this.invalidUrl = false;
     this.tabLimitUrl = null;
-    this.focusContent = false;
+    this.scrollContent = false;
     this.requestUpdate();
   }
   private createTab(target?: LinkReaderTarget): void {
@@ -308,7 +305,7 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
     this.invalidUrl = false;
     this.tabLimitUrl = null;
     this.focusAddress = !target;
-    this.focusContent = Boolean(target);
+    this.scrollContent = Boolean(target);
     if (!this.embedded) {
       this.dockLayout.setOpen(true);
     } else {
@@ -358,10 +355,11 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
     }
     this.urlDraft = target.href;
     this.invalidUrl = false;
-    this.focusContent = true;
+    this.focusAddress = false;
+    this.scrollContent = true;
     this.requestUpdate();
   }
-  handleToggleRequest(event: Event): void {
+  readonly handleToggleRequest = (event: Event): void => {
     const payload: unknown = event instanceof CustomEvent ? event.detail : undefined;
     const detail = isRecord(payload) ? payload : null;
     if (detail?.open === false) {
@@ -419,7 +417,7 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
     } else {
       this.requestUpdate();
     }
-  }
+  };
   private closePanel(): void {
     this.abortRequest();
     if (!this.embedded) {
@@ -428,7 +426,7 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
       this.onClose?.();
       this.requestUpdate();
     }
-    this.focusContent = false;
+    this.scrollContent = false;
     this.focusAddress = false;
     if (this.returnFocus?.isConnected) {
       this.returnFocus.focus({ preventScroll: true });
@@ -453,7 +451,7 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
     this.setTabView(tab, { status: "idle" });
     this.urlDraft = this.target?.href ?? "";
     this.invalidUrl = false;
-    this.focusContent = true;
+    this.scrollContent = true;
     this.requestUpdate();
   }
   private commitUrl(event: Event): void {
@@ -566,14 +564,10 @@ class OpenClawLinkReaderPanel extends OpenClawLitElement implements PanelHostedT
           ? nothing
           : html`<header class="rail-header bp-header lr-tab-header">
               ${renderPanelTabStrip({
-                tabs: this.tabs.map((item) => ({
-                  id: item.id,
+                tabs: this.hostedTabs.map((item) => ({
+                  ...item,
                   domId: item.id + "-label",
-                  label: tabLabel(item),
-                  title: tabTarget(item)?.href,
-                  icon: readerIcon(tabTarget(item)?.reader.icon),
-                  className: item.view.status === "loading" ? "is-connecting" : "",
-                  closeLabel: t("linkReader.closeTab", { title: tabLabel(item) }),
+                  closeLabel: t("linkReader.closeTab", { title: item.label }),
                 })),
                 activeId: this.activeId,
                 ariaControls: "link-reader-tab-panel",

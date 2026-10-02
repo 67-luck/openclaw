@@ -10,15 +10,26 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runPackageUpdateDoctor } from "../cli/update-cli/update-command-package.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import * as diskSpace from "./disk-space.js";
+import { collectNestedErrorCandidates } from "./error-graph-internal.js";
 import { renderUpdateRunReport, updateRunReportInputFromResult } from "./update-run-report.js";
 import { buildUpdateCommandRunner } from "./update-runner-command.js";
 import { resolveCandidateNodeRuntimeForTest } from "./update-runner-git-candidate.test-support.js";
+import { withGitTargetInspectionRoot } from "./update-runner-git-target.js";
 import { updateGitCheckout } from "./update-runner-git.js";
-import type { CommandRunner, UpdateRunnerOptions } from "./update-runner-types.js";
+import type {
+  CommandRunner,
+  UpdateRunnerOptions,
+  UpdateStepProgress,
+} from "./update-runner-types.js";
 
 const temporary = useAutoCleanupTempDirTracker(afterEach);
 
-function fixture(relativeRemote = false, partialClone = false, shallow = false) {
+function fixture(
+  relativeRemote = false,
+  partialClone = false,
+  shallow = false,
+  objectFormat: "sha1" | "sha256" = "sha1",
+) {
   const root = temporary.make("openclaw-git-admission-test-");
   const source = path.join(root, "remote with spaces");
   const install = path.join(root, "installed");
@@ -38,7 +49,7 @@ function fixture(relativeRemote = false, partialClone = false, shallow = false) 
     return result.stdout.trim();
   };
   fs.mkdirSync(source);
-  git(source, "init", "-b", "main");
+  git(source, "init", "-b", "main", `--object-format=${objectFormat}`);
   git(source, "config", "user.name", "Update fixture");
   git(source, "config", "user.email", "fixture@example.invalid");
   fs.writeFileSync(path.join(source, ".gitignore"), "node_modules/\ndist/\n.artifacts/\n");
@@ -196,6 +207,77 @@ function snapshotTree(root: string): string[] {
 }
 
 describe("Git database admission", () => {
+  it.each(["sha1", "sha256"] as const)(
+    "snapshots linked-worktree refs and validates their objects without source writes (%s)",
+    async (objectFormat) => {
+      const state = fixture(false, false, false, objectFormat);
+      const linked = path.join(state.root, "linked");
+      state.git(state.install, "worktree", "add", "-b", "inspection-source", linked);
+      state.git(
+        linked,
+        "-c",
+        "user.name=Update fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "-c",
+        "tag.gpgSign=false",
+        "tag",
+        "-a",
+        "retained-tag",
+        "-m",
+        "retained annotated tag",
+      );
+      state.git(linked, "config", "init.defaultRefFormat", "reftable");
+      const head = state.git(linked, "rev-parse", "HEAD");
+      const tag = state.git(linked, "rev-parse", "refs/tags/retained-tag");
+      const refs = state.git(linked, "for-each-ref", "--format=%(objectname) %(refname)");
+      const before = snapshotTree(state.install);
+      const inspect = (runCommand = state.runCommand) =>
+        withGitTargetInspectionRoot(
+          { root: linked, runCommand, timeoutMs: 15_000, onWarning: () => {} },
+          async (root) => {
+            expect(state.git(root, "for-each-ref", "--format=%(objectname) %(refname)")).toBe(refs);
+            expect(state.git(root, "symbolic-ref", "HEAD")).toBe("refs/heads/inspection-source");
+            expect(state.git(root, "rev-parse", "HEAD")).toBe(head);
+            expect(state.git(root, "rev-parse", "refs/tags/retained-tag")).toBe(tag);
+            expect(state.git(root, "rev-parse", "refs/tags/retained-tag^{}")).toBe(head);
+          },
+        );
+      await inspect();
+      expect(snapshotTree(state.install)).toEqual(before);
+
+      if (objectFormat === "sha1") {
+        for (const failure of ["truncated", "signaled"] as const) {
+          const interrupted: CommandRunner = async (argv, options) => {
+            const result = await state.runCommand(argv, options);
+            return argv.includes("--batch-check=%(objectname) %(objecttype)")
+              ? failure === "truncated"
+                ? { ...result, stdout: result.stdout.slice(0, -8) }
+                : { ...result, termination: "signal", killed: true }
+              : result;
+          };
+          await expect(inspect(interrupted)).rejects.toThrow("Git target inspection");
+          expect(snapshotTree(state.install)).toEqual(before);
+        }
+      }
+
+      const malformed = path.join(state.root, "malformed-commit");
+      fs.writeFileSync(malformed, "malformed commit\n");
+      const invalidObjects = [
+        "f".repeat(head.length),
+        state.git(linked, "rev-parse", "HEAD:package.json"),
+        state.git(linked, "hash-object", "--literally", "-w", "-t", "commit", malformed),
+      ];
+      const invalidRef = path.join(state.install, ".git", "refs", "heads", "invalid");
+      for (const oid of invalidObjects) {
+        fs.writeFileSync(invalidRef, `${oid}\n`);
+        const invalidSource = snapshotTree(state.install);
+        await expect(inspect()).rejects.toThrow("Git target inspection");
+        expect(snapshotTree(state.install)).toEqual(invalidSource);
+      }
+    },
+  );
+
   it.each([
     { channel: "stable", publish: false, downgrade: false, shallow: false },
     { channel: "dev", publish: false, downgrade: false, shallow: false },
@@ -335,31 +417,76 @@ describe("Git database admission", () => {
     },
   );
 
-  it("refuses insufficient object-volume capacity before stopping the Gateway", async () => {
-    const state = fixture();
-    const before = state.git(state.install, "rev-parse", "HEAD");
-    const prepareMutation = vi.fn();
-    const capacity = vi.spyOn(diskSpace, "tryReadDiskSpace").mockReturnValue({
-      targetPath: state.install,
-      checkedPath: state.install,
-      availableBytes: 0,
-      totalBytes: 1024,
-    });
-    try {
-      const result = await state.run({ beforeGitMutation: prepareMutation });
-      expect(result).toMatchObject({ status: "error", reason: "snapshot-capacity-insufficient" });
-      expect(result.steps).toContainEqual(
-        expect.objectContaining({
-          name: "git update pack capacity",
-          stderrTail: expect.stringContaining("0 bytes available"),
-        }),
+  it.each([false, true])(
+    "refuses insufficient object-volume capacity before stopping the Gateway (reporting rejects: %s)",
+    async (reportingRejects) => {
+      const state = fixture();
+      const before = state.git(state.install, "rev-parse", "HEAD");
+      const prepareMutation = vi.fn();
+      const reportingError = new Error("Git pack capacity receipt rejected");
+      const onStepComplete = vi.fn<NonNullable<UpdateStepProgress["onStepComplete"]>>(
+        async (step) => {
+          if (reportingRejects && step.name === "git update pack capacity") {
+            throw reportingError;
+          }
+        },
       );
-      expect(prepareMutation).not.toHaveBeenCalled();
-      expect(state.git(state.install, "rev-parse", "HEAD")).toBe(before);
-    } finally {
-      capacity.mockRestore();
-    }
-  });
+      const capacity = vi.spyOn(diskSpace, "tryReadDiskSpace").mockReturnValue({
+        targetPath: state.install,
+        checkedPath: state.install,
+        availableBytes: 0,
+        totalBytes: 1024,
+      });
+      try {
+        const outcome = await state
+          .run({
+            beforeGitMutation: prepareMutation,
+            progress: { onStepComplete },
+          })
+          .then(
+            (result) => ({ result }),
+            (error: unknown) => ({ error }),
+          );
+        if (reportingRejects) {
+          expect("error" in outcome).toBe(true);
+          const errors = collectNestedErrorCandidates(
+            "error" in outcome ? outcome.error : undefined,
+          );
+          expect(errors).toContain(reportingError);
+          expect(onStepComplete).toHaveBeenCalledWith(
+            expect.objectContaining({ name: "git update pack capacity", exitCode: 1 }),
+          );
+          expect(errors).toContainEqual(
+            expect.objectContaining({
+              exitCode: 1,
+              stderrTail: expect.stringMatching(
+                /snapshot-capacity-insufficient: Git update pack and index need [\s\S]*0 bytes available/,
+              ),
+            }),
+          );
+        } else {
+          if ("error" in outcome) {
+            throw outcome.error;
+          }
+          const { result } = outcome;
+          expect(result).toMatchObject({
+            status: "error",
+            reason: "snapshot-capacity-insufficient",
+          });
+          expect(result.steps).toContainEqual(
+            expect.objectContaining({
+              name: "git update pack capacity",
+              stderrTail: expect.stringContaining("0 bytes available"),
+            }),
+          );
+        }
+        expect(prepareMutation).not.toHaveBeenCalled();
+        expect(state.git(state.install, "rev-parse", "HEAD")).toBe(before);
+      } finally {
+        capacity.mockRestore();
+      }
+    },
+  );
 
   it("continues with a warning when object-volume capacity is unknown", async () => {
     const state = fixture();
@@ -600,11 +727,11 @@ describe("Git database admission", () => {
     },
   );
 
-  it.each(
-    (["global", "command"] as const).flatMap((configuration) =>
-      [false, true].map((configured) => ({ configuration, configured })),
-    ),
-  )(
+  it.each([
+    { configuration: "global", configured: false },
+    { configuration: "global", configured: true },
+    { configuration: "command", configured: true },
+  ] as const)(
     "uses captured transport configuration ($configuration, configured=$configured)",
     async ({ configuration, configured }) => {
       const state = fixture();

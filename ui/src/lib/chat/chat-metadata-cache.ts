@@ -10,6 +10,8 @@ import {
   invalidateModelCatalogCache,
   modelCatalogKey,
   modelCatalogParams,
+  type ModelCatalogInvalidation,
+  type ModelCatalogRead,
 } from "../model-catalog-cache.ts";
 import { readSessionChangedEvent } from "../sessions/reconcile.ts";
 import type { UiSessionDefaultsHost } from "../sessions/session-key.ts";
@@ -56,7 +58,7 @@ export type ChatMetadataEntry = {
   writer?: object;
   refreshRevision: number;
   refreshAfter?: number;
-  validateCatalog?: boolean;
+  validateCatalog?: ReadonlySet<ModelCatalogRead>;
   catalogRevision: number;
   refresh?: ChatMetadataRefreshRecord;
   listeners: Map<(update: ChatMetadataUpdate) => void, () => boolean>;
@@ -79,12 +81,12 @@ export function invalidateChatMetadataStore(
   client: GatewayBrowserClient,
   scope?: ChatMetadataParams,
   sessionDefaults?: UiSessionDefaultsHost,
-  retireCatalog = false,
+  catalogInvalidation: ModelCatalogInvalidation | "preserve" = "refresh",
 ): void {
   // Catalog readers share this lifecycle; retire their copies before metadata listeners reload.
-  if (retireCatalog) {
+  if (catalogInvalidation === "clear") {
     clearModelCatalogCache(client, { requireSnapshot: true });
-  } else {
+  } else if (catalogInvalidation === "refresh") {
     invalidateModelCatalogCache(client, scope, sessionDefaults);
   }
   chatMetadataCache.get(client)?.invalidate(scope, sessionDefaults);

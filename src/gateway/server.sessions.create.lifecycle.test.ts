@@ -15,12 +15,13 @@ import { listSessionStateEventsSince } from "../sessions/session-state-events.js
 import { createDeferredCore } from "../shared/deferred.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { ensureProfileForEmail } from "../state/user-profiles.js";
 import {
   setupPersistentSessionCreateTestHarness,
   chatSendOwner,
   requireNonEmptyString,
 } from "./server.sessions.create.test-support.js";
-import { listSessionGroups } from "./session-groups.js";
+import { readSessionGroupCatalog } from "./session-group-catalog.js";
 import { loadGatewayTestConfig } from "./test-helpers.config-runtime.js";
 import { embeddedRunMock, testState, writeSessionStore } from "./test-helpers.js";
 import {
@@ -52,36 +53,6 @@ function describeSessionStoreForensics(storePath: string): string {
   return JSON.stringify({ storeDir, files, resolvedTargetPath: target.path, rows });
 }
 
-test("sessions.create assigns and registers its requested group", async () => {
-  const { storePath } = await createSessionStoreDir();
-  const broadcastToConnIds = vi.fn();
-
-  const created = await directSessionReq<{ key: string }>(
-    "sessions.create",
-    {
-      agentId: "main",
-      category: "  Client work  ",
-    },
-    {
-      context: {
-        broadcastToConnIds,
-        getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
-      },
-    },
-  );
-
-  expect(created.ok).toBe(true);
-  const key = requireNonEmptyString(created.payload?.key, "grouped session key");
-  expect(loadSessionEntry({ sessionKey: key, storePath })?.category).toBe("Client work");
-  expect(listSessionGroups().map((group) => group.name)).toContain("Client work");
-  expect(broadcastToConnIds).toHaveBeenCalledWith(
-    "sessions.changed",
-    expect.objectContaining({ reason: "groups" }),
-    new Set(["conn-1"]),
-    { dropIfSlow: true },
-  );
-});
-
 test("sessions.create registers a category only after the session commit succeeds", async () => {
   await createSessionStoreDir();
   const category = "Deferred category";
@@ -108,12 +79,16 @@ test("sessions.create registers a category only after the session commit succeed
   );
 
   expect(failed.ok).toBe(false);
-  expect(listSessionGroups().map((group) => group.name)).not.toContain(category);
+  expect(readSessionGroupCatalog().groups.map((group) => group.name)).not.toContain(category);
 
   const broadcastToConnIds = vi.fn();
   const created = await directSessionReq(
     "sessions.create",
-    { agentId: "main", category, key: "agent:main:dashboard:successful-category-create" },
+    {
+      agentId: "main",
+      category: `  ${category}  `,
+      key: "agent:main:dashboard:successful-category-create",
+    },
     {
       context: {
         broadcastToConnIds,
@@ -123,7 +98,9 @@ test("sessions.create registers a category only after the session commit succeed
   );
 
   expect(created.ok).toBe(true);
-  expect(listSessionGroups().filter((group) => group.name === category)).toHaveLength(1);
+  expect(readSessionGroupCatalog().groups.filter((group) => group.name === category)).toHaveLength(
+    1,
+  );
   expect(
     broadcastToConnIds.mock.calls.filter(([, payload]) => payload?.reason === "groups"),
   ).toHaveLength(1);
@@ -519,7 +496,7 @@ test("sessions.create rejects a Fast Mode change completed by draining work befo
   const initialEntry = sessionStoreEntry("sess-fast-drain", { fastMode: false });
   await writeSessionStore({ entries: { main: initialEntry } });
   const placements = createWorkerSessionPlacementStore({ database: openOpenClawStateDatabase() });
-  const claim = placements.claimTurn({
+  const claim = await placements.claimTurn({
     agentId: "main",
     sessionKey: key,
     sessionId: initialEntry.sessionId,
@@ -565,7 +542,7 @@ test("sessions.create rejects a Fast Mode change completed by draining work befo
     releaseWriter.resolve();
     await heldWriter;
     expect(await persisted).toMatchObject({ status: "current", entry: { fastMode: true } });
-    placements.releaseTurn(claim);
+    await placements.releaseTurn(claim);
     admission.release();
     expect(await reset).toMatchObject({
       ok: false,
@@ -583,7 +560,7 @@ test("sessions.create rejects a Fast Mode change completed by draining work befo
     releaseWriter.resolve();
     await heldWriter;
     if (placements.validateTurnClaim(claim)) {
-      placements.releaseTurn(claim);
+      await placements.releaseTurn(claim);
     }
     admission.release();
     await reset;
@@ -653,7 +630,7 @@ test("sessions.create reset-in-place preserves the node creation stamp", async (
       client: {
         connect: { scopes: ["operator.write"] },
         authenticatedUserProfile: {
-          profileId: "profile-resetter",
+          profileId: ensureProfileForEmail("session-resetter@example.test").id,
           displayName: null,
           hasAvatar: false,
           updatedAt: 1,
@@ -702,7 +679,7 @@ test("sessions.create adopting an existing key does not restamp node provenance"
         client: {
           connect: { scopes: ["operator.write"] },
           authenticatedUserProfile: {
-            profileId: "profile-adopter",
+            profileId: ensureProfileForEmail("session-adopter@example.test").id,
             displayName: null,
             hasAvatar: false,
             updatedAt: 1,
@@ -751,7 +728,7 @@ test("sessions.create replays an identical creation once and rejects conflicting
       scopes: ["operator.write", "operator.admin"],
       device: { id: "control-ui-device" },
     },
-    authenticatedUserProfile: { profileId: "profile-owner" },
+    authenticatedUserProfile: { profileId: ensureProfileForEmail("replay@owner.test").id },
   };
   const params = {
     agentId: "main",
@@ -833,7 +810,7 @@ test("sessions.create replays an identical creation once and rejects conflicting
 
     const differentOwner = await request(params, {
       ...client,
-      authenticatedUserProfile: { profileId: "profile-other" },
+      authenticatedUserProfile: { profileId: ensureProfileForEmail("other@owner.test").id },
     });
     expect(differentOwner.ok).toBe(true);
     expect(differentOwner.payload?.key).not.toBe(first.payload?.key);

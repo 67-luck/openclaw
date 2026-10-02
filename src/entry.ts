@@ -4,9 +4,9 @@
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { format } from "node:util";
+import { resolveCliArgvInvocation } from "./cli/argv-invocation.js";
 import { isRootHelpInvocation } from "./cli/argv.js";
 import { parseCliContainerArgs, resolveCliContainerTarget } from "./cli/container-target.js";
-import { requestExitAfterOneShotOutput, runCliWithExitFinalization } from "./cli/one-shot-exit.js";
 import {
   tryOutputPrecomputedCommandHelp,
   type PrecomputedCommandHelpDeps,
@@ -14,7 +14,10 @@ import {
 import { applyCliProfileEnv, parseCliProfileArgs } from "./cli/profile.js";
 import type { RootHelpRenderOptions } from "./cli/program/root-help.js";
 import { isNativeHookRelayArgv } from "./cli/respawn-policy.js";
-import { withCliProcessScope } from "./cli/runtime-cleanup-scope.js";
+import {
+  isUpdateAdmissionInvocation,
+  tryRunUpdateAdmissionBeforeStartup,
+} from "./cli/run-main-update-admission.js";
 import {
   configureGatewayStartupTraceConsoleFormatting,
   createGatewayDispatchStartupTrace,
@@ -125,6 +128,8 @@ if (
   })
 ) {
   // Imported as a dependency — skip all entry-point side effects.
+} else if (isUpdateAdmissionInvocation(resolveCliArgvInvocation(process.argv))) {
+  await tryRunUpdateAdmissionBeforeStartup(resolveCliArgvInvocation(process.argv));
 } else {
   const entryFile = fileURLToPath(import.meta.url);
   const installRoot = resolveEntryInstallRoot(entryFile);
@@ -233,8 +238,10 @@ if (
       gatewayEntryStartupTrace.mark("argv");
 
       if (!tryHandleRootVersionFastPath(process.argv)) {
-        const run = (finalize?: () => Promise<void>) =>
-          withCliProcessScope(() => runMainOrRootHelp(process.argv, { finalize }));
+        const run = async (finalize?: () => Promise<void>) => {
+          const { withCliProcessScope } = await import("./cli/runtime-cleanup-scope.js");
+          return withCliProcessScope(() => runMainOrRootHelp(process.argv, { finalize }));
+        };
         const managedNodeStatePath = getManagedNodeHostStatePath();
         if (managedNodeStatePath) {
           const { withExistingOpenClawStateSchema } =
@@ -364,6 +371,8 @@ export async function runMainOrRootHelp(
   // mode so the envelope is written here. Only failures before runCli are startup failures.
   let commandStarted = false;
   let failureHandler: Awaited<ReturnType<typeof prepareCliFailureHandler>> | undefined;
+  const { runCliWithExitFinalization, requestExitAfterOneShotOutput } =
+    await import("./cli/one-shot-exit.js");
   await runCliWithExitFinalization({
     finalize: deps.finalize,
     run: async () => {
@@ -376,10 +385,12 @@ export async function runMainOrRootHelp(
       }
       if (await tryHandleRootHelpFastPath(argv)) {
         await flushEntryStartupTraceForEarlyReturn(argv);
+        requestExitAfterOneShotOutput(defaultRuntime);
         return;
       }
       if (await tryHandlePrecomputedCommandHelpFastPath(argv)) {
         await flushEntryStartupTraceForEarlyReturn(argv);
+        requestExitAfterOneShotOutput(defaultRuntime);
         return;
       }
       const { runCli } = await gatewayEntryStartupTrace.measure(

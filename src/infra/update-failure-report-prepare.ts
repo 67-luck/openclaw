@@ -4,6 +4,7 @@ import path from "node:path";
 import { valid as validSemver } from "semver";
 import { resolveStateDir } from "../config/paths.js";
 import {
+  redactPublicSupportConfigKey,
   redactPublicSupportDiagnosticLine,
   redactPublicSupportVersion,
   redactSupportDiagnosticLine,
@@ -25,10 +26,8 @@ import {
   selectUpdateFailureReportSteps,
 } from "./update-failure-facts-format.js";
 import { normalizeUpdateFailureFacts } from "./update-failure-facts.js";
-import {
-  isPublicUpdateFailureCode,
-  projectPublicUpdateFailureIdentifiers,
-} from "./update-failure-public-identifiers.js";
+import { isPublicUpdateFailureCode } from "./update-failure-public-codes.js";
+import { projectPublicUpdateFailureIdentifiers } from "./update-failure-public-identifiers.js";
 import { formatNpmFailureFacts } from "./update-npm-failure.js";
 import { updatePreflightDetailMessage } from "./update-preflight-details.js";
 import {
@@ -45,8 +44,9 @@ import {
 } from "./update-run-report.js";
 import { updateRunStepKey } from "./update-run-step-key.js";
 import { isFailedUpdateStep, updateRunWarningMessages } from "./update-run-step.js";
-import type { UpdateRunResult, UpdateStepResult } from "./update-runner-types.js";
+import type { UpdateRunResult } from "./update-runner-types.js";
 import { resolvePublicUpdateStepId } from "./update-step-identity.js";
+import type { UpdateStepResult } from "./update-step-result.js";
 
 const UPDATE_REPORT_BODY_MAX_BYTES = 16_000;
 const UPDATE_REPORT_FIELD_MAX_BYTES = 512;
@@ -124,18 +124,6 @@ function sanitizeFactIdentifier(value: string, context: UpdateFailureReportConte
     (/^(?:[\p{L}\p{N}-]+\.)+[\p{L}][\p{L}\p{N}-]*(?::\d+)?$/u.test(value) && !validSemver(value))
     ? "[redacted-host]"
     : sanitizeReportField(value, context);
-}
-
-function sanitizeFactConfigKey(value: string): string {
-  // Validation paths can contain operator-defined record keys at any depth.
-  const anchor =
-    /^(mcp\.servers|models\.providers|plugins\.entries|skills\.entries|auth\.profiles|cron\.jobs|agents\.list|hooks\.internal\.entries|engines\.node)(?:\.|$)/u.exec(
-      value,
-    )?.[1] ??
-    /^(agents|auth|channels|commands|cron|engines|gateway|hooks|mcp|messages|models|plugins|session|skills|stateDir|tools)(?:\.|$)/u.exec(
-      value,
-    )?.[1];
-  return anchor ? (value === anchor ? anchor : `${anchor}.*`) : "[redacted-key]";
 }
 
 type ReportedFailedStep = Pick<
@@ -299,7 +287,13 @@ async function renderBoundedDiagnostics(
     ]
       .filter(Boolean)
       .join("\n");
-    const diagnostic = redactPublicSupportDiagnosticLine(message, context);
+    const facts = normalizeUpdateFailureFacts(step.failureFacts ?? [], context.env);
+    const npm = facts.find(
+      (fact) => (fact.check === "npm" || fact.check === "bun") && fact.npmErrorCode,
+    );
+    const diagnostic = npm
+      ? [npm.npmErrorCode, npm.packageSpec].filter(Boolean).join(" ")
+      : redactPublicSupportDiagnosticLine(message, context);
     const exit = `exit ${step.exitCode ?? "unknown"}`;
     const detail =
       diagnostic === "[redacted-diagnostic]"
@@ -308,17 +302,19 @@ async function renderBoundedDiagnostics(
           ? diagnostic
           : `${exit} (${diagnostic})`;
     diagnostics.push(`Failed phase ${phase}: ${detail}${termination}`);
-    diagnostics.push(...formatNpmFailureFacts(step.failureFacts ?? [], context));
+    diagnostics.push(...formatNpmFailureFacts(facts, context));
     diagnostics.push(
       ...(await Promise.all(
-        normalizeUpdateFailureFacts(step.failureFacts ?? [], context.env)
-          .filter((fact) => fact.check !== "npm")
+        facts
+          .filter((fact) => fact.check !== "npm" && fact.check !== "bun")
           .map(async (fact) =>
             formatUpdateFailureFact({
               ...(await projectPublicUpdateFailureIdentifiers(fact)),
               ...(fact.location ? { location: fact.location } : {}),
               ...(fact.destination ? { destination: fact.destination } : {}),
-              ...(fact.affectedKey ? { affectedKey: sanitizeFactConfigKey(fact.affectedKey) } : {}),
+              ...(fact.affectedKey
+                ? { affectedKey: redactPublicSupportConfigKey(fact.affectedKey) }
+                : {}),
               ...(fact.message
                 ? {
                     message:

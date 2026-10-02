@@ -11,6 +11,7 @@ import type {
   WorkerProfile,
 } from "../../plugins/capability-provider.types.js";
 import type { DesktopObserveRequester } from "../desktop/observe-requester.js";
+import type { WorkerEnvironmentPreparation } from "./environment-record.js";
 import type {
   WorkerPlacementMoveSource,
   WorkerPlacementMoveTarget,
@@ -20,6 +21,7 @@ import type {
   WorkerSessionPlacementRecord,
   WorkerPlacementExecutionMode,
 } from "./placement-record.js";
+import type { WorkerPlacementCancellationTarget } from "./placement-target.js";
 import type {
   WorkerEnvironmentAttachment,
   WorkerEnvironmentAttachmentRecord,
@@ -57,11 +59,14 @@ export type WorkerEnvironmentServiceRecord = {
   ownerEpoch: number;
   createdAtMs: number;
   idleSinceAtMs: number | null;
+  destroyRequestedAtMs: number | null;
   attachedSessionIds: readonly string[];
   desktopAvailable: boolean;
   desktopApps: readonly WorkerDesktopApp["id"][];
   tunnelStatus: WorkerTunnelStatus;
-  preparation?: { purpose: "reserve" | "build"; key: string } | null;
+  preparation?:
+    | (WorkerEnvironmentPreparation & { project?: { label?: string; baseCommit: string } })
+    | null;
   error?: string;
 };
 
@@ -134,6 +139,8 @@ export type WorkerEnvironmentServiceContract = {
     close: () => Promise<void>;
   }>;
   list(): WorkerEnvironmentServiceRecord[];
+  readPreparedPoolSummary(): { maxTotal: number; reservedEnvironmentIds: string[] };
+  readReadyWorkerTarget(profileId: string): number;
   get(environmentId: string): WorkerEnvironmentServiceRecord | undefined;
   inventoryVersion(): number;
   readMachineShape(
@@ -180,6 +187,10 @@ export type WorkerPlacementDispatchRequest = {
   agentId: string;
   profileId: string;
   executionMode: WorkerPlacementExecutionMode;
+  expectedPlacement?: Pick<
+    WorkerSessionPlacementRecord,
+    "state" | "generation" | "environmentId" | "activeOwnerEpoch"
+  >;
   /** Current dispatch caller's setup authority; never inherited by a new caller. */
   runSetupScript?: boolean;
   devicePlacement?: DevicePlacementRequirement;
@@ -234,10 +245,6 @@ export type WorkerPlacementMoveRequest = Pick<
 
 /** Closure-bound request authority; in-process only and never part of durable placement intent. */
 export type WorkerPlacementAuthorization = () => void;
-
-export type WorkerPlacementCancellationTarget = Readonly<
-  Pick<WorkerSessionPlacementRecord, "state" | "generation" | "environmentId" | "activeOwnerEpoch">
->;
 
 /** Exact source eligibility may follow only transitions published by captured predecessors. */
 export type WorkerPlacementReclaimSourceCheck = (

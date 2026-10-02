@@ -5,7 +5,7 @@ import {
   NodeBuilderFlags,
   SignatureKind,
   type Checker,
-  type Emitter,
+  type Printer,
   type Type,
 } from "typescript/unstable/sync";
 import { normalizePluginSdkApiDeclarationText } from "./api-baseline-normalization.js";
@@ -186,6 +186,7 @@ function renameStructuredDeclarationForExport(
       declaration,
       declarationModifiers(declaration),
       name,
+      declaration.attributes,
       declaration.body,
     );
   }
@@ -196,7 +197,7 @@ function ensureExportedDeclarationText(value: string): string {
   return /^export\b/u.test(value) ? value : `export ${value}`;
 }
 
-function printTypeParameters(printer: Emitter, declaration: ts.TypeAliasDeclaration): string {
+function printTypeParameters(printer: Printer, declaration: ts.TypeAliasDeclaration): string {
   if (!declaration.typeParameters?.length) {
     return "";
   }
@@ -241,7 +242,7 @@ export function formatPluginSdkApiTypeAlias(
 export function printPluginSdkExportDeclaration(
   repoRoot: string,
   checker: Checker,
-  printer: Emitter,
+  printer: Printer,
   declaration: ts.Declaration,
   exportName: string,
 ): string | null {
@@ -261,7 +262,8 @@ export function printPluginSdkExportDeclaration(
             signature,
             ts.SyntaxKind.FunctionDeclaration,
             declaration,
-            DECLARATION_TYPE_FORMAT_FLAGS,
+            // Empty tuple defaults are valid public generic signatures.
+            DECLARATION_TYPE_FORMAT_FLAGS | NodeBuilderFlags.AllowEmptyTuple,
           );
           if (!rendered || !ts.isFunctionDeclaration(rendered)) {
             throw new Error(`Unable to print Plugin SDK function ${exportName}`);
