@@ -178,10 +178,14 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   Source-only edits may reuse the lease; base, dependency, wrapper, or Testbox
   workflow drift requires a fresh lease. Do not set
   `OPENCLAW_TESTBOX_ALLOW_STALE=1` for release evidence.
-- For a committed release candidate, warm the box with
-  `blacksmith testbox warmup ... --ref <candidate-branch-or-sha>`. Do not rely
-  on source sync to overlay committed branch changes onto the workflow's
-  default ref.
+- For a committed release candidate with the supported capsule-aware wrapper,
+  run `node scripts/crabbox-wrapper.mjs run --blacksmith-ref main -- <command>`
+  from that candidate's checkout when using Testbox. The capsule preserves
+  candidate source and frozen dependencies while `main` supplies current
+  admission limits. If the candidate lacks that wrapper contract, use the
+  exact-target release-validation route below with separate Validation and
+  Tooling SHAs. Do not dispatch candidate Testbox workflow refs or borrow
+  another checkout's wrapper.
 
 ## Deferred CI recovery
 
@@ -258,7 +262,7 @@ until their dependent enforcement changes land.
   release branch or beta tag records `coveragePolicy=npm-beta-v1`. It keeps
   Linux/macOS/Windows Node, Control UI, plugin, package, install/update,
   Linux/Windows/macOS cross-OS, QA parity, runtime-pair/restart, and tool coverage.
-  All selected tests except `windows-node-ci` jobs gate npm/ClawHub. Native app
+  All selected tests gate npm/ClawHub. Native app
   CI, performance, and published-package Telegram are deferred to confidence.
   Beta `all` without soak also defers Package Acceptance Telegram, including
   beta-profile checks of `main`. Record deferred checks as not run,
@@ -560,14 +564,18 @@ fresh product qualification. Historical root-only receipts retain
 dispatching child lanes. Npm preflight and package/install acceptance still run
 against the exact Release SHA and its new tarball bytes.
 
-Current all-group FRV also owns read-only npm source/build/qualification and
-Docker preparation. Use its successful run as `preflight_run_id`; the candidate
+Current all-group FRV also owns read-only core and selected-plugin npm
+source/build/qualification plus Docker preparation. Use its successful run as
+`preflight_run_id`; the candidate
 helper defaults to that run. Do not dispatch a second npm preflight unless
 recovering historical separate evidence. Regular final qualification records
 SDK reports for both `beta` and `latest`; review the acknowledgement for the
-actual publication channel. Prepared descriptors live in `publicationArtifacts` in
-the exact final manifest. Product evidence reuse never substitutes Code-SHA
-package or image bytes for the final Release SHA. For failed independent npm qualification, use `pnpm frv continue --failed`:
+actual publication channel. Prepared descriptors live in `publicationArtifacts`
+in the exact final manifest. Release Prepare adopts the manifest's plugin npm
+descriptor and prepares only ClawHub; it never repacks plugin npm after FRV.
+Product evidence reuse never substitutes Code-SHA
+package or image bytes for the final Release SHA. For failed independent npm
+qualification, use `pnpm frv continue --failed`:
 failed npm jobs retry on their original run, successful preparation jobs
 and diagnostic children carry forward, and the parent verifies the resulting
 receipts. Failure alone is not a continuation rejection. Frozen workflows
@@ -594,14 +602,6 @@ Mutation owners recheck live publication authority, selectors, and immutable byt
 
 Publish with `release_profile=from-validation` to consume the sealed profile.
 Stable publication requires stable/full evidence, soak, and blocking performance.
-Windows Node unit-test CI shards (`checks-windows-node-*`) in the normal CI child
-(`normalCi`) are advisory for Release Decision and publication. The named
-`windows-node-ci` class belongs to `scripts/full-release-validation-policy.mjs`.
-Its failures stay visible in the decision, GitHub step summary, and release
-evidence manifest; validators and publish gates recheck the class and child.
-This is policy-derived, never an operator input or waiver. Ordinary PR, push,
-scheduled, and main CI keep Windows blocking.
-
 Decide blocker or flake for every failed test. Rerun flakes on the same Release
 SHA at most twice and file a fix-in-parallel issue/PR on `main`. A selected job
 that remains red still blocks publication; never re-cut, change tooling, or
@@ -727,24 +727,10 @@ manifest target, package versions, saved `run_attempt`, and final tag to identif
 the same candidate. Reject narrow runs, untrusted tooling, mismatched targets,
 and earlier-attempt evidence.
 
-Run the npm preflight separately from trusted `main`. Here `tag` is the exact
-candidate SHA; it is an npm-preflight input, not the workflow transport ref:
-
-```bash
-gh workflow run openclaw-npm-release.yml \
-  --repo openclaw/openclaw \
-  --ref main \
-  -f tag="$VALIDATION_SHA" \
-  -f preflight_only=true \
-  -f npm_dist_tag=extended-stable \
-  -f release_candidate_branch="$CONTEXT_REF"
-```
-
-This standalone run is a supplemental validation-only preflight. Do not pass
-its run ID as publication `preflight_run_id`: a `main` workflow head does not
-have the canonical candidate branch/SHA identity required by that publication
-input. Publication continues to use the Full Release Validation run's
-manifest-bound integrated npm artifact and exact run attempt.
+The all-group parent prepares core and selected plugin npm tarballs itself and
+records their immutable descriptors in `publicationArtifacts`. Publication
+must consume those exact artifacts and attempts. A standalone npm or plugin npm
+preflight is diagnostic-only and cannot replace the manifest-bound evidence.
 
 Product failures need an approved backport. Frozen-target tooling failures need
 the smallest behavior-preserving repair. Provider, approval, runner, or log
@@ -782,7 +768,7 @@ pnpm frv watch --run <full-release-run-id>
 It resolves child run IDs from the parent's dispatch-job log lines
 (`Dispatched <workflow>: <url> (attempt N)`), never from display titles, and
 reports each parent and child attempt transition and each failed job once, with
-runner labels and advisory Windows jobs marked. Transient GitHub 5xx or HTML
+runner labels. Transient GitHub 5xx or HTML
 error bodies are retried on the next poll, never reported as job results.
 State lives in `$TMPDIR/openclaw-frv/<repo>-<parent>-watch.json` (`--state`
 overrides), so a restart after a harness or Monitor timeout does not re-report.
@@ -836,9 +822,8 @@ Interpret state precisely:
 - `cancelled_with_children`: the collector was cancelled while exact children
   remained active.
 
-Read every selected lane's actual conclusion. `passed` requires all selected
-validation lanes outside `windows-node-ci` jobs to succeed and retains the advisory
-failures; omitted coverage is not run, never passed.
+Read every selected lane's actual conclusion. `passed` requires every selected
+validation lane to succeed; omitted coverage is not run, never passed.
 
 The `full-release-diagnostics-<run-id>-<attempt>` artifact is the terminal
 failure and timing manifest. Use it after an early blocker instead of
@@ -889,7 +874,15 @@ run-ID-cached bytes first.
      `ClawHub dispatch blocked by waiting run`: see [Publish children](#publish-children)
      Only product or qualification-harness defects change C/Q. After one diagnosis/fix/narrow
      retry, reassess instead of starting another all-group cycle.
-7. If a required PR CI run is capacity-stalled with queued jobs and no active
+7. Runner routing: FRV-dispatched CI and Plugin Prerelease children always run
+   hosted `ubuntu-24.04` (or the release runner group). Other release lanes
+   follow `OPENCLAW_CI_RUNNER_BACKEND`, so a flip to `github` during a Blacksmith
+   outage moves them to hosted runners, except the QA Lab runtime-pair lane: it
+   fails on hosted runners and stays pinned to Blacksmith, queuing through an
+   outage. Release Checks prints a `Release runner routing` notice while the
+   flip is active. Codex extension tests run as file-bounded Plugin Prerelease
+   jobs because one hosted Codex batch took 36-60 minutes.
+8. If a required PR CI run is capacity-stalled with queued jobs and no active
    jobs, do not cancel unrelated work or accept a generic manual dispatch.
    First verify the PR head carries the current fallback schema:
    `gh api 'repos/openclaw/openclaw/contents/.github/workflows/ci.yml?ref=<pr-head-branch>'
@@ -920,6 +913,7 @@ Record:
 - active full parent run URL, attempt, workflow SHA, and any superseded parent
   with the exact replacement reason
 - selected child run IDs and conclusions: CI, Release Checks, Plugin Prerelease, NPM Telegram, Product Performance; record deferred confidence as not run
+- exact core and plugin npm publication artifact descriptors from the terminal manifest
 - all selected lane conclusions, including Linux/Windows/macOS cross-OS
 - performance comparison result versus earlier releases when available
 - targeted local proof commands
