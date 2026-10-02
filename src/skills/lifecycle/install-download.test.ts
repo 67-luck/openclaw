@@ -10,6 +10,7 @@ import JSZip from "jszip";
 import * as tar from "tar";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import * as tmpOpenClawDir from "../../infra/tmp-openclaw-dir.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { resolveSkillToolsRootDir } from "../runtime/tools-dir.js";
@@ -908,16 +909,32 @@ describe("installDownloadSpec extraction safety (tar.bz2)", () => {
   ])("rejects $name before publishing earlier readable files", async ({ name, archive }) => {
     const targetDir = path.join(resolveSkillToolsRootDir(`tbz2-${name}`), "target");
     mockArchiveResponse(archive);
+    const tempRoot = await fs.mkdtemp(path.join(workspaceDir, "tbz2-permissions-"));
+    const resolveTmp = vi
+      .spyOn(tmpOpenClawDir, "resolvePreferredOpenClawTmpDir")
+      .mockReturnValue(tempRoot);
 
-    const result = await installDownloadSkill({
-      name: `tbz2-${name}`,
-      url: "https://example.invalid/archive.tbz2",
-      archive: "tar.bz2",
-      targetDir,
-    });
+    try {
+      const result = await installDownloadSkill({
+        name: `tbz2-${name}`,
+        url: "https://example.invalid/archive.tbz2",
+        archive: "tar.bz2",
+        targetDir,
+      });
 
-    expect(result.ok).toBe(false);
-    await expect(fs.readdir(targetDir)).resolves.toEqual(["archive.tbz2"]);
+      expect(result.ok).toBe(false);
+      expect(result.stderr).toMatch(/EACCES|permission denied/i);
+      await expect(fs.readdir(targetDir)).resolves.toEqual(["archive.tbz2"]);
+    } finally {
+      resolveTmp.mockRestore();
+      // The rejected directory also prevents removal of the staged fixture.
+      if (name === "unsearchable-directory") {
+        for (const workspace of await fs.readdir(tempRoot)) {
+          await fs.chmod(path.join(tempRoot, workspace, "extracted", "z-directory"), 0o700);
+        }
+      }
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it.runIf(process.platform !== "win32")("installs an empty read-only directory", async () => {

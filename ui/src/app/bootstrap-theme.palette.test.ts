@@ -11,7 +11,9 @@ afterEach(() => {
   for (const dispose of disposals.splice(0).toReversed()) {
     dispose();
   }
-  document.querySelectorAll('[id^="openclaw-theme-palette-"]').forEach((link) => link.remove());
+  document
+    .querySelectorAll('[id^="openclaw-theme-palette-"], [id^="openclaw-typeface-"]')
+    .forEach((link) => link.remove());
   document.documentElement.removeAttribute("style");
   vi.restoreAllMocks();
 });
