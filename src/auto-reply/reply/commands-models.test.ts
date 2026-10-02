@@ -73,6 +73,8 @@ vi.mock("../../plugins/current-plugin-metadata-snapshot.js", async (importOrigin
 }));
 
 beforeEach(() => {
+  vi.stubEnv("CODEX_API_KEY", "");
+  vi.stubEnv("OPENAI_API_KEY", "");
   vi.spyOn(preparedCatalog, "loadPublishedPreparedModelCatalogOwnerSnapshot").mockImplementation(
     async (params) => {
       if (!params?.config) {
@@ -124,6 +126,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.useRealTimers();
   cliBackendsTesting.resetDepsForTest();
