@@ -177,8 +177,6 @@ describe("commitBackgroundResultToSession", () => {
         identities: [target.sessionKey, target.sessionId],
         assertAllowed: () => {},
       });
-      const lifecycle = await import("./session-controller.lifecycle.js");
-      const releaseSpy = vi.spyOn(lifecycle, "captureSessionControllerSettlement");
       const controller = new AbortController();
       const prepareDisplayContent = vi.fn(async () => undefined);
       const pending: Promise<unknown>[] = [];
@@ -212,8 +210,7 @@ describe("commitBackgroundResultToSession", () => {
           },
         );
         pending.push(completionSettlement);
-        await vi.waitFor(() => expect(releaseSpy).toHaveBeenCalledOnce());
-        expect(getSessionMutationCount()).toBe(1);
+        await vi.waitFor(() => expect(getSessionMutationCount()).toBe(1));
         expect(prepareDisplayContent).not.toHaveBeenCalled();
         const sourceMutation = admission.run(async () => {
           sourceResponse = await callGatewayHandler(
@@ -257,7 +254,6 @@ describe("commitBackgroundResultToSession", () => {
         controller.abort();
         admission.release();
         const settled = await Promise.allSettled(pending);
-        releaseSpy.mockRestore();
         expect(settled.filter((result) => result.status === "rejected")).toHaveLength(1);
         expect(completionOutcome).toMatchObject({
           status: "rejected",

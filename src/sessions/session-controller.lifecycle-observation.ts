@@ -12,11 +12,36 @@ import type {
 } from "./session-controller.lifecycle.types.js";
 import { targetFrom, type TargetInput, type SessionTarget } from "./session-controller.target.js";
 
+/** Awaits controller custody, rejecting with the caller's abort reason if it cancels first. */
+export async function waitUnlessAborted<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+  signal?.throwIfAborted();
+  if (!signal) {
+    return await pending;
+  }
+  let remove = () => {};
+  const aborted = new Promise<never>((_, reject) => {
+    const abort = () =>
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error("Session operation cancelled", { cause: signal.reason }),
+      );
+    signal.addEventListener("abort", abort, { once: true });
+    remove = () => signal.removeEventListener("abort", abort);
+  });
+  try {
+    return await Promise.race([pending, aborted]);
+  } finally {
+    remove();
+  }
+}
+
 /** Start work only after all retiring source cleanup has settled. */
 export async function runAfterRetiringSessionSources<T>(
   targets: readonly SessionTarget[],
   requiredSessionId: string | undefined,
   run: () => Promise<T>,
+  signal?: AbortSignal,
 ): Promise<T> {
   // Waiting inputs stay queued; only retiring inputs must settle before activation.
   for (;;) {
@@ -27,7 +52,7 @@ export async function runAfterRetiringSessionSources<T>(
       // Invoke in this frame so a withdrawal cannot slip between the check and activation.
       return await run();
     }
-    await Promise.all(retiring);
+    await waitUnlessAborted(Promise.all(retiring), signal);
   }
 }
 

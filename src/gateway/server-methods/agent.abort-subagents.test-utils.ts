@@ -130,6 +130,8 @@ export function registerAgentAbortSubagentTests() {
             if (!releaseOnParent) {
               expect(releaseSwarmRun(ownedChildSessionKey)).toBe(true);
             }
+            // A cooperative producer settles after accepting cancellation.
+            void Promise.resolve().then(() => childOperation?.complete());
           },
         });
         if (releaseOnParent) {

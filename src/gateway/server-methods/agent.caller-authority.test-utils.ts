@@ -266,12 +266,14 @@ describe("gateway agent caller authority custody", () => {
     const guestRunId = "registered-guest-source";
     const staffRunId = "registered-staff-source";
     const finishCommands = createDeferredCore();
+    // The staff run stays executing until its authority has been checked.
+    const finishStaff = createDeferredCore();
     const commands = new Map<string, AgentCommandGatewayIngressOpts>();
     getAgentTestMocks().agentCommand.mockImplementation(
       async (opts: AgentCommandGatewayIngressOpts) => {
         await opts.onExecutionStarted?.();
         commands.set(expectDefined(opts.runId, "command run ID missing"), opts);
-        await finishCommands.promise;
+        await (opts.runId === staffRunId ? finishStaff.promise : finishCommands.promise);
         opts.abortSignal?.throwIfAborted();
         return { payloads: [{ text: "done" }], meta: { durationMs: 1 } };
       },
@@ -342,6 +344,7 @@ describe("gateway agent caller authority custody", () => {
         "staff authority missing",
       );
       expect(() => staffAuthority.assertCurrent()).not.toThrow();
+      finishStaff.resolve();
       await waitForAssertion(() => {
         expect(rpcSourceTesting.size).toBe(0);
         expect(context.dedupe.get(`agent:${guestRunId}`)).toMatchObject({
@@ -355,6 +358,7 @@ describe("gateway agent caller authority custody", () => {
       });
     } finally {
       finishCommands.resolve();
+      finishStaff.resolve();
       try {
         await waitForAssertion(() => expect(rpcSourceTesting.size).toBe(0));
       } finally {

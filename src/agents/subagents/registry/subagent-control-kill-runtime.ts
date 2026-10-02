@@ -613,7 +613,8 @@ export async function killSubagentRun(params: {
             ? runtime.abortEmbeddedAgentRun(sessionId, target)
             : false);
         stopAccepted ||= aborted;
-        // Native cancellation is a request. Only the captured producer can settle its raw work.
+        // Native cancellation is a request. Only the captured producer can settle its raw work;
+        // a producer that ignores it must not hold the caller's Stop past the drain bound.
         const refused =
           capturedStop &&
           [
@@ -621,7 +622,10 @@ export async function killSubagentRun(params: {
             ...capturedStop.activeInputs.flatMap((input) => input.claim?.operation ?? []),
           ].some((operation) => !operation.result && !operation.abortSignal.aborted);
         if (capturedStop && !refused) {
-          await capturedStop.settled;
+          await waitForSessionControllerSettlement(
+            capturedStop.settled,
+            SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+          );
         }
         if (!ownsSessionIncarnation()) {
           return releaseChangedSessionKill(claimedKill);

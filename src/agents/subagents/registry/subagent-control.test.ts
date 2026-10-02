@@ -18,8 +18,10 @@ import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { ensureContextEnginesInitialized } from "../../../context-engine/init.js";
 import { resolveContextEngine } from "../../../context-engine/registry.js";
 import { rotateAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
+import { createReplyOperation } from "../../../sessions/session-controller.js";
 import {
   beginSessionEffect,
+  captureSessionTarget,
   consumeSessionEffectHandoff,
   getSessionMutationCount,
   SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
@@ -1573,6 +1575,59 @@ describe("controlled subagent cancellation races", () => {
       }
     },
   );
+
+  it("finishes the kill when a child accepts cancellation but never settles", async () => {
+    const controllerSessionKey = "agent:main:main";
+    const childSessionKey = "agent:main:subagent:kill-unsettled-producer";
+    const sessionId = "sess-kill-unsettled-producer";
+    const entry = createSubagentRunRecord({
+      runId: "run-kill-unsettled-producer",
+      childSessionKey,
+      controllerSessionKey,
+      requesterSessionKey: controllerSessionKey,
+      task: "ignore cancellation",
+      createdAt: Date.now() - 2_000,
+      execution: { status: "running", startedAt: Date.now() - 1_000 },
+    });
+    addSubagentRunForTests(entry);
+    const storePath = await writeSessionStoreFixture("kill-unsettled-producer", {
+      [childSessionKey]: { sessionId, updatedAt: Date.now() },
+    });
+    setSubagentControlDepsForTest({
+      isTargetSessionRunActive: () => false,
+      abortEmbeddedAgentRun: () => false,
+      clearSessionQueues: () => ({ followupCleared: 0, keys: [] }),
+    });
+    const operation = createReplyOperation({
+      sessionKey: childSessionKey,
+      sessionId,
+      resetTriggered: false,
+      target: captureSessionTarget({
+        storeScope: storePath,
+        sessionKey: childSessionKey,
+        incarnation: sessionId,
+      }),
+    });
+    operation.attachBackend({ kind: "embedded", isStreaming: () => true, cancel: () => {} });
+    vi.useFakeTimers();
+    try {
+      const pendingKill = killAllControlledSubagentRuns({
+        cfg: cfgWithSessionStore(storePath),
+        controller: controllerFor(controllerSessionKey),
+        runs: [entry],
+      });
+      await vi.waitFor(() => expect(operation.abortSignal.aborted).toBe(true));
+      await vi.advanceTimersByTimeAsync(SESSION_CONTROLLER_DRAIN_TIMEOUT_MS);
+
+      await expect(pendingKill).resolves.toMatchObject({ status: "ok", killed: 1 });
+      expect(getSubagentRunByChildSessionKey(childSessionKey)).toMatchObject({
+        endedReason: SUBAGENT_ENDED_REASON_KILLED,
+      });
+    } finally {
+      operation.complete();
+      vi.useRealTimers();
+    }
+  });
 
   it("leaves restart recovery disabled when the kill tombstone cannot persist", async () => {
     const controllerSessionKey = "agent:main:main";

@@ -3,7 +3,10 @@ import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   type ReplyOperation,
 } from "./session-controller.contracts.js";
-import { runAfterRetiringSessionSources } from "./session-controller.lifecycle-observation.js";
+import {
+  runAfterRetiringSessionSources,
+  waitUnlessAborted,
+} from "./session-controller.lifecycle-observation.js";
 import {
   effectMatchesSessionId,
   inputMatchesSessionId,
@@ -184,6 +187,7 @@ export async function prepareSessionMutationCompetition(params: {
   competitors: readonly ReplyOperation[];
   requiredSessionId?: string;
   targets: readonly SessionTarget[];
+  signal?: AbortSignal;
 }): Promise<{ waitForCompetitors: boolean; preemption?: SessionMutationPreemption }> {
   if (params.policy.policy === "preempt") {
     const preemption = prepareSessionMutationPreemption({
@@ -198,10 +202,13 @@ export async function prepareSessionMutationCompetition(params: {
     return { waitForCompetitors: preemption !== undefined, preemption };
   }
   if (params.policy.policy === "wait") {
-    await Promise.all([
-      ...params.competitors.map((operation) => operation.ownerSettlement),
-      ...params.claims.map((claim) => claim.settlement.promise),
-    ]);
+    await waitUnlessAborted(
+      Promise.all([
+        ...params.competitors.map((operation) => operation.ownerSettlement),
+        ...params.claims.map((claim) => claim.settlement.promise),
+      ]),
+      params.signal,
+    );
     return { waitForCompetitors: true };
   }
   return { waitForCompetitors: false };

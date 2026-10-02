@@ -17,6 +17,7 @@ import type { ReplyOperation } from "./session-controller.contracts.js";
 import {
   runAfterRetiringSessionSources,
   waitForSessionControllerSettlement,
+  waitUnlessAborted,
 } from "./session-controller.lifecycle-observation.js";
 import {
   matchingEntries,
@@ -218,29 +219,7 @@ export function bindSessionControllerTarget(
 }
 async function waitForChange(entry: SessionControllerEntry, signal?: AbortSignal) {
   signal?.throwIfAborted();
-  const changed = lifecycle(entry).changed.promise;
-  if (!signal) {
-    return await changed;
-  }
-  let remove = () => {};
-  const aborted = new Promise<never>((_, reject) => {
-    const abort = () =>
-      reject(
-        signal.reason instanceof Error
-          ? signal.reason
-          : new Error("Session operation cancelled", { cause: signal.reason }),
-      );
-    signal.addEventListener("abort", abort, { once: true });
-    remove = () => signal.removeEventListener("abort", abort);
-    if (signal.aborted) {
-      abort();
-    }
-  });
-  try {
-    await Promise.race([changed, aborted]);
-  } finally {
-    remove();
-  }
+  await waitUnlessAborted(lifecycle(entry).changed.promise, signal);
 }
 
 /** Mutation requests are queued on the canonical entries, not on store-writer locks.
@@ -386,6 +365,7 @@ export async function runSessionMutation<T>(
         competitors,
         requiredSessionId: params.requiredSessionId,
         targets,
+        signal: params.signal,
       });
       // Only effects that actually started can write. Pending validators remain owned
       // through their real return, even if their signal was cancelled while awaiting.
@@ -410,9 +390,16 @@ export async function runSessionMutation<T>(
           run: params.run,
         });
       }
-      await effectsSettled;
+      // Until its body starts, a waiting mutation has written nothing, so its caller may
+      // cancel it. An inherited turn signal does not: the mutation may be stopping that turn.
+      await waitUnlessAborted(effectsSettled, params.signal);
       if (waitForCompetitors) {
-        return await runAfterRetiringSessionSources(targets, params.requiredSessionId, params.run);
+        return await runAfterRetiringSessionSources(
+          targets,
+          params.requiredSessionId,
+          params.run,
+          params.signal,
+        );
       }
       return await params.run();
     } finally {
