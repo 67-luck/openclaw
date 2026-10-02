@@ -355,13 +355,13 @@ final class RealtimeTalkOutput: @unchecked Sendable {
         let (stream, continuation) = AsyncThrowingStream<Data, Error>.makeStream(
             bufferingPolicy: .bufferingOldest(RealtimeTalkRelaySession.maxBufferedOutputChunks))
         self.outputContinuation = continuation
-        // Retain playback itself so stop cancels it before a queued legacy task can start,
-        // even when the detached completion observer has not started.
+        // Both paths fence playback by generation. Retaining playback itself also lets stop
+        // cancel a queued task before the detached completion observer starts.
         let playback: Task<StreamingPlaybackResult, Never> = if let player {
             player.beginPlayback(stream: stream, sampleRate: sampleRate)
         } else {
-            Task { @MainActor [legacyPlayer] in
-                guard !Task.isCancelled else {
+            Task { @MainActor [weak self, legacyPlayer] in
+                guard self?.withLock({ $0.outputSessionId == sessionId && !$0.isClosed }) == true else {
                     return StreamingPlaybackResult(finished: false, interruptedAt: nil)
                 }
                 return await legacyPlayer.play(stream: stream, sampleRate: sampleRate)
