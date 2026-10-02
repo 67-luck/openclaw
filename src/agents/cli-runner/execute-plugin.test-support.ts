@@ -9,7 +9,7 @@ import { buildPreparedCliRunContext } from "../cli-runner.test-helpers.js";
 import { executePluginOwnedProcess } from "./execute-plugin.js";
 import type { PreparedCliRunContext, RunCliAgentParams } from "./types.js";
 
-const activeAdmissions: Array<ReturnType<typeof prepareSystemAgentRunAdmission>> = [];
+const activeAdmissionClosers: Array<() => Promise<void>> = [];
 let nextRunId = 0;
 
 export const SUCCESS_RESULT = {
@@ -34,7 +34,7 @@ export async function createExecution(
   const runId = options.runId ?? `plugin-owner-${++nextRunId}`;
   const config = options.config ?? { tools: { exec: { security: "full", ask: "off" } } };
   const admission = prepareSystemAgentRunAdmission(config, runId, "main", "plugin-test");
-  activeAdmissions.push(admission);
+  activeAdmissionClosers.push(async () => admission.close());
   const context = buildPreparedCliRunContext({
     provider: "claude-cli",
     model: "claude-sonnet-4-6",
@@ -134,9 +134,9 @@ export function requestNativeTool(
   });
 }
 
-export function closePluginTestAdmissions(): void {
-  for (const admission of activeAdmissions.splice(0)) {
-    admission.close();
+export async function closePluginTestAdmissions(): Promise<void> {
+  for (const close of activeAdmissionClosers.splice(0)) {
+    await close();
   }
   resetAdjustedParamsByToolCallIdForTests();
 }

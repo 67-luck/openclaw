@@ -16,7 +16,7 @@ type AdmittedHostCapabilityTestFixture = Readonly<{
   hostCapabilities: ReturnType<typeof createAgentHarnessHostCapabilities>["capabilities"];
   agentHarnessCompletionScope?: ReturnType<typeof createAgentHarnessCompletionScope>;
   closeHost: () => void;
-  closeAdmission: () => void;
+  closeAdmission: () => Promise<void>;
   runWithGatewayScope: <T>(run: () => T) => T;
   closeGateway: () => void;
 }>;
@@ -89,7 +89,7 @@ export async function createAdmittedHostCapabilityTestFixture(
         }
       : {}),
     closeHost: host.close,
-    closeAdmission: admission.close,
+    closeAdmission: async () => admission.close(),
     runWithGatewayScope,
     closeGateway,
   };

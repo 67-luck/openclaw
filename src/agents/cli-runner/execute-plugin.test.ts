@@ -51,12 +51,12 @@ function registerOwnerSession(context: PreparedCliRunContext, generation: string
   return { handle: session, close };
 }
 
-afterEach(() => {
+afterEach(async () => {
   for (const session of activeSessions) {
     session.close("restart");
   }
   activeSessions.clear();
-  closePluginTestAdmissions();
+  await closePluginTestAdmissions();
   mockCallGatewayTool.mockReset();
   vi.restoreAllMocks();
   vi.useRealTimers();
