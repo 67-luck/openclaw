@@ -371,6 +371,9 @@ raw callback string. Actor and source-message checks remain channel-owned.
       Channel turn adapters can forward the same plan through
       `deliverPreparedWithProviderMessageSending`, and durable inbound delivery uses
       `deliverStructuredInboundReplyWithMessageSendContext({ ...context, plan })`.
+      A prepared or filtered agent registry from the current Gateway publication
+      is not a reload successor: ordinary final replies use that Gateway’s live
+      channel registry and do not require a handoff callback.
       Both durable inbound helpers accept an optional synchronous
       `prepareRuntimeHandoff(cfg)` callback for final replies after an unrelated
       plugin reload. The channel must reject a changed admitted sender and return
