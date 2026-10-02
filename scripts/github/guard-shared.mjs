@@ -29,7 +29,7 @@ const recoveryDeadlineEnv = "OPENCLAW_SECURITY_REVIEW_DEADLINE_MS";
 // response bodies or arbitrary error causes that may contain private data.
 const requestDiagnostics = new WeakMap();
 
-function withRequestDiagnostic(error, method, path, response) {
+function recordRequestDiagnostic(error, method, path, response) {
   const diagnostic = {
     method: /^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)$/u.test(method) ? method : "UNKNOWN",
     path: sanitizeGuardDisplayValue(path.split(/[?#]/u, 1)[0]),
@@ -62,7 +62,6 @@ function withRequestDiagnostic(error, method, path, response) {
     diagnostic.code = error.code;
   }
   requestDiagnostics.set(error, JSON.stringify(diagnostic));
-  return error;
 }
 
 export class GitHubRateLimitError extends Error {
@@ -398,7 +397,8 @@ function timeoutError(path, method, timeoutMs) {
     method === "GET" || method === "HEAD"
       ? new GitHubReadTimeoutError(message)
       : new Error(message);
-  return withRequestDiagnostic(error, method, path);
+  recordRequestDiagnostic(error, method, path);
+  return error;
 }
 
 function combineAbortSignals(signals) {
@@ -477,7 +477,8 @@ export function createGitHubApi(token, options = {}) {
           if (!requestSignal.aborted) {
             requestError.code = code;
           }
-          throw withRequestDiagnostic(requestError, method, path);
+          recordRequestDiagnostic(requestError, method, path);
+          throw requestError;
         }
         if (!response.ok) {
           if (
@@ -506,16 +507,14 @@ export function createGitHubApi(token, options = {}) {
               response.headers.has("retry-after") ||
               /(?:API rate limit exceeded|secondary rate limit)/iu.test(errorText))
           ) {
-            throw withRequestDiagnostic(
-              new GitHubRateLimitError(message, response),
-              method,
-              path,
-              response,
-            );
+            const error = new GitHubRateLimitError(message, response);
+            recordRequestDiagnostic(error, method, path, response);
+            throw error;
           }
           const error = new Error(message);
           error.status = response.status;
-          throw withRequestDiagnostic(error, method, path, response);
+          recordRequestDiagnostic(error, method, path, response);
+          throw error;
         }
       }
     })();
