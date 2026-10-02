@@ -17,15 +17,7 @@ fn serialized_len<T: Serialize>(value: &T, maximum: usize) -> Result<usize, crat
     };
     serde_json::to_writer(&mut writer, value).map_err(|error| {
         if writer.exceeded {
-            crate::ClientError::Transport(
-                crate::WebSocketError::Capacity(
-                    tokio_tungstenite::tungstenite::error::CapacityError::MessageTooLong {
-                        size: maximum.saturating_add(1),
-                        max_size: maximum,
-                    },
-                )
-                .to_string(),
-            )
+            crate::ClientError::RequestTooLarge { maximum }
         } else {
             crate::ClientError::InvalidFrame(error.to_string())
         }
@@ -103,7 +95,7 @@ mod tests {
             );
             assert!(matches!(
                 encode_bounded_json(&value, expected.len() - 1),
-                Err(crate::ClientError::Transport(_))
+                Err(crate::ClientError::RequestTooLarge { .. })
             ));
         }
     }
@@ -120,7 +112,7 @@ mod tests {
         }
         assert!(matches!(
             encode_bounded_json(&("x".repeat(32), MustNotVisit), 16),
-            Err(crate::ClientError::Transport(_))
+            Err(crate::ClientError::RequestTooLarge { .. })
         ));
     }
 

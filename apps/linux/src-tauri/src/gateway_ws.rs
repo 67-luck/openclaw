@@ -377,6 +377,9 @@ impl RequestFailure {
             SharedClientError::DispatchRejected(message) => {
                 Self::method_with_details(message, None)
             }
+            error @ SharedClientError::RequestTooLarge { .. } => {
+                Self::method_with_details(error.to_string(), None)
+            }
             SharedClientError::RequestTimeout(method) => {
                 Self::transport(format!("{method} request timed out."))
             }
@@ -4088,6 +4091,14 @@ esac
             TlsTrust::Pinned([0xab; 32])
         );
         assert!(tls_trust(Some("sha256:abc")).is_err());
+    }
+
+    #[test]
+    fn oversized_local_request_does_not_disconnect_the_gateway() {
+        let failure =
+            RequestFailure::from_shared(SharedClientError::RequestTooLarge { maximum: 4096 });
+        assert!(!failure.disconnect);
+        assert!(failure.message.contains("4096"));
     }
 
     #[test]

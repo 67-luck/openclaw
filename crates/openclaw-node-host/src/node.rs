@@ -955,11 +955,29 @@ impl NodeSession {
             return Err(ClientError::NotActivated);
         }
         let params = invocation_result_params(id, node_id, result)?;
-        self.gateway
+        let delivery = match self
+            .gateway
             .request_delivery("node.invoke.result", params)
             .await
-            .map(|_| ())
-            .map_err(map_gateway_error)
+        {
+            // The complete escaped envelope exceeded the wire limit before enqueue.
+            // Report this invocation's failure without retiring unrelated node work.
+            Err(GatewayClientError::RequestTooLarge { .. }) => {
+                let params = invocation_result_params(
+                    id,
+                    node_id,
+                    InvocationResult::failure(
+                        "OUTPUT_TOO_LARGE",
+                        "command result exceeds Gateway frame limit",
+                    ),
+                )?;
+                self.gateway
+                    .request_delivery("node.invoke.result", params)
+                    .await
+            }
+            delivery => delivery,
+        };
+        delivery.map(|_| ()).map_err(map_gateway_error)
     }
 
     pub(crate) async fn progress<G>(&self, params: Value, guard: G) -> Result<(), ClientError>
@@ -1102,6 +1120,9 @@ fn map_gateway_error(error: GatewayClientError) -> ClientError {
             retry_after_ms,
         },
         GatewayClientError::RequestTimeout(method) => ClientError::RequestTimeout(method),
+        error @ GatewayClientError::RequestTooLarge { .. } => {
+            ClientError::InvalidFrame(error.to_string())
+        }
         GatewayClientError::DispatchRejected(reason) => ClientError::Closed(reason),
         GatewayClientError::WriteTimeout(operation) => ClientError::WriteTimeout(operation),
         GatewayClientError::Closed(error) => ClientError::Closed(error),

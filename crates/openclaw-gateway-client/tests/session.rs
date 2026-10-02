@@ -72,10 +72,13 @@ async fn typed_delivery_releases_payload_before_ack_and_enforces_wire_limit() {
             }),
         )
         .await;
-        assert!(!matches!(
-            socket.next().await,
-            Some(Ok(Message::Binary(_) | Message::Text(_)))
-        ));
+        let after = receive_json(&mut socket).await;
+        assert_eq!(after["method"], "test.after-oversized");
+        send_json(
+            &mut socket,
+            json!({"type":"res", "id":after["id"], "ok":true, "payload":null}),
+        )
+        .await;
     });
     let session = GatewayClient::connect(
         GatewayClientConfig::new(format!("ws://{address}"))
@@ -106,10 +109,13 @@ async fn typed_delivery_releases_payload_before_ack_and_enforces_wire_limit() {
                 }
             )
             .await,
-        Err(ClientError::Transport(_))
+        Err(ClientError::RequestTooLarge { maximum: MAXIMUM })
     ));
     assert!(rejected_release.load(Ordering::Acquire));
-    assert!(session.wait_closed().await.is_err());
+    session
+        .request("test.after-oversized", json!({}))
+        .await
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(5), server)
         .await
         .unwrap()
@@ -270,6 +276,21 @@ async fn dispatch_guard_rejects_before_wire_without_closing_the_session() {
     assert!(
         matches!(oversized, Err(ClientError::DispatchRejected(reason)) if reason == "generation changed")
     );
+    let late_rejection = session
+        .request_with_dispatch_deadline(
+            "node.rejected",
+            json!({"media": "x".repeat(4096)}),
+            tokio::time::Instant::now() + Duration::from_secs(1),
+            |dispatch| {
+                dispatch.enqueue();
+                Err(DispatchRejection::new("generation changed"))
+            },
+        )
+        .await;
+    assert!(matches!(
+        late_rejection,
+        Err(ClientError::DispatchRejected(reason)) if reason == "generation changed"
+    ));
     let rejected = session
         .request_with_deadline(
             "node.rejected",

@@ -445,6 +445,8 @@ pub enum ClientError {
     },
     #[error("Gateway request timed out: {0}")]
     RequestTimeout(String),
+    #[error("Gateway request exceeds the {maximum}-byte frame limit")]
+    RequestTooLarge { maximum: usize },
     #[error("Gateway request dispatch rejected: {0}")]
     DispatchRejected(String),
     #[error("Gateway write timed out: {0}")]
@@ -1399,7 +1401,12 @@ where
                 (result, dispatch.enqueued)
             };
             if let Err(rejection) = guard_result {
-                if !enqueued {
+                if !enqueued
+                    || matches!(
+                        enqueue_result.as_ref(),
+                        Some(Err(ClientError::RequestTooLarge { .. }))
+                    )
+                {
                     return Err(ClientError::DispatchRejected(rejection.reason));
                 }
                 enqueue_result.expect("enqueued dispatch must record a result")?;
@@ -1546,7 +1553,8 @@ where
                                 let _ = reply.send(result);
                                 break SessionCloseCause::WriteTimeout(operation);
                             }
-                            Err(error @ ClientError::DispatchRejected(_)) => {
+                            // These failures precede socket enqueue; the connection is still usable.
+                            Err(error @ (ClientError::DispatchRejected(_) | ClientError::RequestTooLarge { .. })) => {
                                 let _ = reply.send(Err(error));
                             }
                             Err(ClientError::Closed(reason)) => {
