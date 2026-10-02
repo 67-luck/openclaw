@@ -11,7 +11,7 @@ import {
 } from "../../channels/message/ingress-drain.test-helpers.js";
 import type { MsgContext } from "../templating.js";
 import type { GetReplyOptions } from "../types.js";
-import { createDispatcher } from "./dispatch-from-config.shared.test-harness.js";
+import { createDispatcher, sessionStoreMocks } from "./dispatch-from-config.shared.test-harness.js";
 import {
   automaticDirectReplyConfig,
   describe0BeforeEach0,
@@ -87,6 +87,10 @@ describe("dispatch retry after queued ingress abandonment", () => {
             originatingChannel: "discord",
             originatingTo: "channel:ingress-fixture",
           });
+          run.run.agentId = "main";
+          run.run.config = {
+            session: { store: sessionStoreMocks.resolveSessionStorePathCore() },
+          };
           run.turnAdoptionLifecycle = options?.turnAdoptionLifecycle;
           run.abortSignal = options?.turnAdoptionLifecycle?.abortSignal;
           let renewalFailed = false;

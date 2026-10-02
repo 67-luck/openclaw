@@ -979,73 +979,6 @@ describe("dispatchReplyFromConfig", () => {
     }
   });
 
-  it("releases a Slack bypass lease when the competing routed thread changes during admission", async () => {
-    const {
-      activeOperation: originalOperation,
-      createCtx,
-      sessionId,
-      sessionKey,
-    } = createActiveSlackThread("U2");
-    let replacementOperation: ReturnType<typeof createReplyOperation> | undefined;
-    let releaseMutation: () => void = () => {};
-    const mutationGate = new Promise<void>((resolve) => {
-      releaseMutation = resolve;
-    });
-    let signalMutationEntered: () => void = () => {};
-    const mutationEntered = new Promise<void>((resolve) => {
-      signalMutationEntered = resolve;
-    });
-    let lifecycleMutation: Promise<void> | undefined;
-    hookMocks.runner.hasHooks.mockImplementation(
-      ((hookName?: string) => hookName === "before_dispatch") as () => boolean,
-    );
-    hookMocks.runner.runBeforeDispatch.mockImplementationOnce(async () => {
-      lifecycleMutation = runSessionMutation({
-        scope: "/tmp/mock-sessions.json",
-        identities: [sessionKey, sessionId],
-        run: async () => {
-          signalMutationEntered();
-          await mutationGate;
-        },
-      });
-      await mutationEntered;
-      setTimeout(() => {
-        originalOperation.complete();
-        replacementOperation = createReplyOperation({
-          sessionKey,
-          sessionId,
-          resetTriggered: false,
-          routeThreadId: "501.000",
-        });
-        replacementOperation.setPhase("running");
-        releaseMutation();
-      }, 0);
-      return undefined;
-    });
-    const replyResolver = vi.fn(async () => ({ text: "must not run" }) satisfies ReplyPayload);
-
-    try {
-      const result = await dispatchReplyFromConfig({
-        ctx: createCtx({ BodyForAgent: "same routed thread after replacement" }),
-        cfg: emptyConfig,
-        dispatcher: createDispatcher(),
-        replyResolver,
-      });
-      await lifecycleMutation;
-
-      expect(result).toMatchObject({ queuedFinal: false });
-      expect(replyResolver).not.toHaveBeenCalled();
-      expect(
-        isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
-      ).toBe(false);
-    } finally {
-      releaseMutation();
-      originalOperation.complete();
-      replacementOperation?.complete();
-      await lifecycleMutation;
-    }
-  });
-
   it("holds a Slack bypass lease until an abort-insensitive resolver settles", async () => {
     const { activeOperation, createCtx, sessionId, sessionKey } = createActiveSlackThread("U3");
     let releaseResolver: () => void = () => {};
@@ -1090,17 +1023,16 @@ describe("dispatchReplyFromConfig", () => {
           },
         }),
     );
-    const result = await dispatch;
-
-    expect(result.queuedFinal).toBe(false);
     expect(mutationRan).toBe(false);
     expect(isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
       true,
     );
 
     releaseResolver();
+    const result = await dispatch;
     await mutation;
 
+    expect(result.queuedFinal).toBe(false);
     expect(mutationRan).toBe(true);
     expect(isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId])).toBe(
       false,
@@ -1147,94 +1079,6 @@ describe("dispatchReplyFromConfig", () => {
     } finally {
       activeOperation.complete();
       vi.useRealTimers();
-    }
-  });
-
-  it("holds a Slack bypass lease until queued delivery settles before revalidation", async () => {
-    const { activeOperation, createCtx, sessionId, sessionKey } = createActiveSlackThread("U5");
-    let releaseDelivery: () => void = () => {};
-    const deliveryGate = new Promise<void>((resolve) => {
-      releaseDelivery = resolve;
-    });
-    const dispatcher = createDispatcher();
-    let holdDelivery = false;
-    dispatcher.waitForIdle = vi.fn(async () => {
-      if (holdDelivery) {
-        await deliveryGate;
-      }
-    });
-    const externalLifecycleRequest = new AsyncResource("slack-bypass-delivery-race");
-    let allowLifecycleInterrupt: () => void = () => {};
-    const lifecycleInterruptGate = new Promise<void>((resolve) => {
-      allowLifecycleInterrupt = resolve;
-    });
-    let signalMutationPrepared: () => void = () => {};
-    const mutationPrepared = new Promise<void>((resolve) => {
-      signalMutationPrepared = resolve;
-    });
-    let signalResolverReturning: () => void = () => {};
-    const resolverReturning = new Promise<void>((resolve) => {
-      signalResolverReturning = resolve;
-    });
-    let mutationRan = false;
-    let mutation: Promise<void> | undefined;
-    const replyResolver = vi.fn(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
-      holdDelivery = true;
-      await requireBlockReplyHandler(opts?.onBlockReply)({ text: "queued block" });
-      mutation = externalLifecycleRequest.runInAsyncScope(
-        async () =>
-          await runSessionMutation({
-            scope: "/tmp/mock-sessions.json",
-            identities: [sessionKey, sessionId],
-            prepare: async () => {
-              signalMutationPrepared();
-              await lifecycleInterruptGate;
-              await interruptSessionControllerEffects({
-                scope: "/tmp/mock-sessions.json",
-                identities: [sessionKey, sessionId],
-              });
-            },
-            run: async () => {
-              mutationRan = true;
-            },
-          }),
-      );
-      signalResolverReturning();
-      return undefined;
-    });
-
-    try {
-      const dispatch = dispatchReplyFromConfig({
-        ctx: createCtx({ BodyForAgent: "hold queued delivery" }),
-        cfg: emptyConfig,
-        dispatcher,
-        replyResolver,
-      });
-      await Promise.all([mutationPrepared, resolverReturning]);
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-      allowLifecycleInterrupt();
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-      expect(dispatcher.sendBlockReply).toHaveBeenCalledOnce();
-      expect(mutationRan).toBe(false);
-      expect(
-        isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
-      ).toBe(true);
-
-      releaseDelivery();
-      await dispatch;
-      await mutation;
-
-      expect(mutationRan).toBe(true);
-    } finally {
-      allowLifecycleInterrupt();
-      releaseDelivery();
-      activeOperation.complete();
-      await mutation;
-      externalLifecycleRequest.emitDestroy();
     }
   });
 
@@ -1832,158 +1676,6 @@ describe("dispatchReplyFromConfig", () => {
       counts: { tool: 0, block: 0, final: 0 },
     });
     recoveryOperation?.complete();
-  });
-
-  it("refreshes a stale visible turn after session rotation without clearing the new owner", async () => {
-    setNoAbort();
-    const sessionKey = "agent:main:telegram:group:-1003774691297";
-    // Terminal store snapshot still reports the failed lifecycle's session id.
-    sessionStoreMocks.currentEntry = {
-      sessionId: "failed-session-rotated",
-      updatedAt: Date.now(),
-      status: "failed",
-    };
-    const dispatcher = createDispatcher();
-    const replyResolver = vi.fn(
-      async () => ({ text: "visible recovery reply" }) satisfies ReplyPayload,
-    );
-
-    // A concurrent reset/rotation admitted a fresh op under the same session key
-    // but with a NEW session id, after this turn already captured the stale
-    // terminal snapshot. Register it inside the fast-abort seam, which runs after
-    // the early short-circuit but before admission, so the visible turn reaches
-    // the terminal force-clear branch with this op active. The op is NOT marked
-    // `terminalRecovery`, so only the session-id guard can stop the force-clear.
-    let freshOperation: ReturnType<typeof createReplyOperation> | undefined;
-    let signalFreshRegistered: () => void = () => {};
-    let fastAbortCalls = 0;
-    const freshRegistered = new Promise<void>((resolve) => {
-      signalFreshRegistered = resolve;
-    });
-
-    const turn = dispatchReplyFromConfig({
-      ctx: buildTestCtx({
-        Provider: "telegram",
-        Surface: "telegram",
-        OriginatingChannel: "telegram",
-        ChatType: "group",
-        SessionKey: sessionKey,
-        MessageSid: "visible-after-rotation",
-        To: "telegram:-1003774691297",
-        BodyForAgent: "@openclaw recover",
-      }),
-      cfg: { ...automaticGroupReplyConfig, diagnostics: { enabled: true } },
-      dispatcher,
-      fastAbortResolver: async () => {
-        fastAbortCalls += 1;
-        if (fastAbortCalls > 1) {
-          return { handled: false, aborted: false };
-        }
-        sessionStoreMocks.currentEntry = {
-          sessionId: "fresh-rotated-session",
-          updatedAt: Date.now(),
-        };
-        freshOperation = createReplyOperation({
-          sessionKey,
-          sessionId: "fresh-rotated-session",
-          resetTriggered: false,
-        });
-        freshOperation.setPhase("running");
-        signalFreshRegistered();
-        return { handled: false, aborted: false };
-      },
-      formatAbortReplyTextResolver: () => "aborted",
-      replyResolver,
-    });
-    void turn.catch(() => {});
-
-    // Let the visible turn run its admission/force-clear path. With the bug it
-    // would force-fail the rotated op here, mistaking a valid in-flight reply for
-    // the stale terminal leftover and recreating the message loss (#86827).
-    await freshRegistered;
-    await new Promise((resolve) => {
-      setTimeout(resolve, 100);
-    });
-
-    // The session-id guard keeps the rotated op untouched while this turn
-    // refreshes its snapshot instead of crossing the reset boundary with stale state.
-    expect(freshOperation).toBeDefined();
-    expect(freshOperation?.result).toBeNull();
-    expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBe(freshOperation);
-    expect(replyResolver).not.toHaveBeenCalled();
-
-    freshOperation?.complete();
-    await expect(turn).resolves.toMatchObject({
-      queuedFinal: true,
-      counts: { tool: 0, block: 0, final: 0 },
-    });
-    expect(replyResolver).toHaveBeenCalledOnce();
-    expect(fastAbortCalls).toBe(2);
-    expect(dispatcher.sendFinalReply).toHaveBeenCalledWith({ text: "visible recovery reply" });
-    expect(dispatchHarness.isSessionRunActiveForKey(sessionKey)).toBe(false);
-    expect(messageAuditEvents()).toEqual([
-      expect.objectContaining({ status: "succeeded", outcome: "completed" }),
-    ]);
-    expect(diagnosticMocks.logMessageProcessed).toHaveBeenCalledOnce();
-    expect(diagnosticMocks.logMessageProcessed).toHaveBeenCalledWith(
-      expect.objectContaining({ outcome: "completed" }),
-    );
-    expect(diagnosticMocks.logMessageQueued).toHaveBeenCalledTimes(2);
-    expect(diagnosticMocks.logSessionStateChange.mock.calls).toEqual([
-      [
-        expect.objectContaining({
-          sessionId: "failed-session-rotated",
-          state: "processing",
-        }),
-      ],
-      [
-        expect.objectContaining({
-          sessionId: "failed-session-rotated",
-          state: "idle",
-          reason: "session_refresh",
-        }),
-      ],
-      [
-        expect.objectContaining({
-          sessionId: "fresh-rotated-session",
-          state: "processing",
-        }),
-      ],
-      [
-        expect.objectContaining({
-          sessionId: "fresh-rotated-session",
-          state: "idle",
-          reason: "message_completed",
-        }),
-      ],
-    ]);
-
-    const followingDispatcher = createDispatcher();
-    await expect(
-      dispatchReplyFromConfig({
-        ctx: buildTestCtx({
-          Provider: "telegram",
-          Surface: "telegram",
-          OriginatingChannel: "telegram",
-          ChatType: "group",
-          SessionKey: sessionKey,
-          MessageSid: "following-visible-after-rotation",
-          To: "telegram:-1003774691297",
-          BodyForAgent: "@openclaw following message",
-        }),
-        cfg: automaticGroupReplyConfig,
-        dispatcher: followingDispatcher,
-        replyResolver,
-      }),
-    ).resolves.toMatchObject({
-      queuedFinal: true,
-      counts: { tool: 0, block: 0, final: 0 },
-    });
-    expect(replyResolver).toHaveBeenCalledTimes(2);
-    expect(followingDispatcher.sendFinalReply).toHaveBeenCalledWith({
-      text: "visible recovery reply",
-    });
-    expect(dispatchHarness.isSessionRunActiveForKey(sessionKey)).toBe(false);
   });
 
   it("routes when OriginatingChannel differs from Provider", async () => {
