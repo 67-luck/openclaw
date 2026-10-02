@@ -1818,14 +1818,25 @@ struct OnboardingAISetupTests {
         await gateway.shutdown()
     }
 
+    private static let lateAdmissionCancellationOrders: [(commitLocked: Bool, startFirst: Bool)] = [
+        (false, false), (false, true), (true, false), (true, true),
+    ]
+
     @Test(
-        arguments: [false, true],
+        arguments: OnboardingAISetupTests.lateAdmissionCancellationOrders,
         [OnboardingAISetupModel.ProviderWizardKind.activation, .auth, .prepare]
     )
     func `setup cancel before admission observes the late session`(
-        commitLocked: Bool, kind: OnboardingAISetupModel.ProviderWizardKind
-    ) async throws {
-        let startGate = AISetupRequestGate()
+        scenario: (commitLocked: Bool, startFirst: Bool),
+        kind: OnboardingAISetupModel.ProviderWizardKind) async throws
+    {
+        let commitLocked = scenario.commitLocked
+        let startReceived = AsyncTestGate()
+        let releaseStart = AsyncTestGate()
+        let firstCancelReceived = AsyncTestGate()
+        let releaseFirstCancel = AsyncTestGate()
+        let laterCancelReceived = AsyncTestGate()
+        let releaseLaterCancels = AsyncTestGate()
         let cancelCount = LockIsolated(0)
         let detections = AISetupSocketGeneration()
         let url = try #require(URL(string: "ws://example.invalid"))
@@ -1841,7 +1852,8 @@ struct OnboardingAISetupTests {
                         ? detectedSetupResponse(id: request.id)
                         : persistedDetectedSetupResponse(id: request.id)
                 case kind.startMethod:
-                    await startGate.wait()
+                    startReceived.open()
+                    try await releaseStart.wait("release late start")
                     let sessionID = try #require(request.params["sessionId"] as? String)
                     return wizardStartResponse(id: request.id, sessionID: sessionID)
                 case "wizard.cancel":
@@ -1850,6 +1862,8 @@ struct OnboardingAISetupTests {
                         return value
                     }
                     if attempt == 1 {
+                        firstCancelReceived.open()
+                        try await releaseFirstCancel.wait("release pre-admission cancellation")
                         return try JSONSerialization.data(withJSONObject: [
                             "type": "res",
                             "id": request.id,
@@ -1857,6 +1871,8 @@ struct OnboardingAISetupTests {
                             "error": ["code": "INVALID_REQUEST", "message": "wizard not found"],
                         ])
                     }
+                    laterCancelReceived.open()
+                    try await releaseLaterCancels.wait("release admitted cancellation")
                     return try JSONSerialization.data(withJSONObject: [
                         "type": "res",
                         "id": request.id,
@@ -1909,20 +1925,41 @@ struct OnboardingAISetupTests {
                 )
             }
         }
+        var cancellation: Task<Void, Never>?
         defer {
+            releaseStart.open()
+            releaseFirstCancel.open()
+            releaseLaterCancels.open()
             model.resetForGatewayChange()
+            cancellation?.cancel()
             activation.cancel()
         }
 
-        await startGate.waitUntilStarted()
-        model.cancelProviderAuth()
-        try #require(model.activeAuthOption != nil)
         do {
-            _ = try await waitForAISetupRequests(harness.recorder, count: 3)
-            await startGate.release()
+            try await startReceived.wait("late start request")
+            cancellation = model.cancelProviderAuth()
+            let firstCancellation = try #require(cancellation)
+            try #require(model.activeAuthOption != nil)
+            try await firstCancelReceived.wait("pre-admission cancellation request")
+            if scenario.startFirst {
+                releaseStart.open()
+                // Start returns without suspending after spawning the MainActor cancellation task.
+                // That task cannot send this request until start's defer has retired its request ID.
+                try await laterCancelReceived.wait("admitted cancellation after start retirement")
+                releaseFirstCancel.open()
+                try await TestWait.value(of: firstCancellation, "absence consumed after start")
+            } else {
+                releaseFirstCancel.open()
+                try await TestWait.value(of: firstCancellation, "absence consumed before start")
+                releaseStart.open()
+                try await laterCancelReceived.wait("admitted cancellation after early absence")
+            }
+            #expect(model.activeAuthOption != nil)
+            #expect(!model.connected)
+            releaseLaterCancels.open()
             try await TestWait.observed("settled provider auth") { model.activeAuthOption == nil }
             try #require(model.activeAuthOption == nil)
-            await activation.value
+            try await TestWait.value(of: activation, "late admission activation")
             if commitLocked {
                 try await TestWait.observed("connected AI setup") { model.connected }
             }
@@ -1933,13 +1970,18 @@ struct OnboardingAISetupTests {
             #expect(requests.filter { $0 == "wizard.cancel" }.count == (commitLocked ? 3 : 2))
             #expect(requests.filter { $0 == "wizard.next" }.count == (commitLocked ? 1 : 0))
         } catch {
-            await startGate.release()
+            releaseStart.open()
+            releaseFirstCancel.open()
+            releaseLaterCancels.open()
             model.resetForGatewayChange()
+            cancellation?.cancel()
             activation.cancel()
+            await cancellation?.value
             await activation.value
             await harness.gateway.shutdown()
             throw error
         }
+        await harness.gateway.shutdown()
     }
 
     @Test func `active activation wizard retains candidate ownership`() async throws {

@@ -80,6 +80,7 @@ final class OnboardingAISetupModel {
     @ObservationIgnored private var authSessionID: String?
     @ObservationIgnored private var authAttemptID = UUID()
     @ObservationIgnored private var authRequestID: UUID?
+    @ObservationIgnored private var authStartRequestID: UUID?
     /// Only a just-completed provider flow may trust setupComplete without re-probing.
     @ObservationIgnored private var providerAuthReconciliationPending: ProviderAuthReconciliation?
 
@@ -1184,9 +1185,11 @@ extension OnboardingAISetupModel {
         requestParams["sessionId"] = AnyCodable(authSessionID)
         let requestID = UUID()
         self.authRequestID = requestID
+        self.authStartRequestID = requestID
         return Task {
             defer {
                 if self.authRequestID == requestID { self.authRequestID = nil }
+                if self.authStartRequestID == requestID { self.authStartRequestID = nil }
             }
             do {
                 let data = try await self.gateway.request(
@@ -1201,6 +1204,7 @@ extension OnboardingAISetupModel {
                     await self.gateway.cancelWizardSession(result.sessionid, on: serverLease)
                     return
                 }
+                self.authStartRequestID = nil
                 if self.providerAuthCancellation != nil {
                     // Cancel can race admission before the Gateway registers the requested id.
                     // Redeem the late response only to release its exact admitted session.
@@ -1266,7 +1270,11 @@ extension OnboardingAISetupModel {
             self.clearProviderAuth()
             return nil
         }
-        let context = (token: self.attemptToken, state: self.lastDetectedActivationState, authID: self.authAttemptID)
+        let context = (
+            token: self.attemptToken,
+            state: self.lastDetectedActivationState,
+            authID: self.authAttemptID,
+            admissionPending: self.authStartRequestID != nil)
         self.providerAuthCancellation = .requesting
         self.authError = nil
         self.authBusy = true
@@ -1277,10 +1285,10 @@ extension OnboardingAISetupModel {
             // A stale cancellation reply must not close or hand off a replacement wizard.
             guard context.token == self.attemptToken, context.authID == self.authAttemptID else { return }
             // Absence can precede admission or follow a purged terminal result.
-            // Keep the exact pending request alive; absence alone cannot settle it.
-            let awaitingResult = cancellation == .absent && self.authRequestID != nil
+            // A pre-admission reply stays inconclusive even if start retired before it arrived.
+            let awaitingResult = cancellation == .absent && (context.admissionPending || self.authRequestID != nil)
             if cancellation == .unresolved || awaitingResult {
-                if self.authRequestID == nil, self.authStep == nil {
+                if cancellation == .unresolved, self.authRequestID == nil, self.authStep == nil {
                     self.advanceProviderAuth(stepID: nil, value: nil)
                 }
                 self.providerAuthCancellation = .unconfirmed
@@ -1554,6 +1562,7 @@ extension OnboardingAISetupModel {
         // error remains visible for inspection and dismissal.
         self.authAttemptID = UUID()
         self.authRequestID = nil
+        self.authStartRequestID = nil
         self.authSessionID = nil
         self.providerAuthCancellation = nil
         self.authStep = nil
