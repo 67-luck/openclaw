@@ -10,6 +10,32 @@ import XCTest
 @MainActor
 @Suite(.serialized)
 struct WatchGatewayControllerTests {
+    @Test(arguments: [false, true])
+    func `conversation subscription omits approval opt in without the grant`(_ approvals: Bool) async throws {
+        let scopes = GatewayOperatorHTTPFixture.scopes + (approvals ? ["operator.approvals"] : [])
+        try await Self.withConnectedConversations(scopes: scopes) { _, conversations, fixture in
+            let route = try await Self.selectFirstConversation(
+                conversations, fixture: fixture, history: AnyCodable(["messages": [
+                    ["id": "existing-message", "role": "assistant", "content": "Existing history"],
+                ]]))
+            let frames = try fixture.snapshot.compactMap { exchange -> RequestFrame? in
+                guard exchange.request.url?.lastPathComponent == "frames" else { return nil }
+                return try exchange.frame
+            }
+            let subscriptions = frames.filter { $0.method == "sessions.messages.subscribe" }
+            try #require(subscriptions.count == 1)
+            let params = try #require(subscriptions.first?.params?.dictionaryValue)
+            #expect(params["key"]?.stringValue == route.sessionKey)
+            #expect(params["agentId"]?.stringValue == route.agentID)
+            if approvals {
+                #expect(params["includeApprovals"]?.boolValue == true)
+            } else {
+                #expect(params["includeApprovals"] == nil)
+            }
+            #expect(conversations.messages.map(\.text) == ["Existing history"])
+        }
+    }
+
     @Test(arguments: ["timeout", "started", "rejected", "wait-timeout"])
     func `chat send distinguishes a terminal acknowledgement from rejection and wait timeout`(_ outcome: String)
         async throws

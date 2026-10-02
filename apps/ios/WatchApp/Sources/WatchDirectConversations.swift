@@ -358,7 +358,7 @@ final class WatchDirectConversations {
         _ = try await self.rpc(
             "sessions.messages.subscribe",
             params: SessionsMessagesSubscribeParams(
-                key: route.sessionKey, agentid: route.agentID, includeapprovals: self.canApprove),
+                key: route.sessionKey, agentid: route.agentID, includeapprovals: self.canApprove ? true : nil),
             as: WatchDirectSubscription.self)
         { value, _ in
             guard self.isCurrent(generation, selection: selection), self.route == route else { return }
