@@ -1,3 +1,4 @@
+import { resolveMergedModelProviderConfig } from "openclaw/plugin-sdk/provider-catalog-shared";
 import {
   isCodexAppServerNativeAuthProfile,
   type CodexAppServerAuthProfileLookup,
@@ -76,12 +77,23 @@ export function resolveCodexAppServerRequestModelSelection(
     model: string;
     homeScope?: CodexAppServerHomeScope;
     modelProvider?: string | null;
+    provider?: string;
   },
 ): { model: string; modelProvider?: string } {
   const model = params.model.trim();
   const modelProvider = params.modelProvider?.trim();
   if (modelProvider) {
     return { model, modelProvider };
+  }
+  if (
+    params.provider?.trim().toLowerCase() === "codex" &&
+    resolveMergedModelProviderConfig(params.config, "codex")?.models?.some(
+      (entry) => entry.id.trim() === model || entry.id.trim() === `codex/${model}`,
+    )
+  ) {
+    // Registered native IDs belong to Codex's selected provider, even when
+    // their vendor namespace looks like a provider-qualified override.
+    return { model };
   }
   // Codex app-server expects provider-qualified refs as separate fields. Keep
   // explicit providers intact so provider-owned slashy model ids are not split.

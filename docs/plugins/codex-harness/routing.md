@@ -70,6 +70,13 @@ for the normal OpenAI route and `codex/gpt-*` only when image understanding
 should run through a bounded Codex app-server turn. Doctor rewrites legacy
 Codex GPT refs to `openai/gpt-*`.
 
+When selecting a model explicitly registered under `models.providers.codex.models`,
+OpenClaw keeps its native ID intact, including vendor namespaces such as
+`vendor/model`. Codex keeps its selected native provider unless an explicit or
+retained thread provider takes precedence. Unregistered provider-qualified
+overrides still select the named provider; an entry in the `codex` catalog does
+not change another OpenClaw provider's routing.
+
 ### Operator role model permissions
 
 A role's [model policy](/gateway/operator-scopes#named-operator-roles) applies to
