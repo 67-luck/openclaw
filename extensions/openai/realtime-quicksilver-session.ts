@@ -397,6 +397,10 @@ export function createOpenAIQuicksilverBrowserSessionBroker(
         respondRealtimeOffer(res, 400, failure.message);
         return true;
       }
+      if (!applyRealtimeOfferCorsHeaders(req, res, params.getConfig())) {
+        respondRealtimeOffer(res, 403, "Origin not allowed");
+        return true;
+      }
       const upstreamSignal = AbortSignal.any([
         lifecycleSignal,
         AbortSignal.timeout(OPENAI_QUICKSILVER_UPSTREAM_TIMEOUT_MS),

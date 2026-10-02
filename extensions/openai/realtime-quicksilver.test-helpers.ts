@@ -91,10 +91,12 @@ export function createPreflightRequest(origin: string, host?: string): IncomingM
 export function createResponseHarness(): {
   res: ServerResponse;
   end: ReturnType<typeof vi.fn>;
+  removeHeader: ReturnType<typeof vi.fn>;
   setHeader: ReturnType<typeof vi.fn>;
   readBody: () => string;
 } {
   let body = "";
+  const removeHeader = vi.fn();
   const setHeader = vi.fn();
   const end = vi.fn((value?: string) => {
     body = value ?? "";
@@ -102,10 +104,11 @@ export function createResponseHarness(): {
   });
   const res = Object.assign(new EventEmitter(), {
     statusCode: 200,
+    removeHeader,
     setHeader,
     end,
   }) as unknown as ServerResponse;
-  return { res, end, setHeader, readBody: () => body };
+  return { res, end, removeHeader, setHeader, readBody: () => body };
 }
 
 export function createCallResponse(answer = "v=answer\r\n", callId = "rtc_test"): Response {

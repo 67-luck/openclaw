@@ -30,5 +30,6 @@ export { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 export { useFrozenTime, useRealTime } from "../test-utils/frozen-time.js";
 export { withServer } from "./test-helpers/http-test-server.js";
 export { createMockIncomingRequest } from "./test-helpers/mock-incoming-request.js";
+export { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 export { postRawWebhook, type RawHttpResult } from "./test-helpers/raw-http-request.js";
 export { withTempHomeCore as withTempHome } from "./test-helpers/temp-home.js";
