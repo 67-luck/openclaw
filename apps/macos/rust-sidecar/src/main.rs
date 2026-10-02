@@ -1099,7 +1099,8 @@ mod tests {
             json!({"type":"event","event":"gateway.status","payload":{"ready":true}})
         );
     }
-    #[tokio::test]
+    // JSON CPU time does not consume the in-memory protocol's virtual deadlines.
+    #[tokio::test(start_paused = true)]
     async fn native_invoke_backlog_retires_before_six_large_requests_are_retained() {
         async fn deliver_with_progress(
             input: &transport::NativeTransportInput,
@@ -1233,7 +1234,8 @@ mod tests {
                 ).await?;
                 step = format!("invocation {index} forwarding");
                 while queued.len() < index + 1 && !task.is_finished() {
-                    tokio::task::yield_now().await;
+                    // A stalled owner must let the existing virtual timeout advance.
+                    tokio::time::sleep(Duration::from_millis(1)).await;
                 }
                 if index < 5 && task.is_finished() { return Err("valid backlog retired early"); }
             }
