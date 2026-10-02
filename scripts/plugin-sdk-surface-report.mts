@@ -185,7 +185,8 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +1: createChannelSecretContract consolidates seven channel secret contracts (approved by Peter, 2026-10-01).
       // +1: createSessionHeaderLink shares plugin-owned conversation navigation (PR #158742).
       // +4: owner-approved replay V2 types on core and plugin-entry (2026-10-01).
-      3631,
+      // +3: requested generic Control UI panel target, props, and owned chat-link route types.
+      3634,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
