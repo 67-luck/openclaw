@@ -398,6 +398,7 @@ export function createOpenAIQuicksilverBrowserSessionBroker(
         return true;
       }
       if (!applyRealtimeOfferCorsHeaders(req, res, params.getConfig())) {
+        reportTerminal(new Error("Origin not allowed"));
         respondRealtimeOffer(res, 403, "Origin not allowed");
         return true;
       }
