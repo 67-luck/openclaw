@@ -29,7 +29,6 @@ import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { markCommandSessionMetadataChanged } from "./command-session-metadata.js";
 import {
   createDispatcher,
-  diagnosticMocks,
   emptyConfig,
   hookMocks,
   messageAuditMocks,
