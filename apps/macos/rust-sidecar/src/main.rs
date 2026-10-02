@@ -3,7 +3,7 @@
 
 mod transport;
 
-use openclaw_gateway_client::{Event, GatewayClientConfig};
+use openclaw_gateway_client::{json_encoded_len, Event, GatewayClientConfig};
 use openclaw_node_host::{
     read_sidecar_frame, write_sidecar_frame, write_sidecar_frame_parts,
     AuthenticatedSidecarChannel, ClientError, CommandRuntime, HandlerError, InvocationContext,
@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use std::{collections::HashMap, error::Error, os::fd::AsFd, sync::Arc, time::Duration};
 use tokio::{
     io::AsyncReadExt,
-    sync::{mpsc, oneshot, Mutex},
+    sync::{mpsc, oneshot, Mutex, OwnedSemaphorePermit, Semaphore},
     task::JoinSet,
 };
 
@@ -24,6 +24,78 @@ const GATEWAY_PAYLOAD_LIMIT: usize = 25 * 1024 * 1024;
 // Private transport records use the original bounded Gateway bytes without base64.
 const FRAME_LIMIT: u32 = (GATEWAY_PAYLOAD_LIMIT.div_ceil(3) * 4 + 4096) as u32;
 const MAX_IN_FLIGHT: u16 = 64;
+// Per-direction retained IPC bytes, separate from caller/runtime payloads and JSON
+// allocation overhead. Count limits and the acknowledged native relay stay independent.
+const RETAINED_MESSAGE_BYTES: usize = 128 * 1024 * 1024;
+type RetainedMessage<T> = (T, OwnedSemaphorePermit);
+
+fn retain_message<T>(
+    value: T,
+    length: usize,
+    budget: &Arc<Semaphore>,
+) -> Result<RetainedMessage<T>, T> {
+    let permit = u32::try_from(length)
+        .ok()
+        .and_then(|length| Arc::clone(budget).try_acquire_many_owned(length).ok());
+    match permit {
+        Some(permit) => Ok((value, permit)),
+        None => Err(value),
+    }
+}
+
+#[derive(Clone)]
+struct SupervisorOutput {
+    sender: mpsc::Sender<RetainedMessage<Value>>,
+    bytes: Arc<Semaphore>,
+    failed: tokio::sync::watch::Sender<bool>,
+}
+
+impl SupervisorOutput {
+    fn new() -> (Self, mpsc::Receiver<RetainedMessage<Value>>) {
+        let (sender, receiver) = mpsc::channel(usize::from(MAX_IN_FLIGHT));
+        (
+            Self {
+                sender,
+                bytes: Arc::new(Semaphore::new(RETAINED_MESSAGE_BYTES)),
+                failed: tokio::sync::watch::channel(false).0,
+            },
+            receiver,
+        )
+    }
+
+    fn retain(&self, value: Value) -> Result<RetainedMessage<Value>, Value> {
+        let retained = match json_encoded_len(&value, RETAINED_MESSAGE_BYTES) {
+            Some(length) => retain_message(value, length, &self.bytes),
+            None => Err(value),
+        };
+        if retained.is_err() {
+            self.failed.send_replace(true);
+        }
+        retained
+    }
+
+    async fn send(&self, value: Value) -> Result<(), mpsc::error::SendError<Value>> {
+        // Byte admission never waits holding an uncharged Value. Existing count
+        // backpressure may suspend only after its payload has acquired byte credit.
+        let retained = self.retain(value).map_err(mpsc::error::SendError)?;
+        self.sender
+            .send(retained)
+            .await
+            .map_err(|error| mpsc::error::SendError(error.0 .0))
+    }
+
+    fn try_send(&self, value: Value) -> Result<(), mpsc::error::TrySendError<Value>> {
+        let retained = self
+            .retain(value)
+            .map_err(mpsc::error::TrySendError::Full)?;
+        self.sender.try_send(retained).map_err(|error| match error {
+            mpsc::error::TrySendError::Full((value, _)) => mpsc::error::TrySendError::Full(value),
+            mpsc::error::TrySendError::Closed((value, _)) => {
+                mpsc::error::TrySendError::Closed(value)
+            }
+        })
+    }
+}
 const NATIVE_RELAY: u64 = 1;
 const INDEPENDENT_PONG: u64 = 2;
 const BINARY_GATEWAY_WRITES: u64 = 4;
@@ -195,7 +267,8 @@ async fn run() -> Result<(), Failure> {
     // Application and progress tasks each own max_in_flight slots; their bursts
     // must fit without blocking transport receipts on the reader task.
     let (incoming_tx, incoming) =
-        mpsc::channel::<SupervisorMessage>(usize::from(max_in_flight) * 2);
+        mpsc::channel::<RetainedMessage<SupervisorMessage>>(usize::from(max_in_flight) * 2);
+    let incoming_bytes = Arc::new(Semaphore::new(RETAINED_MESSAGE_BYTES));
     let (transport_outgoing, mut transport_writes) = mpsc::channel(1);
     let (transport_receipts, mut receipt_writes) = mpsc::channel(1);
     let (transport, transport_input) =
@@ -244,21 +317,30 @@ async fn run() -> Result<(), Failure> {
                 SupervisorMessage::TransportPong { id, ok } => transport_input.pong(id, ok)?,
                 // Never block transport receipts behind application traffic; saturation closes
                 // this connection instead of deadlocking both inherited pipes.
-                message => incoming_tx
-                    .try_send(message)
-                    .map_err(|_| "supervisor queue full or closed")?,
+                message => {
+                    // Authentication and decoding own at most one additional frame.
+                    // Reserve before retaining it in the queue; never wait on the IPC reader.
+                    let retained = retain_message(message, frame.len(), &incoming_bytes)
+                        .map_err(|_| "supervisor queue byte limit")?;
+                    incoming_tx
+                        .try_send(retained)
+                        .map_err(|_| "supervisor queue full or closed")?;
+                }
             }
         }
     };
-    let (outgoing, mut outgoing_rx) = mpsc::channel::<Value>(usize::from(MAX_IN_FLIGHT));
+    let (outgoing, mut outgoing_rx) = SupervisorOutput::new();
     let writer_channel = Arc::clone(&channel);
     let mut writer = tokio::spawn(async move {
         // Each JSON control owns its buffer through one write, so an idle writer
         // cannot retain a prior large frame. Transport writes borrow Gateway bytes.
         loop {
             let mut frame = Vec::new();
-            tokio::select! {
-                Some(value) = outgoing_rx.recv() => writer_channel.lock().await.seal_into(&value, &mut frame)?,
+            let _retained = tokio::select! {
+                Some((value, permit)) = outgoing_rx.recv() => {
+                    writer_channel.lock().await.seal_into(&value, &mut frame)?;
+                    Some(permit)
+                },
                 Some(value) = transport_writes.recv() => {
                     let (metadata, body) = value.payload_parts();
                     let (header, tag) = writer_channel.lock().await
@@ -268,9 +350,13 @@ async fn run() -> Result<(), Failure> {
                     ).await?;
                     continue;
                 },
-                Some(value) = receipt_writes.recv() => writer_channel.lock().await.seal_into(&value, &mut frame)?,
+                Some(value) = receipt_writes.recv() => {
+                    writer_channel.lock().await.seal_into(&value, &mut frame)?;
+                    None
+                },
                 else => break,
             };
+            // The dequeued frame still owns its credit until the physical write ends.
             write_sidecar_frame(&mut output, &frame, frame_limit, WRITE_TIMEOUT).await?;
         }
         Ok::<(), Failure>(())
@@ -306,15 +392,18 @@ async fn run() -> Result<(), Failure> {
 }
 
 async fn run_gateway(
-    mut incoming: mpsc::Receiver<SupervisorMessage>,
-    outgoing: &mpsc::Sender<Value>,
+    mut incoming: mpsc::Receiver<RetainedMessage<SupervisorMessage>>,
+    outgoing: &SupervisorOutput,
     max_in_flight: u16,
     transport: transport::NativeTransport,
 ) -> Result<(), Failure> {
-    let Some(SupervisorMessage::Open {
-        url,
-        private_commands,
-    }) = incoming.recv().await
+    let Some((
+        SupervisorMessage::Open {
+            url,
+            private_commands,
+        },
+        _,
+    )) = incoming.recv().await
     else {
         return Err("expected Gateway configuration".into());
     };
@@ -333,7 +422,8 @@ async fn run_gateway(
             }}))
             .await
             .map_err(|_| "supervisor closed")?;
-        let Some(SupervisorMessage::Frame { frame, .. }) = incoming_ref.lock().await.recv().await
+        let Some((SupervisorMessage::Frame { frame, .. }, _)) =
+            incoming_ref.lock().await.recv().await
         else {
             return Err("expected signed Gateway connect");
         };
@@ -369,12 +459,12 @@ async fn run_gateway(
             return Ok(());
         }
     };
-    let (native_failure, mut native_failed) = tokio::sync::watch::channel(false);
+    let mut native_failed = outgoing.failed.subscribe();
     let native = Arc::new(NativeHandlers {
         outgoing: outgoing.clone(),
         results: std::sync::Mutex::new(HashMap::new()),
         admissions: std::sync::Mutex::new(HashMap::new()),
-        failed: native_failure,
+        failed: outgoing.failed.clone(),
     });
     let mut builder = CommandRuntime::builder()
         .max_concurrency(usize::from(max_in_flight))
@@ -451,7 +541,9 @@ async fn run_gateway(
                     }
                 }
             }
-            message = async { incoming.lock().await.recv().await } => {
+            message = async {
+                incoming.lock().await.recv().await.map(|(message, _)| message)
+            } => {
                 // Completed tasks still occupy JoinSet capacity until joined.
                 while let Some(completed) = requests.try_join_next() {
                     finish_request(completed, &mut request_handles)?;
@@ -540,7 +632,7 @@ async fn run_gateway(
                 completed??;
                 break;
             }
-            _ = native_failed.changed() => return Err("native cancellation delivery saturated".into()),
+            _ = native_failed.changed() => return Err("native delivery saturated".into()),
         }
     }
     requests.abort_all();
@@ -577,7 +669,7 @@ impl Drop for AbortTaskOnDrop {
 }
 
 struct NativeHandlers {
-    outgoing: mpsc::Sender<Value>,
+    outgoing: SupervisorOutput,
     results: std::sync::Mutex<HashMap<String, NativeInvocation>>,
     admissions: std::sync::Mutex<HashMap<String, oneshot::Sender<bool>>>,
     failed: tokio::sync::watch::Sender<bool>,
@@ -941,7 +1033,7 @@ mod tests {
             panic!("expected native result")
         };
         let allocation = frame.params["payload"]["media"].as_str().unwrap().as_ptr();
-        let (outgoing, _) = mpsc::channel(1);
+        let (outgoing, _) = SupervisorOutput::new();
         let native = NativeHandlers {
             outgoing,
             results: std::sync::Mutex::new(HashMap::new()),
@@ -1087,7 +1179,8 @@ mod tests {
             })
             .collect();
         let (incoming, incoming_rx) = mpsc::channel(128);
-        let (outgoing, mut queued) = mpsc::channel(usize::from(MAX_IN_FLIGHT));
+        let (outgoing, mut queued) = SupervisorOutput::new();
+        let input_bytes = Arc::new(Semaphore::new(RETAINED_MESSAGE_BYTES));
         let (transport_outgoing, mut writes) = mpsc::channel(1);
         let (transport_receipts, mut receipts) = mpsc::channel(1);
         let (transport, native_input) =
@@ -1099,23 +1192,23 @@ mod tests {
         let mut step = "open".to_owned();
         let mut peer_responses = std::collections::VecDeque::new();
         let observed = tokio::time::timeout(Duration::from_secs(10), async {
-            incoming.send(SupervisorMessage::Open {
+            incoming.send(retain_message(SupervisorMessage::Open {
                 url: "ws://127.0.0.1:1".into(), private_commands: Vec::new(),
-            }).await.map_err(|_| "open rejected")?;
+            }, 1024, &input_bytes).map_err(|_| "open budget rejected")?).await.map_err(|_| "open rejected")?;
             native_input.receive(1, bytes::Bytes::from(json!({
                 "type":"event", "event":"connect.challenge", "payload":{"nonce":"fixture", "ts":1}
             }).to_string())).map_err(|_| "challenge rejected")?;
             step = "challenge receipt".into();
             receipts.recv().await.ok_or("challenge receipt missing")?;
             step = "native challenge".into();
-            let challenge = queued.recv().await.ok_or("native challenge missing")?;
+            let (challenge, _) = queued.recv().await.ok_or("native challenge missing")?;
             if challenge["frame"]["event"] != "connect.challenge" { return Err("wrong challenge"); }
-            incoming.send(SupervisorMessage::Frame {
+            incoming.send(retain_message(SupervisorMessage::Frame {
                 frame: Request { kind:"req".into(), id:"connect-1".into(), method:"connect".into(),
                     params:json!({"role":"node", "client":{"mode":"node"}, "minProtocol":4,
                         "maxProtocol":4, "commands":["benchmark.hold"]}) },
                 caller_owns_lifetime:false,
-            }).await.map_err(|_| "signed connect rejected")?;
+            }, 1024, &input_bytes).map_err(|_| "connect budget rejected")?).await.map_err(|_| "signed connect rejected")?;
             step = "Gateway connect".into();
             let connect = writes.recv().await.ok_or("Gateway connect missing")?;
             let (metadata, body) = connect.payload_parts();
@@ -1128,7 +1221,7 @@ mod tests {
             step = "hello receipt".into();
             receipts.recv().await.ok_or("hello receipt missing")?;
             step = "native hello".into();
-            let hello = queued.recv().await.ok_or("native hello missing")?;
+            let (hello, _) = queued.recv().await.ok_or("native hello missing")?;
             if hello["frame"]["ok"] != true { return Err("native hello failed"); }
             for (index, frame) in frames.into_iter().enumerate() {
                 step = format!("invocation {index} receipt");
@@ -1158,7 +1251,7 @@ mod tests {
             }
         };
         let mut requests = Vec::new();
-        while let Ok(frame) = queued.try_recv() {
+        while let Ok((frame, _)) = queued.try_recv() {
             if frame["frame"]["event"] == "node.invoke.request" {
                 requests.push(frame["frame"]["payload"]["id"].as_str().unwrap().to_owned());
             }
@@ -1182,5 +1275,52 @@ mod tests {
                 .map(|index| format!("hold-{index}"))
                 .collect::<Vec<_>>()
         );
+    }
+    #[tokio::test]
+    async fn outgoing_count_wait_cancellation_and_dequeue_keep_byte_ownership() {
+        let (outgoing, mut queued) = SupervisorOutput::new();
+        for _ in 0..MAX_IN_FLIGHT {
+            outgoing.send(Value::Null).await.unwrap();
+        }
+        let queued_bytes = usize::from(MAX_IN_FLIGHT) * 4;
+        assert_eq!(
+            outgoing.bytes.available_permits(),
+            RETAINED_MESSAGE_BYTES - queued_bytes
+        );
+        {
+            let mut cancelled = Box::pin(outgoing.send(json!("cancelled")));
+            assert!(futures_util::poll!(cancelled.as_mut()).is_pending());
+            assert_eq!(
+                outgoing.bytes.available_permits(),
+                RETAINED_MESSAGE_BYTES - queued_bytes - 11
+            );
+        }
+        assert_eq!(
+            outgoing.bytes.available_permits(),
+            RETAINED_MESSAGE_BYTES - queued_bytes
+        );
+
+        let mut waiting = Box::pin(outgoing.send(json!("next")));
+        assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+        let (value, retained) = queued.recv().await.unwrap();
+        assert_eq!(value, Value::Null);
+        assert!(matches!(
+            futures_util::poll!(waiting.as_mut()),
+            std::task::Poll::Ready(Ok(()))
+        ));
+        drop(waiting);
+        drop(value);
+        drop(queued);
+        // Dequeue transfers credit to the consumer; dropping the channel must not refund it.
+        assert_eq!(
+            outgoing.bytes.available_permits(),
+            RETAINED_MESSAGE_BYTES - 4
+        );
+        drop(retained);
+        assert_eq!(outgoing.bytes.available_permits(), RETAINED_MESSAGE_BYTES);
+        assert!(outgoing.send(Value::Null).await.is_err());
+        assert!(outgoing.try_send(Value::Null).is_err());
+        assert_eq!(outgoing.bytes.available_permits(), RETAINED_MESSAGE_BYTES);
+        assert!(!*outgoing.failed.borrow());
     }
 }
