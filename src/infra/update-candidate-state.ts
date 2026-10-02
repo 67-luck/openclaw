@@ -288,34 +288,6 @@ export async function readUpdateCandidateStateInventoryInProcess(
     onProgress?: (progress: UpdateStateInspectionProgress) => void;
   },
 ): Promise<z.infer<typeof UpdateCandidateSnapshotInventorySchema>> {
-  const [
-    { assertNoRetiredStateFiles },
-    { listRetiredDeliveryQueueFiles },
-    { legacyInstalledPluginIndexUnsupportedMessage, resolveLegacyInstalledPluginIndexStorePath },
-    { listLegacyOAuthSidecarPaths },
-  ] = await Promise.all([
-    import("./state-migrations.retired-files.js"),
-    import("./state-migrations.retired-delivery-files.js"),
-    import("../plugins/installed-plugin-index-store-path.js"),
-    import("../commands/doctor-auth-legacy-paths.js"),
-  ]);
-  // Published updaters run this inventory before stopping the Gateway; the private
-  // SQLite rehearsal does not copy these retired JSON sources.
-  assertNoRetiredStateFiles("JSON delivery queues", listRetiredDeliveryQueueFiles(input.stateDir));
-  const legacyIndexPath = resolveLegacyInstalledPluginIndexStorePath({ stateDir: input.stateDir });
-  if (await fileExists(legacyIndexPath)) {
-    throw new Error(legacyInstalledPluginIndexUnsupportedMessage(legacyIndexPath));
-  }
-  // Published 9.7 sends source home selectors in stdin and inherits the OAuth override.
-  const sourceEnv = {
-    ...input.env,
-    OPENCLAW_STATE_DIR: input.stateDir,
-    OPENCLAW_OAUTH_DIR: input.env?.OPENCLAW_OAUTH_DIR ?? process.env.OPENCLAW_OAUTH_DIR,
-  };
-  assertNoRetiredStateFiles(
-    "OAuth credential sidecars",
-    listLegacyOAuthSidecarPaths(sourceEnv, input.config),
-  );
   await fs.mkdir(input.targetStateDir, { recursive: true, mode: 0o700 });
   const planPath = path.join(input.targetStateDir, UPDATE_CANDIDATE_PLUGIN_PLAN_FILENAME);
   await fs.writeFile(planPath, "", { mode: 0o600, flag: "wx" });
