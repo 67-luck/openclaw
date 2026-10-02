@@ -1,5 +1,6 @@
 import { afterEach, expect, it } from "vitest";
-import { clearFollowupQueue, getFollowupQueue } from "../../auto-reply/reply/queue/state.js";
+import { enqueueFollowupRun } from "../../auto-reply/reply/queue/enqueue.js";
+import { clearFollowupQueue } from "../../auto-reply/reply/queue/state.js";
 import { refreshSessionPatchQueuedSelection } from "./sessions-patch-model-selection.js";
 
 const sessionKey = "agent:main:direct:model-reset";
@@ -10,8 +11,7 @@ afterEach(() => {
 
 it("retargets an already queued follow-up after a committed model reset", () => {
   const cfg = { agents: { defaults: { model: "openai/configured" } } };
-  const queue = getFollowupQueue(sessionKey, { mode: "followup" });
-  queue.items.push({
+  const source = {
     prompt: "queued message",
     enqueuedAt: 1,
     run: {
@@ -27,9 +27,10 @@ it("retargets an already queued follow-up after a committed model reset", () => 
       hasSessionModelOverride: true,
       modelOverrideSource: "user",
       timeoutMs: 30_000,
-      blockReplyBreak: "message_end",
+      blockReplyBreak: "message_end" as const,
     },
-  });
+  };
+  enqueueFollowupRun(sessionKey, source, { mode: "followup" }, "none", undefined, false);
 
   refreshSessionPatchQueuedSelection({
     cfg,
@@ -39,7 +40,7 @@ it("retargets an already queued follow-up after a committed model reset", () => 
     agentId: "main",
   });
 
-  expect(queue.items[0]?.run).toMatchObject({
+  expect(source.run).toMatchObject({
     provider: "openai",
     model: "configured",
     hasSessionModelOverride: false,
