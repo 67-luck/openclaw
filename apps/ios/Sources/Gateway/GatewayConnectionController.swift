@@ -1368,6 +1368,8 @@ extension GatewayConnectionController {
         case .systemTrusted where isSetupCodeOrigin:
             return nil
         case let .systemTrusted(fp), let .fingerprint(fp):
+            // The verified attempt now belongs to the trust prompt, not the failed retry.
+            self.preconnectRetryContext = nil
             self.pendingTrustConnect = pendingConnect
             self.pendingTrustPrompt = TrustPrompt(
                 stableID: pendingConnect.stableID,
