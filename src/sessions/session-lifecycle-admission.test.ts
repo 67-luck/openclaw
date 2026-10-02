@@ -610,13 +610,17 @@ it("rejects and releases an admission invalidated by an earlier store writer", a
       }
     },
   });
-  await firstValidation.promise;
-  await Promise.resolve();
-  expect(isSessionControllerWorkActive(storePath, ["session-writer-revalidation"])).toBe(true);
-
-  releaseWriter.resolve();
+  const outcome = expect(admission).rejects.toThrow("session changed");
+  try {
+    await firstValidation.promise;
+    // Drain microtasks so the validated admission has queued behind the held writer.
+    await waitForImmediate();
+    expect(isSessionControllerWorkActive(storePath, ["session-writer-revalidation"])).toBe(true);
+  } finally {
+    releaseWriter.resolve();
+  }
   await writer;
-  await expect(admission).rejects.toThrow("session changed");
+  await outcome;
   expect(validationCount).toBe(2);
   expect(isSessionControllerWorkActive(storePath, ["session-writer-revalidation"])).toBe(false);
 });

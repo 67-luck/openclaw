@@ -153,6 +153,11 @@ export function retireRpcSource(runId: string, expected?: RpcSourceRef): boolean
     return true;
   }
   retireSessionControllerInput(ref.input);
+  // Unclaimed retirement settles synchronously; drop the index now so the same
+  // protocol run ID can be reserved again before the settlement observer runs.
+  if (ref.input.phase === "consumed") {
+    removeRpcSource(runId, ref);
+  }
   return true;
 }
 
