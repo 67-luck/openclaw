@@ -220,7 +220,7 @@ class WearDirectGatewayFlowTest {
       findText(input.historyMarker, contains = true)
       capture(input.phase, "02-history")
       if (previous == null) exerciseHelpAndApproval(activity, runtime, input, savedGrant.deviceIdSha256)
-      if (input.approvalScenario == "revoked-before-confirmation") return
+      if (input.approvalScenario != "ordinary") return
       // pressHome waits for a content-change event that the Wear launcher may not emit.
       // Verify key injection here; lifecycle and server closure prove the Home outcome.
       assertTrue("native Home key accepted", device.pressKeyCode(KeyEvent.KEYCODE_HOME))
@@ -334,10 +334,10 @@ class WearDirectGatewayFlowTest {
       cleanupFailure?.let { cleanup ->
         if (failure == null) throw cleanup else failure.addSuppressed(cleanup)
       }
-      if (failure == null && input.approvalScenario == "revoked-before-confirmation") {
+      if (failure == null && input.approvalScenario != "ordinary") {
         writeProof(
-          File(app.filesDir, "wear-direct-revocation-checkpoint.json"),
-          RevocationCheckpoint(input.runId, input.nonce, backgroundRetired, processJob.isCancelled, processJob.isCompleted),
+          File(app.filesDir, if (input.approvalScenario == "excluded-reviewer") "wear-direct-excluded-reviewer-checkpoint.json" else "wear-direct-revocation-checkpoint.json"),
+          ApprovalRejectionCheckpoint(input.runId, input.nonce, backgroundRetired, processJob.isCancelled, processJob.isCompleted),
         )
       }
     }
@@ -443,12 +443,16 @@ class WearDirectGatewayFlowTest {
       val state = runtime.state.value
       state.connected && state.sessionKey == input.sessionKey && state.approvalsReady
     }
-    // The real chat turn binds this watch as reviewer. The external observer verifies
-    // the runtime-produced request before returning its ID; it cannot create the approval.
+    // A real chat turn binds its originating device as reviewer. The observer
+    // verifies the runtime-produced request; it cannot manufacture an approval.
     writeProof(
       File(app.filesDir, "wear-direct-approval-ready.json"),
       ApprovalReady(input.runId, input.nonce, input.sessionKey, deviceIdSha256),
     )
+    if (input.approvalScenario == "excluded-reviewer") {
+      exerciseExcludedReviewer(activity, runtime, input)
+      return
+    }
     clickAction(activity, app.getString(R.string.message))
     val approvalMessage = uniqueEditor(password = false)
     setAccessibleText(approvalMessage, input.approvalPrompt)
@@ -574,6 +578,66 @@ class WearDirectGatewayFlowTest {
     device.pressBack()
   }
 
+  private fun exerciseExcludedReviewer(
+    activity: MainActivity,
+    runtime: WearDirectRuntime,
+    input: ProofInput,
+  ) {
+    val approvalFile = File(app.filesDir, "wear-direct-approval-input.json")
+    awaitState("observer supplies the other device's real approval") { approvalFile.exists() }
+    val request = consumePrivate<ApprovalInput>(approvalFile, 16_384)
+    assertTrue(
+      "foreign approval belongs to this run and selected session",
+      request.runId == input.runId && request.nonce == input.nonce && request.sessionKey == input.sessionKey &&
+        request.expiresAtMs - System.currentTimeMillis() in 1..900_000,
+    )
+    val approval = requireNotNull(parseWearApproval(request.approval))
+    // Pending approval.get omits source attribution; the observer binds the runtime request above.
+    assertTrue("pending RPC projection has no feed-only source session", approval.sourceSessionKey == null)
+    assertTrue(
+      "observer projection describes the pending command, not an expired or invalid action",
+      approval.id == request.id && approval.kind == "exec" &&
+        approval.status == "pending" && approval.presentation["commandText"] == JsonPrimitive(input.approvalCommand) &&
+        approval.decisions == listOf("allow-once", "deny") && approval.reviewIssue == null && approval.canResolve("allow-once", System.currentTimeMillis()),
+    )
+    assertTrue(
+      "foreign live approval is absent",
+      runtime.state.value.approvals
+        .none { it.id == request.id },
+    )
+    runtime.refresh()
+    awaitState("fresh native replay remains connected and excludes the foreign approval") {
+      val state = runtime.state.value
+      state.connected && state.sessionKey == input.sessionKey && state.approvalsReady && state.error == null &&
+        state.approvals.isEmpty()
+    }
+    clickAction(activity, app.getString(R.string.watch_approvals))
+    findText(app.getString(R.string.watch_no_approvals)).recycle()
+    capture(input.phase, "04-excluded")
+    // This probes the real native boundary with an unchanged server projection.
+    // It is not a UI tap: an excluded approval must never have a review card.
+    runtime.resolve(approval, "allow-once")
+    awaitState("native revalidation rejects before submitting a decision and retires its attempt") {
+      val state = runtime.state.value
+      state.connected && state.sessionKey == input.sessionKey && state.approvalsReady && state.error != null &&
+        request.id !in state.resolving && state.approvals.isEmpty()
+    }
+    findText(requireNotNull(runtime.state.value.error)).recycle()
+    capture(input.phase, "04-excluded-rejected")
+    writeProof(
+      File(app.filesDir, "wear-direct-approval-rejected.json"),
+      ApprovalChoice(input.runId, input.nonce, request.id, "allow-once"),
+    )
+    val effectFile = File(app.filesDir, "wear-direct-approval-effect.json")
+    awaitState("originating reviewer settles its approval without command execution") { effectFile.exists() }
+    val effect = consumePrivate<ApprovalEffect>(effectFile, 8192)
+    assertTrue(
+      "terminal denial belongs to the same real request and has no command effect",
+      effect.runId == input.runId && effect.nonce == input.nonce && effect.id == request.id &&
+        effect.status == "denied" && effect.reason == "user" && effect.decision == "deny" && !effect.executed,
+    )
+  }
+
   private fun awaitPaused(
     runtime: WearDirectRuntime,
     activity: MainActivity,
@@ -632,9 +696,9 @@ class WearDirectGatewayFlowTest {
       assertTrue("private native input has not expired", it.expiresAtMs - System.currentTimeMillis() in 1..900_000)
       assertTrue("private native input names an explicit phase", it.phase in setOf("bootstrap", "reopen"))
       assertTrue("private native input names an explicit approval decision", it.approvalDecision in setOf("deny", "allow-once"))
-      assertTrue("private native input names an explicit approval scenario", it.approvalScenario in setOf("ordinary", "revoked-before-confirmation"))
+      assertTrue("private native input names an explicit approval scenario", it.approvalScenario in setOf("ordinary", "revoked-before-confirmation", "excluded-reviewer"))
       assertTrue(
-        "revocation is a fresh Allow-once confirmation case, not durable reconnect",
+        "negative approval cases are fresh Allow-once attempts, not durable reconnect",
         it.approvalScenario == "ordinary" || (it.phase == "bootstrap" && it.approvalDecision == "allow-once"),
       )
       assertTrue("private native input binds build digests", listOf(it.apkSha256, it.testApkSha256).all { value -> value.matches(Regex("[a-f0-9]{64}")) })
@@ -1190,6 +1254,7 @@ class WearDirectGatewayFlowTest {
     val sessionKey: String,
     val expiresAtMs: Long,
     val id: String,
+    val approval: JsonObject? = null,
   )
 
   @Serializable
@@ -1222,7 +1287,7 @@ class WearDirectGatewayFlowTest {
   )
 
   @Serializable
-  private class RevocationCheckpoint(
+  private class ApprovalRejectionCheckpoint(
     val runId: String,
     val nonce: String,
     val activityBackgroundSettled: Boolean,
