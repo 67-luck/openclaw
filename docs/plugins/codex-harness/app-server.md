@@ -10,6 +10,14 @@ sidebarTitle: "App-server policy"
 
 How OpenClaw starts and authenticates the Codex app-server, and what it isolates from the operator environment. Part of the [Codex harness](/plugins/codex-harness) guide; [Where each section moved](/plugins/codex-harness#where-each-section-moved) lists every section.
 
+Connector authentication failures return to the agent without an interactive
+login prompt in group conversations, channels, and background turns. OpenClaw
+disables Codex's `auth_elicitation` feature for those turns so an unavailable
+connector does not leave shared work waiting for an account login. Direct user
+conversations retain interactive login behavior. Tool approval preferences do
+not renew connector credentials; repair a failed connection under the account
+that owns it, including its service account when applicable.
+
 ## App-server policy
 
 By default, the plugin starts OpenClaw's managed Codex binary locally with

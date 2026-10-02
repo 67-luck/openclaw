@@ -475,6 +475,14 @@ export function buildCodexRuntimeThreadConfigForRun(
   const contextConfig = {
     ...runtimeConfig,
     ...(params.bootstrapContextMode === "lightweight" ? CODEX_NO_PROJECT_DOCS_CONFIG : {}),
+    // Connector login belongs with the account manager, not an unattended turn
+    // or a shared conversation. Codex returns the original tool error when this
+    // is disabled instead of waiting on an OAuth question and blocking intake.
+    ...(params.chatType === "group" ||
+    params.chatType === "channel" ||
+    (params.trigger !== undefined && params.trigger !== "user")
+      ? { "features.auth_elicitation": false }
+      : {}),
   };
   return applyCodexManagedShellEnvironment(
     contextConfig,
