@@ -329,18 +329,15 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
           commandSource: "gateway:sessions.abort",
           senderId: requester.deviceId ?? requester.connId,
         },
-        externalParents: [
-          {
-            phase: "active",
-            stop: () => {
-              assertAbortCurrent();
-              parentStatus = embeddedRun.stop();
-              aborted = parentStatus === "aborted";
-              return parentStatus;
-            },
-            settled: embeddedRun.waitForSettlement(),
+        externalParent: {
+          stop: () => {
+            assertAbortCurrent();
+            parentStatus = embeddedRun.stop();
+            aborted = parentStatus === "aborted";
+            return parentStatus;
           },
-        ],
+          settled: embeddedRun.waitForSettlement(),
+        },
         stopChildren: async (applyParentStop) => {
           descendants = await abortControlledSubagents({
             cfg,
