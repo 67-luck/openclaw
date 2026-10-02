@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { testing as externalAuthTesting } from "../../agents/auth-profiles/external-auth.test-support.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import type { RunCliAgentParams } from "../../agents/cli-runner/types.js";
 import type { RunEmbeddedAgentInternalParams } from "../../agents/embedded-agent-runner/run/internal-params.js";
 import { resolveMessageActionTurnCapability } from "../../gateway/message-action-turn-capability.js";
-import { createReplyOperation } from "../../sessions/session-controller.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import {
   createFollowupRun,
   createMinimalRunAgentTurnParams,
@@ -67,18 +67,10 @@ function channelTurn() {
   });
   followupRun.originatingChannel = "discord";
   followupRun.originatingTo = currentChannelId;
-  const replyOperation = createReplyOperation({
-    sessionKey,
-    sessionId: followupRun.run.sessionId,
-    resetTriggered: false,
-  });
-  replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
-  onTestFinished(() => replyOperation.complete());
   return {
     ...createMinimalRunAgentTurnParams({
       followupRun,
       opts: { runId },
-      replyOperation,
       sessionCtx: {
         Provider: "discord",
         ChatType: "channel",
@@ -90,6 +82,25 @@ function channelTurn() {
     }),
     sessionKey,
   };
+}
+
+async function executeChannelTurn(turn: ReturnType<typeof channelTurn>) {
+  const execute = await getExecuteAgentTurnForTest();
+  return await withSessionTurn(
+    {
+      sessionKey,
+      sessionId: turn.followupRun.run.sessionId,
+      agentId: turn.followupRun.run.agentId,
+      storePath: turn.storePath,
+    },
+    async (replyOperation) => {
+      if (!replyOperation) {
+        throw new Error("Channel authority fixture requires a session turn owner");
+      }
+      replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(turn.followupRun));
+      return await execute({ ...turn, replyOperation });
+    },
+  );
 }
 
 function resolveCapability(token: string | undefined, key = sessionKey) {
@@ -127,8 +138,7 @@ describe("channel reply message authority", () => {
         return { payloads: [{ text: "done" }], meta: {} };
       });
 
-      const execute = await getExecuteAgentTurnForTest();
-      const result = await execute({
+      const result = await executeChannelTurn({
         ...turn,
         ...(outcome === "policy-session" ? { runtimePolicySessionKey: policySessionKey } : {}),
       });
@@ -173,8 +183,7 @@ describe("channel reply message authority", () => {
       };
     });
 
-    const execute = await getExecuteAgentTurnForTest();
-    expect((await execute(channelTurn())).kind).toBe("success");
+    expect((await executeChannelTurn(channelTurn())).kind).toBe("success");
     expect(embeddedToken).toBeDefined();
     expect(cliToken).toBeDefined();
     expect(resolveCapability(embeddedToken)).toBeUndefined();
@@ -189,8 +198,7 @@ describe("channel reply message authority", () => {
         expect(run.messageActionTurnCapability).toBeUndefined();
         return { payloads: [{ text: "done" }], meta: {} };
       });
-      const execute = await getExecuteAgentTurnForTest();
-      await execute({
+      await executeChannelTurn({
         ...turn,
         isHeartbeat: mode === "heartbeat",
         sessionCtx: {
