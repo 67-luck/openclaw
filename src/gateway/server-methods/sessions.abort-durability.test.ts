@@ -15,6 +15,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import type { SubsystemLogger } from "../../logging/subsystem.js";
+import { captureSessionTarget } from "../../sessions/session-controller.target.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -26,6 +27,7 @@ import {
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { startGatewayEventSubscriptions } from "../server-runtime-subscriptions.js";
 import * as lifecycleState from "../session-lifecycle-state.js";
+import { claimRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { sessionAbortHandlers } from "./sessions-abort.js";
 import type { RespondFn } from "./types.js";
 
@@ -74,8 +76,15 @@ it.each([
         },
       };
       const embedded = createEmbeddedRunHandle(embeddedState);
+      const controllerTarget = captureSessionTarget({
+        storeScope: target.storePath,
+        sessionKey: target.sessionKey,
+        agentId: target.agentId,
+        incarnation: sessionId,
+      });
       const registration = mode.startsWith("controller")
         ? registerChatAbortController({
+            target: controllerTarget,
             sessionKey: target.sessionKey,
             sessionId,
             agentId: target.agentId,
@@ -84,15 +93,22 @@ it.each([
             timeoutMs: 60_000,
           })
         : undefined;
-      registration?.markExecutionStarted();
+      const releaseController = registration?.entry
+        ? await claimRpcSourceForTest(registration.entry)
+        : undefined;
       registration?.entry?.input.claim?.operation?.attachBackend({
         kind: "embedded",
         cancel: vi.fn(),
         isAbortable: () => embeddedState.isAbortable,
       });
-      registration?.controller.signal.addEventListener("abort", () => embeddedState.abort(), {
-        once: true,
-      });
+      registration?.controller.signal.addEventListener(
+        "abort",
+        () => {
+          embeddedState.abort();
+          releaseController?.();
+        },
+        { once: true },
+      );
       if (mode !== "controller") {
         setActiveEmbeddedRun(sessionId, embedded, target.sessionKey);
       }
@@ -177,6 +193,9 @@ it.each([
         );
         void request.catch(() => {});
         await aborted.promise;
+        if (mode === "embedded-run") {
+          clearActiveEmbeddedRun(sessionId, embedded, target.sessionKey);
+        }
         await setImmediate();
         expect.soft(respond).not.toHaveBeenCalled();
         expect(loadSessionEntry(target)?.status).toBe("running");
