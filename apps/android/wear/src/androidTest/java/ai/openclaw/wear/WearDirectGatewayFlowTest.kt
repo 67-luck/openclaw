@@ -277,6 +277,7 @@ class WearDirectGatewayFlowTest {
       var disconnectTap: Point? = null
       try {
         clickAction(activity, app.getString(R.string.watch_disconnect), rewind = false) { point ->
+          capture(input.phase, "06-disconnect-ready")
           disconnectOwner = runtime.inputOwner()
           disconnectBefore = certificateSnapshot(activity, runtime.state.value, gatewayId)
           disconnectTap = point
@@ -858,6 +859,8 @@ class WearDirectGatewayFlowTest {
     var terminal: JsonObject? = null
     var queryIndex = 0
     var scrollIndex = 0
+    var actionSeen = false
+    var scrollDown = true
     var diagnosticIncomplete = false
 
     fun flags(node: AccessibilityNodeInfo): JsonObject? =
@@ -888,6 +891,8 @@ class WearDirectGatewayFlowTest {
         )
 
         fun actionPoint(): Point? {
+          actionSeen = false
+          scrollDown = true
           val lookupIndex = queryIndex++
           val lookupScrollIndex = scrollIndex
           var matchCount: Int? = null
@@ -897,6 +902,7 @@ class WearDirectGatewayFlowTest {
           var boundsIntersected: Boolean? = null
           var scrollViewportIntersected: Boolean? = null
           var rootReached: Boolean? = null
+          var ownerFullyExposed: Boolean? = null
           val currentRoot = requireNotNull(instrumentation.uiAutomation.rootInActiveWindow)
           val nodes = mutableListOf<AccessibilityNodeInfo>()
           val acquired = mutableListOf<AccessibilityNodeInfo>()
@@ -921,7 +927,7 @@ class WearDirectGatewayFlowTest {
             nodes.addAll(currentRoot.descendants())
             val matches = nodes.filter { it.packageName?.toString() == app.packageName && it.text?.toString() == label }
             matchCount = matches.size
-            val owners = linkedMapOf<AccessibilityNodeInfo, Rect>()
+            val owners = linkedMapOf<AccessibilityNodeInfo, Rect?>()
             for ((matchIndex, child) in matches.withIndex()) {
               assertTrue("action candidate is current", child.refresh())
               if (matchIndex == 0) selfFlags = flags(child)
@@ -940,6 +946,7 @@ class WearDirectGatewayFlowTest {
               }
               val hit = Rect().also { child.getBoundsInScreen(it) }
               val ownerBounds = Rect().also { owner.getBoundsInScreen(it) }
+              val viewport = Rect(windowBounds)
               val intersects = hit.intersect(ownerBounds) && hit.intersect(windowBounds) && hit.intersect(display)
               if (matchIndex == 0) boundsIntersected = intersects
               if (!intersects) continue
@@ -953,8 +960,8 @@ class WearDirectGatewayFlowTest {
                 assertTrue("action viewport ancestry is acyclic", seen.add(current))
                 if (current.packageName?.toString() != app.packageName || current.windowId != window.id) break
                 if (current.isScrollable) {
-                  val viewport = Rect().also { current.getBoundsInScreen(it) }
-                  val viewportIntersects = hit.intersect(viewport)
+                  val bounds = Rect().also { current.getBoundsInScreen(it) }
+                  val viewportIntersects = viewport.intersect(bounds) && hit.intersect(viewport)
                   if (matchIndex == 0) scrollViewportIntersected = viewportIntersects
                   if (!viewportIntersects) break
                 }
@@ -965,7 +972,17 @@ class WearDirectGatewayFlowTest {
                 ancestor = current.getParent(0)?.also { acquired.add(it) }
               }
               if (matchIndex == 0) rootReached = reachedRoot
-              if (reachedRoot && !hit.isEmpty) owners.putIfAbsent(owner, hit)
+              // Compose reports clipped accessibility bounds for partially visible controls.
+              // Scroll past viewport-edge fragments before choosing a physical tap target.
+              val fullyExposed =
+                ownerBounds.left > viewport.left && ownerBounds.top > viewport.top &&
+                  ownerBounds.right < viewport.right && ownerBounds.bottom < viewport.bottom
+              if (matchIndex == 0) ownerFullyExposed = fullyExposed
+              if (reachedRoot && !hit.isEmpty) {
+                actionSeen = true
+                scrollDown = ownerBounds.bottom >= viewport.bottom
+                owners.putIfAbsent(owner, hit.takeIf { fullyExposed })
+              }
             }
             ownerCount = owners.size
             assertTrue("at most one distinct eligible native action owner", owners.size <= 1)
@@ -983,6 +1000,7 @@ class WearDirectGatewayFlowTest {
                   put("boundsIntersected", boundsIntersected)
                   put("scrollViewportIntersected", scrollViewportIntersected)
                   put("rootReached", rootReached)
+                  put("ownerFullyExposed", ownerFullyExposed)
                 }
               terminal = observation
               if (firstMatch == null && (matchCount ?: 0) > 0) firstMatch = observation
@@ -1025,7 +1043,8 @@ class WearDirectGatewayFlowTest {
 
         var point = stableActionPoint()
         if (point == null && allowScroll) {
-          if (rewind) {
+          // A clipped action already locates the target; do not rewind away from it.
+          if (rewind && !actionSeen) {
             repeat(8) {
               scroll(down = false)
               scrollIndex++
@@ -1035,7 +1054,7 @@ class WearDirectGatewayFlowTest {
             if (point == null) {
               point = stableActionPoint()
               if (point == null) {
-                scroll(down = true)
+                scroll(down = scrollDown)
                 scrollIndex++
               }
             }
