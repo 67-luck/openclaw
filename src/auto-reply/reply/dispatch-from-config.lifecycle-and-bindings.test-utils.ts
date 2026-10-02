@@ -41,7 +41,6 @@ import * as dispatchHarness from "./dispatch-from-config.test-harness.js";
 import {
   type ResolveInboundConversationParams,
   dispatchReplyFromConfig,
-  createReplyOperation,
   runWithReplyOperationLifecycleAdmission,
   setNoAbort,
   firstMockCall,
