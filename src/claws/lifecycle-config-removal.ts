@@ -15,6 +15,7 @@ import {
   deleteAgentConfigEntry,
 } from "../gateway/server-methods/agents-config-mutations.js";
 import { withAgentExecApprovalsRemoved } from "../infra/exec-approvals.js";
+import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { readAgentDeletionJournalInDatabase } from "../state/agent-deletion-journal.js";
 import type {
@@ -203,7 +204,9 @@ export async function withClawAgentConfigRemoval<T>(
         if (database) {
           check(database);
         } else {
-          runOpenClawStateWriteTransaction(check, stateOptions);
+          const current = openOpenClawStateDatabase(stateOptions);
+          // Worker admission can hold the writer lock while waiting for this read-only authority check.
+          runSqliteDeferredTransactionSync(current.db, () => check(current));
         }
       };
       try {
