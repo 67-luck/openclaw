@@ -391,6 +391,16 @@ export async function admitChatSend(
 
   let interruptedActiveRun = false;
   try {
+    if (runInterruptTarget) {
+      params.assertCurrent?.();
+      assertSessionTargetCurrent();
+      admittedRunAbort.controller.signal.throwIfAborted();
+      const interruption = await interruptReplyRunTarget(runInterruptTarget, null);
+      interruptedActiveRun = interruption.aborted;
+      params.assertCurrent?.();
+      assertSessionTargetCurrent();
+      admittedRunAbort.controller.signal.throwIfAborted();
+    }
     gatewayWorkAdmission = await beginSessionEffect({
       sourceInput: admittedRunAbort.entry?.input,
       target: captureSessionTarget({
@@ -576,15 +586,6 @@ export async function admitChatSend(
       cleanupPreDispatchAdmission();
       respondChatSendAdmissionError(error, respond);
       return { ok: false as const };
-    }
-    if (runInterruptTarget) {
-      params.assertCurrent?.();
-      admittedRunAbort.controller.signal.throwIfAborted();
-      const interruption = await interruptReplyRunTarget(runInterruptTarget, null);
-      interruptedActiveRun = interruption.aborted;
-      params.assertCurrent?.();
-      assertSessionTargetCurrent();
-      admittedRunAbort.controller.signal.throwIfAborted();
     }
     // Reserve while the request root is live: detached dispatch retains it until terminal persistence.
     releaseGatewayRootContinuation = retainGatewayRootWorkAdmissionContinuation() ?? (() => {});
