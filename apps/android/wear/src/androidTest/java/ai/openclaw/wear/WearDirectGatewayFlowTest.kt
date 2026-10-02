@@ -270,10 +270,40 @@ class WearDirectGatewayFlowTest {
       findText(closure.freshHistoryMarker, contains = true)
       capture(input.phase, "05-resumed")
       // Disconnect follows history; retain the viewport that just exposed the fresh marker.
-      clickAction(activity, app.getString(R.string.watch_disconnect), rewind = false)
-      awaitState("foreground Disconnect retires its connection before Activity finish") {
-        val state = runtime.state.value
-        !state.connected && !state.busy && state.status == "Disconnected" && state.error == null
+      var disconnectOwner: WearInputOwner? = null
+      var disconnectBefore: JsonObject? = null
+      var disconnectTap: Point? = null
+      try {
+        clickAction(activity, app.getString(R.string.watch_disconnect), rewind = false) { point ->
+          disconnectOwner = runtime.inputOwner()
+          disconnectBefore = certificateSnapshot(activity, runtime.state.value, gatewayId)
+          disconnectTap = point
+        }
+        awaitState("foreground Disconnect retires its connection before Activity finish") {
+          val state = runtime.state.value
+          !state.connected && !state.busy && state.status == "Disconnected" && state.error == null
+        }
+      } catch (error: Throwable) {
+        runCatching {
+          val diagnostic =
+            buildJsonObject {
+              put("schema", "wear-disconnect-boundary-v1")
+              put("inputOwnerChanged", disconnectOwner?.let { it != runtime.inputOwner() })
+              put("tapX", disconnectTap?.x)
+              put("tapY", disconnectTap?.y)
+              put("before", disconnectBefore ?: JsonNull)
+              put("failure", certificateSnapshot(activity, runtime.state.value, gatewayId))
+            }
+          val encoded = Json.encodeToString(diagnostic)
+          check(encoded.toByteArray().size <= 4096)
+          error.addSuppressed(AssertionError("wear-disconnect-boundary:$encoded").apply { stackTrace = emptyArray() })
+        }.onFailure {
+          error.addSuppressed(AssertionError("wear-disconnect-diagnostic-unavailable").apply { stackTrace = emptyArray() })
+        }
+        runCatching { capture(input.phase, "06-disconnect-failed") }.onFailure {
+          error.addSuppressed(AssertionError("wear-disconnect-capture-unavailable").apply { stackTrace = emptyArray() })
+        }
+        throw error
       }
       foregroundRetired = true
     } catch (error: Throwable) {
@@ -757,7 +787,7 @@ class WearDirectGatewayFlowTest {
     label: String,
     allowScroll: Boolean = true,
     rewind: Boolean = true,
-    beforeClick: () -> Unit = {},
+    beforeClick: (Point) -> Unit = {},
   ) {
     var firstMatch: JsonObject? = null
     var terminal: JsonObject? = null
@@ -943,7 +973,7 @@ class WearDirectGatewayFlowTest {
           }
         }
         val target = requireNotNull(point) { "one eligible native action is exposed after stability" }
-        beforeClick()
+        beforeClick(target)
         val resumed = activity.lifecycle.currentState == Lifecycle.State.RESUMED
         val focused = activity.hasWindowFocus()
         val interactive = app.getSystemService(PowerManager::class.java).isInteractive
