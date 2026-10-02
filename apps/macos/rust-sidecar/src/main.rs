@@ -1009,6 +1009,67 @@ mod tests {
     }
     #[tokio::test]
     async fn native_invoke_backlog_retires_before_six_large_requests_are_retained() {
+        async fn deliver_with_progress(
+            input: &transport::NativeTransportInput,
+            writes: &mut mpsc::Receiver<transport::TransportWrite>,
+            receipts: &mut mpsc::Receiver<Value>,
+            pending: &mut std::collections::VecDeque<(bytes::Bytes, bool)>,
+            invocation: bytes::Bytes,
+        ) -> Result<(), &'static str> {
+            pending.push_back((invocation, true));
+            while let Some((frame, is_invocation)) = pending.pop_front() {
+                input
+                    .receive(1, frame)
+                    .map_err(|_| "peer delivery rejected")?;
+                loop {
+                    tokio::select! {
+                        receipt = receipts.recv() => {
+                            let receipt = receipt.ok_or("delivery receipt missing")?;
+                            if receipt["type"] != "transport-received" {
+                                return Err("unexpected delivery receipt");
+                            }
+                            break;
+                        }
+                        write = writes.recv() => {
+                            let write = write.ok_or("Gateway writer closed")?;
+                            let (metadata, body) = write.payload_parts();
+                            if !matches!(metadata[0], 1 | 2) { return Err("unexpected Gateway control"); }
+                            let request: Value = serde_json::from_slice(body)
+                                .map_err(|_| "invalid Gateway request")?;
+                            if request["type"] != "req" || request["id"].as_str().is_none() {
+                                return Err("invalid Gateway request identity");
+                            }
+                            match request["method"].as_str() {
+                                Some("node.invoke.progress") => {
+                                    let index = request["params"]["invokeId"].as_str()
+                                        .and_then(|id| id.strip_prefix("hold-"))
+                                        .and_then(|index| index.parse::<usize>().ok());
+                                    if !index.is_some_and(|index| index < 6)
+                                        || request["params"]["nodeId"] != "node-1"
+                                        || request["params"]["chunk"] != ""
+                                        || request["params"]["seq"].as_u64().is_none()
+                                    { return Err("unexpected invocation heartbeat"); }
+                                }
+                                Some("node.invoke.result") if request["params"]["id"] == "hold-5"
+                                    && request["params"]["nodeId"] == "node-1"
+                                    && request["params"]["ok"] == false
+                                    && request["params"]["error"]["code"] == "UNAVAILABLE" => {}
+                                _ => return Err("unexpected Gateway method"),
+                            }
+                            input.acknowledge(u64::from_be_bytes(metadata[1..].try_into().unwrap()), true)
+                                .map_err(|_| "Gateway write acknowledgement rejected")?;
+                            pending.push_back((bytes::Bytes::from(json!({
+                                "type":"res", "id":request["id"], "ok":true, "payload":{}
+                            }).to_string()), false));
+                        }
+                    }
+                }
+                if is_invocation {
+                    return Ok(());
+                }
+            }
+            Err("invocation delivery missing")
+        }
         let (incoming, incoming_rx) = mpsc::channel(128);
         let (outgoing, mut queued) = mpsc::channel(usize::from(MAX_IN_FLIGHT));
         let (transport_outgoing, mut writes) = mpsc::channel(1);
@@ -1020,6 +1081,7 @@ mod tests {
         });
         let _abort = AbortTaskOnDrop(task.abort_handle());
         let mut step = "open".to_owned();
+        let mut peer_responses = std::collections::VecDeque::new();
         let observed = tokio::time::timeout(Duration::from_secs(10), async {
             incoming.send(SupervisorMessage::Open {
                 url: "ws://127.0.0.1:1".into(), private_commands: Vec::new(),
@@ -1061,9 +1123,13 @@ mod tests {
                     "paramsJSON":raw, "timeoutMs":0
                 }}).to_string();
                 if frame.len() >= GATEWAY_PAYLOAD_LIMIT { return Err("fixture exceeds per-frame limit"); }
-                native_input.receive(1, bytes::Bytes::from(frame)).map_err(|_| "invocation rejected")?;
                 step = format!("invocation {index} receipt");
-                receipts.recv().await.ok_or("invocation receipt missing")?;
+                // Real duplex heartbeats share this socket; acknowledge writes and serialize
+                // their responses behind the outstanding frame's actual receive receipt.
+                deliver_with_progress(
+                    &native_input, &mut writes, &mut receipts, &mut peer_responses,
+                    bytes::Bytes::from(frame),
+                ).await?;
                 step = format!("invocation {index} forwarding");
                 while queued.len() < usize::from(index + 1) && !task.is_finished() {
                     tokio::task::yield_now().await;
