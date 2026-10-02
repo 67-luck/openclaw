@@ -68,54 +68,48 @@ describe("chat page navigation", () => {
       expect(ownedChatPaneSessionKey(context, key, agentId)).toBe(expected);
     },
   );
-  it.each(
-    (
-      [
-        { agentId: "main", face: "chat" },
-        { agentId: "main", face: "dashboard" },
-        { agentId: "research", face: "chat" },
-        { agentId: "research", face: "dashboard" },
-      ] as const
-    ).flatMap(({ agentId, face }) =>
-      [false, true].map((pendingDraft) => ({ agentId, face, pendingDraft })),
-    ),
-  )(
-    "keeps $agentId $face navigation stable when its pane adopts global (pending draft: $pendingDraft)",
-    async ({ agentId, face, pendingDraft }) => {
-      const search = "?draft=What+can+you+do%3F&__openclawComposerFocus=1&panel=details";
-      window.history.replaceState(
-        {},
-        "",
-        `/${face}/${agentId}${pendingDraft ? `${search}#pane` : ""}`,
-      );
-      const navigation = createChatPageNavigationContext();
-      navigation.context.agents.state.agentsList = {
-        defaultId: "main",
-        mainKey: "main",
-        scope: "global",
-        agents: [{ id: "main" }, { id: "research" }],
-      };
-      navigation.context.gateway.snapshot.hello = {
-        ...gatewayHelloForMethods([]),
-        snapshot: {
-          sessionDefaults: { defaultAgentId: "main", mainKey: "main", mainSessionKey: "global" },
-        },
-      };
-      navigation.context.agentSelection.set(agentId);
-      navigateChatPage(
-        navigation.context,
-        {
-          sessionKey: `agent:${agentId}:main`,
-          face,
-          ...(pendingDraft ? { draft: "What can you do?", focusComposer: true } : {}),
-        },
-        "global",
-        true,
-      );
-      expect(navigation.replace).toHaveBeenCalledExactlyOnceWith(face, {
-        pathname: `/${face}/${agentId}`,
-        ...(pendingDraft ? { search, hash: "#pane" } : {}),
-      });
+  it.each([
+    { agentId: "main", face: "chat" },
+    { agentId: "research", face: "dashboard" },
+  ] as const)(
+    "keeps $agentId $face navigation stable when its pane adopts global",
+    async ({ agentId, face }) => {
+      for (const pendingDraft of [false, true]) {
+        const search = "?draft=What+can+you+do%3F&__openclawComposerFocus=1&panel=details";
+        window.history.replaceState(
+          {},
+          "",
+          `/${face}/${agentId}${pendingDraft ? `${search}#pane` : ""}`,
+        );
+        const navigation = createChatPageNavigationContext();
+        navigation.context.agents.state.agentsList = {
+          defaultId: "main",
+          mainKey: "main",
+          scope: "global",
+          agents: [{ id: "main" }, { id: "research" }],
+        };
+        navigation.context.gateway.snapshot.hello = {
+          ...gatewayHelloForMethods([]),
+          snapshot: {
+            sessionDefaults: { defaultAgentId: "main", mainKey: "main", mainSessionKey: "global" },
+          },
+        };
+        navigation.context.agentSelection.set(agentId);
+        navigateChatPage(
+          navigation.context,
+          {
+            sessionKey: `agent:${agentId}:main`,
+            face,
+            ...(pendingDraft ? { draft: "What can you do?", focusComposer: true } : {}),
+          },
+          "global",
+          true,
+        );
+        expect(navigation.replace).toHaveBeenCalledExactlyOnceWith(face, {
+          pathname: `/${face}/${agentId}`,
+          ...(pendingDraft ? { search, hash: "#pane" } : {}),
+        });
+      }
     },
   );
   it.each([
