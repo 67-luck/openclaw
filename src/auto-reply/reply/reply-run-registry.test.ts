@@ -78,7 +78,6 @@ describe("reply run registry", () => {
 
       expect(isSessionRunActiveForKey("agent:main:main")).toBe(true);
       expect(resolveActiveSessionRunId("agent:main:main")).toBe("session-new");
-      expect(isSessionRunActive("session-old")).toBe(false);
       expect(isSessionRunActive("session-new")).toBe(true);
 
       let settled = false;

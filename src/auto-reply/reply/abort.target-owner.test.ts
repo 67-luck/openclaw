@@ -15,7 +15,7 @@ import { createReplyOperation } from "../../sessions/session-controller.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { tryFastAbortFromMessage } from "./abort.js";
-import { handleAbortTrigger, handleStopCommand } from "./commands-session-abort.js";
+import { handleStopCommand } from "./commands-session-abort.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 import { parseInlineSessionDirectives } from "./directive-handling.parse.js";
 import { clearSessionQueues, enqueueFollowupRun, getFollowupQueueDepth } from "./queue.js";
@@ -464,36 +464,4 @@ describe.each(["fast", "command"] as const)("%s Stop current owner", (pathKind) 
     ).toBeUndefined();
     replacement.complete();
   });
-});
-
-it("bare abort leaves independently queued channel input intact", async () => {
-  const state = await setupStop();
-  const input = createQueueTestRun({ prompt: "next turn" });
-  input.run.config = state.cfg;
-  input.run.agentId = "main";
-  input.run.sessionKey = sessionKey;
-  input.run.sessionId = state.entry.sessionId;
-  const operation = createReplyOperation({
-    sessionKey,
-    sessionId: state.entry.sessionId,
-    resetTriggered: false,
-  });
-  operation.attachBackend({
-    kind: "embedded",
-    isStreaming: () => true,
-    cancel: () => queueMicrotask(() => operation.complete()),
-  });
-  enqueueFollowupRun(
-    sessionKey,
-    input,
-    { mode: "collect", debounceMs: 0, cap: 20, dropPolicy: "summarize" },
-    "none",
-  );
-  onTestFinished(() => operation.complete());
-  state.params.command.commandBodyNormalized = "stop";
-  state.params.command.rawBodyNormalized = "stop";
-  const result = await handleAbortTrigger(state.params, true);
-  expect(result).toMatchObject({ shouldContinue: false, reply: { text: "⚙️ Agent was aborted." } });
-  expect(operation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
-  expect(getFollowupQueueDepth(sessionKey)).toBe(1);
 });

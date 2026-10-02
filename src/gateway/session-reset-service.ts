@@ -1362,6 +1362,10 @@ export async function performGatewaySessionReset(params: {
         ),
       };
     }
+    // Child Stop runs inside the preemption, so its refusal surfaces here.
+    if (error instanceof SessionResetCleanupError) {
+      return { ok: false, error: errorShape(ErrorCodes.UNAVAILABLE, error.message) };
+    }
     throw error;
   }
 }
