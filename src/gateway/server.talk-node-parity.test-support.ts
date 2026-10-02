@@ -102,7 +102,7 @@ export async function createTalkParityNodeFixture(
 
 // Only the external voice transport is replaced. The registered create handler
 // still owns caller retention, voice binding, readiness and consult admission.
-export async function installTalkParityProviderFixture() {
+export async function installTalkParityProviderFixture(publicOnly = false) {
   const {
     captureActivePluginRegistrySnapshot,
     getActivePluginRegistry,
@@ -120,7 +120,7 @@ export async function installTalkParityProviderFixture() {
   const provider: import("../plugins/types.js").RealtimeVoiceProviderPlugin = {
     id: "openai",
     label: "Synthetic browser transport",
-    isConfigured: () => false,
+    isConfigured: () => publicOnly,
     createBridge: () => {
       throw new Error("Fixture supports browser creation only");
     },
@@ -142,17 +142,19 @@ export async function installTalkParityProviderFixture() {
       };
     },
   };
-  Object.defineProperty(provider, Symbol.for("openclaw.internal.realtime-voice-provider.v1"), {
-    value: {
-      isBrowserSessionConfigured: () => true,
-      resolveBrowserSessionCapabilities: () => ({
-        ...provider.capabilities,
-        handlesAgentConsult: true,
-        supportsToolCalls: false,
-      }),
-      cancelBrowserSession: async () => {},
-    },
-  });
+  if (!publicOnly) {
+    Object.defineProperty(provider, Symbol.for("openclaw.internal.realtime-voice-provider.v1"), {
+      value: {
+        isBrowserSessionConfigured: () => true,
+        resolveBrowserSessionCapabilities: () => ({
+          ...provider.capabilities,
+          handlesAgentConsult: true,
+          supportsToolCalls: false,
+        }),
+        cancelBrowserSession: async () => {},
+      },
+    });
+  }
   setActivePluginRegistry({
     ...registry,
     realtimeVoiceProviders: [

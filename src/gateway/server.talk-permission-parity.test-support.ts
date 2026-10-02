@@ -33,7 +33,9 @@ export async function runTalkNodePermissionParity({
   runEmbeddedAgent,
   rpc,
   waitForDispatchEnd,
+  publicOnly = false,
 }: {
+  publicOnly?: boolean;
   harness: Awaited<ReturnType<typeof createGatewaySuiteHarness>>;
   client: GatewayClient;
   context: GatewayRequestContext;
@@ -120,7 +122,7 @@ export async function runTalkNodePermissionParity({
     throw new Error("invalid fixture auth");
   }
   const node = await createTalkParityNodeFixture(config, harness.port, token);
-  const provider = await installTalkParityProviderFixture();
+  const provider = await installTalkParityProviderFixture(publicOnly);
   const originalConnections = context.getClientConnIds;
   context.getClientConnIds = (filter) => new Set(!filter || filter(client) ? [connectionId] : []);
   const { closeTalkClientGatewayControlSession } = await import("./talk/client-gateway-control.js");
@@ -169,7 +171,9 @@ export async function runTalkNodePermissionParity({
   const observed: unknown[] = [];
   const outcomes: unknown[] = [];
   try {
-    for (const ingress of ["text", "direct", "chat-backed"] as const) {
+    for (const ingress of publicOnly
+      ? (["direct"] as const)
+      : (["text", "direct", "chat-backed"] as const)) {
       for (const decision of [
         "permitted",
         "policy-deny",
@@ -178,6 +182,9 @@ export async function runTalkNodePermissionParity({
         "cancel",
         "source-revoke",
       ] as const) {
+        if (publicOnly && decision !== "source-revoke") {
+          continue;
+        }
         const key = ingress + "-" + decision;
         const requiresApproval = decision !== "permitted" && decision !== "policy-deny";
         const invocationCount = node.invokes.length;
@@ -208,6 +215,8 @@ export async function runTalkNodePermissionParity({
         requested = createDeferred<Record<string, unknown>>();
         let task: Promise<unknown> | undefined;
         let directVoiceSessionId: string | undefined;
+        let activeSignal: AbortSignal | undefined;
+        let activeRunId: string | undefined;
         runEmbeddedAgent.mockImplementationOnce(async (params) => {
           const admission = expectDefined(params.preparedRunAdmission, "real ingress admission");
           const admittedRunContext = await admission.admit(
@@ -258,6 +267,8 @@ export async function runTalkNodePermissionParity({
             }),
             createNodesTool({ agentId, agentSessionKey: params.sessionKey, config: params.config }),
           ]);
+          activeSignal = params.abortSignal;
+          activeRunId = params.runId;
           started.resolve(params.runId);
           try {
             const lookup = await expectDefined(nodes, "bound nodes tool").execute(
@@ -355,6 +366,11 @@ export async function runTalkNodePermissionParity({
               await rpc("chat.abort", { sessionKey, runId });
             } else if (decision === "source-revoke") {
               invalidateGatewayDeviceRevocation(context, identity.identity.deviceId, "operator");
+              if (publicOnly) {
+                expect(activeSignal?.aborted, "public callback retains source cancellation").toBe(
+                  true,
+                );
+              }
             } else {
               expect(
                 (await rpcReq(reviewer, "exec.approval.resolve", { id: approvalId, decision })).ok,
@@ -369,6 +385,12 @@ export async function runTalkNodePermissionParity({
             await task;
           }
           await waitForDispatchEnd();
+          if (publicOnly) {
+            expect(context.chatAbortControllers.has(runId)).toBe(false);
+            await expect(provider.run("Start new work after revocation")).rejects.toThrow(
+              /authority|active|closed|stopped/i,
+            );
+          }
           if (decision === "permitted" || decision === "allow-once") {
             expect(result, key + ": " + JSON.stringify(result)).toMatchObject({
               status: "completed",
@@ -411,6 +433,10 @@ export async function runTalkNodePermissionParity({
           });
         } finally {
           invalidateGatewayDeviceRevocation(context, identity.identity.deviceId, "operator");
+          // Cleanup after a failed assertion must not mask the original revocation result.
+          if (publicOnly && activeRunId && activeSignal?.aborted === false) {
+            await rpc("chat.abort", { sessionKey, runId: activeRunId });
+          }
           await task?.catch(() => {});
           await waitForDispatchEnd();
           if (directVoiceSessionId) {
@@ -424,7 +450,7 @@ export async function runTalkNodePermissionParity({
         }
       }
     }
-    expect(native).toHaveLength(6);
+    expect(native).toHaveLength(publicOnly ? 0 : 6);
     for (const invocation of native) {
       expect(invocation.argv).toEqual(native[0]?.argv);
       expect(invocation.argv.join(" ")).toContain(marker);
@@ -441,9 +467,13 @@ export async function runTalkNodePermissionParity({
         cwd: workspace,
       });
     }
-    expect(node.invokes.filter((frame) => frame.command === "system.run")).toHaveLength(6);
-    expect(node.invokes.filter((frame) => frame.command === "system.which")).toHaveLength(18);
-    expect(outcomes).toHaveLength(18);
+    expect(node.invokes.filter((frame) => frame.command === "system.run")).toHaveLength(
+      publicOnly ? 0 : 6,
+    );
+    expect(node.invokes.filter((frame) => frame.command === "system.which")).toHaveLength(
+      publicOnly ? 1 : 18,
+    );
+    expect(outcomes).toHaveLength(publicOnly ? 1 : 18);
     // Observed, public-safe values only: no identities, transcripts, paths or credentials.
     console.info("Talk permission parity observed:", JSON.stringify(outcomes));
   } finally {

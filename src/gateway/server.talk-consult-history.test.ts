@@ -959,12 +959,13 @@ it("preserves the original operator source through chat-backed capability adapta
 });
 
 // The isolated native cell uses Linux executables; protocol/policy siblings remain portable.
-it.runIf(process.platform === "linux")(
-  "keeps host-authenticated node approvals and native effects equal across text and Talk",
-  async () => {
+it.runIf(process.platform === "linux").each([false, true])(
+  "keeps host-authenticated node approval cancellation (public callback: %s)",
+  async (publicOnly) => {
     const { runTalkNodePermissionParity } =
       await import("./server.talk-permission-parity.test-support.js");
     await runTalkNodePermissionParity({
+      publicOnly,
       harness,
       client,
       context,
