@@ -28,6 +28,7 @@ import {
 import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import { createRetainedAgentDatabaseMatcher } from "../state/agent-deletion-discovery.js";
 import type { HistoricalArchiveSources } from "./doctor-session-sqlite-discovery.js";
+import { reconcileSessionSqliteMigrationPublications } from "./doctor-session-sqlite-restore.js";
 import type {
   DoctorSessionSqliteMode,
   DoctorSessionSqliteOptions,
@@ -247,4 +248,24 @@ export function filterLegacySessionStoreTargets(
         (fs.existsSync(path.dirname(target.storePath)) &&
           fs.readdirSync(path.dirname(target.storePath)).some((file) => file.endsWith(".jsonl")))),
   );
+}
+
+/** Called only under the public maintenance lock, before its strict alias recheck. */
+export async function reconcileDoctorSessionSqlitePublication(
+  options: DoctorSessionSqliteOptions,
+  sourcePath: string,
+): Promise<void> {
+  const env = options.env ?? process.env;
+  const cfg = resolveDoctorSessionSqliteConfig(options);
+  const { targets } = resolveDoctorSessionSqliteTargets({ ...options, cfg, env });
+  assertDoctorSqliteMaintenancePathsNotAliased(
+    `session SQLite ${options.mode}`,
+    resolveDoctorSessionSqliteMaintenancePaths(targets),
+    resolveDoctorSessionSqliteMaintenanceRoots(targets, env),
+  );
+  await reconcileSessionSqliteMigrationPublications({
+    env,
+    sourcePath,
+    trustedTargets: targets.map(createMigrationTargetInput),
+  });
 }

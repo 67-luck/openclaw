@@ -5,6 +5,7 @@ import path, { delimiter, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
+import { normalizeLegacySessionEntryDelivery } from "../../src/infra/state-migrations.legacy-session-store.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { readUpgradeSurvivorPaths } from "./upgrade-survivor-paths.test-support.js";
 
@@ -223,12 +224,24 @@ it.each([
     }),
   );
   const startupModule = pathToFileURL(path.resolve("src/config/sessions/startup-migration.ts"));
+  const volumeModule = pathToFileURL(
+    path.resolve("scripts/e2e/lib/upgrade-survivor/sqlite-volume.mjs"),
+  );
+  const decoyRoute = {
+    sessionId: "transport-origin-decoy",
+    updatedAt: 1,
+    lastChannel: "openai",
+    lastTo: "unrelated-target",
+  };
+  const decoyDelivery = normalizeLegacySessionEntryDelivery(decoyRoute).delivery;
   writeFileSync(
     probePath,
     `import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path, { delimiter, join, resolve } from "node:path";
 import { assertSessionStoreMigrationComplete } from ${JSON.stringify(startupModule.href)};
+import { assertUpgradeVolumeMigrated } from ${JSON.stringify(volumeModule.href)};
 const state = process.env.OPENCLAW_STATE_DIR;
 const volume = process.env.OPENCLAW_UPGRADE_SURVIVOR_SCENARIO === "sqlite-volume";
 const stores = volume
@@ -254,12 +267,43 @@ if (process.argv[2] === "startup") {
   const rows = stores.flatMap(file => Object.values(JSON.parse(fs.readFileSync(path.join(state, file), "utf8"))));
   assert.equal(rows.length, volume ? 15 : 3);
   assert.equal(new Set(rows.map(row => row.sessionId)).size, rows.length);
+  for (const row of rows) {
+    assert.equal(row.modelProvider, "openai");
+    assert.equal(row.model, "gpt-5.5");
+    assert.equal(Object.hasOwn(row, "provider"), false);
+  }
   for (const id of ["upgrade-main-session", "upgrade-direct-session", "upgrade-group-session"]) {
     const row = rows.find(row => row.sessionId === id);
     assert.ok(row, "missing original session " + id);
     assert.equal(JSON.parse(fs.readFileSync(row.sessionFile, "utf8")).id, id);
   }
   assert.equal(rows.filter(row => row.sessionId.startsWith("volume-")).length, volume ? 12 : 0);
+  if (volume) {
+    // Let the existing SDK-eligibility owner author its receipt for this minimal
+    // baseline fixture; this check concerns session metadata, not plugin KV state.
+    const packageRoot = path.join(state, "baseline-package");
+    fs.mkdirSync(packageRoot);
+    fs.writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({
+      name: "openclaw", version: process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_VERSION,
+    }));
+    execFileSync(process.execPath, [
+      "scripts/e2e/lib/upgrade-survivor/sqlite-volume-shared-state.mjs",
+      "seed-baseline-plugin-state", packageRoot,
+    ], { stdio: "pipe" });
+    assertUpgradeVolumeMigrated(state, "baseline");
+    const file = path.join(state, stores[0]);
+    const original = fs.readFileSync(file, "utf8");
+    const store = JSON.parse(original);
+    const key = Object.keys(store).find(key => store[key].sessionId.startsWith("volume-"));
+    for (const [field, value] of [["modelProvider", "slack"], ["model", "changed-model"]]) {
+      const changed = structuredClone(store);
+      changed[key][field] = value;
+      changed[key].delivery = ${JSON.stringify(decoyDelivery)};
+      fs.writeFileSync(file, JSON.stringify(changed));
+      assert.throws(() => assertUpgradeVolumeMigrated(state, "baseline"), /volume model/);
+    }
+    fs.writeFileSync(file, original);
+  }
   fs.writeFileSync(process.env.PROBE_RESULT, JSON.stringify({ rows: rows.length, volume }));
 }
 `,

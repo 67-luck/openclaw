@@ -132,7 +132,7 @@ function seedLegacySessionMetadata(stateDir, perAgent) {
     [perAgent ? "agent:main:main" : "main"]: {
       sessionId: LEGACY_SESSION_MAIN_ID,
       sessionFile: path.join(legacySessionsDir, `${LEGACY_SESSION_MAIN_ID}.jsonl`),
-      provider: "openai",
+      modelProvider: "openai",
       model: "gpt-5.5",
       updatedAt: baseUpdatedAt,
       skillsSnapshot: {
@@ -148,14 +148,14 @@ function seedLegacySessionMetadata(stateDir, perAgent) {
     [perAgent ? "agent:main:+15551234567" : "+15551234567"]: {
       sessionId: LEGACY_SESSION_DIRECT_ID,
       sessionFile: path.join(legacySessionsDir, `${LEGACY_SESSION_DIRECT_ID}.jsonl`),
-      provider: "openai",
+      modelProvider: "openai",
       model: "gpt-5.5",
       updatedAt: baseUpdatedAt + 100,
     },
     [perAgent ? "agent:main:slack:channel:cupgrade" : "slack:channel:CUPGRADE"]: {
       sessionId: LEGACY_SESSION_GROUP_ID,
       sessionFile: path.join(legacySessionsDir, `${LEGACY_SESSION_GROUP_ID}.jsonl`),
-      provider: "openai",
+      modelProvider: "openai",
       model: "gpt-5.5",
       updatedAt: baseUpdatedAt + 200,
       lastChannel: "slack",
@@ -1085,7 +1085,29 @@ function assertSessionMetadataMigrated(stateDir, stage) {
       !Object.hasOwn(entry ?? {}, "sessionFile"),
       `legacy session row retained retired sessionFile metadata for ${sessionId}`,
     );
+    // The serving probe may change main's model after migration; untouched
+    // sessions must retain model ownership independently of transport routing.
+    if (stage !== "post-inference" || sessionId !== LEGACY_SESSION_MAIN_ID) {
+      assert(
+        entry.modelProvider === "openai" && entry.model === "gpt-5.5",
+        `legacy session model metadata was not preserved for ${sessionId}`,
+      );
+    }
   }
+  assert(
+    group.delivery?.kind === "external" &&
+      group.delivery.route?.channel === "slack" &&
+      group.delivery.route?.target?.to === "CUPGRADE" &&
+      group.delivery.context?.channel === "slack" &&
+      group.delivery.context?.to === "CUPGRADE" &&
+      group.delivery.origin?.provider === "slack" &&
+      group.delivery.origin?.to === "CUPGRADE",
+    "legacy session transport metadata was not preserved",
+  );
+  assert(
+    !Object.hasOwn(group, "lastChannel") && !Object.hasOwn(group, "lastTo"),
+    "legacy session retained retired transport metadata",
+  );
   if (source !== "file") {
     const dbPath = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
     const db = new DatabaseSync(dbPath, { readOnly: true });
