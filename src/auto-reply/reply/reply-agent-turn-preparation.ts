@@ -82,8 +82,14 @@ export async function prepareReplyAgentTurn<TConfigured = undefined>(params: {
   const assertOperatorCurrent = () => params.queued.operatorAuthority?.assertCurrent();
   assertOperatorCurrent();
   const existingClaim = params.queued.controllerInput?.claim;
+  // A queued source is claimed before async preparation so Stop selects it as an owned
+  // source; an immediate turn waits for its claim only after configuration.
+  const claimQueuedFirst = !params.providedReplyOperation && !params.claimSource;
   let mailboxClaim: SessionControllerMailboxClaim | undefined;
   try {
+    if (claimQueuedFirst) {
+      mailboxClaim = await claimSessionControllerInput(params.queued);
+    }
     const resolvedConfig = await resolveQueuedReplyExecutionConfig(params.queued.run.config, {
       originatingChannel: params.queued.originatingChannel,
       messageProvider: params.queued.run.messageProvider,
@@ -94,9 +100,9 @@ export async function prepareReplyAgentTurn<TConfigured = undefined>(params: {
     const config = resolveQueuedReplyRuntimeConfig(resolvedConfig);
     const configured = (await params.configure?.(config)) as TConfigured;
     params.onBeforeClaimWait?.();
-    mailboxClaim = await (params.providedReplyOperation
-      ? undefined
-      : (params.claimSource?.() ?? claimSessionControllerInput(params.queued)));
+    if (!claimQueuedFirst) {
+      mailboxClaim = await (params.providedReplyOperation ? undefined : params.claimSource?.());
+    }
     if (!mailboxClaim && !params.providedReplyOperation) {
       return { kind: "skipped", reason: "active-run" } as const;
     }

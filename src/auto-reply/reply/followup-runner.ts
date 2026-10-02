@@ -29,11 +29,8 @@ import { createCompactionNoticePayload } from "./compaction-notice.js";
 import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
 import { settleQueuedFollowupPresentation } from "./followup-presentation.js";
 import { executeFollowupTurn } from "./followup-turn-execution.js";
-import {
-  admitFollowupRunLifecycle,
-  completeFollowupRunLifecycle,
-  type FollowupRun,
-} from "./queue.js";
+import { completeFollowupRunLifecycle, type FollowupRun } from "./queue.js";
+import { admitFollowupRunLifecycle } from "./queue/lifecycle.js";
 import { isFollowupRunAborted, type QueuedFollowupReplyBatch } from "./queue/types.js";
 import {
   prepareReplyAgentTurn,
