@@ -555,7 +555,7 @@ export const en: TranslationMap & {
   },
   communityInvite: {
     title: "Find your people",
-    body: "Questions, projects, and the latest from OpenClaw.",
+    body: "Meet the OpenClaw community. Ask questions, share ideas, or just say hi.",
     reddit: "Reddit",
     discord: "Discord",
     x: "X",
