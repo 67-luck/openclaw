@@ -119,27 +119,6 @@ delaying selection; configured names keep precedence and the Gateway's default
 identity is **Assistant**. The catalog refreshes when the picker opens and stays
 bound to the selected Gateway.
 
-## Sessions
-
-Choose **All Sessions…** in the sidebar to browse **Active**, **Snoozed**, or
-**Archived** sessions. Long-press an eligible session and choose **Snooze**:
-**In 1 hour**, **In 3 hours**, **This evening** (18:00 local, only when more than
-one hour away), **Tomorrow** (09:00 on the next calendar day), or **Next week**
-(next Monday at 09:00). On Sundays, Next week is omitted because it matches
-Tomorrow. Each preset shows its local wake time.
-
-The **Snoozed** scope shows **Wakes** and the scheduled time. Long-press a
-snoozed row and choose **Wake session** to bring it back early. A session also
-wakes when its deadline arrives, a real inbound message arrives, or an agent
-run completes. Pinning or archiving clears its snooze. Protected main sessions,
-child/subagent sessions, and archived sessions cannot be snoozed.
-
-Cached snoozed sessions remain browsable offline under the **Snoozed** scope.
-
-Snooze only hides a session from active lists. It never stops a run, prevents
-messages, or disables automations. The Gateway stores the wake time, so it is
-shared across connected clients; an open conversation stays open.
-
 ## Cloudflare Access sign-in
 
 When a Gateway URL or setup code reaches a Cloudflare Access sign-in challenge,
@@ -175,6 +154,27 @@ Dashboard pages and widgets display an explanation with native Gateway settings
 available; browser-session support for those surfaces is separate. The share
 extension asks you to send from OpenClaw for an Access-protected Gateway. Access
 credentials are not exported to Apple Watch or cloud workers.
+
+## Sessions
+
+Choose **All Sessions…** in the sidebar to browse **Active**, **Snoozed**, or
+**Archived** sessions. Long-press an eligible session and choose **Snooze**:
+**In 1 hour**, **In 3 hours**, **This evening** (18:00 local, only when more than
+one hour away), **Tomorrow** (09:00 on the next calendar day), or **Next week**
+(next Monday at 09:00). On Sundays, Next week is omitted because it matches
+Tomorrow. Each preset shows its local wake time.
+
+The **Snoozed** scope shows **Wakes** and the scheduled time. Long-press a
+snoozed row and choose **Wake session** to bring it back early. A session also
+wakes when its deadline arrives, a real inbound message arrives, or an agent
+run completes. Pinning or archiving clears its snooze. Protected main sessions,
+child/subagent sessions, and archived sessions cannot be snoozed.
+
+Cached snoozed sessions remain browsable offline under the **Snoozed** scope.
+
+Snooze only hides a session from active lists. It never stops a run, prevents
+messages, or disables automations. The Gateway stores the wake time, so it is
+shared across connected clients; an open conversation stays open.
 
 ## Session colors
 

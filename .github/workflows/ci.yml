@@ -5428,12 +5428,12 @@ jobs:
             -only-testing:OpenClawTests/GatewayIngressControllerTests
             -only-testing:OpenClawTests/GatewayIngressLoginPreparationTests
             -only-testing:OpenClawTests/GatewayConnectionControllerTests
-            -only-testing:OpenClawTests/GatewayConnectionSecurityTests
-            -only-testing:OpenClawTests/GatewaySettingsStoreTests
             -only-testing:OpenClawTests/LegacyManualGatewayMigrationTests
             -only-testing:OpenClawTests/GatewayOperatorFleetTests
             -only-testing:OpenClawTests/IOSMediaArtifactLoaderTests
             -only-testing:OpenClawTests/OpenClawTypographyTests
+            -only-testing:OpenClawTests/GatewayConnectionSecurityTests
+            -only-testing:OpenClawTests/GatewaySettingsStoreTests
           )
           if [[ "$IOS_CI_PHASE" == "tests" ]]; then
             test_args+=(

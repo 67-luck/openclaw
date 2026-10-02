@@ -31,7 +31,7 @@ extension GatewayConnectionController {
         let generation = appModel.gatewayConnectGeneration
 
         var refreshedConfig = cfg
-        refreshedConfig.nodeOptions = await makeConnectOptions(
+        refreshedConfig.nodeOptions = await self.makeConnectOptions(
             deviceAuthGatewayID: cfg.nodeOptions.deviceAuthGatewayID,
             allowStoredDeviceAuth: cfg.nodeOptions.allowStoredDeviceAuth)
         guard !Task.isCancelled,

@@ -4225,7 +4225,7 @@ extension NodeAppModel {
         // Async reconnect helpers can resume after Disconnect or a target switch. Only the
         // current route may install a new loop after those suspension points.
         guard self.isCurrentGatewayRoute(generation: routeGeneration, stableID: stableID) else { return }
-        let ingressAuthorization = self.activeGatewayConnectConfig?.ingressAuthorization
+        let ingressAuthorization = config.ingressAuthorization
         // Operator session reconnects independently (chat/talk/config/voicewake), but we tie its
         // lifecycle to the current gateway config so it doesn't keep running across Disconnect.
         self.operatorGatewayTask = Task { [weak self] in
@@ -4475,8 +4475,8 @@ extension NodeAppModel {
                         connectOptions: connectedOptions,
                         sessionBox: sessionBox,
                         extraHeadersProvider: {
-                            if let ingress = config.ingressAuthorization {
-                                return try await ingress.headers(config.url)
+                            if let ingressAuthorization = config.ingressAuthorization {
+                                return try await ingressAuthorization.headers(config.url)
                             }
                             return GatewaySettingsStore.loadGatewayCustomHeaders(gatewayStableID: stableID)
                         },

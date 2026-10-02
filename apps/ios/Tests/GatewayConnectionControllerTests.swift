@@ -365,7 +365,10 @@ private func pendingHandoffDiagnostic(
             VoiceWakePreferences.enabledKey: true,
         ]) {
             let appModel = NodeAppModel()
-            let controller = GatewayConnectionController(appModel: appModel, startDiscovery: false, ingress: makeOrdinaryIngress())
+            let controller = GatewayConnectionController(
+                appModel: appModel,
+                startDiscovery: false,
+                ingress: makeOrdinaryIngress())
             let options = await controller.makeConnectOptions(deviceAuthGatewayID: nil)
             let caps = Set(options.caps)
 
