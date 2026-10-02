@@ -25,6 +25,7 @@ import {
   type NodeApprovalSurface,
 } from "../infra/node-pairing-surface.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { enqueueKeyedTask } from "../plugin-sdk/keyed-async-queue.js";
 import { parseComputerUseCapabilityDescriptor } from "../plugins/computer-use-contract.js";
 import type { NodeHostStats } from "../shared/node-host-stats.js";
 import {
@@ -1332,44 +1333,35 @@ export class NodeRegistry {
     payloadJSON?: SerializedEventPayload | null,
     preparePayload?: NodeEventPayloadPreparation,
   ): Promise<boolean> {
-    const previous = this.pairingGenerationEventChains.get(nodeId) ?? Promise.resolve();
-    const send = previous.then(() => {
-      const node = this.getRegisteredSessionForPairingGeneration(nodeId, pairingGeneration);
-      return node
-        ? this.withCurrentEventSession(node, (current) => {
-            // Select stream baselines after queued sends and pairing verification settle.
-            const prepared = preparePayload?.(current.connId);
-            if (preparePayload && !prepared) {
-              return false;
-            }
-            const sent = this.observeEventSend(
-              current,
-              event,
-              this.sendEventRawInternal(
+    return await enqueueKeyedTask({
+      tails: this.pairingGenerationEventChains,
+      key: nodeId,
+      task: async () => {
+        const node = this.getRegisteredSessionForPairingGeneration(nodeId, pairingGeneration);
+        return node
+          ? this.withCurrentEventSession(node, (current) => {
+              // Select stream baselines after queued sends and pairing verification settle.
+              const prepared = preparePayload?.(current.connId);
+              if (preparePayload && !prepared) {
+                return false;
+              }
+              const sent = this.observeEventSend(
                 current,
                 event,
-                prepared ? prepared.payloadJSON : payloadJSON,
-              ),
-            );
-            if (sent && this.nodesById.get(nodeId) === current) {
-              prepared?.onSent?.();
-            }
-            return sent;
-          })
-        : false;
+                this.sendEventRawInternal(
+                  current,
+                  event,
+                  prepared ? prepared.payloadJSON : payloadJSON,
+                ),
+              );
+              if (sent && this.nodesById.get(nodeId) === current) {
+                prepared?.onSent?.();
+              }
+              return sent;
+            })
+          : false;
+      },
     });
-    const tail = send.then(
-      () => undefined,
-      () => undefined,
-    );
-    this.pairingGenerationEventChains.set(nodeId, tail);
-    try {
-      return await send;
-    } finally {
-      if (this.pairingGenerationEventChains.get(nodeId) === tail) {
-        this.pairingGenerationEventChains.delete(nodeId);
-      }
-    }
   }
 
   private sendEventInternal(node: NodeSession, event: string, payload: unknown): boolean {

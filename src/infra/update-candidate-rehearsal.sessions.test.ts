@@ -50,7 +50,7 @@ it.each([
   const stateDir = path.join(root, "source");
   const sessionDir = external
     ? path.join(root, "external", "sessions")
-    : path.join(stateDir, "sessions");
+    : path.join(stateDir, "agents", "main", "sessions");
   const storePath = path.join(sessionDir, "sessions.json");
   const transcriptPath = path.join(
     json5 ? path.join(root, "foreign", "agents", "main", "sessions") : sessionDir,
@@ -109,7 +109,7 @@ it.each([
     if (json5) {
       const index = readSessionStoreJson5(copied.session!.store!);
       expect(index.ok).toBe(true);
-      const selected = index.store["agent:main:main"].sessionFile;
+      const selected = index.store["agent:main:main"]?.sessionFile;
       expect(selected).toEqual(expect.stringContaining(`${rehearsal.stateDir}${path.sep}`));
       expect(await fs.readFile(String(selected), "utf8")).toBe(originalTranscript);
     }

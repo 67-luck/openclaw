@@ -665,8 +665,7 @@ async function verifyAndPublishSqliteSnapshot(
       if (!options.preserveRowIds) {
         snapshot.exec("VACUUM;");
       }
-      assertSqliteIntegrity(snapshot, options.targetPath);
-      options.validate?.(snapshot, options.targetPath);
+      // Publication validates this output once, after transfer and before exposing the target.
       const userVersion = readSqliteUserVersion(snapshot);
       snapshot.close();
       await syncFile(stagedPath);

@@ -762,11 +762,9 @@
 }
 
 .chat-text a.markdown-github-item::before {
-  /* Keep the mark on the first text line even when a qualified label wraps. */
+  --github-mark: var(--github-item-icon);
+
   inset-inline-start: 0.4em;
-  top: calc((1lh - 1em) / 2 + 0.08em);
-  mask: var(--github-item-icon) center / contain no-repeat;
-  -webkit-mask: var(--github-item-icon) center / contain no-repeat;
 }
 
 /* GitHub Octicons issue-opened-16 and git-pull-request-16 (MIT). */

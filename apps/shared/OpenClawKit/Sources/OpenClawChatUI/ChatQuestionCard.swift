@@ -299,8 +299,7 @@ public final class OpenClawQuestionCardModel: Identifiable {
 
     private func answerValues(questionID: String) -> [String]? {
         guard let answer = self.record.answers?.answers[questionID],
-              let data = try? JSONEncoder().encode(answer),
-              let decoded = try? JSONDecoder().decode([String].self, from: data),
+              let decoded = try? GatewayPayloadDecoding.decode(answer, as: [String].self),
               !decoded.isEmpty
         else { return nil }
         return decoded
@@ -835,7 +834,12 @@ extension OpenClawChatViewModel {
         self.markTimelineChanged()
     }
 
-    func reconcileQuestionsAfterEvent() {
+    func handleQuestionEvent(_ event: OpenClawChatTransportEvent) {
+        switch event {
+        case let .questionRequested(question): self.upsertQuestion(question)
+        case let .questionResolved(resolved): self.resolveQuestionEvent(resolved)
+        default: return
+        }
         guard !self.isQuestionAuthorityRetired else { return }
         // Invalidate a list snapshot captured before this event, then fetch the
         // authoritative set so other pending cards from that snapshot are not lost.

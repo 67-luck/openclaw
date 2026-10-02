@@ -728,52 +728,33 @@ describe("oxlint config", () => {
         fs.readFileSync(path.join(root, owner, "tsconfig.json"), "utf8"),
       ]),
     );
-    const lint = () => {
-      const stdout = path.join(root, "lint.stdout");
-      const stderr = path.join(root, "lint.stderr");
-      // The complete diagnostic and discovery reports together exceed spawnSync's
-      // pipe buffer. Keep both in this fixture's lifecycle without truncation.
-      const out = fs.openSync(stdout, "w");
-      try {
-        const err = fs.openSync(stderr, "w");
-        try {
-          const result = spawnSync(
-            process.execPath,
-            [
-              path.resolve("node_modules/oxlint/bin/oxlint"),
-              "--type-aware",
-              "--threads=1",
-              "--format=json",
-              ...selected,
-            ],
-            {
-              cwd: root,
-              encoding: "utf8",
-              timeout: 30_000,
-              stdio: ["pipe", out, err],
-              env: {
-                ...process.env,
-                OXC_LOG: "debug",
-                GOMAXPROCS: "2",
-                OXLINT_TSGOLINT_PATH: path.resolve(
-                  "node_modules/.bin",
-                  process.platform === "win32" ? "tsgolint.CMD" : "tsgolint",
-                ),
-              },
-            },
-          );
-          return {
-            ...result,
-            stdout: fs.readFileSync(stdout, "utf8"),
-            stderr: fs.readFileSync(stderr, "utf8"),
-          };
-        } finally {
-          fs.closeSync(err);
-        }
-      } finally {
-        fs.closeSync(out);
-      }
-    };
+    const lint = () =>
+      spawnSync(
+        process.execPath,
+        [
+          path.resolve("node_modules/oxlint/bin/oxlint"),
+          "--type-aware",
+          "--threads=1",
+          "--format=json",
+          ...selected,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          // Capture the complete JSON and owner trace when temporary paths are long.
+          maxBuffer: 8 * 1024 * 1024,
+          timeout: 30_000,
+          env: {
+            ...process.env,
+            OXC_LOG: "debug",
+            GOMAXPROCS: "2",
+            OXLINT_TSGOLINT_PATH: path.resolve(
+              "node_modules/.bin",
+              process.platform === "win32" ? "tsgolint.CMD" : "tsgolint",
+            ),
+          },
+        },
+      );
     const narrowed = lint();
     // Recreate the single broad owner with the same ambient contract.
     for (const owner of sourceProjectOwners) {

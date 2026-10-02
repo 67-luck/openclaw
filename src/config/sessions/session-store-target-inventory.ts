@@ -1,14 +1,17 @@
 import path from "node:path";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { resolveAgentSessionDirsFromAgentsDirSync } from "../../agents/session-dirs.js";
+import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
+import {
+  OPENCLAW_AGENT_SCHEMA_VERSION,
+  type OpenClawRegisteredAgentDatabase,
+} from "../../state/openclaw-agent-db-contract.js";
+import type { AgentDatabaseRegistryMutation } from "../../state/openclaw-agent-db-registry-listing.js";
+import { matchesAgentDatabaseReadCandidatePath } from "../../state/openclaw-agent-db-resources.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
-import {
-  resolveSessionStoreCompatibilityAgentId,
-  retainLegacyDefaultAgentId,
-  tryGetLegacyDefaultAgentId,
-} from "../legacy.default-agent-owner.js";
+import { resolveSessionStoreCompatibilityAgentId } from "../legacy.default-agent-owner.js";
 import { resolveStateDir } from "../state-dir.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveAgentsDirFromSessionStorePath, resolveSessionStorePathCore } from "./paths.js";
@@ -32,7 +35,10 @@ import {
   dedupeSessionStoreTargetsBySqliteTarget,
   type SessionStoreTarget,
 } from "./targets-collision.js";
-import { shouldSkipDiscoveryError } from "./targets-path-validation.js";
+import {
+  shouldSkipDiscoveryError,
+  toDiscoveredSessionStoreTarget,
+} from "./targets-path-validation.js";
 import {
   resolveExistingAgentSessionStoreTargetsReadOnlyResult,
   type SessionStoreTargetsReadCache,
@@ -158,11 +164,14 @@ export function captureSessionStoreReadCandidates(storePath: string): SessionSto
 export type SessionStoreTargetInventoryRequest = {
   selection?: "configured";
   config: OpenClawConfig;
-  legacyDefaultAgentId?: string;
   agentIds: string[];
   env: NodeJS.ProcessEnv;
   paths: CapturedSessionStorePaths;
   candidates: SessionStoreReadCandidate[];
+  registryDiscovery?: {
+    agentIds: string[];
+    roots: Array<{ path: string; physicalPath: string }>;
+  };
   registeredDatabases: SessionStoreRegistryRead;
 };
 
@@ -177,6 +186,96 @@ export type SessionStoreTargetInventoryResult =
       }>;
     };
 
+/** Scope registry publications to the paths that can change the original selection. */
+export function createSessionStoreRegistryMutationFilter(params: {
+  captured: readonly {
+    candidate: SessionStoreReadCandidate;
+    identity: string;
+    birthtime?: string;
+  }[];
+  preparedSources: readonly {
+    agentId: string;
+    path: string;
+    identity: string;
+    birthtime: string;
+  }[];
+  registryDiscovery?: SessionStoreTargetInventoryRequest["registryDiscovery"];
+}) {
+  const registryCandidates = params.captured.filter(
+    ({ candidate }) => !resolveUnsuffixedSqliteTargetFromSessionStorePath(candidate.path).agentId,
+  );
+  return (
+    mutation: AgentDatabaseRegistryMutation,
+    entries: readonly OpenClawRegisteredAgentDatabase[] | undefined,
+  ) =>
+    mutation.sources.every((source) => {
+      const sameCapturedRegistration = params.captured.some(
+        ({ candidate, identity, birthtime }) =>
+          identity.startsWith("file:") &&
+          identity === source.identity &&
+          (source.path === candidate.path || source.path === candidate.physicalPath) &&
+          isCurrentRegistrySourceGeneration(
+            { path: candidate.path, identity, birthtime },
+            source,
+          ) &&
+          entries?.some(
+            (entry) =>
+              entry.agentId === source.agentId &&
+              entry.schemaVersion === source.schemaVersion &&
+              (entry.path === candidate.path || entry.path === candidate.physicalPath),
+          ),
+      );
+      if (
+        mutation.kind === "upsert" &&
+        source.schemaVersion === OPENCLAW_AGENT_SCHEMA_VERSION &&
+        (sameCapturedRegistration ||
+          params.preparedSources.some(
+            (prepared) =>
+              prepared.agentId === source.agentId &&
+              prepared.identity === source.identity &&
+              isCurrentRegistrySourceGeneration(prepared, source),
+          ))
+      ) {
+        return true;
+      }
+      return (
+        !params.preparedSources.some(
+          (prepared) =>
+            prepared.path === source.path ||
+            prepared.path === source.physicalPath ||
+            prepared.identity === source.identity,
+        ) &&
+        !isSessionStoreRegistryDiscoveryPath(params.registryDiscovery, source) &&
+        !registryCandidates.some(
+          ({ candidate, identity }) =>
+            (identity.startsWith("file:") && source.identity === identity) ||
+            matchesAgentDatabaseReadCandidatePath(candidate, source.path) ||
+            matchesAgentDatabaseReadCandidatePath(
+              { ...candidate, path: candidate.physicalPath },
+              source.physicalPath,
+            ),
+        )
+      );
+    });
+}
+
+function isCurrentRegistrySourceGeneration(
+  captured: { path: string; identity: string; birthtime?: string },
+  source: { path: string; physicalPath: string },
+): boolean {
+  if (captured.birthtime === undefined) {
+    return false;
+  }
+  try {
+    for (const pathname of new Set([captured.path, source.path, source.physicalPath])) {
+      assertExistingDatabaseIdentity(pathname, captured.identity, captured.birthtime);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Capture locators and bounded families without reading SQLite or assigning an owner. */
 export function prepareSessionStoreTargetInventory(
   cfg: OpenClawConfig,
@@ -188,8 +287,6 @@ export function prepareSessionStoreTargetInventory(
   const stateDir = resolveStateDir(env);
   env.OPENCLAW_STATE_DIR = stateDir;
   const config = structuredClone(cfg);
-  const legacyDefaultAgentId = tryGetLegacyDefaultAgentId(cfg);
-  retainLegacyDefaultAgentId(config, legacyDefaultAgentId);
   const agentIds = [...new Set(inputAgentIds.map(normalizeAgentId))];
   const configured = listConfiguredSessionStoreAgentIds(config);
   const paths = new Map(
@@ -257,12 +354,50 @@ export function prepareSessionStoreTargetInventory(
   return {
     selection,
     config,
-    legacyDefaultAgentId,
     agentIds,
     env: { ...env, OPENCLAW_STATE_DIR: env.OPENCLAW_STATE_DIR },
     paths,
     candidates: [...candidates.values()],
+    ...(perAgent && retired.size > 0
+      ? {
+          registryDiscovery: {
+            agentIds: [...retired],
+            roots: [...roots].map((root) => captureSessionStoreReadCandidate(root)),
+          },
+        }
+      : {}),
   };
+}
+
+/** Future retired directories follow the same root and directory-name rules as discovery. */
+function isSessionStoreRegistryDiscoveryPath(
+  scope: SessionStoreTargetInventoryRequest["registryDiscovery"],
+  source: { path: string; physicalPath: string },
+): boolean {
+  if (!scope) {
+    return false;
+  }
+  return scope.roots.some((root) =>
+    [root.path, root.physicalPath].some((rootPath) =>
+      [source.path, source.physicalPath].some((sourcePath) => {
+        const relative = path.relative(rootPath, sourcePath);
+        const directoryName = relative.split(path.sep)[0];
+        if (path.isAbsolute(relative) || !directoryName || directoryName === "..") {
+          return false;
+        }
+        const sessionsDir = path.join(rootPath, directoryName, "sessions");
+        const target = toDiscoveredSessionStoreTarget(
+          sessionsDir,
+          path.join(sessionsDir, "sessions.json"),
+        );
+        return (
+          target !== undefined &&
+          scope.agentIds.includes(target.agentId) &&
+          resolveUnsuffixedSqliteTargetFromSessionStorePath(target.storePath).path === sourcePath
+        );
+      }),
+    ),
+  );
 }
 
 /** Worker-only native discovery; registry facts come from the canonical host memo. */
@@ -270,7 +405,7 @@ export function readSessionStoreTargetInventory(
   request: SessionStoreTargetInventoryRequest,
 ): SessionStoreTargetInventoryResult {
   const env = cloneEnvWithPlatformSemantics(request.env);
-  const config = retainLegacyDefaultAgentId(request.config, request.legacyDefaultAgentId);
+  const config = request.config;
   const cache: SessionStoreTargetsReadCache = new Map();
   let readFailed = false;
   try {

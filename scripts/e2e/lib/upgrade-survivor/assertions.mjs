@@ -123,13 +123,11 @@ function isPathInsideManagedNpmProjectPackageRoot(params) {
   );
 }
 
-function seedLegacySessionMetadata(stateDir, perAgent) {
-  const legacySessionsDir = perAgent
-    ? path.join(stateDir, "agents", "main", "sessions")
-    : path.join(stateDir, "sessions");
+function seedLegacySessionMetadata(stateDir) {
+  const legacySessionsDir = path.join(stateDir, "agents", "main", "sessions");
   const baseUpdatedAt = Date.now() - 24 * 60 * 60 * 1000;
   writeJson(path.join(legacySessionsDir, "sessions.json"), {
-    [perAgent ? "agent:main:main" : "main"]: {
+    "agent:main:main": {
       sessionId: LEGACY_SESSION_MAIN_ID,
       sessionFile: path.join(legacySessionsDir, `${LEGACY_SESSION_MAIN_ID}.jsonl`),
       modelProvider: "openai",
@@ -145,14 +143,14 @@ function seedLegacySessionMetadata(stateDir, perAgent) {
         ],
       },
     },
-    [perAgent ? "agent:main:+15551234567" : "+15551234567"]: {
+    "agent:main:+15551234567": {
       sessionId: LEGACY_SESSION_DIRECT_ID,
       sessionFile: path.join(legacySessionsDir, `${LEGACY_SESSION_DIRECT_ID}.jsonl`),
       modelProvider: "openai",
       model: "gpt-5.5",
       updatedAt: baseUpdatedAt + 100,
     },
-    [perAgent ? "agent:main:slack:channel:cupgrade" : "slack:channel:CUPGRADE"]: {
+    "agent:main:slack:channel:cupgrade": {
       sessionId: LEGACY_SESSION_GROUP_ID,
       sessionFile: path.join(legacySessionsDir, `${LEGACY_SESSION_GROUP_ID}.jsonl`),
       modelProvider: "openai",
@@ -337,8 +335,7 @@ function seedState() {
     agentId: "main",
     title: "Existing user session",
   });
-  // Volume imports start in per-agent JSON; other scenarios cover the older shared-store move.
-  seedLegacySessionMetadata(stateDir, scenario === "sqlite-volume");
+  seedLegacySessionMetadata(stateDir);
   sessionSourceFixture.recordLegacySessionSources(stateDir);
   seedLegacyExecApprovalPolicy(stateDir);
   if (scenario === "meeting-transcripts-sqlite") {
