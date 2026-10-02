@@ -518,6 +518,7 @@ export async function runChatSendPreAdmission(
         assertCurrent,
         cascadeDescendants: true,
       });
+      assertCurrent();
       // Descendant cancellation aggregates errors; preserve the admission reason.
       if (guard.failure) {
         throw abortedPartialPersistenceError(guard.failure.error, res.warning);
