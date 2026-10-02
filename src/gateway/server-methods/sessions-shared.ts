@@ -2,6 +2,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import {
   ErrorCodes,
   errorShape,
+  type ErrorShape,
   type SessionOperationEvent,
   type SessionsPatchParams,
 } from "../../../packages/gateway-protocol/src/index.js";
@@ -101,16 +102,19 @@ export function loadAccessorSessionEntryForGatewayTarget(params: {
   key: string;
   cfg: OpenClawConfig;
   agentId?: string;
+  clone?: boolean;
 }) {
   const target = resolveGatewaySessionStoreTargetWithStore({
     cfg: params.cfg,
     key: params.key,
     exactRead: true,
+    ...(params.clone === false ? { clone: false } : {}),
     ...(params.agentId ? { agentId: params.agentId } : {}),
   });
   return {
     target,
     storePath: target.storePath,
+    store: target.store,
     // Exact probes include internal-effects rows that operator inventory reads hide.
     entry: isInternalSessionEffectsKey(target.canonicalKey)
       ? undefined
@@ -118,27 +122,6 @@ export function loadAccessorSessionEntryForGatewayTarget(params: {
     canonicalKey: target.canonicalKey,
     sessionStoreKey: target.canonicalKey,
   };
-}
-
-export function loadSessionEntriesForTarget(params: {
-  key: string;
-  cfg: OpenClawConfig;
-  agentId?: string;
-  includeStoreChildEntries?: boolean;
-}) {
-  const target = resolveGatewaySessionStoreTargetWithStore({
-    cfg: params.cfg,
-    key: params.key,
-    clone: false,
-    exactRead: true,
-    includeStoreChildEntries: params.includeStoreChildEntries,
-    ...(params.agentId ? { agentId: params.agentId } : {}),
-  });
-  const store = target.store;
-  const entry = isInternalSessionEffectsKey(target.canonicalKey)
-    ? undefined
-    : resolveCanonicalSessionEntryFromStoreKeys(store, target.storeKeys);
-  return { target, storePath: target.storePath, store, entry };
 }
 
 export function emitSessionOperation(
@@ -174,4 +157,18 @@ export function isAgentMainSessionKey(cfg: OpenClawConfig, sessionKey: string): 
     return false;
   }
   return sessionKey === resolveAgentMainSessionKey({ cfg, agentId: parsed.agentId });
+}
+
+export function resolveProtectedSessionVisibilityError(
+  cfg: OpenClawConfig,
+  canonicalKey: string,
+  action: "archive" | "snooze",
+): ErrorShape | undefined {
+  if (canonicalKey === "unknown") {
+    return errorShape(ErrorCodes.INVALID_REQUEST, `Cannot ${action} the unknown session sentinel.`);
+  }
+  if (canonicalKey === "global" || isAgentMainSessionKey(cfg, canonicalKey)) {
+    return errorShape(ErrorCodes.INVALID_REQUEST, `Cannot ${action} an agent's main session.`);
+  }
+  return undefined;
 }
