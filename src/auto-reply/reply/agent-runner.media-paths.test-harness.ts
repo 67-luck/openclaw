@@ -178,14 +178,18 @@ vi.mock("./agent-runner-memory.js", () => ({
     sessionEntry,
 }));
 
-vi.mock("./queue.js", () => ({
-  admitFollowupRunLifecycle: vi.fn(async () => {}),
-  enqueueFollowupRun: enqueueFollowupRunMock,
-  reserveSteerCandidate: reserveSteerCandidateMock,
-  refreshQueuedFollowupSession: refreshQueuedFollowupSessionMock,
-  resolveFollowupAbortSignal: vi.fn(() => undefined),
-  scheduleFollowupDrain: scheduleFollowupDrainMock,
-}));
+vi.mock("./queue.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./queue.js")>();
+  return {
+    admitFollowupRunLifecycle: vi.fn(async () => {}),
+    completeFollowupRunLifecycle: actual.completeFollowupRunLifecycle,
+    enqueueFollowupRun: enqueueFollowupRunMock,
+    reserveSteerCandidate: reserveSteerCandidateMock,
+    refreshQueuedFollowupSession: refreshQueuedFollowupSessionMock,
+    resolveFollowupAbortSignal: vi.fn(() => undefined),
+    scheduleFollowupDrain: scheduleFollowupDrainMock,
+  };
+});
 
 vi.mock("../../media/outbound-attachment.js", () => ({
   resolveOutboundAttachmentFromUrl: (...args: unknown[]) =>
