@@ -20,16 +20,12 @@ test("shutdown settles an unpolled startup rejection before draining connection 
       kernelRuntime: { ...params.kernelRuntime, isGatewayStartupPending: () => true },
     }),
   );
-  const send = GatewayOperatorHttpTransport.prototype.sendWithContext;
-  let rejectedTransport: GatewayOperatorHttpTransport | undefined;
-  const delivery = vi
-    .spyOn(GatewayOperatorHttpTransport.prototype, "sendWithContext")
-    .mockImplementation(function (this: GatewayOperatorHttpTransport, ...args) {
-      send.apply(this, args);
-      if (args[2]?.rejectedHandshake) {
-        rejectedTransport = this;
-      }
-    });
+  const delivery = vi.spyOn(GatewayOperatorHttpTransport.prototype, "sendWithContext");
+  const rejectedTransport = () => {
+    const index = delivery.mock.calls.findIndex(([, , context]) => context?.rejectedHandshake);
+    const transport = delivery.mock.contexts[index];
+    return transport instanceof GatewayOperatorHttpTransport ? transport : undefined;
+  };
   let started: Awaited<ReturnType<typeof startServer>> | undefined;
   let closing: Promise<void> | undefined;
   try {
@@ -74,14 +70,14 @@ test("shutdown settles an unpolled startup rejection before draining connection 
     });
     expect(submitted.status).toBe(202);
     await submitted.json();
-    await vi.waitFor(() => expect(rejectedTransport?.bufferedAmount).toBeGreaterThan(0));
+    await vi.waitFor(() => expect(rejectedTransport()?.bufferedAmount).toBeGreaterThan(0));
     const closed = vi.fn();
     closing = started.server.close().then(closed);
     // Shutdown must join without waiting for the absent peer's poll or idle expiry.
     await vi.waitFor(() => expect(closed).toHaveBeenCalledOnce());
-    expect(rejectedTransport?.bufferedAmount).toBe(0);
+    expect(rejectedTransport()?.bufferedAmount).toBe(0);
   } finally {
-    rejectedTransport?.terminate();
+    rejectedTransport()?.terminate();
     await closing;
     await started?.server.close();
     started?.envSnapshot.restore();
