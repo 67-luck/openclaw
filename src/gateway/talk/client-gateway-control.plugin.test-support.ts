@@ -1,4 +1,9 @@
 import { vi } from "vitest";
+import {
+  closeClientVoiceSession,
+  createOrResumeClientVoiceSession,
+} from "../../talk/client-voice-session.js";
+import { clientVoiceSessionTesting } from "../../talk/client-voice-session.test-support.js";
 import { createTalkClientGatewayControlOwner } from "./client-gateway-control.js";
 import type { GatewayControlOwner } from "./client-gateway-control.types.js";
 
@@ -6,19 +11,35 @@ export type TalkGatewayControlOwnerTestFixture = {
   closeLogicalSession: () => Promise<void>;
   events: Array<{ type: string; payload: unknown }>;
   owner: GatewayControlOwner;
+  readLogicalSessionStatus: () => "open" | "closed" | undefined;
 };
 
 export function createTalkGatewayControlOwnerTestFixture(
   voiceSessionId: string,
 ): TalkGatewayControlOwnerTestFixture {
+  const agentId = "main";
+  const sessionKey = "agent:main:main";
   const events: Array<{ type: string; payload: unknown }> = [];
-  const closeLogicalSession = vi.fn(async () => undefined);
+  createOrResumeClientVoiceSession({
+    agentId,
+    sessionKey,
+    voiceSessionId,
+    origin: "client",
+  });
+  const closeLogicalSession = vi.fn(async () => {
+    await closeClientVoiceSession({
+      agentId,
+      sessionKey,
+      voiceSessionId,
+      config: {},
+    });
+  });
   const owner = createTalkClientGatewayControlOwner({
     voiceSessionId,
     sessionTarget: {
-      agentId: "main",
-      sessionKey: "agent:main:main",
-      canonicalKey: "agent:main:main",
+      agentId,
+      sessionKey,
+      canonicalKey: sessionKey,
       storePath: "/tmp/sessions",
     },
     connId: `conn-${voiceSessionId}`,
@@ -38,5 +59,11 @@ export function createTalkGatewayControlOwnerTestFixture(
     closeLogicalSession,
   });
   owner.activate();
-  return { closeLogicalSession, events, owner };
+  return {
+    closeLogicalSession,
+    events,
+    owner,
+    readLogicalSessionStatus: () =>
+      clientVoiceSessionTesting.readRecord(agentId, voiceSessionId)?.status,
+  };
 }

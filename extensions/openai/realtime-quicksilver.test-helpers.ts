@@ -9,6 +9,7 @@ import { vi, type Mock } from "vitest";
 import { openAIRealtimeHost } from "./realtime-host.js";
 import { OpenAIQuicksilverDelegationController } from "./realtime-quicksilver-delegation-controller.js";
 import { createOpenAIQuicksilverBrowserSessionBroker } from "./realtime-quicksilver-session.js";
+import type { OpenAIQuicksilverSocketFactory } from "./realtime-quicksilver-socket.shared.js";
 
 type MockLogger = {
   debug: Mock<NonNullable<PluginLogger["debug"]>>;
@@ -131,6 +132,7 @@ export function createBroker(params?: {
   getConfig?: () => OpenClawConfig | undefined;
   runAgentConsult?: (params: { prompt: string; signal?: AbortSignal }) => Promise<{ text: string }>;
   socketFactory?: (attempt: number) => FakeSocket;
+  webSocketFactory?: OpenAIQuicksilverSocketFactory;
 }) {
   const sockets: FakeSocket[] = [];
   const socketRequests: Array<{ url: string; headers?: Record<string, string> }> = [];
@@ -147,15 +149,17 @@ export function createBroker(params?: {
         })),
       logger,
       fetchImpl: params?.fetchImpl ?? vi.fn(async () => createCallResponse()),
-      webSocketFactory: (url, options) => {
-        const socket = params?.socketFactory?.(sockets.length) ?? new FakeSocket();
-        sockets.push(socket);
-        socketRequests.push({
-          url,
-          headers: options.headers as Record<string, string> | undefined,
-        });
-        return socket;
-      },
+      webSocketFactory:
+        params?.webSocketFactory ??
+        ((url, options) => {
+          const socket = params?.socketFactory?.(sockets.length) ?? new FakeSocket();
+          sockets.push(socket);
+          socketRequests.push({
+            url,
+            headers: options.headers as Record<string, string> | undefined,
+          });
+          return socket;
+        }),
     },
     openAIRealtimeHost,
   );
