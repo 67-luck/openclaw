@@ -143,6 +143,78 @@ async fn native_result_survives_application_rpc_saturation() {
 }
 
 #[tokio::test]
+async fn oversized_result_reports_failure_without_retiring_the_node() {
+    const MAXIMUM: usize = 4096;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.unwrap();
+        let mut socket = accept_async(tcp).await.unwrap();
+        send(
+            &mut socket,
+            json!({"type":"event","event":"connect.challenge",
+                "payload":{"nonce":"result-limit","ts":1}}),
+        )
+        .await;
+        let connect = receive(&mut socket).await;
+        send(
+            &mut socket,
+            json!({"type":"res","id":connect["id"],"ok":true,
+                "payload":{"type":"hello-ok","protocol":4}}),
+        )
+        .await;
+        for id in ["escaped", "envelope", "small"] {
+            send(&mut socket, invoke(id, "example.result")).await;
+            let result = receive(&mut socket).await;
+            assert!(result.to_string().len() <= MAXIMUM);
+            assert_eq!(result["method"], "node.invoke.result");
+            assert_eq!(result["params"]["id"], id);
+            if id == "small" {
+                assert_eq!(result["params"]["ok"], true);
+                assert_eq!(result["params"]["payloadJSON"], "\"small\"");
+            } else {
+                assert_eq!(result["params"]["ok"], false);
+                assert_eq!(result["params"]["error"]["code"], "OUTPUT_TOO_LARGE");
+                assert!(result["params"].get("payloadJSON").is_none());
+            }
+            acknowledge(&mut socket, &result).await;
+        }
+        socket.close(None).await.unwrap();
+    });
+    let session = NodeClient::connect_signed(
+        GatewayClientConfig::new(format!("ws://{address}"))
+            .unwrap()
+            .max_message_bytes(MAXIMUM),
+        |_| async {
+            Ok::<_, std::io::Error>(json!({"role":"node","client":{"mode":"node"},
+                "minProtocol":4,"maxProtocol":4,"commands":["example.result"]}))
+        },
+    )
+    .await
+    .unwrap();
+    let runtime = CommandRuntime::builder()
+        .max_output_bytes(MAXIMUM)
+        .command("example.result", |context| async move {
+            let value = match context.invocation.id.as_str() {
+                "escaped" => "\\".repeat(1500),
+                "envelope" => "x".repeat(3990),
+                _ => "small".to_owned(),
+            };
+            let payload = Value::String(value);
+            // Both rejected outputs fit the handler limit. Escaping and the actual
+            // request envelope must be checked before consuming a healthy connection.
+            assert!(payload.to_string().len() < MAXIMUM);
+            Ok(Some(payload))
+        })
+        .build()
+        .unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(3), runtime.run(session))
+        .await
+        .unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn stalled_progress_does_not_block_results_or_cancelled_invocations() {
     use openclaw_node_host::HandlerError;
     use tokio::sync::Notify;
