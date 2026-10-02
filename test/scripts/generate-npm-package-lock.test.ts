@@ -798,6 +798,7 @@ describe("generate-npm-package-lock", () => {
         "bundle version",
         "npm version",
         "path",
+        "marker omitted",
         "unbundled",
       ] as const) {
         const npmVersion = change === "npm version" ? "11.20.1" : "11.20.0";
@@ -813,11 +814,14 @@ describe("generate-npm-package-lock", () => {
               dependencies: { [name]: bundledVersion },
               hasShrinkwrap: true,
             },
-            [childPath]: { version: bundledVersion, inBundle: change !== "unbundled" },
+            [childPath]: {
+              version: bundledVersion,
+              ...(change === "marker omitted" ? {} : { inBundle: change !== "unbundled" }),
+            },
           },
         };
         const rules = { [name]: required };
-        const expectedPaths = change === "approved" ? [] : [childPath];
+        const expectedPaths = ["approved", "marker omitted"].includes(change) ? [] : [childPath];
         expect(
           collectOverrideViolations(lockfile, rules).map((entry) => entry.path),
           change,
@@ -831,7 +835,7 @@ describe("generate-npm-package-lock", () => {
           change,
         ).toEqual([childPath]);
         expect(disableDependencyShrinkwrapOverrideConflictSources(lockfile, rules), change).toEqual(
-          change === "approved" ? [] : [npmPath],
+          ["approved", "marker omitted"].includes(change) ? [] : [npmPath],
         );
       }
     },
@@ -1656,6 +1660,12 @@ process.on("SIGTERM", () => server.close(() => process.exit(0)));
             version: "1.0.0",
             peer: false,
           },
+          "node_modules/npm": {
+            version: "11.20.0",
+          },
+          "node_modules/npm/node_modules/minimatch": {
+            version: "10.2.5",
+          },
         },
       }),
     ).toEqual({
@@ -1672,6 +1682,13 @@ process.on("SIGTERM", () => server.close(() => process.exit(0)));
         "node_modules/keeps-peer-false": {
           version: "1.0.0",
           peer: false,
+        },
+        "node_modules/npm": {
+          version: "11.20.0",
+        },
+        "node_modules/npm/node_modules/minimatch": {
+          version: "10.2.5",
+          inBundle: true,
         },
       },
     });

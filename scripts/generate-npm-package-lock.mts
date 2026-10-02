@@ -1175,7 +1175,8 @@ function isApprovedNpmBundledDependency(packages: UnknownRecord, lockPath: strin
     expectedVersion !== undefined &&
     npm?.version === "11.20.0" &&
     (npm.name === undefined || npm.name === "npm") &&
-    dependency?.inBundle === true &&
+    dependency !== undefined &&
+    (dependency.inBundle === true || dependency.inBundle === undefined) &&
     dependency.version === expectedVersion &&
     (dependency.name === undefined || dependency.name === lockPath.split("/").at(-1))
   );
@@ -1621,9 +1622,15 @@ function normalizeNpmVersionDrift<T>(lockfile: T): T {
   if (!packages) {
     return lockfile;
   }
-  for (const metadata of Object.values(packages)) {
+  for (const [lockPath, metadata] of Object.entries(packages)) {
     if (!isRecord(metadata)) {
       continue;
+    }
+    // npm 11.19.0 omits this marker for npm's own bundled shrinkwrap entries,
+    // while later patch versions emit it. The exact npm/path/version exception
+    // above is still authenticated against npm's pnpm-locked tarball below.
+    if (metadata.inBundle === undefined && isApprovedNpmBundledDependency(packages, lockPath)) {
+      metadata.inBundle = true;
     }
     // npm versions and mutable registry metadata disagree on these package-lock
     // fields. None affect resolution, so keep generated npm locks stable.
