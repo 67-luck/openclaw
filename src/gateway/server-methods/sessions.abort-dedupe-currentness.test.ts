@@ -15,7 +15,9 @@ import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { createAgentDedupeLifecycle } from "../agent-turn/agent-dedupe-lifecycle.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
+import { claimRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import * as transcriptPersistence from "./chat-transcript-persistence.js";
+import { captureRpcTargetForTest } from "./rpc-source-fixtures.test-support.js";
 import { sessionAbortHandlers } from "./sessions-abort.js";
 import type { RespondFn } from "./types.js";
 
@@ -51,6 +53,7 @@ it.each(["unchanged", "absent", "successor", "successor from absent"] as const)(
     const removed = createDeferred();
     const registration = registerChatAbortController({
       ...scope,
+      target: captureRpcTargetForTest({ ...scope, sessionId }),
       sessionId,
       runId,
       kind: "agent",
@@ -58,6 +61,10 @@ it.each(["unchanged", "absent", "successor", "successor from absent"] as const)(
       onRemoved: () => removed.resolve(),
     });
     expect(registration.registered).toBe(true);
+    const releaseExecution = await claimRpcSourceForTest(
+      expectDefined(registration.entry, "registered RPC source"),
+    );
+    registration.controller.signal.addEventListener("abort", releaseExecution, { once: true });
     expect(registration.markExecutionStarted()).toBe(true);
     context.chatRunState.getOrCreate(runId).buffer = "Predecessor partial";
     const committed = createDeferred();
@@ -120,6 +127,7 @@ it.each(["unchanged", "absent", "successor", "successor from absent"] as const)(
         });
         successor = registerChatAbortController({
           ...scope,
+          target: captureRpcTargetForTest({ ...scope, sessionId }),
           sessionId,
           runId,
           kind: "agent",
