@@ -1804,7 +1804,7 @@ fn request_frame(id: &str, method: &str, params: Value) -> Value {
 struct RequestDispatch {
     generation: GatewayGeneration,
     connection_generation: u64,
-    deadline: Option<Instant>,
+    deadline: Instant,
     #[cfg(target_os = "linux")]
     sleep_route: Option<GatewaySleepRoute>,
 }
@@ -1839,11 +1839,7 @@ fn validate_request_dispatch(
             ));
         }
     }
-    if owner_changed
-        || authority
-            .deadline
-            .is_some_and(|deadline| Instant::now() >= deadline)
-    {
+    if owner_changed || Instant::now() >= authority.deadline {
         return Err(DispatchRejection::new(
             "Gateway request owner changed or recovery deadline expired.",
         ));
@@ -1857,8 +1853,7 @@ async fn request_on_session<T>(
     session: &SharedGatewaySession,
     method: &str,
     params: Value,
-    deadline: Instant,
-    authority: Option<RequestDispatch>,
+    authority: RequestDispatch,
 ) -> Result<T, RequestFailure>
 where
     T: DeserializeOwned,
@@ -1868,15 +1863,8 @@ where
         .request_with_dispatch_deadline(
             method,
             params,
-            tokio::time::Instant::from_std(deadline),
-            move |dispatch| {
-                if let Some(authority) = authority.as_ref() {
-                    validate_request_dispatch(&guard_client, authority, dispatch)
-                } else {
-                    dispatch.enqueue();
-                    Ok(())
-                }
-            },
+            tokio::time::Instant::from_std(authority.deadline),
+            move |dispatch| validate_request_dispatch(&guard_client, &authority, dispatch),
         )
         .await
         .map_err(RequestFailure::from_shared)?;
@@ -1965,13 +1953,12 @@ async fn perform_session_request(
             session,
             method.name(),
             params,
-            deadline,
-            Some(RequestDispatch {
+            RequestDispatch {
                 generation: GatewayGeneration(generation),
                 connection_generation,
-                deadline: Some(deadline),
+                deadline,
                 sleep_route: None,
-            }),
+            },
         )
         .await
         .map(GatewayResponse::Desktop),
@@ -1987,14 +1974,13 @@ async fn perform_session_request(
                 session,
                 "chat.send",
                 params,
-                deadline,
-                Some(RequestDispatch {
+                RequestDispatch {
                     generation,
                     connection_generation,
-                    deadline: Some(deadline),
+                    deadline,
                     #[cfg(target_os = "linux")]
                     sleep_route: None,
-                }),
+                },
             )
             .await
             .map(GatewayResponse::ChatSend)
@@ -2024,14 +2010,13 @@ async fn perform_session_request(
                 session,
                 "chat.history",
                 params,
-                deadline,
-                Some(RequestDispatch {
+                RequestDispatch {
                     generation,
                     connection_generation,
-                    deadline: Some(deadline),
+                    deadline,
                     #[cfg(target_os = "linux")]
                     sleep_route: None,
-                }),
+                },
             )
             .await?;
             serde_json::from_value(value)
@@ -2056,14 +2041,13 @@ async fn perform_session_request(
                 session,
                 "plugin.surface.refresh",
                 params,
-                deadline,
-                Some(RequestDispatch {
+                RequestDispatch {
                     generation,
                     connection_generation,
-                    deadline: Some(deadline),
+                    deadline,
                     #[cfg(target_os = "linux")]
                     sleep_route: None,
-                }),
+                },
             )
             .await?;
             let canvas = response
@@ -2079,13 +2063,12 @@ async fn perform_session_request(
             session,
             "gateway.suspend.prepare",
             json!({ "requestId": request_id }),
-            deadline,
-            Some(RequestDispatch {
+            RequestDispatch {
                 generation: GatewayGeneration(route.generation),
                 sleep_route: Some(route),
                 connection_generation,
-                deadline: Some(deadline),
-            }),
+                deadline,
+            },
         )
         .await
         .map(GatewayResponse::SuspendPrepare),
@@ -2098,13 +2081,12 @@ async fn perform_session_request(
             session,
             "gateway.suspend.resume",
             json!({ "suspensionId": suspension_id }),
-            deadline,
-            Some(RequestDispatch {
+            RequestDispatch {
                 generation: GatewayGeneration(route.generation),
                 sleep_route: Some(route),
                 connection_generation,
-                deadline: Some(deadline),
-            }),
+                deadline,
+            },
         )
         .await
         .map(GatewayResponse::SuspendResume),
