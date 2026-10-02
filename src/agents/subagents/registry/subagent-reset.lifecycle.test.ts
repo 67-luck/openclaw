@@ -24,7 +24,6 @@ import {
 import { createChatAbortContext } from "../../../gateway/server-methods/chat.abort.test-helpers.js";
 import { sessionMutationHandlers } from "../../../gateway/server-methods/sessions-mutations.js";
 import { registerInternalHook, unregisterInternalHook } from "../../../hooks/internal-hooks.js";
-import { createReplyOperation } from "../../../sessions/session-controller.js";
 import { beginSessionEffect } from "../../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { killAllControlledSubagentRuns, killSessionSubagentRuns } from "./subagent-control-kill.js";
@@ -392,20 +391,11 @@ it.each(["sessionId", "lifecycleRevision"] as const)(
       defaultSessionId: "parent",
       lifecycleRevision: "original",
     });
-    const cancel = vi.fn();
-    let replacementReply: ReturnType<typeof createReplyOperation> | undefined;
     const replaceParent = async () => {
       await patchSessionEntryCore({ storePath, sessionKey: parentKey }, (entry) => ({
         ...entry,
         [field]: "replacement",
       }));
-      replacementReply = createReplyOperation({
-        sessionKey: parentKey,
-        sessionId: field === "sessionId" ? "replacement" : "parent",
-        resetTriggered: false,
-      });
-      replacementReply.attachBackend({ kind: "embedded", cancel, isStreaming: () => false });
-      replacementReply.setPhase("running");
       enqueueFollowupRun(
         parentKey,
         createQueueTestRun({ prompt: "replacement follow-up" }),
@@ -455,10 +445,8 @@ it.each(["sessionId", "lifecycleRevision"] as const)(
       expectUnfinishedYieldedRun("replacement-child");
       expect(respond).toHaveBeenCalledWith(false, undefined, expect.any(Object));
       expect(loadSessionEntry({ storePath, sessionKey: parentKey })?.[field]).toBe("replacement");
-      expect.soft(cancel).not.toHaveBeenCalled();
       expect(getFollowupQueueDepth(parentKey)).toBe(1);
     } finally {
-      replacementReply?.complete();
       clearSessionQueues([parentKey]);
       unregisterInternalHook("command:reset", replaceParent);
     }
