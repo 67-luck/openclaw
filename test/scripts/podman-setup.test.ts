@@ -21,9 +21,9 @@ describe.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
       for (const [name, body] of Object.entries({
         podman: `
 case "$1" in
-  create) touch "$PODMAN_STUB_ARGS-volume"; printf '%s\\n' "$@" > "$PODMAN_STUB_ARGS-create"; printf '%s' "\${@:$#}" > "$PODMAN_STUB_ARGS-probe.cjs"; printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';;
+  create) touch "$PODMAN_STUB_ARGS-volume"; printf '%s\\n' "$@" > "$PODMAN_STUB_ARGS-create"; printf '%s' "\${@:$#}" > "$PODMAN_STUB_ARGS-probe.cjs"; printf '%s' "\${@: -2:1}" > "$PODMAN_STUB_ARGS-probe-mode"; printf '%s\\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';;
   inspect) printf '%s\\n' 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';;
-  start) (cd "$HOME" && node "$PODMAN_STUB_ARGS-probe.cjs");;
+  start) (cd "$HOME" && node "$PODMAN_STUB_ARGS-probe.cjs" "$(cat "$PODMAN_STUB_ARGS-probe-mode")");;
   rm) printf "%s\\n" "$@" > "$PODMAN_STUB_ARGS"; if [[ " $* " == *" -v "* ]]; then rm -f "$PODMAN_STUB_ARGS-volume"; fi;;
   *) printf "%s\\n" "$@" > "$PODMAN_STUB_ARGS";;
 esac`,
@@ -121,27 +121,32 @@ esac`,
       expect(args).not.toContain("--published-port");
     });
 
-    it.each(["scripts/podman/setup.sh", "scripts/run-openclaw-podman.sh"])(
-      "rejects an older selected image without replacing the service or saved config (%s)",
-      (script) => {
-        const sandbox = fixture();
-        writeFileSync(join(sandbox.home, "dist", "index.js"), 'console.log("--port <port>");');
-        const before = readFileSync(sandbox.file, "utf8");
-        const envPath = join(sandbox.home, "config", ".env");
-        const envBefore = readFileSync(envPath, "utf8");
-        const result = sandbox.run(
-          script,
-          script.includes("setup.sh") ? ["--quadlet"] : ["launch"],
-          "19123",
-          1,
-        );
-        expect(result.stderr).toContain("Select a compatible image or build this checkout");
-        expect(existsSync(`${sandbox.log}-volume`)).toBe(false);
-        expect(readFileSync(sandbox.file, "utf8")).toBe(before);
-        expect(readFileSync(envPath, "utf8")).toBe(envBefore);
-        expect(readFileSync(sandbox.log, "utf8")).not.toContain("--replace");
-      },
-    );
+    it("preserves manual startup for an older selected image", () => {
+      const sandbox = fixture();
+      writeFileSync(join(sandbox.home, "dist", "index.js"), 'console.log("--port <port>");');
+      const result = sandbox.run("scripts/run-openclaw-podman.sh", ["launch"]);
+      expect(result.stderr).toContain("Starting it with the legacy Gateway command");
+      const args = readFileSync(sandbox.log, "utf8").split("\n");
+      expect(args).toContain(
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      );
+      expect(args).toContain("--port");
+      expect(args).not.toContain("--published-port");
+    });
+
+    it("rejects an older selected image before installing a new Quadlet service", () => {
+      const sandbox = fixture();
+      writeFileSync(join(sandbox.home, "dist", "index.js"), 'console.log("--port <port>");');
+      const before = readFileSync(sandbox.file, "utf8");
+      const envPath = join(sandbox.home, "config", ".env");
+      const envBefore = readFileSync(envPath, "utf8");
+      const result = sandbox.run("scripts/podman/setup.sh", ["--quadlet"], "19123", 1);
+      expect(result.stderr).toContain("Select a compatible image or build this checkout");
+      expect(existsSync(`${sandbox.log}-volume`)).toBe(false);
+      expect(readFileSync(sandbox.file, "utf8")).toBe(before);
+      expect(readFileSync(envPath, "utf8")).toBe(envBefore);
+      expect(readFileSync(sandbox.log, "utf8")).not.toContain("--replace");
+    });
 
     it.each(["scripts/podman/setup.sh", "scripts/run-openclaw-podman.sh"])(
       "rejects a selected image missing the required gateway port option (%s)",

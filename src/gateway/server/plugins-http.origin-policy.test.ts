@@ -1,5 +1,10 @@
 import type { IncomingMessage } from "node:http";
 import { describe, expect, it, vi } from "vitest";
+import { OPENAI_QUICKSILVER_OFFER_PATH } from "../../../extensions/openai/realtime-quicksilver-session.js";
+import {
+  createBroker,
+  createRequest,
+} from "../../../extensions/openai/realtime-quicksilver.test-helpers.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { SubsystemLogger } from "../../logging/subsystem.js";
 import { resolveAcceptedBrowserOrigin } from "../../plugin-sdk/webhook-request-guards.js";
@@ -73,5 +78,75 @@ describe("plugin HTTP origin policy", () => {
     expect(await request(mappedOrigin, 25432)).toBe(mappedOrigin);
     cfg.gateway!.controlUi = { allowedOrigins: [] };
     expect(await request(mappedOrigin, 25432)).toBeUndefined();
+  });
+
+  it("enforces mapped origin changes before the OpenAI offer is reserved or sent", async () => {
+    const cfg: OpenClawConfig = { gateway: { publicOrigin: "https://old.example.test" } };
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("v=answer\r\n", {
+          status: 201,
+          headers: { Location: "/v1/live/rtc_origin_proof" },
+        }),
+    ) as unknown as typeof fetch;
+    const { realtime } = createBroker({ fetchImpl, getConfig: () => cfg });
+    const route: PluginHttpRouteRegistration = {
+      pluginId: "openai",
+      source: "openai",
+      path: OPENAI_QUICKSILVER_OFFER_PATH,
+      auth: "plugin",
+      match: "exact",
+      handler: realtime.handler,
+    };
+    const handler = createGatewayPluginRequestHandler({
+      registry: createGatewayTestRegistry({ httpRoutes: [route] }),
+      log: createMockLogger(),
+    });
+    const reservation = await realtime.broker.createBrowserSession(
+      {
+        providerConfig: {},
+        model: "gpt-live-test-canary",
+        runAgentConsult: vi.fn(async () => ({ text: "Done" })),
+      },
+      { type: "api-key", token: "test-token-placeholder" },
+    );
+    if (reservation.transport !== "webrtc") {
+      throw new Error("Expected WebRTC reservation");
+    }
+
+    const offer = async (origin: string) => {
+      const req = createRequest({ origin });
+      Object.assign(req.headers, { authorization: `Bearer ${reservation.clientSecret}` });
+      req.url = route.path;
+      req.headers.host = "gateway.example.test:18789";
+      const response = makeMockHttpResponse();
+      expect(await handler(req, response.res, undefined, { publishedPort: 25432 })).toBe(true);
+      return response;
+    };
+
+    try {
+      expect((await offer("https://untrusted.example.test")).res.statusCode).toBe(403);
+      expect(realtime.getSessionCounts().pending).toBe(1);
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      cfg.gateway!.publicOrigin = "https://new.example.test";
+      expect((await offer("https://old.example.test")).res.statusCode).toBe(403);
+      expect(realtime.getSessionCounts().pending).toBe(1);
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      cfg.gateway!.controlUi = { allowedOrigins: [] };
+      expect((await offer("http://localhost:25432")).res.statusCode).toBe(403);
+      expect(realtime.getSessionCounts().pending).toBe(1);
+      expect(fetchImpl).not.toHaveBeenCalled();
+
+      delete cfg.gateway!.controlUi;
+      const accepted = await offer("http://localhost:25432");
+      expect(accepted.res.statusCode).toBe(200);
+      expect(accepted.end).toHaveBeenCalledWith("v=answer\r\n");
+      expect(realtime.getSessionCounts().pending).toBe(0);
+      expect(fetchImpl).toHaveBeenCalledOnce();
+    } finally {
+      await realtime.cleanup();
+    }
   });
 });

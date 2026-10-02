@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { PluginLogger } from "openclaw/plugin-sdk/plugin-entry";
 import type { RealtimeVoiceGatewayControl } from "openclaw/plugin-sdk/realtime-voice";
@@ -124,6 +125,7 @@ export function emitSideband(socket: FakeSocket, payload: unknown, isBinary = fa
 
 export function createBroker(params?: {
   fetchImpl?: typeof fetch;
+  getConfig?: () => OpenClawConfig | undefined;
   runAgentConsult?: (params: { prompt: string; signal?: AbortSignal }) => Promise<{ text: string }>;
   socketFactory?: (attempt: number) => FakeSocket;
 }) {
@@ -135,9 +137,11 @@ export function createBroker(params?: {
   };
   const realtime = createOpenAIQuicksilverBrowserSessionBroker(
     {
-      getConfig: () => ({
-        gateway: { controlUi: { allowedOrigins: ["https://control.example"] } },
-      }),
+      getConfig:
+        params?.getConfig ??
+        (() => ({
+          gateway: { controlUi: { allowedOrigins: ["https://control.example"] } },
+        })),
       logger,
       fetchImpl: params?.fetchImpl ?? vi.fn(async () => createCallResponse()),
       webSocketFactory: (url, options) => {

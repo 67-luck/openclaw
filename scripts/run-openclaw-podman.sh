@@ -156,7 +156,14 @@ if [[ "${1:-}" == "setup" || "${1:-}" == "onboard" ]]; then
 fi
 
 if [[ "$RUN_SETUP" == false ]]; then
-  GATEWAY_IMAGE_ID="$(openclaw_prepare_gateway_image podman "$OPENCLAW_IMAGE" "$PODMAN_PULL")"
+  GATEWAY_IMAGE_RESULT="$(
+    openclaw_prepare_gateway_image podman "$OPENCLAW_IMAGE" "$PODMAN_PULL" allow-legacy
+  )"
+  IFS=$'\t' read -r GATEWAY_IMAGE_ID GATEWAY_COMMAND_MODE <<<"$GATEWAY_IMAGE_RESULT"
+  if [[ "$GATEWAY_COMMAND_MODE" == "legacy" ]]; then
+    PUBLISHED_PORT_ARGS=()
+    echo "Selected image predates mapped-port defaults. Starting it with the legacy Gateway command." >&2
+  fi
 fi
 
 mkdir -p "$CONFIG_DIR" "$WORKSPACE_DIR"
