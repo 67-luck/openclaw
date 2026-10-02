@@ -47,7 +47,10 @@ export type ClawCronGateway = {
   ) => Promise<unknown>;
   get?: (schedulerJobId: string) => Promise<unknown>;
   list?: (agentId: string) => Promise<unknown>;
-  remove: (schedulerJobId: string, options?: { commitGuard?: () => void }) => Promise<unknown>;
+  remove: (
+    schedulerJobId: string,
+    options: { commitGuard?: () => void; expectedConfigRevision: string },
+  ) => Promise<unknown>;
   waitUntilAgentAvailable?: (agentId: string) => Promise<void>;
 };
 
@@ -286,6 +289,23 @@ export function clawCronGatewayJobMatchesRef(
     );
   } catch {
     return false;
+  }
+}
+
+export function clawCronGatewayJobConfigRevision(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const revision = (value as { configRevision?: unknown }).configRevision;
+  if (typeof revision === "string" && /^sha256:[a-f0-9]{64}$/.test(revision)) {
+    return revision;
+  }
+  try {
+    return resolveCronJobConfigRevision(
+      cronJobDefinitionFromReadView(value as Partial<CronJob>) as CronJob,
+    );
+  } catch {
+    return undefined;
   }
 }
 
