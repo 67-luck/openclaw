@@ -951,21 +951,24 @@ describe("combined security review entry point", () => {
       deadline: "2026-01-02T00:01:00Z",
       diagnostic: null,
     },
-  ])("keeps $route recovery within the shared deadline", ({ route, failure, deadline, diagnostic }) => {
-    const result = evaluate({ [route]: failure }, "enforce", Date.parse(deadline));
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("recovery budget exhausted");
-    if (diagnostic) {
-      expect(result.stderr.trim().split("\n").at(-1)).toBe(
-        `GitHub API recovery budget exhausted; security review remains incomplete. Request: ${JSON.stringify(diagnostic)}`,
-      );
-    } else {
-      expect(result.stderr).toContain("GitHub diff-data recovery budget exhausted");
-      expect(result.stderr).not.toContain("Request:");
-    }
-    expect(result.waits).toEqual([]);
-    expect(result.combined).not.toContain("success");
-  });
+  ])(
+    "keeps $route recovery within the shared deadline",
+    ({ route, failure, deadline, diagnostic }) => {
+      const result = evaluate({ [route]: failure }, "enforce", Date.parse(deadline));
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("recovery budget exhausted");
+      if (diagnostic) {
+        expect(result.stderr.trim().split("\n").at(-1)).toBe(
+          `GitHub API recovery budget exhausted; security review remains incomplete. Request: ${JSON.stringify(diagnostic)}`,
+        );
+      } else {
+        expect(result.stderr).toContain("GitHub diff-data recovery budget exhausted");
+        expect(result.stderr).not.toContain("Request:");
+      }
+      expect(result.waits).toEqual([]);
+      expect(result.combined).not.toContain("success");
+    },
+  );
 
   it.each([
     {
