@@ -259,7 +259,12 @@ describe("buildStatusMessage cost snapshot", () => {
 describe("buildStatusMessage cache usage", () => {
   it.each([
     { inputTokens: -90, cacheRead: 100, cacheWrite: 0, expected: "100% hit · 100 cached, 0 new" },
-    { inputTokens: NaN, cacheRead: 100, cacheWrite: 0, expected: "100% hit · 100 cached, 0 new" },
+    {
+      inputTokens: Number.NaN,
+      cacheRead: 100,
+      cacheWrite: 0,
+      expected: "100% hit · 100 cached, 0 new",
+    },
     { inputTokens: 100, cacheRead: -50, cacheWrite: 100, expected: "0% hit · 0 cached, 100 new" },
     {
       inputTokens: 100,
