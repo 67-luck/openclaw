@@ -184,42 +184,6 @@ export function useQueuedCollectorFixture() {
     } as GatewayRequestHandlerOptions["client"];
   }
 
-  async function expectUnstartedChildHistory(
-    context: GatewayRequestContext,
-    sessionKey: string,
-    activeRunIds: string[],
-  ) {
-    const respond = vi.fn();
-    await expectDefined(
-      chatHistoryHandlers["chat.history"],
-      "chat.history handler",
-    )({
-      req: { type: "req", id: "queued-history", method: "chat.history" },
-      params: { sessionKey, agentId: "main", offset: 0, limit: 20 },
-      client: operatorClient(),
-      isWebchatConnect: () => false,
-      respond,
-      context,
-    });
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({
-        messages: [],
-        hasMore: false,
-        totalMessages: 0,
-        sessionInfo: expect.objectContaining({
-          hasActiveRun: activeRunIds.length > 0,
-          activeRunIds,
-          status: activeRunIds.length > 0 ? "queued" : "killed",
-        }),
-      }),
-    );
-    const payload = respond.mock.calls[0]?.[1];
-    expect(payload).not.toHaveProperty("inFlightRun");
-    expect(payload?.sessionInfo.startedAt).toBeUndefined();
-    expect(payload?.sessionInfo.runtimeMs).toBeUndefined();
-  }
-
   async function listChildren(context: GatewayRequestContext): Promise<SessionsListResult> {
     const respond = vi.fn();
     await expectDefined(
