@@ -149,7 +149,10 @@ describe("runReplyAgent private message_tool_only final warning (#85714)", () =>
         workspaceDir: tmp,
         // Carry the canonical tool-only run fact and keep downstream policy aligned,
         // so the private final is never eligible for automatic source delivery.
-        config: { messages: { visibleReplies: "message_tool" } },
+        config: {
+          session: { store: storePath },
+          messages: { visibleReplies: "message_tool" },
+        },
         skillsSnapshot: {},
         provider: "anthropic",
         model: "claude",
