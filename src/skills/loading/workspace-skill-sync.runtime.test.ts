@@ -594,6 +594,8 @@ describe("syncWorkspaceSkills", () => {
     "refreshes prior read-only copies without changing linked targets or the skills mount",
     async () => {
       const sourceWorkspace = await cloneSourceTemplate();
+      // Copy preserves source permissions; do not inherit the runner's group-write umask.
+      await fs.chmod(path.join(sourceWorkspace, "skills", "demo-skill"), 0o755);
       const targetWorkspace = await createCaseDir("target");
       const targetSkillsDir = path.join(targetWorkspace, "skills");
       const staleDir = path.join(targetSkillsDir, "demo-skill");
