@@ -21,47 +21,53 @@ import {
 } from "./session-sqlite-migration-manifest.js";
 import { resolveTargetSqlitePath } from "./session-sqlite-migration-readers.js";
 import { prepareUpdateCandidateSessions } from "./update-candidate-sessions.js";
-import {
-  readCandidateSessionInputs,
-  readUpdateCandidateStateInventoryInProcess,
-} from "./update-candidate-state.js";
+import { readUpdateCandidateStateInventoryInProcess } from "./update-candidate-state.js";
 import { snapshotUpdateCandidateState } from "./update-candidate-state.snapshot.js";
 
-it("copies shared-store transcripts from each record's admitted agent", async () => {
-  await withOpenClawTestState({ label: "snapshot-session-owners" }, async (state) => {
-    const storePath = state.statePath("shared", "sessions.json");
-    const config: OpenClawConfig = {
-      agents: { entries: { main: { default: true }, ops: {} } },
-      session: { store: storePath },
-    };
-    const records: Record<string, unknown> = {};
-    for (const agentId of ["main", "ops"]) {
-      await state.writeText(`agents/${agentId}/sessions/shared.jsonl`, `${agentId} transcript`);
-      records[`agent:${agentId}:main`] = {
-        sessionId: "shared",
-        sessionFile: state.path("old-root", "agents", agentId, "sessions", "shared.jsonl"),
-        updatedAt: 1,
+it.each([false, true])(
+  "copies shared-store transcripts from each record's admitted agent (legacy main alias: %s)",
+  async (legacyMainAlias) => {
+    await withOpenClawTestState({ label: "snapshot-session-owners" }, async (state) => {
+      const storePath = state.statePath("shared", "sessions.json");
+      const config: OpenClawConfig = {
+        agents: {
+          entries: legacyMainAlias
+            ? { ops: { default: true } }
+            : { main: { default: true }, ops: {} },
+        },
+        session: { store: storePath },
       };
-    }
-    await state.writeJson("shared/sessions.json", records);
-    const inputs = await prepareUpdateCandidateSessions({
-      config,
-      stateDir: state.stateDir,
-      env: state.env,
+      const records: Record<string, unknown> = {};
+      const owners = legacyMainAlias ? ["ops"] : ["main", "ops"];
+      const key = (agentId: string) => `agent:${legacyMainAlias ? "main" : agentId}:main`;
+      for (const agentId of owners) {
+        await state.writeText(`agents/${agentId}/sessions/shared.jsonl`, `${agentId} transcript`);
+        records[key(agentId)] = {
+          sessionId: "shared",
+          sessionFile: state.path("old-root", "agents", agentId, "sessions", "shared.jsonl"),
+          updatedAt: 1,
+        };
+      }
+      await state.writeJson("shared/sessions.json", records);
+      const inputs = await prepareUpdateCandidateSessions({
+        config,
+        stateDir: state.stateDir,
+        env: state.env,
+      });
+      const target = state.path("private");
+      await fs.mkdir(target);
+      const projection = inputs.project(target, true);
+      await inputs.copy(target, projection.path, new Set());
+      const copied = JSON.parse(await fs.readFile(projection.sessionStore!, "utf8"));
+      for (const agentId of owners) {
+        const selected = copied[key(agentId)].sessionFile;
+        expect(selected.startsWith(`${target}${path.sep}`)).toBe(true);
+        expect(await fs.readFile(selected, "utf8")).toBe(`${agentId} transcript`);
+      }
+      expect(JSON.parse(await fs.readFile(storePath, "utf8"))).toEqual(records);
     });
-    const target = state.path("private");
-    await fs.mkdir(target);
-    const projection = inputs.project(target, true);
-    await inputs.copy(target, projection.path, new Set());
-    const copied = JSON.parse(await fs.readFile(projection.sessionStore!, "utf8"));
-    for (const agentId of ["main", "ops"]) {
-      const selected = copied[`agent:${agentId}:main`].sessionFile;
-      expect(selected.startsWith(`${target}${path.sep}`)).toBe(true);
-      expect(await fs.readFile(selected, "utf8")).toBe(`${agentId} transcript`);
-    }
-    expect(JSON.parse(await fs.readFile(storePath, "utf8"))).toEqual(records);
-  });
-});
+  },
+);
 
 it("refuses a newly preferred transcript instead of publishing an unadmitted locator", async () => {
   await withOpenClawTestState({ label: "snapshot-session-selection" }, async (state) => {
@@ -191,20 +197,20 @@ it.each([false, true])(
       run.manifest.completedAt = new Date().toISOString();
       writeSessionSqliteMigrationManifest(run);
       const bytes = await fs.readFile(archive);
-      const targetStateDir = state.path("inventory");
-      await fs.mkdir(targetStateDir);
+      let captureIndex = 0;
       const capture = () =>
-        readCandidateSessionInputs({
+        readUpdateCandidateStateInventoryInProcess({
           config,
           stateDir: state.stateDir,
           env: state.env,
-          targetStateDir,
+          targetStateDir: state.path("inventory", String(captureIndex++)),
+          candidateRoot: fileURLToPath(new URL("../../", import.meta.url)),
         });
       const inputs = await capture();
       expect(inputs.warnings).toEqual([
         expect.stringContaining("Optional archived session recovery was not rehearsed"),
       ]);
-      expect(inputs.bytes).toBe(0);
+      expect(inputs.legacySessionBytes).toBe(0);
       expect(await fs.readFile(archive)).toEqual(bytes);
       await expect(fs.access(source)).rejects.toMatchObject({ code: "ENOENT" });
       // An acknowledged historical import must not be offered again after user deletion.

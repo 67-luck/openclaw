@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { root } from "@openclaw/fs-safe";
+import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { collectHistoricalArchiveSources } from "../commands/doctor-session-sqlite-discovery.js";
 import {
@@ -19,6 +20,10 @@ import {
   type LegacySessionStoreTarget,
 } from "../config/sessions/legacy-store-inspection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readRetainedAgentDeletionsFromDatabase } from "../state/agent-deletion-journal.read.js";
+import { readRegisteredAgentDatabaseRows } from "../state/openclaw-agent-db-registry.read.js";
+import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { sha256Hex } from "./crypto-digest.js";
 import {
   DeferredPluginSessionImportSchema,
@@ -34,10 +39,10 @@ import {
   type MigrationArtifactIdentity,
 } from "./session-sqlite-migration-artifact.js";
 import { assertSafeSessionSqliteMigrationDirectory } from "./session-sqlite-migration-manifest.js";
-import { resolveTargetSqlitePath } from "./session-sqlite-migration-readers.js";
 import { parseSessionStoreJson5 } from "./state-migrations.fs.js";
 import { resolveUpdateCandidateStatePath } from "./update-candidate-paths.js";
 import type { CapturedSessionReceipt } from "./update-candidate-session-receipts.js";
+import { readUpdateRuns } from "./update-run-read.kernel.js";
 
 type Input = { stateDir: string; config: OpenClawConfig; env?: NodeJS.ProcessEnv };
 type Source = { identity: MigrationArtifactIdentity; bytes?: Buffer };
@@ -63,13 +68,32 @@ function sessionPath(sourceRoot: string, targetRoot: string, source: string): st
 /** Inventory only Doctor's declared live inputs; malformed indexes still reach isolated Doctor. */
 export async function prepareUpdateCandidateSessions(input: Input, database?: DatabaseSync) {
   const env = { ...(input.env ?? process.env), OPENCLAW_STATE_DIR: input.stateDir };
-  const { targets } = resolveDoctorSessionSqliteTargets({
+  const statePath = resolveOpenClawStateSqlitePath(env);
+  const snapshot = database
+    ? {
+        registeredAgentDatabases: readRegisteredAgentDatabaseRows(database, statePath, true),
+        retainedDeletions: readRetainedAgentDeletionsFromDatabase(
+          database,
+          statePath,
+          "maintenance",
+        ),
+      }
+    : undefined;
+  const physicalPaths = new Map<LegacySessionStoreTarget, string>();
+  const { targets } = withArtifactPreservingStateReads(() =>
+    resolveDoctorSessionSqliteTargets({
+      cfg: input.config,
+      env,
+      mode: "import",
+      allAgents: true,
+      prepared: { snapshot, physicalPaths },
+    }),
+  );
+  const historical = collectHistoricalArchiveSources({
     cfg: input.config,
     env,
-    mode: "import",
-    allAgents: true,
-  });
-  const historical = collectHistoricalArchiveSources({ cfg: input.config, env }).sources;
+    readUpdateRuns: () => (database ? readUpdateRuns(database, { limit: 100 }) : []),
+  }).sources;
   const historicalTargets = filterLegacySessionStoreTargets(
     targets,
     "import",
@@ -139,10 +163,13 @@ export async function prepareUpdateCandidateSessions(input: Input, database?: Da
   };
   const stores = targets.filter((target) => !target.storePath.endsWith(".sqlite"));
   const physicalTargets = targets.map((target) => ({
-    ...target,
+    agentId: target.agentId,
     sourceTarget: target,
     storePath: path.resolve(target.storePath),
-    sqlitePath: resolveTargetSqlitePath(target, env),
+    sqlitePath: expectDefined(
+      physicalPaths.get(target),
+      "Session target has no captured physical path",
+    ),
   }));
   if (database) {
     for (const target of physicalTargets) {
@@ -233,8 +260,8 @@ export async function prepareUpdateCandidateSessions(input: Input, database?: Da
     project(targetRoot: string, supportsSessionProjection: boolean) {
       const project = (source: string) => sessionPath(input.stateDir, targetRoot, source);
       const databasePaths = new Map(
-        targets.map((target) => {
-          const source = resolveTargetSqlitePath(target, env);
+        physicalTargets.map((target) => {
+          const source = target.sqlitePath;
           return [
             source,
             supportsSessionProjection

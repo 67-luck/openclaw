@@ -175,12 +175,13 @@ it("keeps an explicit external SQLite selector on its copied physical database",
   const database = openNodeSqliteDatabase(source);
   try {
     database.exec(
-      "CREATE TABLE evidence (value TEXT); INSERT INTO evidence VALUES ('selected database');",
+      "PRAGMA journal_mode = WAL; CREATE TABLE evidence (value TEXT); INSERT INTO evidence VALUES ('selected database');",
     );
   } finally {
     database.close();
   }
   const original = await fs.readFile(source);
+  const sourceEntries = await fs.readdir(path.dirname(source));
   const candidateRoot = path.join(directory, "candidate");
   await materializeUpdateCandidateStateWorker(candidateRoot);
   const rehearsal = await prepareUpdateCandidateRehearsal({
@@ -201,6 +202,7 @@ it("keeps an explicit external SQLite selector on its copied physical database",
       snapshot.close();
     }
     expect(await fs.readFile(source)).toEqual(original);
+    expect(await fs.readdir(path.dirname(source))).toEqual(sourceEntries);
   } finally {
     await rehearsal.cleanup();
   }

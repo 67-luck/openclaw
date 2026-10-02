@@ -13,6 +13,7 @@ import { readDatabasePathIdentity } from "./sqlite-worker-identity.js";
 import {
   resolveUpdateCandidateStateIdentity,
   resolveUpdateCandidateStatePath,
+  type StateDatabaseDiscovery,
 } from "./update-candidate-paths.js";
 import {
   sealUpdateCandidatePluginCodeLinks,
@@ -25,9 +26,8 @@ import {
 import {
   collectStateDatabasePaths,
   collectRegisteredPaths,
-  fileExists,
+  updateStatePathExists,
   publishStateDatabaseVersions,
-  readCandidateSessionInputs,
   type CandidateStateDatabase,
   type StateInput,
   type UpdateStateSchemaVersion,
@@ -52,41 +52,54 @@ export async function snapshotUpdateCandidateState(
   const plugins = UpdateCandidatePluginPlanSchema.parse(
     JSON.parse(await fs.readFile(input.pluginPlanPath, "utf8")),
   );
-  const sessions = await readCandidateSessionInputs(input);
-  if (sessions.bytes > 0 && input.config.session?.store && !input.sessionProjection) {
-    throw new Error(
-      "This update driver cannot project the configured legacy session store. Preserve the original state, then run openclaw doctor --fix --non-interactive --yes with the same state and configuration before retrying the update.",
-    );
-  }
-  const sessionProjection = sessions.project(
-    input.targetStateDir,
-    input.sessionProjection === true,
-  );
-  // Older installed drivers cannot budget a newly introduced payload field.
-  // Check the same complete requirement before any database or legacy copy.
-  if (sessions.bytes > 0) {
-    const { measureUpdateStateFiles } = await import("./update-candidate-io.js");
-    const { requiredUpdateSnapshotBytes } = await import("./update-snapshot-capacity.js");
-    const { tryReadDiskSpace, formatDiskSpaceBytes } = await import("./disk-space.js");
-    const required = requiredUpdateSnapshotBytes({
-      ...(await measureUpdateStateFiles(input.databaseInventory)),
-      pluginBytes: plugins.bytes,
-      legacySessionBytes: sessions.bytes,
-    });
-    const available = tryReadDiskSpace(input.targetStateDir)?.availableBytes;
-    if (available === undefined || available < required) {
+  const { prepareUpdateCandidateSessions } = await import("./update-candidate-sessions.js");
+  type Sessions = Awaited<ReturnType<typeof prepareUpdateCandidateSessions>>;
+  let sessions: Sessions | undefined;
+  let sessionProjection: ReturnType<Sessions["project"]> | undefined;
+  const prepareSessions = async (database?: DatabaseSync) => {
+    sessions = await prepareUpdateCandidateSessions(input, database);
+    if (sessions.bytes > 0 && input.config.session?.store && !input.sessionProjection) {
       throw new Error(
-        `Legacy session snapshot needs ${formatDiskSpaceBytes(required)} of verified free space. Free space or select a larger TMPDIR, then retry the update.`,
+        "This update driver cannot project the configured legacy session store. Preserve the original state, then run openclaw doctor --fix --non-interactive --yes with the same state and configuration before retrying the update.",
       );
     }
-  }
+    sessionProjection = sessions.project(input.targetStateDir, input.sessionProjection === true);
+    // Older drivers omit legacy payload budgeting. The shared image already occupies
+    // space; credit only its actual bytes before admitting the remaining copy work.
+    if (sessions.bytes > 0) {
+      const { measureUpdateStateFiles } = await import("./update-candidate-io.js");
+      const { requiredUpdateSnapshotBytes } = await import("./update-snapshot-capacity.js");
+      const { tryReadDiskSpace, formatDiskSpaceBytes } = await import("./disk-space.js");
+      const required = requiredUpdateSnapshotBytes({
+        ...(await measureUpdateStateFiles(input.databaseInventory)),
+        pluginBytes: plugins.bytes,
+        legacySessionBytes: sessions.bytes,
+      });
+      const privateLocation = database?.location();
+      const stagedBytes = privateLocation ? (await fs.stat(privateLocation)).size : 0;
+      const available = tryReadDiskSpace(input.targetStateDir)?.availableBytes;
+      if (available === undefined || available + stagedBytes < required) {
+        throw new Error(
+          `Legacy session snapshot needs ${formatDiskSpaceBytes(required)} of verified free space. Free space or select a larger TMPDIR, then retry the update.`,
+        );
+      }
+    }
+  };
   const admittedDatabases = new Set(input.databaseInventory);
   const sourceRoot = path.resolve(input.stateDir);
   const shared = path.join(sourceRoot, "state", "openclaw.sqlite");
   const { createUpdateCandidateExecApprovalsProjection } =
     await import("./update-candidate-exec-approvals.js");
+  const requireSessionCapture = () => {
+    if (!sessions || !sessionProjection) {
+      throw new Error("Shared snapshot did not complete session discovery");
+    }
+    return { sessions, projection: sessionProjection };
+  };
   const targetPath = (source: string) =>
-    sessionProjection.databasePaths.get(source) ??
+    (source === shared
+      ? undefined
+      : requireSessionCapture().projection.databasePaths.get(source)) ??
     path.join(
       resolveUpdateCandidateStatePath(sourceRoot, input.targetStateDir, path.dirname(source)),
       path.basename(source),
@@ -97,22 +110,26 @@ export async function snapshotUpdateCandidateState(
   const files = await collectStateDatabasePaths(input);
   const inspected = new Map<string, Omit<UpdateStateSchemaVersion, "path">>();
   const sourceDatabaseIdentities = new Map<string, string>();
-  for (const [identity, discovery] of files) {
+  const captureDatabase = async (identity: string, discovery: StateDatabaseDiscovery) => {
     if (!admittedDatabases.has(identity)) {
       throw new Error(
         `State database registration changed after snapshot inventory: ${discovery.spellings[0]}`,
       );
     }
     const file = discovery.spellings[0];
-    if (!(await fileExists(file))) {
+    if (!(await updateStatePathExists(file))) {
+      if (file === shared) {
+        await prepareSessions();
+      }
       inspected.set(identity, { userVersion: null });
-      continue;
+      return;
     }
     const target = targetPath(file);
-    const retained = sessions.targets.some(
+    const captured = file === shared ? undefined : requireSessionCapture().sessions;
+    const retained = captured?.targets.some(
       (entry) =>
         resolveUpdateCandidateStateIdentity(sourceRoot, entry.sqlitePath) === identity &&
-        sessions.receipts.has(entry.sourceTarget),
+        captured.receipts.has(entry.sourceTarget),
     );
     const sourceIdentity = retained ? await readDatabasePathIdentity(file) : undefined;
     if (sourceIdentity) {
@@ -137,7 +154,9 @@ export async function snapshotUpdateCandidateState(
       onProgress: progress.onProgress,
       ...(file === shared
         ? {
-            transform: (db: DatabaseSync) => {
+            transform: async (db: DatabaseSync) => {
+              const registered = collectRegisteredPaths(db, shared, files);
+              await prepareSessions(db);
               contentVersion = readStateSchemaContentVersion(db);
               const queries = getNodeSqliteKysely<CandidateStateDatabase>(db);
               execApprovals.rebaseReceipt(db);
@@ -147,7 +166,7 @@ export async function snapshotUpdateCandidateState(
                   executeSqliteQuerySync(db, queries.deleteFrom(table));
                 }
               }
-              for (const { stored, source } of collectRegisteredPaths(db, shared, files)) {
+              for (const { stored, source } of registered) {
                 const rebound = targetPath(source);
                 const reboundStored = path.relative(input.targetStateDir, rebound);
                 const resolvedRebound = resolveOpenClawRegisteredAgentDatabasePath(
@@ -196,19 +215,33 @@ export async function snapshotUpdateCandidateState(
       userVersion: snapshot.userVersion,
       ...(contentVersion === undefined ? {} : { contentVersion }),
     });
+  };
+  const sharedIdentity = resolveUpdateCandidateStateIdentity(sourceRoot, shared);
+  const sharedDiscovery = files.get(sharedIdentity);
+  if (!sharedDiscovery) {
+    throw new Error("Shared database is missing from snapshot discovery");
+  }
+  // Discovery is path-sorted, not dependency-ordered. Shared capture must establish
+  // selectors and receipts before any agent copy, including registry-added targets.
+  await captureDatabase(sharedIdentity, sharedDiscovery);
+  const captured = requireSessionCapture();
+  for (const [identity, discovery] of files) {
+    if (identity !== sharedIdentity) {
+      await captureDatabase(identity, discovery);
+    }
   }
   input.onProgress?.({ phase: "execution approvals snapshot", path: sourceRoot });
   await execApprovals.copySources();
   const copiedShared = targetPath(shared);
-  const sharedDatabase = (await fileExists(copiedShared))
+  const sharedDatabase = (await updateStatePathExists(copiedShared))
     ? openNodeSqliteDatabase(copiedShared)
     : undefined;
   try {
     const { readDeferredPluginSessionImportReceipt } =
       await import("./deferred-plugin-session-verification.js");
     const preservedIndexes = new Set<string>();
-    for (const target of sessions.targets) {
-      const original = sessions.receipts.get(target.sourceTarget)?.receipt;
+    for (const target of captured.sessions.targets) {
+      const original = captured.sessions.receipts.get(target.sourceTarget)?.receipt;
       const copied = sharedDatabase
         ? readDeferredPluginSessionImportReceipt({
             target,
@@ -225,29 +258,29 @@ export async function snapshotUpdateCandidateState(
       }
     }
     input.onProgress?.({ phase: "legacy session snapshot", path: sourceRoot });
-    const paths = await sessions.copy(
+    const paths = await captured.sessions.copy(
       input.targetStateDir,
-      sessionProjection.path,
+      captured.projection.path,
       preservedIndexes,
     );
     if (sharedDatabase) {
       const { prepareUpdateCandidateSessionReceipt } =
         await import("./update-candidate-session-receipts.js");
       const publications = new Map<string, () => void>();
-      for (const source of sessions.targets) {
-        const captured = sessions.receipts.get(source.sourceTarget);
-        if (!captured) {
+      for (const source of captured.sessions.targets) {
+        const capturedReceipt = captured.sessions.receipts.get(source.sourceTarget);
+        if (!capturedReceipt) {
           continue;
         }
         publications.set(
-          captured.receipt.sourceKey,
+          capturedReceipt.receipt.sourceKey,
           prepareUpdateCandidateSessionReceipt({
             database: sharedDatabase,
             source,
-            captured,
+            captured: capturedReceipt,
             target: {
               agentId: source.agentId,
-              storePath: sessionProjection.path(source.storePath),
+              storePath: captured.projection.path(source.storePath),
               sqlitePath: targetPath(source.sqlitePath),
             },
             sourceDatabaseIdentity: sourceDatabaseIdentities.get(
@@ -280,8 +313,8 @@ export async function snapshotUpdateCandidateState(
   return {
     versions,
     pluginPaths,
-    sessionStore: sessionProjection.sessionStore,
-    sessionStatePaths: sessionProjection.statePaths,
+    sessionStore: captured.projection.sessionStore,
+    sessionStatePaths: captured.projection.statePaths,
     pluginCodeLinks: await sealUpdateCandidatePluginCodeLinks(
       input.pluginPlanPath,
       pluginCodeLinks,

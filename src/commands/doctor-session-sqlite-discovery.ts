@@ -73,10 +73,9 @@ export type HistoricalArchiveSources = Map<
 >;
 
 /** Retained manifests bind archive files to their original agent, path, and bytes. */
-export function collectHistoricalArchiveSources(params: {
-  cfg: OpenClawConfig;
-  env: NodeJS.ProcessEnv;
-}) {
+export function collectHistoricalArchiveSources(
+  params: Parameters<typeof collectRecoveryInventory>[0],
+) {
   const result: HistoricalArchiveSources = new Map();
   const inventory = collectRecoveryInventory(params);
   const claims = new Map<string, RecoveryArtifactReference[][]>();

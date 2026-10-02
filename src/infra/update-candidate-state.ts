@@ -122,7 +122,7 @@ export function updateStateSchemaVersionsMatch(
   );
 }
 
-export async function fileExists(file: string): Promise<boolean> {
+export async function updateStatePathExists(file: string): Promise<boolean> {
   try {
     await fs.access(file);
     return true;
@@ -207,30 +207,6 @@ async function withStateDatabaseSnapshot<T>(
     progress.complete((await fs.stat(location)).size);
     return read(location);
   });
-}
-
-export async function readCandidateSessionInputs(
-  input: StateInput & {
-    targetStateDir: string;
-    onProgress?: (progress: UpdateStateInspectionProgress) => void;
-  },
-  sharedCopy?: string,
-) {
-  const { prepareUpdateCandidateSessions } = await import("./update-candidate-sessions.js");
-  const read = async (location: string) => {
-    const database = openNodeSqliteDatabase(location, { readOnly: true });
-    try {
-      return await prepareUpdateCandidateSessions(input, database);
-    } finally {
-      database.close();
-    }
-  };
-  const shared = path.resolve(input.stateDir, "state", "openclaw.sqlite");
-  return sharedCopy
-    ? read(sharedCopy)
-    : (await fileExists(shared))
-      ? withStateDatabaseSnapshot(shared, read, input.targetStateDir, input.onProgress)
-      : prepareUpdateCandidateSessions(input);
 }
 
 export async function collectStateDatabasePaths(
@@ -329,10 +305,12 @@ export async function readUpdateCandidateStateInventoryInProcess(
     await fs.utimes(planPath, new Date(now), new Date(now));
   };
   const { prepareUpdateCandidatePlugins } = await import("./update-candidate-plugins.js");
+  const { prepareUpdateCandidateSessions } = await import("./update-candidate-sessions.js");
   const files = await collectStateDatabasePaths(input);
   const shared = path.resolve(input.stateDir, "state", "openclaw.sqlite");
   const measure = async (
     sharedStateDatabasePath?: string,
+    database?: DatabaseSync,
   ): Promise<z.infer<typeof UpdateCandidateSnapshotInventorySchema>> => {
     // Database discovery is complete; plugin failures must retain their own phase.
     input.onProgress?.({ phase: "plugin inventory", path: input.stateDir });
@@ -341,7 +319,7 @@ export async function readUpdateCandidateStateInventoryInProcess(
       sharedStateDatabasePath,
       onProgress,
     });
-    const sessions = await readCandidateSessionInputs(input, sharedStateDatabasePath);
+    const sessions = await prepareUpdateCandidateSessions(input, database);
     await fs.writeFile(planPath, JSON.stringify(plugins));
     return {
       databases: files,
@@ -351,17 +329,17 @@ export async function readUpdateCandidateStateInventoryInProcess(
       warnings: [...plugins.warnings, ...sessions.warnings],
     };
   };
-  if (await fileExists(shared)) {
+  if (await updateStatePathExists(shared)) {
     return withStateDatabaseSnapshot(
       shared,
       async (location) => {
         const db = openNodeSqliteDatabase(location, { readOnly: true });
         try {
           collectRegisteredPaths(db, shared, files);
+          return await measure(location, db);
         } finally {
           db.close();
         }
-        return measure(location);
       },
       input.targetStateDir,
       input.onProgress,
@@ -401,7 +379,7 @@ export async function discoverUpdateStateSchemaInspectionInProcess(
   const shared = path.resolve(input.stateDir, "state", "openclaw.sqlite");
   input.onProgress?.({ phase: "shared database discovery", path: shared });
   const files = await collectStateDatabasePaths(input);
-  if (!(await fileExists(shared))) {
+  if (!(await updateStatePathExists(shared))) {
     return { files: [...files], sharedVersion: { path: shared, userVersion: null } };
   }
   const sharedVersion = await withStateDatabaseSnapshot(
@@ -447,7 +425,7 @@ export async function readUpdateStateSchemaVersionsInProcess(
       path: file,
     });
     // Missing stores stay explicit so creation is checked and loss blocks rollback.
-    if (!(await fileExists(file))) {
+    if (!(await updateStatePathExists(file))) {
       inspected.set(identity, { userVersion: null });
       continue;
     }
@@ -478,7 +456,7 @@ async function discoverLegacyUpdateStateSchemaInspection(
   params.signal?.throwIfAborted();
   const shared = path.resolve(params.input.stateDir, "state", "openclaw.sqlite");
   const files = await collectStateDatabasePaths(params.input);
-  if (!(await fileExists(shared))) {
+  if (!(await updateStatePathExists(shared))) {
     return { files: [...files], sharedVersion: { path: shared, userVersion: null } };
   }
   const stagingRoot = await createSqliteSnapshotStagingDirectory(
