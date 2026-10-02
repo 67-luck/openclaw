@@ -343,7 +343,8 @@ describe("worker pre-launch claim recovery", () => {
           "node cancellation unconfirmed",
         );
       }
-      const leafId = openSessionManager().appendMessage(
+      const completed = await openSessionManager();
+      const leafId = await completed.appendMessageAsync(
         makeAgentAssistantMessage({
           content: [{ type: "text", text: "First turn complete" }],
           timestamp: 41,
