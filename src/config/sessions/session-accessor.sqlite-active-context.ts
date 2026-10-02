@@ -20,6 +20,7 @@ import {
   readUnindexedHistoryControls,
   resolveTranscriptBoundaryWindow,
 } from "./session-accessor.sqlite-reset-window.js";
+import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import {
   DEFAULT_VISIBLE_MESSAGE_MAX_BYTES,
@@ -74,7 +75,7 @@ function readBoundedRetentionRanges(
     (id) => !sequences.has(id),
   );
   if (missing.length > 0) {
-    const lastSelectedSeq = Math.max(...rows.map((row) => row.seq));
+    const lastSelectedSeq = rows.reduce((maximum, row) => Math.max(maximum, row.seq), -Infinity);
     const db = getActiveTranscriptKysely(projection.database);
     const anchors = executeSqliteQuerySync(
       projection.database.db,
@@ -99,7 +100,7 @@ function readBoundedRetentionRanges(
     const unresolved = new Set(cuts.map((cut) => cut.firstKeptEntryId));
     for (const row of iterateUnindexedActiveTranscriptNavigation(projection, {
       eventIds: [...unresolved],
-      maxRawSeq: Math.max(...cuts.map((cut) => cut.seq)) - 1,
+      maxRawSeq: cuts.reduce((maximum, cut) => Math.max(maximum, cut.seq), -Infinity) - 1,
       first: true,
     })) {
       const id = typeof row.event.id === "string" ? row.event.id : undefined;
@@ -188,7 +189,13 @@ function readUnindexedLogicalParents(
 /** Reads one byte-bounded active branch without materializing abandoned transcript history. */
 export function readSessionTranscriptBoundedActiveContextCore(
   scope: SessionTranscriptReadScope,
-  options: { maxBytes: number; maxEvents: number; ignoreReadFence?: boolean },
+  options: {
+    maxBytes: number;
+    maxEvents: number;
+    ignoreReadFence?: boolean;
+    readOnly?: boolean;
+    resolvedScope?: ResolvedTranscriptReadScope;
+  },
 ): SessionTranscriptBoundedActiveContext {
   const maxBytes = normalizeVisibleMessageLimit(
     options.maxBytes,
@@ -202,7 +209,7 @@ export function readSessionTranscriptBoundedActiveContextCore(
     MAX_VISIBLE_MESSAGE_MAX_MESSAGES,
     "maxEvents",
   );
-  return withCurrentProjectionSnapshot(scope, (projection) => {
+  const read = (projection: CurrentTranscriptProjection): SessionTranscriptBoundedActiveContext => {
     const db = getActiveTranscriptKysely(projection.database);
     const fence = options.ignoreReadFence
       ? undefined
@@ -457,5 +464,9 @@ export function readSessionTranscriptBoundedActiveContextCore(
       transcriptMutationAt: version.updatedAt,
       truncated,
     };
+  };
+  return withCurrentProjectionSnapshot(scope, read, {
+    readOnly: options.readOnly,
+    resolvedScope: options.resolvedScope,
   });
 }

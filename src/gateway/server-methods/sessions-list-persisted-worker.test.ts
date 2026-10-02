@@ -89,6 +89,7 @@ it.each(["replaced", "made private"])(
         });
         persistSubagentRunsToDiskOrThrow(
           new Map([child, collector].map((entry) => [entry.runId, entry])),
+          [child.runId, collector.runId],
         );
         clearSubagentRunsReadCacheForTest();
         const context = requestContext(cfg);
@@ -121,8 +122,9 @@ it.each(["replaced", "made private"])(
             isWebchatConnect: () => false,
             respond,
           });
-          expect(respond).toHaveBeenCalledTimes(1);
+          // Row workers may yield; the unrelated catalog renewal stays held until cleanup.
           await request;
+          expect(respond).toHaveBeenCalledTimes(1);
           expect(respond.mock.calls[0]?.[0]).toBe(true);
           const result = respond.mock.calls[0]?.[1];
           if (change === "made private") {
@@ -155,7 +157,11 @@ it("lists off-page controller links and deleted-collector totals while a sibling
     { scenario: "minimal", env: { OPENCLAW_TEST_READ_SUBAGENT_RUNS_FROM_SQLITE: "1" } },
     async () => {
       clearSubagentRunsReadCacheForTest();
-      const cfg = { agents: { list: [{ id: "main", default: true }] } };
+      const cfg = {
+        agents: { list: [{ id: "main", default: true }] },
+        // Session reads need the real embedded host, but no bundled plugin runtimes.
+        plugins: { enabled: false },
+      };
       setRuntimeConfigSnapshot(cfg);
       const controller = "agent:main:controller";
       const requester = "agent:main:requester";
@@ -181,6 +187,7 @@ it("lists off-page controller links and deleted-collector totals while a sibling
       }
       persistSubagentRunsToDiskOrThrow(
         new Map([child, collector].map((entry) => [entry.runId, entry])),
+        [child.runId, collector.runId],
       );
       const key = { pluginId: "session-list-proof", namespace: "mixed-progress", key: "written" };
       const context = requestContext(cfg);

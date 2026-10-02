@@ -1,4 +1,3 @@
-// Buffers streaming reply blocks before coalesced final delivery.
 import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import {
   hasOutboundReplyContent,
@@ -11,6 +10,7 @@ import {
   getReplyPayloadMetadata,
   isReplyPayloadStatusNotice,
   isReplyPayloadTerminalContent,
+  readReplyPayloadSourceOccurrence,
 } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import { createBlockReplyCoalescer } from "./block-reply-coalescer.js";
@@ -79,7 +79,6 @@ function createBlockReplyContentIdentity(payload: ReplyPayload) {
   };
 }
 
-/** Creates a stable duplicate key for a complete outbound payload. */
 function createBlockReplyPayloadKey(payload: ReplyPayload): string {
   return JSON.stringify({
     ...createBlockReplyContentIdentity(payload),
@@ -91,7 +90,6 @@ function createBlockReplyPayloadKey(payload: ReplyPayload): string {
   });
 }
 
-/** Creates a duplicate key that ignores reply target for final suppression. */
 export function createBlockReplyContentKey(payload: ReplyPayload): string {
   // Content-only key used for final-payload suppression after block streaming.
   // This intentionally ignores replyToId so a streamed threaded payload and the
@@ -107,11 +105,6 @@ function createIndexedBlockReplyContentKey(payload: ReplyPayload): string {
     : `${assistantMessageIndex}:${contentKey}`;
 }
 
-function resolveBlockReplyTimeoutMs(timeoutMs: number): number {
-  return clampPositiveTimerTimeoutMs(timeoutMs) ?? 0;
-}
-
-/** Creates the ordered block reply delivery pipeline for streamed payloads. */
 export function createBlockReplyPipeline(params: {
   onBlockReply: (
     payload: ReplyPayload,
@@ -122,7 +115,7 @@ export function createBlockReplyPipeline(params: {
   buffer?: BlockReplyBuffer;
 }): BlockReplyPipeline {
   const { onBlockReply, coalescing, buffer } = params;
-  const timeoutMs = resolveBlockReplyTimeoutMs(params.timeoutMs);
+  const timeoutMs = clampPositiveTimerTimeoutMs(params.timeoutMs) ?? 0;
   const sentKeys = new Set<string>();
   const sentContentKeys = new Set<string>();
   const sentMediaUrls = new Set<string>();
@@ -146,11 +139,14 @@ export function createBlockReplyPipeline(params: {
   const hasSeenOrQueuedPayloadKey = (payloadKey: string) =>
     seenKeys.has(payloadKey) || sentKeys.has(payloadKey) || pendingKeys.has(payloadKey);
   const sourceOccurrenceKey = (payload: ReplyPayload) => {
-    const metadata = getReplyPayloadMetadata(payload);
-    const range = metadata?.blockSourceRange;
-    const sourceText = metadata?.blockSourceText;
-    return range && sourceText !== undefined
-      ? JSON.stringify([metadata?.assistantMessageIndex ?? null, range[0], range[1], sourceText])
+    const occurrence = readReplyPayloadSourceOccurrence(payload);
+    return occurrence
+      ? JSON.stringify([
+          occurrence.assistantMessageIndex,
+          occurrence.sourceRange[0],
+          occurrence.sourceRange[1],
+          occurrence.sourceText,
+        ])
       : undefined;
   };
 
@@ -232,13 +228,13 @@ export function createBlockReplyPipeline(params: {
         }
         if (delivery.source?.complete !== false) {
           sentKeys.add(dedupeKey);
-        }
-        if (isTerminalContent && delivery.source?.complete !== false) {
-          if (attempt.terminal) {
-            attempt.terminalDeliveryConfirmed = true;
+          if (isTerminalContent) {
+            if (attempt.terminal) {
+              attempt.terminalDeliveryConfirmed = true;
+            }
+            sentContentKeys.add(contentKey);
+            sentContentKeys.add(createIndexedBlockReplyContentKey(payload));
           }
-          sentContentKeys.add(contentKey);
-          sentContentKeys.add(createIndexedBlockReplyContentKey(payload));
         }
         for (const mediaUrl of reply.mediaUrls) {
           sentMediaUrls.add(mediaUrl);
@@ -376,10 +372,6 @@ export function createBlockReplyPipeline(params: {
     await sendChain;
   };
 
-  const stop = () => {
-    coalescer?.stop();
-  };
-
   const matchingAttempts = (payload: ReplyPayload) => {
     const index = getReplyPayloadMetadata(payload)?.assistantMessageIndex;
     return index === undefined
@@ -387,34 +379,40 @@ export function createBlockReplyPipeline(params: {
       : [blockAttemptsByMessage.get(index) ?? []];
   };
   const normalizeSource = (text: string) => text.replace(/\s+/g, "");
+  const combinedSource = (attempts: BlockAttempt[]) =>
+    normalizeSource(attempts.map((attempt) => attempt.sourceText).join(""));
   const matchesSource = (payload: ReplyPayload, attempts: BlockAttempt[]) => {
     const reply = resolveSendableOutboundReplyParts(payload);
     return (
       !reply.hasMedia &&
       Boolean(reply.trimmedText) &&
       attempts.length > 0 &&
-      normalizeSource(attempts.map((attempt) => attempt.sourceText).join("")) ===
-        normalizeSource(reply.trimmedText)
+      combinedSource(attempts) === normalizeSource(reply.trimmedText)
     );
+  };
+  const hasAttemptSince = (
+    minimumAssistantMessageIndex: number,
+    predicate: (attempt: BlockAttempt) => boolean,
+  ) => {
+    for (const [index, attempts] of blockAttemptsByMessage) {
+      if ((index ?? 0) >= minimumAssistantMessageIndex && attempts.some(predicate)) {
+        return true;
+      }
+    }
+    return false;
   };
 
   return {
     enqueue,
     flush,
-    stop,
+    stop: () => coalescer?.stop(),
     hasBuffered: () => coalescer?.hasBuffered() || bufferedPayloads.length > 0,
     didStream: () => didStream,
-    didStreamTerminalReply: (minimumAssistantMessageIndex = 0) => {
-      for (const [index, attempts] of blockAttemptsByMessage) {
-        if (
-          (index ?? 0) >= minimumAssistantMessageIndex &&
-          attempts.some((attempt) => attempt.terminalDeliveryConfirmed === true)
-        ) {
-          return true;
-        }
-      }
-      return false;
-    },
+    didStreamTerminalReply: (minimumAssistantMessageIndex = 0) =>
+      hasAttemptSince(
+        minimumAssistantMessageIndex,
+        (attempt) => attempt.terminalDeliveryConfirmed === true,
+      ),
     isAborted: () => aborted,
     hasSentExactPayload: (payload) =>
       sentContentKeys.has(createIndexedBlockReplyContentKey(payload)),
@@ -424,7 +422,7 @@ export function createBlockReplyPipeline(params: {
         const attempts = group.filter((attempt) => attempt.terminal);
         if (
           text &&
-          normalizeSource(attempts.map((attempt) => attempt.sourceText).join("")) === text &&
+          combinedSource(attempts) === text &&
           attempts.some((attempt) => attempt.source?.complete === false)
         ) {
           return Array.from(new Set(attempts.flatMap((attempt) => attempt.source ?? [])));
@@ -440,9 +438,7 @@ export function createBlockReplyPipeline(params: {
       for (const group of matchingAttempts(payload)) {
         const attempts = group.filter((attempt) => attempt.terminal);
         const blocked = attempts.filter(hasBlockReplyDeliveryCustody);
-        const sourcePrefix = normalizeSource(
-          attempts.map((attempt) => attempt.sourceText).join(""),
-        );
+        const sourcePrefix = combinedSource(attempts);
         if (
           blocked.some((attempt) => attempt.contentKey === contentKey) ||
           (textOnly &&
@@ -486,17 +482,11 @@ export function createBlockReplyPipeline(params: {
       Array.from(blockAttemptsByMessage.values()).some((attempts) =>
         attempts.some(hasBlockReplyDeliveryCustody),
       ),
-    hasRetryBlockedTerminalDelivery: (minimumAssistantMessageIndex = 0) => {
-      for (const [index, attempts] of blockAttemptsByMessage) {
-        if (
-          (index ?? 0) >= minimumAssistantMessageIndex &&
-          attempts.some((attempt) => attempt.terminal && hasBlockReplyDeliveryCustody(attempt))
-        ) {
-          return true;
-        }
-      }
-      return false;
-    },
+    hasRetryBlockedTerminalDelivery: (minimumAssistantMessageIndex = 0) =>
+      hasAttemptSince(
+        minimumAssistantMessageIndex,
+        (attempt) => attempt.terminal && hasBlockReplyDeliveryCustody(attempt),
+      ),
     getRetryBlockedMediaUrls: () =>
       Array.from(
         new Set(

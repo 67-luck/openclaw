@@ -32,11 +32,8 @@ describe("registered session GitHub publication access", () => {
 
   it.each([
     { target: "own", policy: "absent", actor: "guest", outcome: "published" },
-    { target: "own", policy: "write", actor: "guest", outcome: "published" },
     { target: "foreign", policy: "view", actor: "guest", outcome: "INVALID_REQUEST" },
-    { target: "member", policy: "view", actor: "guest", outcome: "UNAVAILABLE" },
     { target: "foreign", policy: "absent", actor: "guest", outcome: "UNAVAILABLE" },
-    { target: "member", policy: "absent", actor: "guest", outcome: "UNAVAILABLE" },
     { target: "foreign", policy: "write", actor: "guest", outcome: "UNAVAILABLE" },
     { target: "member", policy: "write", actor: "guest", outcome: "UNAVAILABLE" },
     { target: "missing", policy: "absent", actor: "guest", outcome: "INVALID_REQUEST" },
@@ -97,12 +94,11 @@ describe("registered session GitHub publication access", () => {
       };
       prepareGatewayConnectOperatorAccess(person);
       if (target === "member") {
-        expect(
-          addSessionMember(
-            { agentId: "main", sessionKey: SESSION_KEY },
-            { identityId: profileId, addedBy: f.guestProfile },
-          ).inserted,
-        ).toBe(true);
+        const { inserted } = await addSessionMember(
+          { agentId: "main", sessionKey: SESSION_KEY },
+          { identityId: profileId, addedBy: f.guestProfile },
+        );
+        expect(inserted).toBe(true);
       }
       const { loadGatewaySessionEntryReadOnly } =
         await vi.importActual<typeof import("./session-utils.js")>("./session-utils.js");

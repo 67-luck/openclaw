@@ -1,4 +1,3 @@
-// Defines user-facing config field help text for docs and UI surfaces.
 export const AUTOMATION_FIELD_HELP: Record<string, string> = {
   session:
     "Global session routing, reset, delivery policy, and maintenance controls for conversation history behavior. Keep defaults unless you need stricter isolation, retention, or delivery constraints.",
@@ -312,8 +311,6 @@ export const AUTOMATION_FIELD_HELP: Record<string, string> = {
     "Provider API key used by that speech provider when its plugin requires authenticated TTS access.", // pragma: allowlist secret
   channels:
     "Channel provider configurations plus shared defaults that control access policies, heartbeat visibility, and per-surface behavior. Keep defaults centralized and override per provider only where required.",
-  "channels.mattermost":
-    "Mattermost channel provider configuration for bot credentials, base URL, and message trigger modes. Keep mention/trigger rules strict in high-volume team channels.",
   "channels.defaults":
     "Default channel behavior applied across providers when provider-specific settings are not set. Use this to enforce consistent baseline policy before per-provider tuning.",
   "channels.defaults.groupPolicy":
@@ -350,8 +347,6 @@ export const AUTOMATION_FIELD_HELP: Record<string, string> = {
     'Controls whether heartbeat delivery may target direct/DM chats: "allow" (default) permits DM delivery and "block" suppresses direct-target sends.',
   "agents.entries.*.heartbeat.directPolicy":
     'Per-agent override for heartbeat direct/DM delivery policy; use "block" for agents that should only send heartbeat alerts to non-DM destinations.',
-  "channels.mattermost.configWrites":
-    "Allow Mattermost to write config in response to channel events/commands (default: true).",
   "channels.modelByChannel":
     "Map provider -> channel id / DM peer id -> model override (values are provider/model or aliases).",
   "messages.ackReaction": "Emoji reaction used to acknowledge inbound messages (empty disables).",
@@ -362,5 +357,5 @@ export const AUTOMATION_FIELD_HELP: Record<string, string> = {
   "messages.statusReactions.enabled":
     "Enable lifecycle status reactions on supported channels. Discord treats unset as enabled when ack reactions are active; Slack, Signal, Telegram, and WhatsApp require this to be true before lifecycle reactions are used. Slack uses native assistant thread status for progress by default.",
   "messages.inbound.debounceMs":
-    "Debounce window (ms) for batching rapid inbound messages from the same sender (0 to disable).",
+    "Quiet window (ms) for batching rapid inbound messages from the same sender. Telegram defaults to 300ms when neither a global nor channel override is set; other channels default to 0. Zero disables ordinary burst batching, but Telegram still reassembles near-limit long-message chunks.",
 };
