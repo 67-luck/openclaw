@@ -165,6 +165,8 @@ export type CodexThreadConfigurationContext = CodexThreadPromptContext &
     | "pluginHarnessToolPolicySafeDeniedTools"
     | "authoredContextTokenCap"
     | "bootstrapContextMode"
+    | "chatType"
+    | "trigger"
   >;
 
 type CodexThreadConfigurationOptions = {
