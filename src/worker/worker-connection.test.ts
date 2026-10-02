@@ -3,7 +3,7 @@ import { createServer as createHttpsServer } from "node:https";
 import net from "node:net";
 import { rawDataToString } from "@openclaw/gateway-client/websocket-data";
 import { describe, expect, it, vi } from "vitest";
-import { WebSocketServer, type WebSocket } from "ws";
+import { WebSocket, WebSocketServer } from "ws";
 import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
@@ -144,6 +144,25 @@ function installThrowingThenHealthyListeners(connection: ReturnType<typeof creat
 }
 
 describe("worker connection endpoint failures", () => {
+  it("waits for reconnection when the admitted socket is already closing", async () => {
+    const connection = createIdleConnection();
+    Object.assign(connection as unknown as Record<string, unknown>, {
+      stateValue: { kind: "ready", hello: {} },
+      socket: { readyState: WebSocket.CLOSING, close: vi.fn() },
+    });
+    const pending = connection.waitForReady();
+    let settled = false;
+    void pending.then(
+      () => {
+        settled = true;
+      },
+      () => {},
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    await connection.stop();
+  });
+
   it("rejects a TLS pin mismatch before upgrade without retrying admission", async () => {
     const server = createHttpsServer({ key: TEST_TLS_KEY_PEM, cert: TEST_TLS_CERT_PEM });
     const websocketServer = new WebSocketServer({ server });
@@ -344,18 +363,8 @@ describe("worker connection endpoint failures", () => {
   });
 
   it("reports the last unreachable gateway cause with an operator hint", async () => {
-    const port = await new Promise<number>((resolve, reject) => {
-      const server = net.createServer();
-      server.once("error", reject);
-      server.listen(0, "127.0.0.1", () => {
-        const address = server.address();
-        if (!address || typeof address === "string") {
-          reject(new Error("test server did not allocate a TCP port"));
-          return;
-        }
-        server.close((error) => (error ? reject(error) : resolve(address.port)));
-      });
-    });
+    vi.useFakeTimers();
+    const port = 51_564;
     const endpoint = {
       kind: "websocket" as const,
       url: `ws://127.0.0.1:${port}${WORKER_PUBLIC_INGRESS_PATH}`,
@@ -367,6 +376,18 @@ describe("worker connection endpoint failures", () => {
       admissionTimeoutMs: 25,
       admissionDeadlineMs: 100,
       reconnectBackoff: { initialMs: 1, maxMs: 1, factor: 1, jitter: 0 },
+      createSocket: () => {
+        const socket = Object.assign(new EventEmitter(), {
+          readyState: WebSocket.CONNECTING,
+          close: () => socket.emit("close", 1006, Buffer.alloc(0)),
+          terminate: () => socket.emit("close", 1006, Buffer.alloc(0)),
+        });
+        setTimeout(() => {
+          socket.emit("error", new Error("connect ECONNREFUSED 127.0.0.1:51564"));
+          socket.emit("close", 1006, Buffer.alloc(0));
+        }, 0);
+        return socket as unknown as WebSocket;
+      },
       onConnectionFailure: (error) => {
         if (error) {
           failures.push(error.message);
@@ -375,15 +396,17 @@ describe("worker connection endpoint failures", () => {
     });
 
     try {
-      await expect(connection.start()).rejects.toBeInstanceOf(WorkerAdmissionDeadlineExceededError);
-      expect(failures.at(-2)).toMatch(
-        new RegExp(
-          `^worker could not reach gateway 127\\.0\\.0\\.1:${port}: .*ECONNREFUSED.*; check TLS pin/publicUrl configuration$`,
-          "u",
-        ),
+      const starting = connection.start().catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(starting).resolves.toBeInstanceOf(WorkerAdmissionDeadlineExceededError);
+      const expectedFailure = new RegExp(
+        `^worker could not reach gateway 127\\.0\\.0\\.1:${port}: .*ECONNREFUSED.*; check TLS pin/publicUrl configuration$`,
+        "u",
       );
+      expect(failures.some((failure) => expectedFailure.test(failure))).toBe(true);
     } finally {
       await connection.stop();
+      vi.useRealTimers();
     }
   });
 

@@ -18,6 +18,7 @@ function modelRegistry(
 }
 
 const preferredModels = [
+  { id: "gpt-6.1-sol", cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 } },
   { id: "gpt-5.6", cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 } },
   { id: "gpt-5.6-sol", cost: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 } },
   { id: "gpt-5.6-terra", cost: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 3.125 } },
@@ -124,6 +125,18 @@ describe("OpenAI dynamic model capabilities", () => {
           supportsReasoningEffort: true,
           supportsTemperature: false,
           supportedReasoningEfforts: ["none", "low", "medium", "high", "xhigh", "max"],
+        });
+      } else if (id === "gpt-6.1-sol") {
+        expect(model?.thinkingLevelMap).toEqual({
+          off: null,
+          minimal: "low",
+          xhigh: "xhigh",
+          max: "max",
+        });
+        expect(model?.compat).toMatchObject({
+          supportsReasoningEffort: true,
+          supportsTemperature: false,
+          supportedReasoningEfforts: ["low", "medium", "high", "xhigh", "max"],
         });
       } else {
         expect(model?.mediaInput).toEqual({

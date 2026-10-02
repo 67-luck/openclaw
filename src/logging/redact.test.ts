@@ -1504,6 +1504,17 @@ describe("redactSensitiveText", () => {
     expect(output).toContain("OPENAI_API_KEY=sk-123…cdef");
   });
 
+  it("keeps configured boundary patterns on the bounded scan path", () => {
+    const token = "tok_abcdefghij";
+    const input = `${"x".repeat(16_384)}${token}${"y".repeat(32_768)}`;
+    const output = redactSensitiveText(input, {
+      mode: "tools",
+      patterns: [String.raw`(^|[^A-Za-z0-9])(tok_[a-z]{10})`],
+    });
+
+    expect(output).not.toContain(token);
+  });
+
   it("masks Tencent Cloud SecretId (AKID prefix, uppercase-only)", () => {
     const input = "SecretId is AKIDZ8EXAMPLEFAKE01KEY99TEST";
     const output = redactSensitiveText(input, { mode: "tools" });
@@ -2187,6 +2198,13 @@ describe("redactSensitiveLines", () => {
       "https://example.test/cb?client%5Fsecret=***&safe=1",
       "normal log line",
     ]);
+  });
+
+  it("keeps a large plus-joined run linear through the data-URL guard", () => {
+    const input = `${"a+".repeat(50_000)}pass\u200Bword=opaque-value-1234567890`;
+    const started = performance.now();
+    expect(redactSensitiveText(input, { mode: "tools" })).toBe(input);
+    expect(performance.now() - started).toBeLessThan(1_000);
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

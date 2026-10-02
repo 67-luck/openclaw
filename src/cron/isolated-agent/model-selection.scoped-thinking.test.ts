@@ -1,6 +1,8 @@
 // Cron turns must hydrate runtime-only model thinking through the provider-scoped helper,
 // never through a full live catalog build.
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ResolvedPublishedModelCatalogOwner } from "../../agents/prepared-model-catalog.types.js";
+import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 
 const scopedThinkingCatalogMock = vi.fn(
   async (..._args: unknown[]): Promise<Array<Record<string, unknown>>> => [],
@@ -14,13 +16,18 @@ vi.mock("./run-model-selection.runtime.js", async (importOriginal) => {
   };
 });
 
-const owner = {
+const metadataSnapshot = createPluginMetadataSnapshotFixture();
+const owner: ResolvedPublishedModelCatalogOwner = {
+  catalogOwner: { agentId: "main", workspaceDir: "/tmp/cron-workspace" },
   agentId: "main",
   agentDir: "/tmp/cron-agent",
   workspaceDir: "/tmp/cron-workspace",
   config: {},
+  authModes: {},
+  authStore: { version: 1, profiles: {} },
+  metadataSnapshot,
   modelCatalog: { entries: [], routeVariants: [] },
-} as never;
+};
 
 describe("resolveCronThinkingSelection scoped hydration", () => {
   beforeEach(() => {
@@ -66,5 +73,36 @@ describe("resolveCronThinkingSelection scoped hydration", () => {
     });
     expect(selection.requestedThinkLevel).toBe("off");
     expect(scopedThinkingCatalogMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the admitted catalog when hydration outlasts the foreground wait", async () => {
+    vi.useFakeTimers();
+    let resolveHydration: (value: Array<Record<string, unknown>>) => void = () => {};
+    scopedThinkingCatalogMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveHydration = resolve;
+      }),
+    );
+    try {
+      const carried = {
+        provider: "ollama",
+        id: "minimax-m3:cloud",
+        name: "MiniMax M3",
+        reasoning: true,
+      };
+      const { resolveCronThinkingSelection } = await import("./model-selection.js");
+      const pending = resolveCronThinkingSelection({
+        cfg: {},
+        owner: { ...owner, modelCatalog: { entries: [carried], routeVariants: [] } },
+        provider: carried.provider,
+        model: carried.id,
+        jobThinking: "medium",
+      });
+      await vi.advanceTimersByTimeAsync(5_000);
+      await expect(pending).resolves.toMatchObject({ catalog: [carried] });
+    } finally {
+      resolveHydration([]);
+      vi.useRealTimers();
+    }
   });
 });

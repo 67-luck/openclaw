@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { runGatewayShutdownSteps } from "./server-shutdown.js";
+import {
+  GatewayStartupCleanupError,
+  rethrowGatewayStartupError,
+  runGatewayShutdownSteps,
+} from "./server-shutdown.js";
 
 describe("gateway shutdown steps", () => {
   it("names an unavailable module step and continues the remaining shutdown", async () => {
@@ -12,12 +16,17 @@ describe("gateway shutdown steps", () => {
     const closeGateway = vi.fn(async () => {});
     const messages: string[] = [];
 
-    await runGatewayShutdownSteps({
-      steps: [
-        { name: "gateway lifetime sidecars", run: loadStopModule },
-        { name: "gateway close", run: closeGateway },
-      ],
-      onError: (message) => messages.push(message),
+    await expect(
+      runGatewayShutdownSteps({
+        steps: [
+          { name: "gateway lifetime sidecars", run: loadStopModule },
+          { name: "gateway close", run: closeGateway },
+        ],
+        onError: (message) => messages.push(message),
+      }),
+    ).rejects.toMatchObject({
+      message: "Gateway shutdown did not complete cleanly",
+      errors: [expect.objectContaining({ cause: missingModule })],
     });
 
     expect(closeGateway).toHaveBeenCalledOnce();
@@ -25,5 +34,38 @@ describe("gateway shutdown steps", () => {
       "shutdown step failed (gateway lifetime sidecars): Cannot find module 'rotated-chunk.js'",
     ]);
     expect(messages.join("\n")).not.toContain("shutdown error");
+  });
+});
+
+describe("gateway startup cleanup", () => {
+  it("preserves both the startup and cleanup failures", async () => {
+    const startupError = new Error("startup failed");
+    const cleanupError = new Error("cleanup failed");
+
+    const failure = await rethrowGatewayStartupError(startupError, () =>
+      runGatewayShutdownSteps({
+        steps: [
+          {
+            name: "startup cleanup",
+            run: () => {
+              throw cleanupError;
+            },
+          },
+        ],
+        onError: () => {},
+      }),
+    ).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(GatewayStartupCleanupError);
+    expect(failure).toMatchObject({
+      cause: startupError,
+      errors: [
+        startupError,
+        expect.objectContaining({
+          message: "Gateway shutdown did not complete cleanly",
+          errors: [expect.objectContaining({ cause: cleanupError })],
+        }),
+      ],
+    });
   });
 });

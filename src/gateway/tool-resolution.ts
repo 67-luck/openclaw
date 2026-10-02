@@ -1,3 +1,4 @@
+import type { AdmittedRunContext } from "../agents/admitted-run-context.js";
 // Gateway-scoped tool resolution for HTTP and loopback tool surfaces.
 import { resolveAgentWorkspaceDir, resolveSessionAgentIds } from "../agents/agent-scope.js";
 import { applyToolAvailabilityDescriptions } from "../agents/agent-tools.deferred-followup.js";
@@ -72,6 +73,7 @@ export function resolveGatewayScopedTools(params: {
   agentId?: string;
   sessionId?: string;
   runId?: string;
+  admittedRunContext?: AdmittedRunContext;
   workspaceDir?: string;
   cwd?: string;
   modelProvider?: string;
@@ -381,6 +383,7 @@ export function resolveGatewayScopedTools(params: {
           runSessionKey: params.sessionKey,
           sessionId: params.sessionId,
           runId: params.runId,
+          operationalRunInstance: params.admittedRunContext?.operationalRunInstance,
           workspaceDir,
           cwd: params.cwd?.trim() || workspaceDir,
           modelProvider: params.modelProvider,

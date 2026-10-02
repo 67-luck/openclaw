@@ -628,18 +628,18 @@ describe("startGmailWatcher", () => {
     {
       name: "split address-in-use marker",
       chunks: ["address alre", "ady in use\n"],
-      expectedChildren: 1,
+      expectedChildren: 2,
     },
     {
       name: "final bind fragment after exit",
       chunks: ["address alre", "ady in use\n"],
       exitAfterChunk: 0,
-      expectedChildren: 1,
+      expectedChildren: 2,
     },
     {
       name: "marker completed before tail truncation",
       chunks: ["address alre", `ady in use ${"x".repeat(800)}`],
-      expectedChildren: 1,
+      expectedChildren: 2,
     },
     {
       name: "non-bind stderr",
@@ -664,5 +664,28 @@ describe("startGmailWatcher", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("cancels a pending bind retry on stop", async () => {
+    vi.useFakeTimers();
+    const children = await startMockWatcher();
+    const child = expectDefined(children[0], "watcher child");
+    child.stderr.emit("data", Buffer.from("listen: EADDRINUSE"));
+    child.emit("close", 1, null);
+    await stopGmailWatcher();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(children).toHaveLength(1);
+  });
+
+  it("bounds retries for repeated bind conflicts", async () => {
+    vi.useFakeTimers();
+    const children = await startMockWatcher();
+    for (const delayMs of [5_000, 10_000, 20_000, 60_000]) {
+      const child = expectDefined(children.at(-1), "watcher child");
+      child.stderr.emit("data", Buffer.from("address already in use"));
+      child.emit("close", 1, null);
+      await vi.advanceTimersByTimeAsync(delayMs);
+    }
+    expect(children).toHaveLength(4);
   });
 });

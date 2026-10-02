@@ -361,6 +361,24 @@ describe("subagent announce seam flow", () => {
     });
   });
 
+  it("suppresses a captured visible ANNOUNCE_SKIP instead of using stale fallback", async () => {
+    const didAnnounce = await runSubagentAnnounceFlow({
+      childSessionKey: "agent:main:subagent:test",
+      childRunId: "run-captured-skip",
+      requesterSessionKey: "agent:main:main",
+      requesterDisplayKey: "main",
+      task: "do thing",
+      timeoutMs: 10,
+      cleanup: "keep",
+      waitForCompletion: false,
+      outcome: { status: "ok" },
+      terminalReply: { disposition: "visible", text: "ANNOUNCE_SKIP" },
+      fallbackReply: "stale result",
+    });
+    expect(didAnnounce).toBe("delivered");
+    expect(agentSpy).not.toHaveBeenCalled();
+  });
+
   it("skips delete cleanup when the lifecycle owner invalidates the attempt", async () => {
     const didAnnounce = await runSubagentAnnounceFlow({
       childSessionKey: "agent:main:subagent:test",

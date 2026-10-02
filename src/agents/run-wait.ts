@@ -57,6 +57,17 @@ export type AssistantReplySnapshot = {
   fingerprint?: string;
 };
 
+type ResolvedAssistantReplySnapshot = AssistantReplySnapshot & {
+  messageId?: string;
+  truncated?: boolean;
+};
+
+function toAssistantReplySnapshot(
+  snapshot: ResolvedAssistantReplySnapshot,
+): AssistantReplySnapshot {
+  return { text: snapshot.text, fingerprint: snapshot.fingerprint };
+}
+
 /** Summary returned after waiting for a dynamic set of pending runs to drain. */
 type AgentRunsDrainResult = {
   timedOut: boolean;
@@ -180,7 +191,7 @@ function isWaitedReplyTurnBoundary(message: unknown): boolean {
   return (message as { role?: unknown }).role === "user" || isInterSessionInputMessage(message);
 }
 
-function snapshotAssistantReply(message: unknown): AssistantReplySnapshot | undefined {
+function snapshotAssistantReply(message: unknown): ResolvedAssistantReplySnapshot | undefined {
   const text = extractStoredAssistantText(message);
   if (!text?.trim()) {
     return undefined;
@@ -191,7 +202,18 @@ function snapshotAssistantReply(message: unknown): AssistantReplySnapshot | unde
   } catch {
     fingerprint = text;
   }
-  return { text, fingerprint };
+  const meta =
+    message && typeof message === "object" && !Array.isArray(message)
+      ? Reflect.get(message, "__openclaw")
+      : undefined;
+  const messageId = meta && typeof meta === "object" ? Reflect.get(meta, "id") : undefined;
+  const truncated = meta && typeof meta === "object" ? Reflect.get(meta, "truncated") : undefined;
+  return {
+    text,
+    fingerprint,
+    messageId: typeof messageId === "string" ? messageId : undefined,
+    truncated: truncated === true ? true : undefined,
+  };
 }
 
 function readTranscriptMessageSeq(message: unknown): number | undefined {
@@ -219,10 +241,10 @@ function readInternalSourceReplyMessageSeq(message: unknown): number | undefined
 function resolveLatestAssistantReplySnapshot(
   messages: unknown[],
   opts?: { stopAtTranscriptArtifact?: boolean },
-): AssistantReplySnapshot {
-  let latestReply: AssistantReplySnapshot = {};
+): ResolvedAssistantReplySnapshot {
+  let latestReply: ResolvedAssistantReplySnapshot = {};
   const internalSourceReplies: Array<{
-    snapshot: AssistantReplySnapshot;
+    snapshot: ResolvedAssistantReplySnapshot;
     sourceMessageSeq?: number;
   }> = [];
   let sawTranscriptArtifact = false;
@@ -323,7 +345,8 @@ export async function readLatestAssistantReplySnapshot(params: {
   stopAtTranscriptArtifact?: boolean;
   callGateway?: GatewayCaller;
 }): Promise<AssistantReplySnapshot> {
-  const history = await (params.callGateway ?? callGateway)<{
+  const gatewayCaller = params.callGateway ?? callGateway;
+  const history = await gatewayCaller<{
     messages: Array<unknown>;
   }>({
     method: "chat.history",
@@ -333,10 +356,28 @@ export async function readLatestAssistantReplySnapshot(params: {
       limit: params.limit ?? 50,
     },
   });
-  return resolveLatestAssistantReplySnapshot(
+  const snapshot = resolveLatestAssistantReplySnapshot(
     stripToolMessages(Array.isArray(history?.messages) ? history.messages : []),
     { stopAtTranscriptArtifact: params.stopAtTranscriptArtifact },
   );
+  if (snapshot.truncated !== true || !snapshot.messageId) {
+    return snapshot.truncated === true ? {} : toAssistantReplySnapshot(snapshot);
+  }
+  const full = await gatewayCaller<{ ok?: boolean; message?: unknown }>({
+    method: "chat.message.get",
+    params: {
+      sessionKey: params.sessionKey,
+      ...(params.agentId ? { agentId: params.agentId } : {}),
+      messageId: snapshot.messageId,
+    },
+  }).catch(() => undefined);
+  if (full?.ok !== true) {
+    return {};
+  }
+  const fullSnapshot = snapshotAssistantReply(full.message);
+  return fullSnapshot && fullSnapshot.truncated !== true
+    ? toAssistantReplySnapshot(fullSnapshot)
+    : {};
 }
 
 /** Read only the latest assistant text for call sites that do not need fingerprints. */
