@@ -22,6 +22,7 @@ import { stripVTControlCharacters } from "node:util";
 import { WebSocket, WebSocketServer } from "ws";
 import { redactForDevToolLog } from "./lib/dev-tooling-safety.js";
 import { hasUnjoinedWork, runManagedCommand } from "./lib/managed-child-process.mts";
+import { observeOwnedWatchSimulator } from "./lib/watch-simulator-observation.mts";
 
 const scopes = ["operator.read", "operator.talk"];
 const developerDirectory = "/Applications/Xcode.app/Contents/Developer";
@@ -1468,6 +1469,27 @@ async function main(): Promise<void> {
   } catch (error) {
     errors.push(error);
     report.failureStage = stage;
+    if (
+      simulator &&
+      ["watch-boot", "watch-ready"].includes(stage) &&
+      !cancelled.signal.aborted &&
+      !hasUnjoinedWork(error)
+    ) {
+      try {
+        const inventory = await runCommand("watch-state", "xcrun", ["simctl", "list", "--json"], {
+          diagnostic: true,
+        });
+        report.simulatorAfterFailure = observeOwnedWatchSimulator(
+          JSON.parse(inventory.stdout),
+          simulator,
+        );
+      } catch (observationError) {
+        // Preserve unjoined-child fencing during cleanup; failedChild and
+        // failureStage already retain the original boot/readiness failure.
+        errors.push(observationError);
+        report.simulatorAfterFailure = { unavailable: true };
+      }
+    }
   } finally {
     const cleanupFailures: string[] = [];
     const cleanup = async (name: string, operation: () => Promise<unknown>) => {
