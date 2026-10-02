@@ -857,7 +857,7 @@ function createMigratedSessionFileStore(
     },
   };
   return Object.fromEntries(
-    Object.entries(entries).map(([key, entry]) => [
+    Object.entries<SessionEntry>(entries).map(([key, entry]) => [
       key,
       normalizeLegacySessionEntryDelivery(entry),
     ]),

@@ -64,7 +64,7 @@ it.each([
       sessionFile: transcriptPath,
       updatedAt: 1,
       model: "gpt-5.5",
-      ...(unsupported ? { provider: "openai" } : { modelProvider: "openai", channel: "cli" }),
+      ...(unsupported ? { room: "retired-room" } : { modelProvider: "openai", channel: "cli" }),
     },
     ...(invalidEntry ? { "agent:main:invalid": { sessionId: "   ", updatedAt: 1 } } : {}),
   });
@@ -121,7 +121,7 @@ it.each([
       allAgents: true,
     });
     if (unsupported) {
-      await expect(doctor).rejects.toThrow('Session field "provider" predates July 2026');
+      await expect(doctor).rejects.toThrow('Session field "room" predates July 2026');
     } else {
       const report = await doctor;
       expect(report.totals.importedEntries).toBe(1);
