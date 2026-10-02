@@ -27,11 +27,8 @@ import {
 } from "../state/openclaw-state-db.js";
 import { digestClawValue } from "./digest.js";
 import { deletionEffects, type ClawCleanupTargets } from "./lifecycle-delete-support.js";
-import {
-  readClawInstallRecordFromDatabase,
-  updateClawInstallRecordStatus,
-  type PersistedClawInstall,
-} from "./provenance.js";
+import { readClawInstallRecordFromDatabase } from "./provenance-read.kernel.js";
+import { updateClawInstallRecordStatus, type PersistedClawInstall } from "./provenance.js";
 
 type ClawAgentConfigRemovalParams = {
   agentId: string;

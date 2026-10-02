@@ -2,6 +2,8 @@ import type { ClawAgentOrigin } from "./provenance-agent-origin.js";
 import type { parseClawInstallRecordSchemaVersion } from "./provenance-schema-version.js";
 import type { ClawAddPlan } from "./types.js";
 
+export type ClawOrphanWorkspace = { workspace: string; updatedAtMs: number };
+
 export type ClawInstallStatus =
   | "pending"
   | "workspace_ready"

@@ -238,8 +238,8 @@ describe("Claw package independent adoption", () => {
   it("leases a direct operation before the first Claw package reference exists", async () => {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("claw-first-lease-") };
     const artifact = { kind: "plugin", source: "clawhub", ref: "@acme/audit" } as const;
-    const entered = createDeferred<void>();
-    const finish = createDeferred<void>();
+    const entered = createDeferred();
+    const finish = createDeferred();
     let competingEntered = false;
     const directOperation = withClawPackageLifecycleLease(
       artifact,

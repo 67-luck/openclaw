@@ -13,7 +13,6 @@ import {
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { releaseClawRemoveRows } from "./lifecycle-delete-support.js";
-import { upgradeClawInstallSchema } from "./provenance-schema-version.js";
 import {
   deleteClawInstallRecord,
   persistClawInstallRecord,
@@ -22,6 +21,7 @@ import {
   readClawInstallRecord,
   updateClawInstallRecord,
   updateClawInstallRecordStatus,
+  upgradeClawInstallSchema,
 } from "./provenance.js";
 import { makeProvenancePlan } from "./provenance.test-helpers.js";
 
@@ -69,7 +69,7 @@ describe("Claw installation identity during deletion", () => {
           claw: { ...plan.claw, version: "2.0.0", integrity: "sha256:replacement" },
         };
         const paused = createDeferred<AgentDeletionOperation>();
-        const resume = createDeferred<void>();
+        const resume = createDeferred();
         const removal = withAgentDeletion(
           "worker",
           async (begin) => {

@@ -24,9 +24,9 @@ import { readChannelIngressInDatabase } from "../channels/message/ingress-queue-
 import {
   readClawInstallRecordFromDatabase,
   readClawInstallRecordsInDatabase,
+  readClawOrphanWorkspaceInDatabase,
   readClawPackageRefsInDatabase,
-} from "../claws/provenance.js";
-import { readClawOrphanWorkspaceInDatabase } from "../claws/workspace.js";
+} from "../claws/provenance-read.kernel.js";
 import {
   isCronStateReadCommand,
   readCronStateCommandInDatabase,

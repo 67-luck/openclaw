@@ -599,7 +599,7 @@ async function applyClawPackageRemovalsUnlocked(
             decision.skillPlan,
             {
               beforePersistentApply: assertCurrent,
-              beforeRollback: packageLease.assertOwned,
+              beforeRollback: () => packageLease.assertOwned(),
             },
           );
           if (!removed.ok) {
@@ -627,7 +627,9 @@ async function applyClawPackageRemovalsUnlocked(
             );
           } catch (claimError) {
             if (hasSqliteWorkerOutcomeUnknown(claimError)) {
-              throw new AggregateError([error, claimError], "Package cleanup outcome is unknown");
+              throw new AggregateError([error, claimError], "Package cleanup outcome is unknown", {
+                cause: claimError,
+              });
             }
             // Preserve the original cleanup failure as the actionable result.
           }

@@ -371,6 +371,7 @@ describe("Claw status and remove", () => {
       consentPlanIntegrity: remove.planIntegrity,
       purgeSessions: async () => undefined,
     });
+    expect(removed.error).toBeUndefined();
     expect(removed).toMatchObject({ status: "complete", agentRemoved: false });
     await expect(readClawStatus("worker", { env: current.env, config: {} })).resolves.toMatchObject(
       {
@@ -504,6 +505,7 @@ describe("Claw status and remove", () => {
     const result = await applyClawRemovePlan(plan, {
       ...removeOptions(current, plan, config),
     });
+    expect(result.error).toBeUndefined();
     expect(result).toMatchObject({
       status: "complete",
       agentRemoved: true,
@@ -902,12 +904,12 @@ describe("Claw status and remove", () => {
       }),
     );
 
-    await expect(
-      applyClawRemovePlan(plan, {
-        ...removeOptions(current, plan, config),
-        packageDeps,
-      }),
-    ).resolves.toMatchObject({ status: "complete", agentRemoved: true });
+    const result = await applyClawRemovePlan(plan, {
+      ...removeOptions(current, plan, config),
+      packageDeps,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result).toMatchObject({ status: "complete", agentRemoved: true });
   });
 
   it("blocks removal when the created agent config changed", async () => {
