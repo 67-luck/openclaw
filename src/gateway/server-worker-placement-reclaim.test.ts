@@ -10,6 +10,7 @@ import { loadTranscriptEvents, replaceSessionEntry } from "../config/sessions/se
 import { clearAgentRunContext } from "../infra/agent-run-registry.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { runSessionMutation } from "../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
@@ -248,7 +249,7 @@ async function scenario(
     });
   const oldRunId = name + "-before-stop-complete";
   const running = blockedInspection ? await admit(name + "-running").promise : undefined;
-  const activeController = context.rpcSources.get(name + "-running");
+  const activeController = rpcSourceTesting.get(name + "-running");
   if (pendingMove) {
     context.chatRunState.getOrCreate(name + "-running").buffer = "partial before queued Move Stop";
   }
@@ -333,7 +334,7 @@ async function scenario(
     if (beforeStop) {
       expect((reservation?.payload as { status?: string } | undefined)?.status).toBe("accepted");
     }
-    expect(context.rpcSources.has(oldRunId)).toBe(false);
+    expect(rpcSourceTesting.has(oldRunId)).toBe(false);
   };
   const stop = async () => {
     const reclaim = coordinated.reclaim(REQUEST).then(
@@ -671,7 +672,7 @@ it.each(["missing", "local"] as const)(
     if (!admitted.ok) {
       throw new Error("Active local chat fixture was not admitted");
     }
-    const controller = context.rpcSources.get(runId);
+    const controller = rpcSourceTesting.get(runId);
     if (!controller) {
       throw new Error("Active local chat fixture has no controller");
     }

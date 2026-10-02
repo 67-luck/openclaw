@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { onTestFinished } from "vitest";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
-import type { RpcSourceAdapter } from "../../sessions/session-controller.rpc-sources.js";
+import type {
+  RpcSourceAdapter,
+  RpcSourceIdentity,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
 import { claimRpcSourceForTest, createRpcSourceForTest } from "../test-helpers.rpc-source.js";
@@ -52,8 +55,9 @@ export function registerRpcSourceForTest(
 /** Projection-only fixtures still acquire an actual selector claim and operation. */
 export async function createActiveRpcSourceForTest(
   metadata: Partial<RpcSourceAdapter> & { projectSessionActive?: boolean } = {},
+  identity: Partial<RpcSourceIdentity> = {},
 ) {
-  const ref = createRpcSourceForTest(metadata);
-  await claimRpcSourceForTest(ref);
-  return ref;
+  const ref = createRpcSourceForTest(metadata, identity);
+  const release = await claimRpcSourceForTest(ref);
+  return Object.assign(ref, { release });
 }

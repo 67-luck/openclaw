@@ -6,9 +6,9 @@ import { markAgentRunFailureReplyPayload } from "./agent-runner-failure-reply.js
 import { accountAgentTurn } from "./agent-runner-result-accounting.js";
 import { prepareReplyAgentPayloads } from "./agent-runner-result-payloads.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
-import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
 import { resolveFollowupDeliveryDecision } from "./followup-delivery.js";
 import type { PendingContinuationSettlement } from "./get-reply.types.js";
+import type { AdmittedFollowupTurn } from "./reply-agent-turn-preparation.js";
 import {
   createMockFollowupRun,
   createMockReplyOperation,
@@ -107,7 +107,6 @@ async function prepare(lane: "ordinary" | "queued", context: FinalizeReplyAgentR
       key: expectDefined(context.followupRun.run.sessionKey, "queued requester session"),
       current: () => undefined,
       publish: () => undefined,
-      adopt: () => undefined,
     },
     sendPolicy: "allow",
     preflightCompactionApplied: false,

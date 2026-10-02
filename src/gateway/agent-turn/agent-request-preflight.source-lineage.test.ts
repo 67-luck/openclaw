@@ -63,7 +63,6 @@ it.each([
         agentRunSeq: new Map(),
         broadcast: vi.fn(),
         broadcastToConnIds: vi.fn(),
-        rpcSources: new Map(),
 
         chatRunState: createChatRunState(),
         dedupe: new Map(),

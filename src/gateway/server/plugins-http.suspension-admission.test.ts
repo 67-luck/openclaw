@@ -238,7 +238,6 @@ describe("plugin HTTP suspension admission", () => {
       trackExecution: trackAsyncWork,
       cron,
       logGateway: { warn: vi.fn() },
-      rpcSources: new Map(),
       terminalSessions: new Map(),
     } as unknown as GatewayRequestContext;
     let requestedMethod = "gateway.suspend.prepare";

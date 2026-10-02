@@ -2,16 +2,18 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 // Authorization and pending-run state transitions for chat cancellation.
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import {
-  listRpcSourcesForSession,
+  getRpcSourceIdentity,
+  listRpcSourceEntriesForSession,
   isRpcSourceQueued,
   type RpcSourceRef,
   type RpcSourceAdapter,
+  type RpcSourceIdentity,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { chatRunBelongsToAgent, resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import { createChatAbortMarker } from "../server-chat-state.js";
-import { pendingChatSendDedupeKey, PENDING_CHAT_SEND_DEDUPE_PREFIX } from "../server-shared.js";
+import { pendingChatSendDedupeKey } from "../server-shared.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
@@ -92,9 +94,12 @@ export function resolveChatAbortRequester(
   };
 }
 
+type ChatRunAbortAuthority = RpcSourceIdentity & {
+  requester?: RpcSourceAdapter["requester"];
+};
+
 export function canRequesterAbortChatRun(
-  entry: Pick<RpcSourceAdapter, "ownerDeviceId" | "ownerConnId"> &
-    Partial<Pick<RpcSourceAdapter, "agentId" | "sessionKey" | "sessionId">>,
+  entry: ChatRunAbortAuthority,
   requester: ChatAbortRequester,
   options: { requireOwnerMatch?: boolean } = {},
 ): boolean {
@@ -110,13 +115,57 @@ export function canRequesterAbortChatRun(
   if (requester.isAdmin) {
     return true;
   }
-  const ownerDeviceId = normalizeOptionalString(entry.ownerDeviceId);
-  const ownerConnId = normalizeOptionalString(entry.ownerConnId);
+  const ownerDeviceId = normalizeOptionalString(entry.requester?.deviceId);
+  const ownerConnId = normalizeOptionalString(entry.requester?.connectionId);
   return Boolean(
     (!options.requireOwnerMatch && !ownerDeviceId && !ownerConnId) ||
     (ownerDeviceId && requester.deviceId && ownerDeviceId === requester.deviceId) ||
     (ownerConnId && requester.connId && ownerConnId === requester.connId),
   );
+}
+
+/** Returns the protocol-facing rejection for one exact run target, if any. */
+export function resolveChatAbortTargetRejection(params: {
+  target: ChatRunAbortAuthority;
+  requester: ChatAbortRequester;
+  requestedSessionKey: string;
+  canonicalSessionKey: string;
+  requestedAgentId: string;
+  defaultAgentId?: string;
+  requiredSessionId?: string;
+  discardPendingInput?: boolean;
+  narrow: boolean;
+}): string | undefined {
+  const { target } = params;
+  const matchesSessionKey =
+    target.sessionKey === params.requestedSessionKey ||
+    target.sessionKey === params.canonicalSessionKey;
+  if (params.discardPendingInput && !matchesSessionKey) {
+    return "discarded input runId does not match sessionKey";
+  }
+  if (params.narrow && target.sessionId !== params.requiredSessionId) {
+    return "runId does not match session incarnation";
+  }
+  if (
+    !matchesSessionKey &&
+    (params.narrow ||
+      !canRequesterAbortChatRun(target, params.requester, { requireOwnerMatch: true }))
+  ) {
+    return "runId does not match sessionKey";
+  }
+  if (
+    !chatRunBelongsToAgent(
+      {
+        agentId: target.agentId,
+        sessionKey: target.sessionKey,
+        defaultAgentId: params.defaultAgentId,
+      },
+      params.requestedAgentId,
+    )
+  ) {
+    return "runId does not match agentId";
+  }
+  return canRequesterAbortChatRun(target, params.requester) ? undefined : "unauthorized";
 }
 
 export function readPreRegisteredAgentDedupePayloadForSession(params: {
@@ -200,22 +249,6 @@ export function readPreRegisteredRun(params: {
     return undefined;
   }
   return { runId, sessionKey, payload };
-}
-
-export function canRequesterAbortPreRegisteredRun(
-  payload: PreRegisteredAgentDedupePayload,
-  requester: ChatAbortRequester,
-): boolean {
-  return canRequesterAbortChatRun(
-    {
-      ownerConnId: normalizeOptionalString(payload.ownerConnId),
-      ownerDeviceId: normalizeOptionalString(payload.ownerDeviceId),
-      agentId: normalizeOptionalString(payload.agentId),
-      sessionKey: normalizeOptionalString(payload.sessionKey),
-      sessionId: normalizeOptionalString(payload.sessionId),
-    },
-    requester,
-  );
 }
 
 function resolvePreRegisteredAgentDedupeKeys(
@@ -355,77 +388,7 @@ function createChatAbortRunSelection<T extends { runId: string }>() {
   };
 }
 
-export function resolveAuthorizedPreRegisteredRunsForSessionKeys(params: {
-  context: GatewayRequestContext;
-  sessionKeys: Iterable<string>;
-  agentId?: string;
-  requiredSessionId?: string;
-  defaultAgentId?: string;
-  requester: ChatAbortRequester;
-  keyPrefix: string;
-  preserveSideRuns?: boolean;
-  includeProtectedRuns?: boolean;
-}) {
-  const sessionKeys = new Set(
-    Array.from(params.sessionKeys, (sessionKey) => normalizeOptionalString(sessionKey)).filter(
-      (sessionKey): sessionKey is string => Boolean(sessionKey),
-    ),
-  );
-  const selection = createChatAbortRunSelection<PreRegisteredAgentRun>();
-  for (const [key, entry] of params.context.dedupe) {
-    const run = readPreRegisteredRun({
-      key,
-      entry,
-      keyPrefix: params.keyPrefix,
-      includeHidden: true,
-    });
-    if (!run) {
-      continue;
-    }
-    if (
-      params.requiredSessionId !== undefined &&
-      normalizeOptionalString(run.payload.sessionId) !== params.requiredSessionId
-    ) {
-      continue;
-    }
-    const runSessionKeys = [
-      run.sessionKey,
-      ...(Array.isArray(run.payload.sessionKeyAliases)
-        ? run.payload.sessionKeyAliases.map(normalizeOptionalString)
-        : []),
-    ];
-    if (!runSessionKeys.some((sessionKey) => Boolean(sessionKey && sessionKeys.has(sessionKey)))) {
-      continue;
-    }
-    if (params.context.rpcSources.has(run.runId)) {
-      continue;
-    }
-    const agentId = normalizeOptionalString(params.agentId)?.toLowerCase();
-    if (
-      agentId &&
-      !chatRunBelongsToAgent(
-        {
-          agentId: normalizeOptionalString(run.payload.agentId),
-          sessionKey: run.sessionKey,
-          defaultAgentId: params.defaultAgentId,
-        },
-        agentId,
-      )
-    ) {
-      continue;
-    }
-    const requesterCanAbort = canRequesterAbortPreRegisteredRun(run.payload, params.requester);
-    const isProtected =
-      params.includeProtectedRuns !== true &&
-      (run.payload.controlUiVisible === false ||
-        (params.preserveSideRuns && normalizeOptionalString(run.payload.turnKind) === "btw"));
-    selection.add(run, requesterCanAbort, isProtected);
-  }
-  return selection.result();
-}
-
 export function resolveAuthorizedRunsForSessionKeys(params: {
-  rpcSources: Map<string, RpcSourceRef>;
   sessionKeys: Iterable<string>;
   sessionIds?: Iterable<string | undefined>;
   requiredSessionId?: string;
@@ -442,12 +405,14 @@ export function resolveAuthorizedRunsForSessionKeys(params: {
     agentId?: string;
     entry: RpcSourceRef;
   }>();
-  for (const { runId, entry } of listRpcSourcesForSession(params)) {
+  for (const { runId, entry } of listRpcSourceEntriesForSession(params)) {
     if (isRpcSourceQueued(entry)) {
       continue;
     }
     const adapter = entry.adapter;
-    const requesterCanAbort = canRequesterAbortChatRun(adapter, params.requester);
+    const identity = getRpcSourceIdentity(entry);
+    const target = { ...identity, requester: adapter.requester };
+    const requesterCanAbort = canRequesterAbortChatRun(target, params.requester);
     const isProtected =
       params.includeProtectedRuns !== true &&
       (adapter.controlUiVisible === false ||
@@ -455,9 +420,7 @@ export function resolveAuthorizedRunsForSessionKeys(params: {
     selection.add(
       {
         runId,
-        sessionKey: adapter.sessionKey,
-        sessionId: adapter.sessionId,
-        agentId: adapter.agentId,
+        ...identity,
         entry,
       },
       requesterCanAbort,
@@ -480,8 +443,7 @@ export function resolveAuthorizedQueuedTurnsForSession(params: {
   preserveSideRuns?: boolean;
   includeProtectedRuns?: boolean;
 }) {
-  const matches = listRpcSourcesForSession({
-    rpcSources: params.context.rpcSources,
+  const matches = listRpcSourceEntriesForSession({
     queuedOnly: true,
     sessionKeys: params.sessionKeys,
     sessionIds: [params.sessionId],
@@ -498,15 +460,15 @@ export function resolveAuthorizedQueuedTurnsForSession(params: {
   }>();
   for (const { runId, entry } of matches) {
     const adapter = entry.adapter;
+    const identity = getRpcSourceIdentity(entry);
+    const target = { ...identity, requester: adapter.requester };
     selection.add(
       {
         runId,
         entry,
-        sessionKey: adapter.sessionKey,
-        sessionId: adapter.sessionId,
-        agentId: adapter.agentId,
+        ...identity,
       },
-      canRequesterAbortChatRun(adapter, params.requester),
+      canRequesterAbortChatRun(target, params.requester),
       params.includeProtectedRuns !== true &&
         (adapter.controlUiVisible === false ||
           (params.preserveSideRuns && adapter.turnKind === "btw")),
@@ -534,7 +496,6 @@ export function hasGatewaySessionAbortOwner(params: SessionAbortOwnerParams): bo
   };
   return (
     resolveAuthorizedRunsForSessionKeys({
-      rpcSources: params.context.rpcSources,
       sessionIds: [params.sessionId],
       ...ownerScope,
       includeProtectedRuns: true,
@@ -544,15 +505,6 @@ export function hasGatewaySessionAbortOwner(params: SessionAbortOwnerParams): bo
       sessionId: params.sessionId,
       includeProtectedRuns: true,
       ...ownerScope,
-    }).authorized.length > 0 ||
-    ["agent:", PENDING_CHAT_SEND_DEDUPE_PREFIX].some(
-      (keyPrefix) =>
-        resolveAuthorizedPreRegisteredRunsForSessionKeys({
-          context: params.context,
-          ...ownerScope,
-          keyPrefix,
-          includeProtectedRuns: true,
-        }).authorizedRuns.length > 0,
-    )
+    }).authorized.length > 0
   );
 }

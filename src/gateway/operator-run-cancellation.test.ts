@@ -16,15 +16,18 @@ import {
   retireSessionControllerSourceCancellation,
   retireSessionControllerInput,
 } from "../sessions/session-controller.mailbox.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import {
   isRpcSourceQueued,
   setRpcSourceProjectSessionActive,
+  updateRpcSourceSessionId,
 } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { registerChatAbortController, type ChatAbortControllerEntry } from "./chat-abort.js";
+import { registerChatAbortController } from "./chat-abort.js";
 import { retainGatewayOperatorRun } from "./operator-run-cancellation.js";
 import { createChatRunState } from "./server-chat-state.js";
 import { createChatSendWorkAdmission } from "./server-methods/chat-send-work-admission.js";
@@ -66,7 +69,6 @@ async function createCancellationFixture(cfg: OpenClawConfig) {
   const logGateway = createSubsystemLogger("test/operator-run-cancellation");
   const warn = vi.spyOn(logGateway, "warn").mockImplementation(() => {});
   const context: Parameters<typeof retainGatewayOperatorRun>[0]["context"] = {
-    rpcSources: new Map<string, ChatAbortControllerEntry>(),
     chatRunState,
     agentRunSeq: new Map(),
     broadcast: vi.fn(),
@@ -80,7 +82,7 @@ async function createCancellationFixture(cfg: OpenClawConfig) {
   };
   const registrations: Array<ReturnType<typeof registerChatAbortController>> = [];
   const releases: Array<() => void> = [];
-  const claimReleases = new Map<ChatAbortControllerEntry, () => void>();
+  const claimReleases = new Map<RpcSourceRef, () => void>();
   const register = async (
     runId: string,
     projection: Pick<
@@ -91,7 +93,6 @@ async function createCancellationFixture(cfg: OpenClawConfig) {
     preparing = false,
   ) => {
     const registration = registerChatAbortController({
-      rpcSources: context.rpcSources,
       ...scope,
       target: captureSessionTarget({
         storeScope: resolveSessionStorePathCore(cfg.session?.store, { agentId: scope.agentId }),
@@ -115,7 +116,7 @@ async function createCancellationFixture(cfg: OpenClawConfig) {
     }
     return registration;
   };
-  const retain = async (signal: AbortSignal, runId: string, entry: ChatAbortControllerEntry) => {
+  const retain = async (signal: AbortSignal, runId: string, entry: RpcSourceRef) => {
     const retained = await retainGatewayOperatorRun({
       context,
       runId,
@@ -149,7 +150,7 @@ async function createCancellationFixture(cfg: OpenClawConfig) {
       ),
     warn,
     register,
-    finishClaim: async (entry: ChatAbortControllerEntry) => {
+    finishClaim: async (entry: RpcSourceRef) => {
       const claim = entry.input.claim;
       claimReleases.get(entry)?.();
       await claim?.settlement.promise;
@@ -164,10 +165,10 @@ async function createCancellationFixture(cfg: OpenClawConfig) {
       for (const registration of registrations) {
         registration.cleanup();
       }
-      for (const entry of context.rpcSources.values()) {
+      for (const entry of rpcSourceTesting.values()) {
         retireSessionControllerInput(entry.input);
       }
-      context.rpcSources.clear();
+      rpcSourceTesting.clear();
       chatRunState.clear();
       warn.mockRestore();
     },
@@ -295,7 +296,7 @@ describe("operator access cancellation", () => {
           source.abort();
           await f.settle();
           expect(guest.controller.signal.aborted).toBe(false);
-          expect(f.context.rpcSources.get("terminal-run")).toBe(guest.entry);
+          expect(rpcSourceTesting.get("terminal-run")).toBe(guest.entry);
           expect(guest.entry.input.claim?.released).toBe(false);
           expect(f.context.chatRunState.resolveBuffer("terminal-run").text).toBe(
             "The already accepted result.",
@@ -365,8 +366,8 @@ describe("operator access cancellation", () => {
           );
           expect(isRpcSourceQueued(guest.entry)).toBe(false);
           expect(staff.controller.signal.aborted).toBe(false);
-          expect(f.context.rpcSources.has("queued-staff")).toBe(true);
-          expect(f.context.rpcSources.get("queued-guest")).toBe(
+          expect(rpcSourceTesting.has("queued-staff")).toBe(true);
+          expect(rpcSourceTesting.get("queued-guest")).toBe(
             collect || activeAdmission ? guest.entry : undefined,
           );
           expect(f.context.broadcast).not.toHaveBeenCalled();
@@ -388,7 +389,7 @@ describe("operator access cancellation", () => {
       source.abort();
       await f.settle();
       expect(replacement.controller.signal.aborted).toBe(false);
-      expect(f.context.rpcSources.get("reused-run")).toBe(replacement.entry);
+      expect(rpcSourceTesting.get("reused-run")).toBe(replacement.entry);
       expect(f.context.broadcast).not.toHaveBeenCalled();
     });
   });
@@ -433,7 +434,7 @@ describe("operator access cancellation", () => {
         source.abort();
         await f.settle();
         expect(guest.controller.signal.aborted).toBe(false);
-        expect(f.context.rpcSources.get("admitted-input")).toBe(guest.entry);
+        expect(rpcSourceTesting.get("admitted-input")).toBe(guest.entry);
         expect(f.context.broadcast).not.toHaveBeenCalled();
         expect(loadTranscriptEventsSync(f.scope)).toEqual(transcript);
         expect(() => retained.authority?.assertCurrent()).toThrow();
@@ -448,7 +449,7 @@ describe("operator access cancellation", () => {
         await f.settle();
         expect(guest.controller.signal.aborted).toBe(!retired);
         expect(staff.controller.signal.aborted).toBe(false);
-        expect(f.context.rpcSources.get("independent-backing-run")).toBe(staff.entry);
+        expect(rpcSourceTesting.get("independent-backing-run")).toBe(staff.entry);
       });
     },
   );
@@ -483,7 +484,7 @@ describe("operator access cancellation", () => {
     await withCancellationFixture(async (f) => {
       const source = new AbortController();
       const guest = await f.register("failed-partial-capture");
-      guest.entry.adapter.sessionId = "retired-session";
+      updateRpcSourceSessionId(guest.entry, "retired-session");
       f.context.chatRunState.getOrCreate("failed-partial-capture").buffer =
         "Preserve this progress.";
       (await f.retain(source.signal, "failed-partial-capture", guest.entry)).armCancellation();

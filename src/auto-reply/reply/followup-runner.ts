@@ -4,6 +4,7 @@ import {
   classifyAgentRunTerminalOutcome,
 } from "../../agents/agent-run-terminal-outcome.js";
 import { hasCompletedSourceReplyDeliveryEvidence } from "../../agents/embedded-agent-runner/delivery-evidence.js";
+import { normalizeChatType } from "../../channels/chat-type.js";
 import type { ProgressContinuationCapability } from "../../channels/progress-continuation.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -12,24 +13,53 @@ import {
   withPluginRuntimeGatewayContextResolver,
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../../runtime.js";
+import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import type { ReplyOperation } from "../../sessions/session-controller.js";
 import { deferSessionControllerClaimBeforeExecution } from "../../sessions/session-controller.mailbox-claim.js";
-import { getReplyPayloadMetadata } from "../reply-payload.js";
+import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
+import {
+  getReplyPayloadMetadata,
+  markReplyPayloadForSourceSuppressionDelivery,
+} from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import type { AgentTurnExecutionResult } from "./agent-runner-execution.types.js";
+import { buildPreflightCompactionFailureText } from "./agent-runner-failure-reply.js";
 import { accountFollowupTurn } from "./agent-runner-result-accounting.js";
-import {
-  prepareClaimedReplyTurn,
-  type AdmittedFollowupTurn,
-  type FollowupRunnerParams,
-} from "./claimed-turn-preparation.js";
+import { createCompactionNoticePayload } from "./compaction-notice.js";
 import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
 import { settleQueuedFollowupPresentation } from "./followup-presentation.js";
 import { executeFollowupTurn } from "./followup-turn-execution.js";
-import { completeFollowupRunLifecycle, type FollowupRun } from "./queue.js";
+import {
+  admitFollowupRunLifecycle,
+  completeFollowupRunLifecycle,
+  type FollowupRun,
+} from "./queue.js";
 import { isFollowupRunAborted, type QueuedFollowupReplyBatch } from "./queue/types.js";
+import {
+  prepareReplyAgentTurn,
+  type AdmittedFollowupTurn,
+  type FollowupRunnerParams,
+} from "./reply-agent-turn-preparation.js";
 
 type FollowupDrainDisposition = { kind: "consumed" } | { kind: "retry"; error: unknown };
+
+function resolveQueuedTurnSendPolicy(turn: AdmittedFollowupTurn): "allow" | "deny" {
+  const entry = turn.session.current();
+  return resolveSendPolicy({
+    cfg: turn.config,
+    entry,
+    sessionKey:
+      turn.queued.run.runtimePolicySessionKey ??
+      (turn.session.kind === "session" ? turn.session.key : turn.queued.run.sessionKey),
+    channel:
+      turn.queued.originatingChannel ??
+      turn.queued.run.messageProvider ??
+      sessionDeliveryChannel(entry),
+    chatType: normalizeChatType(
+      turn.queued.originatingChatType ?? turn.queued.run.chatType ?? entry?.chatType,
+    ),
+  });
+}
 
 function resolveFollowupCompletion(
   outcome: AgentTurnExecutionResult["outcome"],
@@ -96,6 +126,7 @@ export function createFollowupRunner(
     let terminalPayloads: ReplyPayload[] = [];
     let progressContinuation: ProgressContinuationCapability | undefined;
     const admissionNotices: ReplyPayload[] = [];
+    const terminalCompactionNotices: ReplyPayload[] = [];
     let completion: QueuedFollowupReplyBatch["completion"] = { kind: "completed" };
     let queuedFollowupAdmitted = false;
     let executionEntered = false;
@@ -121,41 +152,76 @@ export function createFollowupRunner(
           : { kind: "consumed" };
         return;
       }
-      const admission = await prepareClaimedReplyTurn({
+      const deliverCompactionNotice = async (
+        payload: ReplyPayload,
+        phase: import("./compaction-notice.js").CompactionNoticePhase,
+        turn: AdmittedFollowupTurn,
+      ) => {
+        const source = turn.queued.queuedFollowupReplyDisposition;
+        if (
+          phase !== "memory_flush_degraded" &&
+          source?.kind === "deliver" &&
+          source.deliver.ownsCompletion?.(turn.queued.originatingChannel)
+        ) {
+          admissionNotices.push(payload);
+          return;
+        }
+        await deliverFollowupDecision({
+          decision: { kind: "deliver", payloads: [payload] },
+          turn,
+          defaults,
+          runId: turn.runId,
+          runFollowup,
+          kind: "block",
+        });
+      };
+      const admission = await prepareReplyAgentTurn({
         queued,
         defaults,
-        onCompactionNoticePayload: async (payload, turn, phase) => {
-          const source = turn.queued.queuedFollowupReplyDisposition;
-          if (
-            phase !== "memory_flush_degraded" &&
-            source?.kind === "deliver" &&
-            source.deliver.ownsCompletion?.(turn.queued.originatingChannel)
-          ) {
-            admissionNotices.push(payload);
-          } else {
-            await deliverFollowupDecision({
-              decision: { kind: "deliver", payloads: [payload] },
-              turn,
-              defaults,
-              runId: turn.runId,
-              runFollowup,
-              kind: "block",
-            });
+        onCompactionNotice: async (phase, text, turn) => {
+          turn.sendPolicy = resolveQueuedTurnSendPolicy(turn);
+          if (turn.sendPolicy === "deny") {
+            return;
           }
+          const currentMessageId =
+            queued.run.inputProvenance?.kind === "internal_system" &&
+            queued.run.inputProvenance.sourceTool === "restart-sentinel"
+              ? queued.originatingReplyToId
+              : queued.messageId;
+          const payload = createCompactionNoticePayload({ phase, text, currentMessageId });
+          if (phase !== "start" && phase !== "memory_flush_degraded") {
+            terminalCompactionNotices.push(payload);
+            return;
+          }
+          await deliverCompactionNotice(payload, phase, turn);
         },
       });
-      switch (admission.kind) {
-        case "skipped":
-          operation = admission.operation;
-          disposition =
-            admission.reason === "aborted" && hasSurvivingSources()
-              ? { kind: "retry", error: queued.abortSignal?.reason }
-              : { kind: "consumed" };
-          return;
-        case "admitted":
-          break;
+      if (admission.kind === "skipped") {
+        operation = admission.operation;
+        disposition =
+          admission.reason === "aborted" && hasSurvivingSources()
+            ? { kind: "retry", error: queued.abortSignal?.reason }
+            : { kind: "consumed" };
+        return;
       }
       const turn: AdmittedFollowupTurn = admission.turn;
+      await admitFollowupRunLifecycle(turn.queued);
+      if (turn.preflightError) {
+        turn.operation.fail("run_failed", turn.preflightError);
+        const text = buildPreflightCompactionFailureText(formatErrorMessage(turn.preflightError), {
+          includeDetails:
+            turn.queued.run.verboseLevelOverride === "on" ||
+            turn.queued.run.verboseLevelOverride === "full",
+        });
+        if (text) {
+          turn.preflightFailurePayload = markReplyPayloadForSourceSuppressionDelivery({ text });
+          turn.preflightError = undefined;
+        }
+      }
+      turn.sendPolicy = resolveQueuedTurnSendPolicy(turn);
+      for (const payload of terminalCompactionNotices) {
+        await deliverCompactionNotice(payload, "end", turn);
+      }
       admittedTurn = turn;
       admittedRunId = turn.runId;
       operation = turn.operation;

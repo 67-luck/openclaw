@@ -1,5 +1,6 @@
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { ReplyOperation } from "./session-controller.contracts.js";
+import type { RpcSourceRef } from "./session-controller.rpc-sources.js";
 import type {
   SessionControllerEntry,
   ReplyOperationAdmission,
@@ -8,6 +9,8 @@ import type {
 } from "./session-controller.state.types.js";
 const controllerState = resolveGlobalSingleton(Symbol.for("openclaw.sessionControllers"), () => ({
   controllers: new Map<string, SessionControllerEntry>(),
+  rpcSourceByRunId: new Map<string, RpcSourceRef>(),
+  rpcSourceRemovalByRef: new WeakMap<RpcSourceRef, () => void>(),
   entryByOperation: new WeakMap<ReplyOperation, SessionControllerEntry>(),
   lifecycleAdmissionByOperation: new WeakMap<ReplyOperation, ReplyOperationAdmission>(),
   evictOperationByOperation: new WeakMap<ReplyOperation, () => void>(),
@@ -22,6 +25,8 @@ const controllerState = resolveGlobalSingleton(Symbol.for("openclaw.sessionContr
   >(),
 }));
 export const sessionControllers = controllerState.controllers;
+export const rpcSourceByRunId = controllerState.rpcSourceByRunId;
+export const rpcSourceRemovalByRef = controllerState.rpcSourceRemovalByRef;
 export const controllerEntryByOperation = controllerState.entryByOperation;
 export const lifecycleAdmissionByOperation = controllerState.lifecycleAdmissionByOperation;
 

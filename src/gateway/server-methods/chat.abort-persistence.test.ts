@@ -11,6 +11,7 @@ import {
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { onAgentEvent, resetAgentEventsForTest } from "../../infra/agent-events.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { createWorkerInferenceCancellationService } from "../worker-environments/inference-control.test-helpers.js";
@@ -122,7 +123,7 @@ function bufferedContext(
   overrides: Parameters<typeof createChatAbortContext>[0] = {},
 ) {
   return createChatAbortContext({
-    rpcSources: new Map(
+    sources: new Map(
       runs.map(([runId, , options]) => [runId, createActiveRun("main", { sessionId, ...options })]),
     ),
     chatRunState: createAbortTestRunState(
@@ -295,7 +296,7 @@ describe("chat abort transcript persistence", () => {
     );
     const cancelWorker = vi.fn(() => ["parent"]);
     const context = createChatAbortContext({
-      rpcSources: new Map([["parent", parent]]),
+      sources: new Map([["parent", parent]]),
       workerEnvironmentService: createWorkerInferenceCancellationService(
         sessionId,
         ["parent"],
@@ -440,7 +441,7 @@ describe("chat abort transcript persistence", () => {
     expect(ok1).toBe(true);
     expectAbortPayload(payload1, { runIds: [runId] });
 
-    context.rpcSources.set(runId, createActiveRun("main", { sessionId }));
+    rpcSourceTesting.set(runId, createActiveRun("main", { sessionId }));
     const retryRun = context.chatRunState.getOrCreate(runId);
     retryRun.buffer = "Partial from run abort";
     retryRun.deltaSentAt = Date.now();
@@ -606,9 +607,9 @@ describe("chat abort transcript persistence", () => {
     const { transcriptPath, sessionId } = await createTranscriptFixture();
     const respond = vi.fn();
     const finalizingRun = createActiveRun("main", { sessionId });
-    finalizingRun.adapter.isAbortable = () => false;
+    finalizingRun.input.claim?.operation?.freezeAbort();
     const context = createChatAbortContext({
-      rpcSources: new Map([
+      sources: new Map([
         ["run-aborted", createActiveRun("main", { sessionId })],
         ["run-finalizing", finalizingRun],
       ]),
@@ -624,7 +625,7 @@ describe("chat abort transcript persistence", () => {
     expect(ok).toBe(true);
     expectAbortPayload(payload, { runIds: ["run-aborted"] });
     expect(finalizingRun.input.abortSignal.aborted).toBe(false);
-    expect(context.rpcSources.get("run-finalizing")).toBe(finalizingRun);
+    expect(rpcSourceTesting.get("run-finalizing")).toBe(finalizingRun);
 
     const lines = await readTranscriptLines(transcriptPath);
     expect(findMessageWithIdempotencyKey(lines, "run-aborted:assistant")).toBeDefined();
@@ -637,7 +638,7 @@ describe("chat abort transcript persistence", () => {
     const runId = "run-stop-raw-alias";
     const active = createActiveRun("alias-main", { sessionId });
     const context = createChatAbortContext({
-      rpcSources: new Map([[runId, active]]),
+      sources: new Map([[runId, active]]),
       removeChatRun: vi.fn().mockReturnValue({ sessionKey: "alias-main", clientRunId: runId }),
     });
 
@@ -655,7 +656,6 @@ describe("chat abort transcript persistence", () => {
     expect(ok).toBe(true);
     expectAbortPayload(payload, { runIds: [runId] });
     expect(active.input.abortSignal.aborted).toBe(true);
-    expect(context.rpcSources.has(runId)).toBe(false);
   });
 
   it.each([
@@ -683,7 +683,7 @@ describe("chat abort transcript persistence", () => {
     });
     const runId = `run-${selectedAgentId}-global`;
     const context = createChatAbortContext({
-      rpcSources: new Map([
+      sources: new Map([
         ["run-main-global", mainActive],
         ["run-work-global", workActive],
       ]),
@@ -754,7 +754,7 @@ describe("chat abort transcript persistence", () => {
       agentId: "work",
     });
     const context = createChatAbortContext({
-      rpcSources: new Map([
+      sources: new Map([
         ["run-main-global", mainActive],
         ["run-work-global", workActive],
       ]),
@@ -818,7 +818,7 @@ describe("chat abort transcript persistence", () => {
       agentId: "work",
     });
     const context = globalContext({
-      rpcSources: new Map([["run-work-global", workActive]]),
+      sources: new Map([["run-work-global", workActive]]),
     });
 
     await abort(
@@ -836,120 +836,6 @@ describe("chat abort transcript persistence", () => {
     expect(workActive.input.abortSignal.aborted).toBe(true);
   });
 
-  it("aborts pending selected global agent runs stored under agent-prefixed aliases", async () => {
-    const respond = vi.fn();
-    const context = globalContext();
-    context.dedupe.set("agent:run-work-global", {
-      ts: Date.now(),
-      ok: true,
-      payload: {
-        runId: "run-work-global",
-        sessionKey: "agent:work:main",
-        agentId: "work",
-        status: "accepted",
-        ownerConnId: "conn-work",
-      },
-    });
-
-    await abort(
-      context,
-      {
-        sessionKey: "agent:work:main",
-        runId: "run-work-global",
-      },
-      respond,
-      { connId: "conn-work" },
-    );
-
-    const [ok, payload] = requireLastRespondCall(respond);
-    expect(ok).toBe(true);
-    expectAbortPayload(payload, { runIds: ["run-work-global"] });
-    expect(context.dedupe.get("agent:run-work-global")).toEqual(
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          sessionKey: "agent:work:main",
-          status: "timeout",
-          stopReason: "rpc",
-        }),
-      }),
-    );
-  });
-
-  it("aborts hidden pending internal agent runs by explicit owner run id", async () => {
-    const respond = vi.fn();
-    const context = createChatAbortContext();
-    context.dedupe.set("agent:run-hidden", {
-      ts: Date.now(),
-      ok: true,
-      payload: {
-        runId: "run-hidden",
-        sessionKey: "main",
-        status: "accepted",
-        controlUiVisible: false,
-        ownerConnId: "conn-hidden",
-      },
-    });
-
-    await abort(context, { sessionKey: "main", runId: "run-hidden" }, respond, {
-      connId: "conn-hidden",
-    });
-
-    const [ok, payload] = requireLastRespondCall(respond);
-    expect(ok).toBe(true);
-    const actual = expectRecord(payload, "abort payload");
-    expect(actual.aborted).toBe(true);
-    expect(actual.runIds).toEqual(["run-hidden"]);
-    expect(context.dedupe.get("agent:run-hidden")).toEqual(
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          status: "timeout",
-          controlUiVisible: false,
-          stopReason: "rpc",
-        }),
-      }),
-    );
-  });
-
-  it("does not abort pending agent-prefixed global aliases for another selected agent", async () => {
-    const respond = vi.fn();
-    const context = globalContext();
-    context.dedupe.set("agent:run-main-global", {
-      ts: Date.now(),
-      ok: true,
-      payload: {
-        runId: "run-main-global",
-        sessionKey: "agent:main:main",
-        agentId: "main",
-        status: "accepted",
-        ownerConnId: "conn-main",
-      },
-    });
-
-    await abort(
-      context,
-      {
-        sessionKey: "agent:work:main",
-        runId: "run-main-global",
-      },
-      respond,
-      { connId: "conn-main" },
-    );
-
-    const [ok, payload] = requireLastRespondCall(respond);
-    expect(ok).toBe(true);
-    const actual = expectRecord(payload, "abort payload");
-    expect(actual.aborted).toBe(false);
-    expect(actual.runIds).toEqual([]);
-    expect(context.dedupe.get("agent:run-main-global")).toEqual(
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          sessionKey: "agent:main:main",
-          status: "accepted",
-        }),
-      }),
-    );
-  });
-
   it("uses the configured default agent for legacy unscoped global aborts", async () => {
     const respond = vi.fn();
     const active = createActiveRun("global", {
@@ -957,7 +843,7 @@ describe("chat abort transcript persistence", () => {
     });
     const context = createChatAbortContext({
       getRuntimeConfig: () => ({ agents: { list: [{ id: "work", default: true }] } }),
-      rpcSources: new Map([["run-work-global", active]]),
+      sources: new Map([["run-work-global", active]]),
     });
 
     await abort(
@@ -975,48 +861,12 @@ describe("chat abort transcript persistence", () => {
     expect(active.input.abortSignal.aborted).toBe(true);
   });
 
-  it.each([
-    ["does not abort pending default global agent runs for another selected agent", "work", false],
-    ["aborts pending default global agent runs for the default selected agent", "main", true],
-  ])("%s", async (_name, agentId, shouldAbort) => {
-    const respond = vi.fn();
-    const context = globalContext();
-    context.dedupe.set("agent:run-main-global", {
-      ts: Date.now(),
-      ok: true,
-      payload: {
-        runId: "run-main-global",
-        sessionKey: "global",
-        status: "accepted",
-        ownerConnId: "conn-main",
-      },
-    });
-
-    await abort(context, { sessionKey: "global", agentId, runId: "run-main-global" }, respond, {
-      connId: "conn-main",
-    });
-
-    const [ok, payload] = requireLastRespondCall(respond);
-    expect(ok).toBe(true);
-    const actual = expectRecord(payload, "abort payload");
-    expect(actual.aborted).toBe(shouldAbort);
-    expect(actual.runIds).toEqual(shouldAbort ? ["run-main-global"] : []);
-    expect(context.dedupe.get("agent:run-main-global")).toEqual(
-      expect.objectContaining({
-        payload: expect.objectContaining({
-          status: shouldAbort ? "timeout" : "accepted",
-          ...(shouldAbort ? { stopReason: "rpc" } : {}),
-        }),
-      }),
-    );
-  });
-
   it("does not match stop targets by client-supplied session id without a stored entry", async () => {
     const { sessionId } = await createMissingEntryFixture("openclaw-chat-stop-client-session-");
     const respond = vi.fn();
     const active = createActiveRun("third-session", { sessionId });
     const context = createChatAbortContext({
-      rpcSources: new Map([["run-stop-client-session", active]]),
+      sources: new Map([["run-stop-client-session", active]]),
     });
 
     await stop(
@@ -1034,7 +884,7 @@ describe("chat abort transcript persistence", () => {
     expect(ok).toBe(true);
     expect(expectRecord(payload, "abort payload").aborted).toBe(false);
     expect(active.input.abortSignal.aborted).toBe(false);
-    expect(context.rpcSources.has("run-stop-client-session")).toBe(true);
+    expect(rpcSourceTesting.has("run-stop-client-session")).toBe(true);
   });
 
   it("skips run-scoped transcript persistence when partial text is blank", async () => {
@@ -1081,7 +931,7 @@ describe("chat.abort session identity matching", () => {
     const runId = "embedded-run-1";
     const active = createActiveRun("agent:main:embedded-key", { sessionId: storedSessionId });
     const context = createChatAbortContext({
-      rpcSources: new Map([[runId, active]]),
+      sources: new Map([[runId, active]]),
     });
     const respond = vi.fn();
 
@@ -1102,7 +952,7 @@ describe("chat.abort session identity matching", () => {
     const runId = "embedded-run-2";
     const active = createActiveRun("agent:main:other-key", { sessionId: "sess-different" });
     const context = createChatAbortContext({
-      rpcSources: new Map([[runId, active]]),
+      sources: new Map([[runId, active]]),
     });
     const respond = vi.fn();
 

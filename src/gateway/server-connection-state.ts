@@ -4,8 +4,10 @@ import { parseAgentSessionKey } from "../routing/session-key.js";
 // Gateway connection and run registries.
 // This state is transport-fed but can be constructed without HTTP or WebSocket servers.
 import {
+  getRpcSource,
+  getRpcSourceIdentity,
   isRpcSourceActive,
-  type RpcSourceIndex,
+  listRpcSourceEntries,
   type RpcSourceRef,
 } from "../sessions/session-controller.rpc-sources.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
@@ -189,33 +191,34 @@ export function createGatewayConnectionState(params: {
         }
         if (
           !projectRun ||
-          registrations.length !== rpcSources.size ||
+          registrations.length !== listRpcSourceEntries().length ||
           // Compare copied fields: registrations can mutate in place between recipients.
           registrations.some((previous) => {
-            const current = rpcSources.get(previous.runId);
+            const current = getRpcSource(previous.runId);
+            const identity = current ? getRpcSourceIdentity(current) : undefined;
             return (
               current !== previous.ref ||
-              current.adapter.sessionKey !== previous.sessionKey ||
-              current.adapter.sessionId !== previous.sessionId ||
-              current.adapter.agentId !== previous.agentId ||
+              identity?.sessionKey !== previous.sessionKey ||
+              identity?.sessionId !== previous.sessionId ||
+              identity?.agentId !== previous.agentId ||
               isRpcSourceActive(current) !== previous.active ||
               current.adapter.controlUiVisible !== previous.controlUiVisible
             );
           }) ||
           projectedAgentRuns !== projection.state.rowContext.projectedAgentRuns
         ) {
-          registrations = Array.from(rpcSources, ([runId, ref]) => ({
-            runId,
-            ref,
-            sessionKey: ref.adapter.sessionKey,
-            sessionId: ref.adapter.sessionId,
-            agentId: ref.adapter.agentId,
-            active: isRpcSourceActive(ref),
-            controlUiVisible: ref.adapter.controlUiVisible,
-          }));
+          registrations = listRpcSourceEntries().map(([runId, ref]) => {
+            const identity = getRpcSourceIdentity(ref);
+            return {
+              runId,
+              ref,
+              ...identity,
+              active: isRpcSourceActive(ref),
+              controlUiVisible: ref.adapter.controlUiVisible,
+            };
+          });
           projectedAgentRuns = projection.state.rowContext.projectedAgentRuns;
           projectRun = createVisibleActiveSessionRunProjector(
-            { rpcSources },
             projectedAgentRuns,
             registrations.map(({ runId, ref }) => [runId, ref] as const),
           );
@@ -323,7 +326,6 @@ export function createGatewayConnectionState(params: {
   const chatRunRegistry = chatRunState.registry;
   const addChatRun = chatRunRegistry.add;
   const removeChatRun = chatRunRegistry.remove;
-  const rpcSources: RpcSourceIndex = new Map();
   const toolEventRecipients = chatRunState.toolEventRecipients;
 
   return {
@@ -357,7 +359,6 @@ export function createGatewayConnectionState(params: {
     chatRunState,
     addChatRun,
     removeChatRun,
-    rpcSources,
     toolEventRecipients,
     sessionEventSubscribers,
     sessionMessageSubscribers,

@@ -1162,7 +1162,6 @@ describe("scheduleRestartSentinelWake", () => {
         broadcastToConnIds,
         sessionEventSubscribers: { getAll: () => subscribers },
         sessionMessageSubscribers: { get: () => subscribers },
-        rpcSources: new Map(),
       });
       const publications: Promise<void>[] = [];
       const publicationErrors: unknown[] = [];

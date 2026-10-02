@@ -76,17 +76,20 @@ it.each([
       const embedded = createEmbeddedRunHandle(embeddedState);
       const registration = mode.startsWith("controller")
         ? registerChatAbortController({
-            rpcSources: context.rpcSources,
             sessionKey: target.sessionKey,
             sessionId,
             agentId: target.agentId,
             runId,
             kind: "agent",
             timeoutMs: 60_000,
-            isAbortable: () => embeddedState.isAbortable,
           })
         : undefined;
       registration?.markExecutionStarted();
+      registration?.entry?.input.claim?.operation?.attachBackend({
+        kind: "embedded",
+        cancel: vi.fn(),
+        isAbortable: () => embeddedState.isAbortable,
+      });
       registration?.controller.signal.addEventListener("abort", () => embeddedState.abort(), {
         once: true,
       });
@@ -106,7 +109,6 @@ it.each([
         toolEventRecipients: context.chatRunState.toolEventRecipients,
         sessionEventSubscribers: createSessionEventSubscriberRegistry(),
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-        rpcSources: context.rpcSources,
         restartRecoveryCandidates: new Map(),
         refreshConnectedUserProfiles: vi.fn(),
       });

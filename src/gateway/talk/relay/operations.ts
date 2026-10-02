@@ -1,5 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { formatErrorMessage as formatError } from "../../../infra/errors.js";
+import { hasRpcSource } from "../../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { buildRealtimeVoiceAgentCancelProviderResult } from "../../../talk/agent-run-control-shared.js";
 import {
@@ -111,7 +112,7 @@ function retireRelayAgentRuns(session: RelaySession, reason?: string): void {
 
 export function pruneInactiveRelayAgentRuns(session: RelaySession): number {
   for (const runId of session.activeAgentRuns.keys()) {
-    if (!session.context.rpcSources.has(runId)) {
+    if (!hasRpcSource(runId)) {
       session.activeAgentRuns.delete(runId);
     }
   }
@@ -502,7 +503,6 @@ export function prepareTalkRealtimeRelayAgentControl(
     throw new Error("Realtime relay steering session key does not match the relay session");
   }
   const runTarget = resolveOwnedActiveTalkRunTarget({
-    context: session.context,
     clientConnId: session.connId,
     sessionTarget: session.sessionTarget,
     scope: { kind: "voice-session", voiceSessionId: session.id },

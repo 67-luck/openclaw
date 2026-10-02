@@ -39,7 +39,6 @@ async function callStatus(
     context: {
       hostLifecycle,
       cron: { getSuspensionBlockerCount: () => 0 },
-      rpcSources: new Map(),
     } as never,
     client: { connect: { role: "operator", scopes } } as never,
     isWebchatConnect: () => false,

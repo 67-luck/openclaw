@@ -135,7 +135,6 @@ async function withDemandFixture(
         async (_request, dispatch) => await dispatch(),
       );
     const context = makeDispatchTestContext({
-      rpcSources: new Map(),
       chatRunState: createChatRunState(),
       dedupe: new Map(),
       agentRunSeq: new Map(),

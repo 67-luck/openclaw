@@ -87,7 +87,6 @@ it.each(["chat", "projected"] as const)(
         owner === "chat"
           ? registerChatAbortController({
               target: captureRpcTargetForTest({ sessionKey: key, sessionId, agentId: "main" }),
-              rpcSources: context.rpcSources,
               runId,
               sessionId,
               sessionKey: key,

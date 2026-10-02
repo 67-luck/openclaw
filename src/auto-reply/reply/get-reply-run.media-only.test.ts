@@ -53,6 +53,7 @@ import {
   beginSessionEffect,
   captureSessionTarget,
 } from "../../sessions/session-controller.lifecycle.js";
+import { reserveSessionControllerSource } from "../../sessions/session-controller.mailbox.js";
 import * as sessionNativeRuntime from "../../sessions/session-controller.native-runtime.js";
 import * as sessionQueries from "../../sessions/session-controller.queries.js";
 import { prepareSessionParticipantInput } from "../../sessions/session-participant-input.js";
@@ -89,6 +90,7 @@ import {
 import { prepareReplyConversation } from "./prompt-session-context.js";
 import { resolveFollowupAbortSignal } from "./queue/types.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
+import { bindReplySourceInput } from "./reply-source-binding.js";
 import { routeReply } from "./route-reply.runtime.js";
 import { drainFormattedSystemEvents } from "./session-system-events.js";
 import {
@@ -2682,6 +2684,12 @@ describe("runPreparedReply media-only handling", () => {
       ...activeEntry,
       goal: { ...activeEntry.goal!, status: "complete" },
     };
+    const cfg = {
+      session: {},
+      channels: {},
+      agents: { defaults: {} },
+      skills: { workshop: { autonomous: { mode: "off" as const } } },
+    };
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
     vi.mocked(inboundMeta.formatActiveGoalContext).mockImplementation((entry) =>
       entry?.goal?.status === "active" ? "Active goal: Finish the interrupted work" : undefined,
@@ -2691,41 +2699,38 @@ describe("runPreparedReply media-only handling", () => {
         entry?.goal?.status === "active" ? "Active goal: Finish the interrupted work" : "",
     );
     loadSessionEntryMock.mockReturnValue(completeEntry);
+    const target = captureSessionTarget({
+      storeScope: "/tmp/openclaw-session-store.json",
+      sessionKey: "session-key",
+      incarnation: "session-goal-interrupt",
+      agentId: "default",
+    });
     const activeRun = createReplyOperation({
       sessionId: "session-goal-interrupt",
       sessionKey: "session-key",
       resetTriggered: false,
+      target,
     });
     activeRun.setPhase("running");
+    activeRun.attachBackend({ kind: "embedded", cancel: () => activeRun.complete() });
+    const source = reserveSessionControllerSource("session-key", {
+      policy: { mode: "interrupt" },
+      target,
+    });
 
     const runPromise = runPrepared({
-      cfg: {
-        session: {},
-        channels: {},
-        agents: { defaults: {} },
-        skills: { workshop: { autonomous: { mode: "off" } } },
-      },
+      cfg,
       isNewSession: false,
       sessionId: "session-goal-interrupt",
       sessionEntry: activeEntry,
       sessionStore: { "session-key": activeEntry },
       storePath: "/tmp/openclaw-session-store.json",
+      opts: bindReplySourceInput({}, source),
     });
-    while (!activeRun.abortSignal.aborted) {
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
-    }
-    activeRun.complete();
-
     await expect(runPromise).resolves.toEqual({ text: "ok" });
-    expect(loadSessionEntryMock).toHaveBeenCalledWith({
-      storePath: "/tmp/openclaw-session-store.json",
-      sessionKey: "session-key",
-      readConsistency: "latest",
-    });
     const call = requireLastRunReplyAgentCall();
     expect(call.followupRun.currentInboundContext?.text ?? "").not.toContain("Active goal:");
+    activeRun.complete();
   });
 
   it("treats reset-triggered followup mode as interrupt when the session lane is empty", async () => {
@@ -3187,51 +3192,68 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
     const routeSessionKey = "agent:main:slack:channel:c123";
     const dispatchSessionKey = `${routeSessionKey}:thread:123.456`;
+    const cfg = { session: {}, channels: {}, agents: { defaults: {} } };
+    const storePath = resolveSessionStorePathCore(undefined, { agentId: "main" });
+    let resolveCancelled!: () => void;
+    const cancelled = new Promise<void>((resolve) => {
+      resolveCancelled = resolve;
+    });
     enqueueSystemEvent("Slack reaction added: :eyes:", { sessionKey: routeSessionKey });
     enqueueSystemEvent("Slack message in #claw-test from Alice", {
       sessionKey: dispatchSessionKey,
+    });
+    const previousTarget = captureSessionTarget({
+      storeScope: storePath,
+      sessionKey: dispatchSessionKey,
+      incarnation: "session-before-wait",
+      agentId: "main",
     });
     const previousRun = createReplyOperation({
       sessionId: "session-before-wait",
       sessionKey: dispatchSessionKey,
       resetTriggered: false,
+      target: previousTarget,
     });
     previousRun.setPhase("running");
-
-    const runPromise = runPrepared({
-      agentId: "main",
-      isNewSession: false,
-      sessionId: "session-before-wait",
-      sessionKey: dispatchSessionKey,
-      opts: withReplySystemEventContext({}, { sessionKey: routeSessionKey }),
-      provider: "",
-      model: "",
-      resolvedThinkLevel: "off",
+    previousRun.attachBackend({ kind: "embedded", cancel: resolveCancelled });
+    const source = reserveSessionControllerSource(dispatchSessionKey, {
+      policy: { mode: "interrupt" },
+      target: previousTarget,
     });
 
-    await Promise.resolve();
-    previousRun.complete();
-    const nextRun = createReplyOperation({
-      sessionId: "session-after-wait",
-      sessionKey: dispatchSessionKey,
-      resetTriggered: false,
-    });
-    nextRun.setPhase("running");
+    try {
+      const runPromise = runPrepared({
+        agentId: "main",
+        cfg,
+        isNewSession: false,
+        sessionId: "session-before-wait",
+        sessionKey: dispatchSessionKey,
+        storePath,
+        opts: bindReplySourceInput(
+          withReplySystemEventContext({}, { sessionKey: routeSessionKey }),
+          source,
+        ),
+        provider: "",
+        model: "",
+        resolvedThinkLevel: "off",
+      });
 
-    const assertion = expect(runPromise).resolves.toEqual({
-      text: "⚠️ Previous run is still shutting down. Please try again in a moment.",
-    });
-    await vi.advanceTimersByTimeAsync(15_000);
-    await assertion;
-    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
-    expect(peekSystemEventEntries(routeSessionKey).map((event) => event.text)).toEqual([
-      "Slack reaction added: :eyes:",
-    ]);
-    expect(peekSystemEventEntries(dispatchSessionKey).map((event) => event.text)).toEqual([
-      "Slack message in #claw-test from Alice",
-    ]);
-
-    nextRun.complete();
+      const assertion = expect(runPromise).resolves.toEqual({
+        text: "⚠️ Previous run is still shutting down. Please try again in a moment.",
+      });
+      await cancelled;
+      await vi.advanceTimersByTimeAsync(15_000);
+      await assertion;
+      expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
+      expect(peekSystemEventEntries(routeSessionKey).map((event) => event.text)).toEqual([
+        "Slack reaction added: :eyes:",
+      ]);
+      expect(peekSystemEventEntries(dispatchSessionKey).map((event) => event.text)).toEqual([
+        "Slack message in #claw-test from Alice",
+      ]);
+    } finally {
+      previousRun.complete();
+    }
   });
   it("drains system events only after waiting behind an active run", async () => {
     await useActualSystemEventDrain();

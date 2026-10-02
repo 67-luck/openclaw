@@ -13,7 +13,12 @@ import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import { materializeProjectClone, refreshProjectClone } from "../../projects/project-clone.js";
 import { parseProjectGitUrl } from "../../projects/project-git-url.js";
 import { resolveProjectDirectory } from "../../projects/project-registry.js";
-import { getRpcSourceProjectSessionActive } from "../../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  getRpcSourceProjectSessionActive,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { generateWorktreeSessionTitle } from "../dashboard-session-title.js";
 import { githubApiToken } from "../github-public-api.js";
@@ -191,15 +196,16 @@ export async function prepareSessionWorkspace(params: {
   const signal = admission.activeRunAbort.entry.input.abortSignal;
   const assertRunOwnership = () => {
     signal.throwIfAborted();
-    const activeRun = context.rpcSources.get(clientRunId);
+    const activeRun = getRpcSource(clientRunId);
+    const activeRunIdentity = activeRun && getRpcSourceIdentity(activeRun);
     if (
       !activeRun ||
       activeRun !== admission.activeRunAbort.entry ||
       activeRun.input.abortSignal !== signal ||
-      activeRun.adapter.sessionKey !== sessionKey ||
-      activeRun.adapter.sessionId !== entry.sessionId ||
+      activeRunIdentity?.sessionKey !== sessionKey ||
+      activeRunIdentity.sessionId !== entry.sessionId ||
       entry.sessionId !== admission.admittedSessionId ||
-      activeRun.adapter.lifecycleGeneration !== admission.lifecycleGeneration ||
+      getRpcSourceLifecycleGeneration(activeRun) !== admission.lifecycleGeneration ||
       getRpcSourceProjectSessionActive(activeRun) === false ||
       activeRun.adapter.projectSessionTerminalPending === true ||
       activeRun.adapter.projectSessionTerminalPersisted === true ||

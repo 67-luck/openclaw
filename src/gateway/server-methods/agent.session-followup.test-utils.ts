@@ -7,6 +7,8 @@ import {
   getSubagentRunByChildSessionKey,
   resetSubagentRegistryForTests,
 } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
+import { getRpcSourceIdentity } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { withPluginSubagentTestState } from "./agent.spawned-child.test-support.js";
 import {
   backendGatewayClient,
@@ -73,7 +75,8 @@ describe("gateway agent follow-up activity", () => {
         };
         try {
           await invokeAgent(request, { context, reqId: runId, client: backendGatewayClient() });
-          expect(context.rpcSources.get(runId)?.adapter.sessionKey).toBe(childSessionKey);
+          const source = rpcSourceTesting.get(runId);
+          expect(source && getRpcSourceIdentity(source).sessionKey).toBe(childSessionKey);
           const callCount = mocks.agentCommand.mock.calls.length;
           await invokeAgent(request, { context, reqId: "replay", client: backendGatewayClient() });
           expect(mocks.agentCommand).toHaveBeenCalledTimes(callCount);

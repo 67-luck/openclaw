@@ -57,7 +57,6 @@ describe("agent RPC deleted-agent guard", () => {
         respond,
         context: {
           dedupe: new Map(),
-          rpcSources: new Map(),
           getRuntimeConfig: () => ({}),
         } as never,
         client: null,
@@ -93,7 +92,6 @@ describe("agent RPC deleted-agent guard", () => {
         respond,
         context: {
           dedupe,
-          rpcSources: new Map(),
           getRuntimeConfig: () => ({}),
         } as never,
         client: null,
@@ -129,7 +127,6 @@ describe("agent RPC deleted-agent guard", () => {
           respond,
           context: {
             dedupe: new Map(),
-            rpcSources: new Map(),
             getRuntimeConfig: () => ({}),
           } as never,
           client: { connect: { scopes: ["operator.admin"] } } as never,
@@ -165,7 +162,6 @@ describe("agent RPC deleted-agent guard", () => {
         respond,
         context: {
           dedupe,
-          rpcSources: new Map(),
           getRuntimeConfig: () => ({}),
         } as never,
         client: { connect: { client: { mode: "backend" } } } as never,

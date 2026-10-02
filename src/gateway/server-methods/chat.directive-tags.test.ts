@@ -53,6 +53,7 @@ import {
   getSessionControllerWorkCount,
   runSessionMutation,
 } from "../../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { projectAssistantDisplayContent } from "../../shared/assistant-display-content.js";
 import { extractFirstTextBlock } from "../../shared/chat-message-content.js";
 import { withEnvAsync } from "../../test-utils/env.js";
@@ -795,7 +796,6 @@ function createChatContext() {
     broadcast: vi.fn<GatewayRequestContext["broadcast"]>(),
     nodeSendToSession: vi.fn<GatewayRequestContext["nodeSendToSession"]>(),
     agentRunSeq: new Map<string, number>(),
-    rpcSources: new Map(),
     chatRunState: createChatRunState(),
     addChatRun: vi.fn(),
     removeChatRun: vi.fn(),
@@ -1176,6 +1176,18 @@ async function expectImageOnlyFinal(params: {
   expect(JSON.stringify(content)).not.toContain(mediaUrl);
 }
 
+// Global tool-recipient fixtures retain their controller-owned physical identity.
+const globalToolEventRunReleases: Array<() => void> = [];
+
+async function registerGlobalToolEventRun(runId: string, sessionId: string, agentId?: string) {
+  const source = await createActiveRpcSourceForTest(
+    {},
+    { sessionId, sessionKey: "global", agentId },
+  );
+  globalToolEventRunReleases.push(source.release);
+  rpcSourceTesting.set(runId, source);
+}
+
 beforeAll(() => {
   suiteResources = createChatDirectiveSuiteResources();
   suiteFixtureRoot = suiteResources.root;
@@ -1186,11 +1198,18 @@ beforeAll(() => {
 });
 
 afterEach(async () => {
-  // ACKs and terminal errors can precede detached transcript cleanup.
-  await waitForAssertion(() => expect(getSessionControllerWorkCount()).toBe(0));
-  replyRunRegistryTesting.resetReplyRunRegistry();
-  mockState.reset();
-  bindingMocks.resolveByConversation.mockReset();
+  try {
+    for (const release of globalToolEventRunReleases.splice(0)) {
+      release();
+    }
+    // ACKs and terminal errors can precede detached transcript cleanup.
+    await waitForAssertion(() => expect(getSessionControllerWorkCount()).toBe(0));
+  } finally {
+    rpcSourceTesting.clear();
+    replyRunRegistryTesting.resetReplyRunRegistry();
+    mockState.reset();
+    bindingMocks.resolveByConversation.mockReset();
+  }
   bindingMocks.resolveByConversation.mockReturnValue(null);
 });
 
@@ -1603,84 +1622,6 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     }
   });
 
-  it("falls back once without touching a successor when the captured owner ends", async () => {
-    const { context, respond } = await createSqliteChatRequest(
-      "openclaw-chat-send-targetless-operation-aba-",
-    );
-    await appendTestTranscriptMessage({
-      eventId: "current-leaf",
-      role: "assistant",
-      content: "working",
-      now: 1,
-      parentId: null,
-    });
-    const originalQueue = vi.fn(async () => {});
-    const successorQueue = vi.fn(async () => {});
-    const successorCancel = vi.fn();
-    const dispatchCallsBefore = dispatchInboundMessageMock.mock.calls.length;
-    const original = beginMessageInjectionOperation({
-      originatingLeafEntryId: "current-leaf",
-      queueMessage: originalQueue,
-    });
-    let successor: ReturnType<typeof createReplyOperation> | undefined;
-
-    try {
-      await handleChatSend(
-        {
-          params: {
-            sessionKey: "main",
-            message: "hello",
-            idempotencyKey: "idem-targetless-operation-aba",
-            expectedLeafEntryId: "current-leaf",
-            queueMode: "steer",
-          },
-          respond: respond as never,
-          req: {} as never,
-          client: {
-            connect: {
-              client: {
-                id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
-                mode: GATEWAY_CLIENT_MODES.WEBCHAT,
-                version: "dev",
-                platform: "web",
-              },
-              scopes: ["operator.admin"],
-            },
-          } as never,
-          isWebchatConnect: () => false,
-          context,
-        },
-        async () => {
-          original.complete();
-          successor = beginMessageInjectionOperation({
-            originatingLeafEntryId: "current-leaf",
-            cancel: successorCancel,
-            queueMessage: successorQueue,
-          });
-          return true;
-        },
-      );
-    } finally {
-      original.complete();
-      successor?.complete();
-    }
-
-    expect(respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ status: "started" }),
-      undefined,
-      expect.any(Object),
-    );
-    await waitForAssertion(() =>
-      expect(dispatchInboundMessageMock).toHaveBeenCalledTimes(dispatchCallsBefore + 1),
-    );
-    expect(originalQueue).not.toHaveBeenCalled();
-    expect(successorQueue).not.toHaveBeenCalled();
-    expect(successorCancel).not.toHaveBeenCalled();
-    expect(context.addChatRun).toHaveBeenCalledOnce();
-    expect(mockState.lastMessageInjectionDisposition).toBe("rejected");
-  });
-
   it("starts captured-operation injection before ACK and does not dispatch after owner clear", async () => {
     const { context, respond, send } = await createSqliteChatRequest(
       "openclaw-chat-send-steer-before-ack-",
@@ -2012,83 +1953,6 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(context.broadcast).toHaveBeenCalledOnce();
   });
 
-  it("falls back once when reply hydration outlives its captured run", async () => {
-    const { context, respond, send } = await createSqliteChatRequest(
-      "openclaw-chat-send-reply-steer-race-",
-    );
-    const hydration = createDeferred();
-    mockState.replyContextWait = hydration.promise;
-    mockState.replyContextResult = {
-      ReplyToId: "prior-message",
-      ReplyToBody: "quoted deployment status",
-      ReplyToSender: "Alice",
-    };
-    const dispatchCallsBefore = dispatchInboundMessageMock.mock.calls.length;
-    const originalQueue = vi.fn(async () => {});
-    const successorQueue = vi.fn(async () => {});
-    const successorCancel = vi.fn();
-    const original = beginMessageInjectionOperation({
-      originatingLeafEntryId: "current-leaf",
-      runId: "run-a",
-      queueMessage: originalQueue,
-    });
-    let successor: ReturnType<typeof createReplyOperation> | undefined;
-
-    try {
-      const pendingSend = send({
-        idempotencyKey: "idem-reply-steer-race",
-        requestParams: {
-          queueMode: "steer",
-          replyToId: "prior-message",
-        },
-        waitFor: "none",
-      });
-      await waitForAssertion(() => expect(mockState.replyContextCalls).toBe(1));
-      expect(respond).not.toHaveBeenCalled();
-      expect(originalQueue).not.toHaveBeenCalled();
-      original.complete();
-      successor = beginMessageInjectionOperation({
-        originatingLeafEntryId: "current-leaf",
-        runId: "run-b",
-        cancel: successorCancel,
-        queueMessage: successorQueue,
-      });
-      hydration.resolve();
-      await pendingSend;
-      expect(respond).toHaveBeenCalledWith(
-        true,
-        expect.objectContaining({ status: "started" }),
-        undefined,
-        expect.any(Object),
-      );
-      await waitForAssertion(() => {
-        expect(context.dedupe.get("chat:idem-reply-steer-race")?.payload).toMatchObject({
-          status: "ok",
-        });
-      });
-    } finally {
-      hydration.resolve();
-      original.complete();
-      successor?.complete();
-    }
-
-    expect(originalQueue).not.toHaveBeenCalled();
-    expect(successorQueue).not.toHaveBeenCalled();
-    expect(successorCancel).not.toHaveBeenCalled();
-    expect(mockState.replyContextCalls).toBe(1);
-    expect(dispatchInboundMessageMock).toHaveBeenCalledTimes(dispatchCallsBefore + 1);
-    expect(mockState.lastMessageInjectionDisposition).toBe("rejected");
-    expect(readPersistedUserMessages()).toHaveLength(1);
-    expect(
-      (readPersistedUserMessages()[0]?.["__openclaw"] as Record<string, unknown> | undefined)
-        ?.steerTargetRunId,
-    ).toBeUndefined();
-    const broadcasts = context.broadcast.mock.calls.map(
-      ([, payload]) => payload as Record<string, unknown>,
-    );
-    expect(broadcasts.filter((payload) => payload.state === "error")).toEqual([]);
-  });
-
   it("hydrates an ordinary reply before acknowledging its durable input", async () => {
     const { context, respond, send } = await createSqliteChatRequest(
       "openclaw-chat-send-reply-no-steer-",
@@ -2187,63 +2051,6 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       operation.complete();
       await Promise.allSettled([pendingSend, delivery.promise]);
     }
-  });
-
-  it("never aborts or replays onto a successor after unconfirmed acceptance", async () => {
-    const { context, send } = await createSqliteChatRequest(
-      "openclaw-chat-send-steer-unconfirmed-",
-    );
-    const delivery = createDeferred<{
-      transcriptCommit: "unconfirmed";
-      errorMessage: string;
-    }>();
-    const queueMessage = vi.fn(async (_text: string, options?: ReplyBackendQueueMessageOptions) => {
-      options?.onQueueAccepted?.(true);
-      await options?.userTurnTranscriptRecorder?.persistApproved();
-      return await delivery.promise;
-    });
-    const first = beginMessageInjectionOperation({
-      originatingLeafEntryId: null,
-      runId: "active-run",
-      cancel: vi.fn(),
-      queueMessage,
-    });
-
-    await send({
-      idempotencyKey: "idem-steer-unconfirmed",
-      requestParams: { queueMode: "steer" },
-      waitFor: "none",
-    });
-    await waitForAssertion(() => expect(readPersistedUserMessages()).toHaveLength(1));
-    expect(readPersistedUserMessages()[0]).not.toHaveProperty("__openclaw.steerTargetRunId");
-    first.complete();
-    const successorCancel = vi.fn();
-    const successor = beginMessageInjectionOperation({
-      originatingLeafEntryId: null,
-      runId: "successor-run",
-      cancel: successorCancel,
-      queueMessage: vi.fn(async () => {}),
-    });
-    delivery.resolve({
-      transcriptCommit: "unconfirmed",
-      errorMessage: "receipt timed out",
-    });
-
-    await waitForAssertion(() => {
-      expect(context.dedupe.get("chat:idem-steer-unconfirmed")?.payload).toEqual({
-        runId: "idem-steer-unconfirmed",
-        status: "ok",
-      });
-    });
-    expect(successor.result).toBeNull();
-    expect(successorCancel).not.toHaveBeenCalled();
-    expect(mockState.lastDispatchCtx).toBeUndefined();
-    const persistedUsers = readPersistedUserMessages();
-    expect(persistedUsers).toHaveLength(1);
-    expect(
-      (persistedUsers[0]?.["__openclaw"] as Record<string, unknown> | undefined)?.steerTargetRunId,
-    ).toBeUndefined();
-    successor.complete();
   });
 
   it("falls back once when captured owner evidence is stale", async () => {
@@ -2533,21 +2340,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     mockState.triggerAgentRunStart = true;
     mockState.agentRunId = "run-current-global";
     const { context, send } = createChatRequestFixture();
-    context.rpcSources.set(
-      "run-default-global",
-      await createActiveRpcSourceForTest({
-        sessionId: "sess-default-global",
-        sessionKey: "global",
-      }),
-    );
-    context.rpcSources.set(
-      "run-work-global",
-      await createActiveRpcSourceForTest({
-        sessionId: "sess-work-global",
-        sessionKey: "global",
-        agentId: "work",
-      }),
-    );
+    await registerGlobalToolEventRun("run-default-global", "sess-default-global");
+    await registerGlobalToolEventRun("run-work-global", "sess-work-global", "work");
 
     await send({
       sessionKey: "global",
@@ -2572,21 +2366,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     mockState.triggerAgentRunStart = true;
     mockState.agentRunId = "run-current-work-global";
     const { context, send } = createChatRequestFixture();
-    context.rpcSources.set(
-      "run-default-global",
-      await createActiveRpcSourceForTest({
-        sessionId: "sess-default-global",
-        sessionKey: "global",
-      }),
-    );
-    context.rpcSources.set(
-      "run-work-global",
-      await createActiveRpcSourceForTest({
-        sessionId: "sess-work-global",
-        sessionKey: "global",
-        agentId: "work",
-      }),
-    );
+    await registerGlobalToolEventRun("run-default-global", "sess-default-global");
+    await registerGlobalToolEventRun("run-work-global", "sess-work-global", "work");
 
     await send({
       sessionKey: "agent:work:main",

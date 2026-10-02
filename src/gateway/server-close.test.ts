@@ -47,12 +47,12 @@ import {
   reserveSessionControllerSource,
 } from "../sessions/session-controller.mailbox.js";
 import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalMap, resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { killPidIfAlive } from "../test-utils/process-tree.js";
-import { removeChatAbortControllerEntry } from "./chat-abort.js";
 import { registerGatewayCloseListenerCases } from "./server-close.listeners.test-cases.js";
 import {
   createGatewayCloseTestDepsFactory,
@@ -1808,26 +1808,19 @@ describe("createGatewayCloseHandler", () => {
         bufferedEvent: { sessionKey: "session-1", payload: {} as never },
       },
     };
-    const rpcSources = new Map([
-      [
-        "run-1",
-        createRpcSourceForTest({
-          sessionId: "run-1",
-          sessionKey: "session-1",
-        }),
-      ],
+    rpcSourceTesting.reset([
+      ["run-1", createRpcSourceForTest({}, { sessionId: "run-1", sessionKey: "session-1" })],
       [
         "agent-run-1",
-        createRpcSourceForTest({
-          sessionId: "agent-run-1",
-          sessionKey: "session-1",
-          kind: "agent" as const,
-        }),
+        createRpcSourceForTest(
+          { kind: "agent" as const },
+          { sessionId: "agent-run-1", sessionKey: "session-1" },
+        ),
       ],
     ]);
-    const controller = rpcSources.get("run-1")!;
+    const controller = rpcSourceTesting.get("run-1")!;
     await claimRpcSourceForTest(controller);
-    const agentController = rpcSources.get("agent-run-1")!;
+    const agentController = rpcSourceTesting.get("agent-run-1")!;
     await claimRpcSourceForTest(agentController);
     const broadcast = vi.fn();
     const nodeSendToSession = vi.fn();
@@ -1836,7 +1829,6 @@ describe("createGatewayCloseHandler", () => {
         broadcast,
         nodeSendToSession,
         chatRunState,
-        rpcSources,
         removeChatRun: vi.fn(() => ({
           sessionKey: "session-1",
           clientRunId: "run-1",
@@ -1857,18 +1849,18 @@ describe("createGatewayCloseHandler", () => {
     expect(result.warnings).toContain("restart-reply-drain");
     expect(controller.input.abortSignal.aborted).toBe(true);
     expect(agentController.input.abortSignal.aborted).toBe(true);
-    expect(rpcSources.get("run-1")).toBe(controller);
-    expect(rpcSources.get("agent-run-1")).toBe(agentController);
+    expect(rpcSourceTesting.get("run-1")).toBe(controller);
+    expect(rpcSourceTesting.get("agent-run-1")).toBe(agentController);
     expect(controller.input.claim?.released).toBe(false);
     expect(agentController.input.claim?.released).toBe(false);
-    for (const [runId, source] of rpcSources) {
+    for (const [runId, source] of rpcSourceTesting) {
       const claim = source.input.claim!;
       claim.operation!.complete();
       releaseSessionControllerClaim(claim);
       await claim.settlement.promise;
-      expect(removeChatAbortControllerEntry(rpcSources, runId, source)).toBe(true);
+      expect(rpcSourceTesting.deleteExpected(runId, source)).toBe(true);
     }
-    expect(rpcSources.size).toBe(0);
+    expect(rpcSourceTesting.size).toBe(0);
     expect(chatRunState.runs.get("run-1")?.buffer).toBeUndefined();
     expect(chatRunState.runs.get("run-1")?.deltaSentAt).toBeUndefined();
     expect(chatRunState.runs.get("run-1")?.assistantScope).toBeUndefined();
@@ -1934,14 +1926,16 @@ describe("createGatewayCloseHandler", () => {
     await graceEntered.promise;
     const late = createRpcSourceForTest(
       {
-        sessionId: "late-grace-session",
-        sessionKey: "agent:main:late-grace",
         lifecycleGeneration: getAgentEventLifecycleGeneration(),
       },
-      { runId: "late-grace-run" },
+      {
+        runId: "late-grace-run",
+        sessionId: "late-grace-session",
+        sessionKey: "agent:main:late-grace",
+      },
     );
     const release = await claimRpcSourceForTest(late);
-    deps.rpcSources.set("late-grace-run", late);
+    rpcSourceTesting.set("late-grace-run", late);
     try {
       await vi.advanceTimersByTimeAsync(100);
       await closing;
@@ -2002,23 +1996,19 @@ describe("createGatewayCloseHandler", () => {
   });
 
   it("aborts queued turns before restart shutdown continues", async () => {
-    const rpcSources = new Map([
+    rpcSourceTesting.reset([
       [
         "queued-1",
         createRpcSourceForTest(
-          {
-            sessionId: "session-1",
-            sessionKey: "session-1",
-          },
-          { phase: "waiting" },
+          {},
+          { phase: "waiting", sessionId: "session-1", sessionKey: "session-1" },
         ),
       ],
     ]);
-    const controller = rpcSources.get("queued-1")!;
+    const controller = rpcSourceTesting.get("queued-1")!;
     let queuedAbortedAtRecovery: boolean | undefined;
     const close = createGatewayCloseHandler(
       createGatewayCloseTestDeps({
-        rpcSources,
         markMainSessionsAbortedForRestart: async () => {
           queuedAbortedAtRecovery = controller.input.abortSignal.aborted;
         },
@@ -2043,21 +2033,14 @@ describe("createGatewayCloseHandler", () => {
   });
 
   it("cancels remaining runs after ordinary shutdown grace without restart recovery", async () => {
-    const rpcSources = new Map([
-      [
-        "run-1",
-        createRpcSourceForTest({
-          sessionId: "run-1",
-          sessionKey: "session-1",
-        }),
-      ],
+    rpcSourceTesting.reset([
+      ["run-1", createRpcSourceForTest({}, { sessionId: "run-1", sessionKey: "session-1" })],
     ]);
-    const controller = rpcSources.get("run-1")!;
+    const controller = rpcSourceTesting.get("run-1")!;
     await claimRpcSourceForTest(controller);
     const getPendingReplyCount = vi.fn(() => 1);
     const markMainSessionsAbortedForRestart = vi.fn<MarkMainSessionsAbortedForRestart>();
     const deps = createGatewayCloseTestDeps({
-      rpcSources,
       getPendingReplyCount,
       markMainSessionsAbortedForRestart,
     });
@@ -2068,7 +2051,7 @@ describe("createGatewayCloseHandler", () => {
     expect(result.warnings).not.toContain("restart-reply-drain");
     expect(controller.input.abortSignal.aborted).toBe(true);
     expect(isAgentRunRestartAbortReason(controller.input.abortSignal.reason)).toBe(false);
-    expect([...rpcSources.values()]).toContain(controller);
+    expect([...rpcSourceTesting.values()]).toContain(controller);
     expect(controller.input.claim?.released).toBe(false);
     expect(getPendingReplyCount).not.toHaveBeenCalled();
     expect(markMainSessionsAbortedForRestart).not.toHaveBeenCalled();
@@ -2080,22 +2063,12 @@ describe("createGatewayCloseHandler", () => {
   });
 
   it("aborts active runs immediately when restart drain budget is exhausted", async () => {
-    const rpcSources = new Map([
-      [
-        "run-1",
-        createRpcSourceForTest({
-          sessionId: "run-1",
-          sessionKey: "session-1",
-        }),
-      ],
+    rpcSourceTesting.reset([
+      ["run-1", createRpcSourceForTest({}, { sessionId: "run-1", sessionKey: "session-1" })],
     ]);
-    const controller = rpcSources.get("run-1")!;
+    const controller = rpcSourceTesting.get("run-1")!;
     await claimRpcSourceForTest(controller);
-    const close = createGatewayCloseHandler(
-      createGatewayCloseTestDeps({
-        rpcSources,
-      }),
-    );
+    const close = createGatewayCloseHandler(createGatewayCloseTestDeps({}));
 
     const result = await close({
       reason: "gateway restarting",
@@ -2106,7 +2079,7 @@ describe("createGatewayCloseHandler", () => {
     expect(result.warnings).toContain("restart-reply-drain");
     expect(controller.input.abortSignal.aborted).toBe(true);
     expect(isAgentRunRestartAbortReason(controller.input.abortSignal.reason)).toBe(true);
-    expect([...rpcSources.values()]).toContain(controller);
+    expect([...rpcSourceTesting.values()]).toContain(controller);
     expect(controller.input.claim?.released).toBe(false);
     expect(
       mocks.logWarn.mock.calls.some(([message]) =>
@@ -2116,24 +2089,19 @@ describe("createGatewayCloseHandler", () => {
   });
 
   it("does not abort a finalizing completed run when restart drain expires", async () => {
-    const rpcSources = new Map([
+    rpcSourceTesting.reset([
       [
         "run-finalizing",
-        createRpcSourceForTest({
-          sessionId: "run-finalizing",
-          sessionKey: "session-finalizing",
-          projectSessionActive: false,
-          isAbortable: () => false,
-        }),
+        createRpcSourceForTest(
+          { projectSessionActive: false },
+          { sessionId: "run-finalizing", sessionKey: "session-finalizing" },
+        ),
       ],
     ]);
-    const controller = rpcSources.get("run-finalizing")!;
+    const controller = rpcSourceTesting.get("run-finalizing")!;
     await claimRpcSourceForTest(controller);
-    const close = createGatewayCloseHandler(
-      createGatewayCloseTestDeps({
-        rpcSources,
-      }),
-    );
+    controller.input.claim?.operation?.freezeAbort();
+    const close = createGatewayCloseHandler(createGatewayCloseTestDeps({}));
 
     const result = await close({
       reason: "gateway restarting",
@@ -2143,68 +2111,72 @@ describe("createGatewayCloseHandler", () => {
 
     expect(result.warnings).toContain("restart-reply-drain");
     expect(controller.input.abortSignal.aborted).toBe(false);
-    expect(rpcSources.has("run-finalizing")).toBe(true);
+    expect(rpcSourceTesting.has("run-finalizing")).toBe(true);
   });
 
   it("marks active main sessions for restart recovery before aborting restart-drained runs", async () => {
     const events: string[] = [];
-    const rpcSources = new Map([
+    rpcSourceTesting.reset([
       [
         "run-1",
-        createRpcSourceForTest({
-          sessionId: "session-id-1",
-          sessionKey: "agent:main:main",
-          lifecycleGeneration: getAgentEventLifecycleGeneration(),
-        }),
+        createRpcSourceForTest(
+          { lifecycleGeneration: getAgentEventLifecycleGeneration() },
+          { sessionId: "session-id-1", sessionKey: "agent:main:main" },
+        ),
       ],
       [
         "agent-run-1",
-        createRpcSourceForTest({
-          sessionId: "session-id-2",
-          sessionKey: "agent:main:test:direct:source",
-          lifecycleGeneration: getAgentEventLifecycleGeneration(),
-          kind: "agent" as const,
-        }),
+        createRpcSourceForTest(
+          { lifecycleGeneration: getAgentEventLifecycleGeneration(), kind: "agent" as const },
+          {
+            sessionId: "session-id-2",
+            sessionKey: "agent:main:test:direct:source",
+          },
+        ),
       ],
       [
         "completed-run",
-        createRpcSourceForTest({
-          sessionId: "completed-session-id",
-          sessionKey: "agent:main:completed",
-          lifecycleGeneration: getAgentEventLifecycleGeneration(),
-          projectSessionActive: false,
-          projectSessionTerminalPersisted: true,
-          registrationCleanupRequested: true,
-        }),
+        createRpcSourceForTest(
+          {
+            lifecycleGeneration: getAgentEventLifecycleGeneration(),
+            projectSessionActive: false,
+            projectSessionTerminalPersisted: true,
+          },
+          {
+            sessionId: "completed-session-id",
+            sessionKey: "agent:main:completed",
+          },
+        ),
       ],
       [
         "stale-run",
-        createRpcSourceForTest({
-          sessionId: "stale-session-id",
-          sessionKey: "agent:main:stale",
-          lifecycleGeneration: getAgentEventLifecycleGeneration(),
-        }),
+        createRpcSourceForTest(
+          { lifecycleGeneration: getAgentEventLifecycleGeneration() },
+          { sessionId: "stale-session-id", sessionKey: "agent:main:stale" },
+        ),
       ],
       [
         "hidden-run",
-        createRpcSourceForTest({
-          sessionId: "hidden-session-id",
-          sessionKey: "agent:main:hidden",
-          lifecycleGeneration: getAgentEventLifecycleGeneration(),
-          controlUiVisible: false,
-          kind: "agent" as const,
-        }),
+        createRpcSourceForTest(
+          {
+            lifecycleGeneration: getAgentEventLifecycleGeneration(),
+            controlUiVisible: false,
+            kind: "agent" as const,
+          },
+          { sessionId: "hidden-session-id", sessionKey: "agent:main:hidden" },
+        ),
       ],
     ]);
-    const controller = rpcSources.get("run-1")!;
+    const controller = rpcSourceTesting.get("run-1")!;
     await claimRpcSourceForTest(controller);
-    const agentController = rpcSources.get("agent-run-1")!;
+    const agentController = rpcSourceTesting.get("agent-run-1")!;
     await claimRpcSourceForTest(agentController);
-    const completedController = rpcSources.get("completed-run")!;
+    const completedController = rpcSourceTesting.get("completed-run")!;
     await claimRpcSourceForTest(completedController);
-    const alreadyAbortedController = rpcSources.get("stale-run")!;
+    completedController.input.retirementRequested = true;
+    const alreadyAbortedController = rpcSourceTesting.get("stale-run")!;
     await claimRpcSourceForTest(alreadyAbortedController);
-    const hiddenController = rpcSources.get("hidden-run")!;
+    const hiddenController = rpcSourceTesting.get("hidden-run")!;
     await claimRpcSourceForTest(hiddenController);
     requestRpcSourceCancellation(alreadyAbortedController);
     const chatRunState = createTestChatRunState();
@@ -2223,7 +2195,6 @@ describe("createGatewayCloseHandler", () => {
     });
     const close = createGatewayCloseHandler(
       createGatewayCloseTestDeps({
-        rpcSources,
         chatRunState,
         markMainSessionsAbortedForRestart,
         removeChatRun,
@@ -2295,23 +2266,26 @@ describe("createGatewayCloseHandler", () => {
 
   it("keeps post-terminal caller work in restart drain and recovery", async () => {
     const markMainSessionsAbortedForRestart = vi.fn<MarkMainSessionsAbortedForRestart>();
-    const rpcSources = new Map([
+    rpcSourceTesting.reset([
       [
         "post-terminal-run",
-        createRpcSourceForTest({
-          sessionId: "post-terminal-session-id",
-          sessionKey: "agent:main:post-terminal",
-          lifecycleGeneration: getAgentEventLifecycleGeneration(),
-          projectSessionActive: false,
-          projectSessionTerminalPersisted: true,
-        }),
+        createRpcSourceForTest(
+          {
+            lifecycleGeneration: getAgentEventLifecycleGeneration(),
+            projectSessionActive: false,
+            projectSessionTerminalPersisted: true,
+          },
+          {
+            sessionId: "post-terminal-session-id",
+            sessionKey: "agent:main:post-terminal",
+          },
+        ),
       ],
     ]);
-    const controller = rpcSources.get("post-terminal-run")!;
+    const controller = rpcSourceTesting.get("post-terminal-run")!;
     await claimRpcSourceForTest(controller);
     const close = createGatewayCloseHandler(
       createGatewayCloseTestDeps({
-        rpcSources,
         markMainSessionsAbortedForRestart,
       }),
     );
@@ -2351,26 +2325,29 @@ describe("createGatewayCloseHandler", () => {
     const broadcast = vi.fn();
     const markMainSessionsAbortedForRestart = vi.fn<MarkMainSessionsAbortedForRestart>();
     const nodeSendToSession = vi.fn();
-    const rpcSources = new Map([
+    rpcSourceTesting.reset([
       [
         "completed-run",
-        createRpcSourceForTest({
-          sessionId: "completed-session-id",
-          sessionKey: "agent:main:completed",
-          lifecycleGeneration: getAgentEventLifecycleGeneration(),
-          projectSessionActive: false,
-          projectSessionTerminalPersisted: false,
-          projectSessionTerminalPending: true,
-          registrationCleanupRequested: true,
-        }),
+        createRpcSourceForTest(
+          {
+            lifecycleGeneration: getAgentEventLifecycleGeneration(),
+            projectSessionActive: false,
+            projectSessionTerminalPersisted: false,
+            projectSessionTerminalPending: true,
+          },
+          {
+            sessionId: "completed-session-id",
+            sessionKey: "agent:main:completed",
+          },
+        ),
       ],
     ]);
-    const controller = rpcSources.get("completed-run")!;
+    const controller = rpcSourceTesting.get("completed-run")!;
     await claimRpcSourceForTest(controller);
+    controller.input.retirementRequested = true;
     const close = createGatewayCloseHandler(
       createGatewayCloseTestDeps({
         broadcast,
-        rpcSources,
         getPendingReplyCount: vi.fn().mockReturnValueOnce(1).mockReturnValue(0),
         markMainSessionsAbortedForRestart,
         nodeSendToSession,
@@ -2384,7 +2361,7 @@ describe("createGatewayCloseHandler", () => {
     });
 
     expect(controller.input.abortSignal.aborted).toBe(true);
-    expect([...rpcSources.values()]).toContain(controller);
+    expect([...rpcSourceTesting.values()]).toContain(controller);
     expect(controller.input.claim?.released).toBe(false);
     expect(markMainSessionsAbortedForRestart).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2406,25 +2383,28 @@ describe("createGatewayCloseHandler", () => {
 
   it("retains recovery after terminal persistence while the producer still owns cleanup", async () => {
     const markMainSessionsAbortedForRestart = vi.fn<MarkMainSessionsAbortedForRestart>();
-    const rpcSources = new Map([
+    rpcSourceTesting.reset([
       [
         "completed-run",
-        createRpcSourceForTest({
-          sessionId: "completed-session-id",
-          sessionKey: "agent:main:completed",
-          lifecycleGeneration: getAgentEventLifecycleGeneration(),
-          projectSessionActive: false,
-          projectSessionTerminalPersisted: false,
-          projectSessionTerminalPersistence: Promise.resolve(),
-          registrationCleanupRequested: true,
-        }),
+        createRpcSourceForTest(
+          {
+            lifecycleGeneration: getAgentEventLifecycleGeneration(),
+            projectSessionActive: false,
+            projectSessionTerminalPersisted: false,
+            projectSessionTerminalPersistence: Promise.resolve(),
+          },
+          {
+            sessionId: "completed-session-id",
+            sessionKey: "agent:main:completed",
+          },
+        ),
       ],
     ]);
-    const controller = rpcSources.get("completed-run")!;
+    const controller = rpcSourceTesting.get("completed-run")!;
     await claimRpcSourceForTest(controller);
+    controller.input.retirementRequested = true;
     const close = createGatewayCloseHandler(
       createGatewayCloseTestDeps({
-        rpcSources,
         getPendingReplyCount: vi.fn().mockReturnValueOnce(1).mockReturnValue(0),
         markMainSessionsAbortedForRestart,
       }),
@@ -2448,7 +2428,7 @@ describe("createGatewayCloseHandler", () => {
     );
     expect(controller.adapter.projectSessionTerminalPersisted).toBe(true);
     expect(controller.input.abortSignal.aborted).toBe(true);
-    expect([...rpcSources.values()]).toContain(controller);
+    expect([...rpcSourceTesting.values()]).toContain(controller);
     expect(controller.input.claim?.released).toBe(false);
   });
 
@@ -2456,25 +2436,28 @@ describe("createGatewayCloseHandler", () => {
     vi.useFakeTimers();
     const markMainSessionsAbortedForRestart = vi.fn<MarkMainSessionsAbortedForRestart>();
     const getPendingReplyCount = vi.fn().mockReturnValueOnce(1).mockReturnValue(0);
-    const rpcSources = new Map([
+    rpcSourceTesting.reset([
       [
         "persisting-run",
-        createRpcSourceForTest({
-          sessionId: "persisting-session-id",
-          sessionKey: "agent:main:persisting",
-          lifecycleGeneration: getAgentEventLifecycleGeneration(),
-          projectSessionActive: false,
-          projectSessionTerminalPersisted: false,
-          projectSessionTerminalPersistence: new Promise<void>(() => {}),
-          registrationCleanupRequested: true,
-        }),
+        createRpcSourceForTest(
+          {
+            lifecycleGeneration: getAgentEventLifecycleGeneration(),
+            projectSessionActive: false,
+            projectSessionTerminalPersisted: false,
+            projectSessionTerminalPersistence: new Promise<void>(() => {}),
+          },
+          {
+            sessionId: "persisting-session-id",
+            sessionKey: "agent:main:persisting",
+          },
+        ),
       ],
     ]);
-    const controller = rpcSources.get("persisting-run")!;
+    const controller = rpcSourceTesting.get("persisting-run")!;
     await claimRpcSourceForTest(controller);
+    controller.input.retirementRequested = true;
     const close = createGatewayCloseHandler(
       createGatewayCloseTestDeps({
-        rpcSources,
         getPendingReplyCount,
         markMainSessionsAbortedForRestart,
       }),
@@ -2496,21 +2479,19 @@ describe("createGatewayCloseHandler", () => {
     vi.useFakeTimers();
     const getPendingReplyCount = vi.fn().mockReturnValueOnce(1).mockReturnValue(0);
     const { promise: markerPending, resolve: finishMarker } = createDeferredCore();
-    const rpcSources = new Map([
+    rpcSourceTesting.reset([
       [
         "active-run",
-        createRpcSourceForTest({
-          sessionId: "active-session-id",
-          sessionKey: "agent:main:active",
-          lifecycleGeneration: getAgentEventLifecycleGeneration(),
-        }),
+        createRpcSourceForTest(
+          { lifecycleGeneration: getAgentEventLifecycleGeneration() },
+          { sessionId: "active-session-id", sessionKey: "agent:main:active" },
+        ),
       ],
     ]);
-    const controller = rpcSources.get("active-run")!;
+    const controller = rpcSourceTesting.get("active-run")!;
     await claimRpcSourceForTest(controller);
     const close = createGatewayCloseHandler(
       createGatewayCloseTestDeps({
-        rpcSources,
         getPendingReplyCount,
         markMainSessionsAbortedForRestart: () => markerPending,
       }),
@@ -2583,21 +2564,19 @@ describe("createGatewayCloseHandler", () => {
   });
 
   it("continues restart shutdown when marking active main sessions fails", async () => {
-    const rpcSources = new Map([
+    rpcSourceTesting.reset([
       [
         "run-1",
-        createRpcSourceForTest({
-          sessionId: "session-id-1",
-          sessionKey: "agent:main:main",
-          lifecycleGeneration: getAgentEventLifecycleGeneration(),
-        }),
+        createRpcSourceForTest(
+          { lifecycleGeneration: getAgentEventLifecycleGeneration() },
+          { sessionId: "session-id-1", sessionKey: "agent:main:main" },
+        ),
       ],
     ]);
-    const controller = rpcSources.get("run-1")!;
+    const controller = rpcSourceTesting.get("run-1")!;
     await claimRpcSourceForTest(controller);
     const close = createGatewayCloseHandler(
       createGatewayCloseTestDeps({
-        rpcSources,
         markMainSessionsAbortedForRestart: vi.fn(async () => {
           throw new Error("marker unavailable");
         }),
@@ -2612,7 +2591,7 @@ describe("createGatewayCloseHandler", () => {
 
     expect(result.warnings).toContain("restart-main-session-marker");
     expect(controller.input.abortSignal.aborted).toBe(true);
-    expect([...rpcSources.values()]).toContain(controller);
+    expect([...rpcSourceTesting.values()]).toContain(controller);
     expect(controller.input.claim?.released).toBe(false);
     expect(
       mocks.logWarn.mock.calls.some(([message]) =>

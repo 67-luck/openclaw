@@ -13,9 +13,14 @@ import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.j
 import { bindReplySourceInput } from "../../auto-reply/reply/reply-source-binding.js";
 import { createPluginRuntime } from "../../plugins/runtime/index.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import {
+  updateRpcSourceSessionId,
+  type RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { controlRealtimeVoiceAgentRun } from "../../talk/agent-run-control.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { registerChatAbortController, type ChatAbortControllerEntry } from "../chat-abort.js";
+import { registerChatAbortController } from "../chat-abort.js";
 import { sharingPolicyClient } from "../session-sharing.test-utils.js";
 import { prepareTalkClientControlAuthority } from "./client-agent-consult.js";
 import { resolveTalkAgentConsultAuthority } from "./client-gateway-control.js";
@@ -54,10 +59,9 @@ it.each([true, false])(
       client.connect.caps = ["tool-events", "task-suggestions"];
       const sessionTarget = prepareTalkSessionTarget(config, "agent:main:main");
       const authority = resolveTalkAgentConsultAuthority(client.connect.scopes, client);
-      const context = { rpcSources: new Map<string, ChatAbortControllerEntry>() };
+      const context = { rpcSourceTesting: new Map<string, RpcSourceRef>() };
       const runId = "talk-authority-run";
       const registration = registerChatAbortController({
-        rpcSources: context.rpcSources,
         runId,
         sessionId: "queued-session",
         sessionKey: sessionTarget.canonicalKey,
@@ -88,7 +92,7 @@ it.each([true, false])(
             throw new Error("Missing real reply admission");
           }
           const operation = params.replyOperation;
-          registration.entry.adapter.sessionId = params.sessionId;
+          updateRpcSourceSessionId(registration.entry, params.sessionId);
           const admittedRunContext = await params.preparedRunAdmission.admit(
             "embedded",
             "talk-chat-test",
@@ -122,7 +126,6 @@ it.each([true, false])(
               } satisfies Parameters<typeof setActiveEmbeddedRun>[1];
               const captureTarget = () =>
                 resolveOwnedActiveTalkRunTarget({
-                  context,
                   clientConnId: "talk-authority-client",
                   sessionTarget,
                   scope: { kind: "session" },

@@ -1,3 +1,4 @@
+import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 /** Recursive spawn authority must survive the real Gateway and agent-command admission path. */
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
@@ -253,7 +254,7 @@ function readBoundExecutionState(
   const receipt = childRunId ? context.dedupe.get(`agent:${childRunId}`) : undefined;
   const payload = asOptionalRecord(receipt?.payload);
   const cause = asOptionalRecord(asOptionalRecord(receipt?.error)?.cause);
-  const controller = childRunId ? context.rpcSources.get(childRunId) : undefined;
+  const controller = childRunId ? rpcSourceTesting.get(childRunId) : undefined;
   const execution = childRunId ? subagentRuns.get(childRunId)?.execution : undefined;
   const collector = childRunId ? subagentRuns.get(childRunId) : undefined;
   const label = (value: unknown, allowed: readonly string[]) =>
@@ -328,7 +329,7 @@ async function closeBoundGateway(
       () => {
         expect(bound.execution.hasPendingWork).toBe(false);
         if (childRunId) {
-          expect(bound.context.rpcSources.has(childRunId)).toBe(false);
+          expect(rpcSourceTesting.has(childRunId)).toBe(false);
         }
         // Fence new work in the same turn that observes idle; never start an unbounded drain.
         return bound.execution.drain();
@@ -478,7 +479,7 @@ describe("recursive spawn production boundary", () => {
         provider: "custom",
         model: "child-model",
       });
-      expect(context.rpcSources.get(details.runId)?.adapter).toMatchObject({
+      expect(rpcSourceTesting.get(details.runId)?.adapter).toMatchObject({
         agentId: "main",
         sessionKey: details.childSessionKey,
         operationalRunInstance: { runId: details.runId },
@@ -686,7 +687,7 @@ describe("recursive spawn production boundary", () => {
             );
           }
           expect(runEmbeddedAgent).not.toHaveBeenCalled();
-          expect(context.rpcSources.has(childRunId)).toBe(false);
+          expect(rpcSourceTesting.has(childRunId)).toBe(false);
           expect(
             loadSessionEntry({ storePath: bound.storePath, sessionKey: parentSessionKey }),
           ).toMatchObject({ sessionId: "parent-session" });
@@ -704,7 +705,7 @@ describe("recursive spawn production boundary", () => {
         if (parentState === "stopped" || parentState === "operator-stopped") {
           await Promise.resolve();
           expect(runEmbeddedAgent).not.toHaveBeenCalled();
-          expect(context.rpcSources.has(childRunId)).toBe(false);
+          expect(rpcSourceTesting.has(childRunId)).toBe(false);
           expect(subagentRuns.get(childRunId)).toMatchObject({
             collectorCompletion: { status: "killed" },
           });
@@ -714,7 +715,7 @@ describe("recursive spawn production boundary", () => {
             runId: childRunId,
             sessionKey: details.childSessionKey,
           });
-          expect(context.rpcSources.get(childRunId)?.adapter).toMatchObject({
+          expect(rpcSourceTesting.get(childRunId)?.adapter).toMatchObject({
             sessionKey: details.childSessionKey,
             operationalRunInstance: { runId: childRunId },
           });

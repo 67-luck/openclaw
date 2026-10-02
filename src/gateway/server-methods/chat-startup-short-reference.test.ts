@@ -49,7 +49,6 @@ describe("chat.startup short references", () => {
           broadcastToConnIds,
           sessionEventSubscribers: subscribers,
           sessionMessageSubscribers: { get: () => new Set() },
-          rpcSources: new Map(),
         });
         const lateMessage = { role: "assistant", content: "Arrived during startup", timestamp: 2 };
         const readChatStartupProjection = vi.fn(async () => {

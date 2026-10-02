@@ -74,9 +74,10 @@ export async function runReplyQuestionInput(
     followupRun.operatorAuthority?.assertCurrent();
   };
   const state = resolveReplyOperationRunState(opts);
-  const injection = followupRun.controllerInput
-    ? beginSessionControllerSourceInjection(followupRun.controllerInput)
-    : undefined;
+  const injection =
+    followupRun.controllerInput && !followupRun.controllerInput.claim
+      ? beginSessionControllerSourceInjection(followupRun.controllerInput)
+      : undefined;
   let consumed = false;
   try {
     if (injection && !(await injection.admit())) {

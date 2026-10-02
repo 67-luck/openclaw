@@ -88,7 +88,6 @@ export async function prepareGatewayLifecycle(params: {
     readinessEventLoopHealth,
     browserAuthRateLimiter,
     chatRunState,
-    rpcSources,
     removeChatRun,
     agentRunSeq,
     listActiveGatewayMethods,
@@ -502,7 +501,6 @@ export async function prepareGatewayLifecycle(params: {
       {
         resolveGatewayContext: runtime.resolvePluginGatewayContext,
         chatRunState,
-        rpcSources,
         restartRecoveryCandidates,
         removeChatRun,
         agentRunSeq,

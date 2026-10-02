@@ -5,7 +5,11 @@ import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
 import type { createGatewayInstanceRuntime } from "../../../gateway/server-instance-runtime.js";
 import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
 import { withTimeout } from "../../../infra/fs-safe.js";
-import { requestRpcSourceCancellation } from "../../../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSourceIdentity,
+  requestRpcSourceCancellation,
+} from "../../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import type { AdmittedRunOperatorAuthority } from "../../admitted-run-context.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { persistSubagentRunsToDiskOrThrow } from "../registry/subagent-registry-state.js";
@@ -80,10 +84,10 @@ export function registerOperatorSpawnRollbackCases(options: {
           childSessionKey = record.childSessionKey;
           childRunId = record.runId;
           const acceptedRun = expectDefined(
-            context.rpcSources.get(record.runId),
+            rpcSourceTesting.get(record.runId),
             "accepted child execution owner",
           );
-          expect(acceptedRun.adapter.sessionKey).toBe(record.childSessionKey);
+          expect(getRpcSourceIdentity(acceptedRun).sessionKey).toBe(record.childSessionKey);
           source.revoke();
           throw new Error("ordinary child registry write failed");
         });
@@ -108,7 +112,7 @@ export function registerOperatorSpawnRollbackCases(options: {
           expect(options.runEmbeddedAgent).not.toHaveBeenCalled();
         } else {
           const runId = expectDefined(childRunId, "accepted child run");
-          expect(context.rpcSources.has(runId)).toBe(false);
+          expect(rpcSourceTesting.has(runId)).toBe(false);
           expect(context.dedupe.get(`agent:${runId}`)).toMatchObject({
             payload: { runId, status: expect.stringMatching(/^(error|timeout)$/) },
           });
@@ -125,7 +129,7 @@ export function registerOperatorSpawnRollbackCases(options: {
       } finally {
         spawnTesting.setDepsForTest();
         vi.mocked(persistSubagentRunsToDiskOrThrow).mockReset();
-        for (const entry of context.rpcSources.values()) {
+        for (const entry of rpcSourceTesting.values()) {
           if (entry !== bound.parent.entry) {
             requestRpcSourceCancellation(entry, new Error("spawn rollback fixture cleanup"));
           }

@@ -1,4 +1,4 @@
-import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import "../agents/subagents/spawn/subagent-spawn-model.mocks.shared.js";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
@@ -147,7 +147,6 @@ describe("queued collector session projection", () => {
     const publishLifecycle = createLifecycleEventBroadcastHandler({
       broadcastToConnIds: broadcast,
       sessionEventSubscribers: { getAll: () => new Set(["observer"]) },
-      rpcSources: context.rpcSources,
       getSessionRowProjection: () => getSessionRowProjection(context),
     });
     const unsubscribe = onSessionLifecycleEvent((event) => {
@@ -422,7 +421,6 @@ describe("queued collector session projection", () => {
       expect(isSubagentRunQueued(entry)).toBe(true);
       expect(
         resolveVisibleActiveSessionRunState({
-          context,
           requestedKey: entry.childSessionKey,
           canonicalKey: entry.childSessionKey,
         }),
@@ -438,7 +436,6 @@ describe("queued collector session projection", () => {
     await expectPreparing();
     expect(
       resolveVisibleActiveSessionRunState({
-        context,
         requestedKey: entry.childSessionKey,
         canonicalKey: entry.childSessionKey,
         agentId: "other",
@@ -603,80 +600,59 @@ describe("queued collector session projection", () => {
     }
   });
 
-  it.each([
-    "foreign requester",
-    "parent replaced",
-    "parent closed",
-    "parent settled",
-    "parent lifecycle retired",
-    "session access revoked",
-    "reservation withdrawn",
-    "registry replaced",
-  ])("rejects queued-child Stop when %s", async (failure) => {
-    const { entry, registration } = await createQueuedReservation();
-    const unrelated = await createQueuedReservation("unrelated");
-    const context = requestContext();
-    const parent = expectDefined(context.rpcSources.get("parent-turn"), "parent admission");
-    let authorizationObserved = false;
-    let accessRevoked = false;
-    const authorization = createDeferred();
-    // Preserve the post-authorization microtask race, but join queued registration's durable setup.
-    const mutation = authorization.promise.then(async () => {
-      if (!authorizationObserved) {
-        return;
-      }
-      if (failure === "parent replaced") {
-        context.rpcSources.set("parent-turn", { ...parent });
-      }
-      if (failure === "parent closed") {
-        requestRpcSourceCancellation(parent);
-      }
-      if (failure === "parent settled") {
-        parent.adapter.isAbortable = () => false;
-      }
-      if (failure === "parent lifecycle retired") {
-        parent.adapter.lifecycleGeneration = "retired";
-      }
-      if (failure === "session access revoked") {
-        accessRevoked = true;
-      }
-      if (failure === "reservation withdrawn") {
-        removeQueuedSwarmRun(entry.runId);
-      }
-      if (failure === "registry replaced") {
-        await registerSubagentRun(registration);
-      }
-    });
-    const assertCurrent = () => {
-      if (!authorizationObserved) {
-        authorizationObserved = true;
-        authorization.resolve();
-      }
-      if (accessRevoked) {
-        throw new Error("Session mutation authorization changed");
-      }
-    };
-    const respond = vi.fn();
-    const abort = abortCollector({
-      params: { key: entry.childSessionKey, runId: entry.runId, agentId: "main" },
-      client: operatorClient(
-        failure === "foreign requester" ? "other-requester" : "parent-requester",
-      ),
-      context,
-      respond,
-      sessionMutationAuthorization: { assertCurrent, assertTargetCurrent: assertCurrent },
-    });
-    await Promise.all([Promise.resolve(abort).finally(() => authorization.resolve()), mutation]);
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({ code: expect.any(String) }),
-    );
-    expect(entry.execution.endedAt).toBeUndefined();
-    expect(entry.collectorCompletion).toBeUndefined();
-    expect(isSubagentRunQueued(unrelated.entry)).toBe(true);
-    expect(launchedRunIds).toEqual([]);
-  });
+  it.each(["session access revoked", "reservation withdrawn", "registry replaced"])(
+    "rejects queued-child Stop when %s",
+    async (failure) => {
+      const { entry, registration } = await createQueuedReservation();
+      const unrelated = await createQueuedReservation("unrelated");
+      const context = requestContext();
+      let authorizationObserved = false;
+      let accessRevoked = false;
+      const authorization = createDeferred();
+      // Preserve the post-authorization microtask race, but join queued registration's durable setup.
+      const mutation = authorization.promise.then(async () => {
+        if (!authorizationObserved) {
+          return;
+        }
+        if (failure === "session access revoked") {
+          accessRevoked = true;
+        }
+        if (failure === "reservation withdrawn") {
+          removeQueuedSwarmRun(entry.runId);
+        }
+        if (failure === "registry replaced") {
+          await registerSubagentRun(registration);
+        }
+      });
+      const assertCurrent = () => {
+        if (!authorizationObserved) {
+          authorizationObserved = true;
+          authorization.resolve();
+        }
+        if (accessRevoked) {
+          throw new Error("Session mutation authorization changed");
+        }
+      };
+      const respond = vi.fn();
+      const abort = abortCollector({
+        params: { key: entry.childSessionKey, runId: entry.runId, agentId: "main" },
+        client: operatorClient("parent-requester"),
+        context,
+        respond,
+        sessionMutationAuthorization: { assertCurrent, assertTargetCurrent: assertCurrent },
+      });
+      await Promise.all([Promise.resolve(abort).finally(() => authorization.resolve()), mutation]);
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({ code: expect.any(String) }),
+      );
+      expect(entry.execution.endedAt).toBeUndefined();
+      expect(entry.collectorCompletion).toBeUndefined();
+      expect(isSubagentRunQueued(unrelated.entry)).toBe(true);
+      expect(launchedRunIds).toEqual([]);
+    },
+  );
 
   it("rejects typed queued-child Stop after session access is revoked", async () => {
     const { entry } = await createQueuedReservation();
@@ -813,13 +789,13 @@ describe("queued collector session projection", () => {
           await finish.promise;
         } finally {
           if (scenario === "parent-retired" && admission.activeRunAbort.controller.signal.aborted) {
-            context.rpcSources.delete("parent-turn");
+            rpcSourceTesting.delete("parent-turn");
           }
           releaseClaim();
           cleanup();
         }
       })();
-      expect(context.rpcSources.get(extraRunId)).toBe(admission.activeRunAbort.entry);
+      expect(rpcSourceTesting.get(extraRunId)).toBe(admission.activeRunAbort.entry);
       expect(isSubagentRunQueued(entry)).toBe(true);
       try {
         const respond = vi.fn();
@@ -847,11 +823,11 @@ describe("queued collector session projection", () => {
           await handleChatSend(options);
         }
         const stopped = !foreign && !exact;
-        const collectorStopped = stopped && scenario === "owned";
+        const collectorStopped = stopped && (scenario === "owned" || scenario === "parent-retired");
         expect.soft(respond.mock.calls[0]?.[0]).toBe(collectorStopped);
         if (foreignAdmission) {
           expect(foreignAdmission.activeRunAbort.controller.signal.aborted).toBe(false);
-          expect(context.rpcSources.get(foreignRunId)).toBe(foreignAdmission.activeRunAbort.entry);
+          expect(rpcSourceTesting.get(foreignRunId)).toBe(foreignAdmission.activeRunAbort.entry);
           expect
             .soft(respond)
             .toHaveBeenCalledWith(
@@ -863,15 +839,6 @@ describe("queued collector session projection", () => {
         expect.soft(admission.activeRunAbort.controller.signal.aborted).toBe(stopped);
         expect.soft(isSubagentRunQueued(entry)).toBe(!collectorStopped);
         expect.soft(context.chatRunState.hasAbortMarker(extraRunId)).toBe(stopped);
-        if (scenario === "parent-retired") {
-          expect(respond).toHaveBeenCalledWith(
-            false,
-            undefined,
-            expect.objectContaining({
-              message: expect.stringContaining("Unauthorized queued collector Stop"),
-            }),
-          );
-        }
         expect
           .soft(admission.activeRunAbort.entry?.adapter.abortStopReason)
           .toBe(stopped ? (method === "chat.send" ? "stop" : "rpc") : undefined);

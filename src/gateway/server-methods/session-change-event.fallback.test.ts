@@ -116,7 +116,6 @@ it.each(["capture", "preparation", "canonical deferral"] as const)(
       const context = {
         ...bindSessionRowProjection({}, () => projection),
         broadcastToConnIds: broadcast,
-        rpcSources: connection.rpcSources,
         getRuntimeConfig: () => cfg,
         getSessionEventSubscriberConnIds: () => new Set(["conn-1", "no-read"]),
       };
@@ -238,7 +237,6 @@ it.each(ownerCases)(
       const context = {
         ...bindSessionRowProjection({}, () => projection),
         broadcastToConnIds: broadcast,
-        rpcSources: new Map(),
         getRuntimeConfig: () => cfg,
         getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
       };

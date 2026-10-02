@@ -10,8 +10,9 @@ import { managedWorktrees } from "../agents/worktrees/service.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
 import {
   copyGitWorkspace,
@@ -177,7 +178,7 @@ test.each([
       }
       let sessionKey: string | undefined;
       const pastedText = `Pasted deployment plan ${"x".repeat(2_000)}`;
-      const context = { rpcSources: new Map<string, ChatAbortControllerEntry>() };
+      const context = { rpcSourceTesting: new Map<string, RpcSourceRef>() };
       const message = "Review this rollout [[reply_to_current]]";
       const attachment = {
         type: "file",

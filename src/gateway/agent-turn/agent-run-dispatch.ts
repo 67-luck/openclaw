@@ -26,7 +26,12 @@ import { agentCommandFromGatewayIngress } from "../../commands/agent.js";
 import { isAbortError } from "../../infra/abort-signal.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { formatErrorMessage, toErrorObject } from "../../infra/errors.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  type RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { errorShapeFromError } from "../error-shape.js";
 import type { GatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
 import { setGatewayDedupeEntries } from "./agent-dedupe.js";
@@ -44,7 +49,7 @@ import {
 import { bindGatewayAgentTerminalProducer } from "./agent-run-terminal-producer.js";
 import type { AgentTurnContext, AgentTurnIo } from "./types.js";
 
-export function resolveAbortedAgentStopReason(entry?: ChatAbortControllerEntry): string {
+export function resolveAbortedAgentStopReason(entry?: RpcSourceRef): string {
   return entry?.adapter.abortStopReason?.trim() || "rpc";
 }
 
@@ -52,14 +57,14 @@ export function dispatchAgentRunFromGateway(params: {
   assertCurrent?: () => void;
   assertSettlementCurrent?: () => void;
   followupCompletion?: FollowupCompletionOwner;
-  admittedRunEntry: ChatAbortControllerEntry | undefined;
+  admittedRunEntry: RpcSourceRef | undefined;
   ingressOpts: Parameters<typeof agentCommandFromGatewayIngress>[0];
   runId: string;
   cronCreatorAuthority?: GatewayCronCreatorAuthorityAdmission;
   dedupeKeys: readonly string[];
   /**
    * Controller whose signal is wired into `ingressOpts.abortSignal`. Used on
-   * completion to drop the matching `rpcSources` entry without
+   * completion to retire the matching controller source without
    * touching a same-runId entry owned by a concurrent chat.send.
    */
   abortController: Pick<AbortController, "signal" | "abort">;
@@ -83,19 +88,29 @@ export function dispatchAgentRunFromGateway(params: {
   );
   const assertSettlementCurrent = params.assertSettlementCurrent;
   const registeredRunEntry = params.admittedRunEntry;
-  const jobSessionBinding = registeredRunEntry?.adapter ?? params.ingressOpts;
+  const captureJobSession = () =>
+    captureAgentJobSession(
+      registeredRunEntry
+        ? {
+            ...getRpcSourceIdentity(registeredRunEntry),
+            lifecycleGeneration: getRpcSourceLifecycleGeneration(registeredRunEntry),
+          }
+        : params.ingressOpts,
+    );
   const registeredRunInstance = registeredRunEntry?.adapter.operationalRunInstance;
-  const registeredLifecycleGeneration = registeredRunEntry?.adapter.lifecycleGeneration;
-  const registeredSessionKey = registeredRunEntry?.adapter.sessionKey;
+  const registeredLifecycleGeneration =
+    registeredRunEntry && getRpcSourceLifecycleGeneration(registeredRunEntry);
+  const registeredSessionKey =
+    registeredRunEntry && getRpcSourceIdentity(registeredRunEntry).sessionKey;
   const ownsRunRegistration = () => {
-    const current = params.context.rpcSources.get(params.runId);
+    const current = getRpcSource(params.runId);
     return (
       !current ||
       (current === registeredRunEntry &&
         current.input.abortSignal === params.abortController.signal &&
         current.adapter.operationalRunInstance === registeredRunInstance &&
-        current.adapter.lifecycleGeneration === registeredLifecycleGeneration &&
-        current.adapter.sessionKey === registeredSessionKey)
+        getRpcSourceLifecycleGeneration(current) === registeredLifecycleGeneration &&
+        getRpcSourceIdentity(current).sessionKey === registeredSessionKey)
     );
   };
   const assertCurrent = () => {
@@ -112,11 +127,12 @@ export function dispatchAgentRunFromGateway(params: {
     try {
       await followupCompletion.settle(params.runId, reply, () => {
         assertSettlementCurrent?.();
-        const current = params.context.rpcSources.get(params.runId);
+        const current = getRpcSource(params.runId);
         // Another session may reuse the run ID without adopting this retained result.
         if (
           !ownsRunRegistration() &&
-          (current === registeredRunEntry || current?.adapter.sessionKey === registeredSessionKey)
+          (current === registeredRunEntry ||
+            (current && getRpcSourceIdentity(current).sessionKey === registeredSessionKey))
         ) {
           throw new Error("Followup physical execution lost its Gateway registration.");
         }
@@ -168,7 +184,6 @@ export function dispatchAgentRunFromGateway(params: {
     entry: registeredRunEntry,
     controller: params.abortController,
     ingressOpts: params.ingressOpts,
-    rpcSources: params.context.rpcSources,
     isOwnerReleased: () => runOwnerCleanedUp,
   });
   const ingressOptsWithSpawnFacts = withAgentCommandExecutionIdentitySpawnFacts(
@@ -193,8 +208,8 @@ export function dispatchAgentRunFromGateway(params: {
       if (
         !registeredRunEntry ||
         !ownsRunRegistration() ||
-        params.context.rpcSources.get(params.runId) !== registeredRunEntry ||
-        registeredRunEntry.adapter.registrationCleanupRequested
+        getRpcSource(params.runId) !== registeredRunEntry ||
+        registeredRunEntry.input.retirementRequested
       ) {
         throw new Error("Followup no longer owns its Gateway run registration.");
       }
@@ -299,7 +314,7 @@ export function dispatchAgentRunFromGateway(params: {
         setGatewayDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.dedupeKeys,
-          session: captureAgentJobSession(jobSessionBinding),
+          session: captureJobSession(),
           entry: diagnostics.forReplay({
             ts: Date.now(),
             ok: true,
@@ -318,7 +333,7 @@ export function dispatchAgentRunFromGateway(params: {
         setGatewayDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.dedupeKeys,
-          session: captureAgentJobSession(jobSessionBinding),
+          session: captureJobSession(),
           entry: diagnostics.forReplay({
             ts: Date.now(),
             ok: false,
@@ -399,7 +414,7 @@ export function dispatchAgentRunFromGateway(params: {
         setGatewayDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.dedupeKeys,
-          session: captureAgentJobSession(jobSessionBinding),
+          session: captureJobSession(),
           entry: diagnostics.forReplay({
             ts: Date.now(),
             ok: aborted && settlementPersisted,

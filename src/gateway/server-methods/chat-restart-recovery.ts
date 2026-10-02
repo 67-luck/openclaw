@@ -26,6 +26,10 @@ import { findRestartRecoveryUnsafeChatAdmissionHook } from "../../plugins/restar
 import { isCronSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
 import { isAgentHarnessSessionKey } from "../../sessions/agent-harness-session-key.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import {
+  getRpcSourceIdentity,
+  listRpcSourceEntries,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { findSessionControllerEntry } from "../../sessions/session-controller.state.js";
 import { isAcpSessionKey, resolveSessionDispatchKind } from "../../sessions/session-key-utils.js";
 import { recordGatewaySessionRunFailure } from "../../sessions/session-run-error.js";
@@ -265,7 +269,6 @@ function hasRestartUnsafeChatWork(params: {
   activeRunScopeKey: string;
   clientRunId: string;
   storePath: string;
-  context: Pick<GatewayRequestContext, "rpcSources">;
   sessionId: string;
   sessionKey: string;
   agentId: string;
@@ -289,22 +292,20 @@ function hasRestartUnsafeChatWork(params: {
   ) {
     return true;
   }
-  for (const runs of [params.context.rpcSources]) {
-    for (const [runId, active] of runs ?? []) {
-      if (runId === params.clientRunId) {
-        continue;
-      }
-      if (
-        (active.adapter.sessionKey === params.sessionKey ||
-          active.adapter.sessionId === params.sessionId) &&
-        resolveChatRunOwnerAgentId({
-          agentId: active.adapter.agentId,
-          sessionKey: active.adapter.sessionKey,
-          defaultAgentId: params.agentId,
-        }) === params.agentId
-      ) {
-        return true;
-      }
+  for (const [runId, active] of listRpcSourceEntries()) {
+    if (runId === params.clientRunId) {
+      continue;
+    }
+    const identity = getRpcSourceIdentity(active);
+    if (
+      (identity.sessionKey === params.sessionKey || identity.sessionId === params.sessionId) &&
+      resolveChatRunOwnerAgentId({
+        agentId: identity.agentId,
+        sessionKey: identity.sessionKey,
+        defaultAgentId: params.agentId,
+      }) === params.agentId
+    ) {
+      return true;
     }
   }
   return false;
@@ -315,7 +316,7 @@ export function resolveRestartSafeChatAdmission(params: {
   agentId: string;
   cfg: OpenClawConfig;
   clientRunId: string;
-  context: Pick<GatewayRequestContext, "rpcSources" | "workerSessionPlacementService">;
+  context: Pick<GatewayRequestContext, "workerSessionPlacementService">;
   entry?: SessionEntry;
   initialSessionEntry?: SessionEntry;
   now: number;

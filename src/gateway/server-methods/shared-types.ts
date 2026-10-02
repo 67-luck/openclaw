@@ -26,7 +26,6 @@ import type {
 } from "../../infra/system-agent-approvals.js";
 import type { SubsystemLogger } from "../../logging/subsystem.js";
 import type { PluginRuntimeCore } from "../../plugins/runtime/types-core.js";
-import type { RpcSourceIndex } from "../../sessions/session-controller.rpc-sources.js";
 import type { SystemAgentOperation } from "../../system-agent/operation-types.js";
 import type { WizardSession } from "../../wizard/session.js";
 import type { AgentRuntimeApprovalAuthorityValidator } from "../agent-runtime-approval-authority.js";
@@ -290,8 +289,6 @@ type GatewayKernelContext = {
   enforceSharedGatewayAuthGenerationForConfigWrite?: (nextConfig: OpenClawConfig) => void;
   nodeRegistry: NodeRegistry;
   agentRunSeq: Map<string, number>;
-  /** Exact RPC input refs; the session controller owns preparation, queueing, and execution. */
-  rpcSources: RpcSourceIndex;
   chatRunState: ChatRunState;
   addChatRun: (sessionId: string, entry: ChatRunRegistration) => void;
   removeChatRun: (

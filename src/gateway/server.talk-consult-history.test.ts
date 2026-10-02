@@ -23,6 +23,7 @@ import {
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store-writer-state.js";
 import { captureSessionControllerSettlement } from "../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -155,7 +156,6 @@ beforeEach(async () => {
     broadcastToConnIds: broadcast,
     sessionEventSubscribers: { getAll: () => new Set([connectionId]) },
     sessionMessageSubscribers: { get: () => new Set([connectionId]) },
-    rpcSources: context.rpcSources,
   });
   unsubscribe = onInternalSessionTranscriptUpdate((update) => {
     if ((update.target?.sessionId ?? update.sessionId) !== sessionId) {
@@ -218,7 +218,7 @@ async function waitForDispatchEnd() {
     scope: storePath,
     identities: [canonicalKey, sessionId],
   });
-  expect(context.rpcSources.size).toBe(0);
+  expect(rpcSourceTesting.size).toBe(0);
 }
 async function drainPublications() {
   await Promise.all(publications);

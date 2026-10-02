@@ -1,3 +1,4 @@
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 /** Parent cancellation survives an unreadable descendant partition without hiding failure. */
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
@@ -33,8 +34,14 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
-import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
-import { requestRpcSourceCancellation } from "../../sessions/session-controller.rpc-sources.js";
+import {
+  beginSessionEffect,
+  captureSessionTarget,
+} from "../../sessions/session-controller.lifecycle.js";
+import {
+  registerRpcSource,
+  requestRpcSourceCancellation,
+} from "../../sessions/session-controller.rpc-sources.js";
 import {
   closeOpenClawAgentDatabaseByPath,
   openOpenClawAgentDatabase,
@@ -71,7 +78,7 @@ it.each(["exact", "session cascade", "typed stop", "channel stop", "embedded sto
     const sessionKey = "agent:main:main";
     const badKey = "agent:broken:subagent:bad";
     const healthyKey = "agent:main:subagent:healthy";
-    await writeSubagentSessionEntry({
+    const parentStore = await writeSubagentSessionEntry({
       stateDir: fixture.stateDir,
       agentId: "main",
       sessionKey,
@@ -126,6 +133,7 @@ it.each(["exact", "session cascade", "typed stop", "channel stop", "embedded sto
     const cfg = getRuntimeConfig();
     const parent = createActiveRun(sessionKey, {
       sessionId: "parent-session",
+      storeScope: parentStore,
       agentId: "main",
       owner: { connId: "owner" },
     });
@@ -135,11 +143,10 @@ it.each(["exact", "session cascade", "typed stop", "channel stop", "embedded sto
       expect(healthyDispatch).not.toHaveBeenCalled();
     });
     parent.input.abortSignal.addEventListener("abort", signal);
-    const operation = createReplyOperation({
-      sessionKey,
-      sessionId: "parent-session",
-      resetTriggered: false,
-    });
+    const operation = parent.input.claim?.operation;
+    if (!operation) {
+      throw new Error("Expected the parent fixture operation");
+    }
     operation.attachBackend({
       kind: "embedded",
       isStreaming: () => true,
@@ -154,7 +161,7 @@ it.each(["exact", "session cascade", "typed stop", "channel stop", "embedded sto
       setActiveEmbeddedRun("parent-session", embedded, sessionKey);
       context.getSessionEventSubscriberConnIds = () => new Set();
     } else {
-      context.rpcSources.set("parent", parent);
+      registerRpcSource("parent", parent);
     }
     try {
       const result =
@@ -225,7 +232,6 @@ it.each(["exact", "session cascade", "typed stop", "channel stop", "embedded sto
       releaseSwarmRun("bad");
       await vi.waitFor(() => expect(survivorDispatch).toHaveBeenCalledOnce());
     } finally {
-      operation.complete();
       clearActiveEmbeddedRun("parent-session", embedded, sessionKey);
       releaseSwarmRun("capacity");
     }
@@ -284,11 +290,13 @@ it.each([
         onStartFailure: () => true,
       });
     }
+    let parentHandle: ReturnType<typeof createEmbeddedRunHandle>;
     const parentAbort = vi.fn(() => {
       expect(releaseSwarmRun("parent")).toBe(true);
+      clearActiveEmbeddedRun("parent-session", parentHandle, sessionKey);
     });
     const badAbort = vi.fn();
-    const parentHandle = createEmbeddedRunHandle({ runId: "parent", abort: parentAbort });
+    parentHandle = createEmbeddedRunHandle({ runId: "parent", abort: parentAbort });
     const badHandle = createEmbeddedRunHandle({ runId: "bad", abort: badAbort });
     setActiveEmbeddedRun("parent-session", parentHandle, sessionKey);
     if (!queued) {
@@ -454,7 +462,26 @@ it.each(["cascade native new", "RPC reset", "RPC delete"])(
         );
       },
     });
-    setActiveEmbeddedRun("incarnation-child", childHandle, childKey);
+    const childOperation = createReplyOperation({
+      sessionKey: childKey,
+      sessionId: "incarnation-child",
+      agentId: "child",
+      resetTriggered: false,
+      target: captureSessionTarget({
+        storeScope: childStore,
+        sessionKey: childKey,
+        incarnation: "incarnation-child",
+        agentId: "child",
+      }),
+    });
+    setActiveEmbeddedRun(
+      "incarnation-child",
+      childHandle,
+      childKey,
+      undefined,
+      "child",
+      childOperation,
+    );
     const parentAdmission = await beginSessionEffect({
       scope: storePath,
       identities: [sessionKey, sessionId],
@@ -475,7 +502,7 @@ it.each(["cascade native new", "RPC reset", "RPC delete"])(
       getRuntimeConfig: () => cfg,
       getSessionEventSubscriberConnIds: () => new Set(),
     });
-    context.rpcSources.set("parent", parent);
+    registerRpcSource("parent", parent);
     context.chatRunState.getOrCreate("parent").buffer = "old delayed partial";
     let completed = false;
     const abort = invokeChatAbortHandler({
@@ -498,11 +525,11 @@ it.each(["cascade native new", "RPC reset", "RPC delete"])(
         }),
       ]);
       expect(parent.input.abortSignal.aborted).toBe(true);
-      expect(context.rpcSources.has("parent")).toBe(false);
-      expect(getSubagentRunByChildSessionKey(childKey)?.endedReason).toBe("subagent-killed");
+      expect(rpcSourceTesting.has("parent")).toBe(false);
       // Explicit reset drains children, including native /new. Keep the original
       // abort pending on its marker writer, not on work the reset must stop.
       clearActiveEmbeddedRun("incarnation-child", childHandle, childKey);
+      childOperation.complete();
       if (native) {
         const reset = await initSessionState({
           cfg,
@@ -575,8 +602,9 @@ it.each(["cascade native new", "RPC reset", "RPC delete"])(
       operation.complete();
       release.resolve();
       await writer;
-      await abort;
       clearActiveEmbeddedRun("incarnation-child", childHandle, childKey);
+      childOperation.complete();
+      await abort;
     }
   },
 );

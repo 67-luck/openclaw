@@ -60,7 +60,6 @@ describe("queued turn steering", () => {
           storePath,
           current: () => entry,
           publish: () => {},
-          adopt: () => {},
         },
       });
       turn.queued.messageId = "queued-human-input";
@@ -114,8 +113,14 @@ describe("queued turn steering", () => {
         for (const [index, message] of steeringMessages.entries()) {
           const clientRunId = `new-human-input-${index}`;
           const sourceRef = createRpcSourceForTest(
-            { sessionKey, sessionId: entry.sessionId, agentId: "main" },
-            { runId: clientRunId, storeScope: storePath },
+            {},
+            {
+              runId: clientRunId,
+              storeScope: storePath,
+              sessionKey,
+              sessionId: entry.sessionId,
+              agentId: "main",
+            },
           );
           const attempt = await createChatSendMessageInjectionStarter({
             sourceRef,

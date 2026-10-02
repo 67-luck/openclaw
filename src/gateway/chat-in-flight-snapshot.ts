@@ -1,10 +1,12 @@
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { AgentEventPayload } from "../infra/agent-events.js";
 import {
+  getRpcSourceIdentity,
   getRpcSourceStartedAt,
   isRpcSourceActive,
+  listRpcSourceEntries,
+  type RpcSourceRef,
 } from "../sessions/session-controller.rpc-sources.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
 import { projectLiveAssistantBufferedText } from "./live-chat-projector.js";
 import type { ChatRunPlanSnapshot, ChatRunState } from "./server-chat-state.js";
 
@@ -50,15 +52,15 @@ export function projectInFlightRunSnapshot(params: {
  * Match requested and canonical keys, with agent scoping for the shared global row.
  */
 export function resolveInFlightRunSnapshot(params: {
-  rpcSources: Map<string, ChatAbortControllerEntry>;
   chatRunState: Pick<ChatRunState, "resolveBuffer" | "runs">;
   requestedSessionKey: string;
   canonicalSessionKey: string;
   agentId?: string;
   defaultAgentId?: string;
 }): InFlightRunSnapshot | undefined {
-  const matchesKey = (entry: ChatAbortControllerEntry, key: string): boolean => {
-    if (entry.adapter.sessionKey !== key) {
+  const matchesKey = (entry: RpcSourceRef, key: string): boolean => {
+    const identity = getRpcSourceIdentity(entry);
+    if (identity.sessionKey !== key) {
       return false;
     }
     if (key !== "global") {
@@ -71,18 +73,13 @@ export function resolveInFlightRunSnapshot(params: {
       return false;
     }
     const runAgentId =
-      normalizeOptionalLowercaseString(entry.adapter.agentId) ??
+      normalizeOptionalLowercaseString(identity.agentId) ??
       normalizeOptionalLowercaseString(params.defaultAgentId);
     return runAgentId === requestedAgentId;
   };
-  // Some callers/tests run without populated run state; guard like
-  // collectTrackedActiveSessionRuns so a missing map is a no-op, not a throw.
-  if (!(params.rpcSources instanceof Map)) {
-    return undefined;
-  }
   // Timestamp wins over insertion order; runId breaks ties deterministically.
   let best: { runId: string; startedAtMs: number } | undefined;
-  for (const [runId, entry] of params.rpcSources) {
+  for (const [runId, entry] of listRpcSourceEntries()) {
     if (
       !isRpcSourceActive(entry) ||
       entry.adapter.controlUiVisible === false ||

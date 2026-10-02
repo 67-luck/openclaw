@@ -4,7 +4,6 @@ import type { DesktopAvailability } from "../../packages/gateway-protocol/src/sc
 import type { NodeHostStatsPayload } from "../../packages/gateway-protocol/src/schema/nodes.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import type { CliDeps } from "../cli/deps.types.js";
-import type { RpcSourceIndex } from "../sessions/session-controller.rpc-sources.js";
 import type { NodeHostStats } from "../shared/node-host-stats.js";
 import type { HealthSummary } from "./health/types.js";
 import type { ChatRunEntry, ChatRunRegistration } from "./server-chat.js";
@@ -25,7 +24,6 @@ export type NodeEventContext = {
     clientRunId: string,
     sessionKey?: string,
   ) => ChatRunEntry | undefined;
-  rpcSources: RpcSourceIndex;
   dedupe: Map<string, DedupeEntry>;
   agentRunSeq: Map<string, number>;
   getHealthCache: () => HealthSummary | null;

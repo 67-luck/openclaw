@@ -115,7 +115,6 @@ export function makeContextParams(
       githubPublicationService: undefined,
       terminalSessions: undefined,
       agentRunSeq: new Map(),
-      rpcSources: new Map(),
       chatRunState: createChatRunState(),
       addChatRun: vi.fn(),
       removeChatRun: vi.fn(),

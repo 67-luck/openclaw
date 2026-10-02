@@ -17,6 +17,9 @@ import {
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
   getRpcSourceProjectSessionActive,
   isRpcSourceQueued,
 } from "../sessions/session-controller.rpc-sources.js";
@@ -43,7 +46,7 @@ function readCurrent(target: CompletionTarget): SessionEntry | undefined {
 function hasLiveCompletionOwner(claim: HarnessCompletionRecovery, runId: string): boolean {
   const scope = getPluginRuntimeGatewayRequestScope();
   const gateway = scope?.resolveGatewayContext ? scope.resolveGatewayContext() : scope?.context;
-  const admission = gateway?.rpcSources.get(runId);
+  const admission = gateway ? getRpcSource(runId) : undefined;
   const input = admission?.input;
   const sourceClaim = input?.claim;
   const operation = sourceClaim?.operation;
@@ -60,12 +63,12 @@ function hasLiveCompletionOwner(claim: HarnessCompletionRecovery, runId: string)
         !operation.abortSignal.aborted));
   if (
     admission &&
-    admission.adapter.sessionKey === claim.requesterSessionKey &&
-    admission.adapter.sessionId === claim.sessionId &&
-    admission.adapter.agentId === claim.requesterAgentId &&
-    admission.adapter.lifecycleGeneration === getAgentRunLifecycleGeneration() &&
+    getRpcSourceIdentity(admission).sessionKey === claim.requesterSessionKey &&
+    getRpcSourceIdentity(admission).sessionId === claim.sessionId &&
+    getRpcSourceIdentity(admission).agentId === claim.requesterAgentId &&
+    getRpcSourceLifecycleGeneration(admission) === getAgentRunLifecycleGeneration() &&
     getRpcSourceProjectSessionActive(admission) === true &&
-    !admission.adapter.registrationCleanupRequested &&
+    !admission.input.retirementRequested &&
     !admission.input.abortSignal.aborted &&
     !admission.input.custody.cancellationRetired &&
     (isRpcSourceQueued(admission) || claimed)

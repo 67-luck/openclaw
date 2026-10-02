@@ -226,7 +226,6 @@ describe("followup queue durable input consumption", () => {
                 kind: "detached",
                 current: () => undefined,
                 publish: () => {},
-                adopt: () => {},
               },
               sendPolicy: "allow",
               preflightCompactionApplied: false,

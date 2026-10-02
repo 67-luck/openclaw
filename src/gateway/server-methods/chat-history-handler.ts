@@ -222,7 +222,6 @@ export async function handleChatHistoryRequest({
               before: pendingBefore,
               limit: max,
               maxChars: effectiveMaxChars,
-              queuedTurns: context.rpcSources,
               cronStorePath: context.cronStorePath,
             },
           )
@@ -238,7 +237,7 @@ export async function handleChatHistoryRequest({
           ).map((receipt) =>
             receipt.state === "pending" &&
             !receipt.cancelled &&
-            isRpcSourceQueuedForSession(context.rpcSources, receipt.runId, {
+            isRpcSourceQueuedForSession(receipt.runId, {
               agentId: sessionAgentId,
               sessionKey: canonicalKey,
               sessionId,
@@ -362,7 +361,6 @@ export async function handleChatHistoryRequest({
         Object.assign(sessionInfo, currentSharing);
       }
       const activeRunState = resolveVisibleActiveSessionRunState({
-        context,
         requestedKey: sessionKey,
         canonicalKey,
         sessionId,
@@ -461,7 +459,6 @@ export async function handleChatHistoryRequest({
       // can restore the in-flight assistant text on switch-back.
       const inFlightRun =
         resolveInFlightRunSnapshot({
-          rpcSources: context.rpcSources,
           chatRunState: context.chatRunState,
           requestedSessionKey: sessionKey,
           // The agent-scoped canonical key from session load: an unscoped re-resolve

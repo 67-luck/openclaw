@@ -3,6 +3,10 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { inputMatchesSessionId } from "../../sessions/session-controller.lifecycle-projections.js";
 import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
+import {
+  getRpcSourceIdentity,
+  listRpcSourceEntries,
+} from "../../sessions/session-controller.rpc-sources.js";
 import type { SessionControllerEntry } from "../../sessions/session-controller.state.js";
 import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
@@ -10,10 +14,8 @@ import {
   resolveStoredSessionKeyForAgentStore,
   resolveStoredSessionOwnerAgentId,
 } from "../session-store-key.js";
-import type { GatewayRequestContext } from "./types.js";
 
 export function resolveAbortSessionKey(params: {
-  context: Pick<GatewayRequestContext, "rpcSources">;
   requestedKey: string;
   canonicalKey: string;
   activeRunSessionKey?: string;
@@ -29,18 +31,19 @@ export function resolveAbortSessionKey(params: {
     params.requestedKey,
     ...(params.aliasKeys ?? []),
   ]);
-  for (const active of params.context.rpcSources.values()) {
+  for (const [, active] of listRpcSourceEntries()) {
     if (active.adapter.controlUiVisible === false) {
       continue;
     }
-    if (candidates.has(active.adapter.sessionKey)) {
+    const identity = getRpcSourceIdentity(active);
+    if (candidates.has(identity.sessionKey)) {
       const owner = resolveChatRunOwnerAgentId({
-        agentId: active.adapter.agentId,
-        sessionKey: active.adapter.sessionKey,
+        agentId: identity.agentId,
+        sessionKey: identity.sessionKey,
         defaultAgentId: params.defaultAgentId,
       });
       if (!params.agentId || owner === normalizeAgentId(params.agentId)) {
-        return active.adapter.sessionKey;
+        return identity.sessionKey;
       }
     }
   }

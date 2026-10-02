@@ -9,11 +9,11 @@ import {
   captureSessionControllerSettlement,
   isSessionControllerWorkActive,
 } from "../sessions/session-controller.lifecycle.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { createMentionInbox } from "./mention-inbox.js";
 import { identifiedClient } from "./server-methods/sessions-sharing.test-support.js";
 import type { GatewayClient } from "./server-methods/types.js";
@@ -298,7 +298,6 @@ test.each(mentionCreationOwners)(
       });
       const context = {
         mentionInbox: inbox,
-        rpcSources: new Map<string, ChatAbortControllerEntry>(),
         getClientConnIds: (filter?: (client: GatewayClient) => boolean) =>
           new Set(
             [sender, recipient]

@@ -38,9 +38,10 @@ facts; they do not independently grant a turn.
 - `session-controller.stop.ts` sequences captured cancellation effects.
   `session-controller.watchdog.ts` owns progress, real waits and deadlines,
   recovery deduplication, and retained cleanup for each exact operation.
-- Gateway `rpcSources` is a protocol-ID-to-source-reference index with
-  presentation metadata. The source input owns cancellation and custody; the
-  operation owns execution and deadlines.
+- `session-controller.rpc-sources.ts` owns protocol-run-ID correlation for
+  Gateway RPC inputs. The source input owns cancellation and custody; the
+  operation owns execution and deadlines; Gateway adapters retain only
+  protocol presentation and delivery metadata.
 
 `reply-operation-state.ts` remains the pure phase and terminal-outcome reducer
 used by real operations. Generated traces compare real controller behavior with

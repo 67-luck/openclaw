@@ -472,6 +472,11 @@ describe("visible yielded session continuation", () => {
               }
               expect(requesterStep).toBe(2);
               child = parseSpawnReceipt(body.input, childCallId);
+              if (requester && !attachedChatRuns.has(requester.runId)) {
+                void gateway?.client
+                  .request("agent.wait", { runId: requester.runId, timeoutMs: 30_000 })
+                  .catch(() => undefined);
+              }
               await waitForGatewayDispatch(
                 "nested provider open",
                 nestedOpen.promise,

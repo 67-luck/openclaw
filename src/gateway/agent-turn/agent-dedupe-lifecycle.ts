@@ -7,6 +7,7 @@ import {
   isSubagentCoordinationInputProvenance,
   type InputProvenance,
 } from "../../sessions/input-provenance.js";
+import { hasRpcSource } from "../../sessions/session-controller.rpc-sources.js";
 import { resolveAgentRunExpiresAtMs } from "../chat-abort.js";
 import { logAttachmentFailure } from "../chat-attachments.js";
 import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
@@ -83,7 +84,7 @@ export function createAgentDedupeLifecycle(params: {
       keys: params.agentDedupeKeys,
       // Durable private input decides replay after the prior controller ends.
       // Its new reservation must retire stale sticky terminal projections.
-      ...(params.privateCompletion && !params.context.rpcSources.has(params.runId)
+      ...(params.privateCompletion && !hasRpcSource(params.runId)
         ? { startNewAttempt: true as const }
         : {}),
       entry: {

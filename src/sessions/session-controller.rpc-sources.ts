@@ -4,6 +4,7 @@ import { chatRunBelongsToAgent } from "../gateway/chat-run-owner.js";
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-authority.types.js";
 import {
   isSessionControllerSourceQueued,
+  retireSessionControllerInput,
   type SessionControllerInput,
   type SessionControllerSourceAdapter,
 } from "./session-controller.mailbox.js";
@@ -16,6 +17,7 @@ import {
   cancelCapturedSessionControllerSource,
   captureSessionControllerStop,
 } from "./session-controller.stop.js";
+import { rpcSourceByRunId, rpcSourceRemovalByRef } from "./session-controller.storage.js";
 
 type ChatTerminalProducer = {
   sessionId: string;
@@ -26,16 +28,11 @@ type ChatTerminalProducer = {
 export type RpcSourceAdapter = SessionControllerSourceAdapter & {
   /** Captures this run's canonical producer before cancellation releases its live slot. */
   resolveTerminalProducer?: () => ChatTerminalProducer | undefined;
-  sessionId: string;
-  sessionKey: string;
   lifecycleGeneration?: string;
   /** Exact operational instance created by this controller registration. */
   operationalRunInstance?: OperationalRunInstanceRef;
   /** Exact approval lease captured when this controller's execution was admitted. */
   agentRunDelegatedAuthority?: AgentRunDelegatedAuthority;
-  agentId?: string;
-  ownerConnId?: string;
-  ownerDeviceId?: string;
   providerId?: string;
   authProviderId?: string;
   abortStopReason?: string;
@@ -56,18 +53,7 @@ export type RpcSourceAdapter = SessionControllerSourceAdapter & {
   projectSessionTerminalObservedAt?: number;
   /** In-flight terminal session-store update used by restart shutdown. */
   projectSessionTerminalPersistence?: Promise<void>;
-  /** Caller completion requested cleanup before terminal lifecycle persistence settled. */
-  registrationCleanupRequested?: boolean;
-  /** False after the owning reply run commits a terminal outcome. */
-  isAbortable?: (entry: RpcSourceRef) => boolean;
-  /** Runs once when this registration is actually removed. */
-  onRemoved?: () => void;
-  /**
-   * Which RPC owns this registration. Absent (undefined) is treated as
-   * `"chat-send"` so pre-existing callers that constructed entries without
-   * a kind keep their behavior. Consumers that need "chat.send specifically
-   * is active" must check `kind !== "agent"`, not just `.has(runId)`.
-   */
+  /** Which Gateway RPC owns this protocol projection. */
   kind?: "chat-send" | "agent";
   /** Side questions stay independent from main-turn TUI session stops. */
   turnKind?: "main" | "btw";
@@ -75,7 +61,100 @@ export type RpcSourceAdapter = SessionControllerSourceAdapter & {
 
 /** Byte-exact protocol correlation; scheduling and cancellation belong to input. */
 export type RpcSourceRef = Readonly<{ input: SessionControllerInput; adapter: RpcSourceAdapter }>;
-export type RpcSourceIndex = Map<string, RpcSourceRef>;
+
+export type RpcSourceIdentity = Readonly<{
+  sessionId: string;
+  sessionKey: string;
+  agentId?: string;
+}>;
+
+/** Reads logical identity from the exact operation, then its captured source target. */
+export function getRpcSourceIdentity(ref: RpcSourceRef): RpcSourceIdentity {
+  const operation = ref.input.claim?.operation;
+  return {
+    sessionId:
+      operation?.sessionId ?? ref.input.sourceSessionId ?? ref.input.target?.incarnation ?? "",
+    sessionKey: operation?.key ?? ref.input.target?.sessionKey ?? ref.input.mailbox.key,
+    agentId: operation?.agentId ?? ref.input.target?.agentId,
+  };
+}
+
+/** Reads lifecycle generation from the operation once a turn owns the source. */
+export function getRpcSourceLifecycleGeneration(ref: RpcSourceRef): string | undefined {
+  return ref.input.claim?.operation?.lifecycleGeneration ?? ref.adapter.lifecycleGeneration;
+}
+
+/** Updates the controller-owned source identity and its operation, when claimed. */
+export function updateRpcSourceSessionId(ref: RpcSourceRef, sessionId: string): void {
+  const normalized = sessionId.trim();
+  if (!normalized) {
+    return;
+  }
+  ref.input.sourceSessionId = normalized;
+  ref.input.claim?.operation?.updateSessionId(normalized);
+}
+
+function removeRpcSource(runId: string, ref: RpcSourceRef): boolean {
+  if (rpcSourceByRunId.get(runId) !== ref) {
+    return false;
+  }
+  rpcSourceByRunId.delete(runId);
+  const onRemoved = rpcSourceRemovalByRef.get(ref);
+  rpcSourceRemovalByRef.delete(ref);
+  try {
+    onRemoved?.();
+  } catch {
+    // Removal observers cannot reject controller settlement.
+  }
+  return true;
+}
+
+/** Resolves the exact controller-owned source registered for a protocol run. */
+export function getRpcSource(runId: string): RpcSourceRef | undefined {
+  return rpcSourceByRunId.get(runId);
+}
+
+/** Reports whether the controller owns a source for a protocol run. */
+export function hasRpcSource(runId: string): boolean {
+  return getRpcSource(runId) !== undefined;
+}
+
+/** Returns a stable snapshot for Gateway projection, shutdown, and abort iteration. */
+export function listRpcSourceEntries(): Array<[runId: string, ref: RpcSourceRef]> {
+  return [...rpcSourceByRunId].flatMap(([runId, ref]) =>
+    getRpcSource(runId) === ref ? [[runId, ref]] : [],
+  );
+}
+
+/** Registers protocol correlation after the controller has reserved the source input. */
+export function registerRpcSource(runId: string, ref: RpcSourceRef, onRemoved?: () => void): void {
+  if (hasRpcSource(runId)) {
+    throw new Error(`RPC source already registered for run ${runId}`);
+  }
+  rpcSourceByRunId.set(runId, ref);
+  if (onRemoved) {
+    rpcSourceRemovalByRef.set(ref, onRemoved);
+  }
+  const settled = () => removeRpcSource(runId, ref);
+  void ref.input.settlement.promise.then(settled, settled);
+}
+
+/** Requests retirement; the index leaves only when the exact controller input settles. */
+export function retireRpcSource(runId: string, expected?: RpcSourceRef): boolean {
+  const ref = rpcSourceByRunId.get(runId);
+  if (!ref || (expected && ref !== expected)) {
+    return false;
+  }
+  if (
+    ref.adapter.projectSessionTerminalPending === true &&
+    !ref.adapter.projectSessionTerminalPersistence
+  ) {
+    ref.input.retirementRequested = true;
+    return true;
+  }
+  retireSessionControllerInput(ref.input);
+  return true;
+}
 
 export function getRpcSourceSignal(ref: RpcSourceRef): AbortSignal {
   return ref.input.abortSignal;
@@ -110,6 +189,16 @@ export function isRpcSourceActive(ref: RpcSourceRef | undefined): boolean {
   return isRpcSourceExecuting(ref) && getRpcSourceProjectSessionActive(ref) !== false;
 }
 
+/** Projects live source ownership before and during execution. */
+export function isRpcSourceProjectedActive(ref: RpcSourceRef | undefined): boolean {
+  return (
+    ref !== undefined &&
+    !ref.input.retirementRequested &&
+    !ref.input.abortSignal.aborted &&
+    getRpcSourceProjectSessionActive(ref) !== false
+  );
+}
+
 /** Reads the active-session presentation fact from the exact controller attachment. */
 export function getRpcSourceProjectSessionActive(
   ref: RpcSourceRef | undefined,
@@ -122,9 +211,7 @@ export function getRpcSourceProjectSessionActive(
       : undefined;
   const operation = ref?.input.claim?.operation;
   if (!operation) {
-    return (
-      terminalProjection ?? (ref?.adapter.registrationCleanupRequested === true ? false : undefined)
-    );
+    return terminalProjection ?? (ref?.input.retirementRequested === true ? false : undefined);
   }
   const attachment = getSessionControllerEntryForOperation(operation).attachment;
   return attachment?.operation === operation ? attachment.projectSessionActive : terminalProjection;
@@ -170,24 +257,21 @@ export function requestRpcSourceCancellation(
   }).abortedInputs.includes(ref.input);
 }
 
-export function isRpcSourceQueuedForSession(
-  sources: ReadonlyMap<string, RpcSourceRef> | undefined,
-  runId: string,
-  scope: Pick<RpcSourceAdapter, "sessionId" | "sessionKey" | "agentId">,
-): boolean {
-  const ref = sources?.get(runId);
+export function isRpcSourceQueuedForSession(runId: string, scope: RpcSourceIdentity): boolean {
+  const ref = getRpcSource(runId);
+  const identity = ref && getRpcSourceIdentity(ref);
   return (
     ref !== undefined &&
+    identity !== undefined &&
     isRpcSourceQueued(ref) &&
-    ref.adapter.sessionId === scope.sessionId &&
-    ref.adapter.sessionKey === scope.sessionKey &&
-    ref.adapter.agentId === scope.agentId
+    identity.sessionId === scope.sessionId &&
+    identity.sessionKey === scope.sessionKey &&
+    identity.agentId === scope.agentId
   );
 }
 
 /** Capture presentation correlation with exact inputs; no scheduler state is copied. */
-export function listRpcSourcesForSession(params: {
-  rpcSources: ReadonlyMap<string, RpcSourceRef>;
+export function listRpcSourceEntriesForSession(params: {
   sessionKeys: Iterable<string>;
   sessionIds?: Iterable<string | undefined>;
   requiredSessionId?: string;
@@ -197,17 +281,17 @@ export function listRpcSourcesForSession(params: {
 }): Array<{ runId: string; entry: RpcSourceRef }> {
   const keys = new Set(params.sessionKeys);
   const ids = new Set(params.sessionIds ?? []);
-  return [...params.rpcSources].flatMap(([runId, entry]) => {
-    const adapter = entry.adapter;
+  return listRpcSourceEntries().flatMap(([runId, entry]) => {
+    const identity = getRpcSourceIdentity(entry);
     if (params.queuedOnly && !isRpcSourceQueued(entry)) {
       return [];
     }
-    if (!keys.has(adapter.sessionKey) && !ids.has(adapter.sessionId)) {
+    if (!keys.has(identity.sessionKey) && !ids.has(identity.sessionId)) {
       return [];
     }
     if (
       params.requiredSessionId !== undefined &&
-      (!keys.has(adapter.sessionKey) || adapter.sessionId !== params.requiredSessionId)
+      (!keys.has(identity.sessionKey) || identity.sessionId !== params.requiredSessionId)
     ) {
       return [];
     }
@@ -215,8 +299,8 @@ export function listRpcSourcesForSession(params: {
       params.agentId &&
       !chatRunBelongsToAgent(
         {
-          agentId: adapter.agentId,
-          sessionKey: adapter.sessionKey,
+          agentId: identity.agentId,
+          sessionKey: identity.sessionKey,
           defaultAgentId: params.defaultAgentId,
         },
         params.agentId,

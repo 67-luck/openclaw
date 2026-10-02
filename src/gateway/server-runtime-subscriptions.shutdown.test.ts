@@ -46,7 +46,6 @@ function createParams(signal: AbortSignal): Parameters<typeof startGatewayEventS
     toolEventRecipients: chatRunState.toolEventRecipients,
     sessionEventSubscribers: createSessionEventSubscriberRegistry(),
     sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-    rpcSources: new Map(),
     restartRecoveryCandidates: new Map(),
     refreshConnectedUserProfiles: vi.fn(),
   };

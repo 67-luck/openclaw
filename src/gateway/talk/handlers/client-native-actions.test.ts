@@ -27,6 +27,7 @@ import {
 } from "../../../config/sessions/session-accessor.js";
 import { readTranscriptEventRows } from "../../../config/sessions/session-accessor.sqlite-read.js";
 import { waitForSessionTranscriptIndexReconcile } from "../../../config/sessions/session-transcript-reconcile.js";
+import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { onInternalSessionTranscriptUpdate } from "../../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import {
@@ -167,7 +168,6 @@ describe("native Talk action ownership through public plugin registration", () =
         broadcastToConnIds: published,
         sessionEventSubscribers: { getAll: () => new Set([CONNECTION_ID]) },
         sessionMessageSubscribers: { get: () => new Set([CONNECTION_ID]) },
-        rpcSources: fixture.rpcSources,
       });
       const unsubscribe = onInternalSessionTranscriptUpdate((update) => {
         if ((update.target?.sessionId ?? update.sessionId) === SESSION_ID) {
@@ -490,7 +490,7 @@ describe("native Talk action ownership through public plugin registration", () =
         .mockImplementationOnce(() => providerStream)
         .mockImplementation(() => createAssistantResultStream(answer));
       await withParkedNativeTask(
-        async ({ create, result, socket, activeRun, rpcSources, abortOwned }) => {
+        async ({ create, result, socket, activeRun, rpcSourceTesting, abortOwned }) => {
           let closing: Promise<boolean> | undefined;
           try {
             await vi.waitFor(() => expect(streamMocks.streamSimple).toHaveBeenCalledOnce());
@@ -501,7 +501,7 @@ describe("native Talk action ownership through public plugin registration", () =
                 : undefined;
             const handle = getActiveNativeAttempt(activeRun.sessionId);
             const registration = handle && getEmbeddedRunAttachment(handle);
-            const chatRegistration = rpcSources.get(activeRun.runId);
+            const chatRegistration = rpcSourceTesting.get(activeRun.runId);
             if (!handle || !registration?.toolAuthority || !chatRegistration) {
               throw new Error("Expected the real admitted backend and control registration");
             }
@@ -571,7 +571,7 @@ describe("native Talk action ownership through public plugin registration", () =
             expect(getActiveNativeAttempt(activeRun.sessionId)).toBe(handle);
             expect(ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(activeRun.runId)).toBe(registration);
             expect(getEmbeddedRunAttachment(handle)).toBe(registration);
-            expect(rpcSources.get(activeRun.runId)).toBe(chatRegistration);
+            expect(rpcSourceTesting.get(activeRun.runId)).toBe(chatRegistration);
             expect(() => registration.toolAuthority?.assertActive()).not.toThrow();
             expect(activeRun.abortSignal.aborted).toBe(false);
             expect(session.agent.signal?.aborted).toBe(false);
@@ -603,13 +603,13 @@ describe("native Talk action ownership through public plugin registration", () =
     "does not retarget %s during control readiness or FIFO wait (%s)",
     async (transition, mode) => {
       await withParkedNativeTask(
-        async ({ socket, activeRun, rpcSources, abortOwned, queueMessage }) => {
-          const entry = rpcSources.get(activeRun.runId);
+        async ({ socket, activeRun, rpcSourceTesting, abortOwned, queueMessage }) => {
+          const entry = rpcSourceTesting.get(activeRun.runId);
           if (!entry) {
             throw new Error("Missing original registration");
           }
           if (transition === "idle") {
-            rpcSources.delete(activeRun.runId);
+            rpcSourceTesting.delete(activeRun.runId);
           }
           const before = socket.sent.length;
           const queued = transition === "queued replacement";
@@ -623,7 +623,7 @@ describe("native Talk action ownership through public plugin registration", () =
             ),
           );
           // Same call and even the same correlation ID cannot adopt a new registration.
-          rpcSources.set(activeRun.runId, { ...entry });
+          rpcSourceTesting.set(activeRun.runId, { ...entry });
           await vi.waitFor(() =>
             expect(spokenMessages(socket.sent.slice(before))).toEqual([
               ...(queued
@@ -947,7 +947,15 @@ describe("native Talk action ownership through public plugin registration", () =
   // The real queue yields on readiness: one synchronous burst fills it without a blocker seam.
   it("speaks a bounded refusal at control capacity and accepts a fresh cancel after draining", async () => {
     await withParkedNativeTask(
-      async ({ socket, result, activeRun, queueMessage, abortOwned, broadcast, rpcSources }) => {
+      async ({
+        socket,
+        result,
+        activeRun,
+        queueMessage,
+        abortOwned,
+        broadcast,
+        rpcSourceTesting,
+      }) => {
         const beforeBurst = socket.sent.length;
         for (let index = 0; index < 9; index += 1) {
           socket.serverEvent(nativeTranscript("Status?"));
@@ -984,7 +992,7 @@ describe("native Talk action ownership through public plugin registration", () =
         expect(queueMessage).not.toHaveBeenCalled();
         expect(abortOwned).not.toHaveBeenCalled();
         expect(activeRun.abortSignal.aborted).toBe(false);
-        expect(rpcSources.has(activeRun.runId)).toBe(true);
+        expect(rpcSourceTesting.has(activeRun.runId)).toBe(true);
         expect(upstream.runEmbeddedAgent).toHaveBeenCalledOnce();
         expect(socket.readyState).toBe(upstream.NativeSocket.OPEN);
         expect(talkEventTypes(broadcast)).not.toContain("session.error");

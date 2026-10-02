@@ -37,10 +37,7 @@ export function createRelaySessionFixture(activeRelaySessions: Map<string, strin
       tools,
       controlSource: capabilities?.handlesAgentConsult === true ? "delegation" : "transcript",
       capabilities,
-      context: {
-        ...request.context,
-        rpcSources: request.context.rpcSources ?? new Map(),
-      },
+      context: request.context,
       cfg,
       sessionTarget: prepareTalkSessionTarget(cfg, sessionKey ?? "agent:main:main"),
     });

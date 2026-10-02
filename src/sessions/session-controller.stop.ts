@@ -215,22 +215,6 @@ export type SessionStopHookContext = Readonly<{
 export type SessionStopChildrenResult = Readonly<{ stopped: number; failed: number }>;
 export type SessionStopTargetStatus = "aborted" | "finalizing" | "unchanged";
 
-export type SessionStopExternalParent =
-  | Readonly<{
-      /** Captured queued parent; cancellation remains synchronous with queue withdrawal. */
-      phase: "queued";
-      stop: () => SessionStopTargetStatus | Promise<SessionStopTargetStatus>;
-      settled?: Promise<unknown>;
-    }>
-  | Readonly<{
-      /** Captured active parent; adapters may join an asynchronous remote cancellation. */
-      phase: "active";
-      /** Start before native active callbacks when another owner must not be starved by them. */
-      start?: "after-queued";
-      stop: () => SessionStopTargetStatus | Promise<SessionStopTargetStatus>;
-      settled?: Promise<unknown>;
-    }>;
-
 export type SessionStopOutcome = Readonly<{
   aborted: boolean;
   alreadyFinalizing: boolean;
@@ -257,7 +241,6 @@ type SessionStopRequestBase = {
   recordAbortTarget?: (options: { recordCutoff: boolean }) => Promise<void>;
   hookContext?: SessionStopHookContext;
   stopChildren?: (applyParentStop: () => Promise<boolean>) => Promise<SessionStopChildrenResult>;
-  externalParents?: readonly SessionStopExternalParent[];
   /** Authorize and reserve presentation or partial custody before invoking cancel exactly once. */
   cancelInput?: (input: SessionControllerInput, cancel: () => boolean) => boolean;
   cancelOperation?: (operation: ReplyOperation, cancel: () => boolean) => boolean;
@@ -484,16 +467,13 @@ export function cancelCapturedSessionControllerSource(
 
 function resolveStopOutcome(
   result: SessionControllerStopResult,
-  externalActiveCancelled: number,
-  externalQueuedCancelled: number,
-  externalFinalizing: number,
   children: SessionStopChildrenResult,
 ): SessionStopOutcome {
   return Object.freeze({
-    aborted: result.activeCancelled + externalActiveCancelled > 0,
-    alreadyFinalizing: result.finalizing + externalFinalizing > 0,
-    queuedCancelled: result.queuedCancelled + externalQueuedCancelled,
-    activeCancelled: result.activeCancelled + externalActiveCancelled,
+    aborted: result.activeCancelled > 0,
+    alreadyFinalizing: result.finalizing > 0,
+    queuedCancelled: result.queuedCancelled,
+    activeCancelled: result.activeCancelled,
     childrenStopped: children.stopped,
     childFailures: children.failed,
     settled: result.settled,
@@ -517,9 +497,6 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
           stopChildren: request.mutation.stopChildren,
         }
       : sourcePolicy;
-  let externalActiveCancelled = 0;
-  let externalQueuedCancelled = 0;
-  let externalFinalizing = 0;
   let parentResult: SessionControllerStopResult | undefined;
   let runPostParent: (() => Promise<void>) | undefined;
   let resolveParentResult!: (result: SessionControllerStopResult) => void;
@@ -535,22 +512,6 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
     }
     const capture = typeof request.capture === "function" ? request.capture() : request.capture;
     request.assertCurrent?.();
-    const pendingExternalStops: Promise<void>[] = [];
-    const startedExternalStops = new Set<SessionStopExternalParent>();
-    const recordExternalStatus = (
-      parent: SessionStopExternalParent,
-      status: SessionStopTargetStatus,
-    ) => {
-      if (status === "aborted") {
-        if (parent.phase === "active") {
-          externalActiveCancelled++;
-        } else {
-          externalQueuedCancelled++;
-        }
-      } else if (status === "finalizing") {
-        externalFinalizing++;
-      }
-    };
     parentResult = applySessionControllerStop(capture, {
       source: request.source,
       assertCurrent: request.assertCurrent,
@@ -558,47 +519,19 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
       phase: policy.cancelQueued ? "all" : "active",
       cancelInput: request.cancelInput,
       cancelOperation: request.cancelOperation,
-      afterQueued: () => {
-        for (const parent of request.externalParents ?? []) {
-          if (parent.phase === "queued" || ("start" in parent && parent.start === "after-queued")) {
-            startedExternalStops.add(parent);
-            pendingExternalStops.push(
-              Promise.resolve(parent.stop()).then((status) => recordExternalStatus(parent, status)),
-            );
-          }
-        }
-        request.afterQueued?.();
-      },
+      afterQueued: request.afterQueued,
       onCancelled: request.onCancelled,
       onError: request.onError,
     });
-    for (const parent of request.externalParents ?? []) {
-      if (parent.phase === "queued" || startedExternalStops.has(parent)) {
-        continue;
-      }
-      request.assertCurrent?.();
-      pendingExternalStops.push(
-        Promise.resolve(parent.stop()).then((status) => recordExternalStatus(parent, status)),
-      );
-    }
-    const externalSettlements = (request.externalParents ?? []).flatMap((parent) =>
-      parent.settled ? [parent.settled] : [],
-    );
-    if (externalSettlements.length > 0) {
-      parentResult.settled = Promise.all([parentResult.settled, ...externalSettlements]).then(
-        () => undefined,
-      );
-    }
     resolveParentResult(parentResult);
     request.afterParent?.(parentResult);
     runPostParent = async () => {
-      await Promise.all(pendingExternalStops);
       const currentParentResult = parentResult;
       if (!currentParentResult) {
         throw new Error("Parent Stop result is unavailable");
       }
-      const alreadyFinalizing = currentParentResult.finalizing + externalFinalizing > 0;
-      const activeCancelled = currentParentResult.activeCancelled + externalActiveCancelled;
+      const alreadyFinalizing = currentParentResult.finalizing > 0;
+      const activeCancelled = currentParentResult.activeCancelled;
       if ((!alreadyFinalizing || activeCancelled > 0) && request.recordAbortTarget) {
         await request.recordAbortTarget({
           recordCutoff: policy.recordMessageCutoff && request.messageIdentity !== undefined,
@@ -609,7 +542,6 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
         if (!hookContext) {
           throw new Error(`Stop source ${request.source} requires command hook context`);
         }
-        request.assertCurrent?.();
         await triggerInternalHook(
           createInternalHookEvent("command", "stop", hookContext.sessionKey, {
             sessionEntry: hookContext.sessionEntry,
@@ -620,6 +552,9 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
         );
       }
     };
+    // Let synchronous cancellation observers publish replacement identity before descendants run.
+    await Promise.resolve();
+    request.assertCurrent?.();
     return request.continueChildStop?.() ?? true;
   };
 
@@ -636,13 +571,7 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
   const pendingSettlement = parentResultReady.then((result) => result.settled);
   void pendingSettlement.catch(() => {});
   const initial = parentResult
-    ? resolveStopOutcome(
-        parentResult,
-        externalActiveCancelled,
-        externalQueuedCancelled,
-        externalFinalizing,
-        { stopped: 0, failed: 0 },
-      )
+    ? resolveStopOutcome(parentResult, { stopped: 0, failed: 0 })
     : resolveStopOutcome(
         {
           queuedCancelled: 0,
@@ -653,9 +582,6 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
           failures: [],
           finalizing: 0,
         },
-        0,
-        0,
-        0,
         { stopped: 0, failed: 0 },
       );
   const completed = children.then(
@@ -666,13 +592,7 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
         throw new Error("Parent Stop result is unavailable");
       }
       await postParent();
-      return resolveStopOutcome(
-        currentParentResult,
-        externalActiveCancelled,
-        externalQueuedCancelled,
-        externalFinalizing,
-        childResult,
-      );
+      return resolveStopOutcome(currentParentResult, childResult);
     },
     async (error) => {
       await runPostParent?.();

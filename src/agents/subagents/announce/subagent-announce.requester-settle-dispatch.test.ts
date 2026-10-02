@@ -26,6 +26,7 @@ import {
 } from "../../../sessions/session-controller.lifecycle.js";
 import { getExistingSessionControllerMailbox } from "../../../sessions/session-controller.mailbox.js";
 import { markReplyOperationExecutionStarted } from "../../../sessions/session-controller.state.js";
+import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { trackAsyncWork } from "../../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../../state/openclaw-agent-db.js";
@@ -145,7 +146,6 @@ function createContext(): GatewayRequestContext {
     trackExecution: trackAsyncWork,
     agentRunSeq: new Map(),
     broadcast: vi.fn(),
-    rpcSources: new Map(),
     chatRunState,
     dedupe: new Map(),
     getRuntimeConfig: () => ({}),
@@ -642,7 +642,6 @@ describe("requester settle dispatch deadline", () => {
       startTurn.mockImplementation(async ({ preflight, io }) => {
         const request = preflight.request as { idempotencyKey: string; sessionKey: string };
         const registration = registerChatAbortController({
-          rpcSources: context.rpcSources,
           target: REQUESTER_TARGET,
           runId: request.idempotencyKey,
           sessionId: "requester-session",
@@ -773,7 +772,7 @@ describe("requester settle dispatch deadline", () => {
         const mailbox = getExistingSessionControllerMailbox(REQUESTER_KEY, REQUESTER_TARGET);
         expect(mailbox?.claim).toBeUndefined();
         expect(mailbox?.entries ?? []).toEqual([]);
-        expect(context.rpcSources.size).toBe(0);
+        expect(rpcSourceTesting.size).toBe(0);
         expect(child.execution.outcome).toEqual({ status: "ok" });
         expect(child.completion?.resultText).toBe("child result");
       } finally {
@@ -800,7 +799,6 @@ describe("requester settle dispatch deadline", () => {
     startTurn.mockImplementation(async ({ preflight, io }) => {
       const request = preflight.request as { idempotencyKey: string; sessionKey: string };
       const registration = registerChatAbortController({
-        rpcSources: context.rpcSources,
         target: REQUESTER_TARGET,
         runId: request.idempotencyKey,
         sessionId: "requester-session",

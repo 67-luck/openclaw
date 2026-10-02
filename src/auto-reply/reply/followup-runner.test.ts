@@ -8,9 +8,9 @@ import {
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
-import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
 import type { FollowupExecutionResult } from "./followup-turn-execution.js";
 import type { FollowupRun } from "./queue.js";
+import type { AdmittedFollowupTurn } from "./reply-agent-turn-preparation.js";
 
 const state = vi.hoisted(() => ({
   account: vi.fn(),
@@ -35,8 +35,8 @@ vi.mock("./agent-runner-result-accounting.js", () => ({
   accountFollowupTurn: (...args: unknown[]) => state.account(...args),
 }));
 
-vi.mock("./claimed-turn-preparation.js", () => ({
-  prepareClaimedReplyTurn: (...args: unknown[]) => state.admit(...args),
+vi.mock("./reply-agent-turn-preparation.js", () => ({
+  prepareReplyAgentTurn: (...args: unknown[]) => state.admit(...args),
 }));
 
 vi.mock("./followup-turn-execution.js", () => ({
@@ -173,15 +173,19 @@ describe("createFollowupRunner", () => {
       turn.queued.originatingChannel = "webchat";
       turn.queued.queuedFollowupReplyDisposition = { kind: "deliver", deliver: source.deliver };
       const failure = new Error("session generation changed after compaction");
-      const notice = { text: "Context compacted", mediaUrl: "https://example.test/status.png" };
+      const notice = {
+        text: "Context compacted",
+        replyToCurrent: true,
+        isCompactionNotice: true,
+      };
       const order: string[] = [];
       state.admit.mockImplementation(
         async (
           params: Parameters<
-            typeof import("./claimed-turn-preparation.js").prepareClaimedReplyTurn
+            typeof import("./reply-agent-turn-preparation.js").prepareReplyAgentTurn
           >[0],
         ) => {
-          await params.onCompactionNoticePayload?.(notice, turn);
+          await params.onCompactionNotice?.("end", notice.text, turn);
           if (!succeeds) {
             throw failure;
           }
@@ -229,10 +233,10 @@ describe("createFollowupRunner", () => {
     state.admit.mockImplementation(
       async (
         params: Parameters<
-          typeof import("./claimed-turn-preparation.js").prepareClaimedReplyTurn
+          typeof import("./reply-agent-turn-preparation.js").prepareReplyAgentTurn
         >[0],
       ) => {
-        await params.onCompactionNoticePayload?.({ text: "Compacting context" }, turn);
+        await params.onCompactionNotice?.("start", "Compacting context", turn);
         order.push("compaction-finished");
         return { kind: "admitted", turn };
       },

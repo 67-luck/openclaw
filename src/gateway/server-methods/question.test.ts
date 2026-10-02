@@ -13,13 +13,11 @@ import {
 import { isSecretValueRegisteredForRedaction } from "../../logging/secret-redaction-registry.js";
 import * as secretsRuntimeState from "../../secrets/runtime-state.js";
 import { listSecretStoreEntries, readSecretStoreValue } from "../../secrets/store/secret-store.js";
+import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import {
-  abortChatRunById,
-  registerChatAbortController,
-  type ChatAbortControllerEntry,
-} from "../chat-abort.js";
+import { abortChatRunById, registerChatAbortController } from "../chat-abort.js";
 import { createGatewayBroadcaster } from "../server-broadcast.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { GatewayClientRegistry } from "../server/client-registry.js";
@@ -568,13 +566,12 @@ describe("question gateway methods", () => {
         } else if (closure === "rotation") {
           rotateAgentRunRegistryLifecycleGeneration();
         } else {
-          const rpcSources = new Map<string, ChatAbortControllerEntry>();
+          rpcSourceTesting.clear();
           const registration = registerChatAbortController({
             target: captureRpcTargetForTest({
               sessionKey: requestParams.sessionKey,
               sessionId: "question-session",
             }),
-            rpcSources,
             runId: requestParams.runId,
             sessionId: "question-session",
             sessionKey: requestParams.sessionKey,
@@ -588,7 +585,6 @@ describe("question gateway methods", () => {
             expect(
               abortChatRunById(
                 {
-                  rpcSources,
                   chatRunState: createChatRunState(),
                   removeChatRun: () => undefined,
                   agentRunSeq: new Map(),

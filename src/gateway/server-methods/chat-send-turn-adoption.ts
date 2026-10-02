@@ -3,9 +3,11 @@ import type { TurnAdoptionLifecycle } from "../../auto-reply/get-reply-options.t
 import type { QueuedFollowupReplyDelivery } from "../../auto-reply/reply/queue/types.js";
 import { bindReplySourceInput } from "../../auto-reply/reply/reply-source-binding.js";
 import { retireSessionControllerSourceCancellation } from "../../sessions/session-controller.mailbox.js";
-import type {
-  RpcSourceAdapter,
-  RpcSourceRef,
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { buildAbortedChatSendPayload } from "./chat-abort-authorization.js";
@@ -22,10 +24,6 @@ export function createChatSendTurnAdoptionLifecycle(params: {
   context: GatewayRequestContext;
   runId: string;
   controller: AbortController;
-  sessionBinding: Readonly<
-    Pick<RpcSourceAdapter, "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration">
-  > &
-    Pick<RpcSourceAdapter, "abortDiagnosticReason">;
   sessionKey: string;
   agentId?: string;
   ownerConnId?: string;
@@ -67,7 +65,10 @@ export function createChatSendTurnAdoptionLifecycle(params: {
     setGatewayDedupeEntry({
       dedupe: params.context.dedupe,
       key: `chat:${params.runId}`,
-      session: captureAgentJobSession(params.sessionBinding),
+      session: captureAgentJobSession({
+        ...getRpcSourceIdentity(params.sourceRef),
+        lifecycleGeneration: getRpcSourceLifecycleGeneration(params.sourceRef),
+      }),
       entry: {
         ts: now,
         ok: true,
@@ -142,7 +143,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
         return;
       }
       settlementRecorded = true;
-      const ownsCompletion = params.context.rpcSources.get(params.runId) === params.sourceRef;
+      const ownsCompletion = getRpcSource(params.runId) === params.sourceRef;
       // Consumed steering also settles custody, but has no terminal batch. Only
       // the exact queued owner can retire an executed or abandoned refresh.
       completed = ownsCompletion && terminalKnown;

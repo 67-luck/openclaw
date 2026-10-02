@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
+import type { AdmittedFollowupTurn } from "./reply-agent-turn-preparation.js";
 import { createMockReplyOperation } from "./test-helpers.js";
 
 const followupTurnTestState = vi.hoisted(() => ({
@@ -85,7 +85,6 @@ export function createFollowupTurnTestTurn(
       key: "main",
       current: () => ({ sessionId: "session", updatedAt: 1, verboseLevel: "on" }),
       publish: () => undefined,
-      adopt: () => undefined,
     },
     sendPolicy: "allow",
     preflightCompactionApplied: false,

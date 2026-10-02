@@ -15,7 +15,14 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isAcpSessionKey } from "../../routing/session-key.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  type RpcSourceAdapter,
+  type RpcSourceIdentity,
+  type RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { readInProcessSubagentResume } from "../in-process-subagent-resume.js";
 import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
 import { registerPluginSubagentRunFromGateway } from "../server-methods/agent-subagent-registration.js";
@@ -147,14 +154,15 @@ export async function prepareGatewaySubagentRun(params: {
 export async function settleUnstartedGatewayFollowup(params: {
   completion: FollowupCompletionOwner | undefined;
   runId: string;
-  admittedRunEntry: ChatAbortControllerEntry | undefined;
+  admittedRunEntry: RpcSourceRef | undefined;
   admittedRunIdentity:
-    | (Pick<
-        ChatAbortControllerEntry["adapter"],
-        "operationalRunInstance" | "lifecycleGeneration" | "sessionKey"
-      > & { controller: Pick<AbortController, "signal" | "abort"> })
+    | (Pick<RpcSourceAdapter, "operationalRunInstance"> &
+        Pick<RpcSourceIdentity, "sessionKey"> & {
+          controller: Pick<AbortController, "signal" | "abort">;
+          lifecycleGeneration?: string;
+        })
     | undefined;
-  context: Pick<AgentTurnContext, "rpcSources" | "logGateway">;
+  context: Pick<AgentTurnContext, "logGateway">;
   isIncognito?: boolean;
   outcome: AgentRunTerminalOutcome;
 }): Promise<void> {
@@ -167,20 +175,20 @@ export async function settleUnstartedGatewayFollowup(params: {
       params.runId,
       { ...params.outcome, endedAt: params.outcome.endedAt ?? Date.now() },
       () => {
-        const current = params.context.rpcSources.get(params.runId);
+        const current = getRpcSource(params.runId);
         const admitted = params.admittedRunIdentity;
         const ownsRegistration =
           current === params.admittedRunEntry &&
           admitted &&
           current?.input.abortSignal === admitted.controller.signal &&
           current.adapter.operationalRunInstance === admitted.operationalRunInstance &&
-          current.adapter.lifecycleGeneration === admitted.lifecycleGeneration &&
-          current.adapter.sessionKey === admitted.sessionKey;
+          getRpcSourceLifecycleGeneration(current) === admitted.lifecycleGeneration &&
+          getRpcSourceIdentity(current).sessionKey === admitted.sessionKey;
         if (
           current &&
           !ownsRegistration &&
           (current === params.admittedRunEntry ||
-            current.adapter.sessionKey === completion.request.targetSessionKey)
+            getRpcSourceIdentity(current).sessionKey === completion.request.targetSessionKey)
         ) {
           throw new Error("Follow-up admission was replaced before cleanup.");
         }

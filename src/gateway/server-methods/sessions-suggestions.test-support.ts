@@ -39,7 +39,6 @@ export function context(
     getRuntimeConfig: () => runtimeConfig,
     broadcast,
     broadcastToConnIds: vi.fn(),
-    rpcSources: new Map(),
     logGateway: { warn: vi.fn() },
   } as unknown as GatewayRequestContext;
 }

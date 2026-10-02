@@ -1,3 +1,4 @@
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 /** Cancellation binds session incarnations and retains exact durable dispatch fences. */
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
@@ -42,7 +43,7 @@ function abortParent() {
     getSessionEventSubscriberConnIds: () => new Set(),
   });
   const parent = createActiveRun(parentKey, { agentId: "main", owner: { connId: "owner" } });
-  context.rpcSources.set("parent", parent);
+  rpcSourceTesting.set("parent", parent);
   return {
     context,
     parent,

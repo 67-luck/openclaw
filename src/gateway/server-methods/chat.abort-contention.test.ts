@@ -23,7 +23,7 @@ it("reports typed contention without replaying or denying an already applied Sto
   });
   const sessionKey = "agent:main:main";
   const active = createActiveRun(sessionKey, { agentId: "main" });
-  const context = createChatAbortContext({ rpcSources: new Map([["run-1", active]]) });
+  const context = createChatAbortContext({ sources: new Map([["run-1", active]]) });
   const respond = await invokeChatAbortHandler({
     handler: handleChatAbortRequest,
     context,

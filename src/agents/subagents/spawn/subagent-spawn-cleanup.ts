@@ -1,10 +1,14 @@
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import type { callGateway } from "../../../gateway/call.js";
-import type { ChatAbortControllerEntry } from "../../../gateway/chat-abort.js";
 import type { GatewayContextResolver } from "../../../gateway/server-methods/types.js";
 import { bindGatewayLifecycleRequest } from "../../../gateway/server-recovery-runtime-context.js";
 import { isFastTestRuntimeEnv } from "../../../infra/env.js";
 import { getPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  type RpcSourceRef,
+} from "../../../sessions/session-controller.rpc-sources.js";
 import { deleteSubagentSessionForCleanup } from "../registry/subagent-session-cleanup.js";
 import { cleanupMaterializedSubagentAttachments } from "./subagent-attachments.js";
 import { callSubagentGateway } from "./subagent-spawn-gateway.js";
@@ -27,8 +31,8 @@ export function bindSubagentSpawnCleanup(params: {
   let acceptedRun:
     | {
         runId: string;
-        entry: ChatAbortControllerEntry | undefined;
-        operationalRunInstance: ChatAbortControllerEntry["adapter"]["operationalRunInstance"];
+        entry: RpcSourceRef | undefined;
+        operationalRunInstance: RpcSourceRef["adapter"]["operationalRunInstance"];
       }
     | undefined;
   const isCurrent = () => {
@@ -39,13 +43,13 @@ export function bindSubagentSpawnCleanup(params: {
     if (!identity.expectedSessionId || !identity.expectedLifecycleRevision) {
       return false;
     }
-    const currentRun = acceptedRun && context.rpcSources.get(acceptedRun.runId);
+    const currentRun = acceptedRun && getRpcSource(acceptedRun.runId);
     return (
       !currentRun ||
       (currentRun === acceptedRun?.entry &&
         currentRun.adapter.operationalRunInstance === acceptedRun?.operationalRunInstance &&
-        currentRun.adapter.sessionKey === params.childSessionKey &&
-        currentRun.adapter.sessionId === identity.expectedSessionId)
+        getRpcSourceIdentity(currentRun).sessionKey === params.childSessionKey &&
+        getRpcSourceIdentity(currentRun).sessionId === identity.expectedSessionId)
     );
   };
   const callGateway: GatewayCall = async (request) => {
@@ -84,7 +88,7 @@ export function bindSubagentSpawnCleanup(params: {
     assertCurrent();
     if (
       method === "chat.abort" &&
-      (!acceptedRun?.entry || context?.rpcSources.get(acceptedRun.runId) !== acceptedRun.entry)
+      (!acceptedRun?.entry || getRpcSource(acceptedRun.runId) !== acceptedRun.entry)
     ) {
       return { aborted: false, runIds: [] };
     }
@@ -105,7 +109,7 @@ export function bindSubagentSpawnCleanup(params: {
       if (acceptedRun) {
         throw new Error("Subagent cleanup already owns an accepted run");
       }
-      const entry = context?.rpcSources.get(runId);
+      const entry = getRpcSource(runId);
       acceptedRun = { runId, entry, operationalRunInstance: entry?.adapter.operationalRunInstance };
     },
   };

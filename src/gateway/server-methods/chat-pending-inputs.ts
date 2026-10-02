@@ -7,7 +7,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import {
   isRpcSourceQueuedForSession,
-  type RpcSourceIndex,
+  listRpcSourceEntries,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { prepareForwardedMessageCronJobNameResolver } from "../chat-display-projection.history.js";
 import {
@@ -60,7 +60,6 @@ export async function readChatPendingInputs(
     before?: number;
     limit: number;
     maxChars: number;
-    queuedTurns?: RpcSourceIndex;
     cronStorePath?: string;
   },
 ): Promise<ChatPendingInputsPage> {
@@ -73,10 +72,10 @@ export async function readChatPendingInputs(
     options.cronStorePath,
   );
   let queuedCount = 0;
-  for (const runId of options.queuedTurns?.keys() ?? []) {
+  for (const [runId] of listRpcSourceEntries()) {
     if (
       runId.length <= PENDING_INPUT_CORRELATION_MAX_CHARS &&
-      isRpcSourceQueuedForSession(options.queuedTurns, runId, scope)
+      isRpcSourceQueuedForSession(runId, scope)
     ) {
       queuedCount += 1;
     }
@@ -99,7 +98,7 @@ export async function readChatPendingInputs(
   }).messages;
   return {
     ...page,
-    ...(options.queuedTurns ? { queuedCount } : {}),
+    queuedCount,
     items: visible.map(({ input: item }, index) => {
       const display: ChatPendingInputsPage["items"][number] = {
         id: item.id,
@@ -109,10 +108,7 @@ export async function readChatPendingInputs(
       };
       if (item.runId.length <= PENDING_INPUT_CORRELATION_MAX_CHARS) {
         display.runId = item.runId;
-        if (
-          item.state === "queued" &&
-          isRpcSourceQueuedForSession(options.queuedTurns, item.runId, scope)
-        ) {
+        if (item.state === "queued" && isRpcSourceQueuedForSession(item.runId, scope)) {
           display.queued = true;
         }
       }

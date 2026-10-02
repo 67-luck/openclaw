@@ -11,10 +11,7 @@ import {
   retireFollowupRunCancellation,
 } from "../auto-reply/reply/queue/lifecycle.js";
 import { testing as controllerTesting } from "../auto-reply/reply/reply-run-registry.test-support.js";
-import {
-  registerChatAbortController,
-  removeChatAbortControllerEntry,
-} from "../gateway/chat-abort.js";
+import { registerChatAbortController } from "../gateway/chat-abort.js";
 import { withSessionTurn } from "./session-controller.admission.js";
 import { captureSessionTarget } from "./session-controller.lifecycle.js";
 import {
@@ -23,15 +20,17 @@ import {
   holdSessionControllerSourceWithdrawal,
 } from "./session-controller.mailbox.js";
 import {
+  getRpcSourceIdentity,
   getRpcSourceSignal,
   getRpcSourceStartedAt,
   isRpcSourceActive,
   isRpcSourceQueued,
-  listRpcSourcesForSession,
+  listRpcSourceEntriesForSession,
   requestRpcSourceCancellation,
   type RpcSourceRef,
 } from "./session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "./session-controller.state.js";
+import { rpcSourceTesting } from "./session-lifecycle-admission.test-support.js";
 
 const storeScope = "/synthetic/rpc-source-contracts/sessions.db";
 const sessionKey = "agent:main:rpc-sources";
@@ -41,13 +40,8 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function reserve(
-  rpcSources: Map<string, RpcSourceRef>,
-  runId: string,
-  scope = { sessionKey, sessionId, agentId: "main" },
-) {
+function reserve(runId: string, scope = { sessionKey, sessionId, agentId: "main" }) {
   const registration = registerChatAbortController({
-    rpcSources,
     runId,
     ...scope,
     timeoutMs: 1,
@@ -65,10 +59,11 @@ function reserve(
 }
 
 function runSource(ref: RpcSourceRef, run: Parameters<typeof withSessionTurn>[1]) {
+  const identity = getRpcSourceIdentity(ref);
   return withSessionTurn(
     {
-      sessionKey: ref.adapter.sessionKey,
-      sessionId: ref.adapter.sessionId,
+      sessionKey: identity.sessionKey,
+      sessionId: identity.sessionId,
       storePath: storeScope,
       controllerInput: ref.input,
     },
@@ -85,10 +80,9 @@ function runSource(ref: RpcSourceRef, run: Parameters<typeof withSessionTurn>[1]
 
 describe("RPC source owner boundary", () => {
   it("reserves before async preparation, then executes the same input rather than a second turn", async () => {
-    const sources = new Map<string, RpcSourceRef>();
-    const first = reserve(sources, "first");
+    const first = reserve("first");
     const prepared = createDeferred();
-    const second = reserve(sources, "second");
+    const second = reserve("second");
     const order: string[] = [];
     const follower = runSource(second.entry, async () => {
       order.push("second");
@@ -111,12 +105,11 @@ describe("RPC source owner boundary", () => {
     expect(order).toEqual(["first", "second"]);
     first.cleanup();
     second.cleanup();
-    expect(sources.size).toBe(0);
+    expect(rpcSourceTesting.size).toBe(0);
   });
 
   it("cancels the exact claimed operation but retains retry custody until its producer settles", async () => {
-    const sources = new Map<string, RpcSourceRef>();
-    const source = reserve(sources, "active-source");
+    const source = reserve("active-source");
     const started = createDeferred();
     const release = createDeferred();
     const task = runSource(source.entry, async (operation, signal) => {
@@ -130,19 +123,17 @@ describe("RPC source owner boundary", () => {
     expect(requestRpcSourceCancellation(source.entry)).toBe(true);
     expect(isRpcSourceActive(source.entry)).toBe(false);
     source.cleanup();
-    expect(sources.get("active-source")).toBe(source.entry);
+    expect(rpcSourceTesting.get("active-source")).toBe(source.entry);
     release.resolve();
     await task;
     await captureSessionControllerSourceSettlement(source.entry.input);
-    expect(sources.has("active-source")).toBe(false);
+    expect(rpcSourceTesting.has("active-source")).toBe(false);
   });
 
   it("keeps byte-exact spaced protocol IDs distinct during cancellation and duplicate admission", () => {
-    const sources = new Map<string, RpcSourceRef>();
-    const spaced = reserve(sources, " run ");
-    const plain = reserve(sources, "run");
+    const spaced = reserve(" run ");
+    const plain = reserve("run");
     const duplicate = registerChatAbortController({
-      rpcSources: sources,
       runId: " run ",
       sessionKey,
       sessionId,
@@ -152,13 +143,12 @@ describe("RPC source owner boundary", () => {
     expect(requestRpcSourceCancellation(spaced.entry)).toBe(true);
     expect(getRpcSourceSignal(plain.entry).aborted).toBe(false);
     spaced.cleanup();
-    expect([...sources.keys()]).toEqual(["run"]);
+    expect([...rpcSourceTesting].map(([runId]) => runId)).toEqual(["run"]);
     plain.cleanup();
   });
 
   it.each([false, true])("preserves exact cancellation reason (restart: %s)", (restart) => {
-    const sources = new Map<string, RpcSourceRef>();
-    const source = reserve(sources, "reason");
+    const source = reserve("reason");
     const reason = restart ? createAgentRunRestartAbortError() : new Error("private reason");
     expect(requestRpcSourceCancellation(source.entry, reason)).toBe(true);
     expect(getRpcSourceSignal(source.entry).reason).toBe(reason);
@@ -168,8 +158,7 @@ describe("RPC source owner boundary", () => {
   });
 
   it("holds selection through withdrawal and cancels before releasing the held selector", async () => {
-    const sources = new Map<string, RpcSourceRef>();
-    const source = reserve(sources, "withdrawn");
+    const source = reserve("withdrawn");
     const hold = holdSessionControllerSourceWithdrawal(source.entry.input);
     const execute = vi.fn(async () => {});
     const pending = runSource(source.entry, execute);
@@ -186,8 +175,7 @@ describe("RPC source owner boundary", () => {
   });
 
   it("releases a refused withdrawal without poisoning the input or losing its queued execution", async () => {
-    const sources = new Map<string, RpcSourceRef>();
-    const source = reserve(sources, "retry-withdrawal");
+    const source = reserve("retry-withdrawal");
     const hold = holdSessionControllerSourceWithdrawal(source.entry.input);
     const execute = vi.fn(async () => {});
     const pending = runSource(source.entry, execute);
@@ -206,38 +194,41 @@ describe("RPC source owner boundary", () => {
   });
 
   it("stale cancellation and cleanup cannot erase or cancel a successor with a reused run ID", () => {
-    const sources = new Map<string, RpcSourceRef>();
-    const first = reserve(sources, "reused");
+    const first = reserve("reused");
     first.cleanup();
-    const successor = reserve(sources, "reused");
+    const successor = reserve("reused");
     first.controller.abort();
     first.cleanup();
-    expect(removeChatAbortControllerEntry(sources, "reused", first.entry)).toBe(false);
-    expect(sources.get("reused")).toBe(successor.entry);
+    expect(rpcSourceTesting.get("reused")).toBe(successor.entry);
     expect(getRpcSourceSignal(successor.entry).aborted).toBe(false);
     successor.cleanup();
   });
 
-  it("publishes cancellation while the exact source is retained and preserves a synchronous replacement", () => {
-    const sources = new Map<string, RpcSourceRef>();
-    const first = reserve(sources, "reentrant");
-    let successor: ReturnType<typeof reserve> | undefined;
+  it("retains the exact source through cancellation and permits replacement after settlement", async () => {
+    const first = reserve("reentrant");
     first.entry.adapter.cancel = () => {
-      expect(sources.get("reentrant")).toBe(first.entry);
+      expect(rpcSourceTesting.get("reentrant")).toBe(first.entry);
       first.cleanup();
-      successor = reserve(sources, "reentrant");
+      expect(
+        registerChatAbortController({
+          runId: "reentrant",
+          sessionKey,
+          sessionId,
+          timeoutMs: 1,
+        }).registered,
+      ).toBe(false);
     };
     expect(requestRpcSourceCancellation(first.entry, "rpc")).toBe(true);
     first.cleanup();
-    expect(successor).toBeDefined();
-    expect(sources.get("reentrant")).toBe(successor?.entry);
-    expect(successor?.entry.input.abortSignal.aborted).toBe(false);
-    successor?.cleanup();
+    await captureSessionControllerSourceSettlement(first.entry.input);
+    const successor = reserve("reentrant");
+    expect(rpcSourceTesting.get("reentrant")).toBe(successor.entry);
+    expect(successor.entry.input.abortSignal.aborted).toBe(false);
+    successor.cleanup();
   });
 
   it("retains collected siblings as retry identities after retiring cancellation until aggregate settlement", async () => {
-    const sources = new Map<string, RpcSourceRef>();
-    const originals = [reserve(sources, "collect-a"), reserve(sources, "collect-b")];
+    const originals = [reserve("collect-a"), reserve("collect-b")];
     const runs = originals.map((source) => {
       const run = createQueueTestRun({ prompt: source.entry.input.protocolRunId! });
       bindSessionControllerSource(source.entry.input, run);
@@ -252,7 +243,7 @@ describe("RPC source owner boundary", () => {
       expect(requestRpcSourceCancellation(source.entry)).toBe(false);
       expect(getRpcSourceSignal(source.entry).aborted).toBe(false);
       expect(isRpcSourceQueued(source.entry)).toBe(false);
-      expect(sources.get(source.entry.input.protocolRunId!)).toBe(source.entry);
+      expect(rpcSourceTesting.get(source.entry.input.protocolRunId!)).toBe(source.entry);
     }
     for (const run of runs) {
       completeFollowupRunLifecycle(run, "consumed");
@@ -260,19 +251,17 @@ describe("RPC source owner boundary", () => {
     await Promise.all(
       originals.map((source) => captureSessionControllerSourceSettlement(source.entry.input)),
     );
-    expect(sources.size).toBe(0);
+    expect(rpcSourceTesting.size).toBe(0);
   });
 
   it("lists only the captured logical session and agent", () => {
-    const sources = new Map<string, RpcSourceRef>();
-    reserve(sources, "main", { sessionKey: "global", sessionId: "global-main", agentId: "main" });
-    reserve(sources, "other", {
+    reserve("main", { sessionKey: "global", sessionId: "global-main", agentId: "main" });
+    reserve("other", {
       sessionKey: "global",
       sessionId: "global-other",
       agentId: "other",
     });
-    const matches = listRpcSourcesForSession({
-      rpcSources: sources,
+    const matches = listRpcSourceEntriesForSession({
       sessionKeys: ["global"],
       agentId: "main",
       defaultAgentId: "main",
@@ -281,23 +270,21 @@ describe("RPC source owner boundary", () => {
     });
     expect(matches.map(({ runId }) => runId)).toEqual(["main"]);
     expect(
-      listRpcSourcesForSession({
-        rpcSources: sources,
+      listRpcSourceEntriesForSession({
         sessionKeys: ["wrong-session"],
         requiredSessionId: "global-main",
         queuedOnly: true,
       }),
     ).toEqual([]);
-    for (const [runId, entry] of sources) {
-      removeChatAbortControllerEntry(sources, runId, entry);
+    for (const [runId] of rpcSourceTesting.entries()) {
+      rpcSourceTesting.delete(runId);
     }
   });
 
   it("does not project a waiting source as active or start its execution clock while a predecessor prepares", async () => {
     vi.useFakeTimers();
-    const sources = new Map<string, RpcSourceRef>();
-    const predecessor = reserve(sources, "preparing");
-    const waiting = reserve(sources, "waiting");
+    const predecessor = reserve("preparing");
+    const waiting = reserve("waiting");
     const started = createDeferred();
     const release = createDeferred();
     const task = runSource(waiting.entry, async () => {

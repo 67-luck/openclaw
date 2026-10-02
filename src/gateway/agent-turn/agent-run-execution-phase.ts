@@ -32,6 +32,12 @@ import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-reques
 import { retainGatewayRootWorkAdmissionContinuation } from "../../process/gateway-work-admission.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  updateRpcSourceSessionId,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { isOperatorUiClient } from "../../utils/message-channel.js";
 import { discardPreparedInboundMedia } from "../chat-attachments.js";
 import { errorShapeFromError } from "../error-shape.js";
@@ -70,17 +76,29 @@ import {
 
 export async function startAgentRunExecution(params: StartAgentRunExecutionParams): Promise<void> {
   const { prepared } = params;
+  let deliverFinal: (() => void) | undefined;
+  const deferFinal = (...args: Parameters<typeof params.io.emitFinal>) => {
+    deliverFinal = () => params.io.emitFinal(...args);
+  };
   const diagnostics = createAgentRunDiagnostics(
     params.resolvedSessionKey,
     params.sessionEntry?.incognito,
     params.context.logGateway,
   );
-  const jobSessionBinding = prepared.activeRunAbort.entry?.adapter ?? {
-    sessionKey: params.resolvedSessionKey,
-    sessionId: params.resolvedSessionId,
-    agentId: params.activeSessionAgentId,
-    lifecycleGeneration: params.lifecycleGeneration,
-  };
+  const captureJobSession = () =>
+    captureAgentJobSession(
+      prepared.activeRunAbort.entry
+        ? {
+            ...getRpcSourceIdentity(prepared.activeRunAbort.entry),
+            lifecycleGeneration: getRpcSourceLifecycleGeneration(prepared.activeRunAbort.entry),
+          }
+        : {
+            sessionKey: params.resolvedSessionKey,
+            sessionId: params.resolvedSessionId,
+            agentId: params.activeSessionAgentId,
+            lifecycleGeneration: params.lifecycleGeneration,
+          },
+    );
   let unpersistedOffloadedRefs = prepared.unpersistedOffloadedRefs;
   const releaseGatewayRootContinuation = retainGatewayRootWorkAdmissionContinuation() ?? undefined;
   let finishUndispatchedFollowup = false;
@@ -91,13 +109,13 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
     const abortEntry = abortRegistration.entry;
     const abortController = abortRegistration.controller;
     const operationalRunInstance = prepared.operationalRunInstance;
-    const sessionKey = abortEntry?.adapter.sessionKey;
+    const sessionKey = abortEntry && getRpcSourceIdentity(abortEntry).sessionKey;
     const admittedRunIdentity = abortEntry
       ? {
           controller: abortController,
           operationalRunInstance,
           lifecycleGeneration: params.lifecycleGeneration,
-          sessionKey: abortEntry.adapter.sessionKey,
+          sessionKey: getRpcSourceIdentity(abortEntry).sessionKey,
         }
       : undefined;
     const assertSettlementCurrent = () => {
@@ -121,12 +139,12 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
         (abortRegistration.registered &&
           (prepared.activeGatewayWorkAdmission?.isActive() === false ||
             !abortEntry ||
-            params.context.rpcSources.get(params.runId) !== abortEntry ||
+            getRpcSource(params.runId) !== abortEntry ||
             abortEntry.input.abortSignal !== abortController.signal ||
             abortEntry.adapter.operationalRunInstance !== operationalRunInstance ||
-            abortEntry.adapter.lifecycleGeneration !== params.lifecycleGeneration ||
-            abortEntry.adapter.sessionKey !== sessionKey ||
-            abortEntry.adapter.registrationCleanupRequested))
+            getRpcSourceLifecycleGeneration(abortEntry) !== params.lifecycleGeneration ||
+            getRpcSourceIdentity(abortEntry).sessionKey !== sessionKey ||
+            abortEntry.input.retirementRequested))
       ) {
         throw new Error("agent dispatch no longer owns this Gateway run");
       }
@@ -220,10 +238,10 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
         setGatewayDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.agentDedupeKeys,
-          session: captureAgentJobSession(jobSessionBinding),
+          session: captureJobSession(),
           entry: diagnostics.forReplay({ ts: Date.now(), ok: false, payload, error }),
         });
-        params.io.emitFinal([false, payload, error], {
+        deferFinal([false, payload, error], {
           runId: params.runId,
           ...diagnostics.errorMeta(renderedErr),
         });
@@ -249,12 +267,12 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
         setAbortedAgentDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.agentDedupeKeys,
-          session: captureAgentJobSession(jobSessionBinding),
+          session: captureJobSession(),
           agentId: params.activeSessionAgentId,
           runId: params.runId,
           stopReason,
         });
-        params.io.emitFinal([true, buildAbortedAgentPayload(params.runId, stopReason), undefined], {
+        deferFinal([true, buildAbortedAgentPayload(params.runId, stopReason), undefined], {
           runId: params.runId,
         });
       };
@@ -566,7 +584,6 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
                   }
                 },
                 onActiveModelSelected: createAgentRunModelSelectionHandler({
-                  context: params.context,
                   runId: params.runId,
                   cfg: params.cfg,
                   cfgForAgent: params.cfgForAgent,
@@ -579,7 +596,7 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
                 }),
                 onSessionIdChanged: (sessionId) => {
                   if (prepared.activeRunAbort.entry) {
-                    prepared.activeRunAbort.entry.adapter.sessionId = sessionId;
+                    updateRpcSourceSessionId(prepared.activeRunAbort.entry, sessionId);
                   }
                 },
                 workspaceDir: prepared.workspaceOverride,
@@ -611,7 +628,7 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
                       onRecovered,
                     )
                 : undefined,
-              io: params.io,
+              io: { ...params.io, emitFinal: deferFinal },
               context: params.context,
               isIncognito: diagnostics.incognito,
               followupCompletion: prepared.followupCompletion,
@@ -674,9 +691,10 @@ export async function startAgentRunExecution(params: StartAgentRunExecutionParam
         }
       }
     };
-    return await (prepared.activeGatewayWorkAdmission
+    await (prepared.activeGatewayWorkAdmission
       ? prepared.activeGatewayWorkAdmission.run(execute)
       : execute());
+    deliverFinal?.();
   } finally {
     // Shutdown joins the execution through asynchronous runtime disposal, not just bookkeeping.
     try {

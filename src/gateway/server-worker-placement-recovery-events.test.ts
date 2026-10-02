@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -87,7 +88,6 @@ async function withRecoveryRuntime(
   verify: (runtime: {
     context: {
       broadcastToConnIds: ReturnType<typeof vi.fn>;
-      rpcSources: Map<never, never>;
       getRuntimeConfig: () => object;
       getSessionEventSubscriberConnIds: () => Set<string>;
     };
@@ -122,7 +122,6 @@ async function withRecoveryRuntime(
     }
     const context = {
       broadcastToConnIds: vi.fn(options.broadcast),
-      rpcSources: new Map<never, never>(),
       getRuntimeConfig: () => ({}),
       getSessionEventSubscriberConnIds: () =>
         new Set(options.hasSubscribers === false ? [] : ["session-observer"]),

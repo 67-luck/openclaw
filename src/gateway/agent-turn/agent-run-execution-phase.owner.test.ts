@@ -9,13 +9,19 @@ import { SessionFollowupCompletion } from "../../agents/subagents/completion/ses
 import type { SessionEntry } from "../../config/sessions.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { getCurrentSessionControllerOwner } from "../../sessions/session-controller.lifecycle.js";
+import { getRpcSourceIdentity } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { isWebchatClient } from "../../utils/message-channel.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import * as sessionChange from "../server-methods/session-change-event.js";
 import { replayAgentTurnIfCached } from "./agent-dedupe.js";
 import { resolveAgentDeliveryPhase } from "./agent-delivery-phase.js";
 import { startAgentRunExecution } from "./agent-run-execution-phase.js";
-import { createTestRpcSource, testRpcSourceController } from "./rpc-source.test-support.js";
+import {
+  createTestRpcSource,
+  setTestRpcSourceIdentity,
+  testRpcSourceController,
+} from "./rpc-source.test-support.js";
 import type { AgentTurnPrincipal } from "./types.js";
 
 const dispatchAgentRunFromGateway = vi.hoisted(() => vi.fn());
@@ -142,9 +148,9 @@ function bindFollowupCompletion(execution: ReturnType<typeof createExecution>) {
   }
   params.prepared.lifecycleStorePath = entry.input.mailbox.owner.target!.storeScope;
   params.resolvedSessionKey = sessionKey;
-  params.resolvedSessionId = entry.adapter.sessionId;
+  params.resolvedSessionId = getRpcSourceIdentity(entry).sessionId;
   params.lifecycleGeneration = lifecycleGeneration;
-  params.context.rpcSources = new Map([[params.runId, entry]]);
+  rpcSourceTesting.reset([[params.runId, entry]]);
   params.prepared.activeRunAbort = {
     ...params.prepared.activeRunAbort,
     registered: true,
@@ -153,8 +159,8 @@ function bindFollowupCompletion(execution: ReturnType<typeof createExecution>) {
   };
   params.prepared.activeGatewayWorkAdmission!.isActive = () => true;
   execution.abortCleanup.mockImplementation(() => {
-    if (params.context.rpcSources.get(params.runId) === entry) {
-      params.context.rpcSources.delete(params.runId);
+    if (rpcSourceTesting.get(params.runId) === entry) {
+      rpcSourceTesting.delete(params.runId);
     }
   });
   const custody = new AbortController();
@@ -439,37 +445,41 @@ describe("startAgentRunExecution Gateway ownership", () => {
       const owner = bindFollowupCompletion(execution);
       const entry = execution.params.prepared.activeRunAbort.entry!;
       const successor =
-        registration === "foreign" || registration === "replacement"
+        registration === "foreign" || registration === "replacement" || registration === "lifecycle"
           ? createTestRpcSource(
               {
                 ...entry.adapter,
+                ...getRpcSourceIdentity(entry),
                 sessionKey:
-                  registration === "foreign" ? "agent:main:unrelated" : entry.adapter.sessionKey,
+                  registration === "foreign"
+                    ? "agent:main:unrelated"
+                    : getRpcSourceIdentity(entry).sessionKey,
                 operationalRunInstance: { runId: execution.params.runId, instanceId: "successor" },
+                ...(registration === "lifecycle"
+                  ? { lifecycleGeneration: "successor-lifecycle" }
+                  : {}),
               },
               execution.params.runId,
             )
           : undefined;
       if (successor) {
-        execution.params.context.rpcSources.set(execution.params.runId, successor);
+        rpcSourceTesting.set(execution.params.runId, successor);
       }
       const lostRegistration = !["current", "foreign", "absent"].includes(registration);
       execution.params.prepared.activeGatewayWorkAdmission!.run = async (run) => {
         if (registration === "absent") {
-          execution.params.context.rpcSources.delete(execution.params.runId);
+          rpcSourceTesting.delete(execution.params.runId);
         } else if (registration === "controller") {
           Object.defineProperty(entry.input, "abortSignal", {
             value: new AbortController().signal,
           });
         } else if (registration === "session") {
-          entry.adapter.sessionKey = "agent:main:unrelated";
+          setTestRpcSourceIdentity(entry, { sessionKey: "agent:main:unrelated" });
         } else if (registration === "instance") {
           entry.adapter.operationalRunInstance = {
             runId: execution.params.runId,
             instanceId: "successor",
           };
-        } else if (registration === "lifecycle") {
-          entry.adapter.lifecycleGeneration = "successor-lifecycle";
         }
         return await run();
       };
@@ -517,7 +527,7 @@ describe("startAgentRunExecution Gateway ownership", () => {
         expect(execution.callerRelease).toHaveBeenCalledOnce();
         expect(finishExecution).toHaveBeenCalledExactlyOnceWith(execution.params.runId);
         if (successor) {
-          expect(execution.params.context.rpcSources.get(execution.params.runId)).toBe(successor);
+          expect(rpcSourceTesting.get(execution.params.runId)).toBe(successor);
         }
         if (lostRegistration) {
           await expect(reply).rejects.toThrow("Follow-up admission was replaced before cleanup.");

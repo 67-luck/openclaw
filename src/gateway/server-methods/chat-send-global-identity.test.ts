@@ -19,6 +19,8 @@ import {
   captureSessionTarget,
   captureSessionControllerSettlement,
 } from "../../sessions/session-controller.lifecycle.js";
+import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
   closeOpenClawAgentDatabaseByPath,
@@ -278,6 +280,7 @@ it.each<{
     const resumeProfile = createDeferred();
     const admissionCallback = vi.fn(async () => true);
     const interrupted = vi.fn();
+    let preparedSourceInput: SessionControllerInput | undefined;
     const activeRun = scenario.writeDuringProfilePreparation
       ? createReplyOperation({
           target: captureSessionTarget({
@@ -402,6 +405,7 @@ it.each<{
               throw new Error("chat.send settled before real operator profile preparation");
             }),
           ]);
+          preparedSourceInput = rpcSourceTesting.get(runId)?.input;
           await seedRow(literalScope);
           rows.push(literalScope);
           const withCounterpart = await snapshot();
@@ -462,13 +466,17 @@ it.each<{
         expect(observeDispatch).not.toHaveBeenCalled();
         expect(holdDispatch).not.toHaveBeenCalled();
         expect(context.addChatRun).not.toHaveBeenCalled();
-        expect(context.rpcSources.size).toBe(0);
-        expect(
-          captureSessionControllerSettlement({
-            scope: storePath,
-            identities: [scenario.key, "raw-session", "literal-session"],
-          }),
-        ).toBeUndefined();
+        expect(rpcSourceTesting.size).toBe(0);
+        if (scenario.writeDuringProfilePreparation) {
+          await expectDefined(preparedSourceInput, "prepared RPC source").settlement.promise;
+        } else {
+          expect(
+            captureSessionControllerSettlement({
+              scope: storePath,
+              identities: [scenario.key, "raw-session", "literal-session"],
+            }),
+          ).toBeUndefined();
+        }
         expect(await snapshot()).toEqual(before);
         if (scenario.replaceDatabase) {
           expect(databaseReplaced).toBe(true);
@@ -557,7 +565,7 @@ it.each<{
             expect(settled).toBeDefined();
             release.resolve();
             await settled;
-            expect(context.rpcSources.has(runId)).toBe(false);
+            expect(rpcSourceTesting.has(runId)).toBe(false);
             expect(readPending(source.path)).toEqual(pendingBefore);
             expect(readPending(originalPath)).toEqual(pendingBefore);
           }

@@ -8,7 +8,6 @@ import {
 import {
   setActiveEmbeddedRun,
   clearActiveEmbeddedRun,
-  isEmbeddedAgentRunAbortableForRunId,
   abortEmbeddedAgentRun,
   resolveActiveEmbeddedRunOwnerByRunId,
 } from "../agents/embedded-agent-runner/runs.js";
@@ -319,7 +318,6 @@ describe("controller/native admission boundary", () => {
     await withSessionTurn({ sessionId, detached: true }, async (operation) => {
       expect(operation).toBeUndefined();
       setActiveEmbeddedRun(sessionId, native);
-      expect(isEmbeddedAgentRunAbortableForRunId("detached-run")).toBe(false);
       expect(abortEmbeddedAgentRun(sessionId)).toBe(false);
       expect(native.abort).not.toHaveBeenCalled();
       expect(getActiveNativeAttempt(sessionId)).toBe(native);

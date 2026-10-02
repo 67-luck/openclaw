@@ -6,6 +6,7 @@ import {
 } from "../agents/embedded-agent-runner/runs.test-support.js";
 import { claimAgentRunContext, releaseAgentRunContext } from "../infra/agent-run-registry.js";
 import { retireSessionControllerInput } from "../sessions/session-controller.mailbox.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createChatAbortMarker } from "./server-chat-state.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
 import { createRpcSourceForTest } from "./test-helpers.rpc-source.js";
@@ -102,8 +103,11 @@ describe("gateway chat-state maintenance", () => {
   it("keeps stale buffers for active runs that still have abort controllers", async () => {
     const { startGatewayMaintenanceTimers, deps } = await createTimedMaintenanceScenario();
     const runId = "run-active";
-    const source = createRpcSourceForTest({ sessionId: "maintenance-session", sessionKey: "main" });
-    deps.rpcSources.set(runId, source);
+    const source = createRpcSourceForTest(
+      {},
+      { sessionId: "maintenance-session", sessionKey: "main" },
+    );
+    rpcSourceTesting.set(runId, source);
     seedStaleRunBuffers(deps, runId);
 
     const timers = startGatewayMaintenanceTimers(deps);
@@ -222,18 +226,22 @@ describe("gateway chat-state maintenance", () => {
       const source =
         kind === "queued"
           ? createRpcSourceForTest(
-              { sessionId: "maintenance-session", sessionKey: "main" },
-              { phase: "waiting" },
+              {},
+              {
+                phase: "waiting",
+                sessionId: "maintenance-session",
+                sessionKey: "main",
+              },
             )
           : undefined;
       if (source) {
-        deps.rpcSources.set(runId, source);
+        rpcSourceTesting.set(runId, source);
       }
       const release = () => {
         releaseAgentRunContext(runId, claim);
         if (source) {
           retireSessionControllerInput(source.input);
-          deps.rpcSources.delete(runId);
+          rpcSourceTesting.delete(runId);
         }
         if (kind === "embedded") {
           clearActiveEmbeddedRun("maintenance-session", handle, "main");

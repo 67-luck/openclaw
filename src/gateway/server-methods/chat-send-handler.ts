@@ -21,6 +21,7 @@ import {
   retireProviderReviewAcknowledgment,
   type ProviderReviewAcknowledgment,
 } from "../../sessions/provider-review.js";
+import { getRpcSourceIdentity } from "../../sessions/session-controller.rpc-sources.js";
 import { recordSessionCreated } from "../../sessions/session-created.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
@@ -193,7 +194,7 @@ async function handleChatSendWithOptions(
               agentId: preparedSession.value.agentId,
               sessionKey,
               storePath,
-              sessionId: admitted.value.sessionBinding.sessionId,
+              sessionId: getRpcSourceIdentity(admitted.value.sourceRef).sessionId,
             },
           });
           if (resolved.error) {

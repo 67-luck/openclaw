@@ -10,6 +10,7 @@ import {
   replaceSessionEntrySync,
   resetSessionEntryLifecycle,
 } from "../config/sessions/session-accessor.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -144,20 +145,19 @@ it.each(["sessions.list", "sessions.subscribe"])(
         expect(payloadFor(peers[0]!).ancestorSessionRefs).toHaveLength(1);
 
         // Runtime-only content can change and return without invalidating stored row facts.
-        connection.rpcSources.set(
+        rpcSourceTesting.set(
           "ancestor-run",
-          await createActiveRpcSourceForTest({
-            agentId: "main",
-            sessionKey: root,
-            sessionId: root,
-          }),
+          await createActiveRpcSourceForTest(
+            {},
+            { agentId: "main", sessionKey: root, sessionId: root },
+          ),
         );
         publish("activity-summary");
         expect(payloadFor(peers[0]!).ancestorSessions).toEqual([
           expect.objectContaining({ key: root, hasActiveRun: true }),
         ]);
-        connection.rpcSources.get("ancestor-run")?.input.claim?.operation?.complete();
-        connection.rpcSources.delete("ancestor-run");
+        rpcSourceTesting.get("ancestor-run")?.input.claim?.operation?.complete();
+        rpcSourceTesting.delete("ancestor-run");
         publish();
         expect(payloadFor(peers[0]!).ancestorSessions).toEqual([
           expect.objectContaining({ key: root, hasActiveRun: false }),
@@ -214,7 +214,6 @@ it("publishes fresh ancestor rows through private intermediates with list visibi
       cfg,
     });
     const context = requestContext(cfg);
-    context.rpcSources = connection.rpcSources;
     context.broadcastToConnIds = connection.broadcastToConnIds;
     const createPeer = (profile: (typeof profiles)[number], connId: string) => {
       const send = vi.fn();

@@ -87,7 +87,6 @@ describe("restart recovery startup ownership", () => {
         ? createReplyOperation({ sessionKey, sessionId, resetTriggered: false, target })
         : undefined;
     const registration = registerChatAbortController({
-      rpcSources: context.rpcSources,
       target,
       runId,
       agentId: "main",

@@ -755,7 +755,6 @@ describe("agent RPC real delegated-authority effects", () => {
           });
         } else {
           registration = registerChatAbortController({
-            rpcSources: f.context.rpcSources,
             runId: f.runId,
             sessionKey: f.sessionKey,
             sessionId: f.sessionId,

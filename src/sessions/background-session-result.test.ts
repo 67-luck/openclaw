@@ -225,7 +225,6 @@ describe("commitBackgroundResultToSession", () => {
                 getRuntimeConfig: () => target.config,
                 getSessionEventSubscriberConnIds: () => new Set<string>(),
                 broadcastToConnIds: vi.fn(),
-                rpcSources: new Map(),
                 dedupe: new Map(),
               },
             },

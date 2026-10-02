@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { runSessionMutation } from "../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createAgentDedupeLifecycle } from "./agent-turn/agent-dedupe-lifecycle.js";
@@ -73,7 +74,7 @@ describe("pending Stop producer binding", () => {
             clearDedupe: lifecycle.clearUnaccepted,
           }),
         ).toBeDefined();
-        expect(context.rpcSources.size).toBe(0);
+        expect(rpcSourceTesting.size).toBe(0);
         const pending = context.dedupe.get(`agent:${runId}`);
         if (target === "replacement") {
           await upsertSessionEntryCore(
@@ -162,7 +163,7 @@ describe("pending Stop producer binding", () => {
         await vi.waitFor(() =>
           expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(true),
         );
-        expect(context.rpcSources.has(runId)).toBe(false);
+        expect(rpcSourceTesting.has(runId)).toBe(false);
         const respond = vi.fn();
         await handleGatewayRequest({
           req: {

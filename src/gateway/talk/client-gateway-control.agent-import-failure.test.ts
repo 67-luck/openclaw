@@ -42,7 +42,7 @@ it("does not create Talk admission when lazy core loading fails", async () => {
   });
   const runner = createTalkClientAgentConsultRunner({
     config: {} as OpenClawConfig,
-    context: { rpcSources: new Map(), logGateway: { warn: vi.fn() } } as never,
+    context: { logGateway: { warn: vi.fn() } } as never,
     sessionTarget: {
       agentId: "main",
       sessionKey: "agent:main:talk",

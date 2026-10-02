@@ -11,6 +11,7 @@ import {
 import { onAgentEvent } from "../infra/agent-events.js";
 import { clearAgentRunContext } from "../infra/agent-run-registry.js";
 import type { SubsystemLogger } from "../logging/subsystem.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import {
   createChatRunState,
@@ -76,7 +77,6 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
     const context = {
       dedupe: new Map(),
       chatRunState,
-      rpcSources: new Map(),
       agentRunSeq: new Map(),
       getRuntimeConfig: () => ({}),
       removeChatRun: vi.fn(),
@@ -142,7 +142,6 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         toolEventRecipients: chatRunState.toolEventRecipients,
         sessionEventSubscribers: createSessionEventSubscriberRegistry(),
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-        rpcSources: context.rpcSources,
         restartRecoveryCandidates: new Map(),
         refreshConnectedUserProfiles: vi.fn(),
       });
@@ -224,7 +223,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         },
       });
       await abortObserved.promise;
-      expect(context.rpcSources.has(runId)).toBe(true);
+      expect(rpcSourceTesting.has(runId)).toBe(true);
       expect(owned.activeRunAbort.entry?.adapter.projectSessionTerminalPersistence).toBeInstanceOf(
         Promise,
       );
@@ -249,7 +248,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
           session: { agentId: "main", clientRunId: runId, sessionKey: target.sessionKey },
           terminalizeRestartSafeAdmission: vi.fn(async () => false),
         });
-        expect(context.rpcSources.get(runId)).toBe(owned.activeRunAbort.entry);
+        expect(rpcSourceTesting.get(runId)).toBe(owned.activeRunAbort.entry);
         expect(reclaimEffectStarted).toBe(false);
       }
       if (outcome !== "success") {
@@ -268,7 +267,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
       expect(events.filter((event) => event.phase === "end")).toEqual([
         { phase: "end", status: "cancelled", aborted: true, stopReason: "rpc" },
       ]);
-      expect(context.rpcSources.has(runId)).toBe(false);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
       await closeSessionSqliteDatabasesForTest();
       const persisted = loadSessionEntry({ ...target, readConsistency: "latest" });
       expect(persisted).toMatchObject({ status: "killed", lastRunId: runId, abortedLastRun: true });

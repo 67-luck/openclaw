@@ -32,6 +32,7 @@ import {
   createReplyOperation,
   markReplyOperationExecutionStarted,
 } from "../../sessions/session-controller.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../chat-abort.js";
@@ -100,31 +101,34 @@ it("selects current work before pagination and represents an isolated cron run o
       });
       await replaceSessionEntry(scope, { ...entry!, updatedAt });
     }
-    context.rpcSources.set(
+    rpcSourceTesting.set(
       "local-run",
-      await createActiveRpcSourceForTest({
-        sessionKey: "agent:main:local",
-        sessionId: "local-session",
-        agentId: "main",
-      }),
+      await createActiveRpcSourceForTest(
+        {},
+        {
+          sessionKey: "agent:main:local",
+          sessionId: "local-session",
+          agentId: "main",
+        },
+      ),
     );
-    context.rpcSources.set(
+    rpcSourceTesting.set(
       "hidden-run",
-      await createActiveRpcSourceForTest({
-        sessionKey: "agent:main:hidden",
-        sessionId: "hidden-session",
-        agentId: "main",
-        controlUiVisible: false,
-      }),
+      await createActiveRpcSourceForTest(
+        { controlUiVisible: false },
+        { sessionKey: "agent:main:hidden", sessionId: "hidden-session", agentId: "main" },
+      ),
     );
-    context.rpcSources.set(
+    rpcSourceTesting.set(
       "settled-run",
-      createRpcSourceForTest({
-        sessionKey: "agent:main:settled",
-        sessionId: "settled-session",
-        agentId: "main",
-        projectSessionActive: false,
-      }),
+      createRpcSourceForTest(
+        { projectSessionActive: false },
+        {
+          sessionKey: "agent:main:settled",
+          sessionId: "settled-session",
+          agentId: "main",
+        },
+      ),
     );
     registerAgentRunContext("remote-run", {
       agentId: "work",
@@ -303,13 +307,16 @@ it.each(["global", "unknown"] as const)(
           },
         );
         if (agentId !== "main") {
-          context.rpcSources.set(
+          rpcSourceTesting.set(
             `sentinel-run-${agentId}`,
-            await createActiveRpcSourceForTest({
-              sessionKey: sentinel,
-              sessionId,
-              agentId,
-            }),
+            await createActiveRpcSourceForTest(
+              {},
+              {
+                sessionKey: sentinel,
+                sessionId,
+                agentId,
+              },
+            ),
           );
         }
       }
@@ -354,13 +361,16 @@ it.each(["global", "unknown"] as const)(
         visibility: "shared",
       });
       await replaceSessionEntry(literalScope, { ...literalEntry!, updatedAt: 1 });
-      context.rpcSources.set(
+      rpcSourceTesting.set(
         "literal-sentinel-run",
-        await createActiveRpcSourceForTest({
-          sessionKey: literalKey,
-          sessionId: literalSessionId,
-          agentId: "ops",
-        }),
+        await createActiveRpcSourceForTest(
+          {},
+          {
+            sessionKey: literalKey,
+            sessionId: literalSessionId,
+            agentId: "ops",
+          },
+        ),
       );
       await new SqliteBoardStore({
         resolveSession: () => ({ agentId: "ops", path: storePathFor("ops"), sessionKey: sentinel }),
@@ -492,13 +502,16 @@ it.each([{ activeMinutes: 1 }, { activeOnly: true }])(
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const { clock, config } = await seedSessionsWithActivityTimes();
       const context = requestContext(config);
-      context.rpcSources.set(
+      rpcSourceTesting.set(
         "active-run",
-        await createActiveRpcSourceForTest({
-          agentId: "main",
-          sessionKey: "agent:main:active",
-          sessionId: "main-active",
-        }),
+        await createActiveRpcSourceForTest(
+          {},
+          {
+            agentId: "main",
+            sessionKey: "agent:main:active",
+            sessionId: "main-active",
+          },
+        ),
       );
       const client = identifiedClient("owner@example.com");
       clock.mockReturnValue(60_400);
@@ -534,30 +547,36 @@ it.each(["settled", "replaced"] as const)(
           throw new Error("Missing seeded active session");
         }
         await replaceSessionEntry(scope, { ...entry, updatedAt: agentId === "main" ? 400 : 100 });
-        context.rpcSources.set(
+        rpcSourceTesting.set(
           `run-${agentId}`,
-          await createActiveRpcSourceForTest({
-            agentId,
-            sessionKey: `agent:${agentId}:active`,
-            sessionId: `${agentId}-active`,
-          }),
+          await createActiveRpcSourceForTest(
+            {},
+            {
+              agentId,
+              sessionKey: `agent:${agentId}:active`,
+              sessionId: `${agentId}-active`,
+            },
+          ),
         );
       }
       await changeDuringReadiness(context, async () => {
-        context.rpcSources.get("run-main")?.input.claim?.operation?.complete();
-        context.rpcSources.delete("run-main");
+        rpcSourceTesting.get("run-main")?.input.claim?.operation?.complete();
+        rpcSourceTesting.delete("run-main");
         if (transition === "replaced") {
           await upsertSessionEntryCore(
             { agentId: "main", sessionKey: "agent:main:active" },
             { sessionId: "replacement-session" },
           );
-          context.rpcSources.set(
+          rpcSourceTesting.set(
             "run-replacement",
-            await createActiveRpcSourceForTest({
-              agentId: "main",
-              sessionKey: "agent:main:active",
-              sessionId: "replacement-session",
-            }),
+            await createActiveRpcSourceForTest(
+              {},
+              {
+                agentId: "main",
+                sessionKey: "agent:main:active",
+                sessionId: "replacement-session",
+              },
+            ),
           );
         }
       });
@@ -590,14 +609,13 @@ it.each([false, true])(
       await changeDuringReadiness(context, async () => {
         registerChatAbortController({
           target: captureRpcTargetForTest({ sessionKey, sessionId, agentId: "main" }),
-          rpcSources: context.rpcSources,
           runId,
           agentId: "main",
           sessionKey,
           sessionId,
           timeoutMs: 60_000,
         });
-        await claimRpcSourceForTest(expectDefined(context.rpcSources.get(runId), "model source"));
+        await claimRpcSourceForTest(expectDefined(rpcSourceTesting.get(runId), "model source"));
         if (known) {
           registerAgentRunContext(runId, {
             agentId: "main",
@@ -670,14 +688,13 @@ it.each(
       }
       registerChatAbortController({
         target: captureRpcTargetForTest({ sessionKey, sessionId, agentId: "main" }),
-        rpcSources: context.rpcSources,
         runId,
         agentId: "main",
         sessionKey,
         sessionId,
         timeoutMs: 60_000,
       });
-      await claimRpcSourceForTest(expectDefined(context.rpcSources.get(runId), "model source"));
+      await claimRpcSourceForTest(expectDefined(rpcSourceTesting.get(runId), "model source"));
       registerAgentRunContext(runId, {
         agentId: "main",
         sessionKey,
@@ -694,8 +711,8 @@ it.each(
       );
 
       await changeDuringReadiness(context, async () => {
-        context.rpcSources.get(runId)?.input.claim?.operation?.complete();
-        context.rpcSources.delete(runId);
+        rpcSourceTesting.get(runId)?.input.claim?.operation?.complete();
+        rpcSourceTesting.delete(runId);
         clearAgentRunContext(runId);
         const scope = { agentId: "main", sessionKey };
         const entry = expectDefined(loadSessionEntry(scope), "settling session");

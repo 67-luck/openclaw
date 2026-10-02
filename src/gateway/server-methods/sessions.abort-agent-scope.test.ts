@@ -78,15 +78,9 @@ function expectRespondErrorMessage(respond: RespondFn, message: string): void {
 }
 
 function mockChatSuccess(mock: typeof chatAbortMock, payload: Record<string, unknown>): void {
-  mock.mockImplementationOnce(
-    (
-      { respond }: { respond: RespondFn },
-      lifecycle?: { onAuthorizedAfterQueuedAbort?: () => boolean },
-    ) => {
-      const additionalAborted = lifecycle?.onAuthorizedAfterQueuedAbort?.() ?? false;
-      respond(true, additionalAborted ? { ...payload, aborted: true } : payload);
-    },
-  );
+  mock.mockImplementationOnce(({ respond }: { respond: RespondFn }) => {
+    respond(true, payload);
+  });
 }
 
 const projections = new Set<ReturnType<typeof createSessionRowProjectionFixture>>();

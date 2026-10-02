@@ -5,10 +5,11 @@ import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { markChatAbortTerminalPersistenceError } from "./chat-abort-lifecycle-internal.js";
-import { registerChatAbortController, removeChatAbortControllerEntry } from "./chat-abort.js";
+import { registerChatAbortController } from "./chat-abort.js";
 import { createChatRunState } from "./server-chat-state.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./server-methods/types.js";
 import type { resolveSessionMutationAuthorization } from "./session-sharing.js";
@@ -26,9 +27,8 @@ export function activeRunContext(params: {
   ownerConnId?: string;
   terminalPersistenceError?: Error;
 }) {
-  const rpcSources = new Map();
+  rpcSourceTesting.clear();
   const registration = registerChatAbortController({
-    rpcSources,
     runId: params.runId,
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
@@ -63,11 +63,11 @@ export function activeRunContext(params: {
       () => {
         entry.adapter.projectSessionTerminalPersistence = undefined;
         entry.adapter.projectSessionTerminalPersisted = true;
-        removeChatAbortControllerEntry(rpcSources, params.runId, entry);
+        rpcSourceTesting.deleteExpected(params.runId, entry);
       },
       (error: unknown) => {
         markChatAbortTerminalPersistenceError(entry, error);
-        removeChatAbortControllerEntry(rpcSources, params.runId, entry);
+        rpcSourceTesting.deleteExpected(params.runId, entry);
       },
     );
     terminalStarted.resolve();
@@ -82,7 +82,7 @@ export function activeRunContext(params: {
       agentRunSeq: new Map([[params.runId, 0]]),
       broadcast: vi.fn(),
       cancelRunBoundApprovals: vi.fn(),
-      rpcSources,
+      rpcSourceTesting,
       chatRunState,
       logGateway: { warn: vi.fn() },
       nodeSendToSession: vi.fn(),
@@ -215,7 +215,6 @@ export async function archiveLifecycleRequestContext(
     trackExecution: trackAsyncWork,
     broadcast: vi.fn(),
     broadcastToConnIds: vi.fn(),
-    rpcSources: new Map(),
     dedupe: new Map(),
     getSessionEventSubscriberConnIds: () => new Set<string>(),
     getRuntimeConfig,

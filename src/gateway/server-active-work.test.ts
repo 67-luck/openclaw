@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { retireSessionControllerInput } from "../sessions/session-controller.mailbox.js";
 import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createGatewayServerActiveWorkInspectors } from "./server-active-work.js";
 import type { GatewayRequestContext } from "./server-methods/shared-types.js";
 import { TerminalSessionManager } from "./terminal/session-manager.js";
@@ -26,27 +27,26 @@ describe("gateway server active work inspectors", () => {
     requestRpcSourceCancellation(aborted);
     const cancelled = createRpcSourceForTest({}, { phase: "waiting" });
     requestRpcSourceCancellation(cancelled);
+    rpcSourceTesting.reset([
+      ["preparing", createRpcSourceForTest()],
+      ["aborted", aborted],
+      [
+        "persisting",
+        createRpcSourceForTest(
+          {
+            controlUiVisible: true,
+            projectSessionTerminalPending: true,
+          },
+          { phase: "consumed" },
+        ),
+      ],
+      ["queued", createRpcSourceForTest({}, { phase: "waiting" })],
+      ["cancelled", cancelled],
+    ]);
     const context = {
       cron: { getSuspensionBlockerCount: () => 1 },
-      rpcSources: new Map([
-        ["preparing", createRpcSourceForTest()],
-        ["aborted", aborted],
-        [
-          "persisting",
-          createRpcSourceForTest(
-            {
-              registrationCleanupRequested: true,
-              controlUiVisible: true,
-              projectSessionTerminalPending: true,
-            },
-            { phase: "consumed" },
-          ),
-        ],
-        ["queued", createRpcSourceForTest({}, { phase: "waiting" })],
-        ["cancelled", cancelled],
-      ]),
       terminalSessions: { size: 2 },
-    } as unknown as Pick<GatewayRequestContext, "rpcSources" | "cron" | "terminalSessions">;
+    } as unknown as Pick<GatewayRequestContext, "cron" | "terminalSessions">;
 
     const inspectors = createGatewayServerActiveWorkInspectors(context);
 
@@ -55,7 +55,7 @@ describe("gateway server active work inspectors", () => {
     expect(inspectors.getQueuedTurns?.()).toBe(2);
     expect(inspectors.getTerminalPersistence?.()).toBe(1);
     expect(inspectors.getTerminalSessions?.()).toBe(2);
-    for (const ref of context.rpcSources.values()) {
+    for (const ref of rpcSourceTesting.values()) {
       retireSessionControllerInput(ref.input);
     }
   });
@@ -77,9 +77,8 @@ describe("gateway server active work inspectors", () => {
     await terminalSessions.open(baseOpenRequest({ owner: agentTerminalOwner("agent:main:main") }));
     const inspectors = createGatewayServerActiveWorkInspectors({
       cron: {},
-      rpcSources: new Map(),
       terminalSessions,
-    } as unknown as Pick<GatewayRequestContext, "rpcSources" | "cron" | "terminalSessions">);
+    } as unknown as Pick<GatewayRequestContext, "cron" | "terminalSessions">);
 
     expect(inspectors.getTerminalSessions?.()).toBe(2);
     const drain = terminalSessions.beginAgentSessionDrain(drainingOwner);

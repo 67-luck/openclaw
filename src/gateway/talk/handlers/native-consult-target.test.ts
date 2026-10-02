@@ -16,6 +16,7 @@ import {
   replaceSessionEntrySync,
 } from "../../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { rotateAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import { emitTrustedDiagnosticEvent } from "../../../infra/diagnostic-events.js";
 import { createEmptyPluginRegistry } from "../../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../../plugins/runtime.js";
@@ -29,6 +30,8 @@ import {
   claimSessionControllerTask,
   releaseSessionControllerClaim,
 } from "../../../sessions/session-controller.mailbox.js";
+import { updateRpcSourceSessionId } from "../../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { controlRealtimeVoiceAgentRun } from "../../../talk/agent-run-control.js";
@@ -106,7 +109,6 @@ const submitProviderResult = vi.fn();
 const context = {
   getRuntimeConfig: () => config,
   getClientConnIds: () => new Set([client.connId]),
-  rpcSources: new Map(),
   broadcastToConnIds: vi.fn(),
   logGateway: { warn: vi.fn() },
 } as unknown as GatewayRequestContext;
@@ -158,7 +160,7 @@ beforeEach(async () => {
     payloads: [{ text: "Synthetic consult answer" }],
     meta: { durationMs: 0 },
   });
-  context.rpcSources.clear();
+  rpcSourceTesting.clear();
   setActivePluginRegistry(createEmptyPluginRegistry());
   const provider: RealtimeVoiceProviderPlugin = {
     id: "synthetic-voice",
@@ -352,7 +354,6 @@ it("fences an opaque relay record replaced after authorization", async () => {
 async function registerOwnedEmbeddedRun(runId: string, sessionId: string) {
   const target = prepareTalkSessionTarget(config, "main");
   const registration = registerChatAbortController({
-    rpcSources: context.rpcSources,
     runId,
     sessionId,
     target: captureSessionTarget({
@@ -405,7 +406,6 @@ it("rechecks RPC sharing authorization after the control runtime import", async 
   });
   expect(authorization.error).toBeNull();
   const runTarget = resolveOwnedActiveTalkRunTarget({
-    context,
     clientConnId: client.connId,
     sessionTarget: target,
     scope: { kind: "session" },
@@ -454,7 +454,6 @@ it.each([
   registerClientVoiceConsultRun({ ...voiceScope, voiceSessionId, runId });
   const { registration, abort } = await registerOwnedEmbeddedRun(runId, "captured-session");
   const runTarget = resolveOwnedActiveTalkRunTarget({
-    context,
     clientConnId: client.connId,
     sessionTarget: target,
     scope: { kind: "voice-session", voiceSessionId },
@@ -466,17 +465,21 @@ it.each([
     text: "cancel",
     mode: "cancel",
   });
-  const entry = context.rpcSources.get(runId)!;
+  const entry = rpcSourceTesting.get(runId)!;
   if (change === "replaced") {
-    context.rpcSources.set(runId, { ...entry });
+    rpcSourceTesting.set(runId, { ...entry });
   } else if (change === "agent") {
-    entry.adapter.agentId = "primary";
+    entry.input.claim!.operation!.updateSessionKey("global", "primary", entry.input.claim);
   } else if (change === "key") {
-    entry.adapter.sessionKey = "agent:voice:another";
+    entry.input.claim!.operation!.updateSessionKey(
+      "agent:voice:another",
+      "voice",
+      entry.input.claim,
+    );
   } else if (change === "connection") {
-    entry.adapter.ownerConnId = "another-client";
+    Object.assign(entry.adapter.requester!, { connectionId: "another-client" });
   } else if (change === "generation") {
-    entry.adapter.lifecycleGeneration = "retired";
+    rotateAgentEventLifecycleGeneration();
   } else if (change === "claim retired") {
     const claim = entry.input.claim!;
     claim.operation!.complete();
@@ -522,7 +525,6 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
   expect(respond).toHaveBeenCalledWith(true, expect.any(Object), undefined);
   const sessionId = loadSessionEntry({ agentId: "voice", sessionKey: "global" })!.sessionId;
   const registration = registerChatAbortController({
-    rpcSources: context.rpcSources,
     runId: "queued-talk",
     target: captureSessionTarget({
       storeScope: prepareTalkSessionTarget(config, "main").storePath,
@@ -558,13 +560,12 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
     registration.cleanup();
   });
   const runTarget = resolveOwnedActiveTalkRunTarget({
-    context,
     clientConnId: client.connId,
     sessionTarget: prepareTalkSessionTarget(config, "main"),
     scope: { kind: "session" },
   });
   const resolvedSessionId = "materialized-reply-session";
-  context.rpcSources.get("queued-talk")!.adapter.sessionId = resolvedSessionId;
+  updateRpcSourceSessionId(rpcSourceTesting.get("queued-talk")!, resolvedSessionId);
   operation.updateSessionId(resolvedSessionId);
   const voiceSessionId = (respond.mock.calls[0]![1] as { voiceSessionId: string }).voiceSessionId;
   registerClientVoiceConsultRun({
@@ -574,7 +575,6 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
     runId: "queued-talk",
   });
   const voiceTarget = resolveOwnedActiveTalkRunTarget({
-    context,
     clientConnId: client.connId,
     sessionTarget: prepareTalkSessionTarget(config, "main"),
     scope: { kind: "voice-session", voiceSessionId },
@@ -582,7 +582,7 @@ it("preserves status and cancellation for an owned queued chat.send reply", asyn
   try {
     expect(voiceTarget?.isCurrent()).toBe(true);
     registration.cleanup();
-    expect(context.rpcSources.get("queued-talk")).toBe(registration.entry);
+    expect(rpcSourceTesting.get("queued-talk")).toBe(registration.entry);
     expect(runTarget?.isCurrent()).toBe(true);
     expect(
       await controlRealtimeVoiceAgentRun({
@@ -916,7 +916,7 @@ describe.each(["browser-rpc", "browser-provider", "relay"] as const)(
             throw new Error("consult ended before model dispatch");
           }),
         ]);
-        expect(context.rpcSources.get(active.runId)?.adapter).toMatchObject({
+        expect(rpcSourceTesting.get(active.runId)?.adapter).toMatchObject({
           agentId: "voice",
           sessionKey: "global",
           sessionId: active.sessionId,

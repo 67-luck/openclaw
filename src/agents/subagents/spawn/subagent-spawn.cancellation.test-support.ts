@@ -19,7 +19,11 @@ import {
   startSessionControllerInterruption,
   type SessionEffectRef,
 } from "../../../sessions/session-controller.lifecycle.js";
-import { requestRpcSourceCancellation } from "../../../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSourceIdentity,
+  requestRpcSourceCancellation,
+} from "../../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { createAgentRunDirectAbortError } from "../../run-termination.js";
 import { createSubagentsTool } from "../../tools/subagents-tool.js";
 import * as nativeControl from "../registry/subagent-control.js";
@@ -174,20 +178,20 @@ export function registerNativeCancellationCases<
           expectsCompletionMessage: false,
         }),
       );
-      const target = expectDefined(context.rpcSources.get(targetRunId), "target run");
+      const target = expectDefined(rpcSourceTesting.get(targetRunId), "target run");
       const onAbort = vi.fn(() => entered.resolve());
       target.input.abortSignal.addEventListener("abort", onAbort, { once: true });
       if (transition === "blocked drain") {
         blockedAdmission = await beginSessionEffect({
           scope: bound.storePath,
-          identities: [targetKey, target.adapter.sessionId],
+          identities: [targetKey, getRpcSourceIdentity(target).sessionId],
           assertAllowed: () => {},
         });
       }
       if (transition === "already interrupted") {
         startSessionControllerInterruption({
           scope: bound.storePath,
-          identities: [targetKey, target.adapter.sessionId],
+          identities: [targetKey, getRpcSourceIdentity(target).sessionId],
           reason: createAgentRunDirectAbortError(),
         });
       }
@@ -303,7 +307,7 @@ export function registerNativeCancellationCases<
       blockedAdmission?.release();
       releaseCancellation.resolve();
       releaseTerminal.resolve();
-      for (const entry of context.rpcSources.values()) {
+      for (const entry of rpcSourceTesting.values()) {
         requestRpcSourceCancellation(entry, new Error("native cancellation fixture cleanup"));
       }
       await vi.advanceTimersByTimeAsync(20);

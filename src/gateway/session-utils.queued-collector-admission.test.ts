@@ -2,6 +2,7 @@ import {
   isRpcSourceExecuting,
   requestRpcSourceCancellation,
 } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import "../agents/subagents/spawn/subagent-spawn-model.mocks.shared.js";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
@@ -193,7 +194,7 @@ describe("queued collector native admission", () => {
           "pending native collector",
         );
         const admission = expectDefined(
-          context.rpcSources.get(entry.runId),
+          rpcSourceTesting.get(entry.runId),
           "real native controller",
         );
         expect(admission.adapter.kind).toBe("agent");
@@ -202,7 +203,6 @@ describe("queued collector native admission", () => {
         expect(isSubagentRunQueued(entry)).toBe(true);
         expect(
           resolveVisibleActiveSessionRunState({
-            context,
             requestedKey: entry.childSessionKey,
             canonicalKey: entry.childSessionKey,
           }).status,
@@ -214,7 +214,6 @@ describe("queued collector native admission", () => {
         try {
           expect(
             resolveVisibleActiveSessionRunState({
-              context,
               requestedKey: entry.childSessionKey,
               canonicalKey: entry.childSessionKey,
             }).status,
@@ -269,7 +268,7 @@ describe("queued collector native admission", () => {
         expect.soft(admission.adapter.abortStopReason).toBe("rpc");
         expect.soft(entry.execution.startedAt).toBeUndefined();
         expect.soft(entry.sessionStartedAt).toBeUndefined();
-        expect(context.rpcSources.has(entry.runId)).toBe(false);
+        expect(rpcSourceTesting.has(entry.runId)).toBe(false);
         // This unadopted launch still owns its provisional session; join its real cleanup.
         await closeSwarmScheduler();
         expect(order[0]).toBe(publicationFailure ? "deleting" : "published");
@@ -282,7 +281,7 @@ describe("queued collector native admission", () => {
       } finally {
         releasePublication.resolve();
         if (nativeRunId) {
-          const source = context.rpcSources.get(nativeRunId);
+          const source = rpcSourceTesting.get(nativeRunId);
           if (source) {
             requestRpcSourceCancellation(source);
           }

@@ -10,7 +10,7 @@ import { authorizeGatewaySessionCreation } from "../operator-role-policy.js";
 import { authorizeResolvedSessionMutation } from "../session-sharing.js";
 import { loadSessionEntry } from "../session-utils.js";
 import type { AgentRequestPreflight } from "./agent-request-preflight.js";
-import type { AgentTurnContext, AgentTurnIo, AgentTurnPrincipal } from "./types.js";
+import type { AgentTurnIo, AgentTurnPrincipal } from "./types.js";
 
 export function authorizeAgentTurnSession({
   cfg,
@@ -34,7 +34,6 @@ export function registerAgentTurnSourceAdmission({
   sessionKey,
   agentId: targetAgentId,
   preflight,
-  context,
   principal,
   io,
   sourceWork,
@@ -49,7 +48,6 @@ export function registerAgentTurnSourceAdmission({
   sessionKey?: string;
   agentId?: string;
   preflight: AgentRequestPreflight;
-  context: AgentTurnContext;
   principal: AgentTurnPrincipal | null;
   io: AgentTurnIo;
   sourceWork: Promise<void>;
@@ -84,7 +82,6 @@ export function registerAgentTurnSourceAdmission({
   }
   assertRequestCurrent();
   const earlyRunAbort = registerChatAbortController({
-    rpcSources: context.rpcSources,
     sourceWork,
     runId,
     sessionKey: loaded.canonicalKey,

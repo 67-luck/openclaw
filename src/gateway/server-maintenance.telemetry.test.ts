@@ -77,7 +77,6 @@ vi.mock("../skills/workshop/workspace-skill-read.js", () => ({
 
 vi.mock("./chat-abort.js", () => ({
   abortChatRunById: () => forbiddenDefaultAdapter("chat abort"),
-  removeChatAbortControllerEntry: () => forbiddenDefaultAdapter("chat abort removal"),
 }));
 
 vi.mock("./session-request-agent.js", () => ({

@@ -15,6 +15,7 @@ import { normalizeResolvedSecretInputString } from "../../../config/types.secret
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import { setActiveDegradedSecretOwners } from "../../../secrets/runtime-degraded-state.js";
+import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { resolveRealtimeVoiceAgentConsultToolsAllow } from "../../../talk/agent-consult-tool.js";
 import { checkClientVoiceToolConfirmationPolicy } from "../../../talk/client-voice-confirmation.js";
@@ -368,6 +369,7 @@ async function callTalkHandler(
 }
 
 beforeEach(() => {
+  rpcSourceTesting.clear();
   setActiveDegradedSecretOwners([]);
   mocks.getRealtimeTranscriptionProvider.mockImplementation((providerId: string | undefined) => {
     const normalized = providerId?.trim().toLowerCase();
@@ -3257,20 +3259,20 @@ describe("talk.client.steer handler", () => {
   const createSteerContext = async (ownerConnId = "conn-1") => {
     const source = createRpcSourceForTest(
       {
+        lifecycleGeneration: getAgentEventLifecycleGeneration(),
+        requester: { connectionId: ownerConnId },
+        kind: "chat-send",
+      },
+      {
+        runId: "run-voice-1",
         sessionId: "session-active",
         sessionKey: "agent:main:main",
         agentId: "main",
-        lifecycleGeneration: getAgentEventLifecycleGeneration(),
-        ownerConnId,
-        kind: "chat-send",
       },
-      { runId: "run-voice-1" },
     );
     await claimRpcSourceForTest(source);
-    return {
-      getRuntimeConfig: () => ({}),
-      rpcSources: new Map([["run-voice-1", source]]),
-    } as never;
+    rpcSourceTesting.set("run-voice-1", source);
+    return { getRuntimeConfig: () => ({}) } as never;
   };
 
   beforeEach(() => {
@@ -3679,12 +3681,11 @@ describe("talk.client.create handler", () => {
   it("binds GPT-Live delegations to the voice session and browser-owned steer lifecycle", async () => {
     const started = createDeferred();
     const release = createDeferred();
-    const rpcSources = new Map();
+    let releaseSource = () => {};
     const config = {
       talk: { realtime: { provider: "openai", model: "gpt-live-1" } },
     } as OpenClawConfig;
     const context = {
-      rpcSources,
       getRuntimeConfig: () => config,
       logGateway: { warn: vi.fn() },
     };
@@ -3712,8 +3713,11 @@ describe("talk.client.create handler", () => {
         sessionId: "session-main",
         timeoutMs: 30_000,
       });
+      const source = rpcSourceTesting.get("talk-realtime-consult:gpt-live")!;
+      releaseSource = await claimRpcSourceForTest(source);
       const handle = createEmbeddedRunHandle({ runId: "talk-realtime-consult:gpt-live" });
-      setActiveEmbeddedRun("session-main", handle, "agent:main:main");
+      const operation = source.input.claim?.operation;
+      setActiveEmbeddedRun("session-main", handle, "agent:main:main", undefined, "main", operation);
       started.resolve();
       try {
         await release.promise;
@@ -3748,14 +3752,7 @@ describe("talk.client.create handler", () => {
       runId: "talk-realtime-consult:gpt-live",
       config,
     });
-    expect(rpcSources.get("talk-realtime-consult:gpt-live")?.adapter).toMatchObject({
-      sessionId: "session-main",
-      sessionKey: "agent:main:main",
-      agentId: "main",
-      ownerConnId: "conn-1",
-      controlUiVisible: false,
-      kind: "chat-send",
-    });
+    const consultSource = rpcSourceTesting.get("talk-realtime-consult:gpt-live")!;
 
     mocks.controlRealtimeVoiceAgentRun.mockResolvedValueOnce({
       ok: true,
@@ -3787,7 +3784,9 @@ describe("talk.client.create handler", () => {
     release.resolve();
     await expect(consult).resolves.toEqual({ text: "Done" });
     expect(providerConsult.claimAppend?.()).toBe(true);
-    expect(rpcSources.has("talk-realtime-consult:gpt-live")).toBe(false);
+    releaseSource();
+    await consultSource.input.settlement.promise;
+    expect(rpcSourceTesting.has("talk-realtime-consult:gpt-live")).toBe(false);
   });
 
   it("lets native agent handoff own the Codex OAuth prompt and omits direct tools", async () => {

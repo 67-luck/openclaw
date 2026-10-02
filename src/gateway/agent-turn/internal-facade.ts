@@ -6,11 +6,15 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
   isRpcSourceExecuting,
   isRpcSourceQueued,
+  type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore, type Deferred } from "../../shared/deferred.js";
-import { abortChatRunById, type ChatAbortControllerEntry } from "../chat-abort.js";
+import { abortChatRunById } from "../chat-abort.js";
 import type { GatewayMethodRegistry } from "../methods/registry.js";
 import {
   type GatewayMethodDispatchResponse,
@@ -102,18 +106,19 @@ export function createInternalAgentTurnFacade(
       let privateSourceSettlement: Promise<void> | undefined;
       // Acceptance publishes the abort owner before this callback runs. Retain that exact
       // entry so a late deadline cannot cancel a same-run-id successor.
-      let acceptedAbortOwner: { entry: ChatAbortControllerEntry; runId: string } | undefined;
+      let acceptedAbortOwner: { entry: RpcSourceRef; runId: string } | undefined;
       let startOwnerPublished = false;
-      const publishStartOwner = (runId: string, owner: ChatAbortControllerEntry) => {
+      const publishStartOwner = (runId: string, owner: RpcSourceRef) => {
+        const identity = getRpcSourceIdentity(owner);
         if (
           startOwnerPublished ||
           !dispatchOptions.onStartOwner ||
           runId !== expectedRunId ||
-          (expectedAgentId !== undefined && owner.adapter.agentId !== expectedAgentId) ||
-          owner.adapter.sessionKey !== expectedSessionKey ||
-          owner.adapter.sessionId !== expectedSessionId ||
-          owner.adapter.lifecycleGeneration !== lifecycleGeneration ||
-          context.rpcSources.get(runId) !== owner
+          (expectedAgentId !== undefined && identity.agentId !== expectedAgentId) ||
+          identity.sessionKey !== expectedSessionKey ||
+          identity.sessionId !== expectedSessionId ||
+          getRpcSourceLifecycleGeneration(owner) !== lifecycleGeneration ||
+          getRpcSource(runId) !== owner
         ) {
           return;
         }
@@ -125,14 +130,15 @@ export function createInternalAgentTurnFacade(
             return undefined;
           }
           if (
-            context.rpcSources.get(runId) !== owner ||
+            getRpcSource(runId) !== owner ||
             getAgentEventLifecycleGeneration() !== lifecycleGeneration ||
-            owner.adapter.lifecycleGeneration !== lifecycleGeneration ||
-            (expectedAgentId !== undefined && owner.adapter.agentId !== expectedAgentId) ||
-            owner.adapter.sessionId !== expectedSessionId ||
-            owner.adapter.sessionKey !== expectedSessionKey ||
+            getRpcSourceLifecycleGeneration(owner) !== lifecycleGeneration ||
+            (expectedAgentId !== undefined &&
+              getRpcSourceIdentity(owner).agentId !== expectedAgentId) ||
+            getRpcSourceIdentity(owner).sessionId !== expectedSessionId ||
+            getRpcSourceIdentity(owner).sessionKey !== expectedSessionKey ||
             owner.input.abortSignal.aborted ||
-            owner.adapter.registrationCleanupRequested === true
+            owner.input.retirementRequested === true
           ) {
             return undefined;
           }
@@ -167,7 +173,7 @@ export function createInternalAgentTurnFacade(
             abortChatRunById(context, {
               runId,
               expectedEntry: owner,
-              sessionKey: owner.adapter.sessionKey,
+              sessionKey: getRpcSourceIdentity(owner).sessionKey,
               stopReason: "timeout",
             }).aborted,
         });
@@ -176,12 +182,12 @@ export function createInternalAgentTurnFacade(
       const cancelAcceptedRun = (reason: "rpc" | "timeout") => {
         pendingCancelReason ??= reason;
         const owner = acceptedAbortOwner;
-        if (!owner || context.rpcSources.get(owner.runId) !== owner.entry) {
+        if (!owner || getRpcSource(owner.runId) !== owner.entry) {
           return;
         }
         abortChatRunById(context, {
           runId: owner.runId,
-          sessionKey: owner.entry.adapter.sessionKey,
+          sessionKey: getRpcSourceIdentity(owner.entry).sessionKey,
           stopReason: pendingCancelReason,
         });
       };
@@ -203,7 +209,7 @@ export function createInternalAgentTurnFacade(
             acceptanceResult.resolve(acceptance);
             const acceptedRunId =
               typeof meta?.runId === "string" && meta.runId.length ? meta.runId : undefined;
-            const acceptedEntry = acceptedRunId ? context.rpcSources.get(acceptedRunId) : undefined;
+            const acceptedEntry = acceptedRunId ? getRpcSource(acceptedRunId) : undefined;
             if (acceptedRunId && acceptedEntry) {
               acceptedAbortOwner = { entry: acceptedEntry, runId: acceptedRunId };
               if (pendingCancelReason) {

@@ -20,7 +20,6 @@ import { accountAgentTurnCompaction } from "./agent-runner-result-accounting.js"
 import { finalizeReplyAgentRun } from "./agent-runner-result.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
 import { buildThreadingToolContext } from "./agent-runner-utils.js";
-import type { CompactionNoticePhase } from "./compaction-notice.js";
 import { createFollowupRunner } from "./followup-runner.js";
 import {
   buildRecoverablePendingFinalDeliveryText,
@@ -29,7 +28,6 @@ import {
 import { admitFollowupRunLifecycle } from "./queue/lifecycle.js";
 import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
 import { recordReplyOperationAgentTurn } from "./reply-operation-run-state.js";
-import { prepareReplyTurnContext } from "./reply-turn-preflight.js";
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
 import { resolveReplySourceTurnId } from "./source-turn-id.js";
 type ExecutePreparedReplyAgentRunInput = Omit<
@@ -51,9 +49,8 @@ type ExecutePreparedReplyAgentRunInput = Omit<
     resolveVisibleReplyDelivery: () => Promise<boolean>;
     getActiveSessionEntry: () => SessionEntry | undefined;
     isRestartRecoveryArmed: () => Promise<boolean>;
-    sendDirectCompactionNotice: ((phase: CompactionNoticePhase) => Promise<void>) | undefined;
+    preflightCompactionApplied: boolean;
     setRunFollowupTurn: (runner: FinalizeReplyAgentRunInput["runFollowupTurn"]) => void;
-    setActiveSessionEntry: (entry: SessionEntry | undefined) => void;
     shouldEmitToolOutput: () => boolean;
     shouldEmitToolResult: () => boolean;
     traceAgentPhase: <T>(name: string, run: () => Promise<T> | T) => Promise<T>;
@@ -93,17 +90,15 @@ export async function executePreparedReplyAgentRun(
     replyThreadingOverride,
     returnWithQueuedFollowupDrain,
     runtimePolicySessionKey,
-    sendDirectCompactionNotice,
+    preflightCompactionApplied,
     sessionCtx,
     sessionKey,
-    setActiveSessionEntry,
     setRunFollowupTurn,
     storePath,
     toolProgressDetail,
     traceAgentPhase,
     typing,
     typingMode,
-    typingSignals,
   } = context;
   let activeSessionEntry = getActiveSessionEntry();
   const admitUserTurn = async (
@@ -127,22 +122,6 @@ export async function executePreparedReplyAgentRun(
     activeSessionEntry = getActiveSessionEntry();
     return result;
   };
-
-  await typingSignals.signalRunStart();
-
-  const prePreflightCompactionCount = activeSessionEntry?.compactionCount ?? 0;
-  activeSessionEntry = await prepareReplyTurnContext({
-    ...context,
-    promptForEstimate: followupRun.prompt,
-    sessionEntry: activeSessionEntry,
-    sessionStore: activeSessionStore,
-    publishCheckpoint: setActiveSessionEntry,
-    onCompactionNotice: sendDirectCompactionNotice,
-    trace: traceAgentPhase,
-  });
-  setActiveSessionEntry(activeSessionEntry);
-  const preflightCompactionApplied =
-    (activeSessionEntry?.compactionCount ?? 0) > prePreflightCompactionCount;
 
   const runFollowupTurn = createFollowupRunner({
     resolveGatewayContext: getGatewayContextResolver(replyOperation),

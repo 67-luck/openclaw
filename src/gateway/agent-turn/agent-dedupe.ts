@@ -1,6 +1,7 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import { getRpcSource, hasRpcSource } from "../../sessions/session-controller.rpc-sources.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { setGatewayDedupeEntry } from "./agent-job.js";
 import type { AgentTurnIo } from "./types.js";
@@ -57,10 +58,10 @@ export function isAcceptedAgentDedupePayload(payload: unknown): payload is {
 }
 
 export function resolveAgentWaitSource(
-  context: Pick<GatewayRequestContext, "rpcSources" | "dedupe">,
+  context: Pick<GatewayRequestContext, "dedupe">,
   runId: string,
 ): "agent" | "chat" | undefined {
-  const activeChatEntry = context.rpcSources.get(runId);
+  const activeChatEntry = getRpcSource(runId);
   if (activeChatEntry) {
     return activeChatEntry.adapter.kind === "agent" ? "agent" : "chat";
   }
@@ -184,7 +185,7 @@ export function setAbortedAgentDedupeEntries(params: {
 export function replayAgentTurnIfCached(params: {
   acceptedOnly?: boolean;
   preflight: { agentDedupeKeys: readonly string[]; runId: string };
-  context: Pick<GatewayRequestContext, "dedupe" | "rpcSources">;
+  context: Pick<GatewayRequestContext, "dedupe">;
   io: AgentTurnIo;
 }): boolean {
   const { agentDedupeKeys, runId } = params.preflight;
@@ -202,7 +203,7 @@ export function replayAgentTurnIfCached(params: {
     params.acceptedOnly &&
     isAcceptedAgentDedupePayload(cached.payload) &&
     !cached.payload.reservationId &&
-    !params.context.rpcSources.has(runId)
+    !hasRpcSource(runId)
   ) {
     // Durable private input owns recovery after the accepted controller is gone.
     return false;

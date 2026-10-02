@@ -13,7 +13,6 @@ import { parseSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-m
 import { isSessionTranscriptProjectionUnavailableError } from "../config/sessions/session-transcript-projection-error.js";
 import { WorkerTaskError } from "../infra/worker-task-pool.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
-import type { RpcSourceIndex } from "../sessions/session-controller.rpc-sources.js";
 import type { SessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import type { InternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -108,7 +107,6 @@ export function createTranscriptUpdateBroadcastHandler(params: {
   broadcastToConnIds: GatewayBroadcastToConnIdsFn;
   sessionEventSubscribers: SessionEventSubscribers;
   sessionMessageSubscribers: SessionMessageSubscribers;
-  rpcSources: RpcSourceIndex;
   getSessionRowProjection?: () => SessionRowProjection | undefined;
 }) {
   // Ordering is a per-transcript contract: subscribers merge each session's
@@ -290,7 +288,6 @@ async function handleTranscriptUpdateBroadcast(
     broadcastToConnIds: GatewayBroadcastToConnIdsFn;
     sessionEventSubscribers: SessionEventSubscribers;
     sessionMessageSubscribers: SessionMessageSubscribers;
-    rpcSources: RpcSourceIndex;
     getSessionRowProjection?: () => SessionRowProjection | undefined;
   },
   update: InternalSessionTranscriptUpdate,
@@ -538,7 +535,6 @@ async function handleTranscriptUpdateBroadcast(
         sessionRow &&
         (sessionRow.key !== "global" || routingAgentId !== undefined || compatibilityOwnerAgentId)
           ? resolveVisibleActiveSessionRunState({
-              context: params,
               requestedKey: sessionKey,
               canonicalKey: sessionRow.key,
               sessionId: sessionRow.sessionId,
@@ -612,7 +608,6 @@ async function handleTranscriptUpdateBroadcast(
 export function createLifecycleEventBroadcastHandler(params: {
   broadcastToConnIds: GatewayBroadcastToConnIdsFn;
   sessionEventSubscribers: SessionEventSubscribers;
-  rpcSources: RpcSourceIndex;
   getSessionRowProjection?: () => SessionRowProjection | undefined;
 }) {
   return async (event: SessionLifecycleEvent): Promise<void> => {
@@ -660,7 +655,6 @@ export function createLifecycleEventBroadcastHandler(params: {
     const captured = projection?.capture(query);
     const readActiveState = (session: { key: string; sessionId?: string }) =>
       resolveVisibleActiveSessionRunState({
-        context: params,
         requestedKey: event.sessionKey,
         canonicalKey: session.key,
         sessionId: session.sessionId,

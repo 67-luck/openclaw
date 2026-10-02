@@ -110,17 +110,19 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
   } = params;
   let { sessionEntry, prefixedBodyBase } = context;
   const isRoomEvent = inboundEventKind === "room_event";
-  const resolvedQueue = useFastReplyRuntime
-    ? { mode: "collect" as const, debounceMs: 0, cap: 1, dropPolicy: "summarize" as const }
-    : resolveQueueSettings({
-        cfg,
-        channel: sessionCtx.Provider,
-        sessionEntry,
-        inlineMode: effectiveQueueMode,
-        inlineOptions: perMessageQueueOptions,
-      });
-  const activeRunQueueMode = effectiveResetTriggered ? "interrupt" : resolvedQueue.mode;
   const sourceInput = readReplySourceInput(opts);
+  const resolvedQueue =
+    sourceInput?.policy ??
+    (useFastReplyRuntime
+      ? { mode: "collect" as const, debounceMs: 0, cap: 1, dropPolicy: "summarize" as const }
+      : resolveQueueSettings({
+          cfg,
+          channel: sessionCtx.Provider,
+          sessionEntry,
+          inlineMode: effectiveQueueMode,
+          inlineOptions: perMessageQueueOptions,
+        }));
+  const activeRunQueueMode = effectiveResetTriggered ? "interrupt" : resolvedQueue.mode;
   const prioritySource =
     activeRunQueueMode === "interrupt" && !context.isHeartbeat && !isRoomEvent
       ? sourceInput

@@ -1,16 +1,20 @@
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { validateAgentRunDelegatedAuthority } from "../../infra/agent-run-registry.js";
-import { getRpcSourceStartedAt } from "../../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  getRpcSourceStartedAt,
+  type RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.types.js";
 
 /** Binds canonical transcript settlement to the exact registered API producer. */
 export function bindGatewayAgentTerminalProducer(params: {
   runId: string;
-  entry: ChatAbortControllerEntry | undefined;
+  entry: RpcSourceRef | undefined;
   controller: Pick<AbortController, "signal" | "abort">;
   ingressOpts: { abortSignal?: AbortSignal };
-  rpcSources: Map<string, ChatAbortControllerEntry>;
   isOwnerReleased: () => boolean;
 }): {
   complete: () => Promise<void>;
@@ -18,27 +22,27 @@ export function bindGatewayAgentTerminalProducer(params: {
 } {
   const { entry, controller } = params;
   const registeredRunInstance = entry?.adapter.operationalRunInstance;
-  const registeredLifecycleGeneration = entry?.adapter.lifecycleGeneration;
-  const registeredSessionKey = entry?.adapter.sessionKey;
+  const registeredLifecycleGeneration = entry && getRpcSourceLifecycleGeneration(entry);
+  const registeredSessionKey = entry && getRpcSourceIdentity(entry).sessionKey;
   const producerCompletion = createDeferredCore();
   let terminalSettlement: Promise<void> | undefined;
   if (entry && params.ingressOpts.abortSignal === controller.signal) {
     entry.adapter.resolveTerminalProducer = () => {
-      const { sessionId, sessionKey } = entry.adapter;
+      const { sessionId, sessionKey } = getRpcSourceIdentity(entry);
       const isCurrent = () => {
         const authority = entry.adapter.agentRunDelegatedAuthority;
         return (
           !params.isOwnerReleased() &&
           !controller.signal.aborted &&
           params.ingressOpts.abortSignal === controller.signal &&
-          params.rpcSources.get(params.runId) === entry &&
+          getRpcSource(params.runId) === entry &&
           entry.input.abortSignal === controller.signal &&
           entry.adapter.operationalRunInstance === registeredRunInstance &&
-          entry.adapter.lifecycleGeneration === registeredLifecycleGeneration &&
-          entry.adapter.sessionId === sessionId &&
-          entry.adapter.sessionKey === sessionKey &&
+          getRpcSourceLifecycleGeneration(entry) === registeredLifecycleGeneration &&
+          getRpcSourceIdentity(entry).sessionId === sessionId &&
+          getRpcSourceIdentity(entry).sessionKey === sessionKey &&
           sessionKey === registeredSessionKey &&
-          !entry.adapter.registrationCleanupRequested &&
+          !entry.input.retirementRequested &&
           (!registeredLifecycleGeneration ||
             isAgentEventLifecycleGenerationCurrent(registeredLifecycleGeneration)) &&
           (getRpcSourceStartedAt(entry) === undefined || authority !== undefined) &&

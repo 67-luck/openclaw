@@ -17,6 +17,7 @@ import { waitForSessionTranscriptIndexReconcile } from "../../config/sessions/se
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { getSessionControllerWorkCount } from "../../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
@@ -52,7 +53,7 @@ async function createRebuildingFixture() {
   };
   const assertNoDispatch = () => {
     expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
-    expect(fixture.context.rpcSources.size).toBe(0);
+    expect(rpcSourceTesting.size).toBe(0);
     expect(
       fixture.context.dedupe.has(pendingChatSendDedupeKey(fixture.params.idempotencyKey)),
     ).toBe(false);

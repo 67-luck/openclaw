@@ -33,13 +33,14 @@ import {
   isSessionRunActiveForKey,
   captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
-import { captureSessionControllerSettlement } from "../../sessions/session-controller.lifecycle.js";
 import { bindSessionControllerSource } from "../../sessions/session-controller.mailbox.js";
 import {
   isRpcSourceActive,
   isRpcSourceQueued,
   requestRpcSourceCancellation,
+  type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { attachSessionTranscriptRunId } from "../../sessions/transcript-events.js";
 import {
   createUserTurnTranscriptRecorder,
@@ -423,6 +424,10 @@ describe("ordinary chat input admission", () => {
 
   it("retries a failed custody write with the same request identity without acknowledging lost input", async () => {
     const fixture = await createBrowserFollowupFixture();
+    let rejectedInput: RpcSourceRef["input"] | undefined;
+    fixture.beforeApprove.mockImplementation(() => {
+      rejectedInput = rpcSourceTesting.get(fixture.params.idempotencyKey)?.input;
+    });
     const database = openOpenClawAgentDatabase(
       toDatabaseOptions(resolveSqliteScope(fixture.scope)),
     ).db;
@@ -441,11 +446,11 @@ describe("ordinary chat input admission", () => {
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
       expect(loadTranscriptEventsSync(fixture.scope)).toEqual(fixture.activeTranscript);
       expect(listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
-      expect(fixture.context.rpcSources.has(fixture.params.idempotencyKey)).toBe(false);
-      await captureSessionControllerSettlement({
-        scope: fixture.scope.storePath,
-        identities: [fixture.scope.sessionKey, fixture.scope.sessionId],
-      });
+      expect(rpcSourceTesting.has(fixture.params.idempotencyKey)).toBe(false);
+      if (!rejectedInput) {
+        throw new Error("Expected the rejected RPC source input");
+      }
+      await rejectedInput.settlement.promise;
 
       database.exec("DROP TRIGGER reject_browser_custody");
       const retried = await fixture.send();
@@ -482,7 +487,7 @@ describe("ordinary chat input admission", () => {
           });
           return;
         }
-        const active = fixture.context.rpcSources.get(fixture.params.idempotencyKey);
+        const active = rpcSourceTesting.get(fixture.params.idempotencyKey);
         if (!active) {
           throw new Error("Expected the browser admission to own its cancellation controller");
         }
@@ -518,7 +523,7 @@ describe("ordinary chat input admission", () => {
             loadTranscriptEventsSync({ ...fixture.scope, sessionId: "successor-session" }),
           ).toEqual([]);
         }
-        expect(fixture.context.rpcSources.has(fixture.params.idempotencyKey)).toBe(false);
+        expect(rpcSourceTesting.has(fixture.params.idempotencyKey)).toBe(false);
       } finally {
         await fixture.cleanup();
       }
@@ -853,9 +858,9 @@ describe("ordinary chat input admission", () => {
         const { replyOptions } = await entered.promise;
         if (route === "queued-webchat") {
           await vi.waitFor(() =>
-            expect(
-              isRpcSourceQueued(fixture.context.rpcSources.get(fixture.params.idempotencyKey)),
-            ).toBe(true),
+            expect(isRpcSourceQueued(rpcSourceTesting.get(fixture.params.idempotencyKey))).toBe(
+              true,
+            ),
           );
         }
         await replyOptions?.userTurnTranscriptRecorder?.persistApproved();

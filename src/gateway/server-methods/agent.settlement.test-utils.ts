@@ -23,6 +23,8 @@ import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
 } from "../../process/gateway-work-admission.js";
+import { getRpcSourceIdentity } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
@@ -92,7 +94,7 @@ export function registerSuccessfulAgentSettlementCase() {
             status: "ok",
             summary: "completed",
           });
-          expect(context.rpcSources.has("gateway-agent-run")).toBe(false);
+          expect(rpcSourceTesting.has("gateway-agent-run")).toBe(false);
         });
       });
     });
@@ -255,7 +257,8 @@ export function registerCompactionSessionSettlementCase() {
         throw new Error("expected session id change callback");
       }
       onSessionIdChanged("rotated-session-id");
-      trackedSessionId = context.rpcSources.get("agent-session-rotation")?.adapter.sessionId;
+      const source = rpcSourceTesting.get("agent-session-rotation");
+      trackedSessionId = source && getRpcSourceIdentity(source).sessionId;
       return {
         payloads: [{ text: "ok" }],
         meta: { durationMs: 100 },

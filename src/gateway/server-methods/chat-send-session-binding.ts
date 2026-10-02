@@ -5,17 +5,19 @@ import {
   captureSessionTarget,
   type SessionEffectRef,
 } from "../../sessions/session-controller.lifecycle.js";
+import {
+  getRpcSource,
+  updateRpcSourceSessionId,
+  type RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { bindSessionControllerEntryTarget } from "../../sessions/session-controller.state.js";
-import { isChatAbortControllerEntryAbortable } from "../chat-abort.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.types.js";
 
 // Native initialization may create the SID after admission. Only the original
 // registration can adopt it; retained callbacks cannot bind a successor.
 export function bindChatSendPreparedSession(params: {
-  rpcSources: Map<string, ChatAbortControllerEntry>;
   clientRunId: string;
   sessionKey: string;
-  sourceRef: ChatAbortControllerEntry;
+  sourceRef: RpcSourceRef;
   lifecycleGeneration: string;
   admission: Pick<SessionEffectRef, "isActive">;
   progressRefresh: boolean;
@@ -23,15 +25,22 @@ export function bindChatSendPreparedSession(params: {
   const { sourceRef } = params;
   const sessionBinding = sourceRef.adapter;
   return (binding) => {
+    const input = sourceRef.input;
+    const operation = input.claim?.operation;
     if (binding.sessionKey !== params.sessionKey) {
       return;
     }
     if (
-      params.rpcSources.get(params.clientRunId) !== sourceRef ||
+      getRpcSource(params.clientRunId) !== sourceRef ||
       params.lifecycleGeneration !== getAgentEventLifecycleGeneration() ||
       !params.admission.isActive() ||
-      !isChatAbortControllerEntryAbortable(sourceRef) ||
-      sourceRef.input.phase === "consumed" ||
+      input.abortSignal.aborted ||
+      input.phase === "consumed" ||
+      input.retirementRequested ||
+      input.custody.cancellationRetired ||
+      input.withdrawalHolds > 0 ||
+      operation?.abortFrozen ||
+      operation?.result ||
       sessionBinding.projectSessionTerminalPending ||
       sessionBinding.projectSessionTerminalPersisted
     ) {
@@ -52,6 +61,6 @@ export function bindChatSendPreparedSession(params: {
         incarnation: binding.sessionId,
       }),
     );
-    sessionBinding.sessionId = binding.sessionId;
+    updateRpcSourceSessionId(sourceRef, binding.sessionId);
   };
 }

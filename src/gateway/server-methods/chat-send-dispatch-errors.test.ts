@@ -15,6 +15,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { SessionTranscriptProjectionUnavailableError } from "../../config/sessions/session-transcript-projection-error.js";
 import { onAgentRuntimeEvent } from "../../infra/agent-events.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import * as sessionRunError from "../../sessions/session-run-error.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { abortChatRunById } from "../chat-abort.js";
@@ -42,47 +43,52 @@ describe("handleChatSendSetupError", () => {
     const broadcast = vi.fn();
     const respond = vi.fn();
     const dedupe = new Map();
-
-    await handleChatSendSetupError({
-      admission: {
-        sessionBinding: {
-          sessionId: "sess-main",
-          sessionKey: "agent:main:main",
-          agentId: "main",
-          lifecycleGeneration: "test-generation",
-        },
-        cleanupAdmittedRun,
-        lifecycleGeneration: "test-generation",
-        restartSafeAdmission: undefined,
-      },
-      context: {
-        agentRunSeq: new Map(),
-        broadcast,
-        chatRunState: { clearRun },
-        dedupe,
-        logGateway: { warn: vi.fn() },
-        nodeSendToSession: vi.fn(),
-        removeChatRun: vi.fn(),
-      } as never,
-      error: new SessionTranscriptProjectionUnavailableError("sess-main"),
-      respond,
-      session: {
-        agentId: "main",
-        clientRunId: "setup-projection-retry",
-        sessionKey: "agent:main:main",
-      },
-      terminalizeRestartSafeAdmission: vi.fn(),
+    const activeRunAbort = registerRpcSourceForTest({
+      runId: "setup-projection-retry",
+      sessionId: "sess-main",
+      sessionKey: "agent:main:main",
+      agentId: "main",
     });
 
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      expect.objectContaining({ runId: "setup-projection-retry", status: "error" }),
-      expect.objectContaining({ code: "UNAVAILABLE", retryable: true, retryAfterMs: 250 }),
-      expect.anything(),
-    );
-    expect(dedupe.size).toBe(0);
-    expect(broadcast).not.toHaveBeenCalled();
-    expect(cleanupAdmittedRun).toHaveBeenCalledOnce();
+    try {
+      await handleChatSendSetupError({
+        admission: {
+          activeRunAbort,
+          cleanupAdmittedRun,
+          lifecycleGeneration: "test-generation",
+          restartSafeAdmission: undefined,
+        },
+        context: {
+          agentRunSeq: new Map(),
+          broadcast,
+          chatRunState: { clearRun },
+          dedupe,
+          logGateway: { warn: vi.fn() },
+          nodeSendToSession: vi.fn(),
+          removeChatRun: vi.fn(),
+        } as never,
+        error: new SessionTranscriptProjectionUnavailableError("sess-main"),
+        respond,
+        session: {
+          agentId: "main",
+          clientRunId: "setup-projection-retry",
+          sessionKey: "agent:main:main",
+        },
+        terminalizeRestartSafeAdmission: vi.fn(),
+      });
+
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        expect.objectContaining({ runId: "setup-projection-retry", status: "error" }),
+        expect.objectContaining({ code: "UNAVAILABLE", retryable: true, retryAfterMs: 250 }),
+        expect.anything(),
+      );
+      expect(dedupe.size).toBe(0);
+      expect(broadcast).not.toHaveBeenCalled();
+      expect(cleanupAdmittedRun).toHaveBeenCalledOnce();
+    } finally {
+      activeRunAbort.cleanup();
+    }
   });
 });
 
@@ -157,7 +163,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         const chatRunState = createChatRunState();
         const broadcast = vi.fn();
         const agentRunSeq = new Map<string, number>();
-        const rpcSources = new Map();
+        rpcSourceTesting.clear();
         broadcastChatDelta({
           context: { chatRunState, broadcast, agentRunSeq, nodeSendToSession: vi.fn() },
           runId,
@@ -168,14 +174,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         const previewGroup = chatRunState.runs.get(runId)?.liveTextGroup;
         const lifecycle = createChatSendDispatchErrorLifecycle({
           admission: {
-            sessionBinding: {
-              sessionId: target.sessionId,
-              sessionKey: target.sessionKey,
-              agentId: target.agentId,
-              lifecycleGeneration: "test-generation",
-            },
             activeRunAbort: registerRpcSourceForTest({
-              rpcSources,
               runId,
               ...target,
               storeScope: target.storePath,
@@ -190,7 +189,6 @@ describe("createChatSendDispatchErrorLifecycle", () => {
             agentRunSeq,
             broadcast,
             broadcastToConnIds: vi.fn(),
-            rpcSources,
             chatRunState,
             dedupe: new Map(),
             getRuntimeConfig: () => ({}),
@@ -398,17 +396,10 @@ describe("createChatSendDispatchErrorLifecycle", () => {
       const removeChatRun = vi.fn();
       const warn = vi.fn();
       const dedupe = new Map();
-      const rpcSources = new Map();
+      rpcSourceTesting.clear();
       const lifecycle = createChatSendDispatchErrorLifecycle({
         admission: {
-          sessionBinding: {
-            sessionId: "run-1",
-            sessionKey: "agent:main:main",
-            agentId: "main",
-            lifecycleGeneration: "test-generation",
-          },
           activeRunAbort: registerRpcSourceForTest({
-            rpcSources,
             runId: "run-1",
             sessionId: "run-1",
             sessionKey: "agent:main:main",
@@ -419,7 +410,6 @@ describe("createChatSendDispatchErrorLifecycle", () => {
           restartSafeAdmission: undefined,
         },
         context: {
-          rpcSources,
           agentRunSeq: new Map(),
           broadcast,
           chatRunState: createChatRunState(),
@@ -471,10 +461,9 @@ describe("createChatSendDispatchErrorLifecycle", () => {
     async (settlement) => {
       const runId = `explicit-abort-before-dispatch-${settlement}`;
       const sessionKey = "agent:main:main";
-      const rpcSources = new Map();
+      rpcSourceTesting.clear();
       const chatRunState = createChatRunState();
       const registration = registerRpcSourceForTest({
-        rpcSources,
         runId,
         sessionId: "sess-main",
         sessionKey,
@@ -482,7 +471,6 @@ describe("createChatSendDispatchErrorLifecycle", () => {
       if (!registration.registered) {
         throw new Error("expected the chat abort controller to be registered");
       }
-      const entry = registration.entry;
       const removeChatRun = vi.fn();
       const broadcast = vi.fn();
       const dedupe = new Map();
@@ -492,7 +480,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         if (event.runId !== runId || event.stream !== "lifecycle" || event.data.phase !== "end") {
           return;
         }
-        const current = rpcSources.get(runId);
+        const current = rpcSourceTesting.get(runId);
         if (current) {
           current.adapter.projectSessionTerminalPending = true;
           current.adapter.projectSessionTerminalObservedAt = event.ts;
@@ -503,7 +491,6 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         expect(
           abortChatRunById(
             {
-              rpcSources,
               chatRunState,
               removeChatRun,
               agentRunSeq: new Map(),
@@ -516,19 +503,12 @@ describe("createChatSendDispatchErrorLifecycle", () => {
 
         const lifecycle = createChatSendDispatchErrorLifecycle({
           admission: {
-            sessionBinding: {
-              sessionId: "sess-main",
-              sessionKey: "agent:main:main",
-              agentId: "main",
-              lifecycleGeneration: "test-generation",
-            },
             activeRunAbort: registration,
             cleanupAdmittedRun: registration.cleanup,
             lifecycleGeneration: "test-generation",
             restartSafeAdmission: {} as never,
           },
           context: {
-            rpcSources,
             agentRunSeq: new Map(),
             broadcast,
             chatRunState,
@@ -568,11 +548,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
           expect.objectContaining({ runId, state: "error" }),
           expect.anything(),
         );
-        expect(rpcSources.get(runId)).toBe(entry);
-        expect(entry.adapter).toMatchObject({
-          projectSessionTerminalPending: true,
-          registrationCleanupRequested: true,
-        });
+        expect(rpcSourceTesting.has(runId)).toBe(false);
         expect(terminalizeRestartSafeAdmission).not.toHaveBeenCalled();
       } finally {
         unsubscribe();
@@ -582,9 +558,8 @@ describe("createChatSendDispatchErrorLifecycle", () => {
   );
 
   it("keeps a signal-only dispatch rejection as an error without an explicit abort", async () => {
-    const rpcSources = new Map();
+    rpcSourceTesting.clear();
     const registration = registerRpcSourceForTest({
-      rpcSources,
       runId: "signal-only-dispatch-rejection",
       sessionId: "sess-main",
       sessionKey: "agent:main:main",
@@ -595,19 +570,12 @@ describe("createChatSendDispatchErrorLifecycle", () => {
     const broadcast = vi.fn();
     const lifecycle = createChatSendDispatchErrorLifecycle({
       admission: {
-        sessionBinding: {
-          sessionId: "sess-main",
-          sessionKey: "agent:main:main",
-          agentId: "main",
-          lifecycleGeneration: "test-generation",
-        },
         activeRunAbort: registration,
         cleanupAdmittedRun: vi.fn(),
         lifecycleGeneration: "test-generation",
         restartSafeAdmission: undefined,
       },
       context: {
-        rpcSources,
         agentRunSeq: new Map(),
         broadcast,
         chatRunState,
@@ -650,9 +618,8 @@ describe("createChatSendDispatchErrorLifecycle", () => {
   it("does not overwrite a terminal already owned by the agent lifecycle", async () => {
     const runId = "agent-owned-terminal-before-dispatch-rejection";
     const sessionKey = "agent:main:main";
-    const rpcSources = new Map();
+    rpcSourceTesting.clear();
     const registration = registerRpcSourceForTest({
-      rpcSources,
       runId,
       sessionId: "sess-main",
       sessionKey,
@@ -672,19 +639,12 @@ describe("createChatSendDispatchErrorLifecycle", () => {
     chatRunState.getOrCreate(runId).buffer = "Native-owned output";
     const lifecycle = createChatSendDispatchErrorLifecycle({
       admission: {
-        sessionBinding: {
-          sessionId: "sess-main",
-          sessionKey: "agent:main:main",
-          agentId: "main",
-          lifecycleGeneration: "test-generation",
-        },
         activeRunAbort: registration,
         cleanupAdmittedRun: registration.cleanup,
         lifecycleGeneration: "test-generation",
         restartSafeAdmission: undefined,
       },
       context: {
-        rpcSources,
         agentRunSeq: new Map(),
         broadcast,
         chatRunState,
@@ -744,25 +704,18 @@ describe("createChatSendDispatchErrorLifecycle", () => {
     const broadcast = vi.fn();
     const dedupe = new Map();
     const clientRunId = "failed-ops-global-send";
-    const rpcSources = new Map([
+    rpcSourceTesting.reset([
       [
         "compat-owner-run",
-        await createActiveRpcSourceForTest({ sessionId: "sess-main", sessionKey: "global" }),
+        await createActiveRpcSourceForTest({}, { sessionId: "sess-main", sessionKey: "global" }),
       ],
     ]);
 
     try {
       const lifecycle = createChatSendDispatchErrorLifecycle({
         admission: {
-          sessionBinding: {
-            sessionId: "sess-ops",
-            sessionKey: "agent:ops:main",
-            agentId: "ops",
-            lifecycleGeneration: "test-generation",
-          },
           activeRunAbort: {
             ...registerRpcSourceForTest({
-              rpcSources,
               runId: clientRunId,
               sessionId: "sess-ops",
               sessionKey: "agent:ops:main",
@@ -775,7 +728,6 @@ describe("createChatSendDispatchErrorLifecycle", () => {
           restartSafeAdmission: undefined,
         },
         context: {
-          rpcSources,
           agentRunSeq: new Map(),
           broadcast,
           broadcastToConnIds: vi.fn(),

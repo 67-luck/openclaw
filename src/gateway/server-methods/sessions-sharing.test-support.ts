@@ -45,7 +45,6 @@ export function sessionSharingTestContext(
     broadcast,
     broadcastToConnIds: vi.fn(),
     getSessionEventSubscriberConnIds: () => new Set(),
-    rpcSources: new Map(),
   } as unknown as GatewayRequestContext;
 }
 

@@ -1,3 +1,4 @@
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
 import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
@@ -149,7 +150,7 @@ it.each(["unchanged", "new turn", "reset incarnation", "partial cancellation"] a
       getRuntimeConfig,
       getSessionEventSubscriberConnIds: () => new Set(),
     });
-    expect(context.rpcSources.size).toBe(0);
+    expect(rpcSourceTesting.size).toBe(0);
     expect(resolveActiveEmbeddedRunOwner(parentId)).toBeUndefined();
     const captured = loadSessionEntry({ agentId: "main", sessionKey: parentKey });
     if (!captured) {

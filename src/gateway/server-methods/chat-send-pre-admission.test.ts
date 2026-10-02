@@ -11,6 +11,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { claimSessionControllerTask } from "../../sessions/session-controller.mailbox.js";
 import { createReplyOperation } from "../../sessions/session-controller.operation.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import {
   ensureProfileForEmail,
   linkEmail,
@@ -167,7 +168,6 @@ describe("chat send retry identity", () => {
       });
       if (state === "active" || state === "queued") {
         const registered = registerChatAbortController({
-          rpcSources: params.context.rpcSources,
           target: captureSessionTarget({
             storeScope: params.session.storePath,
             sessionKey,
@@ -476,7 +476,7 @@ describe("chat send retry identity", () => {
           expect(recoveryCompleted).toBe(true);
           expect(loadSessionEntry(scope)).toEqual(originalEntry);
           expect([...fixture.context.dedupe]).toEqual(originalReceipts);
-          expect(fixture.context.rpcSources.size).toBe(0);
+          expect(rpcSourceTesting.size).toBe(0);
           expect(client).not.toHaveProperty("invalidated", true);
           if (outcome === "unchanged") {
             expect(settled).toEqual({ value: true, error: undefined });

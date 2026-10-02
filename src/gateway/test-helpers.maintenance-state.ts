@@ -25,7 +25,6 @@ export function createGatewayMaintenanceStateForTest(params?: {
     refreshPresence: () => {},
     resetEventLoopHealth: () => {},
     dedupe: new Map(),
-    rpcSources: new Map(),
     restartRecoveryCandidates: new Map(),
     chatRunState,
     removeChatRun: () => undefined,

@@ -11,6 +11,7 @@ import {
   stageActivePluginRegistry,
 } from "../plugins/runtime.js";
 import { getActiveGatewayRootWorkCount } from "../process/gateway-work-admission.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -32,7 +33,6 @@ function createContext(): GatewayRequestContext {
       warn: vi.fn(),
       error: vi.fn(),
     },
-    rpcSources: new Map(),
     dedupe: new Map(),
   } as unknown as GatewayRequestContext;
 }
@@ -127,7 +127,7 @@ describe("createGatewayInstanceRuntime", () => {
     });
     const activeSource = createRpcSourceForTest({}, { runId: "run-cached-active" });
     await claimRpcSourceForTest(activeSource);
-    context.rpcSources.set("run-cached-active", activeSource);
+    rpcSourceTesting.set("run-cached-active", activeSource);
     await expect(
       runtime.recovery.dispatchAgent(
         { message: "test", idempotencyKey: "run-cached-active" },

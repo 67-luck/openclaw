@@ -199,7 +199,6 @@ export function createAgentTurnService(
           registerAgentTurnSourceAdmission({
             ...target,
             preflight,
-            context,
             principal,
             io,
             sourceWork: sourceWork.promise,
@@ -412,7 +411,6 @@ export function createAgentTurnService(
         resolvedSessionAgentId = sessionAgentId;
         if (!admissionController.getAdmittedRunAbort()) {
           earlyRunAbort = registerChatAbortController({
-            rpcSources: context.rpcSources,
             sourceWork: sourceWork.promise,
             runId,
             sessionKey: canonicalSessionKey,
@@ -687,8 +685,8 @@ export function createAgentTurnService(
         .catch((error: unknown) => {
           preparedDispatch.releaseCallerAuthority?.();
           context.logGateway.warn(`agent execution cleanup failed: ${String(error)}`);
-        })
-        .finally(() => sourceWork.resolve());
+        });
+      sourceWork.resolve();
       gatewayAdmissionTransferred = true;
       mainRestartRecoveryOwnerLease = undefined;
     } finally {

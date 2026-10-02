@@ -1,8 +1,7 @@
+import { expectDefined } from "@openclaw/normalization-core";
 /**
  * Gateway sessions.list changed-state tests.
  */
-
-import { expectDefined } from "@openclaw/normalization-core";
 import { expect, test, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
@@ -21,7 +20,10 @@ import { flushPendingSessionsChangedEvents } from "./server-methods/session-chan
 import { initializeSessionReadContext } from "./server-methods/sessions-read-cache.test-support.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
-import { setupPersistentSessionListTestHarness } from "./server.sessions.list-changed.fixture.test-support.js";
+import {
+  registerSessionListRpcSourceForTest,
+  setupPersistentSessionListTestHarness,
+} from "./server.sessions.list-changed.fixture.test-support.js";
 import {
   requireRecord,
   requireArray,
@@ -135,7 +137,6 @@ async function invokeSessionMutation({
   const { getRuntimeConfig } = await getGatewayConfigModule();
   const requestContext = {
     broadcastToConnIds,
-    rpcSources: new Map(),
     dedupe: new Map(),
     getSessionEventSubscriberConnIds: () => subscribedConnIds,
     loadGatewayModelCatalog: async () => ({ providers: [] }),
@@ -208,18 +209,16 @@ async function invokeSessionsCompact({
 
 async function expectListedSessionActiveRun(
   requestId: string,
-  run: Record<string, unknown>,
+  run: Parameters<typeof registerSessionListRpcSourceForTest>[0],
   expected: boolean,
   expectedStatus?: "queued" | "running",
   sessionOptions?: SessionStoreEntryOptions,
 ) {
   await writeMainSessionStore(sessionOptions);
+  await registerSessionListRpcSourceForTest(run);
 
   const { respond } = await invokeSessionsList({
     requestId,
-    context: {
-      rpcSources: new Map([["run-1", { sessionKey: "agent:main:main", ...run }]]),
-    },
   });
 
   const payload = expectRespondPayload(respond);
@@ -737,12 +736,10 @@ test("sessions.list distinguishes proven idle from unavailable run identities", 
 
 test("sessions.changed publishes running status during ordinary startup", async () => {
   await writeMainSessionStore({ status: "failed" });
+  await registerSessionListRpcSourceForTest({ executionStarted: false });
   const result = await invokeSessionMutation({
     method: "sessions.patch",
     params: { key: "main", label: "Starting main" },
-    context: {
-      rpcSources: new Map([["run-1", { sessionKey: "agent:main:main", executionStarted: false }]]),
-    },
   });
 
   expectChangedBroadcast(result.broadcastToConnIds, {

@@ -18,7 +18,12 @@ import {
 } from "../../process/gateway-work-admission.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
-import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  type RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
 import {
   buildRunUserTurnIdempotencyKey,
   createUserTurnTranscriptRecorder,
@@ -211,7 +216,7 @@ export function prepareTalkClientControlAuthority(params: {
 
 export function createTalkClientAgentConsultRunner(params: {
   config: OpenClawConfig;
-  context: Pick<GatewayRequestContext, "rpcSources" | "logGateway">;
+  context: Pick<GatewayRequestContext, "logGateway">;
   sessionTarget: PreparedTalkSessionTarget;
   ownerConnId?: string;
   authority?: TalkAgentConsultAuthority;
@@ -227,7 +232,7 @@ export function createTalkClientAgentConsultRunner(params: {
   let agentRuntime: ReturnType<typeof createPluginRuntime>["agent"] | undefined;
   const getAgentRuntime = () =>
     (agentRuntime ??= createTalkClientAgentRuntime({
-      resolveRpcSource: (runId) => params.context.rpcSources.get(runId),
+      resolveRpcSource: getRpcSource,
       config: params.config,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
     }));
@@ -254,7 +259,7 @@ export function createTalkClientAgentConsultRunner(params: {
     getAdditionalSystemPrompt?: () => string | undefined,
   ) =>
     createTalkClientAgentRuntime({
-      resolveRpcSource: (runId) => params.context.rpcSources.get(runId),
+      resolveRpcSource: getRpcSource,
       config: params.config,
       ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
       assertCurrent,
@@ -313,7 +318,7 @@ export function createTalkClientAgentConsultRunner(params: {
       ? createOwnedAgentRuntime(owner, assertCurrent, getAdditionalSystemPrompt)
       : assertCurrent || source === "native-delegation" || confirmationGrant
         ? createTalkClientAgentRuntime({
-            resolveRpcSource: (runId) => params.context.rpcSources.get(runId),
+            resolveRpcSource: getRpcSource,
             config: params.config,
             ...(params.ownerConnId ? { rawSourceRef: params.ownerConnId } : {}),
             assertCurrent,
@@ -406,7 +411,6 @@ export function createTalkClientAgentConsultRunner(params: {
             }
             const registration = params.ownerConnId
               ? registerChatAbortController({
-                  rpcSources: params.context.rpcSources,
                   target: captureSessionTarget({
                     storeScope: storePath,
                     sessionKey: canonicalKey,
@@ -425,22 +429,26 @@ export function createTalkClientAgentConsultRunner(params: {
               : undefined;
             if (owner) {
               const entry = registration?.entry;
-              const generation = entry?.adapter.lifecycleGeneration;
+              const generation = entry ? getRpcSourceLifecycleGeneration(entry) : undefined;
               owner.cleanup = registration?.cleanup;
               owner.signal = entry?.input.abortSignal;
-              owner.isCurrent = (resolvedSessionId) =>
-                params.getVoiceSessionId() === voiceSessionId &&
-                (!params.ownerConnId ||
-                  (params.context.rpcSources.get(runId) === entry &&
-                    entry?.input.abortSignal.aborted === false &&
-                    entry.adapter.ownerConnId === params.ownerConnId &&
-                    entry.adapter.sessionId === sessionId &&
-                    entry.adapter.sessionKey === canonicalKey &&
-                    generation !== undefined &&
-                    entry.adapter.lifecycleGeneration === generation &&
-                    isAgentEventLifecycleGenerationCurrent(generation))) &&
-                (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
-                (params.isRunCurrent?.(runId) ?? true);
+              owner.isCurrent = (resolvedSessionId) => {
+                const identity = entry ? getRpcSourceIdentity(entry) : undefined;
+                return (
+                  params.getVoiceSessionId() === voiceSessionId &&
+                  (!params.ownerConnId ||
+                    (getRpcSource(runId) === entry &&
+                      entry?.input.abortSignal.aborted === false &&
+                      entry.adapter.requester?.connectionId === params.ownerConnId &&
+                      identity?.sessionId === sessionId &&
+                      identity.sessionKey === canonicalKey &&
+                      generation !== undefined &&
+                      getRpcSourceLifecycleGeneration(entry) === generation &&
+                      isAgentEventLifecycleGenerationCurrent(generation))) &&
+                  (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
+                  (params.isRunCurrent?.(runId) ?? true)
+                );
+              };
             }
             return registration
               ? {

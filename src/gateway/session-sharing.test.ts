@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { addSessionMember } from "../config/sessions/session-sharing-store.native.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -739,7 +740,7 @@ describe("session sharing policy", () => {
       const solo = client({});
       const profiledSolo = client({ user: "gateway-owner" });
       const cfg = {};
-      const context = { rpcSources: new Map(), getRuntimeConfig: () => cfg } as never;
+      const context = { getRuntimeConfig: () => cfg } as never;
       const directRequests = (requestedKey: string) => [
         { method: "chat.history", requestParams: { sessionKey: requestedKey } },
         { method: "chat.metadata", requestParams: { sessionKey: requestedKey } },
@@ -818,7 +819,7 @@ describe("session sharing policy", () => {
         agents: { list: [{ id: "main", default: true }, { id: "work" }] },
       } as never;
       const context = {
-        rpcSources: new Map([["run-1", { sessionKey: "global", agentId: "work" }]]),
+        rpcSourceTesting: new Map([["run-1", { sessionKey: "global", agentId: "work" }]]),
         execApprovalManager: {
           lookupLocalApprovalId: () => ({ kind: "exact", id: "approval-1" }),
           getLocalSnapshot: () => ({ request: { sessionKey: "global", agentId: "work" } }),
@@ -867,7 +868,7 @@ describe("session sharing policy", () => {
   });
 
   it("fails closed when a required session mutation has no target", () => {
-    const context = { rpcSources: new Map(), getRuntimeConfig: () => ({}) } as never;
+    const context = { getRuntimeConfig: () => ({}) } as never;
     for (const method of ["sessions.reset", "sessions.move"]) {
       expect(
         resolveSessionMutationAuthorization({

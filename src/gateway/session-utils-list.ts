@@ -387,10 +387,7 @@ export function prepareProjectedSessionList(params: {
     client,
     now,
     context
-      ? createVisibleActiveSessionRunProjector(
-          context,
-          projection.state.rowContext.projectedAgentRuns,
-        )
+      ? createVisibleActiveSessionRunProjector(projection.state.rowContext.projectedAgentRuns)
       : undefined,
   );
   const prepared = prepareSessionRowSelection(projection, opts, {

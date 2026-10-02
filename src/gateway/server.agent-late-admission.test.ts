@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
 import {
   agentCommandMock,
@@ -117,7 +118,7 @@ describe("Gateway close during agent admission", () => {
         }),
       );
       await admissionHeld.promise;
-      expect(kernel.gatewayRequestContext.rpcSources.size).toBe(0);
+      expect(rpcSourceTesting.size).toBe(0);
       const drain = kernel.connectionWork.drain.bind(kernel.connectionWork);
       vi.spyOn(kernel.connectionWork, "drain").mockImplementationOnce(() => {
         const operation = drain();

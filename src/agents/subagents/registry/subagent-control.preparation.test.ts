@@ -4,8 +4,8 @@ import { useSubagentControlFixture } from "./subagent-control.test-support.js";
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import * as replyConfig from "../../../auto-reply/reply/agent-runner-utils.js";
-import { prepareClaimedReplyTurn } from "../../../auto-reply/reply/claimed-turn-preparation.js";
 import { createQueueTestRun } from "../../../auto-reply/reply/queue.test-helpers.js";
+import { prepareReplyAgentTurn } from "../../../auto-reply/reply/reply-agent-turn-preparation.js";
 import { createTypingController } from "../../../auto-reply/reply/typing.js";
 import { getRuntimeConfig } from "../../../config/config.js";
 import { releaseSessionControllerClaim } from "../../../sessions/session-controller.mailbox.js";
@@ -48,7 +48,7 @@ it("cancels a selected preparation source and retains its actual return before c
     return config;
   });
   const typing = createTypingController({});
-  const preparation = prepareClaimedReplyTurn({
+  const preparation = prepareReplyAgentTurn({
     queued,
     defaults: { typing, typingMode: "never", defaultModel: "gpt-test", sessionKey, storePath },
   });

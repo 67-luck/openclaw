@@ -4,9 +4,9 @@ import { createChatSendLateFollowupDisposition } from "../../gateway/server-meth
 import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import type { AgentTurnExecutionResult } from "./agent-runner-execution.types.js";
-import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
 import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
 import type { FollowupRun } from "./queue/types.js";
+import type { AdmittedFollowupTurn } from "./reply-agent-turn-preparation.js";
 
 const deliveryState = vi.hoisted(() => ({
   followupRoute: undefined as { route: "dispatcher" | "origin" | "drop" } | undefined,
@@ -71,7 +71,6 @@ function createTurn(overrides: Partial<AdmittedFollowupTurn> = {}): AdmittedFoll
       key: "main",
       current: () => undefined,
       publish: () => undefined,
-      adopt: () => undefined,
     },
     sendPolicy: "allow",
     preflightCompactionApplied: false,

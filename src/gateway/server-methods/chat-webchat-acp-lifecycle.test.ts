@@ -62,7 +62,6 @@ function createParams(): SubscriptionParams {
     toolEventRecipients: chatRunState.toolEventRecipients,
     sessionEventSubscribers: createSessionEventSubscriberRegistry(),
     sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-    rpcSources: new Map(),
     restartRecoveryCandidates: new Map(),
     refreshConnectedUserProfiles: vi.fn(),
   };
@@ -87,7 +86,6 @@ describe("bound ACP terminal lifecycle", () => {
       const targetKey = "agent:claude:acp:target";
       const params = createParams();
       const registration = registerRpcSourceForTest({
-        rpcSources: params.rpcSources,
         runId,
         agentId: "main",
         sessionId: "source-session",

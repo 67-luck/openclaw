@@ -13,6 +13,7 @@ import { saveCronJobsStore } from "../../cron/store.js";
 import type { CronJob } from "../../cron/types.js";
 import { retireSessionControllerSourceCancellation } from "../../sessions/session-controller.mailbox.js";
 import { requestRpcSourceCancellation } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import * as userProfileList from "../../state/user-profile-list.js";
 import { ensureProfileForEmail, setAvatar } from "../../state/user-profiles.js";
@@ -194,14 +195,16 @@ describe("pending input read boundary", () => {
         ].entries()) {
           const runId = index === 5 ? "external-run-".repeat(30) : `pending-display-run-${index}`;
           const ref = createRpcSourceForTest(
-            { ...scope, ...overrides },
+            {},
             {
               runId,
               storeScope: captureRpcTargetForTest(scope).storeScope,
               phase: "waiting",
+              ...scope,
+              ...overrides,
             },
           );
-          context.rpcSources.set(runId, ref);
+          rpcSourceTesting.set(runId, ref);
           if (index === 3) {
             retireSessionControllerSourceCancellation(ref.input);
           } else if (index === 4) {
@@ -508,12 +511,16 @@ describe("pending input consumption receipts", () => {
               ),
             );
           }
-          const retainedSource = createRpcSourceForTest(scope, {
-            runId: "retained-0",
-            storeScope: captureRpcTargetForTest(scope).storeScope,
-            phase: "waiting",
-          });
-          context.rpcSources.set("retained-0", retainedSource);
+          const retainedSource = createRpcSourceForTest(
+            {},
+            {
+              runId: "retained-0",
+              storeScope: captureRpcTargetForTest(scope).storeScope,
+              phase: "waiting",
+              ...scope,
+            },
+          );
+          rpcSourceTesting.set("retained-0", retainedSource);
           const retainedPage = await call({ inputRunIds: ["retained-0", "retained-1"], limit: 1 });
           expect(retainedPage.inputReceipts).toEqual([
             { runId: "retained-0", state: "pending", queued: true },

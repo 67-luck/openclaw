@@ -21,12 +21,11 @@ import {
   getAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
-import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
-  getRpcSourceSignal,
-  type RpcSourceRef,
+  getRpcSource,
+  getRpcSourceIdentity,
+  listRpcSourceEntries,
 } from "../../sessions/session-controller.rpc-sources.js";
-import { findSessionControllerEntries } from "../../sessions/session-controller.state.js";
 import {
   captureSessionControllerStop,
   stopSession,
@@ -58,7 +57,6 @@ import {
   readGatewayRequestMutationAuthority,
 } from "./session-mutation-guards.js";
 import {
-  captureAbortChannelSources,
   resolveAbortSessionKey,
   resolveScopedAbortKey,
   resolveSessionKeyAgentId,
@@ -110,9 +108,10 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const requestedKeyAgentId = scopedRequestedKey
       ? resolveSessionKeyAgentId(scopedRequestedKey, cfg)
       : undefined;
-    const activeRun = requestedRunId ? context.rpcSources.get(requestedRunId) : undefined;
-    const activeRunSessionKey = activeRun?.adapter.sessionKey;
-    const activeRunAgentId = normalizeOptionalString(activeRun?.adapter.agentId);
+    const activeRun = requestedRunId ? getRpcSource(requestedRunId) : undefined;
+    const activeRunIdentity = activeRun && getRpcSourceIdentity(activeRun);
+    const activeRunSessionKey = activeRunIdentity?.sessionKey;
+    const activeRunAgentId = normalizeOptionalString(activeRunIdentity?.agentId);
     let inferredRunAgentId =
       requestedParamAgentId ??
       activeRunAgentId ??
@@ -191,16 +190,18 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
           }) === normalizeAgentId(targetAgentId)) ||
         (embeddedRun !== undefined &&
           resolveSessionKeyAgentId(embeddedRunSessionKey, cfg) === normalizeAgentId(targetAgentId))
-      : [...context.rpcSources.values()].some(
-          (entry) =>
+      : listRpcSourceEntries().some(([, entry]) => {
+          const identity = getRpcSourceIdentity(entry);
+          return (
             entry.adapter.controlUiVisible !== false &&
-            entry.adapter.sessionKey === key &&
+            identity.sessionKey === key &&
             resolveChatRunOwnerAgentId({
-              agentId: entry.adapter.agentId,
-              sessionKey: entry.adapter.sessionKey,
+              agentId: identity.agentId,
+              sessionKey: identity.sessionKey,
               defaultAgentId: stableTargetOwner,
-            }) === normalizeAgentId(targetAgentId),
-        );
+            }) === normalizeAgentId(targetAgentId)
+          );
+        });
     if (!configuredTarget && existingTargets.length === 0 && !hasExactActiveRun) {
       respond(
         false,
@@ -264,7 +265,6 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         ? [requestedKey]
         : undefined;
     const resolvedAbortSessionKey = resolveAbortSessionKey({
-      context,
       requestedKey: key,
       canonicalKey,
       activeRunSessionKey: narrow ? undefined : scopedActiveRunSessionKey,
@@ -277,31 +277,13 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const abortAgentId = requestedGlobalAgentId ?? activeRunAgentId;
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const lifecycleRevision = sessionEntry?.lifecycleRevision;
-    const assertAbortCurrent = () => {
-      authority.assertCurrent();
-      sessionMutationAuthorization?.assertCurrent();
-      requester.sessionAuthority?.assertCurrent();
-      assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
-    };
-    const physicalTarget = loadedSession
-      ? captureSessionTarget({
-          storeScope: loadedSession.storePath,
-          sessionKey: canonicalKey,
-          aliases: [key, ...(requestedKeyAliases ?? [])],
-          agentId: targetAgentId,
-          incarnation: sessionEntry?.sessionId,
-        })
-      : undefined;
-    const controllerOwners = physicalTarget
-      ? findSessionControllerEntries(canonicalKey, physicalTarget)
-      : [];
     const persistSessionAbort = (
       owner: Pick<ActiveEmbeddedRunOwner, "runId" | "sessionId" | "startedAtMs">,
-    ) =>
-      persistGatewaySessionLifecycleEvent({
+    ) => {
+      const endedAt = Date.now();
+      return persistGatewaySessionLifecycleEvent({
         sessionKey: canonicalKey,
         agentId: targetAgentId,
-        // Exact cancellation already committed; requester revocation cannot abandon its terminal write.
         assertCommitAllowed: () => assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration),
         expectedWriter: {
           runId: owner.runId,
@@ -312,23 +294,38 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
           runId: owner.runId,
           sessionId: owner.sessionId,
           lifecycleGeneration,
-          ts: Date.now(),
+          ts: endedAt,
           data: {
             phase: "end",
             status: "cancelled",
             aborted: true,
             stopReason: "rpc",
             startedAt: owner.startedAtMs ?? sessionEntry?.startedAt,
-            endedAt: Date.now(),
+            endedAt,
           },
         },
       });
+    };
+    const assertAbortCurrent = () => {
+      authority.assertCurrent();
+      sessionMutationAuthorization?.assertCurrent();
+      requester.sessionAuthority?.assertCurrent();
+      assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
+    };
     // Controller-backed runs must keep the requester checks and lifecycle cleanup below.
     if (embeddedRun && !activeRun) {
-      let aborted = false;
-      let parentStatus: ReturnType<ActiveEmbeddedRunOwner["stop"]> = "unchanged";
+      assertAbortCurrent();
+      const aborted = embeddedRun.stop() === "aborted";
       let descendants: Awaited<ReturnType<typeof abortControlledSubagents>> | undefined;
-      const stopped = stopSession({
+      if (aborted) {
+        descendants = await abortControlledSubagents({
+          cfg,
+          sessionKey: embeddedRun.sessionKey ?? canonicalKey,
+          agentId: targetAgentId,
+          requesterTurnRunId: embeddedRun.runId,
+        });
+      }
+      await stopSession({
         source: "client-run",
         capture: captureSessionControllerStop({}),
         assertCurrent: assertAbortCurrent,
@@ -340,38 +337,9 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
           commandSource: "gateway:sessions.abort",
           senderId: requester.deviceId ?? requester.connId,
         },
-        externalParents: [
-          {
-            phase: "active",
-            stop: () => {
-              assertAbortCurrent();
-              parentStatus = embeddedRun.stop();
-              aborted = parentStatus === "aborted";
-              return parentStatus;
-            },
-            settled: embeddedRun.waitForSettlement(),
-          },
-        ],
-        stopChildren: async (applyParentStop) => {
-          descendants = await abortControlledSubagents({
-            cfg,
-            sessionKey: embeddedRun.sessionKey ?? canonicalKey,
-            agentId: targetAgentId,
-            requesterTurnRunId: embeddedRun.runId,
-            assertCurrent: assertAbortCurrent,
-            beforeKill: applyParentStop,
-          });
-          return {
-            stopped: descendants?.killed ?? 0,
-            failed: descendants?.status === "error" ? descendants.failed : 0,
-          };
-        },
-        continueChildStop: () => parentStatus !== "unchanged",
-      });
-      const outcome = await stopped.completed;
-      aborted = outcome.aborted;
+      }).completed;
       if (aborted) {
-        await Promise.all([persistSessionAbort(embeddedRun), embeddedRun.waitForSettlement()]);
+        await persistSessionAbort(embeddedRun);
       }
       const error = descendantAbortError(descendants, "Parent run");
       if (error) {
@@ -394,36 +362,9 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     }
     // Snapshot before abort can remove controllers. Agent run IDs are idempotency
     // keys, so preserve their dedupe namespace instead of colliding with chat.send.
-    const preAbortRuns = new Map(context.rpcSources);
+    const preAbortRuns = new Map(listRpcSourceEntries());
     const preAbortDedupe = new Map(context.dedupe);
-    const representedInputs = new Set([...preAbortRuns.values()].map((entry) => entry.input));
-    const representedOperations = new Set(
-      [...preAbortRuns.values()].map((entry) => entry.input.claim?.operation),
-    );
     const persistedSessionId = sessionEntry?.sessionId;
-    const channelSources = captureAbortChannelSources({
-      controllerOwners,
-      representedInputs,
-      requiredSessionId: narrow ? persistedSessionId : undefined,
-    });
-    const channelSettlements: Promise<void>[] = [];
-    const channelStop = captureSessionControllerStop({
-      inputs: !requestedRunId && canonicalKey !== "global" ? channelSources.keys() : [],
-      operations:
-        !requestedRunId && canonicalKey !== "global"
-          ? controllerOwners
-              .map((owner) => owner.active)
-              .filter(
-                (operation) =>
-                  Boolean(operation) &&
-                  !representedOperations.has(operation) &&
-                  (requiredSessionId === undefined ||
-                    operation?.hasOwnedSessionId(requiredSessionId)),
-              )
-          : [],
-    });
-    let channelStopCommitted = false;
-
     const preAbortSessions = new Map(
       [...preAbortRuns].map(([runId, entry]) => [runId, captureAgentJobSession(entry.adapter)]),
     );
@@ -446,9 +387,6 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
           capturedSessionEmbeddedRun.sessionKey === canonicalKey))
         ? capturedSessionEmbeddedRun
         : undefined;
-    const embeddedController = sessionEmbeddedRun
-      ? preAbortRuns.get(sessionEmbeddedRun.runId)
-      : undefined;
     const yieldedRunId =
       typeof sessionEntry?.lifecycleRunId === "string" ? sessionEntry.lifecycleRunId : undefined;
     const yieldedParent =
@@ -471,33 +409,24 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
             startedAtMs: sessionEntry.startedAt,
           }
         : undefined;
-    let embeddedAbortPersistence: Promise<void> | undefined;
-    let mcpRetirement: Promise<boolean> | undefined;
-    let pendingMcpController: RpcSourceRef | undefined;
     const settleAbortPersistence = async (runIds: readonly string[]) => {
       try {
-        await embeddedAbortPersistence;
-        if (channelStopCommitted) {
-          await Promise.all(channelSettlements);
-        }
         await Promise.all(
           runIds.flatMap((runId) => {
             const entry = preAbortRuns.get(runId);
             return entry ? [waitForChatAbortTerminalPersistence(entry)] : [];
           }),
         );
-        if (
-          persistedSessionId &&
-          pendingMcpController &&
-          getRpcSourceSignal(pendingMcpController).aborted
-        ) {
+        if (aborted && sessionEmbeddedRun && !preAbortRuns.has(sessionEmbeddedRun.runId)) {
+          await persistSessionAbort(sessionEmbeddedRun);
+        }
+        if (aborted && persistedSessionId) {
           assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
-          mcpRetirement ??= retireSessionMcpRuntime({
+          await retireSessionMcpRuntime({
             sessionId: persistedSessionId,
             reason: "session-stop",
           });
         }
-        await mcpRetirement;
         if (descendantsCancelled && yieldedParent) {
           // Child cancellation consumes the wake; join its parent's terminal write too.
           await persistSessionAbort(yieldedParent);
@@ -506,69 +435,6 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         throw abortedPartialPersistenceError(error, abortWarning);
       }
     };
-    let queuedCleared = false;
-    let embeddedAborted = false;
-    const additionalStop = !requestedRunId
-      ? {
-          capture: channelStop,
-          cancelInput: (input: (typeof channelStop.inputs)[number], cancel: () => boolean) => {
-            const captured = channelSources.get(input);
-            if (
-              !captured ||
-              input.mailbox !== captured.mailbox ||
-              input.source !== captured.source ||
-              input.target !== captured.target ||
-              input.retirementRequested ||
-              (input.source && input.source.run.sessionId !== captured.sessionId)
-            ) {
-              return false;
-            }
-            return cancel();
-          },
-          cancelOperation: (
-            _operation: (typeof channelStop.operations)[number],
-            cancel: () => boolean,
-          ) => cancel(),
-          onCancelled: (
-            target: (typeof channelStop.inputs)[number] | (typeof channelStop.operations)[number],
-          ) => {
-            channelStopCommitted = true;
-            if ("mailbox" in target) {
-              channelSettlements.push(target.settlement.promise);
-              if (channelStop.queuedInputs.includes(target)) {
-                queuedCleared = true;
-              } else {
-                embeddedAborted = true;
-              }
-            } else {
-              channelSettlements.push(target.ownerSettlement);
-              embeddedAborted = true;
-            }
-          },
-          afterParent: () => {
-            const wasActive =
-              channelStop.activeInputs.length > 0 || channelStop.operations.length > 0;
-            if (embeddedAborted && sessionEmbeddedRun) {
-              embeddedAbortPersistence = persistSessionAbort(sessionEmbeddedRun);
-              void embeddedAbortPersistence.catch(() => {});
-            }
-            if ((queuedCleared || embeddedAborted) && embeddedController) {
-              pendingMcpController = embeddedController;
-            }
-            if (
-              (queuedCleared || embeddedAborted || canonicalKey === "global") &&
-              persistedSessionId &&
-              (canonicalKey === "global" || !wasActive || embeddedAborted)
-            ) {
-              assertAbortCurrent();
-              mcpRetirement ??= retireSessionMcpRuntime({
-                sessionId: persistedSessionId,
-                reason: "session-stop",
-              });
-            }
-          },
-        }
-      : undefined;
     const stopHookContext = {
       sessionKey: canonicalKey,
       sessionEntry,
@@ -592,7 +458,6 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       stopSource: requestedRunId ? "client-run" : "client-session",
       hookContext: stopHookContext,
       assertCurrent: assertAbortCurrent,
-      additionalStop,
     });
     if (queuedAbort) {
       const result = await queuedAbort;
@@ -689,7 +554,6 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       {
         ...(!requestedRunId ? { cascadeDescendants: true as const } : {}),
         hookContext: stopHookContext,
-        additionalStop,
         onDescendantsCancelled: () => {
           descendantsCancelled = true;
         },

@@ -68,7 +68,6 @@ function patchContext(
     },
     getSessionEventSubscriberConnIds: () => new Set(),
     broadcastToConnIds: vi.fn(),
-    rpcSources: new Map(),
     dedupe: new Map(),
   } as unknown as GatewayRequestContext;
 }

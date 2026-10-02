@@ -1,5 +1,5 @@
 import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../sessions/session-controller.lifecycle.js";
-import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import { getRpcSource, type RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import { settlesWithin } from "../shared/settle-within.js";
 
 const terminalPersistenceErrorByEntry = new WeakMap<object, unknown>();
@@ -51,17 +51,19 @@ export async function waitForChatAbortAcknowledgment<T>(settlement: Promise<T>):
   return await settlement;
 }
 
-/** Cancellation joins terminal dispatch before inspecting its write or intentional no-write. */
+/** Cancellation joins the prepared terminal write, or dispatch when it must discover one. */
 export async function waitForChatAbortTerminalPersistence(entry: RpcSourceRef): Promise<void> {
   const dispatch = terminalDispatchByEntry.get(entry);
   const preparedPersistence = entry.adapter.projectSessionTerminalPersistence;
-  if (dispatch) {
+  if (preparedPersistence) {
+    await preparedPersistence;
+  } else if (dispatch) {
     await dispatch.settled;
   }
   // Dispatch can attach persistence lazily. Retain an already accepted write
   // even if a later terminal event replaces it while this dispatch is pending.
-  const persistence = preparedPersistence ?? entry.adapter.projectSessionTerminalPersistence;
-  if (persistence) {
+  const persistence = entry.adapter.projectSessionTerminalPersistence;
+  if (!preparedPersistence && persistence) {
     await persistence;
   }
   if (!persistence && terminalPersistenceErrorByEntry.has(entry)) {
@@ -77,7 +79,6 @@ export async function waitForChatAbortTerminalPersistence(entry: RpcSourceRef): 
 
 /** Waits for captured run registrations and their terminal persistence owner to leave. */
 export async function waitForChatAbortControllerRemoval<TEntry extends RpcSourceRef>(params: {
-  entries: ReadonlyMap<string, TEntry>;
   targets: ReadonlyArray<{ runId: string; entry: TEntry }>;
   timeoutMs: number;
 }): Promise<boolean> {
@@ -90,7 +91,7 @@ export async function waitForChatAbortControllerRemoval<TEntry extends RpcSource
     );
   const registeredWaiters: Array<{ entry: TEntry; resolve: () => void }> = [];
   const removals = params.targets.flatMap(({ runId, entry }) => {
-    if (params.entries.get(runId) !== entry) {
+    if (getRpcSource(runId) !== entry) {
       return [];
     }
     return [

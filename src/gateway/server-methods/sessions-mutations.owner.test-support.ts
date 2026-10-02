@@ -37,6 +37,5 @@ export function createSessionMutationTestContext(cfg: OpenClawConfig) {
     getRuntimeConfig: () => cfg,
     getSessionEventSubscriberConnIds: () => new Set(["observer"]),
     broadcastToConnIds: vi.fn(),
-    rpcSources: new Map(),
   } as unknown as GatewayRequestContext;
 }

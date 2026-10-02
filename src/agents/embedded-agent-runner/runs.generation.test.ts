@@ -27,7 +27,6 @@ import { assertSessionControllerOperation } from "../../sessions/session-control
 import { withGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
 import { type EmbeddedAgentQueueHandle } from "./run-state.js";
 import {
-  isEmbeddedAgentRunAbortableForRunId,
   prepareEmbeddedAgentRunCompletionClaim,
   queueEmbeddedAgentMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunHandleSessionId,
@@ -247,8 +246,6 @@ describe("embedded run registry lifecycle generations", () => {
     expect(listActiveSessionRunIds()).toContain("shared-session");
     expect(listActiveSessionRunKeys()).toEqual(["agent:main:current"]);
     expect(resolveActiveEmbeddedRunHandleSessionId("agent:main:stale")).toBeUndefined();
-    expect(isEmbeddedAgentRunAbortableForRunId("current-run")).toBe(false);
-    expect(isEmbeddedAgentRunAbortableForRunId("stale-run")).toBe(true);
   });
 
   it("rejects a delayed prior-lifecycle registration without a replacement owner", async () => {
@@ -283,7 +280,6 @@ describe("embedded run registry lifecycle generations", () => {
     expect(
       resolveActiveEmbeddedRunHandleSessionIdBySessionFile("/tmp/stale-session.jsonl"),
     ).toBeUndefined();
-    expect(isEmbeddedAgentRunAbortableForRunId("stale-run")).toBe(true);
   });
 
   it("retains a handle's original lifecycle fence after eviction and clear", () => {

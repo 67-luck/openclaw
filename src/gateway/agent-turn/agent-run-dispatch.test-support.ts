@@ -1,5 +1,6 @@
 import { vi } from "vitest";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { createTestRpcSource } from "./rpc-source.test-support.js";
 import type { AgentTurnContext } from "./types.js";
@@ -11,7 +12,6 @@ function createContext(): AgentTurnContext {
     agentRunSeq: new Map(),
     broadcast: vi.fn(),
     broadcastToConnIds: vi.fn(),
-    rpcSources: new Map(),
     chatRunState: createChatRunState(),
     dedupe: new Map(),
     deps: {},
@@ -49,6 +49,6 @@ export function createTrackedDispatch() {
     },
     runId,
   );
-  context.rpcSources.set(runId, entry);
+  rpcSourceTesting.set(runId, entry);
   return { runId, sessionKey, context, entry };
 }

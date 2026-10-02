@@ -262,7 +262,6 @@ for (const { name, replaceParent } of [
         await expect.poll(() => interrupted.toSorted(), { timeout: 2_000 }).toEqual(running);
         expect(parent.abortSignal!.aborted).toBe(true);
         expect(slotReleaseResults).toEqual(running.map(() => true));
-        expect(leases.every((lease) => lease.isActive())).toBe(true);
         expect(getSessionControllerWorkCount()).toBe(activeAdmissionCount);
         expect(responseSettled).toBe(false);
         expect(start).not.toHaveBeenCalled();

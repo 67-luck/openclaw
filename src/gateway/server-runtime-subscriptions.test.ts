@@ -25,13 +25,15 @@ import {
   PROGRESS_CARD_REFRESH_SOURCE_TOOL,
   progressCardRefreshRunProjection,
 } from "../sessions/input-provenance.js";
+import { getRpcSourceIdentity } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import {
   waitForChatAbortControllerRemoval,
   waitForChatAbortTerminalPersistence,
 } from "./chat-abort-lifecycle-internal.js";
-import { abortChatRunById, removeChatAbortControllerEntry } from "./chat-abort.js";
+import { abortChatRunById } from "./chat-abort.js";
 import type { AgentEventHandlerOptions } from "./server-chat.js";
 import { registerActivitySummaryPublicationTests } from "./server-runtime-subscriptions.activity-summary.test-support.js";
 import {
@@ -381,9 +383,9 @@ describe("startGatewayEventSubscriptions", () => {
     const handler = Object.assign(vi.fn(), { dispose: vi.fn() });
     agentEventHandlerMocks.create.mockReturnValue(handler);
     const params = createParams();
-    const source = createRpcSourceForTest({ sessionKey: "global", sessionId: "session-ops" });
+    const source = createRpcSourceForTest({}, { sessionKey: "global", sessionId: "session-ops" });
     const release = await claimRpcSourceForTest(source);
-    params.rpcSources.set("run-ops", source);
+    rpcSourceTesting.set("run-ops", source);
     unsubs = startGatewayEventSubscriptions(params);
 
     emitAgentEvent({ runId: "load-handler", stream: "lifecycle", data: { phase: "error" } });
@@ -466,7 +468,7 @@ describe("startGatewayEventSubscriptions", () => {
 
     registration.cleanup();
     transitions.push({ state: "Removed" });
-    expect(params.rpcSources.has(runId)).toBe(false);
+    expect(rpcSourceTesting.has(runId)).toBe(false);
     expect(transitions).toEqual([
       { state: "Registered", lifecycle: lifecycleState(true) },
       { state: "Start-normalized", lifecycle: lifecycleState(true, false) },
@@ -525,7 +527,7 @@ describe("startGatewayEventSubscriptions", () => {
         emitAgentEvent({
           runId,
           sessionKey,
-          sessionId: entry.adapter.sessionId,
+          sessionId: getRpcSourceIdentity(entry).sessionId,
           stream: "lifecycle",
           data: { phase: "end", endedAt },
         });
@@ -538,14 +540,14 @@ describe("startGatewayEventSubscriptions", () => {
       const recovery = {
         runId,
         sessionKey,
-        sessionId: entry.adapter.sessionId,
+        sessionId: getRpcSourceIdentity(entry).sessionId,
         lifecycleGeneration: getAgentEventLifecycleGeneration(),
         observedAt: 2_000,
       };
       params.restartRecoveryCandidates.set(runId, recovery);
       let current = entry;
       if (change !== "newer write") {
-        expect(removeChatAbortControllerEntry(params.rpcSources, runId, entry)).toBe(true);
+        expect(rpcSourceTesting.deleteExpected(runId, entry)).toBe(true);
       }
       if (change.includes("replacement")) {
         current = register();
@@ -555,7 +557,7 @@ describe("startGatewayEventSubscriptions", () => {
         params.restartRecoveryCandidates.set(runId, { ...recovery, observedAt: 3_000 });
       }
       if (change === "retired replacement") {
-        expect(removeChatAbortControllerEntry(params.rpcSources, runId, current)).toBe(true);
+        expect(rpcSourceTesting.deleteExpected(runId, current)).toBe(true);
       }
       const currentState = readLifecycleState(current);
       try {
@@ -579,7 +581,6 @@ describe("startGatewayEventSubscriptions", () => {
           expect(entry.adapter.projectSessionTerminalPersisted).toBe(persisted);
           expect(
             await waitForChatAbortControllerRemoval({
-              entries: params.rpcSources,
               targets: [{ runId, entry }],
               timeoutMs: 1_000,
             }),
@@ -591,7 +592,7 @@ describe("startGatewayEventSubscriptions", () => {
         if (change === "removed") {
           expect(params.restartRecoveryCandidates.get(runId)).toEqual(recovery);
         } else {
-          expect(params.rpcSources.get(runId)).toBe(
+          expect(rpcSourceTesting.get(runId)).toBe(
             change === "retired replacement" ? undefined : current,
           );
           expect(readLifecycleState(current)).toEqual(currentState);
@@ -690,9 +691,10 @@ describe("startGatewayEventSubscriptions", () => {
         ...(hidden ? { controlUiVisible: false, projectSessionActive: false } : {}),
       });
       const entry = registration.entry;
+      const identity = getRpcSourceIdentity(entry);
       claimAgentRunContext(runId, {
         lifecycleGeneration,
-        sessionId: entry.adapter.sessionId,
+        sessionId: identity.sessionId,
         sessionKey,
         ...(hidden
           ? progressCardRefreshRunProjection({
@@ -751,7 +753,7 @@ describe("startGatewayEventSubscriptions", () => {
       try {
         await dispatchEntered.promise;
         expect(settled).toBe(false);
-        expect(params.rpcSources.get(runId)).toBe(entry);
+        expect(rpcSourceTesting.get(runId)).toBe(entry);
         expect(entry.adapter.projectSessionTerminalPending).toBe(true);
         expect(entry.adapter.projectSessionTerminalPersistence).toBe(
           hidden ? undefined : terminalPersistence.promise,
@@ -786,14 +788,14 @@ describe("startGatewayEventSubscriptions", () => {
           );
         } else {
           expect(entry.adapter.projectSessionTerminalPending).toBe(false);
-          expect(params.rpcSources.has(runId)).toBe(false);
+          expect(rpcSourceTesting.has(runId)).toBe(false);
           expect(warn).not.toHaveBeenCalled();
         }
       } finally {
         releaseDispatch.resolve();
         terminalPersistence.resolve();
         await waiter;
-        removeChatAbortControllerEntry(params.rpcSources, runId, entry);
+        rpcSourceTesting.deleteExpected(runId, entry);
       }
     },
   );

@@ -33,7 +33,7 @@ import type { ConsultParams } from "./client-gateway-control.agent-consult.test-
 function createRunner() {
   return createTalkClientAgentConsultRunner({
     config,
-    context: { rpcSources: new Map(), logGateway: { warn: vi.fn() } } as never,
+    context: { logGateway: { warn: vi.fn() } } as never,
     sessionTarget: {
       agentId: "researcher",
       sessionKey: "main",

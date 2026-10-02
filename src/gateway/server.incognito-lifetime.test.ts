@@ -14,6 +14,7 @@ import {
   resetSessionEntryLifecycle,
 } from "../config/sessions/session-accessor.sqlite-lifecycle.js";
 import { createReplyOperation, isSessionRunActiveForKey } from "../sessions/session-controller.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabaseByPath } from "../state/openclaw-agent-db-lifecycle.js";
 import {
@@ -368,7 +369,7 @@ it.each(["provided", "legacy"] as const)(
         }),
       );
       expect(await loadTranscriptEvents(scope)).toEqual([]);
-      expect(context.rpcSources.size).toBe(0);
+      expect(rpcSourceTesting.size).toBe(0);
       await time.advanceBy(60_000);
       await expect(deleted.promise).resolves.toMatchObject({ ok: true, result: { deleted: true } });
       expect(deletes).toHaveBeenCalledTimes(2);

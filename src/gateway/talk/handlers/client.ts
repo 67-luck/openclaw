@@ -267,7 +267,6 @@ export const talkClientHandlers: GatewayRequestHandlers = {
           sessionMutationAuthorization?.talkSessionTarget ??
           prepareTalkSessionTarget(context.getRuntimeConfig(), params.sessionKey);
         const runTarget = resolveOwnedActiveTalkRunTarget({
-          context,
           clientConnId: client?.connId,
           sessionTarget: target,
           scope: { kind: "session" },

@@ -7,9 +7,13 @@ import {
 } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { areHeartbeatsEnabled, setHeartbeatsEnabled } from "../infra/heartbeat-wake.js";
-import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSourceIdentity,
+  requestRpcSourceCancellation,
+} from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import * as subscriptions from "./server-runtime-subscriptions.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
 import { buildMockOpenAiResponsesProvider } from "./test-openai-responses-model.js";
@@ -53,7 +57,7 @@ it("binds a first native chat.send before streaming and persists its stopped par
     })().catch((error: unknown) => response.writeHead(500).end(String(error)));
   });
   let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
-  let original: ChatAbortControllerEntry | undefined;
+  let original: RpcSourceRef | undefined;
   const lifecycle: Array<{ phase?: unknown; sessionId?: unknown; aborted?: unknown }> = [];
   const heartbeatsEnabled = areHeartbeatsEnabled();
   try {
@@ -149,7 +153,7 @@ it("binds a first native chat.send before streaming and persists its stopped par
       }),
     ).toMatchObject({ runId, status: "started" });
     const response = await providerResponse.promise;
-    original = runtime.rpcSources.get(runId);
+    original = rpcSourceTesting.get(runId);
     expect(original).toBeDefined();
     const committed = loadExactSessionEntryReadOnly({ sessionKey });
     expect(committed?.entry.sessionId).toBeDefined();
@@ -157,7 +161,7 @@ it("binds a first native chat.send before streaming and persists its stopped par
       throw new Error("Native initialization did not retain its registration and session");
     }
     expect(committed.entry.sessionId).not.toBe(runId);
-    expect.soft(original.adapter.sessionId).toBe(committed.entry.sessionId);
+    expect.soft(getRpcSourceIdentity(original).sessionId).toBe(committed.entry.sessionId);
     response.writeHead(200, { "content-type": "text/event-stream" });
     for (const event of [
       {
@@ -183,7 +187,7 @@ it("binds a first native chat.send before streaming and persists its stopped par
     }
     await firstDelta.promise;
     expect(runtime.chatRunState.resolveBuffer(runId).text).toBe(partial);
-    expect.soft(original.adapter.sessionId).toBe(committed.entry.sessionId);
+    expect.soft(getRpcSourceIdentity(original).sessionId).toBe(committed.entry.sessionId);
     expect(lifecycle).toContainEqual(
       expect.objectContaining({ phase: "start", sessionId: committed.entry.sessionId }),
     );
@@ -217,7 +221,7 @@ it("binds a first native chat.send before streaming and persists its stopped par
         gateway.client.request("chat.send", { sessionKey, message: "/stop", ...guard }),
       ).rejects.toMatchObject({ details: { reason: "active-leaf-changed" } });
       expect(original.input.abortSignal.aborted).toBe(false);
-      expect(runtime.rpcSources.get(runId)).toBe(original);
+      expect(rpcSourceTesting.get(runId)).toBe(original);
       expect(runtime.chatRunState.resolveBuffer(runId).text).toBe(partial);
       expect(response.destroyed).toBe(false);
       expect(requestBodies).toHaveLength(1);
@@ -239,7 +243,7 @@ it("binds a first native chat.send before streaming and persists its stopped par
     expect(original.input.abortSignal.aborted).toBe(true);
     await terminal.promise;
     await providerClosed.promise;
-    await vi.waitFor(() => expect(runtime.rpcSources.has(runId)).toBe(false));
+    await vi.waitFor(() => expect(rpcSourceTesting.has(runId)).toBe(false));
     expect
       .soft(loadExactSessionEntryReadOnly({ sessionKey })?.entry, JSON.stringify(lifecycle))
       .toMatchObject({

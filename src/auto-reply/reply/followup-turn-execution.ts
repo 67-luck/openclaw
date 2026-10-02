@@ -14,11 +14,11 @@ import type { ReplyPayload } from "../types.js";
 import { executeAgentTurn } from "./agent-runner-execution.js";
 import type { AgentTurnExecutionResult } from "./agent-runner-execution.types.js";
 import { buildTerminalAgentRunFailureReplyPayload } from "./agent-runner-failure-reply.js";
-import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./claimed-turn-preparation.js";
 import { resolveTurnCommentaryProgressOwner } from "./commentary-progress-owner.js";
 import { requiresDurableToolResultDelivery } from "./dispatch-from-config.payloads.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { drainPendingToolTasks } from "./pending-tool-task-drain.js";
+import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./reply-agent-turn-preparation.js";
 import { recordReplyOperationAgentTurn } from "./reply-operation-run-state.js";
 import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
 import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
@@ -355,6 +355,7 @@ export async function executeFollowupTurn(params: {
     };
   } else {
     try {
+      turn.operation.abortSignal.throwIfAborted();
       turn.queued.run.bootstrapUserProfileId = turn.queued.personalBootstrapEligible
         ? sessionPersonalProfileId(turn.session.current())
         : undefined;

@@ -10,9 +10,9 @@ import {
   SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
 } from "../sessions/session-controller.lifecycle.js";
 import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-internal.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -72,12 +72,12 @@ export async function initializeRepository(root: string, name: string): Promise<
 }
 
 export async function settleWorkspaceRuns(
-  context: { rpcSources: Map<string, ChatAbortControllerEntry> },
+  _context: unknown,
   storePath: string,
   sessionKey: string | undefined,
   abort = false,
 ): Promise<void> {
-  const targets = [...context.rpcSources].map(([runId, entry]) => ({ runId, entry }));
+  const targets = [...rpcSourceTesting].map(([runId, entry]) => ({ runId, entry }));
   const released = captureSessionControllerSettlement({
     scope: storePath,
     identities: [sessionKey],
@@ -91,7 +91,6 @@ export async function settleWorkspaceRuns(
   // retains custody until all dispatch and title work finishes in this test store.
   expect(
     await waitForChatAbortControllerRemoval({
-      entries: context.rpcSources,
       targets,
       timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
     }),
@@ -102,7 +101,7 @@ export async function settleWorkspaceRuns(
 }
 
 export async function waitForCreatedSessionRun(
-  context: { rpcSources: Map<string, ChatAbortControllerEntry> },
+  _context: unknown,
   storePath: string,
   sessionKey: string | undefined,
 ) {
@@ -111,8 +110,7 @@ export async function waitForCreatedSessionRun(
     identities: [sessionKey],
   });
   const removed = await waitForChatAbortControllerRemoval({
-    entries: context.rpcSources,
-    targets: [...context.rpcSources].map(([runId, entry]) => ({ runId, entry })),
+    targets: [...rpcSourceTesting].map(([runId, entry]) => ({ runId, entry })),
     timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
   });
   if (released) {

@@ -52,6 +52,7 @@ const replyRunRegistryTestApi = {
       }
     }
     controllerStorage.sessionControllers.clear();
+    controllerStorage.rpcSourceByRunId.clear();
   },
 };
 

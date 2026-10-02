@@ -144,7 +144,6 @@ function createLocalGatewayRequestContext(
     hasConnectedTalkNode: async () => false,
     nodeRegistry: new NodeRegistry(),
     agentRunSeq: new Map(),
-    rpcSources: new Map(),
     chatRunState,
     addChatRun: chatRunState.registry.add,
     removeChatRun: chatRunState.registry.remove,

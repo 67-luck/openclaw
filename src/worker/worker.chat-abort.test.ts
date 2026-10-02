@@ -96,7 +96,6 @@ describe("worker chat.abort settlement", () => {
         throw new Error("managed worker turn has no admitted authority");
       }
       const registration = registerChatAbortController({
-        rpcSources: context.rpcSources,
         target: captureSessionTarget({
           storeScope: harness.sessionTarget.storePath,
           sessionKey: SESSION_KEY,

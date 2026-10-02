@@ -3,11 +3,9 @@ import { isCliProvider } from "../../agents/model-selection.js";
 import { resolveProviderIdForAuth } from "../../agents/provider-auth-aliases.js";
 import { applySessionEntryReplacements } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { AgentTurnContext } from "../agent-turn/types.js";
 import { updateChatRunProvider } from "../chat-abort.js";
 
 export function createAgentRunModelSelectionHandler(params: {
-  context: Pick<AgentTurnContext, "rpcSources">;
   runId: string;
   cfg: OpenClawConfig;
   cfgForAgent?: OpenClawConfig;
@@ -23,7 +21,7 @@ export function createAgentRunModelSelectionHandler(params: {
       params.trustedInternalHandoff.provider = provider.trim().toLowerCase();
       params.trustedInternalHandoff.model = model.trim();
     }
-    updateChatRunProvider(params.context.rpcSources, {
+    updateChatRunProvider({
       runId: params.runId,
       providerId: provider,
       authProviderId: resolveProviderIdForAuth(provider, {

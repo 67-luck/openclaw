@@ -69,7 +69,6 @@ it("publishes an initially unseen retired-agent event from its default store", a
       await createLifecycleEventBroadcastHandler({
         broadcastToConnIds,
         sessionEventSubscribers: { getAll: () => new Set(["subscriber"]) },
-        rpcSources: new Map(),
         getSessionRowProjection: () => projection,
       })({ agentId: query.agentId, sessionKey: query.key, reason: "reactivated" });
       expect(projection.selectEntries(query).map((row) => row.entry.sessionId)).toEqual([
@@ -118,7 +117,6 @@ it("admits a committed update without host SQL while a marker awaits prepared me
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["subscriber"]) },
       sessionMessageSubscribers: { get: () => new Set<string>() },
-      rpcSources: new Map(),
       getSessionRowProjection: () => projection,
     });
     const marker = handler({
@@ -256,7 +254,6 @@ it.each(
         broadcastToConnIds,
         sessionEventSubscribers: { getAll: () => new Set(["subscriber"]) },
         sessionMessageSubscribers: { get: () => new Set<string>() },
-        rpcSources: new Map(),
         getSessionRowProjection: () => projection,
       };
       const pending =

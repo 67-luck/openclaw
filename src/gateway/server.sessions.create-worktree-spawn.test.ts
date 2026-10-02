@@ -1,6 +1,6 @@
-import "../agents/subagents/spawn/subagent-spawn-model.mocks.shared.js";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
+import "../agents/subagents/spawn/subagent-spawn-model.mocks.shared.js";
 import path from "node:path";
 import { promisify } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -25,6 +25,8 @@ import {
   captureSessionControllerSettlement,
   SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
 } from "../sessions/session-controller.lifecycle.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -33,7 +35,6 @@ import {
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-internal.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
 import { createWorktreeSpawnRepositoryFixture } from "./server.sessions.create-worktree-spawn.test-support.js";
@@ -709,7 +710,6 @@ test("publishes a failed worktree spawn only after its durable session failure",
   let publishedEntry: SessionEntry | undefined;
   let registryProjection: Promise<void> | undefined;
   const context = {
-    rpcSources: new Map<string, ChatAbortControllerEntry>(),
     dedupe: new Map(),
     broadcast: vi.fn((event: string, payload: unknown) => {
       if (
@@ -783,7 +783,7 @@ test("publishes a failed worktree spawn only after its durable session failure",
   expect(created.ok, JSON.stringify(created.error)).toBe(true);
   expect(created.payload?.runStarted).toBe(true);
   const { runId, sessionId } = created.payload!;
-  const admittedRun = context.rpcSources.get(runId)!;
+  const admittedRun = rpcSourceTesting.get(runId)!;
   expect(admittedRun.input.claim).toBeUndefined();
   registryStartedAt = Date.now() + 1;
   const released = captureSessionControllerSettlement({ scope: storePath, identities: [key] });
@@ -865,7 +865,6 @@ test.each(["archive", "replace", "rebind", "stale-child", "unregister"] as const
     initialSend.mockRestore();
     const context = {
       broadcast: vi.fn(),
-      rpcSources: new Map<string, ChatAbortControllerEntry>(),
       dedupe: new Map(),
     };
     const operator = {
@@ -945,11 +944,10 @@ test.each(["archive", "replace", "rebind", "stale-child", "unregister"] as const
         operator,
       );
       expect(retried.ok, JSON.stringify(retried.error)).toBe(true);
-      const targets = [...context.rpcSources].map(([runId, entry]) => ({ runId, entry }));
+      const targets = [...rpcSourceTesting].map(([runId, entry]) => ({ runId, entry }));
       const released = captureSessionControllerSettlement({ scope: storePath, identities: [key] });
       expect(
         await waitForChatAbortControllerRemoval({
-          entries: context.rpcSources,
           targets,
           timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
         }),

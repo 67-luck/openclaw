@@ -2,6 +2,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { reconcileSessionChanged } from "../../ui/src/lib/sessions/reconcile.ts";
 import { sessionsResult } from "../../ui/src/lib/sessions/session-capability.test-support.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
@@ -127,7 +128,6 @@ it("keeps cold archived ancestor placement and moves through child-event recipie
       cfg,
     });
     const context = requestContext(cfg);
-    context.rpcSources = connection.rpcSources;
     context.broadcastToConnIds = connection.broadcastToConnIds;
     bindSessionRowProjection(context, () => projection);
     const detach = connection.attachSessionRowProjection(projection);

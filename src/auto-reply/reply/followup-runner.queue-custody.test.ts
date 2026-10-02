@@ -9,12 +9,12 @@ import {
   claimSessionControllerInput,
   releaseSessionControllerClaim,
 } from "../../sessions/session-controller.mailbox.js";
-import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./claimed-turn-preparation.js";
 import { createFollowupRunner } from "./followup-runner.js";
 import { enqueueFollowupRun, scheduleFollowupDrain, type FollowupRun } from "./queue.js";
 import { createQueueTestRun, installQueueRuntimeErrorSilencer } from "./queue.test-helpers.js";
 import { admitFollowupRunLifecycle } from "./queue/lifecycle.js";
 import { clearFollowupQueue } from "./queue/state.js";
+import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./reply-agent-turn-preparation.js";
 import { createTypingController } from "./typing.js";
 
 const state = vi.hoisted(() => ({
@@ -22,8 +22,8 @@ const state = vi.hoisted(() => ({
   execute: vi.fn(),
   config: vi.fn(async (config: unknown) => config),
 }));
-vi.mock("./claimed-turn-preparation.js", () => ({
-  prepareClaimedReplyTurn: (...args: unknown[]) => state.admit(...args),
+vi.mock("./reply-agent-turn-preparation.js", () => ({
+  prepareReplyAgentTurn: (...args: unknown[]) => state.admit(...args),
 }));
 vi.mock("./followup-turn-execution.js", () => ({
   executeFollowupTurn: (...args: unknown[]) => state.execute(...args),
@@ -111,7 +111,7 @@ it.each([
           queued,
           operation,
           config: queued.run.config,
-          session: { kind: "detached", current: () => undefined, publish() {}, adopt() {} },
+          session: { kind: "detached", current: () => undefined, publish() {} },
           sendPolicy: "allow",
           preflightCompactionApplied: false,
         },
@@ -180,9 +180,9 @@ it.each([
 });
 
 it("keeps a drain-owned claim through the actual preparation failure boundary", async () => {
-  const { prepareClaimedReplyTurn } = await vi.importActual<
-    typeof import("./claimed-turn-preparation.js")
-  >("./claimed-turn-preparation.js");
+  const { prepareReplyAgentTurn } = await vi.importActual<
+    typeof import("./reply-agent-turn-preparation.js")
+  >("./reply-agent-turn-preparation.js");
   const queued = createQueueTestRun({ prompt: "failed configuration preparation" });
   queued.run.sessionKey = "agent:main:actual-preparation-refusal";
   const claim = await claimSessionControllerInput(queued);
@@ -191,7 +191,7 @@ it("keeps a drain-owned claim through the actual preparation failure boundary", 
   const typing = createTypingController({});
   try {
     await expect(
-      prepareClaimedReplyTurn({
+      prepareReplyAgentTurn({
         queued,
         defaults: { typing, typingMode: "never", defaultModel: "gpt-test" },
       }),

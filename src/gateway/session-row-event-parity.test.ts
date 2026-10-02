@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -70,14 +71,12 @@ it("delivers nested event rows identical to the full list for each viewer and cl
       cfg,
     });
     const context = requestContext(cfg);
-    context.rpcSources = connection.rpcSources;
-    connection.rpcSources.set(
+    rpcSourceTesting.set(
       "current-run",
-      await createActiveRpcSourceForTest({
-        sessionKey: key,
-        sessionId: "parent-session",
-        agentId: "main",
-      }),
+      await createActiveRpcSourceForTest(
+        {},
+        { sessionKey: key, sessionId: "parent-session", agentId: "main" },
+      ),
     );
     const peers = profiles.map((profile, index) => {
       const send = vi.fn();

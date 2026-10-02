@@ -1,7 +1,11 @@
 import type { AgentWaitParams } from "../../../packages/gateway-protocol/src/index.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
-import { isRpcSourceQueued } from "../../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  isRpcSourceQueued,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { resolveAgentWaitSource } from "./agent-dedupe.js";
 import { captureAgentJobSession, getAgentJobSession, waitForAgentJob } from "./agent-job.js";
 import type { AgentTurnContext } from "./types.js";
@@ -15,10 +19,13 @@ export function prepareAgentTurnWait(context: AgentTurnContext, params: AgentWai
   const source = resolveAgentWaitSource(context, runId);
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
   const queuedResult = () => {
-    const queued = context.rpcSources.get(runId);
+    const queued = getRpcSource(runId);
     return queued && isRpcSourceQueued(queued)
       ? {
-          session: captureAgentJobSession({ ...queued.adapter, lifecycleGeneration }),
+          session: captureAgentJobSession({
+            ...getRpcSourceIdentity(queued),
+            lifecycleGeneration,
+          }),
           result: {
             runId,
             status: "pending" as const,

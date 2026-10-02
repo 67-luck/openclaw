@@ -17,6 +17,8 @@ import {
 } from "../../infra/agent-run-registry.js";
 import { createPluginRuntimeCapabilityLease } from "../../plugins/capability-lease.js";
 import { createPluginServiceGatewayEvents } from "../../plugins/gateway-events.js";
+import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -76,8 +78,9 @@ function holdExactPreparation(projection: SessionRowProjection, ...ready: Promis
 function createContext(
   receivers = new Set(["conn-1"]),
   config: OpenClawConfig = {},
-  rpcSources: GatewayRequestContext["rpcSources"] = new Map(),
+  sources: Iterable<readonly [string, RpcSourceRef]> = [],
 ) {
+  rpcSourceTesting.reset(sources);
   const projection = {
     get state() {
       return { rowContext: { projectedAgentRuns: buildProjectedAgentRunIndex() } };
@@ -92,7 +95,6 @@ function createContext(
   };
   return {
     broadcastToConnIds: vi.fn(),
-    rpcSources,
     getRuntimeConfig: () => config,
     ...bindSessionRowProjection({}, () => projection as unknown as SessionRowProjection),
     getSessionEventSubscriberConnIds: () => receivers,
@@ -873,7 +875,7 @@ describe("sessions.changed coalescing", () => {
       new Map([
         [
           "compat-owner-run",
-          await createActiveRpcSourceForTest({ sessionId, sessionKey: "legacy-unscoped" }),
+          await createActiveRpcSourceForTest({}, { sessionId, sessionKey: "legacy-unscoped" }),
         ],
       ]),
     );
@@ -906,11 +908,14 @@ describe("sessions.changed coalescing", () => {
       new Map([
         [
           "ops-global-run",
-          await createActiveRpcSourceForTest({
-            agentId: "ops",
-            sessionId: "global-id",
-            sessionKey: "global",
-          }),
+          await createActiveRpcSourceForTest(
+            {},
+            {
+              agentId: "ops",
+              sessionId: "global-id",
+              sessionKey: "global",
+            },
+          ),
         ],
       ]),
     );
@@ -976,17 +981,20 @@ describe("sessions.changed coalescing", () => {
   it("tombstones exact run ids when lifecycle projection takes ownership", async () => {
     const sessionKey = "agent:main:projected";
     const sessionId = `${sessionKey}-id`;
-    const rpcSources = new Map([
+    rpcSourceTesting.reset([
       [
         "direct-run",
-        await createActiveRpcSourceForTest({
-          agentId: "main",
-          sessionId,
-          sessionKey,
-        }),
+        await createActiveRpcSourceForTest(
+          {},
+          {
+            agentId: "main",
+            sessionId,
+            sessionKey,
+          },
+        ),
       ],
     ]);
-    const context = createContext(new Set(["conn-1"]), {}, rpcSources);
+    const context = createContext(new Set(["conn-1"]), {}, rpcSourceTesting);
 
     await emitAndSettleLeading(context, { reason: "update", sessionKey });
     expect(vi.mocked(context.broadcastToConnIds).mock.calls[0]?.[1]).toMatchObject({
@@ -994,10 +1002,10 @@ describe("sessions.changed coalescing", () => {
       activeRunIds: ["direct-run"],
     });
 
-    for (const source of rpcSources.values()) {
+    for (const source of rpcSourceTesting.values()) {
       source.input.claim?.operation?.complete();
     }
-    rpcSources.clear();
+    rpcSourceTesting.clear();
     registerAgentRunContext("hidden-worker-run", {
       isControlUiVisible: false,
       projectSessionActive: true,

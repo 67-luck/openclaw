@@ -203,7 +203,6 @@ const embeddedRunState = resolveGlobalSingleton(EMBEDDED_RUN_STATE_KEY, () => ({
   // Talk prepares before registration; only the matching live run promotes this
   // one-shot final-delivery claim. Replacement or lifecycle rotation revokes it.
   completionClaims: new Map<string, EmbeddedRunCompletionClaim>(),
-  retainedAbortabilityRunIds: new Set<string>(),
   snapshots: new Map<string, ActiveEmbeddedRunSnapshot>(),
   sessionIdsByFile: new Map<string, string>(),
   abandonedRunsBySessionId: new Map<string, AbandonedEmbeddedRun>(),
@@ -432,9 +431,6 @@ export function resolveActiveEmbeddedRunRecoveryBlocker(
     ? "runtime_owned_wait"
     : undefined;
 }
-export const RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS =
-  embeddedRunState.retainedAbortabilityRunIds ??
-  (embeddedRunState.retainedAbortabilityRunIds = new Set<string>());
 export const ACTIVE_EMBEDDED_RUN_SNAPSHOTS =
   embeddedRunState.snapshots ??
   (embeddedRunState.snapshots = new Map<string, ActiveEmbeddedRunSnapshot>());
@@ -495,7 +491,6 @@ function evictPriorLifecycleEmbeddedRuns(): void {
     // is abortable. Keeping it would let stale ownership influence new work.
     if (ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(runId) === attachment) {
       ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.delete(runId);
-      RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS.delete(runId);
     }
   }
   for (const [sessionId, claim] of EMBEDDED_RUN_COMPLETION_CLAIMS) {

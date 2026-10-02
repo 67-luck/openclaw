@@ -1,9 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { testing as externalAuthTesting } from "../../agents/auth-profiles/external-auth.test-support.js";
 import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-support.js";
 import type { RunCliAgentParams } from "../../agents/cli-runner/types.js";
 import type { RunEmbeddedAgentInternalParams } from "../../agents/embedded-agent-runner/run/internal-params.js";
 import { resolveMessageActionTurnCapability } from "../../gateway/message-action-turn-capability.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import {
   createFollowupRun,
   createMinimalRunAgentTurnParams,
@@ -13,6 +14,7 @@ import {
   setupAgentRunnerExecutionTestState,
   type FallbackRunnerParams,
 } from "./agent-runner-execution.test-support.js";
+import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
 
 const state = await setupAgentRunnerExecutionTestState();
 const { mintReplyMessageActionTurnCapability } =
@@ -65,10 +67,18 @@ function channelTurn() {
   });
   followupRun.originatingChannel = "discord";
   followupRun.originatingTo = currentChannelId;
+  const replyOperation = createReplyOperation({
+    sessionKey,
+    sessionId: followupRun.run.sessionId,
+    resetTriggered: false,
+  });
+  replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
+  onTestFinished(() => replyOperation.complete());
   return {
     ...createMinimalRunAgentTurnParams({
       followupRun,
       opts: { runId },
+      replyOperation,
       sessionCtx: {
         Provider: "discord",
         ChatType: "channel",

@@ -8,6 +8,10 @@ import {
 } from "../../infra/outbound/agent-delivery.js";
 import { shouldDowngradeDeliveryToSessionOnly } from "../../infra/outbound/best-effort-delivery.js";
 import { resolveMessageChannelSelection } from "../../infra/outbound/channel-selection.js";
+import {
+  getRpcSourceIdentity,
+  listRpcSourceEntries,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { isIncognitoSessionKey } from "../../shared/incognito-session-key.js";
 import {
   INTERNAL_MESSAGE_CHANNEL,
@@ -90,11 +94,12 @@ export async function resolveAgentDeliveryPhase(params: {
           params.resolvedSessionKey,
         )
       : undefined;
-    for (const [activeRunId, active] of params.context.rpcSources) {
-      const sameSession = active.adapter.sessionKey === params.resolvedSessionKey;
+    for (const [activeRunId, active] of listRpcSourceEntries()) {
+      const identity = getRpcSourceIdentity(active);
+      const sameSession = identity.sessionKey === params.resolvedSessionKey;
       const activeOwner = resolveChatRunOwnerAgentId({
-        agentId: active.adapter.agentId,
-        sessionKey: active.adapter.sessionKey,
+        agentId: identity.agentId,
+        sessionKey: identity.sessionKey,
         defaultAgentId: compatibilityOwnerAgentId,
       });
       if (activeRunId !== params.runId && sameSession && activeOwner === activeSessionAgentId) {

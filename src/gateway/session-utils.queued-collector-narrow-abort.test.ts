@@ -1,3 +1,4 @@
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import "../agents/subagents/spawn/subagent-spawn-model.mocks.shared.js";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
@@ -17,6 +18,7 @@ import {
   captureSessionTarget,
 } from "../sessions/session-controller.lifecycle.js";
 import { createReplyOperation } from "../sessions/session-controller.operation.js";
+import { getRpcSourceIdentity } from "../sessions/session-controller.rpc-sources.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import { sessionAbortHandlers } from "./server-methods/sessions-abort.js";
 import { roleClient, rolePolicyConfig } from "./session-sharing.test-utils.js";
@@ -57,33 +59,33 @@ it.each(["active", "queued", "pending-chat", "agent"] as const)(
     const descendantSource = descendant
       ? createRpcSourceForTest(
           {
-            sessionKey: descendant.entry.childSessionKey,
-            agentId: "main",
-            sessionId: "previous-descendant-session",
-            ownerConnId: client.connId,
+            requester: { connectionId: client.connId },
           },
           {
             runId: "prior-descendant-input",
             storeScope: loadGatewaySessionEntryReadOnly(descendant.entry.childSessionKey).storePath,
             phase: "waiting",
+            sessionKey: descendant.entry.childSessionKey,
+            agentId: "main",
+            sessionId: "previous-descendant-session",
           },
         )
       : undefined;
     const descendantOwnedSource = descendant
       ? createRpcSourceForTest(
           {
+            requester: { connectionId: client.connId },
+          },
+          {
+            runId: "owned-descendant-input",
+            storeScope: loadGatewaySessionEntryReadOnly(descendant.entry.childSessionKey).storePath,
+            phase: "waiting",
             sessionKey: descendant.entry.childSessionKey,
             agentId: "main",
             sessionId: expectDefined(
               loadGatewaySessionEntryReadOnly(descendant.entry.childSessionKey).entry,
               "descendant session",
             ).sessionId,
-            ownerConnId: client.connId,
-          },
-          {
-            runId: "owned-descendant-input",
-            storeScope: loadGatewaySessionEntryReadOnly(descendant.entry.childSessionKey).storePath,
-            phase: "waiting",
           },
         )
       : undefined;
@@ -91,25 +93,25 @@ it.each(["active", "queued", "pending-chat", "agent"] as const)(
     const oldRunId = "prior-incarnation-input";
     const old = createRpcSourceForTest(
       {
-        sessionKey: entry.childSessionKey,
-        agentId: "main",
-        sessionId: "previous-child-session",
-        ownerConnId: client.connId,
+        requester: { connectionId: client.connId },
       },
       {
         runId: oldRunId,
         storeScope: loadGatewaySessionEntryReadOnly(entry.childSessionKey).storePath,
         phase: kind === "queued" ? "waiting" : "preparing",
+        sessionKey: entry.childSessionKey,
+        agentId: "main",
+        sessionId: "previous-child-session",
       },
     );
     if (kind === "active") {
       await claimRpcSourceForTest(old);
     }
     if (kind === "active") {
-      context.rpcSources.set(oldRunId, old);
+      rpcSourceTesting.set(oldRunId, old);
       context.chatRunState.getOrCreate(oldRunId).buffer = "untouched old partial";
     } else if (kind === "queued") {
-      context.rpcSources.set(oldRunId, old);
+      rpcSourceTesting.set(oldRunId, old);
     } else {
       context.dedupe.set(`${kind}:${oldRunId}`, {
         ts: Date.now(),
@@ -120,7 +122,7 @@ it.each(["active", "queued", "pending-chat", "agent"] as const)(
           ownerConnId: client.connId,
           agentId: "main",
           sessionKey: entry.childSessionKey,
-          sessionId: old.adapter.sessionId,
+          sessionId: getRpcSourceIdentity(old).sessionId,
         },
       });
     }
@@ -155,12 +157,12 @@ it.each(["active", "queued", "pending-chat", "agent"] as const)(
       await descendantOwnedSource?.input.settlement.promise;
     }
     if (kind === "active") {
-      expect(context.rpcSources.get(oldRunId)).toBe(old);
+      expect(rpcSourceTesting.get(oldRunId)).toBe(old);
       expect(context.chatRunState.resolveBuffer(oldRunId, { final: true }).text).toBe(
         "untouched old partial",
       );
     } else if (kind === "queued") {
-      expect(context.rpcSources.get(oldRunId)).toBe(old);
+      expect(rpcSourceTesting.get(oldRunId)).toBe(old);
     } else {
       expect(context.dedupe.get(`${kind}:${oldRunId}`)).toBe(originalPending);
     }

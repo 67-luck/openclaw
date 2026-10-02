@@ -573,6 +573,7 @@ export function reserveSessionControllerSource(
   params: {
     sourceTurnId?: string;
     protocolRunId?: string;
+    sourceSessionId?: string;
     policy: QueueSettings;
     adapter?: SessionControllerSourceAdapter;
     target?: SessionTarget;
@@ -598,6 +599,7 @@ export function reserveSessionControllerSource(
     sequence: ++mailbox.nextSequence,
     sourceTurnId: params.sourceTurnId,
     protocolRunId: params.protocolRunId,
+    sourceSessionId: params.sourceSessionId,
     policy: Object.freeze({ ...params.policy }),
     mailbox,
     sourceAdapter: params.adapter,
@@ -614,22 +616,20 @@ export function reserveSessionControllerSource(
     mailbox.priority = input;
   }
   const signal = input.abortSignal;
-  if (signal) {
-    const abort = () => {
-      if (input.custody.cancellationRetired) {
-        return;
-      }
-      if (input.claim && !input.claim.released) {
-        input.claim.abortController.abort(signal.reason);
-      }
-      retireSessionControllerInput(input);
-    };
-    input.custody.disposeSource = () => signal.removeEventListener("abort", abort);
-    if (signal.aborted) {
-      abort();
-    } else {
-      signal.addEventListener("abort", abort, { once: true });
+  const abort = () => {
+    if (input.custody.cancellationRetired) {
+      return;
     }
+    if (input.claim && !input.claim.released) {
+      input.claim.abortController.abort(signal.reason);
+    }
+    retireSessionControllerInput(input);
+  };
+  input.custody.disposeSource = () => signal.removeEventListener("abort", abort);
+  if (signal.aborted) {
+    abort();
+  } else {
+    signal.addEventListener("abort", abort, { once: true });
   }
   return input;
 }

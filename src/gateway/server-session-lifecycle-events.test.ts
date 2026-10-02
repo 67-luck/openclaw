@@ -6,6 +6,7 @@ import {
   getAgentRunLifecycleGeneration,
   registerAgentRunContext,
 } from "../infra/agent-run-registry.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import {
   createActiveRun,
@@ -46,7 +47,6 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["observer"]) },
-      rpcSources: new Map(),
     });
     await handler({
       sessionKey: sessionRow.key,
@@ -102,7 +102,6 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["reader"]) },
-      rpcSources: new Map(),
       getSessionRowProjection: () => (scenario.projection ? projection : undefined),
     });
     const pending = handler({ sessionKey: query.key, agentId: query.agentId, reason: "updated" });
@@ -137,7 +136,6 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["observer"]) },
-      rpcSources: new Map(),
     });
     await handler({ sessionKey: sessionRow.key, reason: "delete" });
     expect(broadcastToConnIds).toHaveBeenCalledWith(
@@ -160,7 +158,6 @@ describe("createLifecycleEventBroadcastHandler", () => {
       const handler = createLifecycleEventBroadcastHandler({
         broadcastToConnIds,
         sessionEventSubscribers: { getAll: () => new Set(["observer"]) },
-        rpcSources: new Map(),
       });
 
       await handler({ sessionKey: sessionRow.key, agentId: "main", reason });
@@ -178,7 +175,6 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["conn-1"]) },
-      rpcSources: new Map(),
     });
 
     await handler({
@@ -210,7 +206,6 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set() },
-      rpcSources: new Map(),
     });
 
     try {
@@ -245,10 +240,10 @@ describe("createLifecycleEventBroadcastHandler", () => {
       sessionKey: "global",
     };
     const broadcastToConnIds = vi.fn();
+    rpcSourceTesting.reset([["run-before-finalize", activeRun]]);
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["conn-1"]) },
-      rpcSources: new Map([["run-before-finalize", activeRun]]),
     });
 
     await handler({ sessionKey: "global", ...(agentId ? { agentId } : {}), reason: "updated" });
@@ -306,7 +301,6 @@ describe("createLifecycleEventBroadcastHandler", () => {
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["conn-events"]) },
-      rpcSources: new Map(),
     });
 
     await handler({ sessionKey: "global", reason: "patch", catalogChanged: true });

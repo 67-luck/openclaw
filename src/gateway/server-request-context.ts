@@ -76,7 +76,6 @@ type GatewayRequestContextRuntime = Pick<
   | "validateAgentRuntimeApprovalAuthority"
   | "terminalSessions"
   | "agentRunSeq"
-  | "rpcSources"
   | "chatRunState"
   | "addChatRun"
   | "removeChatRun"
@@ -532,7 +531,6 @@ export function createGatewayRequestContext(
       : {}),
     terminalSessions: runtime.terminalSessions,
     agentRunSeq: runtime.agentRunSeq,
-    rpcSources: runtime.rpcSources,
     chatRunState: runtime.chatRunState,
     addChatRun: runtime.addChatRun,
     removeChatRun: runtime.removeChatRun,

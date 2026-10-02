@@ -22,6 +22,8 @@ import { resolveInstalledPluginIndexPolicyHash } from "../../plugins/installed-p
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { NON_ENV_SECRETREF_MARKER } from "../../secrets/provider-credential-values.js";
 import { resolveProviderAuthLookupMaps } from "../../secrets/provider-env-vars.js";
+import * as rpcSources from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
@@ -41,6 +43,7 @@ const emptyUsageSummary = (): UsageSummary => ({ updatedAt: 0, providers: [] });
 const mocks = vi.hoisted(() => ({
   getRuntimeConfig: vi.fn(() => ({})),
   listAgentIds: vi.fn(() => ["main"]),
+  listAgentEntries: vi.fn(() => []),
   resolveAgentDir: vi.fn((_cfg: unknown, agentId: string) =>
     agentId === "main" ? "/tmp/agent" : `/tmp/agent-${agentId}`,
   ),
@@ -81,6 +84,7 @@ vi.mock("../../config/config.js", () => ({
 
 vi.mock("../../agents/agent-scope.js", () => ({
   listAgentIds: mocks.listAgentIds,
+  listAgentEntries: mocks.listAgentEntries,
   resolveAgentDir: mocks.resolveAgentDir,
   resolveDefaultAgentId: mocks.resolveDefaultAgentId,
 }));
@@ -179,13 +183,12 @@ const orderHandler = expectDefined(
 );
 
 function createActiveRun(providerId: string, authProviderId?: string, agentId = "main") {
-  return createRpcSourceForTest({
+  const identity = {
     sessionId: `session-${providerId}`,
     sessionKey: `agent:${agentId}:${providerId}`,
     agentId,
-    providerId,
-    authProviderId,
-  });
+  };
+  return createRpcSourceForTest({ providerId, authProviderId }, identity);
 }
 
 function createApiKeyProfile(provider: string) {
@@ -251,7 +254,6 @@ function createLogoutOptions(
   const respond = vi.fn();
   const context = {
     getRuntimeConfig: mocks.getRuntimeConfig,
-    rpcSources: new Map(),
     chatRunState: createChatRunState(),
     removeChatRun: vi.fn(),
     agentRunSeq: new Map(),
@@ -396,6 +398,7 @@ function firstDeferredAuthScope() {
 }
 
 afterEach(() => {
+  rpcSourceTesting.clear();
   vi.unstubAllEnvs();
   resetConfigRuntimeState();
 });
@@ -407,7 +410,7 @@ function expectLogoutFailurePreservesRun(params: {
   message: string;
 }): void {
   expect(params.run.input.abortSignal.aborted).toBe(false);
-  expect(params.opts.context.rpcSources.has(params.runId)).toBe(true);
+  expect(rpcSourceTesting.has(params.runId)).toBe(true);
   const [ok, payload, error] = firstRespondCall(params.opts) ?? [];
   expect(ok).toBe(false);
   expect(payload).toBeUndefined();
@@ -421,7 +424,7 @@ async function expectLogoutFailureDoesNotAbortRun(params: {
   params.arrangeFailure();
   const opts = createLogoutOptions({ provider: "openrouter" });
   const activeRun = createActiveRun("openrouter");
-  opts.context.rpcSources.set("run-openrouter", activeRun);
+  rpcSources.registerRpcSource("run-openrouter", activeRun);
 
   await logoutHandler(opts);
 
@@ -2537,7 +2540,7 @@ describe("models.authLogout", () => {
       profileIds: ["openrouter:external"],
     });
     const activeRun = createActiveRun("openrouter");
-    opts.context.rpcSources.set("run-openrouter", activeRun);
+    rpcSources.registerRpcSource("run-openrouter", activeRun);
 
     await logoutHandler(opts);
 
@@ -2599,7 +2602,7 @@ describe("models.authLogout", () => {
     ]);
     const opts = createLogoutOptions({ provider: "openrouter", credentialType: "api_key" });
     const run = createActiveRun("openrouter");
-    opts.context.rpcSources.set("run-openrouter", run);
+    rpcSources.registerRpcSource("run-openrouter", run);
 
     await logoutHandler(opts);
 
@@ -2610,7 +2613,7 @@ describe("models.authLogout", () => {
       apiKeyProvider: "openrouter",
     });
     expect(run.input.abortSignal.aborted).toBe(false);
-    expect(opts.context.rpcSources.has("run-openrouter")).toBe(true);
+    expect(rpcSourceTesting.has("run-openrouter")).toBe(true);
     expect(firstRespondCall(opts)).toEqual([
       true,
       { provider: "openrouter", removedProfiles: ["openrouter:key"], abortedRunIds: [] },
@@ -2622,19 +2625,17 @@ describe("models.authLogout", () => {
     const opts = createLogoutOptions({ provider: "openrouter" });
     const openrouterRun = createActiveRun("openrouter");
     const openaiRun = createActiveRun("openai");
-    opts.context.rpcSources.set("run-openrouter", openrouterRun);
-    opts.context.rpcSources.set("run-openai", openaiRun);
+    rpcSources.registerRpcSource("run-openrouter", openrouterRun);
+    rpcSources.registerRpcSource("run-openai", openaiRun);
 
     await logoutHandler(opts);
 
     expect(openrouterRun.input.abortSignal.aborted).toBe(true);
     expect(openaiRun.input.abortSignal.aborted).toBe(false);
-    expect(opts.context.rpcSources.has("run-openrouter")).toBe(false);
-    expect(opts.context.rpcSources.has("run-openai")).toBe(true);
     expect(opts.context.removeChatRun).toHaveBeenCalledWith(
       "run-openrouter",
       "run-openrouter",
-      openrouterRun.adapter.sessionKey,
+      rpcSources.getRpcSourceIdentity(openrouterRun).sessionKey,
     );
     expect(opts.context.broadcast).toHaveBeenCalledWith(
       "chat",
@@ -2643,7 +2644,7 @@ describe("models.authLogout", () => {
         state: "aborted",
         stopReason: "auth-revoked",
       }),
-      { sessionKeys: [openrouterRun.adapter.sessionKey] },
+      { sessionKeys: [rpcSources.getRpcSourceIdentity(openrouterRun).sessionKey] },
     );
     const [, payload] = firstRespondCall(opts) ?? [];
     expect((payload as ModelAuthLogoutResult).abortedRunIds).toEqual(["run-openrouter"]);
@@ -2656,15 +2657,14 @@ describe("models.authLogout", () => {
     const opts = createLogoutOptions({ provider: "openrouter", agentId: "writer" });
     const mainRun = createActiveRun("openrouter", undefined, "main");
     const writerRun = createActiveRun("openrouter", undefined, "writer");
-    opts.context.rpcSources.set("run-main", mainRun);
-    opts.context.rpcSources.set("run-writer", writerRun);
+    rpcSources.registerRpcSource("run-main", mainRun);
+    rpcSources.registerRpcSource("run-writer", writerRun);
 
     await logoutHandler(opts);
 
     expect(mainRun.input.abortSignal.aborted).toBe(false);
     expect(writerRun.input.abortSignal.aborted).toBe(true);
-    expect(opts.context.rpcSources.has("run-main")).toBe(true);
-    expect(opts.context.rpcSources.has("run-writer")).toBe(false);
+    expect(rpcSourceTesting.has("run-writer")).toBe(false);
     const [, payload] = firstRespondCall(opts) ?? [];
     expect((payload as ModelAuthLogoutResult).abortedRunIds).toEqual(["run-writer"]);
   });
@@ -2688,7 +2688,7 @@ describe("models.authLogout", () => {
     mocks.listProfilesForProvider.mockReturnValue([]);
     const opts = createLogoutOptions({ provider: "openrouter" });
     const activeRun = createActiveRun("openrouter");
-    opts.context.rpcSources.set("run-openrouter", activeRun);
+    rpcSources.registerRpcSource("run-openrouter", activeRun);
 
     await logoutHandler(opts);
 
@@ -2715,7 +2715,7 @@ describe("models.authLogout", () => {
     mocks.listProfilesForProvider.mockReturnValue([profileId]);
     const opts = createLogoutOptions({ provider: "openrouter", profileIds: [profileId] });
     const activeRun = createActiveRun("openrouter");
-    opts.context.rpcSources.set("run-openrouter", activeRun);
+    rpcSources.registerRpcSource("run-openrouter", activeRun);
 
     await logoutHandler(opts);
 
@@ -2730,7 +2730,7 @@ describe("models.authLogout", () => {
   it("aborts active runs that share a provider auth alias", async () => {
     const opts = createLogoutOptions({ provider: "byteplus" });
     const aliasedRun = createActiveRun("byteplus-plan", "byteplus");
-    opts.context.rpcSources.set("run-byteplus-plan", aliasedRun);
+    rpcSources.registerRpcSource("run-byteplus-plan", aliasedRun);
 
     await logoutHandler(opts);
 
@@ -2762,9 +2762,9 @@ describe("models.authLogout", () => {
       const revokedRun = createActiveRun("openrouter", undefined, "writer");
       const otherAgentRun = createActiveRun("openrouter", undefined, "main");
       const otherProviderRun = createActiveRun("openai", undefined, "writer");
-      opts.context.rpcSources.set("revoked", revokedRun);
-      opts.context.rpcSources.set("other-agent", otherAgentRun);
-      opts.context.rpcSources.set("other-provider", otherProviderRun);
+      rpcSources.registerRpcSource("revoked", revokedRun);
+      rpcSources.registerRpcSource("other-agent", otherAgentRun);
+      rpcSources.registerRpcSource("other-provider", otherProviderRun);
       let revokedAtRefresh = false;
       refresh.mockImplementationOnce(async () => {
         revokedAtRefresh = revokedRun.input.abortSignal.aborted;
@@ -2777,11 +2777,11 @@ describe("models.authLogout", () => {
       expect(revokedRun.input.abortSignal.aborted).toBe(true);
       expect(otherAgentRun.input.abortSignal.aborted).toBe(false);
       expect(otherProviderRun.input.abortSignal.aborted).toBe(false);
-      expect(opts.context.rpcSources.has("revoked")).toBe(false);
+      expect(rpcSourceTesting.has("revoked")).toBe(false);
       expect(opts.context.broadcast).toHaveBeenCalledWith(
         "chat",
         expect.objectContaining({ runId: "revoked", state: "aborted", stopReason: "auth-revoked" }),
-        { sessionKeys: [revokedRun.adapter.sessionKey] },
+        { sessionKeys: [rpcSources.getRpcSourceIdentity(revokedRun).sessionKey] },
       );
       const [ok, payload, error] = firstRespondCall(opts) ?? [];
       expect(ok).toBe(true);

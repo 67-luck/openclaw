@@ -34,12 +34,12 @@ import {
 } from "./agent-runner-failure-reply.js";
 import type { AccountedAgentTurn } from "./agent-runner-result-accounting.js";
 import { appendUsageLine, resolveResponseUsageLine } from "./agent-runner-usage-line.js";
-import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./claimed-turn-preparation.js";
 import { resolveFollowupDeliveryPayloads } from "./followup-delivery-payloads.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { warnPrivateMessageToolFinal } from "./private-message-tool-final.js";
 import { enqueueFollowupRun, resolveQueueSettings, type FollowupRun } from "./queue.js";
+import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./reply-agent-turn-preparation.js";
 import type { ReplyDispatchKind } from "./reply-dispatcher.types.js";
 import { isRoutableChannel, routeReply } from "./route-reply.js";
 import {

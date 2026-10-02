@@ -98,7 +98,6 @@ it.each([
                   owner: { actor: { type: "human", id: currentOwner } },
                 }),
                 publish: () => undefined,
-                adopt: () => undefined,
               },
             }),
             defaults: {

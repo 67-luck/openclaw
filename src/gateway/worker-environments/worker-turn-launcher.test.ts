@@ -503,7 +503,6 @@ describe("worker turn launcher local placement", () => {
         agentRunSeq: new Map(),
         broadcast: vi.fn(),
         cancelRunBoundApprovals: vi.fn(),
-        rpcSources: new Map(),
         chatRunState: createChatRunState(),
         dedupe: new Map(),
         getRuntimeConfig: () => ({}),

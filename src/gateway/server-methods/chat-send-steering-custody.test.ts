@@ -43,6 +43,7 @@ import {
   type SessionControllerMailboxClaim,
 } from "../../sessions/session-controller.mailbox.js";
 import { createReplyOperation } from "../../sessions/session-controller.operation.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../../state/user-profiles.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
@@ -822,7 +823,7 @@ describe("steering input custody", () => {
             sourceTerminal: fixture.context.dedupe.get(`chat:${fixture.params.idempotencyKey}`),
             sourceErrors,
             pendingInputs: listSessionPendingInputs(fixture.scope),
-            sourceOwners: fixture.context.rpcSources.size,
+            sourceOwners: rpcSourceTesting.size,
           }).toMatchObject({
             ack: originalAck,
             freshDispatchCalls: 0,
@@ -956,7 +957,7 @@ describe("steering input custody", () => {
             cached,
           );
           expect(loadTranscriptEventsSync(fixture.scope)).toEqual(transcript);
-          expect(fixture.context.rpcSources.size).toBe(0);
+          expect(rpcSourceTesting.size).toBe(0);
           expect(listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
         }
       } catch (error) {

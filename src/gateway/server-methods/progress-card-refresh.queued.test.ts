@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProgressCard } from "../../../packages/gateway-protocol/src/index.js";
-import type { AdmittedFollowupTurn } from "../../auto-reply/reply/claimed-turn-preparation.js";
 import { createFollowupRunner } from "../../auto-reply/reply/followup-runner.js";
 import type { FollowupExecutionResult } from "../../auto-reply/reply/followup-turn-execution.js";
 import { scheduleFollowupDrain } from "../../auto-reply/reply/queue/drain.js";
@@ -12,6 +11,7 @@ import {
   getExistingFollowupQueue,
 } from "../../auto-reply/reply/queue/state.js";
 import type { FollowupRun, QueueSettings } from "../../auto-reply/reply/queue/types.js";
+import type { AdmittedFollowupTurn } from "../../auto-reply/reply/reply-agent-turn-preparation.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
   bindSessionControllerSource,
@@ -24,6 +24,7 @@ import {
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "../../sessions/session-controller.state.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { registerChatAbortController } from "../chat-abort.js";
@@ -37,7 +38,7 @@ const mocks = vi.hoisted(() => ({
   send: vi.fn<typeof handleTrustedInternalChatSend>(),
   admit:
     vi.fn<
-      typeof import("../../auto-reply/reply/claimed-turn-preparation.js").prepareClaimedReplyTurn
+      typeof import("../../auto-reply/reply/reply-agent-turn-preparation.js").prepareReplyAgentTurn
     >(),
   execute:
     vi.fn<typeof import("../../auto-reply/reply/followup-turn-execution.js").executeFollowupTurn>(),
@@ -52,8 +53,8 @@ vi.mock("./chat-send-source-finalization.js", () => ({
 }));
 // Keep enqueue, drain, adoption, completion, and the followup runner real. Only
 // replace session/provider admission and the execution/accounting/delivery edges.
-vi.mock("../../auto-reply/reply/claimed-turn-preparation.js", () => ({
-  prepareClaimedReplyTurn: mocks.admit,
+vi.mock("../../auto-reply/reply/reply-agent-turn-preparation.js", () => ({
+  prepareReplyAgentTurn: mocks.admit,
 }));
 vi.mock("../../auto-reply/reply/followup-turn-execution.js", () => ({
   executeFollowupTurn: mocks.execute,
@@ -120,7 +121,6 @@ function fixture(options: { parkSteer?: boolean } = {}) {
   const card: ProgressCard = { sessionKey, revision: 7, updatedAt: 1, markdown: "Previous status" };
   const context = {
     dedupe: new Map(),
-    rpcSources: new Map(),
     broadcast: vi.fn(),
     logGateway: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   } as unknown as GatewayRequestContext;
@@ -170,7 +170,6 @@ function fixture(options: { parkSteer?: boolean } = {}) {
       return;
     }
     const registration = registerChatAbortController({
-      rpcSources: context.rpcSources,
       runId,
       sessionKey,
       sessionId: "session",
@@ -198,12 +197,6 @@ function fixture(options: { parkSteer?: boolean } = {}) {
       context,
       runId,
       controller,
-      sessionBinding: {
-        sessionId: "session",
-        sessionKey,
-        agentId: "work",
-        lifecycleGeneration: "test-generation",
-      },
       sessionKey,
       agentId: "work",
       originatingChannel: "webchat",
@@ -302,6 +295,7 @@ function holdQueuedExecution(f: ReturnType<typeof fixture>) {
     });
     return {
       kind: "admitted",
+      configured: {},
       turn: {
         runId: randomUUID(),
         queued,
@@ -378,12 +372,12 @@ describe("queued progress refresh settlement", () => {
     expectAccepted(await f.refresh());
     const source = f.first();
     expect(isRpcSourceQueued(source.sourceRef)).toBe(true);
-    expect(f.context.rpcSources.get(source.runId)).toBe(source.sourceRef);
+    expect(rpcSourceTesting.get(source.runId)).toBe(source.sourceRef);
     const execution = holdQueuedExecution(f);
     const turn = await execution.entered;
     expect(turn.runId).not.toBe(source.runId);
     expect(turn.queued.controllerInput).toBe(source.sourceRef.input);
-    expect(f.context.rpcSources.get(source.runId)).toBe(source.sourceRef);
+    expect(rpcSourceTesting.get(source.runId)).toBe(source.sourceRef);
     expect(getExistingFollowupQueue(f.sessionKey)?.inFlight.has(source.queued)).toBe(true);
     expectAccepted(await f.refresh());
     expect(f.sources.size).toBe(1);
@@ -391,7 +385,7 @@ describe("queued progress refresh settlement", () => {
 
     await execution.finish();
     await source.sourceRef.input.settlement.promise;
-    expect(f.context.rpcSources.has(source.runId)).toBe(false);
+    expect(rpcSourceTesting.has(source.runId)).toBe(false);
     expect(f.releases.get(source.runId)).toHaveBeenCalledOnce();
     expectTerminal(await f.refresh());
     expect(f.context.dedupe.get(`chat:` + source.runId)?.payload).toMatchObject({
@@ -420,7 +414,7 @@ describe("queued progress refresh settlement", () => {
     await admitFollowupRunLifecycle(source.queued);
     source.parked?.consume("consumed");
     await source.sourceRef.input.settlement.promise;
-    expect(f.context.rpcSources.has(source.runId)).toBe(false);
+    expect(rpcSourceTesting.has(source.runId)).toBe(false);
     expect(f.releases.get(source.runId)).toHaveBeenCalledOnce();
     expectAccepted(await f.refresh());
     expect(f.context.dedupe.get(`chat:` + source.runId)?.payload).toMatchObject({ status: "ok" });
@@ -440,8 +434,13 @@ describe("queued progress refresh settlement", () => {
       queuedFollowupReplyDisposition: undefined,
     };
     const replacementSource = createRpcSourceForTest(
-      { sessionKey: f.sessionKey, sessionId: "session", agentId: "work" },
-      { storeScope: f.storeScope },
+      {},
+      {
+        storeScope: f.storeScope,
+        sessionKey: f.sessionKey,
+        sessionId: "session",
+        agentId: "work",
+      },
     );
     bindSessionControllerSource(replacementSource.input, replacement);
     expect(
@@ -455,7 +454,7 @@ describe("queued progress refresh settlement", () => {
       ),
     ).toBe(true);
     await source.sourceRef.input.settlement.promise;
-    expect(f.context.rpcSources.has(source.runId)).toBe(false);
+    expect(rpcSourceTesting.has(source.runId)).toBe(false);
     expect(f.releases.get(source.runId)).toHaveBeenCalledOnce();
     expectTerminal(await f.refresh());
     expect(mocks.execute).not.toHaveBeenCalled();
@@ -473,7 +472,7 @@ describe("queued progress refresh settlement", () => {
         expect(requestRpcSourceCancellation(source.sourceRef)).toBe(true);
       }
       await source.sourceRef.input.settlement.promise;
-      expect(f.context.rpcSources.has(source.runId)).toBe(false);
+      expect(rpcSourceTesting.has(source.runId)).toBe(false);
       expectTerminal(await f.refresh());
       expect(f.context.dedupe.get(`chat:${source.runId}`)?.payload).toMatchObject({
         status: "timeout",
@@ -493,15 +492,18 @@ describe("queued progress refresh settlement", () => {
     await execution.entered;
     source.controller.abort();
     const successor = createRpcSourceForTest(
+      {},
       {
+        runId: source.runId,
+        storeScope: f.storeScope,
+        phase: "waiting",
         sessionId: "successor-session",
         sessionKey: f.sessionKey,
         agentId: "work",
       },
-      { runId: source.runId, storeScope: f.storeScope, phase: "waiting" },
     );
     // The old producer retains custody; replacing correlation cannot transfer it.
-    f.context.rpcSources.set(source.runId, successor);
+    rpcSourceTesting.set(source.runId, successor);
     const successorReceipt = {
       ts: Date.now(),
       ok: true,
@@ -510,7 +512,7 @@ describe("queued progress refresh settlement", () => {
     f.context.dedupe.set(`chat:` + source.runId, successorReceipt);
     await execution.finish();
     await source.sourceRef.input.settlement.promise;
-    expect(f.context.rpcSources.get(source.runId)).toBe(successor);
+    expect(rpcSourceTesting.get(source.runId)).toBe(successor);
     expect(f.context.dedupe.get(`chat:` + source.runId)).toBe(successorReceipt);
     expect(f.releases.get(source.runId)).toHaveBeenCalledOnce();
     expectAccepted(await f.refresh());

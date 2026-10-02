@@ -30,6 +30,8 @@ export type SessionControllerInput = {
   mailbox: SessionControllerMailbox;
   readonly custody: SessionControllerSourceCustody;
   readonly settlement: ReturnType<typeof createDeferredCore<void>>;
+  /** Current protocol-facing session identity before an operation owns it. */
+  sourceSessionId?: string;
   /** Source admission identity survives later mailbox incarnation bindings. */
   target?: SessionTarget;
   source?: FollowupRun;

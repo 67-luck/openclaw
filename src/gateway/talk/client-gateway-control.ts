@@ -83,7 +83,7 @@ export function createTalkClientGatewayControlOwner(params: {
   controlSource?: "delegation" | "transcript";
   sessionTarget: PreparedTalkSessionTarget;
   connId: string;
-  context: Pick<GatewayRequestContext, "broadcastToConnIds" | "logGateway" | "rpcSources">;
+  context: Pick<GatewayRequestContext, "broadcastToConnIds" | "logGateway">;
   assertConnectionOpen?: () => void;
   runToolAgentConsult: ReusableTalkAgentConsult;
   runAgentConsult: LifecycleBoundTalkAgentConsult;
@@ -195,7 +195,6 @@ export function createTalkClientGatewayControlOwner(params: {
 
   const resolveRunTarget = () =>
     resolveOwnedActiveTalkRunTarget({
-      context: params.context,
       clientConnId: params.connId,
       sessionTarget: params.sessionTarget,
       scope: { kind: "voice-session", voiceSessionId: params.voiceSessionId },

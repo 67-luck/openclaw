@@ -71,7 +71,7 @@ const coreParams = {
 function createRunner(isRunCurrent: (runId: string) => boolean = () => true) {
   return createTalkClientAgentConsultRunner({
     config,
-    context: { rpcSources: new Map(), logGateway: { warn: vi.fn() } } as never,
+    context: { logGateway: { warn: vi.fn() } } as never,
     sessionTarget: {
       agentId: "researcher",
       sessionKey: "main",

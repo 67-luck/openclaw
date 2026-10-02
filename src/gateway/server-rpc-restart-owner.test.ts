@@ -11,6 +11,7 @@ import {
   captureGatewaySessionControllerWork,
   captureSessionControllerSettlement,
 } from "../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import type { GatewayContextResolver, GatewayRequestContext } from "./server-methods/types.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
@@ -170,7 +171,7 @@ it(
       // chat.send acknowledges before dispatch reaches queue admission. Its source
       // run terminalizes after handoff, while the held first reply keeps it queued.
       await expect(queuedRunTerminal.promise).resolves.toMatchObject({ state: "final" });
-      expect(context?.rpcSources.has("rpc-queued")).toBe(true);
+      expect(rpcSourceTesting.has("rpc-queued")).toBe(true);
       firstGate.resolve();
       await finalReached.promise;
       expect(followupReceived).toBe(true);
@@ -193,8 +194,8 @@ it(
         JSON.stringify({
           status: entry.status,
           operation: getSessionControllerOperation(sessionKey)?.turnKind,
-          activeChatRuns: context.rpcSources.size,
-          queued: context.rpcSources.size,
+          activeChatRuns: rpcSourceTesting.size,
+          queued: rpcSourceTesting.size,
           hostCaptured: captureGatewaySessionControllerWork(hostResolver).isActive(target),
           rpcCaptured: captureGatewaySessionControllerWork(context.resolveGatewayContext).isActive(
             target,

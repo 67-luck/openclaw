@@ -2,12 +2,15 @@ import { isAgentEventLifecycleGenerationCurrent } from "../infra/agent-events.js
 import { captureSessionControllerSourceSettlement } from "../sessions/session-controller.mailbox.js";
 import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
   isRpcSourceQueued,
   requestRpcSourceCancellation,
 } from "../sessions/session-controller.rpc-sources.js";
 import { waitForChatAbortTerminalPersistence } from "./chat-abort-lifecycle-internal.js";
 import { createChatAbortOps } from "./chat-abort-ops.js";
-import { abortChatRunById, isChatAbortControllerEntryAbortable } from "./chat-abort.js";
+import { abortChatRunById } from "./chat-abort.js";
 import { retainGatewayDeviceRevocation } from "./device-revocation.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import {
@@ -22,7 +25,6 @@ type OperatorRunCancellationContext = Pick<
   | "agentRunSeq"
   | "broadcast"
   | "cancelRunBoundApprovals"
-  | "rpcSources"
   | "chatRunState"
   | "getRuntimeConfig"
   | "logGateway"
@@ -72,8 +74,9 @@ function createGatewayOperatorRunCancellation(params: {
 }) {
   const { signal, runId, entry, context } = params;
   const input = entry.input;
-  const sessionKey = entry.adapter.sessionKey;
-  const lifecycleGeneration = entry.adapter.lifecycleGeneration;
+  const identity = getRpcSourceIdentity(entry);
+  const sessionKey = identity.sessionKey;
+  const lifecycleGeneration = getRpcSourceLifecycleGeneration(entry);
   let released = false;
   let armed = false;
   let cancellationStarted = false;
@@ -85,21 +88,20 @@ function createGatewayOperatorRunCancellation(params: {
   // owner's abortability, not sidebar projection, distinguish terminal work.
   const ownsActiveRun = () =>
     ownsLifetime() &&
-    context.rpcSources.get(runId) === entry &&
+    getRpcSource(runId) === entry &&
     entry.input === input &&
-    entry.adapter.sessionKey === sessionKey &&
+    getRpcSourceIdentity(entry).sessionKey === sessionKey &&
     entry.adapter.projectSessionTerminalPersistence === undefined &&
-    entry.adapter.projectSessionTerminalPersisted !== true &&
-    isChatAbortControllerEntryAbortable(entry);
+    entry.adapter.projectSessionTerminalPersisted !== true;
   const cancelQueuedTurn = () => {
-    const queued = context.rpcSources.get(runId);
+    const queued = getRpcSource(runId);
     if (!ownsLifetime() || queued !== entry || !isRpcSourceQueued(queued)) {
       return false;
     }
     queued.adapter.abortStopReason = "rpc";
     queued.adapter.abortDiagnosticReason = "authority-revoked";
     return requestRpcSourceCancellation(queued, signal.reason, () => {
-      if (!ownsLifetime() || context.rpcSources.get(runId) !== entry) {
+      if (!ownsLifetime() || getRpcSource(runId) !== entry) {
         throw new Error("Operator cancellation source is no longer current");
       }
     });
@@ -107,7 +109,7 @@ function createGatewayOperatorRunCancellation(params: {
   const cancel = async () => {
     // Queue custody supersedes the source admission even before its active entry
     // is removed. A collected source cannot fall back to aborting another owner.
-    if (context.rpcSources.get(runId) === entry && isRpcSourceQueued(entry)) {
+    if (getRpcSource(runId) === entry && isRpcSourceQueued(entry)) {
       if (cancelQueuedTurn()) {
         await captureSessionControllerSourceSettlement(input);
       }
@@ -126,8 +128,8 @@ function createGatewayOperatorRunCancellation(params: {
         ? captureAbortedPartial({
             runId,
             sessionKey,
-            sessionId: entry.adapter.sessionId,
-            agentId: entry.adapter.agentId,
+            sessionId: identity.sessionId,
+            agentId: identity.agentId,
             text,
             abortOrigin: "rpc",
             resolveTerminalProducer: entry.adapter.resolveTerminalProducer,

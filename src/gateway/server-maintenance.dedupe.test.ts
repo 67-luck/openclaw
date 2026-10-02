@@ -4,7 +4,8 @@
 // preamble is repeated while pure fixtures stay local to each block.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { retireSessionControllerInput } from "../sessions/session-controller.mailbox.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "./server-constants.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
 import { createRpcSourceForTest } from "./test-helpers.rpc-source.js";
@@ -43,13 +44,10 @@ vi.mock("../media/store.js", async () => {
   };
 });
 
-const fixtureSources: ChatAbortControllerEntry[] = [];
+const fixtureSources: RpcSourceRef[] = [];
 
-function createActiveRun(
-  sessionKey: string,
-  kind?: ChatAbortControllerEntry["adapter"]["kind"],
-): ChatAbortControllerEntry {
-  const ref = createRpcSourceForTest({ sessionKey, sessionId: "sess-1", kind });
+function createActiveRun(sessionKey: string, kind?: RpcSourceRef["adapter"]["kind"]): RpcSourceRef {
+  const ref = createRpcSourceForTest({ kind }, { sessionKey, sessionId: "sess-1" });
   fixtureSources.push(ref);
   return ref;
 }
@@ -102,7 +100,7 @@ describe("gateway dedupe maintenance", () => {
   it("keeps active exec approval dedupe aliases past the normal ttl", async () => {
     const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
     const runId = "exec-approval-followup:req-active:nonce:retry-1";
-    deps.rpcSources.set(runId, createActiveRun("agent:main:main", "agent"));
+    rpcSourceTesting.set(runId, createActiveRun("agent:main:main", "agent"));
     deps.dedupe.set("agent:exec-approval-followup:req-active", {
       ts: now - DEDUPE_TTL_MS - 1,
       ok: true,
@@ -127,7 +125,7 @@ describe("gateway dedupe maintenance", () => {
   it("keeps queued chat dedupe entries past the normal ttl", async () => {
     const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
     const runId = "queued-chat";
-    deps.rpcSources.set(runId, createActiveRun("agent:main:main"));
+    rpcSourceTesting.set(runId, createActiveRun("agent:main:main"));
     deps.dedupe.set(`chat:${runId}`, {
       ts: now - DEDUPE_TTL_MS - 1,
       ok: true,
@@ -145,7 +143,7 @@ describe("gateway dedupe maintenance", () => {
     const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
     const runId = "queued-oldest";
     seedStableDedupeEntries(deps, now);
-    deps.rpcSources.set(runId, createActiveRun("agent:main:main"));
+    rpcSourceTesting.set(runId, createActiveRun("agent:main:main"));
     deps.dedupe.set(`chat:${runId}`, {
       ts: now - 10_000,
       ok: true,
@@ -201,7 +199,7 @@ describe("gateway dedupe maintenance", () => {
     const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
 
     seedStableDedupeEntries(deps, now);
-    deps.rpcSources.set("active-oldest", createActiveRun("agent:main:main", "agent"));
+    rpcSourceTesting.set("active-oldest", createActiveRun("agent:main:main", "agent"));
     deps.dedupe.set("agent:active-oldest", {
       ts: now - 10_000,
       ok: true,

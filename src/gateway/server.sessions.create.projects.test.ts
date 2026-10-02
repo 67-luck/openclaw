@@ -24,6 +24,8 @@ import { resolveMediaReferenceLocalPath } from "../media/media-reference.js";
 import { ProjectCloneError } from "../projects/project-clone-runtime.js";
 import { registerProjectRegistry } from "../projects/project-registry.js";
 import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../sessions/session-controller.lifecycle.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
 import {
@@ -31,7 +33,6 @@ import {
   closeOpenClawStateDatabaseForTest,
 } from "../state/openclaw-state-db.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { createChatRunState } from "./server-chat-state.js";
 import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
 import {
@@ -108,7 +109,6 @@ test.each([
     const broadcast = vi.fn();
     const context = {
       broadcast,
-      rpcSources: new Map<string, ChatAbortControllerEntry>(),
     };
     const events: AgentEventPayload[] = [];
     const unsubscribe = onAgentEvent((event) => events.push(event));
@@ -263,10 +263,10 @@ test("chat.abort cancels remote worktree project preparation without late bindin
     counts: { block: 0, final: 0, tool: 0 },
   });
   const broadcast = vi.fn();
-  const rpcSources = new Map<string, ChatAbortControllerEntry>();
+  rpcSourceTesting.clear();
   const context = {
     broadcast,
-    rpcSources,
+    rpcSourceTesting,
     chatRunState: createChatRunState(),
     dedupe: new Map(),
   };
@@ -295,7 +295,7 @@ test("chat.abort cancels remote worktree project preparation without late bindin
     const { runId, sessionId } = created.payload!;
     key = created.payload!.key;
     await vi.waitFor(() => expect(projectCloneMocks.materialize).toHaveBeenCalledOnce());
-    const signal = rpcSources.get(runId)?.input.abortSignal;
+    const signal = rpcSourceTesting.get(runId)?.input.abortSignal;
     expect(signal).toBeInstanceOf(AbortSignal);
     expect(projectCloneMocks.materialize).toHaveBeenCalledWith(
       expect.anything(),
@@ -355,7 +355,7 @@ test.each([false, true])(
       counts: { block: 0, final: 0, tool: 0 },
     });
     const broadcast = vi.fn();
-    const context = { broadcast, rpcSources: new Map(), dedupe: new Map() };
+    const context = { broadcast, dedupe: new Map() };
 
     const created = await directSessionReq<{
       key: string;
@@ -427,7 +427,7 @@ test.each([false, true])(
 
     const retriedMaterialization = createDeferredCore<typeof project>();
     projectCloneMocks.materialize.mockReturnValueOnce(retriedMaterialization.promise);
-    const restartedContext = { broadcast, rpcSources: new Map(), dedupe: new Map() };
+    const restartedContext = { broadcast, dedupe: new Map() };
 
     try {
       const retried = await directSessionReq<{ runId: string; status: string }>(
@@ -516,7 +516,6 @@ test.each([false, true])(
     );
     const context = {
       broadcast: vi.fn(),
-      rpcSources: new Map(),
       chatRunState: createChatRunState(),
       dedupe: new Map(),
     };
@@ -654,7 +653,7 @@ test("chat.send visibly rejects corrupt persisted project intent without default
     { ...entry!, pendingProjectGitUrl: "https://token@github.com/openclaw/openclaw.git" },
   );
   const broadcast = vi.fn();
-  const context = { broadcast, rpcSources: new Map<string, ChatAbortControllerEntry>() };
+  const context = { broadcast, rpcSourceTesting: new Map<string, RpcSourceRef>() };
 
   const sent = await directSessionReq(
     "chat.send",
@@ -693,7 +692,7 @@ test("sessions.create terminalizes remote project preparation outside a sandboxe
   const materialization = createDeferredCore<typeof project>();
   projectCloneMocks.materialize.mockReturnValueOnce(materialization.promise);
   const broadcast = vi.fn();
-  const context = { broadcast, rpcSources: new Map<string, ChatAbortControllerEntry>() };
+  const context = { broadcast, rpcSourceTesting: new Map<string, RpcSourceRef>() };
 
   let key: string | undefined;
   try {
@@ -852,7 +851,7 @@ test("sessions.create with an empty message preserves its owned checkout above t
         expect(await fs.readFile(path.join(record.path, "README.md"), "utf8")).toBe("project\n");
         return outcome;
       });
-    const context = { rpcSources: new Map<string, ChatAbortControllerEntry>() };
+    const context = { rpcSourceTesting: new Map<string, RpcSourceRef>() };
     try {
       const created = await directSessionReq<{
         key: string;

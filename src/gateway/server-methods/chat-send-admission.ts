@@ -19,7 +19,6 @@ import {
 } from "../../sessions/input-provenance.js";
 import {
   interruptReplyRunTarget,
-  isReplyRunAbortableForSignal,
   type ReplyMessageInjectionTarget,
   type ReplyOperation,
   captureCurrentSessionRunInterruptTarget,
@@ -29,6 +28,10 @@ import {
   captureSessionTarget,
 } from "../../sessions/session-controller.lifecycle.js";
 import { captureCurrentReplyMessageInjectionTarget } from "../../sessions/session-controller.message-injection.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-controller.state.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { registerChatAbortController, resolveChatRunExpiresAtMs } from "../chat-abort.js";
@@ -201,7 +204,6 @@ export async function admitChatSend(
   let supersedingResult: DedupeEntry | undefined;
   let assertSourceAuthority: (() => void) | undefined = params.assertCurrent;
   const admittedRunAbort = registerChatAbortController({
-    rpcSources: context.rpcSources,
     target: captureSessionTarget({
       storeScope: storePath,
       sessionKey,
@@ -226,7 +228,6 @@ export async function admitChatSend(
     ownerDeviceId: normalizeOptionalString(client?.connect?.device?.id),
     providerId: resolvedSessionModel.provider,
     authProviderId: resolvedSessionAuthProvider,
-    isAbortable: (active) => isReplyRunAbortableForSignal(active.input.abortSignal),
     resolveTerminalProducer: (active) =>
       resolveActiveReplyRunOwnerForSignal(active.input.abortSignal),
     kind: "chat-send",
@@ -257,7 +258,7 @@ export async function admitChatSend(
     }
     if (!pendingReservation) {
       const terminalResult = readChatSendDedupeResponse(context.dedupe, clientRunId);
-      const registeredSource = context.rpcSources.get(clientRunId);
+      const registeredSource = getRpcSource(clientRunId);
       if (terminalResult || (registeredSource && registeredSource !== admittedRunAbort?.entry)) {
         reservationSuperseded = true;
         supersedingResult = terminalResult;
@@ -386,25 +387,10 @@ export async function admitChatSend(
     if (retryableClaim && !restartSafeAdmission) {
       throw new Error("chat retry does not match its durable admission");
     }
-    // A terminal Control UI claim can survive a crash after status commit.
-    // The transcript transaction merges its source with fresh tombstones.
-    if (admittedRunAbort?.entry) {
-      admittedRunAbort.entry.adapter.sessionId = admittedSessionId;
-    }
   };
 
   let interruptedActiveRun = false;
   try {
-    if (runInterruptTarget) {
-      params.assertCurrent?.();
-      assertSessionTargetCurrent();
-      admittedRunAbort.controller.signal.throwIfAborted();
-      const interruption = await interruptReplyRunTarget(runInterruptTarget, null);
-      interruptedActiveRun = interruption.aborted;
-      params.assertCurrent?.();
-      assertSessionTargetCurrent();
-      admittedRunAbort.controller.signal.throwIfAborted();
-    }
     gatewayWorkAdmission = await beginSessionEffect({
       sourceInput: admittedRunAbort.entry?.input,
       target: captureSessionTarget({
@@ -591,6 +577,15 @@ export async function admitChatSend(
       respondChatSendAdmissionError(error, respond);
       return { ok: false as const };
     }
+    if (runInterruptTarget) {
+      params.assertCurrent?.();
+      admittedRunAbort.controller.signal.throwIfAborted();
+      const interruption = await interruptReplyRunTarget(runInterruptTarget, null);
+      interruptedActiveRun = interruption.aborted;
+      params.assertCurrent?.();
+      assertSessionTargetCurrent();
+      admittedRunAbort.controller.signal.throwIfAborted();
+    }
     // Reserve while the request root is live: detached dispatch retains it until terminal persistence.
     releaseGatewayRootContinuation = retainGatewayRootWorkAdmissionContinuation() ?? (() => {});
     if (params.onAdmissionOwned && !(await gatewayWorkAdmission.run(params.onAdmissionOwned))) {
@@ -612,14 +607,15 @@ export async function admitChatSend(
 
   const acquiredGatewayWorkAdmission = gatewayWorkAdmission;
   const sourceRef = activeRunAbort.entry;
-  const sessionBinding = sourceRef.adapter;
+  let sessionPreparationActive = true;
   const onSessionPrepared = bindChatSendPreparedSession({
-    rpcSources: context.rpcSources,
     clientRunId,
     sessionKey,
     sourceRef,
     lifecycleGeneration,
-    admission: acquiredGatewayWorkAdmission,
+    admission: {
+      isActive: () => sessionPreparationActive && acquiredGatewayWorkAdmission.isActive(),
+    },
     progressRefresh,
   });
   const retainedWork = createChatSendWorkAdmission({
@@ -634,6 +630,7 @@ export async function admitChatSend(
   // or ACK handing ownership to dispatch, which persists on all paths).
   let discardAbandonedPreparedMedia: (() => void) | undefined;
   const cleanupAdmittedRun: typeof activeRunAbort.cleanup = () => {
+    sessionPreparationActive = false;
     activeRunAbort.cleanup();
     retainedWork.release();
     releaseGatewayRootContinuation();
@@ -652,7 +649,7 @@ export async function admitChatSend(
     setGatewayDedupeEntry({
       dedupe: context.dedupe,
       key: `chat:${clientRunId}`,
-      session: captureAgentJobSession(sessionBinding),
+      session: captureAgentJobSession({ ...getRpcSourceIdentity(sourceRef), lifecycleGeneration }),
       entry: { ts: endedAt, ok: true, payload },
     });
     cleanupAdmittedRun();
@@ -677,7 +674,6 @@ export async function admitChatSend(
       admittedSessionSettings,
       admittedSessionId,
       ...(expectedActiveReplyOperation ? { expectedActiveReplyOperation } : {}),
-      sessionBinding,
       sourceRef,
       onSessionPrepared,
       initialSessionEntry,
@@ -696,7 +692,7 @@ export async function admitChatSend(
       setPendingInputCleanup: retainedWork.setPendingInputCleanup,
       assertClientUploadAllowed: uploadAdmission.assertClientUploadAllowed,
       assertWorkAdmissionCurrent: () => {
-        const queued = context.rpcSources.get(clientRunId);
+        const queued = getRpcSource(clientRunId);
         // Collect retires source cancellation while retaining the original
         // admission until the aggregate commits or settles.
         if (

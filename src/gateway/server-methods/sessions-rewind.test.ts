@@ -10,6 +10,7 @@ import {
   type FollowupRun,
 } from "../../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -185,12 +186,12 @@ it("drains rewind fixture owners before closing handles and restoring selectors"
 async function context(active = false): Promise<GatewayRequestContext> {
   return {
     broadcastToConnIds: vi.fn(),
-    rpcSources: new Map(
+    rpcSourceTesting: new Map(
       active
         ? [
             [
               "active-run",
-              await createActiveRpcSourceForTest({ sessionId: sourceSessionId, sessionKey }),
+              await createActiveRpcSourceForTest({}, { sessionId: sourceSessionId, sessionKey }),
             ],
           ]
         : undefined,

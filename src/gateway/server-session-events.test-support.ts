@@ -2,9 +2,13 @@ import { expect, vi } from "vitest";
 import { buildProjectedAgentRunIndex } from "../infra/agent-run-registry.js";
 import { tryClaimSessionControllerTask } from "../sessions/session-controller.mailbox.js";
 import { createReplyOperation } from "../sessions/session-controller.operation.js";
+import {
+  getRpcSourceIdentity,
+  type RpcSourceRef,
+} from "../sessions/session-controller.rpc-sources.js";
 import { setRpcSourceProjectSessionActive } from "../sessions/session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import type { SessionMessageSubscriberRegistry } from "./server-chat-state.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import { createRpcSourceForTest } from "./test-helpers.rpc-source.js";
@@ -150,23 +154,20 @@ function createTranscriptUpdateBroadcastHandler(
   return createTranscriptHandler({ getSessionRowProjection: () => projection, ...params });
 }
 
-function createActiveRun(
-  projectSessionActive: boolean,
-  executionStarted = true,
-): ChatAbortControllerEntry {
-  const ref = createRpcSourceForTest({
-    sessionId: "sess-main",
-    sessionKey: "agent:main:main",
-    projectSessionActive,
-  });
+function createActiveRun(projectSessionActive: boolean, executionStarted = true): RpcSourceRef {
+  const ref = createRpcSourceForTest(
+    { projectSessionActive },
+    { sessionId: "sess-main", sessionKey: "agent:main:main" },
+  );
   if (executionStarted) {
     const claim = tryClaimSessionControllerTask(ref.input);
     if (!claim) {
       throw new Error("Fixture could not acquire its isolated turn");
     }
+    const identity = getRpcSourceIdentity(ref);
     const operation = createReplyOperation({
-      sessionId: ref.adapter.sessionId,
-      sessionKey: ref.adapter.sessionKey,
+      sessionId: identity.sessionId,
+      sessionKey: identity.sessionKey,
       resetTriggered: false,
       mailboxClaim: claim,
       target: ref.input.mailbox.owner.target,
@@ -203,13 +204,13 @@ function createHandler(
   getSessionMessageSubscribers: SessionMessageSubscriberRegistry["get"] = () => new Set<string>(),
 ) {
   const broadcastToConnIds = vi.fn();
+  rpcSourceTesting.reset([
+    ["run-before-finalize", createActiveRun(projectSessionActive, executionStarted)],
+  ]);
   const handler = createTranscriptUpdateBroadcastHandler({
     broadcastToConnIds,
     sessionEventSubscribers: { getAll: () => new Set(["conn-1"]) },
     sessionMessageSubscribers: { get: getSessionMessageSubscribers },
-    rpcSources: new Map([
-      ["run-before-finalize", createActiveRun(projectSessionActive, executionStarted)],
-    ]),
   });
   return { broadcastToConnIds, handler };
 }

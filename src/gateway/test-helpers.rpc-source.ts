@@ -12,8 +12,10 @@ import {
 } from "../sessions/session-controller.mailbox.js";
 import { createReplyOperation } from "../sessions/session-controller.operation.js";
 import {
+  getRpcSourceIdentity,
   setRpcSourceProjectSessionActive,
   type RpcSourceAdapter,
+  type RpcSourceIdentity,
   type RpcSourceRef,
 } from "../sessions/session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
@@ -25,41 +27,42 @@ export function createRpcSourceForTest(
     runId?: string;
     storeScope?: string;
     phase?: "preparing" | "waiting" | "consumed";
-  } = {},
+    retirementRequested?: boolean;
+  } & Partial<RpcSourceIdentity> = {},
 ): RpcSourceRef {
   const { projectSessionActive, ...adapterMetadata } = metadata;
-  const adapter: RpcSourceAdapter = {
-    sessionKey: "agent:main:fixture",
-    sessionId: "fixture-session",
-    ...adapterMetadata,
-    ...(projectSessionActive === false && adapterMetadata.registrationCleanupRequested === undefined
-      ? { registrationCleanupRequested: true }
-      : {}),
+  const identity = {
+    sessionKey: options.sessionKey ?? "agent:main:fixture",
+    sessionId: options.sessionId ?? "fixture-session",
+    agentId: options.agentId,
   };
+  const adapter: RpcSourceAdapter = { ...adapterMetadata };
   const target = captureSessionTarget({
     storeScope: options.storeScope ?? `/synthetic/rpc-source-fixture/${randomUUID()}/sessions`,
-    sessionKey: adapter.sessionKey || "agent:main:fixture",
-    agentId: adapter.agentId,
-    incarnation: adapter.sessionId,
+    sessionKey: identity.sessionKey,
+    agentId: identity.agentId,
+    incarnation: identity.sessionId,
   });
   const input = reserveSessionControllerSource(target.sessionKey, {
     target,
     adapter,
     protocolRunId: options.runId,
+    sourceSessionId: identity.sessionId,
     policy: { mode: "followup" },
   });
+  input.retirementRequested = options.retirementRequested === true;
   if (options.phase === "waiting") {
     const run = createQueueTestRun({ prompt: "queued RPC fixture" });
     run.run = {
       ...run.run,
-      sessionKey: adapter.sessionKey,
-      sessionId: adapter.sessionId,
-      agentId: adapter.agentId ?? run.run.agentId,
+      sessionKey: target.sessionKey,
+      sessionId: identity.sessionId,
+      agentId: target.agentId ?? run.run.agentId,
       config: { ...run.run.config, session: { store: target.storeScope } },
     };
     run.abortSignal = input.abortSignal;
     bindSessionControllerSource(input, run);
-    enqueueFollowupRun(adapter.sessionKey, run, { mode: "followup" }, "none");
+    enqueueFollowupRun(target.sessionKey, run, { mode: "followup" }, "none");
   } else if (options.phase === "consumed") {
     retireSessionControllerInput(input);
   }
@@ -73,23 +76,26 @@ export function createRpcSourceForTest(
     retireSessionControllerInput(input);
     await input.settlement.promise;
   });
-  return { input, adapter };
+  return { input, adapter, projectSessionActive } as RpcSourceRef;
 }
 
 /** Claim through the controller selector before exercising an active projection. */
 export async function claimRpcSourceForTest(ref: RpcSourceRef): Promise<() => void> {
   const claim = await claimSessionControllerTask(ref.input, (selectedClaim) => {
+    const identity = getRpcSourceIdentity(ref);
     const operation = createReplyOperation({
-      sessionKey: ref.input.mailbox.key,
-      sessionId: ref.adapter.sessionId || "fixture-session",
-      agentId: ref.adapter.agentId,
+      sessionKey: identity.sessionKey,
+      sessionId: identity.sessionId,
+      agentId: identity.agentId,
       resetTriggered: false,
       mailboxClaim: selectedClaim,
       target: ref.input.mailbox.owner.target,
     });
     markReplyOperationExecutionStarted(operation);
-    if (ref.adapter.registrationCleanupRequested === true) {
-      setRpcSourceProjectSessionActive(ref, false);
+    const projectSessionActive = (ref as RpcSourceRef & { projectSessionActive?: boolean })
+      .projectSessionActive;
+    if (projectSessionActive !== undefined) {
+      setRpcSourceProjectSessionActive(ref, projectSessionActive);
     }
   });
   const release = () => {

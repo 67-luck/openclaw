@@ -25,12 +25,10 @@ describe("subagent spawn cleanup identity", () => {
     const response = createDeferredCore<{ aborted: boolean; runIds: string[] }>();
     const dispatchSessionMethod = vi.fn(() => response.promise);
     const context = Object.assign({} as GatewayRequestContext, {
-      rpcSources: new Map(),
       recoveryRuntime: { dispatchSessionMethod },
     });
     const register = () =>
       registerChatAbortController({
-        rpcSources: context.rpcSources,
         target: captureSessionTarget({
           storeScope: "/synthetic/spawn-cleanup.db",
           sessionKey: childSessionKey,

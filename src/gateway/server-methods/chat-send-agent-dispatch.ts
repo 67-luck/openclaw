@@ -15,7 +15,12 @@ import { readAgentRunTerminalOutcome } from "../../channels/turn/agent-run-termi
 import { onAgentEventForRun } from "../../infra/agent-events.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
-import { isRpcSourceActive } from "../../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  isRpcSourceActive,
+  listRpcSourceEntries,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { isOperatorUiClient } from "../../utils/message-channel.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
@@ -86,7 +91,6 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     messageInjectionTarget,
     retainGatewayWorkAdmission,
     restartSafeAdmission,
-    sessionBinding,
   } = admission;
   const {
     activeRunScopeKey,
@@ -133,12 +137,10 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     titleReady.resolve();
   };
 
-  const jobSessionBinding = admission.sessionBinding;
   let agentRunStarted = false;
   let replyDispatchRun: ReplyDispatchRun | undefined;
   const isRunCurrent = () =>
-    !activeRunAbort.controller.signal.aborted &&
-    context.rpcSources.get(clientRunId) === activeRunAbort.entry;
+    !activeRunAbort.controller.signal.aborted && getRpcSource(clientRunId) === activeRunAbort.entry;
   const replyDispatch = createChatSendReplyDispatch({
     requesterContext: ctx,
     accountId,
@@ -147,7 +149,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     isRunCurrent: () =>
       isRunCurrent() ||
       (!activeRunAbort.controller.signal.aborted &&
-        context.rpcSources.get(clientRunId) === admission.sourceRef),
+        getRpcSource(clientRunId) === admission.sourceRef),
     abortSignal: activeRunAbort.controller.signal,
     onCommandBlock: isInternalTextSlashCommandTurn
       ? (text) =>
@@ -172,7 +174,6 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     context,
     runId: clientRunId,
     controller: activeRunAbort.controller,
-    sessionBinding: admission.sessionBinding,
     sessionKey,
     agentId: selectedAgent.agentId,
     ownerConnId: client?.connId,
@@ -260,7 +261,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
         sessionKey,
         // Fresh-session initialization updates this original registration's SID.
         get sessionId() {
-          return sessionBinding.sessionId;
+          return getRpcSourceIdentity(admission.sourceRef).sessionId;
         },
         assertCurrent: assertDashboardReadCurrent,
       }
@@ -291,7 +292,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
           if (messageInjectionAttempt) {
             const injected = await finalizeAcceptedChatSendMessageInjection({
               attempt: messageInjectionAttempt,
-              sessionBinding: jobSessionBinding,
+              sourceRef: admission.sourceRef,
               context,
               ctx,
               persistUserTurnTranscriptBestEffort: async () => {
@@ -436,17 +437,18 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                       sessionKey,
                     );
                     const selectedSessionAgentId = selectedAgent.agentId;
-                    for (const [activeRunId, active] of context.rpcSources) {
+                    for (const [activeRunId, active] of listRpcSourceEntries()) {
+                      const activeIdentity = getRpcSourceIdentity(active);
                       const sameSelectedAgent =
                         selectedSessionAgentId !== undefined &&
                         chatRunBelongsToSelectedAgent({
-                          agentId: active.adapter.agentId,
-                          sessionKey: active.adapter.sessionKey,
+                          agentId: activeIdentity.agentId,
+                          sessionKey: activeIdentity.sessionKey,
                           defaultAgentId: compatibilityOwnerAgentId,
                           selectedAgentId: selectedSessionAgentId,
                         });
                       const sameSession =
-                        active.adapter.sessionKey === sessionKey && sameSelectedAgent;
+                        activeIdentity.sessionKey === sessionKey && sameSelectedAgent;
                       if (activeRunId !== runId && sameSession && isRpcSourceActive(active)) {
                         context.registerToolEventRecipient(activeRunId, connId);
                       }
@@ -455,7 +457,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                   return options?.completionSource;
                 },
                 onModelSelected: (modelSelection) => {
-                  updateChatRunProvider(context.rpcSources, {
+                  updateChatRunProvider({
                     runId: clientRunId,
                     providerId: modelSelection.provider,
                     authProviderId: resolveProviderIdForAuth(modelSelection.provider, {
@@ -587,7 +589,9 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 replyDispatchResult?.assistantTranscript?.agentId === agentId &&
                 replyDispatchResult.assistantTranscript.sessionKey === sessionKey &&
                 replyDispatchResult.assistantTranscript.sessionId ===
-                  activeRunAbort.entry?.adapter.sessionId,
+                  (activeRunAbort.entry
+                    ? getRpcSourceIdentity(activeRunAbort.entry).sessionId
+                    : undefined),
               state: runtimeCancelled ? "aborted" : "final",
               stopReason: runtimeOutcome?.stopReason,
             });
@@ -627,7 +631,10 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
             setGatewayDedupeEntry({
               dedupe: context.dedupe,
               key: `chat:${clientRunId}`,
-              session: captureAgentJobSession(jobSessionBinding),
+              session: captureAgentJobSession({
+                ...getRpcSourceIdentity(admission.sourceRef),
+                lifecycleGeneration: admission.lifecycleGeneration,
+              }),
               entry: {
                 ts: Date.now(),
                 ok: !shouldBroadcastAgentError,

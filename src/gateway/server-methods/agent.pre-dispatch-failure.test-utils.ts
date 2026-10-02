@@ -2,6 +2,7 @@ import { expect, it, vi } from "vitest";
 import { createSubagentRunRecord } from "../../agents/subagent-test-fixtures.test-helpers.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import {
   backendGatewayClient,
   getAgentTestMocks,
@@ -23,7 +24,7 @@ function expectReactivationFailure(respond: ReturnType<typeof vi.fn>, runId: str
 }
 
 export function registerAgentPreDispatchFailureTests() {
-  it("removes the rpcSources entry if pre-dispatch reactivation fails", async () => {
+  it("removes the rpcSourceTesting entry if pre-dispatch reactivation fails", async () => {
     prime("reactivation-session");
     mocks.getLatestSubagentRunByChildSessionKey.mockReturnValueOnce(
       createSubagentRunRecord({
@@ -49,7 +50,7 @@ export function registerAgentPreDispatchFailureTests() {
       { context, reqId: runId, respond },
     );
 
-    expect(context.rpcSources.has(runId)).toBe(false);
+    expect(rpcSourceTesting.has(runId)).toBe(false);
     expect(mocks.agentCommand).not.toHaveBeenCalled();
     expectReactivationFailure(respond, runId);
   });
@@ -137,7 +138,7 @@ export function registerAgentPreDispatchFailureTests() {
           chargedAttempts: 1,
         },
       });
-      expect(context.rpcSources.has(runId)).toBe(false);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
       expect(store[sessionKey]?.mainRestartRecovery?.reservation).toBeUndefined();
       expect(store[sessionKey]?.restartRecoveryDeliveryRunId).toBeUndefined();
       if (failurePhase === "pending input admission") {

@@ -64,7 +64,6 @@ import {
   ABANDONED_EMBEDDED_RUN_SESSION_IDS_BY_KEY,
   EMBEDDED_RUN_COMPLETION_CLAIMS,
   EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS,
-  RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS,
   type ActiveEmbeddedRunSnapshot,
   type AbandonedEmbeddedRun,
   type EmbeddedAgentQueueHandle,
@@ -475,15 +474,6 @@ function resolveEmbeddedInjection(
   }
 }
 
-export function isEmbeddedAgentRunAbortableForRunId(runId: string): boolean {
-  const normalizedRunId = runId.trim();
-  if (!normalizedRunId) {
-    return true;
-  }
-  const handle = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(normalizedRunId)?.handle;
-  return handle ? isEmbeddedRunHandleAbortable(normalizedRunId, handle) : true;
-}
-
 /** Cancels one exact process-local run after recording its superseded terminal owner. */
 export function supersedeEmbeddedAgentRunByRunId(runId: string, beforeCancel: () => void): boolean {
   const normalizedRunId = runId.trim();
@@ -506,34 +496,9 @@ export function supersedeEmbeddedAgentRunByRunId(runId: string, beforeCancel: ()
   return supersedeReplyRunByRunId(normalizedRunId, beforeCancel);
 }
 
-export function clearEmbeddedAgentRunAbortabilityForRunId(runId: string): void {
-  const normalizedRunId = runId.trim();
-  if (normalizedRunId) {
-    ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.delete(normalizedRunId);
-    RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS.delete(normalizedRunId);
-  }
-}
-
-export function retainEmbeddedAgentRunAbortabilityForRunId(runId: string): void {
-  const normalizedRunId = runId.trim();
-  if (normalizedRunId) {
-    RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS.add(normalizedRunId);
-  }
-}
-
-function clearEmbeddedRunAbortability(
-  handle: EmbeddedAgentQueueHandle,
-  opts?: { retainFinalizing?: boolean },
-): void {
+function clearEmbeddedRunAbortability(handle: EmbeddedAgentQueueHandle): void {
   getEmbeddedRunAttachment(handle)?.humanInputWaits?.clear();
   if (!handle.runId || ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(handle.runId)?.handle !== handle) {
-    return;
-  }
-  if (
-    opts?.retainFinalizing &&
-    RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS.has(handle.runId) &&
-    !isEmbeddedRunHandleAbortable(handle.runId, handle)
-  ) {
     return;
   }
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.delete(handle.runId);
@@ -1275,7 +1240,7 @@ export function setActiveEmbeddedRun(
     previousAttachment?.watchdogAttempt?.close();
     previousAttachment?.closeWatchdogWait?.();
     previousHandle.closeDiagnostics?.();
-    clearEmbeddedRunAbortability(previousHandle, { retainFinalizing: true });
+    clearEmbeddedRunAbortability(previousHandle);
     detachNativeAttempt(previousAttachment);
     EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS.delete(previousHandle);
   }
@@ -1451,7 +1416,7 @@ export function clearActiveEmbeddedRun(
   registration.watchdogAttempt?.close();
   const operation = registration.operation;
   const backend = registration.backend;
-  clearEmbeddedRunAbortability(handle, { retainFinalizing: true });
+  clearEmbeddedRunAbortability(handle);
   detachNativeAttempt(registration);
   if (operation && backend) {
     operation.detachBackend(backend);
@@ -1498,7 +1463,6 @@ const testing = {
       claim.settleRegistration(undefined);
     }
     EMBEDDED_RUN_COMPLETION_CLAIMS.clear();
-    RETAINED_EMBEDDED_RUN_ABORTABILITY_RUN_IDS.clear();
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.clear();
     ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE.clear();
     ABANDONED_EMBEDDED_RUNS_BY_SESSION_ID.clear();

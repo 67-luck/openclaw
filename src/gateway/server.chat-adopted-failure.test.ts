@@ -21,6 +21,7 @@ import { getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
 import { clearConfigCache, getRuntimeConfig, readConfigFileSnapshot } from "../config/config.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { captureSessionControllerSettlement } from "../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./server-methods/types.js";
@@ -225,7 +226,7 @@ describe("chat.send quoted model profiles", () => {
       identities: [sessionKey, sessionId],
     });
     expect(context.logGateway.error).not.toHaveBeenCalled();
-    expect(context.rpcSources.size).toBe(0);
+    expect(rpcSourceTesting.size).toBe(0);
   }
 
   async function expectUnchangedModelScope(

@@ -1,5 +1,12 @@
 import { vi } from "vitest";
+import { captureSessionTarget } from "./session-controller.lifecycle.js";
 import * as sessionLifecycle from "./session-controller.lifecycle.js";
+import type { RpcSourceIdentity, RpcSourceRef } from "./session-controller.rpc-sources.js";
+import {
+  rpcSourceByRunId,
+  rpcSourceRemovalByRef,
+  sessionControllers,
+} from "./session-controller.storage.js";
 
 export function observeSessionWorkAdmissionDrain(
   afterDrain: (
@@ -62,3 +69,58 @@ export async function runExclusiveSessionLifecycle<T>(
   }
   return result.value;
 }
+
+/** Rebinds a fixture through controller-owned target and operation identity. */
+export function setRpcSourceIdentityForTest(
+  source: RpcSourceRef,
+  identity: Partial<RpcSourceIdentity>,
+): void {
+  const current = source.input.target;
+  if (!current) {
+    throw new Error("Test RPC source has no captured target");
+  }
+  const operation = source.input.claim?.operation;
+  if (operation && (identity.sessionKey !== undefined || identity.agentId !== undefined)) {
+    operation.updateSessionKey(
+      identity.sessionKey ?? operation.key,
+      identity.agentId ?? operation.agentId,
+      source.input.claim,
+    );
+  }
+  source.input.target = captureSessionTarget({
+    storeScope: current.storeScope,
+    sessionKey: identity.sessionKey ?? current.sessionKey,
+    incarnation: identity.sessionId ?? source.input.sourceSessionId ?? current.incarnation,
+    agentId: identity.agentId ?? current.agentId,
+  });
+  if (identity.sessionId !== undefined) {
+    source.input.sourceSessionId = identity.sessionId;
+    operation?.updateSessionId(identity.sessionId);
+  }
+}
+
+/** Drops test-owned controller singletons after their operations have been completed. */
+export function resetSessionControllerStateForTest(): void {
+  rpcSourceByRunId.clear();
+  sessionControllers.clear();
+}
+
+/** Test-only access to controller-owned protocol correlation. */
+export const rpcSourceTesting = Object.assign(rpcSourceByRunId, {
+  deleteExpected(runId: string, expected: RpcSourceRef): boolean {
+    if (rpcSourceByRunId.get(runId) !== expected) {
+      return false;
+    }
+    rpcSourceByRunId.delete(runId);
+    const onRemoved = rpcSourceRemovalByRef.get(expected);
+    rpcSourceRemovalByRef.delete(expected);
+    onRemoved?.();
+    return true;
+  },
+  reset(entries: Iterable<readonly [string, RpcSourceRef]> = []): void {
+    rpcSourceByRunId.clear();
+    for (const [runId, ref] of entries) {
+      rpcSourceByRunId.set(runId, ref);
+    }
+  },
+});

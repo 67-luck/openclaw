@@ -632,7 +632,6 @@ describe("sessions.patch personal model-account ownership", () => {
     const requestContext = {
       ...context(connections),
       terminalSessions,
-      rpcSources: new Map(),
       dedupe: new Map(),
     };
     const response = await patchSession(

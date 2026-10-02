@@ -37,7 +37,6 @@ function context(broadcast = vi.fn(), cfg: OpenClawConfig = {}): GatewayRequestC
     getRuntimeConfig: () => cfg,
     broadcast,
     broadcastToConnIds: vi.fn(),
-    rpcSources: new Map(),
     logGateway: { warn: vi.fn() },
   } as unknown as GatewayRequestContext;
 }

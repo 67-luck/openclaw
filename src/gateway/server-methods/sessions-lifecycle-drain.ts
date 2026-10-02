@@ -198,7 +198,6 @@ export async function prepareSessionLifecycleDrain(
           includeProtectedRuns: true,
           onControllerTargets: (targets) => {
             controllerDrain = waitForChatAbortControllerRemoval({
-              entries: params.context.rpcSources,
               targets,
               timeoutMs,
             });

@@ -8,6 +8,7 @@ import {
 } from "../../agents/embedded-agent-runner/runs.test-support.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import { getCurrentSessionControllerOwner } from "../../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import {
   authorizeClientVoiceConfirmation,
   checkClientVoiceToolConfirmationPolicy,
@@ -66,7 +67,7 @@ function createConsultRunner(
 ) {
   return createTalkClientAgentConsultRunner({
     config,
-    context: { rpcSources: new Map(), logGateway: { warn: vi.fn() } } as never,
+    context: { logGateway: { warn: vi.fn() } } as never,
     sessionTarget: {
       agentId: "researcher",
       sessionKey: "main",
@@ -204,7 +205,7 @@ describe("Talk client agent consult admission", () => {
     "steers and claims only the exact registered consult owner through %s",
     async (entrypoint) => {
       const core = deferred<void>();
-      const rpcSources = new Map();
+      rpcSourceTesting.clear();
       const isRunCurrent = vi.fn(() => true);
       const operationalRunInstance = {
         instanceId: `instance:${entrypoint}`,
@@ -231,7 +232,7 @@ describe("Talk client agent consult admission", () => {
         return { payloads: [] };
       });
       const runner = createConsultRunner({
-        context: { rpcSources, logGateway: { warn: vi.fn() } } as never,
+        context: { rpcSourceTesting, logGateway: { warn: vi.fn() } } as never,
         ownerConnId: "connection-owner",
         isRunCurrent,
       });
@@ -244,7 +245,7 @@ describe("Talk client agent consult admission", () => {
         entrypoint === "runOwnedArgs"
           ? runner.runOwnedArgs({ question: "first task" }, new AbortController().signal)
           : runner.runPrompt({ prompt: "first task" });
-      await vi.waitFor(() => expect(rpcSources.has("run-talk")).toBe(true));
+      await vi.waitFor(() => expect(rpcSourceTesting.has("run-talk")).toBe(true));
       const steer = lifecycleRunner.steer;
       if (!steer) {
         throw new Error("owned Talk runner did not expose steering");
@@ -268,7 +269,7 @@ describe("Talk client agent consult admission", () => {
       await expect(run).resolves.toEqual({ text: "done" });
       expect(lifecycleRunner.claimAppend()).toBe(true);
       expect(lifecycleRunner.claimAppend()).toBe(false);
-      expect(rpcSources.has("run-talk")).toBe(false);
+      expect(rpcSourceTesting.has("run-talk")).toBe(false);
       expect(isRunCurrent).toHaveBeenCalledWith("run-talk");
     },
   );
@@ -277,7 +278,7 @@ describe("Talk client agent consult admission", () => {
     const announced = deferred<void>();
     const publish = deferred<void>();
     const finish = deferred<void>();
-    const rpcSources = new Map();
+    rpcSourceTesting.clear();
     const client = sharingPolicyClient({
       deviceId: "caller-device",
       scopes: ["operator.admin"],
@@ -311,7 +312,7 @@ describe("Talk client agent consult admission", () => {
       return { payloads: [] };
     });
     const runner = createConsultRunner({
-      context: { rpcSources, logGateway: { warn: vi.fn() } } as never,
+      context: { rpcSourceTesting, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
       authority,
       isRunCurrent: () => true,
@@ -355,7 +356,7 @@ describe("Talk client agent consult admission", () => {
   it("refreshes steering authority when the admitted run publishes a new attempt", async () => {
     const secondPublished = deferred<void>();
     const finish = deferred<void>();
-    const rpcSources = new Map();
+    rpcSourceTesting.clear();
     const firstHandle = createEmbeddedRunHandle({ runId: "run-talk" });
     const secondHandle = createEmbeddedRunHandle({ runId: "run-talk" });
     const operationalRunInstance = {
@@ -427,7 +428,7 @@ describe("Talk client agent consult admission", () => {
       };
     });
     const runner = createConsultRunner({
-      context: { rpcSources, logGateway: { warn: vi.fn() } } as never,
+      context: { rpcSourceTesting, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
       isRunCurrent: () => true,
     });
@@ -573,7 +574,7 @@ describe("Talk client agent consult admission", () => {
     const releaseFirst = deferred<void>();
     const secondPublished = deferred<void>();
     const finishSecond = deferred<void>();
-    const rpcSources = new Map();
+    rpcSourceTesting.clear();
     const registerRun = vi.fn();
     const currentRun = { instanceId: "instance:current-owner", runId: "run-talk" };
     const secondHandle = createEmbeddedRunHandle({ runId: "run-talk" });
@@ -629,7 +630,7 @@ describe("Talk client agent consult admission", () => {
       };
     });
     const runner = createConsultRunner({
-      context: { rpcSources, logGateway: { warn: vi.fn() } } as never,
+      context: { rpcSourceTesting, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
       registerRun,
       isRunCurrent: () => true,
@@ -725,7 +726,7 @@ describe("Talk client agent consult admission", () => {
   it("installs steering ownership before readiness and delays backend admission", async () => {
     const ready = deferred<void>();
     const finish = deferred<void>();
-    const rpcSources = new Map();
+    rpcSourceTesting.clear();
     const handle = createEmbeddedRunHandle({ runId: "run-talk" });
     const operationalRunInstance = {
       instanceId: "instance:readiness",
@@ -751,7 +752,7 @@ describe("Talk client agent consult admission", () => {
       return { payloads: [] };
     });
     const runner = createConsultRunner({
-      context: { rpcSources, logGateway: { warn: vi.fn() } } as never,
+      context: { rpcSourceTesting, logGateway: { warn: vi.fn() } } as never,
       ownerConnId: "connection-owner",
       isRunCurrent: () => true,
     });

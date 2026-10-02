@@ -7,12 +7,9 @@ import {
   validateAgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
 import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
-import {
-  abortChatRunById,
-  registerChatAbortController,
-  type ChatAbortControllerEntry,
-  type ChatAbortOps,
-} from "./chat-abort.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
+import { abortChatRunById, registerChatAbortController, type ChatAbortOps } from "./chat-abort.js";
 import { createChatRunState } from "./server-chat-state.js";
 
 beforeEach(() => {
@@ -22,9 +19,8 @@ beforeEach(() => {
 function createAuthorityAbortFixture(runId: string) {
   const sessionKey = "agent:main:authority";
   const operationalRunInstance = createOperationalRunInstanceRef(runId);
-  const rpcSources = new Map<string, ChatAbortControllerEntry>();
+  rpcSourceTesting.clear();
   const registration = registerChatAbortController({
-    rpcSources,
     runId,
     sessionId: `session-${runId}`,
     sessionKey,
@@ -41,7 +37,6 @@ function createAuthorityAbortFixture(runId: string) {
   registration.bindAgentRunDelegatedAuthority(authority);
   const chatRunState = createChatRunState();
   const ops: ChatAbortOps = {
-    rpcSources,
     chatRunState,
     removeChatRun: vi.fn(() => undefined),
     agentRunSeq: new Map(),
@@ -71,9 +66,8 @@ it("binds delegated authority only to the exact operational instance object", ()
 it("leaves sessionless authority with the outer admission owner", () => {
   const runId = "run-sessionless-authority";
   const operationalRunInstance = createOperationalRunInstanceRef(runId);
-  const rpcSources = new Map<string, ChatAbortControllerEntry>();
+  rpcSourceTesting.clear();
   const registration = registerChatAbortController({
-    rpcSources,
     runId,
     sessionId: `session-${runId}`,
     timeoutMs: 60_000,
@@ -84,7 +78,7 @@ it("leaves sessionless authority with the outer admission owner", () => {
   const unrelatedAuthority = claimAgentRunDelegatedAuthority(unrelatedInstance);
 
   expect(registration.registered).toBe(false);
-  expect(rpcSources).toHaveLength(0);
+  expect(rpcSourceTesting.size).toBe(0);
   expect(() => registration.bindAgentRunDelegatedAuthority(authority)).toThrow(
     "Unregistered source cannot own a projected run authority",
   );
@@ -116,14 +110,6 @@ it("prepares before cancellation and publishes only after exact authority retire
     expect(validateAgentRunDelegatedAuthority(authority)).toBe(false);
     expect(entry.input.abortSignal.aborted).toBe(true);
   });
-
-  entry.adapter.isAbortable = () => false;
-  expect(abortChatRunById(ops, { runId, sessionKey, onAbortCommitted })).toEqual({
-    aborted: false,
-  });
-  expect(onAbortCommitted).not.toHaveBeenCalled();
-  expect(validateAgentRunDelegatedAuthority(authority)).toBe(true);
-  entry.adapter.isAbortable = undefined;
 
   expect(
     abortChatRunById(ops, {

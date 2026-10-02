@@ -31,9 +31,10 @@ import {
   type ReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
 import { beginSessionControllerSourceInjection } from "../../sessions/session-controller.mailbox.js";
-import type {
-  RpcSourceAdapter,
-  RpcSourceRef,
+import {
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { recordAcceptedSessionParticipantInput } from "../../sessions/session-participant-input-recording.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
@@ -305,9 +306,7 @@ export async function settleChatSendPreAckMessageInjection(params: {
 /** Finish an accepted steer without entering reply dispatch, or return false for fallback. */
 export async function finalizeAcceptedChatSendMessageInjection(params: {
   attempt: ReplyMessageInjectionAttempt;
-  sessionBinding?: Readonly<
-    Pick<RpcSourceAdapter, "sessionKey" | "sessionId" | "agentId" | "lifecycleGeneration">
-  >;
+  sourceRef?: RpcSourceRef;
   context: GatewayRequestContext;
   ctx: RuntimeMsgContext;
   persistUserTurnTranscriptBestEffort: () => Promise<void>;
@@ -419,7 +418,14 @@ export async function finalizeAcceptedChatSendMessageInjection(params: {
     setGatewayDedupeEntry({
       dedupe: context.dedupe,
       key: `chat:${clientRunId}`,
-      session: captureAgentJobSession(params.sessionBinding),
+      session: captureAgentJobSession(
+        params.sourceRef
+          ? {
+              ...getRpcSourceIdentity(params.sourceRef),
+              lifecycleGeneration: getRpcSourceLifecycleGeneration(params.sourceRef),
+            }
+          : undefined,
+      ),
       entry: {
         ts: Date.now(),
         ok: progressRefresh || !indeterminate,

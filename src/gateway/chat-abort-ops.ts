@@ -7,7 +7,6 @@ export function createChatAbortOps(
     Pick<GatewayRequestContext, "cancelRunBoundApprovals">,
 ): ChatAbortOps {
   return {
-    rpcSources: context.rpcSources,
     chatRunState: context.chatRunState,
     removeChatRun: context.removeChatRun,
     agentRunSeq: context.agentRunSeq,

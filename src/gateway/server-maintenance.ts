@@ -38,12 +38,17 @@ import {
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
 import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
   getRpcSourceProjectSessionActive,
-  type RpcSourceIndex,
+  hasRpcSource,
+  listRpcSourceEntries,
+  retireRpcSource,
 } from "../sessions/session-controller.rpc-sources.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { registerSkillUsageTracking } from "../skills/workshop/curator.js";
-import { removeChatAbortControllerEntry, type RestartRecoveryCandidate } from "./chat-abort.js";
+import type { RestartRecoveryCandidate } from "./chat-abort.js";
 import { pruneStaleControlPlaneBuckets } from "./control-plane-rate-limit.js";
 import type { HealthSummary } from "./health/types.js";
 import {
@@ -104,7 +109,6 @@ export function startGatewayMaintenanceTimers(params: {
   refreshPresence: () => void;
   resetEventLoopHealth: () => void;
   dedupe: Map<string, DedupeEntry>;
-  rpcSources: RpcSourceIndex;
   restartRecoveryCandidates: Map<string, RestartRecoveryCandidate>;
   chatRunState: ChatRunState;
   removeChatRun: (
@@ -357,7 +361,7 @@ export function startGatewayMaintenanceTimers(params: {
       }
       const keyRunId = key.slice(key.indexOf(":") + 1);
       if (keyRunId) {
-        if (params.rpcSources.has(keyRunId)) {
+        if (hasRpcSource(keyRunId)) {
           return keyRunId;
         }
       }
@@ -391,7 +395,7 @@ export function startGatewayMaintenanceTimers(params: {
         return false;
       }
       const runId = resolveDedupeRunId(key, dedupeEntry);
-      const entry = runId ? params.rpcSources.get(runId) : undefined;
+      const entry = runId ? getRpcSource(runId) : undefined;
       if (entry) {
         return isAgentKey ? entry.adapter.kind === "agent" : entry.adapter.kind !== "agent";
       }
@@ -422,18 +426,19 @@ export function startGatewayMaintenanceTimers(params: {
 
     pruneMapToMaxSize(params.agentRunSeq, AGENT_RUN_SEQ_MAX);
 
-    for (const [runId, entry] of params.rpcSources) {
+    for (const [runId, entry] of listRpcSourceEntries()) {
       const adapter = entry.adapter;
       // Maintenance retires projections only after their source has settled;
       // an elapsed grace never completes private input or releases raw work.
       const terminalClearOverdue =
         typeof adapter.projectSessionTerminalObservedAt === "number" &&
         now - adapter.projectSessionTerminalObservedAt > AGENT_RUN_TERMINAL_RETRY_GRACE_MS;
-      if (!terminalClearOverdue || params.rpcSources.get(runId) !== entry) {
+      if (!terminalClearOverdue || getRpcSource(runId) !== entry) {
         continue;
       }
       if (adapter.projectSessionTerminalPersistence) {
-        const { lifecycleGeneration, sessionKey, sessionId } = adapter;
+        const lifecycleGeneration = getRpcSourceLifecycleGeneration(entry);
+        const { sessionKey, sessionId } = getRpcSourceIdentity(entry);
         if (adapter.controlUiVisible !== false && lifecycleGeneration && sessionKey && sessionId) {
           params.restartRecoveryCandidates.set(runId, {
             runId,
@@ -448,7 +453,7 @@ export function startGatewayMaintenanceTimers(params: {
         getRpcSourceProjectSessionActive(entry) === false ||
         adapter.projectSessionTerminalPending === true
       ) {
-        removeChatAbortControllerEntry(params.rpcSources, runId, entry);
+        retireRpcSource(runId, entry);
       }
     }
 
@@ -460,7 +465,7 @@ export function startGatewayMaintenanceTimers(params: {
     // Idle execution and queued delivery retain their projection until their owners settle.
     for (const [runId, record] of params.chatRunState.runs) {
       if (
-        params.rpcSources.has(runId) ||
+        hasRpcSource(runId) ||
         hasAgentRunContextExecutionOwner(runId) ||
         isActiveEmbeddedRunId(runId)
       ) {
@@ -489,7 +494,6 @@ export function startGatewayMaintenanceTimers(params: {
         hasActiveSessionRun: (sessionKey, agentId) => {
           const cfg = params.getRuntimeConfig();
           return hasRegisteredChatRunForSessionKey({
-            context: { rpcSources: params.rpcSources },
             sessionKey,
             agentId,
             defaultAgentId: tryResolveSessionCompatibilityOwnerAgentId(cfg, sessionKey),

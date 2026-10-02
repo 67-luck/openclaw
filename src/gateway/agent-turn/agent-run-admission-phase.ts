@@ -4,11 +4,6 @@ import {
   type OperationalRunInstanceRef,
 } from "../../agents/admitted-run-context.js";
 import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
-import {
-  clearEmbeddedAgentRunAbortabilityForRunId,
-  isEmbeddedAgentRunAbortableForRunId,
-  retainEmbeddedAgentRunAbortabilityForRunId,
-} from "../../agents/embedded-agent-runner/runs.js";
 import { repairMainSessionRecoveryMutation } from "../../agents/main-session-recovery/main-session-recovery-lifecycle.js";
 import { scheduleMainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-owner-release.js";
 import type { MainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-store.js";
@@ -26,6 +21,11 @@ import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-even
 import { claimAgentRunContext } from "../../infra/agent-run-registry.js";
 import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  updateRpcSourceSessionId,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { readInProcessSubagentResume } from "../in-process-subagent-resume.js";
 import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
@@ -129,19 +129,16 @@ export async function prepareAgentRunDispatch(
         createOperationalRunInstanceRef(params.runId);
       if (existing?.entry) {
         // Retain the exact preparing input; admission adds presentation facts only.
+        updateRpcSourceSessionId(existing.entry, params.getAdmittedSessionId());
         Object.assign(existing.entry.adapter, {
-          sessionId: params.getAdmittedSessionId(),
           providerId: activeModelProvider,
           authProviderId: resolveProviderIdForAuth(activeModelProvider, {
             config: params.cfgForAgent ?? params.cfg,
           }),
-          isAbortable: () => isEmbeddedAgentRunAbortableForRunId(params.runId),
-          onRemoved: () => clearEmbeddedAgentRunAbortabilityForRunId(params.runId),
         });
       } else {
         params.setAdmittedRunAbort(
           registerChatAbortController({
-            rpcSources: params.context.rpcSources,
             sourceWork: params.sourceWork,
             runId: params.runId,
             sessionId: params.getAdmittedSessionId(),
@@ -172,8 +169,6 @@ export async function prepareAgentRunDispatch(
             authProviderId: resolveProviderIdForAuth(activeModelProvider, {
               config: params.cfgForAgent ?? params.cfg,
             }),
-            isAbortable: () => isEmbeddedAgentRunAbortableForRunId(params.runId),
-            onRemoved: () => clearEmbeddedAgentRunAbortabilityForRunId(params.runId),
             controlUiVisible,
             kind: "agent",
             lifecycleGeneration: params.lifecycleGeneration,
@@ -213,7 +208,7 @@ export async function prepareAgentRunDispatch(
     ]);
     return undefined;
   }
-  const existingRunAbort = params.context.rpcSources.get(params.runId);
+  const existingRunAbort = getRpcSource(params.runId);
   if (!activeRunAbort.registered && existingRunAbort) {
     activeGatewayWorkAdmission?.release();
     params.markAgentRunAccepted(existingRunAbort.adapter.kind === "agent");
@@ -231,13 +226,12 @@ export async function prepareAgentRunDispatch(
         controller: activeRunAbort.controller,
         operationalRunInstance,
         lifecycleGeneration: params.lifecycleGeneration,
-        sessionKey: activeRunAbort.entry.adapter.sessionKey,
+        sessionKey: getRpcSourceIdentity(activeRunAbort.entry).sessionKey,
       }
     : undefined;
   if (!activeRunAbort.registered) {
     activeGatewayWorkAdmission?.release();
   } else {
-    retainEmbeddedAgentRunAbortabilityForRunId(params.runId);
     if (params.pendingChatRun) {
       params.context.addChatRun(params.runId, {
         ...params.pendingChatRun,
@@ -469,12 +463,12 @@ export async function prepareAgentRunDispatch(
       assertParentSubagentResumeSuccessorCurrent(parentResume, params.runId);
     }
     assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
-    const entry = params.context.rpcSources.get(params.runId);
+    const entry = getRpcSource(params.runId);
     if (
       entry !== activeRunAbort.entry ||
       (entry &&
         (entry.adapter.operationalRunInstance !== operationalRunInstance ||
-          (!terminal && entry.adapter.registrationCleanupRequested)))
+          (!terminal && entry.input.retirementRequested)))
     ) {
       throw new Error("agent input admission no longer owns this run");
     }

@@ -31,7 +31,7 @@ describe("chat.abort exact controller input withdrawal", () => {
         runId: " source ",
       });
       const context = createChatAbortContext({
-        rpcSources: new Map([[" source ", input]]),
+        sources: new Map([[" source ", input]]),
         getSessionEventSubscriberConnIds: () => new Set(),
       });
       let current = true;
@@ -88,15 +88,16 @@ describe("chat.abort exact controller input withdrawal", () => {
 
   it("never withdraws an execution claim or a byte-distinct protocol run", async () => {
     const source = createRpcSourceForTest(
+      {},
       {
+        runId: " source ",
         sessionKey: "main",
         sessionId: "main-session",
         agentId: "main",
       },
-      { runId: " source " },
     );
     const release = await claimRpcSourceForTest(source);
-    const context = createChatAbortContext({ rpcSources: new Map([[" source ", source]]) });
+    const context = createChatAbortContext({ sources: new Map([[" source ", source]]) });
     const discard = vi.spyOn(withdrawal, "discardSessionPendingInput");
     try {
       for (const runId of ["source", " source "]) {

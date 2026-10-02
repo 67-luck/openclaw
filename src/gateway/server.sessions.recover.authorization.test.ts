@@ -2,6 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { getRuntimeConfig } from "../config/io.js";
 import { loadSessionEntry, loadTranscriptEvents } from "../config/sessions/session-accessor.js";
 import { addSessionMember } from "../config/sessions/session-sharing-store.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import {
   captureGatewayDeviceRevocation,
@@ -294,7 +295,7 @@ test("sessions.recover retains source revocation for its accepted own successor"
   if (typeof runId !== "string") {
     throw new Error("recovery did not return its admitted run");
   }
-  const acceptedRun = context.rpcSources.get(runId);
+  const acceptedRun = rpcSourceTesting.get(runId);
   if (!acceptedRun) {
     throw new Error("recovery did not register its active run");
   }

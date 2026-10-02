@@ -613,7 +613,6 @@ export async function directSessionReq<TPayload = unknown>(
   }
   const contextFields: GatewayRequestContext = createDirectChatContext({
     broadcastToConnIds: vi.fn(),
-    rpcSources: new Map(),
     dedupe: new Map(),
     getSessionEventSubscriberConnIds: () => new Set<string>(),
     readPreparedGatewayModelCatalog: async () => {

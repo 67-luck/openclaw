@@ -363,7 +363,6 @@ describe("built-in session tool role authority", () => {
                 incarnation: successor.sessionId,
                 agentId: "main",
               }),
-              rpcSources: context.rpcSources,
               runId: `${generation}-run`,
               sessionId: successor.sessionId,
               sessionKey: childKey,

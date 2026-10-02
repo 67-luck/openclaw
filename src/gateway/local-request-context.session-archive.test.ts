@@ -279,7 +279,6 @@ describe("scoped session archive tools", () => {
             incarnation: TARGET_ID,
             agentId: "main",
           }),
-          rpcSources: request.context.rpcSources,
           runId: "ordinary-stop-run",
           sessionKey: targetKey,
           sessionId: TARGET_ID,

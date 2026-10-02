@@ -1,3 +1,4 @@
+import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
 // Preserve registry mocks before the cancellation entrypoints load.
 // oxfmt-ignore
 import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
@@ -12,7 +13,6 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { registerWorkerInferenceSessionControl } from "../worker-environments/inference-control-internal.js";
 import {
@@ -88,7 +88,7 @@ it.each([false, true])(
     const context = createChatAbortContext({
       getRuntimeConfig,
       workerEnvironmentService: service,
-      rpcSources: new Map([["worker-run", active]]),
+      sources: new Map([["worker-run", active]]),
     });
     const kill = vi
       .spyOn(subagentKill, "killSubagentRunAdmin")
@@ -148,7 +148,7 @@ it.each([
       "BEGIN SELECT RAISE(ABORT, 'fixture transcript write failed'); END",
   );
   const runId = "run-save-failure";
-  const active: ChatAbortControllerEntry = createActiveRun(scope.sessionKey, scope);
+  const active: RpcSourceRef = createActiveRun(scope.sessionKey, scope);
   const refusal = new SessionMutationAuthorizationChangedError({
     code: "FORBIDDEN",
     message: "terminal authority changed",
@@ -197,7 +197,7 @@ it.each([
   const context = createChatAbortContext({
     getRuntimeConfig,
     getSessionEventSubscriberConnIds: () => new Set(),
-    rpcSources: new Map([[runId, active]]),
+    sources: new Map([[runId, active]]),
     chatRunState: createAbortTestRunState([[runId, { buffer: "Already streamed reply" }]]),
   });
   const pending = invokeChatAbortHandler({

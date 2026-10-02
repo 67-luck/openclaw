@@ -687,9 +687,7 @@ describe("review3 Gateway admission custody", () => {
   ])("uses the real %s pre-execution registration", async (kind) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const { entry, request } = await admit(state);
-      const rpcSources: GatewayRequestContext["rpcSources"] = new Map();
       const registration = registerChatAbortController({
-        rpcSources,
         target: captureSessionTarget({
           storeScope: request.storePath,
           sessionKey,
@@ -704,7 +702,7 @@ describe("review3 Gateway admission custody", () => {
         kind: "agent",
         ...(kind === "retired-generation" ? { lifecycleGeneration: "old-gateway" } : {}),
       });
-      const context = { rpcSources } as GatewayRequestContext;
+      const context = {} as GatewayRequestContext;
       let releaseClaim: (() => void) | undefined;
       try {
         expect(registration.registered).toBe(true);

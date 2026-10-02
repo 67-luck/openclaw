@@ -3,9 +3,12 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { hasGatewayContextOwner } from "../plugins/runtime/gateway-request-scope.js";
 import { sessionControllerMailboxes } from "../sessions/session-controller.mailbox.js";
 import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
   getRpcSourceProjectSessionActive,
   isRpcSourceQueued,
-  type RpcSourceIndex,
+  listRpcSourceEntries,
   type RpcSourceRef,
 } from "../sessions/session-controller.rpc-sources.js";
 import { activeSessionOperations } from "../sessions/session-controller.state.js";
@@ -24,13 +27,10 @@ const RESTART_REPLY_DRAIN_POLL_MS = 100;
 const RESTART_TERMINAL_PERSISTENCE_WAIT_TIMEOUT_MS = 1_000;
 const RESTART_MARKER_SLOW_WARNING_MS = 1_000;
 
-function getRestartReplyDrainCounts(params: {
-  getPendingReplyCount: () => number;
-  rpcSources: RpcSourceIndex;
-}) {
+function getRestartReplyDrainCounts(params: { getPendingReplyCount: () => number }) {
   const pendingReplyCount = params.getPendingReplyCount();
-  const activeRuns = listRestartDrainRuns(params.rpcSources).length;
-  const queuedTurns = Array.from(params.rpcSources.values()).filter(isRpcSourceQueued).length;
+  const activeRuns = listRestartDrainRuns().length;
+  const queuedTurns = listRpcSourceEntries().filter(([, entry]) => isRpcSourceQueued(entry)).length;
   return {
     pendingReplies:
       Number.isFinite(pendingReplyCount) && pendingReplyCount > 0
@@ -41,18 +41,24 @@ function getRestartReplyDrainCounts(params: {
   };
 }
 
-function listUnabortedRuns(rpcSources: RpcSourceIndex): Array<[string, RpcSourceRef]> {
-  return Array.from(rpcSources.entries()).filter(([, entry]) => !entry.input.abortSignal.aborted);
+function listUnabortedRuns(
+  entries: Iterable<readonly [string, RpcSourceRef]> = listRpcSourceEntries(),
+): Array<[string, RpcSourceRef]> {
+  return [...entries].filter(
+    (entry): entry is [string, RpcSourceRef] => !entry[1].input.abortSignal.aborted,
+  );
 }
 
-function listRestartDrainRuns(rpcSources: RpcSourceIndex): Array<[string, RpcSourceRef]> {
-  return listUnabortedRuns(rpcSources).filter(
+function listRestartDrainRuns(): Array<[string, RpcSourceRef]> {
+  return listUnabortedRuns().filter(
     ([, entry]) => entry.input.phase !== "consumed" && !isRpcSourceQueued(entry),
   );
 }
 
-function listRestartRecoveryRuns(rpcSources: RpcSourceIndex): Array<[string, RpcSourceRef]> {
-  return listUnabortedRuns(rpcSources).filter(
+function listRestartRecoveryRuns(
+  entries: Iterable<readonly [string, RpcSourceRef]> = listRpcSourceEntries(),
+): Array<[string, RpcSourceRef]> {
+  return listUnabortedRuns(entries).filter(
     ([, entry]) =>
       ((entry.input.phase !== "consumed" && !isRpcSourceQueued(entry)) ||
         entry.adapter.projectSessionTerminalPending === true ||
@@ -90,7 +96,6 @@ async function sleepForRestartReplyDrain(delayMs: number): Promise<void> {
 
 export type GatewayRunShutdownParams = {
   resolveGatewayContext: GatewayContextResolver;
-  rpcSources: RpcSourceIndex;
   restartRecoveryCandidates?: Map<string, RestartRecoveryCandidate>;
   chatRunState: ChatRunState;
   removeChatRun: (
@@ -112,7 +117,6 @@ export type GatewayRunShutdownParams = {
 
 async function waitForRestartReplyDrain(params: {
   getPendingReplyCount: () => number;
-  rpcSources: RpcSourceIndex;
   timeoutMs: number;
 }): Promise<{
   drained: boolean;
@@ -145,8 +149,8 @@ async function waitForRestartReplyDrain(params: {
 function collectActiveRestartSessionRefs(
   params: Pick<
     GatewayRunShutdownParams,
-    "rpcSources" | "resolveActiveSessionIdForKey" | "restartRecoveryCandidates"
-  >,
+    "resolveActiveSessionIdForKey" | "restartRecoveryCandidates"
+  > & { entries?: Iterable<readonly [string, RpcSourceRef]> },
 ): RestartRecoveryCandidate[] {
   const activeRuns = new Map<string, RestartRecoveryCandidate>();
   const observedAt = Date.now();
@@ -156,14 +160,13 @@ function collectActiveRestartSessionRefs(
       observedAt: run.observedAt ?? observedAt,
     });
   };
-  for (const [runId, entry] of listRestartRecoveryRuns(params.rpcSources)) {
-    const sessionKey = entry.adapter.sessionKey;
-    // Registration metadata can predate a reset or compaction session-id rotation.
-    const sessionId = entry.input.claim?.operation?.sessionId ?? entry.adapter.sessionId;
-    if (runId && entry.adapter.lifecycleGeneration && sessionKey && sessionId) {
+  for (const [runId, entry] of listRestartRecoveryRuns(params.entries)) {
+    const { sessionKey, sessionId } = getRpcSourceIdentity(entry);
+    const lifecycleGeneration = getRpcSourceLifecycleGeneration(entry);
+    if (runId && lifecycleGeneration && sessionKey && sessionId) {
       addRun({
         runId,
-        lifecycleGeneration: entry.adapter.lifecycleGeneration,
+        lifecycleGeneration,
         sessionKey,
         sessionId,
         observedAt: entry.adapter.projectSessionTerminalObservedAt,
@@ -177,9 +180,9 @@ function collectActiveRestartSessionRefs(
 }
 
 async function settleTerminalSessionPersistenceForRestart(
-  rpcSources: RpcSourceIndex,
+  entries: Iterable<readonly [string, RpcSourceRef]>,
 ): Promise<void> {
-  const pending = listUnabortedRuns(rpcSources).flatMap(([, entry]) => {
+  const pending = listUnabortedRuns(entries).flatMap(([, entry]) => {
     const persistence = entry.adapter.projectSessionTerminalPersistence;
     if (getRpcSourceProjectSessionActive(entry) !== false || !persistence) {
       return [];
@@ -224,7 +227,7 @@ async function markActiveRunsForRestartRecovery(
   params: GatewayRunShutdownParams & {
     reason: string;
     warnings: string[];
-    capturedSources: RpcSourceIndex;
+    capturedSources: ReadonlyMap<string, RpcSourceRef>;
     capturedRecoveryCandidates: Map<string, RestartRecoveryCandidate>;
   },
 ): Promise<void> {
@@ -235,7 +238,7 @@ async function markActiveRunsForRestartRecovery(
   const recoveryCandidates = params.capturedRecoveryCandidates;
   const activeRuns = collectActiveRestartSessionRefs({
     ...params,
-    rpcSources: activeEntries,
+    entries: activeEntries,
     restartRecoveryCandidates: recoveryCandidates,
   });
   await settleTerminalSessionPersistenceForRestart(activeEntries);
@@ -250,7 +253,7 @@ async function markActiveRunsForRestartRecovery(
         activeRuns,
         reason: params.reason,
         isActiveRun: (run) => {
-          const entry = params.rpcSources.get(run.runId);
+          const entry = getRpcSource(run.runId);
           const candidate = params.restartRecoveryCandidates?.get(run.runId);
           return (
             (entry &&
@@ -258,7 +261,7 @@ async function markActiveRunsForRestartRecovery(
               !entry.input.abortSignal.aborted &&
               ((entry.input.claim && !entry.input.claim.released) ||
                 entry.adapter.projectSessionTerminalPersisted !== true) &&
-              entry.adapter.lifecycleGeneration === run.lifecycleGeneration) ||
+              getRpcSourceLifecycleGeneration(entry) === run.lifecycleGeneration) ||
             (candidate !== undefined &&
               candidate === recoveryCandidates.get(run.runId) &&
               candidate.lifecycleGeneration === run.lifecycleGeneration)
@@ -319,7 +322,6 @@ export async function prepareGatewayRunShutdown(
       }
       drainResult = await waitForRestartReplyDrain({
         getPendingReplyCount: params.getPendingReplyCount,
-        rpcSources: params.rpcSources,
         timeoutMs,
       });
       if (!drainResult.drained) {
@@ -331,7 +333,7 @@ export async function prepareGatewayRunShutdown(
     }
   }
   // Preparation accepted during grace belongs to this cancellation boundary.
-  const capturedSources = new Map(params.rpcSources);
+  const capturedSources = new Map(listRpcSourceEntries());
   const capturedRecoveryCandidates = new Map(params.restartRecoveryCandidates);
   const sourceByInput = new Map(
     [...capturedSources].map(([runId, entry]) => [
@@ -366,16 +368,16 @@ export async function prepareGatewayRunShutdown(
         if (!target) {
           return hasGatewayContextOwner(input, params.resolveGatewayContext) ? cancel() : false;
         }
+        const lifecycleGeneration = getRpcSourceLifecycleGeneration(target.entry);
         if (
-          params.rpcSources.get(target.runId) !== target.entry ||
-          (target.entry.adapter.lifecycleGeneration &&
-            !isAgentEventLifecycleGenerationCurrent(target.entry.adapter.lifecycleGeneration))
+          getRpcSource(target.runId) !== target.entry ||
+          (lifecycleGeneration && !isAgentEventLifecycleGenerationCurrent(lifecycleGeneration))
         ) {
           return false;
         }
         return abortChatRunById(params, {
           runId: target.runId,
-          sessionKey: target.entry.adapter.sessionKey,
+          sessionKey: getRpcSourceIdentity(target.entry).sessionKey,
           expectedEntry: target.entry,
           presentation: target.presentation,
           preserveTerminal: getRpcSourceProjectSessionActive(target.entry) === false,

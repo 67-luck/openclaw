@@ -17,9 +17,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitAgentAuditEvent, emitAgentEvent } from "../infra/agent-events.js";
 import type { SubsystemLogger } from "../logging/subsystem.js";
 import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import { getRpcSourceProjectSessionActive } from "../sessions/session-controller.rpc-sources.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
-import { registerChatAbortController, type ChatAbortControllerEntry } from "./chat-abort.js";
+import { registerChatAbortController } from "./chat-abort.js";
 import {
   createChatRunState,
   createSessionEventSubscriberRegistry,
@@ -59,7 +60,6 @@ export function createSubscriptionTestFixture() {
         toolEventRecipients: chatRunState.toolEventRecipients,
         sessionEventSubscribers: createSessionEventSubscriberRegistry(),
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-        rpcSources: new Map(),
         restartRecoveryCandidates: new Map(),
         refreshConnectedUserProfiles: vi.fn(),
       };
@@ -68,8 +68,8 @@ export function createSubscriptionTestFixture() {
 }
 
 export function registerSubscriptionChatRun(
-  params: Parameters<typeof startGatewayEventSubscriptions>[0],
-  input: Omit<Parameters<typeof registerChatAbortController>[0], "rpcSources" | "timeoutMs">,
+  _params: Parameters<typeof startGatewayEventSubscriptions>[0],
+  input: Omit<Parameters<typeof registerChatAbortController>[0], "timeoutMs">,
 ) {
   const registration = registerChatAbortController({
     ...input,
@@ -81,7 +81,6 @@ export function registerSubscriptionChatRun(
         agentId: input.agentId,
         incarnation: input.sessionId,
       }),
-    rpcSources: params.rpcSources,
     timeoutMs: 60_000,
   });
   if (!registration.entry) {
@@ -90,14 +89,14 @@ export function registerSubscriptionChatRun(
   return { ...registration, entry: registration.entry };
 }
 
-export function readLifecycleState(entry: ChatAbortControllerEntry) {
+export function readLifecycleState(entry: RpcSourceRef) {
   return {
     projectSessionActive: getRpcSourceProjectSessionActive(entry),
     projectSessionTerminalPending: entry.adapter.projectSessionTerminalPending,
     projectSessionTerminalObservedAt: entry.adapter.projectSessionTerminalObservedAt,
     projectSessionTerminalPersistence: entry.adapter.projectSessionTerminalPersistence,
     projectSessionTerminalPersisted: entry.adapter.projectSessionTerminalPersisted,
-    registrationCleanupRequested: entry.adapter.registrationCleanupRequested,
+    retirementRequested: entry.input.retirementRequested,
   };
 }
 
@@ -107,7 +106,7 @@ export function lifecycleState(
   projectSessionTerminalObservedAt?: number,
   projectSessionTerminalPersistence?: Promise<void>,
   projectSessionTerminalPersisted?: boolean,
-  registrationCleanupRequested?: boolean,
+  retirementRequested?: boolean,
 ): ReturnType<typeof readLifecycleState> {
   return {
     projectSessionActive,
@@ -115,7 +114,7 @@ export function lifecycleState(
     projectSessionTerminalObservedAt,
     projectSessionTerminalPersistence,
     projectSessionTerminalPersisted,
-    registrationCleanupRequested,
+    retirementRequested,
   };
 }
 

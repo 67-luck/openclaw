@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { markReplyOperationExecutionStarted } from "../../sessions/session-controller.state.js";
 import type { AgentTurnParams } from "./agent-runner-execution.types.js";
-import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
 import {
   createFollowupTurnTestTypingController,
   createFollowupTurnTestTurn,
@@ -10,6 +9,7 @@ import {
   getFollowupTurnTestState,
   resetFollowupTurnTestState,
 } from "./followup-turn-execution.test-support.js";
+import type { AdmittedFollowupTurn } from "./reply-agent-turn-preparation.js";
 import {
   resolveReplyOperationAgentTurn,
   type ReplyOperationRunState,

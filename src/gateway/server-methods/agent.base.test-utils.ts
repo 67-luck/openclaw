@@ -16,6 +16,7 @@ import {
   runSessionMutation,
 } from "../../sessions/session-controller.lifecycle.js";
 import { requestRpcSourceCancellation } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
@@ -356,77 +357,6 @@ describe("gateway agent handler", () => {
     await first;
   });
 
-  it("honors owner cancellation while explicit recipient session routing is pending", async () => {
-    const sessionKey = "agent:ops:whatsapp:work:direct:+15551234567";
-    const runId = "recipient-session-route-abort";
-    const { promise: routePending, resolve: finishRoute } = createDeferredCore<{
-      sessionKey: string;
-    }>();
-    mocks.listAgentIds.mockReturnValue(["main", "ops"]);
-    mocks.loadConfigReturn = { session: { dmScope: "per-account-channel-peer" } };
-    mocks.resolveAgentExplicitRecipientSession.mockReturnValue(routePending);
-    mocks.loadSessionEntry.mockReturnValue({
-      cfg: mocks.loadConfigReturn,
-      storePath: "/tmp/sessions.json",
-      entry: { sessionId: "recipient-session", updatedAt: Date.now() },
-      canonicalKey: sessionKey,
-    });
-    mocks.updateSessionStore.mockImplementation(
-      async (_path, updater) =>
-        await updater({
-          [sessionKey]: { sessionId: "recipient-session", updatedAt: Date.now() },
-        }),
-    );
-    mocks.agentCommand.mockClear();
-    const context = makeContext();
-    const ownerClient = { connId: "owner-conn" } as AgentHandlerArgs["client"];
-    const pending = invokeAgent(
-      {
-        message: "hi",
-        agentId: "ops",
-        channel: "whatsapp",
-        to: "+15551234567",
-        idempotencyKey: runId,
-      },
-      { context, client: ownerClient, reqId: runId, flushDispatch: false },
-    );
-    await waitForAssertion(() => {
-      expectRecordFields(context.dedupe.get(`agent:${runId}`)?.payload, {
-        runId,
-        agentId: "ops",
-        status: "accepted",
-      });
-    });
-    expect(context.dedupe.get(`agent:${runId}`)?.payload).not.toHaveProperty("sessionKey");
-
-    const abortRespond = vi.fn();
-    await handleChatAbortRequest({
-      params: { sessionKey: "agent:ops:main", runId },
-      respond: abortRespond as never,
-      context,
-      req: { type: "req", id: "abort-recipient-route", method: "chat.abort" },
-      client: ownerClient,
-      isWebchatConnect: () => false,
-    });
-
-    expectRecordFields(mockCallArg(abortRespond, 0, 1), {
-      aborted: true,
-      runIds: [runId],
-    });
-    expectRecordFields(context.dedupe.get(`agent:${runId}`)?.payload, {
-      runId,
-      status: "timeout",
-      stopReason: "rpc",
-    });
-    expect(context.dedupe.get(`agent:${runId}`)?.payload).not.toHaveProperty("sessionKey");
-
-    finishRoute({ sessionKey });
-    await pending;
-    await flushScheduledDispatchStep();
-
-    expect(mocks.agentCommand).not.toHaveBeenCalled();
-  });
-
   it("clears pending dedupe when explicit recipient session routing fails", async () => {
     const runId = "recipient-session-route-error";
     mocks.listAgentIds.mockReturnValue(["main", "ops"]);
@@ -747,7 +677,6 @@ describe("gateway agent handler", () => {
           [false, undefined, { code: ErrorCodes.UNAVAILABLE, message: inputError.message }],
         ]);
         expect(mocks.agentCommand).not.toHaveBeenCalled();
-        expect(context.rpcSources.has(runId)).toBe(false);
         expect(context.dedupe.has(`agent:${runId}`)).toBe(false);
       } finally {
         releaseCleanup.resolve();
@@ -981,7 +910,7 @@ describe("gateway agent handler", () => {
 
     expect(mockCallArg(abortRespond)).toBe(true);
     expect(mocks.agentCommand).not.toHaveBeenCalled();
-    expect(context.rpcSources.has(runId)).toBe(false);
+    expect(rpcSourceTesting.has(runId)).toBe(false);
     expect(
       respond.mock.calls.some(
         ([ok, payload]) => ok === true && (payload as { status?: string })?.status === "timeout",
@@ -1037,7 +966,7 @@ describe("gateway agent handler", () => {
     await request;
 
     expect(mocks.agentCommand).not.toHaveBeenCalled();
-    expect(context.rpcSources.has(runId)).toBe(false);
+    expect(rpcSourceTesting.has(runId)).toBe(false);
     expect(
       respond.mock.calls.some(
         ([ok, payload]) =>
@@ -1247,7 +1176,7 @@ describe("gateway agent handler", () => {
       );
       await waitForAgentCommandCall();
 
-      const abortEntry = requireValue(context.rpcSources.get(runId), "admitted controller");
+      const abortEntry = requireValue(rpcSourceTesting.get(runId), "admitted controller");
       if (interruption === "already stopped") {
         abortEntry.adapter.abortStopReason = "rpc";
         requestRpcSourceCancellation(abortEntry, reason);

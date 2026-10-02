@@ -2,6 +2,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { normalizeUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { DEFAULT_AGENT_ID } from "../routing/session-key.js";
+import { getRpcSource, getRpcSourceIdentity } from "../sessions/session-controller.rpc-sources.js";
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { resolveAuthorizedBoardViewTicketClaims } from "./board-view-ticket.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
@@ -236,13 +237,15 @@ export function resolveSessionMutationTargets(params: {
     return undefined;
   }
   const runId = asOptionalRecord(params.requestParams)?.runId;
-  const run = typeof runId === "string" ? params.context.rpcSources.get(runId) : undefined;
-  return run
-    ? [
-        {
-          sessionKey: run.adapter.sessionKey,
-          ...(run.adapter.agentId ? { agentId: run.adapter.agentId } : {}),
-        },
-      ]
-    : undefined;
+  const run = typeof runId === "string" ? getRpcSource(runId) : undefined;
+  if (!run) {
+    return undefined;
+  }
+  const identity = getRpcSourceIdentity(run);
+  return [
+    {
+      sessionKey: identity.sessionKey,
+      ...(identity.agentId ? { agentId: identity.agentId } : {}),
+    },
+  ];
 }

@@ -612,7 +612,6 @@ export function createAgentTurnExecutionDefaults() {
     shouldEmitToolOutput: () => false,
     pendingToolTasks: new Set<Promise<void>>(),
     isHeartbeat: false,
-    sessionKey: "main",
     getActiveSessionEntry: () => undefined,
     resolvedVerboseLevel: "off",
   } satisfies Partial<AgentTurnParams>;

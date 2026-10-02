@@ -33,7 +33,6 @@ function invoke(method: keyof typeof suspendHandlers, params: unknown) {
       context: {
         cron: { pauseScheduling, resumeScheduling },
         logGateway: { warn },
-        rpcSources: new Map(),
       },
     } as unknown as Parameters<typeof handler>[0]),
   ).then(() => ({ respond, pauseScheduling, resumeScheduling }));

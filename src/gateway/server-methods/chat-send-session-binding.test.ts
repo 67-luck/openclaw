@@ -25,15 +25,15 @@ import {
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
-import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
   bindSessionControllerSource,
   claimSessionControllerTask,
   releaseSessionControllerClaim,
 } from "../../sessions/session-controller.mailbox.js";
+import { getRpcSourceIdentity } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { registerChatAbortController } from "../chat-abort.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import { resolveSessionMutationAuthorization } from "../session-sharing.js";
@@ -46,7 +46,6 @@ type DispatchOptions = Parameters<typeof dispatch.dispatchInboundMessageWithProj
 
 const admissionScenarios = [
   "removed",
-  "replaced",
   "aborted",
   "released",
   "terminal",
@@ -158,7 +157,6 @@ it.each(admissionScenarios)(
           return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
         });
       const context = {
-        rpcSources: new Map(),
         chatRunState: createChatRunState(),
         dedupe: new Map(),
         agentRunSeq: new Map(),
@@ -173,7 +171,6 @@ it.each(admissionScenarios)(
       } as unknown as GatewayRequestContext;
       let owned: Parameters<typeof chatDispatch.startChatDispatch>[0] | undefined;
       let reply: ReturnType<typeof createReplyOperation> | undefined;
-      let successor: ReturnType<typeof registerChatAbortController> | undefined;
       let options: DispatchOptions | undefined;
       let queuedRun: ReturnType<typeof createQueueTestRun> | undefined;
       try {
@@ -241,7 +238,7 @@ it.each(admissionScenarios)(
           withGatewayToolCallerIdentity(caller, () => capability.invoke({ action: "list" }));
         const { admission, userTurn } = owned;
         const original = admission.activeRunAbort.entry;
-        expect(original?.adapter.sessionId).toBe(initialSessionId);
+        expect(original && getRpcSourceIdentity(original).sessionId).toBe(initialSessionId);
         // This focused test controls preparation; the native WS test proves its real producer.
         await upsertSessionEntryCore(scope, {
           sessionId: membershipRequired ? initialSessionId : "committed-session",
@@ -288,7 +285,7 @@ it.each(admissionScenarios)(
         }
 
         if (closure === "queued") {
-          expect(original?.adapter.sessionId).toBe(binding.sessionId);
+          expect(original && getRpcSourceIdentity(original).sessionId).toBe(binding.sessionId);
           expect(admission.admittedSessionId).toBe(runId);
           if (!original) {
             throw new Error("Expected accepted source");
@@ -306,30 +303,16 @@ it.each(admissionScenarios)(
               false,
             ),
           ).toBe(true);
-          expect(context.rpcSources.get(runId)?.adapter.sessionId).toBe(binding.sessionId);
+          const source = rpcSourceTesting.get(runId);
+          expect(source && getRpcSourceIdentity(source).sessionId).toBe(binding.sessionId);
           await userTurn.persist();
           expect(await loadTranscriptEvents({ ...scope, ...binding })).toContainEqual(
             expect.objectContaining({ message: expect.objectContaining({ role: "user" }) }),
           );
           admission.cleanupAdmittedRun();
-          expect(context.rpcSources.has(runId)).toBe(true);
-        } else if (closure === "removed" || closure === "replaced") {
+          expect(rpcSourceTesting.has(runId)).toBe(true);
+        } else if (closure === "removed") {
           admission.activeRunAbort.cleanup();
-          if (closure === "replaced") {
-            successor = registerChatAbortController({
-              rpcSources: context.rpcSources,
-              target: captureSessionTarget({
-                storeScope: binding.storePath,
-                sessionKey,
-                incarnation: "successor-session",
-                agentId: "main",
-              }),
-              runId,
-              sessionKey,
-              sessionId: "successor-session",
-              timeoutMs: 60_000,
-            });
-          }
         } else if (closure === "aborted") {
           admission.activeRunAbort.controller.abort();
         } else if (closure === "released") {
@@ -359,10 +342,7 @@ it.each(admissionScenarios)(
         if (dashboardRead) {
           expect(dashboardRead.assertCurrent).toThrow();
         }
-        expect(original?.adapter.sessionId).toBe(binding.sessionId);
-        expect(successor?.entry?.adapter.sessionId).toBe(
-          closure === "replaced" ? "successor-session" : undefined,
-        );
+        expect(original && getRpcSourceIdentity(original).sessionId).toBe(binding.sessionId);
         if (closure === "queued") {
           await expect(readLibrary()).resolves.toMatchObject({ profileId: profile.id });
         } else if (closure === "released" || closure === "aborted" || closure === "rotated") {
@@ -388,10 +368,9 @@ it.each(admissionScenarios)(
           await options?.replyOptions?.turnAdoptionLifecycle?.onSettled?.();
         }
         reply?.complete();
-        successor?.cleanup();
         release.resolve();
         if (owned) {
-          await vi.waitFor(() => expect(context.rpcSources.has(runId)).toBe(false));
+          await vi.waitFor(() => expect(rpcSourceTesting.has(runId)).toBe(false));
           owned.admission.cleanupAdmittedRun();
           clearAgentRunContext(runId, owned.admission.lifecycleGeneration);
         }

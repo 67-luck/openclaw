@@ -35,7 +35,6 @@ export async function cancelGatewayWorkerSessionWork(
     onCancellationStarted: request.onCancellationStarted,
     onControllerTargets: (targets) => {
       controllerDrain = waitForChatAbortControllerRemoval({
-        entries: context.rpcSources,
         targets,
         timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
       });

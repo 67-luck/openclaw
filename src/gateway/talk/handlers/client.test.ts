@@ -131,7 +131,6 @@ function configureDelegatedBrowserProvider(
             .filter((candidate) => !filter || filter(candidate))
             .map((candidate) => candidate.connId),
         ),
-      rpcSources: new Map(),
       logGateway: { warn: vi.fn() },
       broadcastToConnIds: vi.fn(),
     },

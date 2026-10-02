@@ -55,7 +55,6 @@ import { sessionMessagingHandlers } from "./sessions-messaging.js";
 
 function createRequestContext(overrides: Record<string, unknown> = {}): GatewayRequestContext {
   return {
-    rpcSources: new Map(),
     chatRunState: { runs: new Map() },
     dedupe: new Map(),
     broadcastToConnIds: vi.fn(),

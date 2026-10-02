@@ -1,3 +1,4 @@
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 /** Exact recovered-parent Stop owns its descendants, not other turns or queues. */
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
@@ -94,8 +95,8 @@ it.each(["matched", "old-incarnation", "foreign-key", "missing-row"] as const)(
         });
       } else {
         expect(context.dedupe.size).toBe(0);
-        expect(context.rpcSources.size).toBe(0);
-        expect(context.rpcSources.size).toBe(0);
+        expect(rpcSourceTesting.size).toBe(0);
+        expect(rpcSourceTesting.size).toBe(0);
       }
     } finally {
       clearActiveEmbeddedRun(selectedId, handle, selectedKey);
@@ -132,7 +133,7 @@ it.each([false, true])(
       agentId: "main",
       owner: { connId: client.connId },
     });
-    context.rpcSources.set("original-queued", queued);
+    rpcSourceTesting.set("original-queued", queued);
     const abort = vi.fn();
     const successor = createEmbeddedRunHandle({ runId: "late-successor", abort });
     let successorRegistration = Promise.resolve();
@@ -184,7 +185,7 @@ async function stopParent(runId = "parent") {
     getRuntimeConfig,
     getSessionEventSubscriberConnIds: () => new Set(),
   });
-  expect(context.rpcSources.size).toBe(0);
+  expect(rpcSourceTesting.size).toBe(0);
   const respond = vi.fn();
   await sessionAbortHandlers["sessions.abort"]!({
     req: { type: "req", id: "stop", method: "sessions.abort" },
@@ -438,7 +439,6 @@ it.each([
       getSessionEventSubscriberConnIds: () => new Set(),
     });
     const registration = registerChatAbortController({
-      rpcSources: context.rpcSources,
       target: captureSessionTarget({
         storeScope: parentStorePath,
         sessionKey: parentKey,
@@ -493,7 +493,7 @@ it.each([
         operation.freezeAbort();
       }
       expect(resolveActiveEmbeddedRunOwnerByRunId("parent")).toBeDefined();
-      expect(context.rpcSources.get("parent")).toBe(registration.entry);
+      expect(rpcSourceTesting.get("parent")).toBe(registration.entry);
       const respond = vi.fn();
       const handler =
         method === "chat.abort" ? handleChatAbortRequest : sessionAbortHandlers[method]!;

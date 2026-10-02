@@ -231,7 +231,6 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
             ) ??
               false) ||
             resolveVisibleActiveSessionRunState({
-              context,
               requestedKey: key,
               canonicalKey: target.canonicalKey,
               sessionId,

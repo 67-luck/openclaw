@@ -27,6 +27,7 @@ import {
   requestRpcSourceCancellation,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { createChatAbortOps } from "../chat-abort-ops.js";
 import { abortChatRunById, registerChatAbortController } from "../chat-abort.js";
@@ -57,7 +58,7 @@ describe("queued chat input withdrawal", () => {
         await fixture.send();
         const recorder = await fixture.dispatchedRecorder;
         const runId = fixture.params.idempotencyKey;
-        const active = fixture.context.rpcSources.get(runId);
+        const active = rpcSourceTesting.get(runId);
         if (!active) {
           throw new Error("Expected the pending input's abort owner");
         }
@@ -106,7 +107,7 @@ describe("queued chat input withdrawal", () => {
           // real work, so this source must remain queued until withdrawal.
           fixture.releaseDispatch();
           await detached.promise;
-          expect(fixture.context.rpcSources.get(runId)).toBe(active);
+          expect(rpcSourceTesting.get(runId)).toBe(active);
           expect(isRpcSourceQueued(active)).toBe(true);
           if (discardPendingInput) {
             await discard();
@@ -204,7 +205,7 @@ describe("queued chat input withdrawal", () => {
         await fixture.send();
         const recorder = await fixture.dispatchedRecorder;
         const runId = fixture.params.idempotencyKey;
-        const active = fixture.context.rpcSources.get(runId);
+        const active = rpcSourceTesting.get(runId);
         if (!active) {
           throw new Error("Expected the pending input's abort owner");
         }
@@ -252,7 +253,7 @@ describe("queued chat input withdrawal", () => {
 
         expect(respond).toHaveBeenCalledWith(true, { ok: true, aborted: false, runIds: [] });
         expect(active.input.abortSignal.aborted).toBe(false);
-        expect(fixture.context.rpcSources.get(runId)).toBe(active);
+        expect(rpcSourceTesting.get(runId)).toBe(active);
         expect(isRpcSourceQueued(active)).toBe(queuedBefore);
         expect(listSessionPendingInputs(fixture.scope)).toEqual(pending);
         expect(loadTranscriptEventsSync(fixture.scope)).toEqual(transcript);
@@ -281,7 +282,7 @@ describe("queued chat input withdrawal", () => {
         await fixture.send();
         await fixture.dispatchedRecorder;
         const runId = fixture.params.idempotencyKey;
-        const active = fixture.context.rpcSources.get(runId);
+        const active = rpcSourceTesting.get(runId);
         if (!active) {
           throw new Error("Expected the pending input's abort owner");
         }
@@ -330,9 +331,8 @@ describe("queued chat input withdrawal", () => {
             if (withdrawn && afterRefusal === "retired" && !replacement) {
               // Replace correlation during publication, but reserve the new source
               // through its real physical owner. The hold still belongs to old input.
-              fixture.context.rpcSources.delete(runId);
+              rpcSourceTesting.delete(runId);
               const registration = registerChatAbortController({
-                rpcSources: fixture.context.rpcSources,
                 runId,
                 ...fixture.scope,
                 target: captureSessionTarget({
@@ -345,7 +345,7 @@ describe("queued chat input withdrawal", () => {
               });
               replacement = registration.entry;
               cleanupReplacement = registration.cleanup;
-              retiredAfterCommit = fixture.context.rpcSources.get(runId) !== active;
+              retiredAfterCommit = rpcSourceTesting.get(runId) !== active;
             }
             if (withdrawn && afterRefusal === "revoked") {
               requestCurrent = false;
@@ -377,7 +377,7 @@ describe("queued chat input withdrawal", () => {
           }, attachment),
         );
         await expect(remove()).rejects.toThrow("Synthetic withdrawal commit refusal");
-        expect(fixture.context.rpcSources.get(runId)).toBe(active);
+        expect(rpcSourceTesting.get(runId)).toBe(active);
         if (afterRefusal !== "resume") {
           expect(isRpcSourceQueued(active)).toBe(true);
         }
@@ -407,7 +407,7 @@ describe("queued chat input withdrawal", () => {
         }
         if (replacement) {
           expect(replacement.input.abortSignal.aborted).toBe(false);
-          expect(fixture.context.rpcSources.get(runId)).toBe(replacement);
+          expect(rpcSourceTesting.get(runId)).toBe(replacement);
         }
         expect(published.length).toBeGreaterThan(0);
         expect(published.every(Boolean)).toBe(true);

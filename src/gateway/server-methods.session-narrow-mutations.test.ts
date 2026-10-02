@@ -2,6 +2,11 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { addSessionMember } from "../config/sessions/session-sharing-store.js";
+import { getRpcSourceIdentity } from "../sessions/session-controller.rpc-sources.js";
+import {
+  rpcSourceTesting,
+  setRpcSourceIdentityForTest,
+} from "../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createTestApprovalManager } from "./exec-approval-manager.test-support.js";
@@ -83,7 +88,7 @@ describe("invocation-owned session mutations", () => {
           sessionId: "own-incarnation",
           owner: { connId: client.connId },
         });
-        context.rpcSources.set("selected", rebind ? original : foreign);
+        rpcSourceTesting.set("selected", rebind ? original : foreign);
         const entered = createDeferredCore();
         const release = createDeferredCore();
         const respond = vi.fn();
@@ -114,7 +119,7 @@ describe("invocation-owned session mutations", () => {
           await Promise.race([entered.promise, request]);
           expect(respond).not.toHaveBeenCalled();
           if (rebind) {
-            context.rpcSources.set("selected", foreign);
+            rpcSourceTesting.set("selected", foreign);
           }
         } finally {
           release.resolve();
@@ -126,8 +131,8 @@ describe("invocation-owned session mutations", () => {
         expect(respond.mock.calls[0]?.[0]).toBe(broad);
         if (!broad) {
           expect([...context.dedupe]).toEqual(before);
-          expect(context.rpcSources.get("selected")).toBe(foreign);
-          expect(context.rpcSources.size).toBe(1);
+          expect(rpcSourceTesting.get("selected")).toBe(foreign);
+          expect(rpcSourceTesting.size).toBe(1);
         }
       });
     },
@@ -226,9 +231,9 @@ describe("invocation-owned session mutations", () => {
               owner: { connId: client.connId },
             });
             if (kind === "active") {
-              context.rpcSources.set(runId, run);
+              rpcSourceTesting.set(runId, run);
             } else if (kind === "queued") {
-              context.rpcSources.set(runId, run);
+              rpcSourceTesting.set(runId, run);
             } else {
               context.dedupe.set(`${kind}:${runId}`, {
                 ts: Date.now(),
@@ -240,7 +245,10 @@ describe("invocation-owned session mutations", () => {
                   ownerConnId: client.connId,
                   ...(mismatch === "unbound" || mismatch === "missing-target"
                     ? {}
-                    : { sessionKey: run.adapter.sessionKey, sessionId: run.adapter.sessionId }),
+                    : {
+                        sessionKey: getRpcSourceIdentity(run).sessionKey,
+                        sessionId: getRpcSourceIdentity(run).sessionId,
+                      }),
                 },
               });
             }
@@ -308,7 +316,7 @@ describe("invocation-owned session mutations", () => {
         });
         for (const changed of ["registration", "key", "sessionId", "agentId"] as const) {
           const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
-          const runs = kind === "active" ? context.rpcSources : context.rpcSources;
+          const runs = kind === "active" ? rpcSourceTesting : rpcSourceTesting;
           const target = {
             queued: kind === "queued",
             agentId: "main",
@@ -326,9 +334,11 @@ describe("invocation-owned session mutations", () => {
               if (changed === "registration") {
                 runs.set("second", replacement);
               } else if (changed === "key") {
-                second.adapter.sessionKey = "agent:main:other";
+                setRpcSourceIdentityForTest(second, { sessionKey: "agent:main:other" });
+              } else if (changed === "sessionId") {
+                setRpcSourceIdentityForTest(second, { sessionId: "replacement" });
               } else {
-                second.adapter[changed] = "replacement";
+                setRpcSourceIdentityForTest(second, { agentId: "replacement" });
               }
             },
             { once: true },
@@ -387,7 +397,7 @@ describe("invocation-owned session mutations", () => {
             sessionId: changed === "key" ? "own-row" : "prior-incarnation",
             owner: { connId: client.connId },
           });
-          context.rpcSources.set("different-run", run);
+          rpcSourceTesting.set("different-run", run);
           const respond = vi.fn();
           await handleGatewayRequest({
             req: {

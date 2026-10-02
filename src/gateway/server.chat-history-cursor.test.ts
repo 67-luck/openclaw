@@ -193,7 +193,6 @@ describe("chat.history cursor catch-up", () => {
     const handler = createTranscriptUpdateBroadcastHandler({
       getSessionRowProjection: () => getSessionRowProjection(context),
       broadcastToConnIds: broadcast,
-      rpcSources: context.rpcSources,
       sessionEventSubscribers: { getAll: () => new Set<string>() },
       sessionMessageSubscribers: { get: () => new Set(["subscriber"]) },
     });

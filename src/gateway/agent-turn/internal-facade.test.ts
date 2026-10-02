@@ -6,6 +6,7 @@ import {
   rotateAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { AsyncWorkScope, trackAsyncWork } from "../../shared/async-work-scope.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { createChatRunState } from "../server-chat-state.js";
@@ -15,6 +16,7 @@ import { GatewayRequestEntryLifetime } from "../server-request-entry.js";
 import { createRpcSourceForTest, claimRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { createInternalAgentTurnFacade } from "./internal-facade.js";
 import type { AgentTurnStartOwner } from "./internal-facade.types.js";
+import { setTestRpcSourceIdentity } from "./rpc-source.test-support.js";
 
 const startTurn = vi.hoisted(() => vi.fn());
 const waitForTurn = vi.hoisted(() => vi.fn());
@@ -48,7 +50,6 @@ function createContext() {
     trackExecution: trackAsyncWork,
     agentRunSeq: new Map(),
     broadcast: vi.fn(),
-    rpcSources: new Map(),
     chatRunState: createChatRunState(),
     dedupe: new Map(),
     getRuntimeConfig: () => ({}),
@@ -382,7 +383,7 @@ describe("createInternalAgentTurnFacade", () => {
     async (executing) => {
       const context = createContext();
       const source = createRpcSourceForTest({}, { runId: "run-2" });
-      context.rpcSources.set("run-2", source);
+      rpcSourceTesting.set("run-2", source);
       if (executing) {
         await claimRpcSourceForTest(source);
       }
@@ -450,7 +451,6 @@ describe("createInternalAgentTurnFacade", () => {
     };
     const register = () =>
       registerChatAbortController({
-        rpcSources: context.rpcSources,
         agentId: request.agentId,
         runId: request.idempotencyKey,
         sessionId: request.expectedExistingSessionId,
@@ -502,10 +502,10 @@ describe("createInternalAgentTurnFacade", () => {
         rotateAgentEventLifecycleGeneration();
         break;
       case "agent changed":
-        registration.entry.adapter.agentId = "other-agent";
+        setTestRpcSourceIdentity(registration.entry, { agentId: "other-agent" });
         break;
       case "session changed":
-        registration.entry.adapter.sessionId = "replacement-session";
+        setTestRpcSourceIdentity(registration.entry, { sessionId: "replacement-session" });
         break;
       case "gateway closed":
         gatewayCurrent = false;
@@ -535,7 +535,6 @@ describe("createInternalAgentTurnFacade", () => {
     vi.useFakeTimers();
     const context = createContext();
     const unrelated = registerChatAbortController({
-      rpcSources: context.rpcSources,
       runId: "unrelated-run",
       sessionId: "unrelated-session",
       sessionKey: "agent:main:unrelated",
@@ -549,7 +548,6 @@ describe("createInternalAgentTurnFacade", () => {
     let accepted: ReturnType<typeof registerChatAbortController> | undefined;
     startTurn.mockImplementation(async ({ io }) => {
       const registration = registerChatAbortController({
-        rpcSources: context.rpcSources,
         runId: "deadline-run",
         sessionId: "deadline-session",
         sessionKey: "agent:main:deadline",
@@ -601,7 +599,6 @@ describe("createInternalAgentTurnFacade", () => {
     startTurn.mockImplementation(async ({ io }) => {
       await acceptanceGate;
       accepted = registerChatAbortController({
-        rpcSources: context.rpcSources,
         runId: "late-run",
         sessionId: "late-session",
         sessionKey: "agent:main:late",

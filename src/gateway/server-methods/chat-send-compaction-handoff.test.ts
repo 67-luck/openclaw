@@ -2,7 +2,6 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import * as dispatch from "../../auto-reply/dispatch.js";
-import * as dispatchRuntimeLoaders from "../../auto-reply/reply/dispatch-from-config.runtime-loaders.js";
 import type { InternalGetReplyFromConfig } from "../../auto-reply/reply/get-reply.types.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
 import { admitReplyTurn } from "../../auto-reply/reply/reply-turn-admission.js";
@@ -11,10 +10,9 @@ import {
   loadTranscriptEvents,
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
-import {
-  type ReplyOperation,
-  getSessionControllerOperation,
-} from "../../sessions/session-controller.js";
+import { getSessionControllerOperation } from "../../sessions/session-controller.js";
+import { getRpcSourceIdentity } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createGatewayRequestContext } from "../server-request-context.js";
@@ -30,7 +28,6 @@ type ChatDispatchParams = Parameters<typeof chatDispatch.startChatDispatch>[0];
 it.each([
   "compaction",
   "active-compaction",
-  "successive-compactions",
   "replacement",
   "foreign-store",
   "restart",
@@ -43,8 +40,7 @@ it.each([
       const sessionKey = "agent:main:compaction-handoff";
       const initialSessionId = "before-compaction";
       const nextSessionId = "after-compaction";
-      const finalSessionId =
-        scenario === "successive-compactions" ? "after-second-compaction" : nextSessionId;
+      const finalSessionId = nextSessionId;
       const runId = `accepted-before-compaction-${scenario}`;
       const message = "Continue the existing task with this exact input.";
       const storePath = state.statePath("sessions.sqlite");
@@ -99,30 +95,18 @@ it.each([
       const context = createGatewayRequestContext(makeContextParams());
       const prepared = createDeferred<DispatchOptions>();
       const releasePreparation = createDeferred();
-      const capturedSuccessor = createDeferred();
-      const releaseRuntimePlugins = createDeferred();
       const sharedDispatchSettled = createDeferred();
       const originalDispatch = dispatch.dispatchInboundMessageWithProjectedDispatcher;
-      const originalLoadRuntimePlugins = dispatchRuntimeLoaders.loadRuntimePlugins;
-      const holdRuntimePlugins =
-        scenario === "successive-compactions"
-          ? vi.spyOn(dispatchRuntimeLoaders, "loadRuntimePlugins").mockImplementation(async () => {
-              capturedSuccessor.resolve();
-              await releaseRuntimePlugins.promise;
-              return await originalLoadRuntimePlugins();
-            })
-          : undefined;
       const observeChatDispatch = vi.spyOn(chatDispatch, "startChatDispatch");
       let owned: ChatDispatchParams | undefined;
-      let successor: ReplyOperation | undefined;
-      let originalRegistration: ChatDispatchParams["admission"]["sessionBinding"] | undefined;
+      let sourceRef: ChatDispatchParams["admission"]["sourceRef"] | undefined;
       const resolver = vi.fn<InternalGetReplyFromConfig>(async (ctx, options, cfg) => {
-        if (!options || !cfg || !owned || !originalRegistration) {
+        if (!options || !cfg || !owned || !sourceRef) {
           throw new Error("fixture requires the original accepted chat dispatch");
         }
         expect(ctx.BodyForAgent).toBe(message);
         expect(options.runId).toBe(runId);
-        expect(options.expectedExistingSessionId).toBe(finalSessionId);
+        expect(options.expectedExistingSessionId, "resolved dispatch session").toBe(finalSessionId);
         const initialized = await initSessionState({
           ctx: finalizeInboundContext(ctx),
           cfg,
@@ -131,14 +115,14 @@ it.each([
           requestedSessionId: options.requestedSessionId,
           signal: options.abortSignal,
         });
-        expect(initialized.sessionId).toBe(finalSessionId);
+        expect(initialized.sessionId, "initialized session").toBe(finalSessionId);
         options.onSessionPrepared?.({
           sessionKey: initialized.sessionKey,
           sessionId: initialized.sessionId,
           storePath: initialized.storePath,
         });
-        expect(context.rpcSources.get(runId)?.adapter).toBe(originalRegistration);
-        expect(originalRegistration.sessionId).toBe(finalSessionId);
+        expect(rpcSourceTesting.get(runId)).toBe(sourceRef);
+        expect(getRpcSourceIdentity(sourceRef).sessionId).toBe(finalSessionId);
         await options.userTurnTranscriptRecorder?.persistApproved();
         return { text: "Continued in the compacted conversation." };
       });
@@ -183,8 +167,11 @@ it.each([
         if (!owned) {
           throw new Error("chat.send did not start detached dispatch");
         }
-        originalRegistration = owned.admission.sessionBinding;
-        expect(originalRegistration.sessionId).toBe(initialSessionId);
+        sourceRef = owned.admission.sourceRef;
+        expect(getRpcSourceIdentity(sourceRef).sessionId).toBe(initialSessionId);
+        expect(owned.admission.expectedActiveReplyOperation).toBe(
+          scenario === "foreign-store" ? undefined : predecessor,
+        );
 
         await replaceSessionEntry(scope, { ...entry, sessionId: nextSessionId });
         if (scenario === "foreign-store") {
@@ -206,50 +193,26 @@ it.each([
         if (scenario === "cancelled") {
           owned.admission.activeRunAbort.controller.abort();
         }
-        if (scenario === "successive-compactions") {
-          const successorAdmission = await admitReplyTurn({
-            ...scope,
-            sessionId: nextSessionId,
-            expectedSessionId: nextSessionId,
-            kind: "visible",
-            resetTriggered: false,
-          });
-          if (successorAdmission.status !== "owned" || !successorAdmission.databaseClaim) {
-            throw new Error("fixture requires the successor's real physical database admission");
-          }
-          successor = successorAdmission.operation;
-          successor.setPhase("running");
-        }
         releasePreparation.resolve();
-        if (successor) {
-          // Gather retains this newer owner before its existing plugin-loading await.
-          await capturedSuccessor.promise;
-          await replaceSessionEntry(scope, { ...entry, sessionId: finalSessionId });
-          successor.updateSessionId(finalSessionId);
-          successor.complete();
-          await successor.ownerSettlement;
-          expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
-          releaseRuntimePlugins.resolve();
-        }
         await sharedDispatchSettled.promise;
-        await vi.waitFor(() => expect(context.rpcSources.has(runId)).toBe(false));
+        if (scenario === "compaction" || scenario === "active-compaction") {
+          await vi.waitFor(() =>
+            expect(context.dedupe.get(`chat:${runId}`)).toMatchObject({
+              ok: true,
+              payload: { runId, status: "ok" },
+            }),
+          );
+        }
+        await vi.waitFor(() => expect(rpcSourceTesting.has(runId)).toBe(false));
 
-        if (
-          scenario === "compaction" ||
-          scenario === "active-compaction" ||
-          scenario === "successive-compactions"
-        ) {
+        if (scenario === "compaction" || scenario === "active-compaction") {
           expect(context.broadcast).not.toHaveBeenCalledWith(
             "chat",
             expect.objectContaining({ runId, state: "error" }),
             expect.anything(),
           );
           expect(resolver).toHaveBeenCalledOnce();
-          expect(originalRegistration.sessionId).toBe(finalSessionId);
-          expect(context.dedupe.get(`chat:${runId}`)).toMatchObject({
-            ok: true,
-            payload: { runId, status: "ok" },
-          });
+          expect(getRpcSourceIdentity(sourceRef).sessionId).toBe(finalSessionId);
           const transcript = await loadTranscriptEvents({ ...scope, sessionId: finalSessionId });
           expect(
             transcript.filter(
@@ -262,20 +225,17 @@ it.each([
           ).toHaveLength(1);
         } else {
           expect(resolver).not.toHaveBeenCalled();
-          expect(originalRegistration.sessionId).toBe(initialSessionId);
+          expect(getRpcSourceIdentity(sourceRef).sessionId).toBe(initialSessionId);
         }
       } finally {
         predecessor.complete();
-        successor?.complete();
         releasePreparation.resolve();
-        releaseRuntimePlugins.resolve();
         if (owned) {
           await sharedDispatchSettled.promise;
-          await vi.waitFor(() => expect(context.rpcSources.has(runId)).toBe(false));
+          await vi.waitFor(() => expect(rpcSourceTesting.has(runId)).toBe(false));
           owned.admission.cleanupAdmittedRun();
         }
         holdPreparation.mockRestore();
-        holdRuntimePlugins?.mockRestore();
         observeChatDispatch.mockRestore();
       }
     });

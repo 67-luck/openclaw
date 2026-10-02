@@ -130,7 +130,7 @@ export function useBrowserFollowupFixture() {
       }
       return {};
     });
-    const context = createDirectChatContext({ getRuntimeConfig, rpcSources: new Map() });
+    const context = createDirectChatContext({ getRuntimeConfig });
     const client: GatewayClient = {
       connId: "browser-custody-client",
       connect: {

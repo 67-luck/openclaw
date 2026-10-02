@@ -9,6 +9,7 @@ import {
 } from "../../../agents/embedded-agent-runner/runs.test-support.js";
 import * as workspace from "../../../agents/workspace.js";
 import { readSessionTranscriptMessageEvents } from "../../../config/sessions/session-accessor.js";
+import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { flushClientVoiceSessionWrites } from "../../../talk/client-voice-session.js";
 import {
@@ -125,9 +126,9 @@ describe("native Talk through the public OpenAI plugin registration", () => {
     "handles native %s without a duplicate consult with %s provider events",
     async (text, eventOrder) => {
       await withParkedNativeTask(
-        async ({ create, offer, result, socket, activeRun, abortOwned, rpcSources }) => {
+        async ({ create, offer, result, socket, activeRun, abortOwned, rpcSourceTesting }) => {
           const { runId, abortSignal } = activeRun;
-          expect(rpcSources.get(runId)?.adapter).toMatchObject({
+          expect(rpcSourceTesting.get(runId)?.adapter).toMatchObject({
             agentId: AGENT_ID,
             sessionKey: SESSION_KEY,
             sessionId: SESSION_ID,
@@ -192,7 +193,7 @@ describe("native Talk through the public OpenAI plugin registration", () => {
           );
           if (text === "Status?") {
             expect(abortOwned).not.toHaveBeenCalled();
-            expect(rpcSources.has(runId)).toBe(true);
+            expect(rpcSourceTesting.has(runId)).toBe(true);
           } else {
             expect(abortOwned).toHaveBeenCalledOnce();
           }
@@ -275,7 +276,7 @@ describe("native Talk through the public OpenAI plugin registration", () => {
         await nextEventLoopTurn();
       };
 
-      await withNativePlugin(async ({ create, offer, broadcast, rpcSources }) => {
+      await withNativePlugin(async ({ create, offer, broadcast, rpcSourceTesting }) => {
         try {
           const { socket } = await connectNativeSession({ create, offer });
           const sentFrames = () => socket.sent.map((frame): unknown => JSON.parse(frame));
@@ -287,7 +288,7 @@ describe("native Talk through the public OpenAI plugin registration", () => {
             throw new Error("Native delegation did not reach the model backend");
           }
           const { runId, abortSignal } = activeRun;
-          expect(rpcSources.get(runId)?.adapter).toMatchObject({
+          expect(rpcSourceTesting.get(runId)?.adapter).toMatchObject({
             agentId: AGENT_ID,
             sessionKey: SESSION_KEY,
             sessionId: SESSION_ID,

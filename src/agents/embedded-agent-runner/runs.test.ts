@@ -16,10 +16,7 @@ import { createEmbeddedRunPermissionChanges } from "./run/permission-change.js";
 import {
   abortAndDrainEmbeddedAgentRun,
   abortEmbeddedAgentRun,
-  clearEmbeddedAgentRunAbortabilityForRunId,
-  isEmbeddedAgentRunAbortableForRunId,
   isEmbeddedAgentRunHandleActive,
-  retainEmbeddedAgentRunAbortabilityForRunId,
   supersedeEmbeddedAgentRunByRunId,
 } from "./runs.js";
 import {
@@ -203,35 +200,6 @@ describe("embedded-agent runner run registry", () => {
     operation.complete();
     expect(isEmbeddedAgentRunHandleActive("session-restart-finalizing")).toBe(false);
     expect(isSessionRunActive("session-restart-finalizing")).toBe(false);
-  });
-
-  it("binds abortability to the owning run id", () => {
-    const finalizing = createEmbeddedRunHandle({
-      abort: vi.fn(),
-      isAbortable: false,
-      runId: "run-finalizing",
-    });
-    setActiveEmbeddedRun("session-shared", finalizing);
-
-    expect(isEmbeddedAgentRunAbortableForRunId("run-finalizing")).toBe(false);
-    expect(isEmbeddedAgentRunAbortableForRunId("run-queued")).toBe(true);
-
-    clearActiveEmbeddedRun("session-shared", finalizing);
-    expect(isEmbeddedAgentRunAbortableForRunId("run-finalizing")).toBe(true);
-
-    retainEmbeddedAgentRunAbortabilityForRunId("run-finalizing");
-    setActiveEmbeddedRun("session-shared", finalizing);
-    clearActiveEmbeddedRun("session-shared", finalizing);
-    expect(isEmbeddedAgentRunAbortableForRunId("run-finalizing")).toBe(false);
-
-    const queued = createEmbeddedRunHandle({ runId: "run-queued" });
-    setActiveEmbeddedRun("session-shared", queued);
-
-    expect(isEmbeddedAgentRunAbortableForRunId("run-finalizing")).toBe(false);
-    expect(isEmbeddedAgentRunAbortableForRunId("run-queued")).toBe(true);
-
-    clearEmbeddedAgentRunAbortabilityForRunId("run-finalizing");
-    expect(isEmbeddedAgentRunAbortableForRunId("run-finalizing")).toBe(true);
   });
 
   it("supersedes an exact reply backend only after recording its terminal owner", () => {

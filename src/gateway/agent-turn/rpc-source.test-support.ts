@@ -7,8 +7,11 @@ import {
 import {
   requestRpcSourceCancellation,
   type RpcSourceAdapter,
+  type RpcSourceIdentity,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
+
+export { setRpcSourceIdentityForTest as setTestRpcSourceIdentity } from "../../sessions/session-lifecycle-admission.test-support.js";
 
 const sources = new Set<RpcSourceRef>();
 let storeSequence = 0;
@@ -19,15 +22,19 @@ afterEach(() => {
   sources.clear();
 });
 
-export function createTestRpcSource(adapter: RpcSourceAdapter, runId = "test-run"): RpcSourceRef {
-  const input = reserveSessionControllerSource(adapter.sessionKey, {
+export function createTestRpcSource(
+  metadata: RpcSourceAdapter & RpcSourceIdentity,
+  runId = "test-run",
+): RpcSourceRef {
+  const { sessionKey, sessionId, agentId, ...adapter } = metadata;
+  const input = reserveSessionControllerSource(sessionKey, {
     protocolRunId: runId,
     sourceTurnId: runId,
     target: captureSessionTarget({
       storeScope: `/synthetic/agent-rpc/${++storeSequence}/sessions.db`,
-      sessionKey: adapter.sessionKey,
-      incarnation: adapter.sessionId,
-      agentId: adapter.agentId,
+      sessionKey,
+      incarnation: sessionId,
+      agentId,
     }),
     policy: { mode: "followup" },
     adapter,

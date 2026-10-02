@@ -18,6 +18,7 @@ import {
 import { recordAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import { attachErrorDiagnostic } from "../../infra/error-diagnostics.js";
 import { requestRpcSourceCancellation } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { waitForAgentJob } from "../agent-turn/agent-job.js";
@@ -548,7 +549,7 @@ describe("gateway agent handler", () => {
             }),
           );
           expect(mocks.agentCommand).not.toHaveBeenCalled();
-          expect(context.rpcSources.has(runId)).toBe(false);
+          expect(rpcSourceTesting.has(runId)).toBe(false);
           expect(getSubagentRunByChildSessionKey(childSessionKey)).toMatchObject({
             runId: previousRunId,
             pauseReason: "sessions_yield",
@@ -814,7 +815,6 @@ describe("gateway agent handler", () => {
         expect(persistSubagentRunsToDiskOrThrow).toHaveBeenCalledTimes(1);
         expect(mocks.agentCommand).toHaveBeenCalledTimes(commandCallCount);
         expect(loadSubagentRegistryFromSqlite().has(runId)).toBe(false);
-        expect(context.rpcSources.has(runId)).toBe(false);
         expectRespondError(respond, {
           code: ErrorCodes.UNAVAILABLE,
           message:
@@ -1329,7 +1329,7 @@ describe("gateway agent handler", () => {
       const runId = "gateway-agent-run-abort-error";
       mocks.agentCommand.mockImplementationOnce(() => {
         {
-          const source = context.rpcSources.get(runId);
+          const source = rpcSourceTesting.get(runId);
           if (source) {
             requestRpcSourceCancellation(source);
           }
@@ -1403,7 +1403,7 @@ describe("gateway agent handler", () => {
       const runId = "gateway-agent-run-restart-abort";
       mocks.agentCommand.mockImplementationOnce(() => {
         {
-          const source = context.rpcSources.get(runId);
+          const source = rpcSourceTesting.get(runId);
           if (source) {
             requestRpcSourceCancellation(source, abortError);
           }
@@ -1442,7 +1442,7 @@ describe("gateway agent handler", () => {
       const runId = "gateway-agent-run-timeout-error";
       mocks.agentCommand.mockImplementationOnce(() => {
         {
-          const source = context.rpcSources.get(runId);
+          const source = rpcSourceTesting.get(runId);
           if (source) {
             requestRpcSourceCancellation(source, timeoutError);
           }
@@ -1487,7 +1487,7 @@ describe("gateway agent handler", () => {
         const runId = "gateway-agent-run-wrapped-timeout-error";
         mocks.agentCommand.mockImplementationOnce(() => {
           {
-            const source = context.rpcSources.get(runId);
+            const source = rpcSourceTesting.get(runId);
             if (source) {
               requestRpcSourceCancellation(source, timeoutReason);
             }
@@ -2562,9 +2562,9 @@ describe("gateway agent handler", () => {
     const context = makeContext();
     const registerToolEventRecipient = vi.fn();
     context.registerToolEventRecipient = registerToolEventRecipient;
-    context.rpcSources.set(
+    rpcSourceTesting.set(
       "run-existing",
-      await createActiveRpcSourceForTest({ sessionKey: "global", agentId: "work" }),
+      await createActiveRpcSourceForTest({}, { sessionKey: "global", agentId: "work" }),
     );
 
     await invokeAgent(

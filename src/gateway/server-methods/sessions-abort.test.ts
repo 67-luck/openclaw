@@ -107,7 +107,7 @@ test("sessions.abort aborts a pre-existing session after its agent is removed fr
   await replaceSessionEntry({ agentId, sessionKey, storePath }, { sessionId, updatedAt: 42 });
   const activeRun = createCancellableRun(sessionKey, { agentId, sessionId });
   const { getRuntimeConfig: _getRuntimeConfig, ...abortContext } = createChatAbortContext({
-    rpcSources: new Map([[runId, activeRun]]),
+    sources: new Map([[runId, activeRun]]),
   });
 
   const result = await directSessionReq(
@@ -131,7 +131,7 @@ test("sessions.abort aborts an exact active run for an unconfigured agent withou
   const runId = "run-active-only";
   const activeRun = createCancellableRun(sessionKey, { agentId });
   const { getRuntimeConfig: _getRuntimeConfig, ...abortContext } = createChatAbortContext({
-    rpcSources: new Map([[runId, activeRun]]),
+    sources: new Map([[runId, activeRun]]),
   });
 
   const result = await directSessionReq(
@@ -221,7 +221,7 @@ test("sessions.abort aborts an unconfigured agent with rows in a fixed store", a
   await replaceSessionEntry({ agentId, sessionKey, storePath }, { sessionId, updatedAt: 42 });
   const activeRun = createCancellableRun(sessionKey, { agentId, sessionId });
   const { getRuntimeConfig: _getRuntimeConfig, ...abortContext } = createChatAbortContext({
-    rpcSources: new Map([[runId, activeRun]]),
+    sources: new Map([[runId, activeRun]]),
   });
 
   const result = await directSessionReq(
@@ -278,7 +278,7 @@ test("sessions.abort finds a retired store only reachable through its determinis
   await replaceSessionEntry({ agentId, sessionKey, storePath }, { sessionId, updatedAt: 42 });
   const activeRun = createCancellableRun(sessionKey, { agentId, sessionId });
   const { getRuntimeConfig: _getRuntimeConfig, ...abortContext } = createChatAbortContext({
-    rpcSources: new Map([[runId, activeRun]]),
+    sources: new Map([[runId, activeRun]]),
   });
 
   const result = await directSessionReq(

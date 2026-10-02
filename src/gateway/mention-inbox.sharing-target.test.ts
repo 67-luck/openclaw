@@ -38,7 +38,6 @@ it("refreshes 50 connected mention views without rereading unchanged session tar
         getRuntimeConfig: () => ({}),
         getSessionEventSubscriberConnIds: () => new Set(),
         broadcastToConnIds: f.broadcast,
-        rpcSources: new Map(),
       };
       const emit = (sessionKey = "agent:main:unrelated") =>
         emitSessionsChanged(context, { sessionKey, agentId: "main", reason: "patch" });

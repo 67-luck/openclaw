@@ -311,7 +311,6 @@ async function mutateSessionAtMessage(
         ) ??
           false) ||
         resolveVisibleActiveSessionRunState({
-          context,
           requestedKey: sessionKey,
           canonicalKey: current.canonicalKey,
           sessionId: initialSessionId,

@@ -34,8 +34,8 @@ import { accountAgentTurn, accountFollowupTurn } from "./agent-runner-result-acc
 import { completeReplyAgentRun } from "./agent-runner-result-complete.js";
 import { finalizeReplyAgentRun } from "./agent-runner-result.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
-import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
 import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
+import type { AdmittedFollowupTurn } from "./reply-agent-turn-preparation.js";
 import { createReplySessionEntryHandle } from "./session-entry-handle.js";
 import { incrementCompactionCount } from "./session-updates.js";
 import { createMockFollowupRun, createMockTypingController } from "./test-helpers.js";
@@ -211,7 +211,6 @@ async function createFixture() {
       storePath,
       current: () => handle.getCurrent(),
       publish: (next) => next && handle.replaceCurrent(next),
-      adopt: (next) => handle.adoptCurrent(next),
     },
     sessionStore: handle.toCompatSessionStore(),
     sendPolicy: "allow",
@@ -1010,6 +1009,7 @@ describe.each(["ordinary", "followup"] as const)("%s context-pressure accounting
 
   it("does not recreate a deleted session while accounting a completed result", async () => {
     const fixture = await createFixture();
+    fixture.context.replyOperation.complete();
     await applySessionEntryLifecycleMutation({
       storePath: fixture.context.storePath!,
       removals: [{ sessionKey: fixture.context.sessionKey! }],

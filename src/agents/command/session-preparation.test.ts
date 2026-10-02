@@ -45,7 +45,6 @@ it.each([
     const lifecycleGeneration = getAgentRunLifecycleGeneration();
     const state = () =>
       resolveVisibleActiveSessionRunState({
-        context: {},
         requestedKey: sessionKey,
         canonicalKey: sessionKey,
         sessionId,

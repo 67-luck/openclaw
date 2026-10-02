@@ -14,6 +14,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { isSessionTranscriptProjectionUnavailableError } from "../../config/sessions/session-transcript-projection-error.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
+import { hasRpcSource } from "../../sessions/session-controller.rpc-sources.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
@@ -141,7 +142,7 @@ type ChatSendRetryParams = {
     | "sessionKey"
     | "storePath"
   >;
-  context: Pick<GatewayRequestHandlerOptions["context"], "dedupe" | "chatRunState" | "rpcSources">;
+  context: Pick<GatewayRequestHandlerOptions["context"], "dedupe" | "chatRunState">;
   respond: GatewayRequestHandlerOptions["respond"];
 };
 
@@ -210,7 +211,7 @@ export function resolveChatSendRequestConflict({
     sameDurableSource ||
     hasRestartRecoveryTerminalRun(session.entry, session.clientRunId) ||
     context.chatRunState.hasAbortMarker(session.clientRunId) ||
-    context.rpcSources.has(session.clientRunId);
+    hasRpcSource(session.clientRunId);
   if (!knownRetry) {
     return undefined;
   }
@@ -284,7 +285,7 @@ export function respondChatSendRetry(params: ChatSendRetryParams): boolean {
     entry: context.dedupe.get(pendingChatSendKey),
     keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
   });
-  if (pending || context.rpcSources.has(clientRunId)) {
+  if (pending || hasRpcSource(clientRunId)) {
     respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
       cached: true,
       runId: clientRunId,
@@ -326,7 +327,7 @@ export function inspectGoalChatSendRetry({
     });
     if (
       pending?.payload.goalFingerprint === request.goalOperation.requestFingerprint ||
-      (!pending && !durableClaimAccepted && context.rpcSources.has(clientRunId))
+      (!pending && !durableClaimAccepted && hasRpcSource(clientRunId))
     ) {
       respond(
         false,
@@ -342,7 +343,7 @@ export function inspectGoalChatSendRetry({
       durableClaimAccepted ||
       context.dedupe.has(`chat:${clientRunId}`) ||
       context.chatRunState.hasAbortMarker(clientRunId) ||
-      context.rpcSources.has(clientRunId)
+      hasRpcSource(clientRunId)
     ) {
       throw new SessionGoalOperationError(
         "operation-conflict",

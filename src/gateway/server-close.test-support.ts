@@ -86,7 +86,6 @@ export function createGatewayCloseTestDepsFactory(mocks: GatewayCloseFixtureMock
       transcriptUnsub: null,
       lifecycleUnsub: null,
       chatRunState: createTestChatRunState(),
-      rpcSources: new Map(),
       restartRecoveryCandidates: new Map(),
       removeChatRun: vi.fn(),
       agentRunSeq: new Map(),

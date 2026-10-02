@@ -30,8 +30,11 @@ import {
   runWithRetainedGatewayRootWork,
 } from "../process/gateway-work-admission.js";
 import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  retireRpcSource,
   setRpcSourceProjectSessionActive,
-  type RpcSourceIndex,
   type RpcSourceRef,
 } from "../sessions/session-controller.rpc-sources.js";
 import {
@@ -50,7 +53,7 @@ import {
   markChatAbortTerminalPersistenceError,
   type ChatAbortTerminalDispatch,
 } from "./chat-abort-lifecycle-internal.js";
-import { removeChatAbortControllerEntry, type RestartRecoveryCandidate } from "./chat-abort.js";
+import type { RestartRecoveryCandidate } from "./chat-abort.js";
 import { bumpGatewayAccessRevision } from "./gateway-access-revision.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
 import type {
@@ -112,7 +115,6 @@ export function startGatewayEventSubscriptions(params: {
   toolEventRecipients: ToolEventRecipientRegistry;
   sessionEventSubscribers: SessionEventSubscriberRegistry;
   sessionMessageSubscribers: SessionMessageSubscriberRegistry;
-  rpcSources: RpcSourceIndex;
   restartRecoveryCandidates: Map<string, RestartRecoveryCandidate>;
   refreshConnectedUserProfiles: () => void;
   getSessionRowProjection?: () => SessionRowProjection | undefined;
@@ -199,33 +201,23 @@ export function startGatewayEventSubscriptions(params: {
     runId === clientRunId ? [runId] : [runId, clientRunId];
   const clearTrackedActiveRun = (run: { runId: string; clientRunId: string }) => {
     for (const candidateRunId of trackedRunIds(run.runId, run.clientRunId)) {
-      const entry = params.rpcSources.get(candidateRunId);
+      const entry = getRpcSource(candidateRunId);
       if (!entry) {
         continue;
       }
       setRpcSourceProjectSessionActive(entry, false);
-      queueMicrotask(() => {
-        const current = params.rpcSources.get(candidateRunId);
-        if (
-          current === entry &&
-          entry.adapter.registrationCleanupRequested === true &&
-          !entry.adapter.projectSessionTerminalPersistence
-        ) {
-          removeChatAbortControllerEntry(params.rpcSources, candidateRunId, entry);
-        }
-      });
     }
   };
   const settleTrackedTerminal = (run: { runId: string; clientRunId: string }) => {
     for (const candidateRunId of trackedRunIds(run.runId, run.clientRunId)) {
-      const entry = params.rpcSources.get(candidateRunId);
+      const entry = getRpcSource(candidateRunId);
       if (!entry || entry.adapter.projectSessionTerminalPersistence) {
         continue;
       }
       entry.adapter.projectSessionTerminalPending = false;
       entry.adapter.projectSessionTerminalPersisted = false;
-      if (entry.adapter.registrationCleanupRequested === true) {
-        removeChatAbortControllerEntry(params.rpcSources, candidateRunId, entry);
+      if (entry.input.retirementRequested) {
+        retireRpcSource(candidateRunId, entry);
       }
     }
   };
@@ -242,7 +234,7 @@ export function startGatewayEventSubscriptions(params: {
     }
     let tracked = false;
     for (const candidateRunId of trackedRunIds(run.runId, run.clientRunId)) {
-      const entry = params.rpcSources.get(candidateRunId);
+      const entry = getRpcSource(candidateRunId);
       if (!entry) {
         continue;
       }
@@ -250,9 +242,10 @@ export function startGatewayEventSubscriptions(params: {
       entry.adapter.projectSessionTerminalPersisted = false;
       markChatAbortTerminalPersistenceError(entry, undefined);
       entry.adapter.projectSessionTerminalPersistence = run.persistence;
-      const lifecycleGeneration = entry.adapter.lifecycleGeneration;
-      const sessionKey = entry.adapter.sessionKey;
-      const sessionId = run.sessionId || entry.adapter.sessionId;
+      const lifecycleGeneration = getRpcSourceLifecycleGeneration(entry);
+      const identity = getRpcSourceIdentity(entry);
+      const sessionKey = identity.sessionKey;
+      const sessionId = run.sessionId || identity.sessionId;
       // Lazy chat consumption must retain the terminal time stamped at ingress.
       const observedAt = entry.adapter.projectSessionTerminalObservedAt;
       const settle = (persisted: boolean, error?: unknown) => {
@@ -265,7 +258,7 @@ export function startGatewayEventSubscriptions(params: {
         entry.adapter.projectSessionTerminalPersistence = undefined;
         entry.adapter.projectSessionTerminalPersisted = persisted;
         markChatAbortTerminalPersistenceError(entry, error);
-        if (params.rpcSources.get(candidateRunId) !== entry) {
+        if (getRpcSource(candidateRunId) !== entry) {
           return;
         }
         if (persisted) {
@@ -284,8 +277,8 @@ export function startGatewayEventSubscriptions(params: {
             observedAt,
           });
         }
-        if (entry.adapter.registrationCleanupRequested === true) {
-          removeChatAbortControllerEntry(params.rpcSources, candidateRunId, entry);
+        if (entry.input.retirementRequested) {
+          retireRpcSource(candidateRunId, entry);
         }
       };
       void run.persistence.then(
@@ -358,7 +351,7 @@ export function startGatewayEventSubscriptions(params: {
             persistGatewaySessionLifecycleEventForEvent: sessionLifecyclePersistence.persist,
             updateRunToolErrorSummary: ({ runId, clientRunId, summary }) => {
               for (const candidateRunId of new Set([runId, clientRunId])) {
-                const entry = params.rpcSources.get(candidateRunId);
+                const entry = getRpcSource(candidateRunId);
                 if (entry) {
                   entry.adapter.toolErrorSummary = summary;
                 }
@@ -368,16 +361,17 @@ export function startGatewayEventSubscriptions(params: {
             settleTrackedTerminal,
             trackTrackedRunTerminalPersistence,
             isChatSendRunActive: (runId) => {
-              const entry = params.rpcSources.get(runId);
+              const entry = getRpcSource(runId);
               // This callback identifies the terminal-response owner, not the
               // sessions.list activity projection. Retain it while the source settles.
               return entry !== undefined && entry.adapter.kind !== "agent";
             },
-            resolveActiveLifecycleGenerationForRun: (runId) =>
-              params.rpcSources.get(runId)?.adapter.lifecycleGeneration,
+            resolveActiveLifecycleGenerationForRun: (runId) => {
+              const entry = getRpcSource(runId);
+              return entry ? getRpcSourceLifecycleGeneration(entry) : undefined;
+            },
             resolveSessionActiveRunState: (session) =>
               resolveVisibleActiveSessionRunState({
-                context: params,
                 ...session,
                 projectedAgentRunIndex:
                   params.getSessionRowProjection?.()?.state.rowContext.projectedAgentRuns,
@@ -449,13 +443,14 @@ export function startGatewayEventSubscriptions(params: {
           ? evt.data.endedAt
           : evt.ts;
       for (const candidateRunId of candidateRunIds) {
-        const entry = params.rpcSources.get(candidateRunId);
+        const entry = getRpcSource(candidateRunId);
         const eventLifecycleGeneration = evt.lifecycleGeneration;
+        const lifecycleGeneration = entry ? getRpcSourceLifecycleGeneration(entry) : undefined;
         if (
           entry &&
           (!eventLifecycleGeneration ||
-            !entry.adapter.lifecycleGeneration ||
-            entry.adapter.lifecycleGeneration === eventLifecycleGeneration)
+            !lifecycleGeneration ||
+            lifecycleGeneration === eventLifecycleGeneration)
         ) {
           entry.adapter.projectSessionTerminalPending = true;
           entry.adapter.projectSessionTerminalObservedAt = observedAt;
@@ -463,20 +458,24 @@ export function startGatewayEventSubscriptions(params: {
         }
       }
       const trackedEntry = candidateRunIds
-        .map((candidateRunId) => params.rpcSources.get(candidateRunId))
+        .map((candidateRunId) => getRpcSource(candidateRunId))
         .find((entry) => entry !== undefined);
       const runContext = getAgentRunContext(evt.runId);
+      const trackedIdentity = trackedEntry ? getRpcSourceIdentity(trackedEntry) : undefined;
       // Match the chat projection owner before preparing the shared terminal write.
       // A bound ACP runtime emits its target key, but the chat link owns the source run.
       const sessionAgentId =
-        chatLink?.agentId ?? evt.agentId ?? trackedEntry?.adapter.agentId ?? runContext?.agentId;
+        chatLink?.agentId ?? evt.agentId ?? trackedIdentity?.agentId ?? runContext?.agentId;
       const knownSessionKey =
         chatLink?.sessionKey ??
         evt.deliverySessionKey ??
         evt.sessionKey ??
-        trackedEntry?.adapter.sessionKey ??
+        trackedIdentity?.sessionKey ??
         runContext?.sessionKey;
       const eventLifecycleGeneration = evt.lifecycleGeneration;
+      const trackedLifecycleGeneration = trackedEntry
+        ? getRpcSourceLifecycleGeneration(trackedEntry)
+        : undefined;
       const terminalAuthority =
         evt.contextClaimId && eventLifecycleGeneration
           ? {
@@ -488,8 +487,8 @@ export function startGatewayEventSubscriptions(params: {
       const trackedOwnerIsCurrent =
         !trackedEntry ||
         !eventLifecycleGeneration ||
-        !trackedEntry.adapter.lifecycleGeneration ||
-        trackedEntry.adapter.lifecycleGeneration === eventLifecycleGeneration;
+        !trackedLifecycleGeneration ||
+        trackedLifecycleGeneration === eventLifecycleGeneration;
       const claimIsComplete = !evt.contextClaimId || terminalAuthority !== undefined;
       const canPersistTerminal =
         isDefinitiveRunLifecycle({ phase: lifecyclePhase, data: evt.data }) &&
@@ -560,12 +559,13 @@ export function startGatewayEventSubscriptions(params: {
       const candidateRunIds = evt.runId === clientRunId ? [evt.runId] : [evt.runId, clientRunId];
       const eventLifecycleGeneration = evt.lifecycleGeneration;
       for (const candidateRunId of candidateRunIds) {
-        const entry = params.rpcSources.get(candidateRunId);
+        const entry = getRpcSource(candidateRunId);
+        const lifecycleGeneration = entry ? getRpcSourceLifecycleGeneration(entry) : undefined;
         if (
           entry &&
           (!eventLifecycleGeneration ||
-            !entry.adapter.lifecycleGeneration ||
-            entry.adapter.lifecycleGeneration === eventLifecycleGeneration)
+            !lifecycleGeneration ||
+            lifecycleGeneration === eventLifecycleGeneration)
         ) {
           entry.adapter.projectSessionTerminalPending = false;
           entry.adapter.projectSessionTerminalObservedAt = undefined;

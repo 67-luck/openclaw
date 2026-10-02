@@ -9,6 +9,8 @@ import {
 } from "../../infra/agent-run-registry.js";
 import type { ReplyBackendMessageInjectionV2 } from "../../sessions/session-controller.contracts.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
+import { getRpcSourceIdentity } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { setUserProfileRole } from "../../state/user-profiles.js";
 import { projectChatDisplayMessages } from "../chat-display-projection.js";
@@ -310,7 +312,7 @@ describe("registered progress refresh admission", () => {
           projectSessionActive: false,
           projectSessionLifecycle: false,
         });
-        expect(f.context.rpcSources.get(payload.runId)?.adapter).toMatchObject({
+        expect(rpcSourceTesting.get(payload.runId)?.adapter).toMatchObject({
           controlUiVisible: false,
           projectSessionActive: false,
         });
@@ -330,7 +332,8 @@ describe("registered progress refresh admission", () => {
           sessionId: f.scope.sessionId,
           storePath: f.scope.storePath,
         });
-        expect(f.context.rpcSources.get(payload.runId)?.adapter.sessionId).toBe(f.scope.sessionId);
+        const source = rpcSourceTesting.get(payload.runId);
+        expect(source && getRpcSourceIdentity(source).sessionId).toBe(f.scope.sessionId);
         await recorder.persistApproved();
         const rows = loadTranscriptEventsSync(f.scope);
         const messages = rows.flatMap((row) =>

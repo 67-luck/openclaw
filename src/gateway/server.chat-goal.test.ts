@@ -21,6 +21,7 @@ import {
   captureSessionControllerSettlement,
   isSessionControllerWorkActive,
 } from "../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { listSessionStateEventsSince } from "../sessions/session-state-events.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
@@ -216,7 +217,7 @@ async function waitForDispatchEnd() {
     scope: storePath,
     identities: [sessionKey, sessionId],
   });
-  expect(context.rpcSources.size).toBe(0);
+  expect(rpcSourceTesting.size).toBe(0);
 }
 
 async function withHeldModel(run: () => Promise<void>) {
@@ -240,7 +241,7 @@ function profileClient(profileId: string): GatewayClient {
 function expectNoDispatch() {
   expect(userMessages()).toEqual([]);
   expect(runEmbeddedAgent).not.toHaveBeenCalled();
-  expect(context.rpcSources.size).toBe(0);
+  expect(rpcSourceTesting.size).toBe(0);
 }
 
 async function waitForModelRun(count = 1) {

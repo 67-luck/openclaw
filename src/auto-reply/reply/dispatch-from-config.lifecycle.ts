@@ -616,7 +616,10 @@ export function createDispatchReplyOperationCoordinator(params: {
   const getReplyOptions = (): DispatchFromConfigParams["replyOptions"] => {
     const abortSignal = getDispatchAbortSignal();
     const expectedExistingSessionId = params.replyOptions?.expectedExistingSessionId
-      ? (dispatchReplyOperation?.sessionId ?? admittedExpectedSessionId)
+      ? (dispatchReplyOperation?.sessionId ??
+        params.replyOptions.expectedActiveReplyOperation?.sessionId ??
+        preDispatchAbortOperation?.sessionId ??
+        admittedExpectedSessionId)
       : undefined;
     const onAgentRunStart: NonNullable<
       NonNullable<DispatchFromConfigParams["replyOptions"]>["onAgentRunStart"]

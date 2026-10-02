@@ -4,16 +4,20 @@ import {
 } from "../../agents/embedded-agent-runner/run-state.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  listRpcSourceEntries,
+} from "../../sessions/session-controller.rpc-sources.js";
+import {
   getAttachedBackend,
   isCurrentSessionControllerOperation,
 } from "../../sessions/session-controller.state.js";
 import type { controlRealtimeVoiceAgentRun } from "../../talk/agent-run-control.js";
 import { resolveClientVoiceRunBinding } from "../../talk/client-voice-session.js";
-import type { GatewayRequestContext } from "../server-methods/types.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
 export function resolveOwnedActiveTalkRunTarget(params: {
-  context: Pick<GatewayRequestContext, "rpcSources">;
   clientConnId?: string;
   sessionTarget: PreparedTalkSessionTarget;
   /** The shipped talk.client.steer RPC is session-wide; attached transports select their call. */
@@ -29,18 +33,19 @@ export function resolveOwnedActiveTalkRunTarget(params: {
     return null;
   }
   const { agentId, sessionKey, canonicalKey } = params.sessionTarget;
-  for (const [runId, entry] of params.context.rpcSources) {
-    const generation = entry.adapter.lifecycleGeneration;
+  for (const [runId, entry] of listRpcSourceEntries()) {
+    const generation = getRpcSourceLifecycleGeneration(entry);
     if (!generation) {
       continue;
     }
+    const identity = getRpcSourceIdentity(entry);
     const signal = entry.input.abortSignal;
     const claim = entry.input.claim;
     const operation = claim?.operation;
     if (!claim || claim.released || !operation || !isCurrentSessionControllerOperation(operation)) {
       continue;
     }
-    const handle = getActiveNativeAttempt(entry.adapter.sessionId);
+    const handle = getActiveNativeAttempt(identity.sessionId);
     const registration = handle ? getEmbeddedRunAttachment(handle) : undefined;
     const voiceBinding =
       params.scope.kind === "voice-session" ? resolveClientVoiceRunBinding(runId) : undefined;
@@ -49,6 +54,8 @@ export function resolveOwnedActiveTalkRunTarget(params: {
     const reply = params.scope.kind === "session" && !handle ? operation : undefined;
     const isCurrent = (resolvedSessionId?: string) => {
       params.assertCurrent?.();
+      const currentIdentity = getRpcSourceIdentity(entry);
+      const currentGeneration = getRpcSourceLifecycleGeneration(entry);
       const replyOwner =
         reply &&
         entry.input.claim === claim &&
@@ -71,22 +78,23 @@ export function resolveOwnedActiveTalkRunTarget(params: {
         }
       }
       return (
-        params.context.rpcSources.get(runId) === entry &&
+        getRpcSource(runId) === entry &&
         entry.input.claim === claim &&
         claim.operation === operation &&
         !claim.released &&
         isCurrentSessionControllerOperation(operation) &&
         !operation.abortSignal.aborted &&
         !operation.result &&
-        entry.adapter.agentId === agentId &&
-        (entry.adapter.sessionKey === sessionKey || entry.adapter.sessionKey === canonicalKey) &&
-        entry.adapter.ownerConnId === connId &&
+        currentIdentity.agentId === agentId &&
+        (currentIdentity.sessionKey === sessionKey ||
+          currentIdentity.sessionKey === canonicalKey) &&
+        entry.adapter.requester?.connectionId === connId &&
         entry.adapter.kind !== "agent" &&
         (!reply ||
           (replyOwner?.key === canonicalKey &&
             (!replyHandle || getAttachedBackend(reply) === replyHandle))) &&
         (resolvedSessionId === undefined ||
-          (entry.adapter.sessionId === resolvedSessionId &&
+          (currentIdentity.sessionId === resolvedSessionId &&
             (replyOwner
               ? replyOwner.sessionId === resolvedSessionId
               : handle !== undefined &&
@@ -94,7 +102,7 @@ export function resolveOwnedActiveTalkRunTarget(params: {
                 getEmbeddedRunAttachment(handle) === registration))) &&
         entry.input.abortSignal === signal &&
         !signal.aborted &&
-        entry.adapter.lifecycleGeneration === generation &&
+        currentGeneration === generation &&
         isAgentEventLifecycleGenerationCurrent(generation)
       );
     };

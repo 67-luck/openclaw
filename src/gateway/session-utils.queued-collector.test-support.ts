@@ -168,7 +168,6 @@ export function useQueuedCollectorFixture() {
         sessionId: "parent-session",
         agentId: "main",
       }),
-      rpcSources: context.rpcSources,
       runId: "parent-turn",
       sessionId: "parent-session",
       sessionKey: parentKey,

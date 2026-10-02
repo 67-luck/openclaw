@@ -394,7 +394,6 @@ describe("pending spawn preparation authority", () => {
             const childSessionKey = params.sessionKey as string;
             const child = loadSessionEntry({ storePath, sessionKey: childSessionKey })!;
             childController = registerChatAbortController({
-              rpcSources: context.rpcSources,
               target: captureSessionTarget({
                 storeScope: storePath,
                 sessionKey: childSessionKey,

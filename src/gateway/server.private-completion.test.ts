@@ -22,8 +22,10 @@ import {
   runSessionMutation,
   SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
 } from "../sessions/session-controller.lifecycle.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import { isRpcSourceExecuting } from "../sessions/session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -39,7 +41,7 @@ import {
 import { setAbortedAgentDedupeEntries } from "./agent-turn/agent-dedupe.js";
 import * as agentJobs from "./agent-turn/agent-job.js";
 import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-internal.js";
-import { abortChatRunById, type ChatAbortControllerEntry } from "./chat-abort.js";
+import { abortChatRunById } from "./chat-abort.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugin-in-process-dispatch.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
 import * as lifecycleState from "./session-lifecycle-state.js";
@@ -261,22 +263,18 @@ describe("private subagent completion processing receipts", () => {
           : "synthetic provider failure",
       );
       await entered.promise;
-      const source = expectDefined(
-        kernel.gatewayRequestContext.rpcSources.get(runId),
-        "private source",
-      );
+      const source = expectDefined(rpcSourceTesting.get(runId), "private source");
       allowed = cause !== "source changed";
       release.resolve();
       await observed;
       await source.input.settlement.promise;
       expect(
         await waitForChatAbortControllerRemoval({
-          entries: kernel.gatewayRequestContext.rpcSources,
           targets: [{ runId, entry: source }],
           timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
         }),
       ).toBe(true);
-      expect(kernel.gatewayRequestContext.rpcSources.has(runId)).toBe(false);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
       const cancelled = cause === "source changed";
       expect(processingCount).toBe(cancelled ? 0 : 1);
       const failedNotice = transcript().some((event) =>
@@ -368,7 +366,7 @@ describe("private subagent completion processing receipts", () => {
     });
     try {
       await expect(dispatch()).rejects.toThrow("synthetic receipt write unavailable");
-      expect(kernel.gatewayRequestContext.rpcSources.has(runId)).toBe(false);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
       expect(kernel.gatewayRequestContext.dedupe.get(`agent:${runId}`)).toMatchObject({
         ok: false,
         payload: { status: "error" },
@@ -471,7 +469,7 @@ describe("private subagent completion processing receipts", () => {
       database().db.exec(
         `CREATE TRIGGER fail_private_admission BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'synthetic private transaction failure'); END`,
       );
-      const aborted: Array<{ runId: string; entry: ChatAbortControllerEntry }> = [];
+      const aborted: Array<{ runId: string; entry: RpcSourceRef }> = [];
       try {
         await expect(
           dispatch(
@@ -481,7 +479,7 @@ describe("private subagent completion processing receipts", () => {
                   aborted.push({
                     runId,
                     entry: expectDefined(
-                      kernel.gatewayRequestContext.rpcSources.get(runId),
+                      rpcSourceTesting.get(runId),
                       "Expected the accepted run's cancellation owner",
                     ),
                   });
@@ -496,12 +494,11 @@ describe("private subagent completion processing receipts", () => {
         ).rejects.toThrow("synthetic private transaction failure");
         expect(
           await waitForChatAbortControllerRemoval({
-            entries: kernel.gatewayRequestContext.rpcSources,
             targets: aborted,
             timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
           }),
         ).toBe(true);
-        expect(kernel.gatewayRequestContext.rpcSources.has(runId)).toBe(false);
+        expect(rpcSourceTesting.has(runId)).toBe(false);
         expect(agentCommandMock).not.toHaveBeenCalled();
         expect(completions()).toEqual([]);
         if (phase === "admission") {
@@ -641,13 +638,13 @@ describe("private subagent completion processing receipts", () => {
     } finally {
       signal.removeEventListener("abort", releaseWaitAdmission);
       waitObservation.mockRestore();
-      if (kernel.gatewayRequestContext.rpcSources.has(runId)) {
+      if (rpcSourceTesting.has(runId)) {
         await kernel.gatewayInstanceRuntime.recovery.dispatchSessionMethod("chat.abort", {
           sessionKey,
           runId,
         });
       }
-      if (kernel.gatewayRequestContext.rpcSources.has(descendantRunId)) {
+      if (rpcSourceTesting.has(descendantRunId)) {
         await kernel.gatewayInstanceRuntime.recovery.dispatchSessionMethod("chat.abort", {
           sessionKey: childSessionKey,
           runId: descendantRunId,
@@ -727,10 +724,7 @@ describe("private subagent completion processing receipts", () => {
         (error: unknown) => ({ error: String(error) }),
       );
       await consumed.promise;
-      const active = expectDefined(
-        kernel.gatewayRequestContext.rpcSources.get(runId),
-        "executing controller",
-      );
+      const active = expectDefined(rpcSourceTesting.get(runId), "executing controller");
       expect(isRpcSourceExecuting(active)).toBe(true);
       const releaseTerminalWrite = createDeferred();
       let terminalWrite: Promise<void> | undefined;
@@ -772,7 +766,7 @@ describe("private subagent completion processing receipts", () => {
         await clock.advanceBy(60_000);
         expect(active.input.abortSignal.aborted).toBe(true);
         expect(active.adapter.abortStopReason).toBe("timeout");
-        expect(kernel.gatewayRequestContext.rpcSources.get(runId)).toBe(active);
+        expect(rpcSourceTesting.get(runId)).toBe(active);
         expect(completions()).toEqual([]);
         if (kind === "abandoned") {
           // A producer abandoned by its observer still owns raw work. Hold both
@@ -806,12 +800,11 @@ describe("private subagent completion processing receipts", () => {
       expect(outcome).toMatchObject({ status: "timeout", stopReason: "timeout" });
       expect(
         await waitForChatAbortControllerRemoval({
-          entries: kernel.gatewayRequestContext.rpcSources,
           targets: [{ runId, entry: active }],
           timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
         }),
       ).toBe(true);
-      expect(kernel.gatewayRequestContext.rpcSources.has(runId)).toBe(false);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
       if (kind === "resolved") {
         expect(outcome).toMatchObject({
           reason: "hard_timeout",

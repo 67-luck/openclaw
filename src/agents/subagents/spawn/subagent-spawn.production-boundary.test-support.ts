@@ -106,7 +106,6 @@ export async function createSpawnBoundaryParent(params: {
     },
   });
   const parent = registerChatAbortController({
-    rpcSources: context.rpcSources,
     target: captureSessionTarget({
       storeScope: storePath,
       sessionKey: parentSessionKey,

@@ -27,6 +27,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resetAgentEventsForTest } from "../../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import {
@@ -85,14 +86,16 @@ describe("resident sessions.list", () => {
           ...loadSessionEntry(terminalScope)!,
           status: "done",
         });
-        context.rpcSources.set(
+        rpcSourceTesting.set(
           "retained-terminal",
-          createRpcSourceForTest({
-            sessionId: "main-active",
-            sessionKey: terminalScope.sessionKey,
-            agentId: "main",
-            projectSessionActive: false,
-          }),
+          createRpcSourceForTest(
+            { projectSessionActive: false },
+            {
+              sessionId: "main-active",
+              sessionKey: terminalScope.sessionKey,
+              agentId: "main",
+            },
+          ),
         );
         if (filtered) {
           expect((await listSessions({ client, context, request })).sessions).toEqual([]);
@@ -895,13 +898,16 @@ describe("resident sessions.list", () => {
         const context = requestContext(config);
         if (filter.activeOnly) {
           for (const name of ["first", "second", "third"]) {
-            context.rpcSources.set(
+            rpcSourceTesting.set(
               `page-run-${name}`,
-              await createActiveRpcSourceForTest({
-                sessionId: `page-${name}`,
-                sessionKey: `agent:main:page-${name}`,
-                agentId: "main",
-              }),
+              await createActiveRpcSourceForTest(
+                {},
+                {
+                  sessionId: `page-${name}`,
+                  sessionKey: `agent:main:page-${name}`,
+                  agentId: "main",
+                },
+              ),
             );
           }
         }

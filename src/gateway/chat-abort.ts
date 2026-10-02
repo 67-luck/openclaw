@@ -21,17 +21,24 @@ import {
 import type { SessionTarget } from "../sessions/session-controller.lifecycle.js";
 import {
   reserveSessionControllerSource,
-  retireSessionControllerInput,
   trackSessionControllerSourceWork,
   type SessionControllerSourceAdapter,
 } from "../sessions/session-controller.mailbox.js";
 import {
   getRpcSourceProjectSessionActive,
   getRpcSourceStartedAt,
+  getRpcSource,
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  hasRpcSource,
   isRpcSourceExecuting,
+  listRpcSourceEntries,
+  registerRpcSource,
+  retireRpcSource,
   requestRpcSourceCancellation,
   setRpcSourceProjectSessionActive,
   type RpcSourceAdapter,
+  type RpcSourceRef,
 } from "../sessions/session-controller.rpc-sources.js";
 import { captureSessionControllerStop, stopSession } from "../sessions/session-controller.stop.js";
 import {
@@ -39,7 +46,6 @@ import {
   type ChatAbortDiagnosticReason,
 } from "./chat-abort-diagnostics.js";
 import { notifyChatAbortControllerRemoved } from "./chat-abort-lifecycle-internal.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
 import { appendChatCanvasBlocksToMessage } from "./chat-display-projection.canvas.js";
 import { resolveChatRunOwnerAgentId } from "./chat-run-owner.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
@@ -50,7 +56,6 @@ import {
   resolveSessionSubscriptionKeys,
 } from "./session-subscription-keys.js";
 
-export type { ChatAbortControllerEntry } from "./chat-abort.types.js";
 export {
   projectInFlightRunSnapshot,
   resolveInFlightRunSnapshot,
@@ -72,10 +77,7 @@ type RegisteredChatAbortController = {
   markExecutionStarted: () => boolean;
   bindAgentRunDelegatedAuthority: (authority: AgentRunDelegatedAuthority) => void;
   cleanup: () => void;
-} & (
-  | { registered: true; entry: ChatAbortControllerEntry }
-  | { registered: false; entry?: undefined }
-);
+} & ({ registered: true; entry: RpcSourceRef } | { registered: false; entry?: undefined });
 
 export function isChatStopCommandText(text: string): boolean {
   return isAbortRequestText(text);
@@ -138,7 +140,6 @@ export function resolveAgentRunExpiresAtMs(params: {
 }
 
 export function registerChatAbortController(params: {
-  rpcSources: Map<string, ChatAbortControllerEntry>;
   target?: SessionTarget;
   policy?: QueueSettings;
   authority?: SessionControllerSourceAdapter["authority"];
@@ -153,9 +154,8 @@ export function registerChatAbortController(params: {
   authProviderId?: string;
   controlUiVisible?: boolean;
   projectSessionActive?: boolean;
-  isAbortable?: (entry: ChatAbortControllerEntry) => boolean;
   resolveTerminalProducer?: (
-    entry: ChatAbortControllerEntry,
+    entry: RpcSourceRef,
   ) => ReturnType<NonNullable<RpcSourceAdapter["resolveTerminalProducer"]>>;
   onRemoved?: () => void;
   kind?: RpcSourceAdapter["kind"];
@@ -168,7 +168,7 @@ export function registerChatAbortController(params: {
   expiresAtMs?: number;
 }): RegisteredChatAbortController {
   // Sessionless RPCs retain prepared authority without a fabricated session owner.
-  if (!params.sessionKey || params.rpcSources.has(params.runId)) {
+  if (!params.sessionKey || hasRpcSource(params.runId)) {
     const controller = new AbortController();
     return {
       controller,
@@ -184,27 +184,20 @@ export function registerChatAbortController(params: {
     throw new Error("RPC source requires its captured physical session target");
   }
   const adapter: RpcSourceAdapter = {
-    scope: params.target.storeScope,
     authority: params.authority,
     requester: { connectionId: params.ownerConnId, deviceId: params.ownerDeviceId },
-    sessionId: params.sessionId,
-    sessionKey: params.sessionKey,
     lifecycleGeneration: params.lifecycleGeneration ?? getAgentEventLifecycleGeneration(),
     operationalRunInstance: params.operationalRunInstance,
-    agentId: normalizeOptionalLowercaseString(params.agentId),
-    ownerConnId: params.ownerConnId,
-    ownerDeviceId: params.ownerDeviceId,
     providerId: normalizeOptionalLowercaseString(params.providerId),
     authProviderId: normalizeOptionalLowercaseString(params.authProviderId),
     controlUiVisible: params.controlUiVisible ?? params.projectSessionActive,
-    isAbortable: params.isAbortable,
-    onRemoved: params.onRemoved,
     kind: params.kind,
     turnKind: params.turnKind,
   };
   const input = reserveSessionControllerSource(params.sessionKey, {
     protocolRunId: params.runId,
     sourceTurnId: params.runId,
+    sourceSessionId: params.sessionId,
     policy: params.policy ?? { mode: "followup" },
     target: params.target,
     adapter,
@@ -212,7 +205,7 @@ export function registerChatAbortController(params: {
   if (params.sourceWork) {
     trackSessionControllerSourceWork(input, params.sourceWork);
   }
-  const entry: ChatAbortControllerEntry = { input, adapter };
+  const entry: RpcSourceRef = { input, adapter };
   adapter.cancel = (reason) => {
     adapter.abortStopReason ??=
       typeof reason === "string"
@@ -227,66 +220,47 @@ export function registerChatAbortController(params: {
   const controller: AbortController = {
     signal: input.abortSignal,
     abort: (reason?: unknown) => {
+      adapter.abortStopReason ??= "rpc";
       requestRpcSourceCancellation(entry, reason);
     },
   };
   const cleanup = () => {
-    if (params.rpcSources.get(params.runId) !== entry) {
+    if (getRpcSource(params.runId) !== entry) {
       return;
     }
     if (adapter.agentRunDelegatedAuthority) {
       releaseAgentRunDelegatedAuthority(adapter.agentRunDelegatedAuthority);
     }
-    adapter.registrationCleanupRequested = true;
-    // Accepted injection retains this source through its native outcome. A
-    // returning dispatcher releases only registration custody, not the input.
-    if (input.injection) {
-      return;
-    }
-    if (input.custody.work?.size || input.custody.adopting || input.custody.settling) {
-      retireSessionControllerInput(input);
-      return;
-    }
+    // Claimed and injected sources settle through their controller operation.
+    // The settlement observer removes the protocol index without a Gateway flag.
     if (
+      input.injection ||
       (input.claim && !input.claim.released) ||
       (input.custody.enqueued && input.phase !== "consumed")
     ) {
       return;
     }
-    if (adapter.projectSessionTerminalPending) {
-      return;
-    }
     const persistence = adapter.projectSessionTerminalPersistence;
     if (persistence) {
-      const finish = (persisted: boolean) => {
-        if (
-          params.rpcSources.get(params.runId) === entry &&
-          adapter.projectSessionTerminalPersistence === persistence
-        ) {
-          // Keep a rejected write on the captured receipt: index removal is not
-          // successful persistence, and the drain owner must retain that failure.
-          if (persisted) {
+      void persistence.then(
+        () => {
+          if (adapter.projectSessionTerminalPersistence === persistence) {
+            adapter.projectSessionTerminalPending = false;
             adapter.projectSessionTerminalPersistence = undefined;
           }
-          removeChatAbortControllerEntry(params.rpcSources, params.runId, entry);
-        }
-      };
-      void persistence
-        .then(
-          () => finish(true),
-          () => finish(false),
-        )
-        .catch(() => {});
-      return;
+        },
+        () => {},
+      );
     }
-    removeChatAbortControllerEntry(params.rpcSources, params.runId, entry);
+    retireRpcSource(params.runId, entry);
   };
-  adapter.onSettled = () => {
-    if (adapter.registrationCleanupRequested) {
-      cleanup();
+  registerRpcSource(params.runId, entry, () => {
+    try {
+      params.onRemoved?.();
+    } finally {
+      notifyChatAbortControllerRemoved(entry);
     }
-  };
-  params.rpcSources.set(params.runId, entry);
+  });
   return {
     controller,
     registered: true,
@@ -294,7 +268,7 @@ export function registerChatAbortController(params: {
     markExecutionStarted: () => isRpcSourceExecuting(entry),
     bindAgentRunDelegatedAuthority: (authority) => {
       if (
-        params.rpcSources.get(params.runId) !== entry ||
+        getRpcSource(params.runId) !== entry ||
         !adapter.operationalRunInstance ||
         authority.operationalRunInstance !== adapter.operationalRunInstance ||
         (adapter.agentRunDelegatedAuthority && adapter.agentRunDelegatedAuthority !== authority)
@@ -308,7 +282,6 @@ export function registerChatAbortController(params: {
 }
 
 export type ChatAbortOps = {
-  rpcSources: Map<string, ChatAbortControllerEntry>;
   chatRunState: Pick<ChatRunState, "clearRun" | "getOrCreate" | "resolveBuffer" | "runs">;
   removeChatRun: (
     sessionId: string,
@@ -392,58 +365,6 @@ function resolveDefaultGlobalAgentId(ops: ChatAbortOps): string | undefined {
   return resolved.ok ? resolved.agentId : undefined;
 }
 
-export function isChatAbortControllerEntryAbortable(entry: ChatAbortControllerEntry): boolean {
-  if (
-    entry.input.abortSignal.aborted ||
-    entry.input.phase === "consumed" ||
-    entry.input.custody.cancellationRetired ||
-    entry.input.retirementRequested ||
-    entry.input.withdrawalHolds > 0 ||
-    entry.input.claim?.operation?.abortFrozen ||
-    entry.input.claim?.operation?.result
-  ) {
-    return false;
-  }
-  try {
-    return entry.adapter.isAbortable?.(entry) !== false;
-  } catch {
-    return false;
-  }
-}
-
-export function removeChatAbortControllerEntry(
-  entries: Map<string, ChatAbortControllerEntry>,
-  runId: string,
-  expectedEntry?: ChatAbortControllerEntry,
-): boolean {
-  const entry = entries.get(runId);
-  if (!entry || (expectedEntry && entry !== expectedEntry)) {
-    return false;
-  }
-  // A timeout or terminal projection does not settle the source. In particular,
-  // never seal a generic private timeout while its producer can still publish facts.
-  if (
-    entry.input.custody.work?.size ||
-    entry.input.injection ||
-    entry.input.custody.adopting ||
-    entry.input.custody.settling ||
-    (entry.input.claim && !entry.input.claim.released) ||
-    (entry.input.custody.enqueued && entry.input.phase !== "consumed")
-  ) {
-    return false;
-  }
-  entries.delete(runId);
-  retireSessionControllerInput(entry.input);
-  try {
-    entry.adapter.onRemoved?.();
-  } catch {
-    // Removal owns state cleanup even if a caller-provided release hook fails.
-  } finally {
-    notifyChatAbortControllerRemoved(entry);
-  }
-  return true;
-}
-
 export function captureChatRunAbortPresentation(ops: ChatAbortOps, runId: string) {
   const bufferedText = ops.chatRunState.resolveBuffer(runId, { final: true }).text;
   const run = ops.chatRunState.runs.get(runId);
@@ -473,7 +394,7 @@ export function abortChatRunById(
     diagnosticReason?: ChatAbortDiagnosticReason;
     onAbortPrepared?: () => void;
     onAbortCommitted?: () => void;
-    expectedEntry?: ChatAbortControllerEntry;
+    expectedEntry?: RpcSourceRef;
     /** Shutdown can cancel retained cleanup without replacing an already published terminal. */
     preserveTerminal?: boolean;
     presentation?: ReturnType<typeof captureChatRunAbortPresentation>;
@@ -484,17 +405,14 @@ export function abortChatRunById(
 ): { aborted: boolean } {
   const { runId, sessionKey, stopReason } = params;
   params.assertCurrent?.();
-  const active = params.expectedEntry ?? ops.rpcSources.get(runId);
-  if (!active || ops.rpcSources.get(runId) !== active) {
+  const active = params.expectedEntry ?? getRpcSource(runId);
+  if (!active || getRpcSource(runId) !== active) {
     return { aborted: false };
   }
-  if (active.adapter.sessionKey !== sessionKey) {
+  const identity = getRpcSourceIdentity(active);
+  if (identity.sessionKey !== sessionKey) {
     return { aborted: false };
   }
-  if (!isChatAbortControllerEntryAbortable(active)) {
-    return { aborted: false };
-  }
-
   const executionStarted = isRpcSourceExecuting(active);
   const priorRetirement = active.input.retirementRequested;
   const priorOperationResult = active.input.claim?.operation?.result;
@@ -508,7 +426,6 @@ export function abortChatRunById(
     abortDiagnosticReason: active.adapter.abortDiagnosticReason,
     projectSessionTerminalPending: active.adapter.projectSessionTerminalPending,
     projectSessionTerminalObservedAt: active.adapter.projectSessionTerminalObservedAt,
-    registrationCleanupRequested: active.adapter.registrationCleanupRequested,
   };
   runProjection.abortMarker = createChatAbortMarker();
   if (stopReason) {
@@ -528,7 +445,6 @@ export function abortChatRunById(
     active.adapter.projectSessionTerminalPending = true;
     active.adapter.projectSessionTerminalObservedAt = undefined;
   }
-  active.adapter.registrationCleanupRequested = true;
   let cancelled: boolean;
   let cancellationFailure: { error: unknown } | undefined;
   try {
@@ -561,11 +477,11 @@ export function abortChatRunById(
   }
   // Cancellation is committed. These publication/revocation receipts finish even if
   // a synchronous abort listener revoked the requesting connection.
-  params.onAbortCommitted?.();
   if (active.adapter.agentRunDelegatedAuthority) {
     releaseAgentRunDelegatedAuthority(active.adapter.agentRunDelegatedAuthority);
   }
-  const replacement = ops.rpcSources.get(runId);
+  params.onAbortCommitted?.();
+  const replacement = getRpcSource(runId);
   if (replacement && replacement !== active) {
     if (!params.preserveTerminal) {
       active.adapter.projectSessionTerminalPending = false;
@@ -588,7 +504,7 @@ export function abortChatRunById(
     broadcastChatAborted(ops, {
       runId,
       sessionKey,
-      agentId: active.adapter.agentId,
+      agentId: identity.agentId,
       stopReason,
       message,
       errorMessage: active.adapter.toolErrorSummary,
@@ -598,12 +514,12 @@ export function abortChatRunById(
   if (!params.preserveTerminal) {
     emitAgentEvent({
       runId,
-      ...(active.adapter.lifecycleGeneration
-        ? { lifecycleGeneration: active.adapter.lifecycleGeneration }
+      ...(getRpcSourceLifecycleGeneration(active)
+        ? { lifecycleGeneration: getRpcSourceLifecycleGeneration(active) }
         : {}),
       sessionKey,
-      sessionId: active.adapter.sessionId,
-      agentId: active.adapter.agentId,
+      sessionId: identity.sessionId,
+      agentId: identity.agentId,
       stream: "lifecycle",
       data: {
         phase: "end",
@@ -630,14 +546,14 @@ export function abortChatRunById(
   // entry as suspension-visible ownership until its persistence write settles.
   if (
     !params.preserveTerminal &&
-    ops.rpcSources.get(runId) === active &&
+    getRpcSource(runId) === active &&
     active.adapter.projectSessionTerminalObservedAt === undefined &&
     !active.adapter.projectSessionTerminalPersistence
   ) {
     active.adapter.projectSessionTerminalPending = false;
-    removeChatAbortControllerEntry(ops.rpcSources, runId, active);
+    retireRpcSource(runId, active);
   } else if (params.preserveTerminal) {
-    removeChatAbortControllerEntry(ops.rpcSources, runId, active);
+    retireRpcSource(runId, active);
   }
   ops.agentRunSeq.delete(runId);
   if (removed?.clientRunId) {
@@ -649,15 +565,12 @@ export function abortChatRunById(
   return { aborted: true };
 }
 
-export function updateChatRunProvider(
-  rpcSources: Map<string, ChatAbortControllerEntry>,
-  params: {
-    runId: string;
-    providerId?: string;
-    authProviderId?: string;
-  },
-): boolean {
-  const entry = rpcSources.get(params.runId);
+export function updateChatRunProvider(params: {
+  runId: string;
+  providerId?: string;
+  authProviderId?: string;
+}): boolean {
+  const entry = getRpcSource(params.runId);
   if (!entry) {
     return false;
   }
@@ -681,7 +594,8 @@ export function abortChatRunsForProvider(
     return { runIds: [] };
   }
   const compatibilityOwnerAgentId = agentId && tryResolveLegacyCompatibilityAgentId(params.cfg);
-  const matches = [...ops.rpcSources.entries()].filter(([, entry]) => {
+  const matches = listRpcSourceEntries().filter(([, entry]) => {
+    const identity = getRpcSourceIdentity(entry);
     if (
       normalizeOptionalLowercaseString(entry.adapter.authProviderId) !== providerId &&
       normalizeOptionalLowercaseString(entry.adapter.providerId) !== providerId
@@ -691,8 +605,8 @@ export function abortChatRunsForProvider(
     return (
       !agentId ||
       resolveChatRunOwnerAgentId({
-        agentId: entry.adapter.agentId,
-        sessionKey: entry.adapter.sessionKey,
+        agentId: identity.agentId,
+        sessionKey: identity.sessionKey,
         defaultAgentId: compatibilityOwnerAgentId,
       }) === agentId
     );
@@ -716,7 +630,7 @@ export function abortChatRunsForProvider(
       }
       return abortChatRunById(ops, {
         runId: target.runId,
-        sessionKey: target.entry.adapter.sessionKey,
+        sessionKey: getRpcSourceIdentity(target.entry).sessionKey,
         expectedEntry: target.entry,
         presentation: target.presentation,
         cancel,

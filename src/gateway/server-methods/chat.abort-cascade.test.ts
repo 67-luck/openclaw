@@ -14,6 +14,7 @@ import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import * as gatewayWorkAdmission from "../../process/gateway-work-admission.js";
 import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createWorkerInferenceCancellationService } from "../worker-environments/inference-control.test-helpers.js";
 import { handleChatAbortRequestWithLifecycle } from "./chat-abort-handler.js";
 import * as transcriptInject from "./chat-transcript-inject.js";
@@ -99,7 +100,7 @@ describe("descendant cascade ownership", () => {
     parent.input.abortSignal.addEventListener("abort", () => {
       current = false;
     });
-    const context = createChatAbortContext({ rpcSources: new Map([["parent", parent]]) });
+    const context = createChatAbortContext({ sources: new Map([["parent", parent]]) });
     context.chatRunState.getOrCreate("parent").buffer = "cancelled parent partial";
     const persist = vi
       .spyOn(transcriptPersistence, "persistAbortedPartials")
@@ -144,15 +145,11 @@ describe("descendant cascade ownership", () => {
     "late descendant",
     "mixed active",
     "mixed queued",
-    "mixed pending agent",
-    "mixed pending chat",
     "hidden",
     "preserved",
-    "hidden pending",
     "unrepresented worker",
     "represented worker",
     "hidden worker",
-    "ordinary",
   ])("does not kill or inhibit excluded queued descendants: %s", async (kind) => {
     const sessionKey = kind.includes("worker") ? "global" : "agent:main:main";
     const cfg: OpenClawConfig = sessionKey === "global" ? { session: { scope: "global" } } : {};
@@ -176,7 +173,7 @@ describe("descendant cascade ownership", () => {
     });
     const context = createChatAbortContext({ getRuntimeConfig: () => cfg });
     if (hasOwnedActive) {
-      context.rpcSources.set("run-mine", mine);
+      rpcSourceTesting.set("run-mine", mine);
       context.chatRunState.getOrCreate("run-mine").buffer = "partial parent reply";
       mine.input.abortSignal.addEventListener("abort", () => {
         if (kind !== "late descendant") {
@@ -194,26 +191,10 @@ describe("descendant cascade ownership", () => {
         "hidden worker",
       ].includes(kind)
     ) {
-      context.rpcSources.set("run-foreign", foreign);
+      rpcSourceTesting.set("run-foreign", foreign);
     }
     if (kind === "mixed queued") {
-      context.rpcSources.set("run-foreign", foreign);
-    }
-    if (kind.includes("pending")) {
-      const prefix = kind === "mixed pending chat" ? "pending-chat:" : "agent:";
-      context.dedupe.set(`${prefix}run-foreign`, {
-        ts: Date.now(),
-        ok: true,
-        payload: {
-          runId: "run-foreign",
-          sessionKey,
-          agentId: "main",
-          status: "accepted",
-          ownerConnId: "conn-foreign",
-          ownerDeviceId: "dev-foreign",
-          controlUiVisible: kind === "hidden pending" ? false : undefined,
-        },
-      });
+      rpcSourceTesting.set("run-foreign", foreign);
     }
     const cancelInferenceForSession = vi.fn(() => ["worker-run"]);
     if (kind.includes("worker")) {
@@ -293,10 +274,7 @@ describe("descendant cascade ownership", () => {
     }
     const pending = invokeChatAbortHandler({
       handler: (options) =>
-        handleChatAbortRequestWithLifecycle(
-          options,
-          kind === "ordinary" ? {} : { cascadeDescendants: true },
-        ),
+        handleChatAbortRequestWithLifecycle(options, { cascadeDescendants: true }),
       context,
       request: {
         sessionKey,

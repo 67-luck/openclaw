@@ -78,8 +78,10 @@ vi.mock("../../agents/embedded-agent-runner/runs.js", () => ({
 }));
 vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../config/sessions/session-accessor.js")>();
+  const exactRead = await import("../../config/sessions/session-accessor.sqlite-exact-read.js");
   return {
     ...actual,
+    loadExactSessionEntryReadOnly: exactRead.loadExactSessionEntryReadOnly,
     markSessionAbortTarget: vi.fn(actual.markSessionAbortTarget),
     resolveSessionAbortTarget: vi.fn(actual.resolveSessionAbortTarget),
   };

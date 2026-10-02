@@ -1,3 +1,4 @@
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
 import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
@@ -79,8 +80,8 @@ async function setup() {
     sessionId,
     owner: { connId: client.connId },
   });
-  context.rpcSources.set("active", active);
-  context.rpcSources.set("queued", queued);
+  rpcSourceTesting.set("active", active);
+  rpcSourceTesting.set("queued", queued);
   let current = true;
   const respond = vi.fn();
   const stop = () =>
@@ -133,7 +134,7 @@ it("UI-style narrow Stop clears owned lane entries through their signals and pre
     sessionId: "previous-incarnation",
     owner: { connId: fixture.client.connId },
   });
-  fixture.context.rpcSources.set("foreign", foreign);
+  rpcSourceTesting.set("foreign", foreign);
   const ownFollowup = followup("owned");
   const foreignFollowup = followup("foreign", "previous-incarnation");
   const queue = readQueue();
@@ -166,7 +167,7 @@ it("UI-style narrow Stop clears owned lane entries through their signals and pre
     expect(fixture.active.input.abortSignal.aborted).toBe(true);
     expect(fixture.queued.input.abortSignal.aborted).toBe(true);
     expect(foreign.input.abortSignal.aborted).toBe(false);
-    expect(fixture.context.rpcSources.get("foreign")).toBe(foreign);
+    expect(rpcSourceTesting.get("foreign")).toBe(foreign);
     expect(ownFollowup.settled).toHaveBeenCalledOnce();
     expect(foreignFollowup.settled).not.toHaveBeenCalled();
     expect(readQueue()).toBe(queue);

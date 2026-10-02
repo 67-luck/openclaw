@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   resolveAgentDeliveryPlanWithSessionRoute: vi.fn(),
@@ -50,7 +51,7 @@ describe("resolveAgentDeliveryPhase", () => {
       bestEffortDeliver: false,
       runId: "strict-target-resolution",
       client: null,
-      context: { rpcSources: new Map() } as never,
+      context: { rpcSourceTesting: new Map() } as never,
       respond,
       isWebchatConnect: () => false,
     });
@@ -105,7 +106,7 @@ describe("resolveAgentDeliveryPhase", () => {
           bestEffortDeliver: false,
           runId: "private-delivery",
           client: null,
-          context: { rpcSources: new Map(), logGateway: { info } } as never,
+          context: { logGateway: { info } } as never,
           respond,
           isWebchatConnect: () => false,
         };

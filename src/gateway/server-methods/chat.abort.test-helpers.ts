@@ -17,7 +17,7 @@ import type {
   RpcSourceAdapter,
   RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
-import { removeChatAbortControllerEntry } from "../chat-abort.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createChatRunState, type ChatRunState } from "../server-chat-state.js";
 import type { GatewayRequestHandler, RespondFn } from "./types.js";
 
@@ -37,7 +37,14 @@ const testAdmissions: Array<Promise<{ error: unknown } | undefined>> = [];
 afterEach(async () => {
   const settlements = [...testSources].map((ref) => ref.input.settlement.promise);
   for (const ref of testSources) {
-    abortSessionControllerInput(ref.input, "Fixture finished");
+    const claim = ref.input.claim;
+    const operation = claim?.operation;
+    if (operation?.abortFrozen && !operation.result && claim && !claim.released) {
+      operation.complete();
+      releaseSessionControllerClaim(claim);
+    } else {
+      abortSessionControllerInput(ref.input, "Fixture finished");
+    }
     if (!ref.input.claim) {
       retireSessionControllerInput(ref.input);
     }
@@ -64,13 +71,12 @@ export function createActiveRun(
     runId?: string;
   } = {},
 ): RpcSourceRef {
+  const sessionId = params.sessionId ?? `${sessionKey}-session`;
   const adapter: RpcSourceAdapter = {
-    sessionId: params.sessionId ?? `${sessionKey}-session`,
-    sessionKey,
-    agentId: params.agentId,
     controlUiVisible: params.controlUiVisible,
-    ownerConnId: params.owner?.connId,
-    ownerDeviceId: params.owner?.deviceId,
+    requester: params.owner
+      ? { connectionId: params.owner.connId, deviceId: params.owner.deviceId }
+      : undefined,
     turnKind: params.turnKind,
   };
   const input = reserveSessionControllerSource(sessionKey, {
@@ -78,7 +84,7 @@ export function createActiveRun(
     target: captureSessionTarget({
       storeScope: params.storeScope ?? `/synthetic/chat-abort/${randomUUID()}/sessions.db`,
       sessionKey,
-      incarnation: adapter.sessionId,
+      incarnation: sessionId,
       agentId: params.agentId,
     }),
     policy: { mode: "followup" },
@@ -94,7 +100,7 @@ export function createActiveRun(
       started = true;
       const operation = createReplyOperation({
         sessionKey,
-        sessionId: adapter.sessionId,
+        sessionId,
         agentId: params.agentId,
         resetTriggered: false,
         mailboxClaim: claim,
@@ -123,7 +129,6 @@ export function createActiveRun(
 }
 
 type ChatAbortTestContext = Record<string, unknown> & {
-  rpcSources: Map<string, RpcSourceRef>;
   chatRunState: ChatRunState;
   dedupe: Map<string, unknown>;
   removeChatRun: (
@@ -138,14 +143,17 @@ type ChatAbortTestContext = Record<string, unknown> & {
 type ChatAbortRespondMock = Mock<RespondFn>;
 
 export function createChatAbortContext(
-  overrides: Record<string, unknown> = {},
+  overrides: Record<string, unknown> & {
+    sources?: Iterable<readonly [string, RpcSourceRef]>;
+  } = {},
 ): ChatAbortTestContext {
+  const { sources, ...contextOverrides } = overrides;
+  rpcSourceTesting.reset(sources);
   const chatRunState =
-    overrides.chatRunState && typeof overrides.chatRunState === "object"
-      ? (overrides.chatRunState as ChatRunState)
+    contextOverrides.chatRunState && typeof contextOverrides.chatRunState === "object"
+      ? (contextOverrides.chatRunState as ChatRunState)
       : createChatRunState();
   const context = {
-    rpcSources: new Map(),
     chatRunState,
     dedupe: new Map(),
     removeChatRun: vi
@@ -156,12 +164,12 @@ export function createChatAbortContext(
     broadcast: vi.fn(),
     nodeSendToSession: vi.fn(),
     logGateway: { warn: vi.fn() },
-    ...overrides,
+    ...contextOverrides,
   } as ChatAbortTestContext;
   // Synthetic registrations retire through the real index owner only after the
   // producer's exact source receipt, preserving replacements and foreign runs.
-  for (const [runId, ref] of context.rpcSources) {
-    const remove = () => removeChatAbortControllerEntry(context.rpcSources, runId, ref);
+  for (const [runId, ref] of rpcSourceTesting) {
+    const remove = () => rpcSourceTesting.deleteExpected(runId, ref);
     void ref.input.settlement.promise.then(remove, remove);
   }
   return context;

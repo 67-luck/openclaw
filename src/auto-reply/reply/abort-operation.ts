@@ -127,7 +127,6 @@ export function abortSessionRunTargetWithOutcome(params: {
   messageIdentity?: unknown;
   recordAbortTarget?: SessionStopRequest["recordAbortTarget"];
   stopChildren?: SessionStopRequest["stopChildren"];
-  externalParents?: SessionStopRequest["externalParents"];
   retirements: Promise<void>[];
 }) {
   let selectedCapture: ChannelStopCapture | undefined;
@@ -162,7 +161,6 @@ export function abortSessionRunTargetWithOutcome(params: {
     messageIdentity: params.messageIdentity,
     recordAbortTarget: params.recordAbortTarget,
     stopChildren: params.stopChildren,
-    externalParents: params.externalParents,
     afterQueued: () => {
       const capture = resolveCapture();
       params.afterQueued?.();
@@ -358,6 +356,7 @@ export async function executeFastAbortRequest(
     }));
     const acpCapture = getAcpSessionResetControls(getAcpSessionManager()).captureCancellation();
     const acpCancellations: Promise<void>[] = [];
+    let acpAborted = false;
     let selectedCapture: ChannelStopCapture | undefined;
     let abortTargetKeys: string[] = [];
     const abortCutoff = shouldPersistAbortCutoff({
@@ -383,6 +382,28 @@ export async function executeFastAbortRequest(
         senderId: ctx.SenderId,
       },
       messageIdentity: abortCutoff,
+      afterQueued: () => {
+        const cancellation = (async () => {
+          for (const acpTargetKey of abortTargetKeys) {
+            assertCurrent();
+            try {
+              acpAborted =
+                (await acpCapture.cancel({
+                  cfg,
+                  sessionKey: acpTargetKey,
+                  agentId: acpTargetKey === resolvedTargetKey ? agentId : undefined,
+                  assertActive: assertCurrent,
+                  reason: "fast-abort",
+                })) || acpAborted;
+            } catch (error) {
+              logVerbose(
+                `abort: ACP cancel failed for ${acpTargetKey}: ${formatErrorMessage(error)}`,
+              );
+            }
+          }
+        })();
+        acpCancellations.push(cancellation);
+      },
       recordAbortTarget: async ({ recordCutoff }) => {
         let persistedAbortTarget: SessionAbortTargetResult | null = null;
         try {
@@ -415,37 +436,6 @@ export async function executeFastAbortRequest(
           setAbortMemory(abortMemoryKey, true);
         }
       },
-      externalParents: [
-        {
-          phase: "active",
-          start: "after-queued",
-          stop: () => {
-            const cancellation = (async () => {
-              let aborted = false;
-              for (const acpTargetKey of abortTargetKeys) {
-                assertCurrent();
-                try {
-                  aborted =
-                    (await acpCapture.cancel({
-                      cfg,
-                      sessionKey: acpTargetKey,
-                      agentId: acpTargetKey === resolvedTargetKey ? agentId : undefined,
-                      assertActive: assertCurrent,
-                      reason: "fast-abort",
-                    })) || aborted;
-                } catch (error) {
-                  logVerbose(
-                    `abort: ACP cancel failed for ${acpTargetKey}: ${formatErrorMessage(error)}`,
-                  );
-                }
-              }
-              return aborted ? ("aborted" as const) : ("unchanged" as const);
-            })();
-            acpCancellations.push(cancellation.then(() => undefined));
-            return cancellation;
-          },
-        },
-      ],
       stopChildren: (applyParentStop) =>
         stopSubagentsForRequester({
           cfg,
@@ -519,6 +509,9 @@ export async function executeFastAbortRequest(
     // failed retirement, and both paths above join every captured producer.
     if (retirementFailure) {
       throw retirementFailure.reason;
+    }
+    if (acpAborted) {
+      result.aborted = true;
     }
     return result;
   }

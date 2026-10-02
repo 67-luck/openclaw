@@ -5,13 +5,13 @@ import {
   resolveSubagentController,
 } from "../../agents/subagents/registry/subagent-control.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 
 export async function abortControlledSubagents(params: {
   cfg: OpenClawConfig;
   sessionKey: string;
   agentId?: string;
   requesterTurnRunId?: string;
-  assertCurrent?: () => void;
   beforeKill?: Parameters<typeof killAllControlledSubagentRuns>[0]["beforeKill"];
 }) {
   const controller = resolveSubagentController({
@@ -24,14 +24,23 @@ export async function abortControlledSubagents(params: {
     await params.beforeKill?.();
     return undefined;
   }
-  return killAllControlledSubagentRuns({
-    cfg: params.cfg,
-    controller,
-    runs,
-    suppressTaskDelivery: true,
-    assertCurrent: params.assertCurrent,
-    beforeKill: params.beforeKill,
-  });
+  try {
+    return await killAllControlledSubagentRuns({
+      cfg: params.cfg,
+      controller,
+      runs,
+      suppressTaskDelivery: true,
+      beforeKill: params.beforeKill,
+    });
+  } catch (error) {
+    return {
+      status: "error" as const,
+      error: formatErrorMessage(error),
+      failed: runs.length,
+      killed: 0,
+      labels: [],
+    };
+  }
 }
 
 export function descendantAbortError(

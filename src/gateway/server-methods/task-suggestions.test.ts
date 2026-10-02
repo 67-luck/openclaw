@@ -3,6 +3,7 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { addSessionMember } from "../../config/sessions/session-sharing-store.native.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -605,7 +606,7 @@ describe("task suggestion gateway methods", () => {
 
       const accepted = await call("taskSuggestions.accept", { taskId, mode: "session" }, vi.fn(), {
         client,
-        context: { rpcSources: new Map() },
+        context: {},
       });
       const replay = await call("taskSuggestions.accept", { taskId, mode: "session" });
 
@@ -636,7 +637,7 @@ describe("task suggestion gateway methods", () => {
 
       const accepted = await call("taskSuggestions.accept", { taskId, mode: "session" }, vi.fn(), {
         client: operatorClient(),
-        context: { rpcSources: new Map() },
+        context: {},
       });
       const listed = await call("taskSuggestions.list", {});
 
@@ -664,7 +665,7 @@ describe("task suggestion gateway methods", () => {
 
       const accepted = await call("taskSuggestions.accept", { taskId, mode: "session" }, vi.fn(), {
         client: operatorClient(),
-        context: { rpcSources: new Map() },
+        context: {},
       });
       const listed = await call("taskSuggestions.list", {});
 

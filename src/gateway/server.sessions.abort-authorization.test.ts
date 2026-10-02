@@ -25,6 +25,8 @@ import * as queueCleanup from "../auto-reply/reply/queue/cleanup.js";
 import { enqueueFollowupRun } from "../auto-reply/reply/queue/enqueue.js";
 import { getExistingFollowupQueue } from "../auto-reply/reply/queue/state.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
+import { getRpcSourceIdentity } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { observeGatewayRunExecution } from "./agent-command.test-helpers.js";
 import { callGatewayCli } from "./call.js";
 import * as chatAbort from "./chat-abort.js";
@@ -103,6 +105,9 @@ async function startNativeRun(owner: Awaited<ReturnType<typeof openOperator>>, n
     expect(command.abortSignal).toBeInstanceOf(AbortSignal);
     const runController = new AbortController();
     const abort = () => {
+      if (runController.signal.aborted) {
+        return;
+      }
       nativeAbort();
       runController.abort();
     };
@@ -141,17 +146,19 @@ async function startNativeRun(owner: Awaited<ReturnType<typeof openOperator>>, n
     await started.promise;
     const admission = registration.mock.calls.find(([input]) => input.runId === runId)?.[0];
     expect(admission).toBeDefined();
-    const entry = admission!.rpcSources.get(runId)!;
+    const entry = rpcSourceTesting.get(runId)!;
     expect(entry.adapter).toMatchObject({
-      ownerConnId: owner.hello.server.connId,
-      ownerDeviceId: owner.deviceId,
+      requester: {
+        connectionId: owner.hello.server.connId,
+        deviceId: owner.deviceId,
+      },
       kind: "agent",
-      sessionKey,
     });
+    expect(getRpcSourceIdentity(entry).sessionKey).toBe(sessionKey);
     expect(resolveActiveEmbeddedRunOwnerByRunId(runId)).toMatchObject({
       runId,
       sessionKey,
-      sessionId: entry.adapter.sessionId,
+      sessionId: getRpcSourceIdentity(entry).sessionId,
     });
     return {
       runId,
@@ -214,6 +221,13 @@ describe("native sessions.abort requester authorization over WebSocket", () => {
     };
     owner.ws.on("message", record);
     const queued = createQueueTestRun({ prompt: "preserve queued followup" });
+    const target = run.entry.input.target!;
+    queued.run = {
+      ...queued.run,
+      agentId: target.agentId!,
+      sessionId: target.incarnation!,
+      config: { session: { store: target.storeScope } },
+    };
     enqueueFollowupRun(run.sessionKey, queued, { mode: "collect" });
     const queue = getExistingFollowupQueue(run.sessionKey)!;
     try {

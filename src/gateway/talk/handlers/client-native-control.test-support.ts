@@ -25,6 +25,7 @@ import {
   setActivePluginRegistry,
 } from "../../../plugins/runtime.js";
 import { getCurrentSessionControllerOwner } from "../../../sessions/session-controller.lifecycle.js";
+import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { loadBundledPluginFacade } from "../../../test-utils/bundled-plugin-public-surface.js";
@@ -168,7 +169,7 @@ type NativePluginFixture = {
     response: ReturnType<typeof createResponse>;
   };
   broadcast: ReturnType<typeof vi.fn>;
-  rpcSources: GatewayRequestContext["rpcSources"];
+  rpcSourceTesting: typeof rpcSourceTesting;
 };
 
 export async function withNativePlugin(
@@ -216,7 +217,6 @@ export async function withNativePlugin(
         getRuntimeConfig: () => config,
         getClientConnIds: (filter?: (candidate: GatewayClient) => boolean) =>
           new Set(!filter || filter(client) ? [CONNECTION_ID] : []),
-        rpcSources: new Map(),
         broadcastToConnIds: broadcast,
         logGateway: { warn: vi.fn() },
       } as unknown as GatewayRequestContext;
@@ -310,7 +310,7 @@ export async function withNativePlugin(
             return { handling, response };
           },
           broadcast,
-          rpcSources: context.rpcSources,
+          rpcSourceTesting,
         });
       } finally {
         for (const voiceSessionId of voiceSessionIds) {

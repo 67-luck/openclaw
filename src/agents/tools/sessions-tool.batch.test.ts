@@ -38,7 +38,6 @@ function createStoredSessionTool(config: OpenClawConfig = {}) {
     loadGatewayModelCatalog: async () => [],
     getSessionEventSubscriberConnIds: () => new Set(),
     broadcastToConnIds: vi.fn(),
-    rpcSources: new Map(),
     dedupe: new Map(),
   } as unknown as GatewayRequestContext;
   const callGateway: AgentToolGatewayRequestCaller = async <T>(

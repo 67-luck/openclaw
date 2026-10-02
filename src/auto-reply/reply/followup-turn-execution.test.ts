@@ -69,7 +69,6 @@ async function runFastAutoProgressCase(params: {
         verboseLevel: params.verboseLevel ?? "on",
       }),
       publish: () => undefined,
-      adopt: () => undefined,
     },
   });
   turn.queued.currentInboundEventKind = params.currentInboundEventKind;
@@ -108,7 +107,6 @@ describe("executeFollowupTurn", () => {
             owner: { actor: { type: "human", id: "new-owner" } },
           }),
           publish: () => undefined,
-          adopt: () => undefined,
         },
       });
       turn.queued.personalBootstrapEligible = eligible;
@@ -228,7 +226,6 @@ describe("executeFollowupTurn", () => {
           key: "main",
           current: () => ({ sessionId: "session", updatedAt: 1, verboseLevel: liveLevel }),
           publish: () => undefined,
-          adopt: () => undefined,
         },
       });
       turn.queued.run.verboseLevelOverride = selected;
@@ -267,7 +264,6 @@ describe("executeFollowupTurn", () => {
         storePath: "/tmp/sessions.json",
         current: () => currentEntry,
         publish: () => undefined,
-        adopt: () => undefined,
       },
     });
     state.loadEntryReadOnly.mockReturnValue({
@@ -298,7 +294,6 @@ describe("executeFollowupTurn", () => {
         storePath: "/tmp/sessions.json",
         current: () => currentEntry,
         publish: () => undefined,
-        adopt: () => undefined,
       },
     });
     state.loadEntryReadOnly.mockReturnValue({
@@ -337,7 +332,6 @@ describe("executeFollowupTurn", () => {
           key: "main",
           current: () => ({ sessionId: "session", updatedAt: 1, verboseLevel }),
           publish: () => undefined,
-          adopt: () => undefined,
         },
       });
       state.execute.mockImplementation(async (params: AgentTurnParams) => {
@@ -375,7 +369,6 @@ describe("executeFollowupTurn", () => {
         key: "main",
         current: () => ({ sessionId: "session", updatedAt: 1, verboseLevel: "off" }),
         publish: () => undefined,
-        adopt: () => undefined,
       },
     });
     state.execute.mockImplementation(async (params: AgentTurnParams) => {
@@ -443,7 +436,6 @@ describe("executeFollowupTurn", () => {
           key: "main",
           current: () => ({ sessionId: "session", updatedAt: 1, verboseLevel: "off" }),
           publish: () => undefined,
-          adopt: () => undefined,
         },
       });
       state.execute.mockImplementation(async (params: AgentTurnParams) => {
@@ -524,7 +516,6 @@ describe("executeFollowupTurn", () => {
         key: "main",
         current: () => ({ sessionId: "session", updatedAt: 1, verboseLevel: "off" }),
         publish: () => undefined,
-        adopt: () => undefined,
       },
     });
     state.execute.mockImplementation(async (params: AgentTurnParams) => {
@@ -723,7 +714,6 @@ describe("executeFollowupTurn", () => {
           key: "main",
           current: () => ({ sessionId: "session", updatedAt: 1, verboseLevel: "off" }),
           publish: () => undefined,
-          adopt: () => undefined,
         },
       });
       state.execute.mockImplementation(async (params: AgentTurnParams) => {
@@ -784,7 +774,6 @@ describe("executeFollowupTurn", () => {
         key: "main",
         current: () => ({ sessionId: "session", updatedAt: 1, verboseLevel: "off" }),
         publish: () => undefined,
-        adopt: () => undefined,
       },
     });
     state.execute.mockImplementation(async (params: AgentTurnParams) => {
@@ -919,7 +908,6 @@ describe("executeFollowupTurn", () => {
           key: "main",
           current: () => ({ sessionId: "session", updatedAt: 1, verboseLevel: "off" }),
           publish: () => undefined,
-          adopt: () => undefined,
         },
       }),
       defaults: {

@@ -228,7 +228,6 @@ it.runIf(process.env.OPENCLAW_DB_WORKER_BENCH === "1")(
             const registration = active
               ? registerChatAbortController({
                   target: captureRpcTargetForTest(scope),
-                  rpcSources: context.rpcSources,
                   ...scope,
                   runId,
                   timeoutMs: 60_000,

@@ -1,4 +1,5 @@
 import { requestRpcSourceCancellation } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 // Keep shared fixture mock registration before the production imports.
 // oxfmt-ignore
 import {
@@ -363,7 +364,7 @@ describe("Gateway followup owner final effect", () => {
           expect(authorityReleased).toBe(false);
           expect(effectStarted).toBe(false);
           if (outcome === "cancel before dispatch") {
-            for (const entry of context.rpcSources.values()) {
+            for (const entry of rpcSourceTesting.values()) {
               requestRpcSourceCancellation(entry);
             }
           }

@@ -13,6 +13,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { addSessionMember, listSessionMembers } from "../config/sessions/session-sharing-store.js";
 import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import {
   openOpenClawAgentDatabase,
@@ -304,7 +305,7 @@ it.each(["agent", "chat"] as const)(
         });
         expect(committed.entry.sessionId).toBe("successor");
         expect(run.entry.input.abortSignal.aborted).toBe(true);
-        expect(params.rpcSources.has(runId)).toBe(false);
+        expect(rpcSourceTesting.has(runId)).toBe(false);
         expect(readGatewayAccessRevision()).toBeGreaterThan(revision);
         expect(loadSessionEntry(scope)?.visibility).toBeUndefined();
         expect(listSessionMembers(scope)).toEqual([]);

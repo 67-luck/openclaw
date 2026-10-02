@@ -100,7 +100,6 @@ it.each(["replacement", "reset"])(
     const handler = createLifecycleEventBroadcastHandler({
       broadcastToConnIds,
       sessionEventSubscribers: { getAll: () => new Set(["viewer"]) },
-      rpcSources: new Map(),
       getSessionRowProjection: () => projection,
     });
     setImmediate(() => {

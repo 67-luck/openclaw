@@ -178,7 +178,6 @@ async function seedMessageCutSource(
 function context(): GatewayRequestContext {
   return {
     broadcastToConnIds: vi.fn(),
-    rpcSources: new Map(),
     getRuntimeConfig: () => cfg,
     getSessionEventSubscriberConnIds: () => new Set(),
   } as unknown as GatewayRequestContext;

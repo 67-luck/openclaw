@@ -4,12 +4,21 @@ import type { AgentCommandDeliveryResult } from "../../agents/command/delivery-r
 import type { AgentCommandOpts } from "../../agents/command/types.js";
 import { SessionFollowupCompletion } from "../../agents/subagents/completion/session-followup-completion.js";
 import type { SubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.types.js";
+import {
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+} from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createChatAbortOps } from "../chat-abort-ops.js";
 import { abortChatRunById } from "../chat-abort.js";
 import { setGatewayDedupeEntries } from "./agent-dedupe.js";
 import { dispatchAgentRunFromGateway } from "./agent-run-dispatch.js";
 import { createTrackedDispatch } from "./agent-run-dispatch.test-support.js";
-import { createTestRpcSource, testRpcSourceController } from "./rpc-source.test-support.js";
+import {
+  createTestRpcSource,
+  setTestRpcSourceIdentity,
+  testRpcSourceController,
+} from "./rpc-source.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   agentCommand: vi.fn(
@@ -160,13 +169,13 @@ describe("Gateway dispatch run ownership", () => {
         const producer = entry.adapter.resolveTerminalProducer?.();
         expect(producer).toBeDefined();
         if (replacement === "registration") {
-          context.rpcSources.set(runId, { ...entry });
+          rpcSourceTesting.set(runId, { ...entry });
         } else if (replacement === "controller") {
           Object.defineProperty(entry.input, "abortSignal", {
             value: new AbortController().signal,
           });
         } else if (replacement === "session") {
-          entry.adapter.sessionId = "successor-session";
+          setTestRpcSourceIdentity(entry, { sessionId: "successor-session" });
         } else {
           entry.adapter.operationalRunInstance = { runId, instanceId: "successor-instance" };
         }
@@ -185,17 +194,18 @@ describe("Gateway dispatch run ownership", () => {
     const successor = createTestRpcSource(
       {
         ...entry.adapter,
+        ...getRpcSourceIdentity(entry),
         sessionId: "successor-session",
         sessionKey: "agent:main:successor-session",
         operationalRunInstance: { runId, instanceId: "successor-instance" },
       },
       runId,
     );
-    context.rpcSources.set(runId, successor);
+    rpcSourceTesting.set(runId, successor);
     const emitFinal = vi.fn();
     await dispatchAgentRunFromGateway({
       assertCurrent() {
-        if (context.rpcSources.get(runId) !== entry) {
+        if (rpcSourceTesting.get(runId) !== entry) {
           throw new Error("Gateway run owner replaced");
         }
       },
@@ -214,14 +224,14 @@ describe("Gateway dispatch run ownership", () => {
     });
     expect(mocks.agentCommand).not.toHaveBeenCalled();
     expect(mocks.clearAgentRunContext).not.toHaveBeenCalled();
-    expect(context.rpcSources.get(runId)).toBe(successor);
+    expect(rpcSourceTesting.get(runId)).toBe(successor);
     expect(setGatewayDedupeEntries).toHaveBeenCalledWith(
       expect.objectContaining({
         session: {
           sessionKey,
-          sessionId: entry.adapter.sessionId,
-          agentId: entry.adapter.agentId,
-          lifecycleGeneration: entry.adapter.lifecycleGeneration,
+          sessionId: getRpcSourceIdentity(entry).sessionId,
+          agentId: getRpcSourceIdentity(entry).agentId,
+          lifecycleGeneration: getRpcSourceLifecycleGeneration(entry),
         },
         entry: expect.objectContaining({ ok: false }),
       }),
@@ -299,6 +309,7 @@ describe("Gateway dispatch run ownership", () => {
       const successor = createTestRpcSource(
         {
           ...entry.adapter,
+          ...getRpcSourceIdentity(entry),
           operationalRunInstance: { runId, instanceId: "successor" },
           sessionKey: replacement === "same-session" ? sessionKey : "agent:main:other",
         },
@@ -342,11 +353,13 @@ describe("Gateway dispatch run ownership", () => {
           expect(
             abortChatRunById(createChatAbortOps(context), { runId, sessionKey, stopReason: "rpc" }),
           ).toEqual({ aborted: true });
-          expect(context.rpcSources.has(runId)).toBe(false);
+          expect(rpcSourceTesting.has(runId)).toBe(false);
         } else if (replacement === "mutated-entry") {
-          entry.adapter.sessionKey = successor.adapter.sessionKey;
+          setTestRpcSourceIdentity(entry, {
+            sessionKey: getRpcSourceIdentity(successor).sessionKey,
+          });
         } else {
-          context.rpcSources.set(runId, successor);
+          rpcSourceTesting.set(runId, successor);
         }
         finishCommand.resolve();
         await saving.promise;
@@ -369,17 +382,20 @@ describe("Gateway dispatch run ownership", () => {
         }
         if (replacement !== "removed-by-abort") {
           expect(mocks.clearAgentRunContext).not.toHaveBeenCalled();
-          expect(context.rpcSources.get(runId)).toBe(
+          expect(rpcSourceTesting.get(runId)).toBe(
             replacement === "mutated-entry" ? entry : successor,
           );
         }
         expect(setGatewayDedupeEntries).toHaveBeenCalledWith(
           expect.objectContaining({
             session: {
-              sessionKey: replacement === "mutated-entry" ? entry.adapter.sessionKey : sessionKey,
-              sessionId: entry.adapter.sessionId,
-              agentId: entry.adapter.agentId,
-              lifecycleGeneration: entry.adapter.lifecycleGeneration,
+              sessionKey:
+                replacement === "mutated-entry"
+                  ? getRpcSourceIdentity(entry).sessionKey
+                  : sessionKey,
+              sessionId: getRpcSourceIdentity(entry).sessionId,
+              agentId: getRpcSourceIdentity(entry).agentId,
+              lifecycleGeneration: getRpcSourceLifecycleGeneration(entry),
             },
           }),
         );
@@ -472,11 +488,12 @@ describe("Gateway dispatch run ownership", () => {
       const successorEntry = createTestRpcSource(
         {
           ...f.entry.adapter,
+          ...getRpcSourceIdentity(f.entry),
           operationalRunInstance: { runId: successor.runId, instanceId: "successor-instance" },
         },
         successor.runId,
       );
-      f.context.rpcSources.set(successor.runId, successorEntry);
+      rpcSourceTesting.set(successor.runId, successorEntry);
       mocks.agentCommand.mockImplementationOnce(async (opts) => {
         await opts.onExecutionStarted?.();
         return {
@@ -537,12 +554,15 @@ describe("Gateway dispatch run ownership", () => {
 
   it("does not invoke a followup after its admitted registration was replaced", async () => {
     const { f, owner, dispatch } = createFollowupDispatch();
-    const successor = createTestRpcSource({ ...f.entry.adapter }, f.runId);
-    f.context.rpcSources.set(f.runId, successor);
+    const successor = createTestRpcSource(
+      { ...f.entry.adapter, ...getRpcSourceIdentity(f.entry) },
+      f.runId,
+    );
+    rpcSourceTesting.set(f.runId, successor);
     try {
       await expect(dispatch()).rejects.toThrow("lost its Gateway registration");
       expect(mocks.agentCommand).not.toHaveBeenCalled();
-      expect(f.context.rpcSources.get(f.runId)).toBe(successor);
+      expect(rpcSourceTesting.get(f.runId)).toBe(successor);
       await expect(owner.take()).rejects.toThrow("lost its Gateway registration");
     } finally {
       owner.close();

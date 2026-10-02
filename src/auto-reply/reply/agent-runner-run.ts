@@ -18,13 +18,10 @@ import {
   getGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
-import type { ReplyOperation } from "../../sessions/session-controller.js";
 import {
   submitSessionControllerInput,
   claimSessionControllerInput,
   tryClaimSessionControllerTask,
-  bindSessionControllerInputOperation,
-  attachSessionControllerInputOperation,
   releaseSessionControllerClaim,
   retireSessionControllerInput,
 } from "../../sessions/session-controller.mailbox.js";
@@ -35,7 +32,6 @@ import {
   BLOCK_REPLY_SEND_TIMEOUT_MS,
   cleanupReplyAgentRun,
   handleReplyAgentRunError,
-  resolveAdmittedRunSessionFile,
   type RunReplyAgentParams,
   scheduleFollowupDrainAfterReplyOperationClear,
 } from "./agent-runner-core.js";
@@ -48,7 +44,6 @@ import { createShouldEmitToolOutput, createShouldEmitToolResult } from "./agent-
 import { runReplyQuestionInput } from "./agent-runner-question-input.js";
 import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
 import { prepareReplyStreamingDelivery } from "./agent-runner-streaming-delivery.js";
-import { resolveQueuedReplyExecutionConfig } from "./agent-runner-utils.js";
 import { createFollowupRunner } from "./followup-runner.js";
 import { REPLY_RUN_STILL_SHUTTING_DOWN_TEXT } from "./get-reply-run-queue.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
@@ -60,13 +55,14 @@ import {
 } from "./queue.js";
 import { resolveFollowupAbortSignal } from "./queue/types.js";
 import { REPLY_ADMISSION_TICKET } from "./reply-admission-ticket.js";
+import { prepareReplyAgentTurn } from "./reply-agent-turn-preparation.js";
 import { createReplyMediaContext } from "./reply-media-paths.js";
 import * as replyRunState from "./reply-operation-run-state.js";
 import { bindReplyOperationTyping } from "./reply-run-typing.js";
 import { bindReplySourceToFollowup, retireUnadoptedReplySource } from "./reply-source-binding.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
 import { prepareReplyToolAuthority } from "./reply-tool-authority.js";
-import { admitReplyTurn, resolveReplyTurnKind } from "./reply-turn-admission.js";
+import { resolveReplyTurnKind } from "./reply-turn-admission.js";
 import { createReplyTurnRotationEvidence } from "./reply-turn-rotation.js";
 import {
   isDuplicateRestartRecoverySource,
@@ -131,7 +127,7 @@ export async function runReplyAgent(
     const turnAdoptionLifecycle = opts?.turnAdoptionLifecycle;
     const releaseAdmissionTicket = () => opts?.[REPLY_ADMISSION_TICKET]?.release();
     let activeSessionEntry = sessionEntry;
-    const activeSessionStore = sessionStore;
+    let activeSessionStore = sessionStore;
     const effectiveResetTriggered = resetTriggered === true;
 
     const isHeartbeat = opts?.isHeartbeat === true;
@@ -455,54 +451,139 @@ export async function runReplyAgent(
       return undefined;
     }
 
-    followupRun.run.config = await resolveQueuedReplyExecutionConfig(followupRun.run.config, {
-      originatingChannel: sessionCtx.OriginatingChannel,
-      messageProvider: followupRun.run.messageProvider,
-      originatingAccountId: followupRun.originatingAccountId,
-      agentAccountId: followupRun.run.agentAccountId,
+    const replySessionKey = sessionKey ?? followupRun.run.sessionKey;
+    const replyRouteThreadId = resolveRoutedDeliveryThreadId({
+      ctx: sessionCtx,
+      sessionKey: replySessionKey,
     });
-
-    const replyToChannel = resolveOriginMessageProvider({
-      originatingChannel: sessionCtx.OriginatingChannel,
-      provider: sessionCtx.Surface ?? sessionCtx.Provider,
-    }) as OriginatingChannelType | undefined;
-    const replyToMode =
-      followupRun.originatingReplyToMode ??
-      resolveReplyToMode(
-        followupRun.run.config,
-        replyToChannel,
-        sessionCtx.AccountId,
-        sessionCtx.ChatType,
-      );
-    const applyReplyToMode = createReplyToModeFilterForChannel(replyToMode, replyToChannel);
-    const cfg = followupRun.run.config;
-    const replyMediaContext = createReplyMediaContext({
-      cfg,
-      agentId: followupRun.run.agentId,
-      sessionKey,
-      workspaceDir: followupRun.run.workspaceDir,
-      mediaNormalizationOwner: followupRun.run.mediaNormalizationOwner,
-      messageProvider: followupRun.run.messageProvider,
-      accountId: followupRun.originatingAccountId ?? followupRun.run.agentAccountId,
-      groupId: followupRun.run.groupId,
-      groupChannel: followupRun.run.groupChannel,
-      groupSpace: followupRun.run.groupSpace,
-      requesterSenderId: followupRun.run.senderId,
-      requesterSenderName: followupRun.run.senderName,
-      requesterSenderUsername: followupRun.run.senderUsername,
-      requesterSenderE164: followupRun.run.senderE164,
+    const replyTurnKind = resolveReplyTurnKind(opts);
+    const rotationEvidence = providedReplyOperation
+      ? undefined
+      : createReplyTurnRotationEvidence({
+          sessionKey: replySessionKey ?? "",
+          controller: controllerInput.mailbox.owner,
+        });
+    let directCompactionNotice:
+      | ((phase: import("./compaction-notice.js").CompactionNoticePhase) => Promise<void>)
+      | undefined;
+    const preparation = await prepareReplyAgentTurn({
+      queued: followupRun,
+      defaults: {
+        resolveGatewayContext,
+        opts: runOpts,
+        typing,
+        typingMode,
+        sessionEntry: activeSessionEntry,
+        sessionStore: activeSessionStore,
+        sessionKey,
+        storePath,
+        defaultModel,
+        toolProgressDetail,
+      },
+      kind: replyTurnKind,
+      resetTriggered: effectiveResetTriggered,
+      routeThreadId: replyRouteThreadId,
+      providedReplyOperation,
+      rotationEvidence,
+      claimSource: providedReplyOperation
+        ? undefined
+        : async () => {
+            const observation = rotationEvidence?.observeAdmission();
+            try {
+              return await (isHeartbeat
+                ? tryClaimSessionControllerTask(controllerInput, "heartbeat")
+                : claimSessionControllerInput(followupRun));
+            } catch (error) {
+              if (!resolveFollowupAbortSignal(followupRun)?.aborted) {
+                throw error;
+              }
+              return undefined;
+            } finally {
+              observation?.dispose();
+            }
+          },
+      onBeforeClaimWait: releaseAdmissionTicket,
+      configure: (cfg) => {
+        const replyToChannel = resolveOriginMessageProvider({
+          originatingChannel: sessionCtx.OriginatingChannel,
+          provider: sessionCtx.Surface ?? sessionCtx.Provider,
+        }) as OriginatingChannelType | undefined;
+        const replyToMode =
+          followupRun.originatingReplyToMode ??
+          resolveReplyToMode(cfg, replyToChannel, sessionCtx.AccountId, sessionCtx.ChatType);
+        const applyReplyToMode = createReplyToModeFilterForChannel(replyToMode, replyToChannel);
+        const replyMediaContext = createReplyMediaContext({
+          cfg,
+          agentId: followupRun.run.agentId,
+          sessionKey,
+          workspaceDir: followupRun.run.workspaceDir,
+          mediaNormalizationOwner: followupRun.run.mediaNormalizationOwner,
+          messageProvider: followupRun.run.messageProvider,
+          accountId: followupRun.originatingAccountId ?? followupRun.run.agentAccountId,
+          groupId: followupRun.run.groupId,
+          groupChannel: followupRun.run.groupChannel,
+          groupSpace: followupRun.run.groupSpace,
+          requesterSenderId: followupRun.run.senderId,
+          requesterSenderName: followupRun.run.senderName,
+          requesterSenderUsername: followupRun.run.senderUsername,
+          requesterSenderE164: followupRun.run.senderE164,
+        });
+        const streaming = prepareReplyStreamingDelivery({
+          opts,
+          sessionCtx,
+          cfg,
+          applyReplyToMode,
+          blockStreamingEnabled,
+          blockReplyChunking,
+          blockReplyTimeoutMs,
+        });
+        directCompactionNotice = streaming.sendDirectCompactionNotice;
+        return {
+          applyReplyToMode,
+          cfg,
+          replyMediaContext,
+          replyToChannel,
+          replyToMode,
+          ...streaming,
+        };
+      },
+      signalRunStart: typingSignals.signalRunStart,
+      trace: traceAgentPhase,
+      onCompactionNotice: async (phase) => await directCompactionNotice?.(phase),
     });
-    const { sendDirectCompactionNotice, blockReplyPipeline } = prepareReplyStreamingDelivery({
-      opts,
-      sessionCtx,
-      cfg,
+    if (preparation.kind === "skipped") {
+      preparation.operation?.complete();
+      if (replyOperationRunState) {
+        replyOperationRunState.admission = {
+          status: "skipped",
+          reason: preparation.reason === "active-run" ? "active-run" : "aborted",
+        };
+      }
+      typing.cleanup();
+      if (preparation.reason !== "active-run" || replyTurnKind !== "visible") {
+        return undefined;
+      }
+      return markReplyPayloadForSourceSuppressionDelivery({
+        text: REPLY_RUN_STILL_SHUTTING_DOWN_TEXT,
+      });
+    }
+    if (replyOperationRunState) {
+      replyOperationRunState.admission = { status: "owned" };
+    }
+    const turn = preparation.turn;
+    Object.assign(followupRun, turn.queued);
+    activeSessionEntry = turn.session.current();
+    activeSessionStore = turn.sessionStore;
+    const replyOperation = turn.operation;
+    const {
       applyReplyToMode,
-      blockStreamingEnabled,
-      blockReplyChunking,
-      blockReplyTimeoutMs,
-    });
+      blockReplyPipeline,
+      cfg,
+      replyMediaContext,
+      replyToChannel,
+      replyToMode,
+    } = preparation.configured;
     const resolveVisibleReplyDelivery = async () => {
-      // Settle accepted or in-flight blocks before deciding whether a terminal failure may stay silent.
       try {
         await blockReplyPipeline?.flush({ force: true });
       } catch (flushError) {
@@ -512,117 +593,6 @@ export async function runReplyAgent(
       }
       return didDeliverVisiblePartialReply || blockReplyPipeline?.didStream() === true;
     };
-    const replySessionKey = sessionKey ?? followupRun.run.sessionKey;
-    const replyRouteThreadId = resolveRoutedDeliveryThreadId({
-      ctx: sessionCtx,
-      sessionKey: replySessionKey,
-    });
-    let replyOperation: ReplyOperation;
-    if (providedReplyOperation) {
-      replyOperation = providedReplyOperation;
-      attachSessionControllerInputOperation(followupRun, replyOperation);
-      if (replyOperationRunState) {
-        replyOperationRunState.admission = { status: "owned" };
-      }
-      releaseAdmissionTicket();
-    } else {
-      const replyTurnKind = resolveReplyTurnKind(opts);
-      // The selector can wait past a predecessor's compaction and raw cleanup.
-      // Preserve its physical lineage before waiting, not just its final ID.
-      const rotationEvidence = createReplyTurnRotationEvidence({
-        sessionKey: replySessionKey ?? "",
-        controller: controllerInput.mailbox.owner,
-      });
-      const observation = rotationEvidence.observeAdmission();
-      let mailboxClaim;
-      try {
-        // Heartbeats never wait behind a claim, unbound source, or effect fence.
-        const selected = isHeartbeat
-          ? tryClaimSessionControllerTask(controllerInput, "heartbeat")
-          : claimSessionControllerInput(followupRun);
-        releaseAdmissionTicket();
-        mailboxClaim = await selected;
-      } catch (error) {
-        if (!resolveFollowupAbortSignal(followupRun)?.aborted) {
-          throw error;
-        }
-      } finally {
-        observation.dispose();
-      }
-      if (!mailboxClaim) {
-        if (replyOperationRunState) {
-          replyOperationRunState.admission = {
-            status: "skipped",
-            reason: resolveFollowupAbortSignal(followupRun)?.aborted ? "aborted" : "active-run",
-          };
-        }
-        typing.cleanup();
-        return undefined;
-      }
-      const admission = await admitReplyTurn({
-        mailboxClaim,
-        rotationEvidence,
-        runId: controllerInput.protocolRunId,
-        providerReviewAcknowledgment: opts?.providerReviewAcknowledgment,
-        agentId: followupRun.run.agentId,
-        resolveGatewayContext,
-        sessionId: followupRun.run.sessionId,
-        sessionKey: replySessionKey ?? "",
-        expectedSessionId: activeSessionEntry?.sessionId,
-        storePath,
-        kind: replyTurnKind,
-        resetTriggered: effectiveResetTriggered,
-        routeThreadId: replyRouteThreadId,
-        originatingLeafEntryId: turnAdoptionLifecycle?.originatingLeafEntryId,
-        upstreamAbortSignal: resolveFollowupAbortSignal({
-          abortSignal: controllerInput.abortSignal,
-          operatorAuthority: followupRun.operatorAuthority,
-        }),
-      }).catch((error: unknown) => {
-        releaseSessionControllerClaim(mailboxClaim);
-        throw error;
-      });
-      if (replyOperationRunState) {
-        replyOperationRunState.admission =
-          admission.status === "owned"
-            ? { status: "owned" }
-            : { status: "skipped", reason: admission.reason };
-      }
-      if (admission.status === "skipped") {
-        releaseSessionControllerClaim(mailboxClaim);
-        typing.cleanup();
-        if (admission.reason !== "active-run" || replyTurnKind !== "visible") {
-          return undefined;
-        }
-        return markReplyPayloadForSourceSuppressionDelivery({
-          text: REPLY_RUN_STILL_SHUTTING_DOWN_TEXT,
-        });
-      }
-      replyOperation = admission.operation;
-      bindSessionControllerInputOperation(followupRun, replyOperation);
-      const previousRunSessionId = followupRun.run.sessionId;
-      followupRun.run.sessionId = replyOperation.sessionId;
-      if (replyOperation.sessionId !== previousRunSessionId) {
-        const admittedSessionEntry =
-          admission.sessionEntry ??
-          (replySessionKey
-            ? (activeSessionStore?.[replySessionKey] ?? activeSessionEntry)
-            : activeSessionEntry);
-        if (admittedSessionEntry?.sessionId === replyOperation.sessionId) {
-          activeSessionEntry = admittedSessionEntry;
-          if (admission.sessionEntry && activeSessionStore && replySessionKey) {
-            activeSessionStore[replySessionKey] = admission.sessionEntry;
-          }
-          const admittedSessionFile = resolveAdmittedRunSessionFile({
-            sessionFile: undefined,
-            sessionKey: replySessionKey,
-          });
-          if (admittedSessionFile) {
-            followupRun.run.sessionFile = admittedSessionFile;
-          }
-        }
-      }
-    }
     replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
     bindReplyOperationTyping(replyOperation, typing);
     let runFollowupTurn = queuedRunFollowupTurn;
@@ -654,6 +624,9 @@ export async function runReplyAgent(
       storePath,
     });
     try {
+      if (turn.preflightError) {
+        throw turn.preflightError;
+      }
       return await executePreparedReplyAgentRun({
         ...params,
         activeSessionStore,
@@ -675,12 +648,9 @@ export async function runReplyAgent(
         replyRouteThreadId,
         replyToChannel,
         replyToMode,
+        preflightCompactionApplied: turn.preflightCompactionApplied,
         returnWithQueuedFollowupDrain,
         runFollowupTurn,
-        sendDirectCompactionNotice,
-        setActiveSessionEntry: (entry) => {
-          activeSessionEntry = entry;
-        },
         setRunFollowupTurn: (runner) => {
           runFollowupTurn = runner;
         },

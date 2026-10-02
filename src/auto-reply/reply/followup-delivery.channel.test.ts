@@ -9,9 +9,9 @@ import {
 } from "../../test-utils/channel-plugins.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
-import type { AdmittedFollowupTurn } from "./claimed-turn-preparation.js";
 import { resolveFollowupDeliveryPayloads } from "./followup-delivery-payloads.js";
 import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./followup-delivery.js";
+import type { AdmittedFollowupTurn } from "./reply-agent-turn-preparation.js";
 
 const channelState = vi.hoisted(() => ({
   outcomes: [] as Array<"delivered" | "failed">,
@@ -87,7 +87,6 @@ function createTurn(params: {
       key: "main",
       current: () => undefined,
       publish: () => undefined,
-      adopt: () => undefined,
     },
     sendPolicy: "allow",
     preflightCompactionApplied: false,

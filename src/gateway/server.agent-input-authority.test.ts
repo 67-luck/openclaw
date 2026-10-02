@@ -18,6 +18,7 @@ import {
   runExclusiveSqliteSessionWrite,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { registerInternalHook, unregisterInternalHook } from "../hooks/internal-hooks.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import type { PreparedAgentRunDispatch } from "./agent-turn/agent-run-admission-types.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugins.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
@@ -362,7 +363,7 @@ describe("accepted input Gateway instance retirement", () => {
         throw new Error("Expected prepared Gateway work custody");
       }
       expect(gatewayWork.isActive()).toBe(true);
-      expect(context.rpcSources.get(runId)).toBe(prepared.activeRunAbort.entry);
+      expect(rpcSourceTesting.get(runId)).toBe(prepared.activeRunAbort.entry);
       expect(prepared.activeRunAbort.controller.signal.aborted).toBe(false);
       expect(() => guard()).not.toThrow();
       const runtimeRelease = vi.spyOn(prepared.preparedModelRuntimeLease, Symbol.asyncDispose);
@@ -402,7 +403,7 @@ describe("accepted input Gateway instance retirement", () => {
       expect(prepared.userTurn.recorder?.getAdmissionReceipt()).toBeUndefined();
       expect(agentCommandMock).not.toHaveBeenCalled();
       expect(prepared.activeRunAbort.controller.signal.aborted).toBe(false);
-      expect(context.rpcSources.size).toBe(0);
+      expect(rpcSourceTesting.size).toBe(0);
       expect(gatewayWork.isActive()).toBe(false);
       await gatewayWork.released;
       expect(runtimeRelease).toHaveBeenCalledOnce();

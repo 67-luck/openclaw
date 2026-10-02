@@ -14,6 +14,7 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { onSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -154,7 +155,6 @@ describe("board and progress event session ownership", () => {
           broadcastToConnIds,
           getRuntimeConfig: () => cfg,
           getSessionEventSubscriberConnIds: () => new Set(peers.map(({ client }) => client.connId)),
-          rpcSources: new Map(),
           resolveGatewayContext: (): GatewayRequestContext => context,
         } as unknown as GatewayRequestContext;
         bindSessionRowProjection(context, connection.getSessionRowProjection);
@@ -827,23 +827,25 @@ it("delivers committed collector updates to a parent-only cross-agent viewer", a
     peers.forEach(({ client }) => connection.clients.add(client));
     const { broadcastToConnIds } = connection;
     const publications: Promise<void>[] = [];
+    rpcSourceTesting.reset([
+      [
+        "parent-run",
+        await createActiveRpcSourceForTest(
+          { projectSessionActive: true },
+          {
+            sessionId: "parent-viewer",
+            sessionKey: parent.sessionKey,
+            agentId: parent.agentId,
+          },
+        ),
+      ],
+    ]);
     const publish = createLifecycleEventBroadcastHandler({
       getSessionRowProjection: () => rowProjection,
       broadcastToConnIds,
       sessionEventSubscribers: {
         getAll: () => new Set(peers.map(({ client }) => client.connId)),
       },
-      rpcSources: new Map([
-        [
-          "parent-run",
-          await createActiveRpcSourceForTest({
-            sessionId: "parent-viewer",
-            sessionKey: parent.sessionKey,
-            agentId: parent.agentId,
-            projectSessionActive: true,
-          }),
-        ],
-      ]),
     });
     const unsubscribe = onSessionLifecycleEvent((event) => {
       publications.push(publish(event));

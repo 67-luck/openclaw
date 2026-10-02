@@ -34,7 +34,6 @@ type SessionChangedPayload = {
 type SessionChangeContext = Pick<
   GatewayRequestContext,
   | "broadcastToConnIds"
-  | "rpcSources"
   | "getRuntimeConfig"
   | "sessionRowProjectionOwner"
   | "getSessionEventSubscriberConnIds"
@@ -207,7 +206,6 @@ function broadcastSessionsChanged(
   const activeRunState =
     sessionRow && (sessionRow.key !== "global" || routingAgentId !== undefined)
       ? resolveVisibleActiveSessionRunState({
-          context,
           requestedKey: payload.sessionKey ?? sessionRow.key,
           canonicalKey: sessionRow.key,
           sessionId: sessionRow.sessionId,

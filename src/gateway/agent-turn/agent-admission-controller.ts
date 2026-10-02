@@ -11,6 +11,7 @@ import {
   captureSessionTarget,
   type SessionEffectRef,
 } from "../../sessions/session-controller.lifecycle.js";
+import { getRpcSource } from "../../sessions/session-controller.rpc-sources.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import {
   assertExpectedExistingSession,
@@ -187,8 +188,8 @@ export function createAgentAdmissionController(params: {
       const entry = admittedRunAbort.entry;
       const ownsRun =
         entry !== undefined &&
-        params.context.rpcSources.get(params.runId) === entry &&
-        !entry.adapter.registrationCleanupRequested;
+        getRpcSource(params.runId) === entry &&
+        !entry.input.retirementRequested;
       admittedRunAbort.controller.abort(
         stopReason === "rpc" ? reason : createAgentRunRestartAbortError(),
       );

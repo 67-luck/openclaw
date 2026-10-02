@@ -9,6 +9,7 @@ import {
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import { markReplyOperationExecutionStarted } from "../../sessions/session-controller.state.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { createActiveRun as createAbortRun } from "./chat.abort.test-helpers.js";
 import type { GatewayRequestContext } from "./types.js";
@@ -48,8 +49,8 @@ export function createContext(
     agents: { list: options.agents ?? createDefaultAgents() },
     ...(options.globalScope ? { session: { scope: "global" as const } } : {}),
   };
+  rpcSourceTesting.reset(options.activeRuns);
   return {
-    rpcSources: new Map(options.activeRuns ?? []),
     dedupe: new Map(),
     getSessionEventSubscriberConnIds: () => new Set(),
     getRuntimeConfig: () => cfg,
@@ -105,10 +106,13 @@ export function createPhysicalOperation(
 
 export function createQueuedRun(sessionKey: string, sessionId: string, agentId = "main") {
   return createRpcSourceForTest(
-    { sessionKey, sessionId, agentId },
+    {},
     {
       storeScope: fixtureStorePath(agentId),
       phase: "waiting",
+      sessionKey,
+      sessionId,
+      agentId,
     },
   );
 }

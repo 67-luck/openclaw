@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions.js";
-import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./claimed-turn-preparation.js";
 import type { FollowupExecutionResult } from "./followup-turn-execution.js";
+import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./reply-agent-turn-preparation.js";
 
 const mocks = vi.hoisted(() => ({
   persistSessionUsageUpdate: vi.fn(async (_params: unknown) => undefined),
@@ -117,10 +117,6 @@ function createParams(
           entry = next;
           sessionStore.main = next;
         }
-      },
-      adopt: (next: SessionEntry) => {
-        entry = next;
-        sessionStore.main = next;
       },
     },
     sessionStore,
@@ -242,9 +238,9 @@ describe("accountFollowupTurn", () => {
     const params = createParams();
     const session = params.turn.session as unknown as {
       current: () => SessionEntry;
-      adopt: (entry: SessionEntry) => void;
+      publish: (entry: SessionEntry) => void;
     };
-    session.adopt({
+    session.publish({
       ...session.current(),
       modelProvider: "anthropic",
       model: "claude",

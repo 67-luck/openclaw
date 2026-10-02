@@ -126,7 +126,6 @@ export function createDirectChatContext(
       debug: vi.fn(),
     },
     agentRunSeq: new Map(),
-    rpcSources: new Map(),
     chatRunState: createChatRunState(),
     addChatRun: vi.fn(),
     removeChatRun: vi.fn(),

@@ -332,7 +332,6 @@ export function installSpawnAuthorityFixture() {
       },
     });
     const parent = registerChatAbortController({
-      rpcSources: context.rpcSources,
       target: captureSessionTarget({
         storeScope: storePath,
         sessionKey: parentSessionKey,

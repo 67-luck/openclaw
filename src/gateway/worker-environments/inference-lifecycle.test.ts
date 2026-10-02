@@ -276,7 +276,7 @@ describe("worker inference manager", () => {
             { once: true },
           );
           const context = createChatAbortContext({
-            rpcSources: new Map([[REQUEST.runId, parent]]),
+            sources: new Map([[REQUEST.runId, parent]]),
             workerEnvironmentService: workerService,
           });
           try {

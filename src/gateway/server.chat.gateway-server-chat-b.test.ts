@@ -57,6 +57,7 @@ import {
   runSessionMutation,
 } from "../sessions/session-controller.lifecycle.js";
 import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { buildPersistedUserTurnMessage } from "../sessions/user-turn-transcript.js";
 import { recordAgentProvenance } from "../state/agent-provenance.js";
@@ -931,14 +932,16 @@ describe("gateway server chat", () => {
         // chat.send registers the agent-scoped canonical key; the handler's
         // in-flight adoption must resolve the same scoped key for the bare
         // alias request or the streaming run renders idle on switch-back.
-        context.rpcSources.set(
+        rpcSourceTesting.set(
           "run-writer",
-          await createActiveRpcSourceForTest({
-            sessionId: "sess-writer",
-            sessionKey: "agent:writer:notes",
-            agentId: "writer",
-            projectSessionActive: true,
-          }),
+          await createActiveRpcSourceForTest(
+            { projectSessionActive: true },
+            {
+              sessionId: "sess-writer",
+              sessionKey: "agent:writer:notes",
+              agentId: "writer",
+            },
+          ),
         );
         context.chatRunState.getOrCreate("run-writer").buffer = "writer partial";
         const responses: CapturedChatResponse[] = [];
@@ -986,13 +989,12 @@ describe("gateway server chat", () => {
       });
       try {
         await writeMainSessionStore();
-        context.rpcSources.set(
+        rpcSourceTesting.set(
           "run-active",
-          await createActiveRpcSourceForTest({
-            sessionId: "sess-main",
-            sessionKey: "main",
-            projectSessionActive: true,
-          }),
+          await createActiveRpcSourceForTest(
+            { projectSessionActive: true },
+            { sessionId: "sess-main", sessionKey: "main" },
+          ),
         );
         context.chatRunState.registry.add("provider-run", {
           sessionKey: "main",
@@ -2601,7 +2603,7 @@ describe("gateway server chat", () => {
         expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(true);
       }, FAST_WAIT_OPTS);
       expect(context.dedupe.get(collidingFinalKey)).toBe(collidingFinalEntry);
-      expect(context.rpcSources.has(runId)).toBe(false);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
 
       const retryResponses: CapturedChatResponse[] = [];
       await callDirectChat("chat.send", {
@@ -2653,7 +2655,7 @@ describe("gateway server chat", () => {
       ]);
       expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(false);
       expect(context.dedupe.get(collidingFinalKey)).toBe(collidingFinalEntry);
-      expect(context.rpcSources.has(runId)).toBe(false);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       releaseMutation.resolve();
@@ -2715,7 +2717,7 @@ describe("gateway server chat", () => {
         },
       ]);
       expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(false);
-      expect(context.rpcSources.has(runId)).toBe(false);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       releaseMutation.resolve();
@@ -2810,7 +2812,7 @@ describe("gateway server chat", () => {
           meta: undefined,
         },
       ]);
-      expect(context.rpcSources.has(runId)).toBe(false);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       performDeletion.resolve();
@@ -2868,7 +2870,7 @@ describe("gateway server chat", () => {
       expect(sendResponses[0]?.error).toMatchObject({
         message: expect.stringMatching(/changed while starting work/i),
       });
-      expect(context.rpcSources.has(runId)).toBe(false);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       releaseMutation.resolve();
@@ -2937,7 +2939,7 @@ describe("gateway server chat", () => {
         },
       ]);
       expect(context.dedupe.get(pendingKey)).toBe(replacement);
-      expect(context.rpcSources.has(runId)).toBe(false);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
 
       const terminalMutationStarted = createDeferred();
@@ -3206,7 +3208,7 @@ describe("gateway server chat", () => {
       dispatchInboundMessageMock.mockImplementationOnce(async () => dispatchRelease.promise);
       let snapshotAtAck: ReturnType<typeof loadSessionEntry>;
       const freshAdmission = vi.fn(async () => {
-        expect(context.rpcSources.get(nextRunId)?.adapter.controlUiVisible).not.toBe(false);
+        expect(rpcSourceTesting.get(nextRunId)?.adapter.controlUiVisible).not.toBe(false);
         return true;
       });
 
@@ -3226,7 +3228,7 @@ describe("gateway server chat", () => {
       });
 
       expect(freshAdmission).toHaveBeenCalledTimes(1);
-      expect(context.rpcSources.get(nextRunId)?.adapter.controlUiVisible).toBeUndefined();
+      expect(rpcSourceTesting.get(nextRunId)?.adapter.controlUiVisible).toBeUndefined();
       expect(snapshotAtAck).toMatchObject({
         restartRecoveryDeliveryRunId: nextRunId,
         restartRecoveryDeliverySourceRunId: nextRunId,
@@ -3313,7 +3315,7 @@ describe("gateway server chat", () => {
     const runId = "idem-visible-during-admission-callback";
     try {
       await writeStoredMainSession(makeDoneSessionEntry());
-      const context = createDirectChatContext({ rpcSources: new Map() });
+      const context = createDirectChatContext();
       const sendResponses: Array<{ ok: boolean; payload?: unknown }> = [];
       const sendPromise = sendControlUiChat({
         context,
@@ -3327,7 +3329,7 @@ describe("gateway server chat", () => {
         respond: captureChatResult(sendResponses),
       });
       await callbackEntered.promise;
-      expect(context.rpcSources.get(runId)?.adapter.controlUiVisible).not.toBe(false);
+      expect(rpcSourceTesting.get(runId)?.adapter.controlUiVisible).not.toBe(false);
 
       const abortResponses: Array<{ ok: boolean; payload?: unknown }> = [];
       await callDirectChat("chat.abort", {
@@ -3378,10 +3380,7 @@ describe("gateway server chat", () => {
       const scope = makeMainSessionScope(storePath);
       const context = createDirectChatContext();
       const abortCommittedTurn = vi.fn(() => {
-        const activeRun = expectDefined(
-          context.rpcSources.get(runId),
-          "expected admitted chat run",
-        );
+        const activeRun = expectDefined(rpcSourceTesting.get(runId), "expected admitted chat run");
         activeRun.adapter.abortStopReason = stopReason;
         requestRpcSourceCancellation(activeRun);
       });
@@ -3681,7 +3680,7 @@ describe("gateway server chat", () => {
         },
       ]);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
-      expect(context.rpcSources.has(idempotencyKey)).toBe(false);
+      expect(rpcSourceTesting.has(idempotencyKey)).toBe(false);
     } finally {
       releaseMutation.resolve();
       await Promise.allSettled(mutation ? [mutation] : []);
@@ -4151,7 +4150,6 @@ describe("gateway server chat", () => {
       const broadcast = vi.fn((_event: string, _payload: unknown) => undefined);
       const context = createDirectChatContext({
         loadGatewayModelCatalog: vi.fn<GatewayRequestContext["loadGatewayModelCatalog"]>(),
-        rpcSources: new Map(),
         broadcast,
       });
       let turnAdoptionLifecycle: GetReplyOptions["turnAdoptionLifecycle"];
@@ -4225,7 +4223,7 @@ describe("gateway server chat", () => {
         }),
         { sessionKeys: ["agent:main:main"] },
       );
-      expect(context.rpcSources.has("idem-queued-followup")).toBe(true);
+      expect(rpcSourceTesting.has("idem-queued-followup")).toBe(true);
       expect(isSessionControllerWorkActive(storePath, ["agent:main:main", "sess-main"])).toBe(true);
       const { createAgentTurnService } = await import("./agent-turn/agent-turn-service.js");
       const service = createAgentTurnService({ context, isWebchatConnect: () => true });
@@ -4272,15 +4270,15 @@ describe("gateway server chat", () => {
       );
       expect(dispatchInboundMessageMock).toHaveBeenCalledTimes(1);
 
-      const queuedEntry = context.rpcSources.get("idem-queued-followup");
+      const queuedEntry = rpcSourceTesting.get("idem-queued-followup");
       expect(queuedEntry).toBeDefined();
       if (queuedEntry) {
         requestRpcSourceCancellation(queuedEntry);
       }
-      expect(context.rpcSources.has("idem-queued-followup")).toBe(false);
+      expect(rpcSourceTesting.has("idem-queued-followup")).toBe(false);
 
       await turnAdoptionLifecycle?.onSettled?.();
-      expect(context.rpcSources.has("idem-queued-followup")).toBe(false);
+      expect(rpcSourceTesting.has("idem-queued-followup")).toBe(false);
       expect(isSessionControllerWorkActive(storePath, ["agent:main:main", "sess-main"])).toBe(
         false,
       );
@@ -4336,9 +4334,9 @@ describe("gateway server chat", () => {
         ok: true,
         payload: { status: "ok" },
       });
-      expect(context.rpcSources.has("idem-queued-followup-post-error")).toBe(true);
+      expect(rpcSourceTesting.has("idem-queued-followup-post-error")).toBe(true);
       await failedDispatchLifecycle?.onSettled?.();
-      expect(context.rpcSources.has("idem-queued-followup-post-error")).toBe(false);
+      expect(rpcSourceTesting.has("idem-queued-followup-post-error")).toBe(false);
     });
   });
 

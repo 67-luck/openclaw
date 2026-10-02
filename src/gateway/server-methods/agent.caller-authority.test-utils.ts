@@ -13,7 +13,11 @@ import {
   withPluginRuntimeGatewayContextResolver,
   withPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
-import { isRpcSourceQueued } from "../../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSourceIdentity,
+  isRpcSourceQueued,
+} from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import * as userTurn from "../agent-turn/agent-run-user-turn.js";
@@ -214,7 +218,7 @@ describe("gateway agent caller authority custody", () => {
         });
         await waitForAgentCommandCall();
         await expectDefined(proof, "command proof missing");
-        await waitForAssertion(() => expect(context.rpcSources.size).toBe(0));
+        await waitForAssertion(() => expect(rpcSourceTesting.size).toBe(0));
         expect(caller.isCurrent()).toBe(false);
       } finally {
         caller.release();
@@ -309,8 +313,8 @@ describe("gateway agent caller authority custody", () => {
         expect(accepted).toBe(true);
       }
       await waitForAssertion(() => expect(commands.size).toBe(1));
-      const guest = expectDefined(context.rpcSources.get(guestRunId), "guest run missing");
-      const staff = expectDefined(context.rpcSources.get(staffRunId), "staff run missing");
+      const guest = expectDefined(rpcSourceTesting.get(guestRunId), "guest run missing");
+      const staff = expectDefined(rpcSourceTesting.get(staffRunId), "staff run missing");
       const guestAuthority = expectDefined(
         commands.get(guestRunId)?.operatorAuthority,
         "guest authority missing",
@@ -320,7 +324,7 @@ describe("gateway agent caller authority custody", () => {
       expect(source.signal.aborted).toBe(false);
       expect(guest.input.abortSignal.aborted).toBe(false);
       expect(staff.input.abortSignal.aborted).toBe(false);
-      expect(guest.adapter.sessionKey).toBe(staff.adapter.sessionKey);
+      expect(getRpcSourceIdentity(guest).sessionKey).toBe(getRpcSourceIdentity(staff).sessionKey);
       expect(isRpcSourceQueued(staff)).toBe(true);
       expect(commands.has(staffRunId)).toBe(false);
       expect(() => guestAuthority.assertCurrent()).not.toThrow();
@@ -330,7 +334,7 @@ describe("gateway agent caller authority custody", () => {
       expect(guest.input.abortSignal.aborted).toBe(true);
       expect(() => guestAuthority.assertCurrent()).toThrow();
       expect(staff.input.abortSignal.aborted).toBe(false);
-      expect(context.rpcSources.get(staffRunId)).toBe(staff);
+      expect(rpcSourceTesting.get(staffRunId)).toBe(staff);
       finishCommands.resolve();
       await waitForAssertion(() => expect(commands.size).toBe(2));
       const staffAuthority = expectDefined(
@@ -339,7 +343,7 @@ describe("gateway agent caller authority custody", () => {
       );
       expect(() => staffAuthority.assertCurrent()).not.toThrow();
       await waitForAssertion(() => {
-        expect(context.rpcSources.size).toBe(0);
+        expect(rpcSourceTesting.size).toBe(0);
         expect(context.dedupe.get(`agent:${guestRunId}`)).toMatchObject({
           ok: true,
           payload: { runId: guestRunId, status: "timeout", summary: "aborted", stopReason: "rpc" },
@@ -352,7 +356,7 @@ describe("gateway agent caller authority custody", () => {
     } finally {
       finishCommands.resolve();
       try {
-        await waitForAssertion(() => expect(context.rpcSources.size).toBe(0));
+        await waitForAssertion(() => expect(rpcSourceTesting.size).toBe(0));
       } finally {
         for (const caller of callers) {
           caller.release();

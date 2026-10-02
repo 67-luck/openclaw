@@ -10,6 +10,7 @@ import {
   type SessionControllerMailboxClaim,
 } from "../../sessions/session-controller.mailbox.js";
 import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { drainGlobalSingletonLifecycleState } from "../../shared/global-singleton.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -43,12 +44,13 @@ function waitThroughGateway(
       )
     : undefined;
   const claim = source ? claimSessionControllerTask(source.input, () => {}) : undefined;
+  rpcSourceTesting.reset(source ? [[params.runId, source]] : []);
   const promise = (async () => {
     try {
       return await handler({
         params,
         respond,
-        context: { dedupe: new Map(), rpcSources: new Map(source ? [[params.runId, source]] : []) },
+        context: { dedupe: new Map() },
       } as unknown as Parameters<typeof handler>[0]);
     } finally {
       if (claim !== undefined) {
@@ -106,10 +108,9 @@ describe("agent.wait gateway dedupe observations", () => {
       },
       spaced,
     );
+    rpcSourceTesting.reset([[spaced, source]]);
     const service = createAgentTurnService({
-      context: { dedupe, rpcSources: new Map([[spaced, source]]) } as Parameters<
-        typeof createAgentTurnService
-      >[0]["context"],
+      context: { dedupe } as unknown as Parameters<typeof createAgentTurnService>[0]["context"],
       isWebchatConnect: () => false,
     });
     expect((await service.waitForTurn({ runId: spaced, timeoutMs: 0 })).result).toMatchObject({
@@ -147,7 +148,7 @@ describe("agent.wait gateway dedupe observations", () => {
           },
           runId,
         );
-        context.rpcSources.set(runId, source);
+        rpcSourceTesting.set(runId, source);
         claim = await claimSessionControllerTask(source.input, () => {});
       }
       setGatewayDedupeEntry({
@@ -200,7 +201,7 @@ describe("agent.wait gateway dedupe observations", () => {
           data: { phase: "end", executionSettled: true, ...terminal },
         });
         if (registration === "retired") {
-          context.rpcSources.delete(runId);
+          rpcSourceTesting.delete(runId);
         }
         await vi.advanceTimersByTimeAsync(0);
         expect(waiting.respond).not.toHaveBeenCalled();
@@ -209,7 +210,7 @@ describe("agent.wait gateway dedupe observations", () => {
         expect(duringPublication.respond).toHaveBeenCalledWith(true, { runId, status: "timeout" });
         expect(replay()?.[1]).toMatchObject({ runId, status: "in_flight" });
         publish();
-        context.rpcSources.delete(runId);
+        rpcSourceTesting.delete(runId);
         await waiting.promise;
         expect(waiting.respond).toHaveBeenCalledWith(
           true,
@@ -225,7 +226,7 @@ describe("agent.wait gateway dedupe observations", () => {
       } finally {
         publish();
         await waiting.promise;
-        context.rpcSources.clear();
+        rpcSourceTesting.clear();
         if (claim) {
           releaseSessionControllerClaim(claim);
         }
@@ -340,11 +341,11 @@ describe("agent.wait gateway dedupe observations", () => {
         },
       );
       const runId = "queued-visible-wait";
-      const rpcSources = new Map<string, RpcSourceRef>();
+      rpcSourceTesting.clear();
       const source = createTestRpcSource({ ...session }, runId);
       const controller = testRpcSourceController(source);
       const handler = expectDefined(agentHandlers["agent.wait"], "registered wait handler");
-      const context = createGatewayRequestContext(makeContextParams({ rpcSources }));
+      const context = createGatewayRequestContext(makeContextParams());
       context.getRuntimeConfig = () => cfg;
       const invoke = async (client: typeof owner) => {
         const respond = vi.fn();
@@ -361,7 +362,7 @@ describe("agent.wait gateway dedupe observations", () => {
       try {
         vi.useFakeTimers();
         vi.setSystemTime(2_000_000);
-        rpcSources.set(runId, source);
+        rpcSourceTesting.set(runId, source);
         setGatewayDedupeEntry({
           dedupe: new Map(),
           key: `chat:${runId}`,
@@ -533,12 +534,11 @@ describe("agent.wait gateway dedupe observations", () => {
       session: original,
       entry: { ts: Date.now(), ok: true, payload: { runId, status: "ok" } },
     });
-    const rpcSources = new Map<string, RpcSourceRef>();
+    rpcSourceTesting.clear();
     const service = createAgentTurnService({
       context: {
         dedupe: new Map(),
-        rpcSources,
-      } as Parameters<typeof createAgentTurnService>[0]["context"],
+      } as unknown as Parameters<typeof createAgentTurnService>[0]["context"],
       isWebchatConnect: () => false,
     });
     const selected = service.waitForTurn({ runId, timeoutMs: 0 });
@@ -550,7 +550,7 @@ describe("agent.wait gateway dedupe observations", () => {
     const source = createTestRpcSource(queued, runId);
     const controller = testRpcSourceController(source);
     try {
-      rpcSources.set(runId, source);
+      rpcSourceTesting.set(runId, source);
       await expect(selected).resolves.toEqual({
         session: { ...queued, lifecycleGeneration },
         result: { runId, status: "pending", timeoutPhase: "queue", providerStarted: false },

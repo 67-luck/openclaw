@@ -31,7 +31,6 @@ function createContext(handlers: GatewayRequestHandlers): GatewayRequestContext 
       warn: vi.fn(),
       error: vi.fn(),
     },
-    rpcSources: new Map(),
     dedupe: new Map(),
   } as unknown as GatewayRequestContext;
   context.createAgentTurnFacade = (principal) =>

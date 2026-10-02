@@ -590,7 +590,6 @@ describe("chat history recovery byte budget", () => {
         const historyJson = JSON.stringify(inactive.messages);
         const registration = registerChatAbortController({
           target: captureRpcTargetForTest(scope),
-          rpcSources: context.rpcSources,
           runId: "run-history-bytes",
           ...scope,
           timeoutMs: 60_000,

@@ -27,6 +27,7 @@ import {
   clearAgentRunTerminalWriteContext,
   drainAgentRunTerminalWrites,
 } from "../infra/agent-run-terminal-writes.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { abortChatRunById, registerChatAbortController, type ChatAbortOps } from "./chat-abort.js";
@@ -124,7 +125,6 @@ describe("durable pre-reply run failure", () => {
         const transcriptBefore = await loadTranscriptEvents(target);
         const chatRunState = createChatRunState();
         const ops: ChatAbortOps = {
-          rpcSources: new Map(),
           chatRunState,
           removeChatRun: () => undefined,
           agentRunSeq: new Map(),
@@ -134,7 +134,6 @@ describe("durable pre-reply run failure", () => {
         const active = registerChatAbortController({
           ...target,
           target: captureRpcTargetForTest(target),
-          rpcSources: ops.rpcSources,
           runId,
           timeoutMs: 60_000,
           kind: "agent",
@@ -148,7 +147,6 @@ describe("durable pre-reply run failure", () => {
         const queued = registerChatAbortController({
           ...target,
           target: captureRpcTargetForTest(target),
-          rpcSources: ops.rpcSources,
           runId: queuedRunId,
           timeoutMs: 60_000,
           kind: "agent",
@@ -168,9 +166,9 @@ describe("durable pre-reply run failure", () => {
             }),
           ).toEqual({ aborted: true });
           expect(queued.controller.signal.aborted).toBe(true);
-          expect(ops.rpcSources.has(queuedRunId)).toBe(false);
+          expect(rpcSourceTesting.has(queuedRunId)).toBe(false);
           expect(active.controller.signal.aborted).toBe(false);
-          expect(ops.rpcSources.get(runId)?.input.abortSignal).toBe(active.controller.signal);
+          expect(rpcSourceTesting.get(runId)?.input.abortSignal).toBe(active.controller.signal);
           expect(events).toHaveLength(1);
           for (const queuedEvent of events) {
             expect(

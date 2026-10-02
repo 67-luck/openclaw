@@ -10,9 +10,10 @@ import {
   interruptSessionControllerEffects,
   isSessionControllerWorkActive,
 } from "../sessions/session-controller.lifecycle.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import {
@@ -57,7 +58,6 @@ test.each(["keep", "delete"] as const)(
     const context = {
       broadcastToConnIds: vi.fn(),
       getSessionEventSubscriberConnIds: () => new Set(["title-listener"]),
-      rpcSources: new Map<string, ChatAbortControllerEntry>(),
     };
     let key: string | undefined;
     try {
@@ -135,7 +135,7 @@ test.each(["adopted", "incognito"] as const)(
       client,
     );
     expect(result.ok, JSON.stringify(result.error)).toBe(true);
-    await settleWorkspaceRuns({ rpcSources: new Map() }, storePath, key);
+    await settleWorkspaceRuns({ rpcSourceTesting: new Map() }, storePath, key);
     expect(titleMocks.generate).not.toHaveBeenCalled();
     expect(
       loadSessionEntry({ agentId: "main", sessionKey: result.payload!.key, storePath })
@@ -162,7 +162,6 @@ test("successful naming survives setup failure and is shared with discussion ope
   );
   const context = {
     broadcast: vi.fn(),
-    rpcSources: new Map<string, ChatAbortControllerEntry>(),
     dedupe: new Map(),
   };
   dispatchInboundMessageMock.mockResolvedValue({
@@ -268,7 +267,6 @@ test.each(["generator error", "worktree wait timeout"])(
     const dispatchFinished = createDeferredCore();
     const preparationFailed = createDeferredCore<Error>();
     const context = {
-      rpcSources: new Map<string, ChatAbortControllerEntry>(),
       broadcast: vi.fn<GatewayRequestContext["broadcast"]>((event, payload) => {
         if (event === "chat" && isRecord(payload) && payload.state === "error") {
           preparationFailed.resolve(
@@ -359,7 +357,6 @@ test("creates a two-word worktree name before an initial turn can generate its t
   testState.agentConfig = { workspace };
   const { storePath } = await createSessionStoreDir();
   const context = {
-    rpcSources: new Map<string, ChatAbortControllerEntry>(),
     dedupe: new Map(),
   };
   titleMocks.generate.mockResolvedValue("Canvas video and device presence");

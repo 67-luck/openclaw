@@ -17,6 +17,7 @@ import type { OpenClawConfig } from "../../../config/types.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import { requestRpcSourceCancellation } from "../../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { drainGlobalSingletonLifecycleState } from "../../../shared/global-singleton.js";
 import { captureOpenClawStateDatabaseReadAdmission } from "../../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../../state/openclaw-state-db.paths.js";
@@ -87,30 +88,37 @@ const providerErrorCases = [
 const { createTalkRealtimeRelaySession, stopTalkRealtimeRelaySession } =
   createRelaySessionFixture(activeRelaySessions);
 
+function indexRpcSourceForTest(ref: ReturnType<typeof createRpcSourceForTest>) {
+  rpcSourceTesting.set("run-1", ref);
+  void ref.input.settlement.promise.finally(() => rpcSourceTesting.deleteExpected("run-1", ref));
+}
+
 async function createOwnedTalkRunControllers(backend?: Parameters<typeof setActiveEmbeddedRun>[1]) {
   const ref = createRpcSourceForTest(
     {
-      sessionId: "embedded-session-1",
-      sessionKey: "agent:main:main",
-      agentId: "main",
-      ownerConnId: "conn-1",
+      requester: { connectionId: "conn-1" },
       kind: "chat-send",
       lifecycleGeneration: getAgentEventLifecycleGeneration(),
     },
-    { runId: "run-1" },
+    {
+      runId: "run-1",
+      sessionId: "embedded-session-1",
+      sessionKey: "agent:main:main",
+      agentId: "main",
+    },
   );
   await claimRpcSourceForTest(ref);
   if (backend) {
     setActiveEmbeddedRun(
-      ref.adapter.sessionId,
+      ref.input.sourceSessionId ?? "",
       backend,
-      ref.adapter.sessionKey,
+      ref.input.mailbox.key,
       undefined,
       "main",
       ref.input.claim!.operation!,
     );
   }
-  return new Map([["run-1", ref]]);
+  indexRpcSourceForTest(ref);
 }
 
 function ensureActiveRelayTurnId(relaySessionId: string): string {
@@ -511,7 +519,6 @@ describe("talk realtime gateway relay", () => {
       const broadcastToConnIds = vi.fn();
       const context = {
         broadcastToConnIds,
-        rpcSources: new Map(),
         getRuntimeConfig: () => ({}),
         logGateway,
       } as never;
@@ -647,7 +654,6 @@ describe("talk realtime gateway relay", () => {
     const session = createTalkRealtimeRelaySession({
       context: {
         broadcastToConnIds: vi.fn(),
-        rpcSources: new Map(),
         getRuntimeConfig: () => ({}),
         logGateway: { warn: vi.fn() },
       } as never,
@@ -674,7 +680,6 @@ describe("talk realtime gateway relay", () => {
     const session = createTalkRealtimeRelaySession({
       context: {
         broadcastToConnIds: vi.fn(),
-        rpcSources: new Map(),
         getRuntimeConfig: () => ({}),
         logGateway: { warn: vi.fn() },
       } as never,
@@ -747,7 +752,6 @@ describe("talk realtime gateway relay", () => {
         createTalkRealtimeRelaySession({
           context: {
             broadcastToConnIds,
-            rpcSources: new Map(),
             getRuntimeConfig: () => ({}),
             logGateway: { warn: vi.fn() },
           } as never,
@@ -781,7 +785,6 @@ describe("talk realtime gateway relay", () => {
       createTalkRealtimeRelaySession({
         context: {
           broadcastToConnIds,
-          rpcSources: new Map(),
           getRuntimeConfig: () => ({}),
           logGateway: { warn: vi.fn() },
         } as never,
@@ -830,7 +833,6 @@ describe("talk realtime gateway relay", () => {
         const session = createTalkRealtimeRelaySession({
           context: {
             broadcastToConnIds: vi.fn(),
-            rpcSources: new Map(),
             getRuntimeConfig: () => ({}),
             logGateway: { warn: vi.fn() },
           } as never,
@@ -915,7 +917,6 @@ describe("talk realtime gateway relay", () => {
           broadcastToConnIds: (event: string, payload: unknown, connIds: ReadonlySet<string>) => {
             events.push({ event, payload, connIds: [...connIds] });
           },
-          rpcSources: new Map(),
           getRuntimeConfig: () => ({}),
           logGateway: { warn: vi.fn() },
         } as never,
@@ -1011,7 +1012,6 @@ describe("talk realtime gateway relay", () => {
       const session = createTalkRealtimeRelaySession({
         context: {
           broadcastToConnIds: vi.fn(),
-          rpcSources: new Map(),
           getRuntimeConfig: () => ({}),
           logGateway: { warn: vi.fn() },
         } as never,
@@ -1070,7 +1070,6 @@ describe("talk realtime gateway relay", () => {
         controlSource: "transcript",
         context: {
           broadcastToConnIds: vi.fn(),
-          rpcSources: new Map(),
           getRuntimeConfig: () => runtimeConfig,
           logGateway: { warn: vi.fn() },
         } as never,
@@ -1119,7 +1118,6 @@ describe("talk realtime gateway relay", () => {
         controlSource: "transcript",
         context: {
           broadcastToConnIds: vi.fn(),
-          rpcSources: new Map(),
           getRuntimeConfig: () => ({
             agents: { entries: { main: {}, ops: { default: true } } },
           }),
@@ -1296,20 +1294,22 @@ describe("talk realtime gateway relay", () => {
   ) {
     const source = createRpcSourceForTest(
       {
-        sessionId: "run-1",
-        sessionKey: "main",
-        agentId: "main",
-        ownerConnId: "conn-1",
+        requester: { connectionId: "conn-1" },
         lifecycleGeneration: getAgentEventLifecycleGeneration(),
       },
-      { runId: "run-1" },
+      {
+        runId: "run-1",
+        sessionId: "run-1",
+        sessionKey: options.backend ? "agent:main:main" : "main",
+        agentId: "main",
+      },
     );
     await claimRpcSourceForTest(source);
     if (options.backend) {
       setActiveEmbeddedRun(
-        source.adapter.sessionId,
+        source.input.sourceSessionId ?? "",
         options.backend,
-        source.adapter.sessionKey,
+        source.input.mailbox.key,
         undefined,
         "main",
         source.input.claim!.operation!,
@@ -1341,12 +1341,12 @@ describe("talk realtime gateway relay", () => {
         },
       },
     });
+    indexRpcSourceForTest(source);
     const context = {
       broadcastToConnIds,
       broadcast,
       nodeSendToSession,
       logGateway: { warn: vi.fn() },
-      rpcSources: new Map([["run-1", source]]),
       chatRunState,
       removeChatRun,
       agentRunSeq: new Map(),
@@ -4747,7 +4747,7 @@ describe("talk realtime gateway relay", () => {
       if (!relay || !request) {
         throw new Error("Missing relay fixture");
       }
-      const controls = relay.context.rpcSources;
+      const controls = rpcSourceTesting;
       const original = controls.get("run-1");
       if (!original) {
         throw new Error("Missing original registration");
@@ -5054,11 +5054,11 @@ describe("talk realtime gateway relay", () => {
       return bridge;
     });
     const events: Array<{ event: string; payload: unknown; connIds: string[] }> = [];
+    await createOwnedTalkRunControllers(backend);
     const context = {
       broadcastToConnIds: (event: string, payload: unknown, connIds: ReadonlySet<string>) => {
         events.push({ event, payload, connIds: [...connIds] });
       },
-      rpcSources: await createOwnedTalkRunControllers(backend),
     } as never;
 
     const session = createTalkRealtimeRelaySession({
@@ -5278,12 +5278,12 @@ describe("talk realtime gateway relay", () => {
       return bridge;
     });
     const events: Array<{ event: string; payload: unknown; connIds: string[] }> = [];
+    await createOwnedTalkRunControllers(backend);
     const session = createTalkRealtimeRelaySession({
       context: {
         broadcastToConnIds: (event: string, payload: unknown, connIds: ReadonlySet<string>) => {
           events.push({ event, payload, connIds: [...connIds] });
         },
-        rpcSources: await createOwnedTalkRunControllers(backend),
       } as never,
       provider,
       instructions: "be brief",
@@ -5385,7 +5385,6 @@ describe("talk realtime gateway relay", () => {
       });
       const context = {
         broadcastToConnIds: vi.fn(),
-        rpcSources: new Map(),
       } as never;
       const session = createTalkRealtimeRelaySession({
         context,
@@ -5574,13 +5573,15 @@ describe("talk realtime gateway relay", () => {
   it("aborts linked agent consult runs when the provider closes the relay", async () => {
     const source = createRpcSourceForTest(
       {
+        requester: { connectionId: "conn-1" },
+        lifecycleGeneration: getAgentEventLifecycleGeneration(),
+      },
+      {
+        runId: "run-1",
         sessionId: "run-1",
         sessionKey: "main",
         agentId: "main",
-        ownerConnId: "conn-1",
-        lifecycleGeneration: getAgentEventLifecycleGeneration(),
       },
-      { runId: "run-1" },
     );
     await claimRpcSourceForTest(source);
     const abortController = {
@@ -5613,11 +5614,11 @@ describe("talk realtime gateway relay", () => {
       bridgeRequest = req;
       return makeRelayTransport();
     });
+    indexRpcSourceForTest(source);
     const context = {
       broadcastToConnIds: vi.fn(),
       broadcast,
       nodeSendToSession,
-      rpcSources: new Map([["run-1", source]]),
       chatRunState,
       removeChatRun,
       agentRunSeq: new Map(),

@@ -14,10 +14,10 @@ import { refreshSessionEntryFromStore, resolveFallbackOriginModel } from "./agen
 import type { AgentTurnCompaction } from "./agent-runner-execution.types.js";
 import { buildReplyDiagnosticsPayload } from "./agent-runner-result-diagnostics.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
-import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./claimed-turn-preparation.js";
 import type { FollowupExecutionResult } from "./followup-turn-execution.js";
 import { drainPendingToolTasks } from "./pending-tool-task-drain.js";
 import { refreshQueuedFollowupSession } from "./queue.js";
+import type { AdmittedFollowupTurn, FollowupRunnerParams } from "./reply-agent-turn-preparation.js";
 import { buildReplyUsageState, recordReplyUsageState } from "./reply-usage-state.js";
 import { incrementCompactionCount } from "./session-updates.js";
 import { persistSessionUsageUpdate } from "./session-usage.js";

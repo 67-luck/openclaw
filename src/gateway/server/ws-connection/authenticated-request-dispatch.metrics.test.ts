@@ -508,7 +508,6 @@ describe("Gateway observation response ordering", () => {
       extraHandlers: { "agent.wait": agentWaitHandler },
       buildRequestContext: () => ({
         dedupe: new Map(),
-        rpcSources: new Map(),
         getRuntimeConfig: () => ({}),
       }),
     });

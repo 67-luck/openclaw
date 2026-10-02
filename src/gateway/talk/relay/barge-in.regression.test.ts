@@ -57,7 +57,6 @@ function captureBridgeRequest(params: {
   const session = createTalkRealtimeRelaySession({
     context: {
       broadcastToConnIds: vi.fn(),
-      rpcSources: new Map(),
     } as never,
     connId: "conn-1",
     cfg,
