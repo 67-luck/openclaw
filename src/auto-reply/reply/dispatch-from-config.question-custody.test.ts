@@ -169,7 +169,7 @@ describe("dispatch input custody after a question response", () => {
     const onAdopted = vi.fn(async () => {
       throw new Error("source adoption closed");
     });
-    const onSettled = vi.fn(() => {
+    const onSettled = vi.fn(async () => {
       if (failure === "source-abort") {
         abort.abort();
       } else {
