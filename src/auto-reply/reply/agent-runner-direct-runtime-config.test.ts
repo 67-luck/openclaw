@@ -27,7 +27,7 @@ import type { TemplateContext } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { ReplyPayload } from "../types.js";
 import { createTestFollowupRun, withTestModelContextTokens } from "./agent-runner.test-fixtures.js";
-import type { QueueSettings } from "./queue.js";
+import type { FollowupRun, QueueSettings } from "./queue.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
 import type { ReplyDispatchKind } from "./reply-dispatcher.types.js";
 import {
@@ -161,9 +161,11 @@ function createReplyOperation(): TestReplyOperation {
 function createDirectRuntimeReplyParams({
   shouldFollowup = false,
   isActive = false,
+  queueMode = "interrupt",
 }: {
   shouldFollowup?: boolean;
   isActive?: boolean;
+  queueMode?: QueueSettings["mode"];
 } = {}) {
   const sessionKey = directSessionKey;
   const followupRun = createTestFollowupRun({
@@ -174,7 +176,9 @@ function createDirectRuntimeReplyParams({
     provider: "openai",
     model: "gpt-5.4",
   });
-  const resolvedQueue = { mode: "interrupt" } as QueueSettings;
+  followupRun.originatingChannel = "telegram";
+  followupRun.originatingTo = "12345";
+  const resolvedQueue = { mode: queueMode } as QueueSettings;
   const replyParams: Parameters<typeof runReplyAgent>[0] = {
     commandBody: "hello",
     followupRun,
@@ -223,7 +227,7 @@ function requireMaintenanceCall(mock: MockCallSource, name: string, index = 0) {
   const call = mock.mock.calls[index]?.[0] as
     | {
         cfg?: unknown;
-        followupRun?: unknown;
+        followupRun?: FollowupRun;
         sessionKey?: string;
         runtimePolicySessionKey?: string;
       }
@@ -308,13 +312,17 @@ describe("runReplyAgent runtime config", () => {
     );
     const memoryCall = requireMaintenanceCall(runMemoryFlushIfNeededMock, "runMemoryFlushIfNeeded");
     expect(memoryCall.cfg).toBe(freshCfg);
-    expect(memoryCall.followupRun).toBe(followupRun);
     const preflightCall = requireMaintenanceCall(
       runSessionCompactionIfNeededMock,
       "runSessionCompactionIfNeeded",
     );
     expect(preflightCall.cfg).toBe(freshCfg);
-    expect(preflightCall.followupRun).toBe(followupRun);
+    expect(memoryCall.followupRun).toBe(preflightCall.followupRun);
+    expect(memoryCall.followupRun).toMatchObject({
+      originatingChannel: "telegram",
+      originatingTo: "12345",
+      run: { config: freshCfg },
+    });
   });
 
   it("passes the derived runtime-policy key to pre-run maintenance", async () => {
@@ -782,6 +790,7 @@ describe("runReplyAgent runtime config", () => {
     const { followupRun, resolvedQueue, replyParams } = createDirectRuntimeReplyParams({
       shouldFollowup: true,
       isActive: true,
+      queueMode: "followup",
     });
     const runState: ReplyOperationRunState = {};
     replyParams.opts = { [REPLY_OPERATION_RUN_STATE]: runState };
@@ -793,7 +802,7 @@ describe("runReplyAgent runtime config", () => {
     expect(resolveQueuedReplyExecutionConfigMock).not.toHaveBeenCalled();
     expect(enqueueFollowupRunMock).toHaveBeenCalledTimes(1);
     const enqueueCall = enqueueFollowupRunMock.mock.calls.at(0);
-    expect(enqueueCall?.[0]).toBe("main");
+    expect(enqueueCall?.[0]).toBe(directSessionKey);
     expect(enqueueCall?.[1]).toBe(followupRun);
     expect(enqueueCall?.[2]).toBe(resolvedQueue);
     expect(enqueueCall?.[3]).toBe("message-id");
