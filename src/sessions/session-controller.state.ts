@@ -504,14 +504,16 @@ function registerReplyRunAdmissionBarrier(
   barrier: Promise<void>,
 ): ReplyRunAdmissionBarrier {
   const sourceOwner = getSessionControllerEntryForOperation(initialSource.operation);
-  const owner = sourceOwner.aliases.has(sessionKey)
-    ? sourceOwner
-    : getSessionControllerEntry(
-        sessionKey,
-        sourceOwner.target
-          ? { ...sourceOwner.target, sessionKey, aliases: [sessionKey] }
-          : undefined,
-      );
+  const owner =
+    controllerStorage.sessionControllers.get(sourceOwner.id) === sourceOwner &&
+    sourceOwner.aliases.has(sessionKey)
+      ? sourceOwner
+      : getSessionControllerEntry(
+          sessionKey,
+          sourceOwner.target
+            ? { ...sourceOwner.target, sessionKey, aliases: [sessionKey] }
+            : undefined,
+        );
   const previous = owner[barrierKind];
   const source = mergeReplyRunAdmissionSource(
     initialSource,
