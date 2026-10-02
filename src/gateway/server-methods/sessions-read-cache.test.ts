@@ -26,7 +26,6 @@ import { mergeSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resetAgentEventsForTest } from "../../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
-import { createReplyOperation } from "../../sessions/session-controller.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
@@ -94,23 +93,28 @@ describe("resident sessions.list", () => {
               sessionId: "main-active",
               sessionKey: terminalScope.sessionKey,
               agentId: "main",
+              phase: "consumed",
             },
           ),
         );
         if (filtered) {
           expect((await listSessions({ client, context, request })).sessions).toEqual([]);
         }
-        const operation = createReplyOperation({
-          sessionId: "main-active",
-          sessionKey: "agent:main:active",
-          resetTriggered: false,
-        });
+        const activeSource = await createActiveRpcSourceForTest(
+          {},
+          {
+            sessionId: "main-active",
+            sessionKey: terminalScope.sessionKey,
+            agentId: "main",
+          },
+        );
+        rpcSourceTesting.set("active-reply", activeSource);
         try {
           const active = await listSessions({ client, context, request });
           expect(active.sessions.find((row) => row.key === terminalScope.sessionKey)).toMatchObject(
             { hasActiveRun: true, status: "running" },
           );
-          operation.complete();
+          activeSource.release();
           if (!filtered) {
             vi.spyOn(Date, "now").mockReturnValue(Date.now() + 1_000);
           }
@@ -123,7 +127,7 @@ describe("resident sessions.list", () => {
             ).toMatchObject({ hasActiveRun: false, status: "done" });
           }
         } finally {
-          operation.complete();
+          activeSource.release();
         }
       });
     },
