@@ -2049,6 +2049,27 @@
           ]
         },
         {
+          "path": "openclaw-state-worker-store-BFg443-b.mjs",
+          "imports": [
+            {
+              "importer": "deferred-plugin-migrations-kvKr-fFx.mjs",
+              "owner": "src/infra/deferred-plugin-migrations.ts",
+              "exports": [
+                "runOpenClawStateWorkerOperation"
+              ]
+            }
+          ],
+          "exports": [
+            {
+              "exported": "runOpenClawStateWorkerOperation",
+              "origin": {
+                "module": "src/state/openclaw-state-worker-store.ts",
+                "symbol": "runOpenClawStateWorkerOperation"
+              }
+            }
+          ]
+        },
+        {
           "path": "plugins/memory-state.js",
           "imports": [
             {
@@ -3048,6 +3069,27 @@
               "origin": {
                 "module": "src/state/openclaw-agent-db-resources.ts",
                 "symbol": "hasOpenClawAgentDatabaseAsyncResources"
+              }
+            }
+          ]
+        },
+        {
+          "path": "openclaw-state-worker-store-BgU7tLf5.mjs",
+          "imports": [
+            {
+              "importer": "deferred-plugin-migrations-DZuh_dkr.mjs",
+              "owner": "src/infra/deferred-plugin-migrations.ts",
+              "exports": [
+                "runOpenClawStateWorkerOperation"
+              ]
+            }
+          ],
+          "exports": [
+            {
+              "exported": "runOpenClawStateWorkerOperation",
+              "origin": {
+                "module": "src/state/openclaw-state-worker-store.ts",
+                "symbol": "runOpenClawStateWorkerOperation"
               }
             }
           ]
@@ -4216,6 +4258,76 @@
               "origin": {
                 "module": "src/state/openclaw-agent-db-resources.ts",
                 "symbol": "hasOpenClawAgentDatabaseAsyncResources"
+              }
+            }
+          ]
+        },
+        {
+          "path": "openclaw-state-lease-worker-storage-CF8p_Uyv.mjs",
+          "imports": [
+            {
+              "importer": "deferred-plugin-migrations-Dg7uETi4.mjs",
+              "owner": "src/infra/deferred-plugin-migrations.ts",
+              "exports": [
+                "runWithOpenClawStateLeaseWorker"
+              ]
+            }
+          ],
+          "exports": [
+            {
+              "exported": "runWithOpenClawStateLeaseWorker",
+              "origin": {
+                "module": "src/state/openclaw-state-lease-worker-storage.ts",
+                "symbol": "runWithOpenClawStateLeaseWorker"
+              }
+            }
+          ]
+        },
+        {
+          "path": "openclaw-state-worker-store-BeEcG2CR.mjs",
+          "imports": [
+            {
+              "importer": "deferred-plugin-migrations-Dg7uETi4.mjs",
+              "owner": "src/infra/deferred-plugin-migrations.ts",
+              "exports": [
+                "runOpenClawStateWorkerOperation"
+              ]
+            },
+            {
+              "importer": "deferred-plugin-migrations-Dg7uETi4.mjs",
+              "owner": "src/infra/deferred-plugin-migrations.ts",
+              "exports": [
+                "runOpenClawStateWorkerOperation"
+              ]
+            }
+          ],
+          "exports": [
+            {
+              "exported": "runOpenClawStateWorkerOperation",
+              "origin": {
+                "module": "src/state/openclaw-state-worker-store.ts",
+                "symbol": "runOpenClawStateWorkerOperation"
+              }
+            }
+          ]
+        },
+        {
+          "path": "plugin-lifecycle-lease-hc58DecT.mjs",
+          "imports": [
+            {
+              "importer": "deferred-plugin-migrations-Dg7uETi4.mjs",
+              "owner": "src/infra/deferred-plugin-migrations.ts",
+              "exports": [
+                "withPluginLifecycleLease"
+              ]
+            }
+          ],
+          "exports": [
+            {
+              "exported": "withPluginLifecycleLease",
+              "origin": {
+                "module": "src/plugins/plugin-lifecycle-lease.ts",
+                "symbol": "withPluginLifecycleLease"
               }
             }
           ]
@@ -5442,6 +5554,76 @@
               "origin": {
                 "module": "src/state/openclaw-agent-db-resources.ts",
                 "symbol": "hasOpenClawAgentDatabaseAsyncResources"
+              }
+            }
+          ]
+        },
+        {
+          "path": "openclaw-state-lease-worker-storage-BU9JBx2n.mjs",
+          "imports": [
+            {
+              "importer": "deferred-plugin-migrations-Ds53ELH9.mjs",
+              "owner": "src/infra/deferred-plugin-migrations.ts",
+              "exports": [
+                "runWithOpenClawStateLeaseWorker"
+              ]
+            }
+          ],
+          "exports": [
+            {
+              "exported": "runWithOpenClawStateLeaseWorker",
+              "origin": {
+                "module": "src/state/openclaw-state-lease-worker-storage.ts",
+                "symbol": "runWithOpenClawStateLeaseWorker"
+              }
+            }
+          ]
+        },
+        {
+          "path": "openclaw-state-worker-store-Bp_XCEWM.mjs",
+          "imports": [
+            {
+              "importer": "deferred-plugin-migrations-Ds53ELH9.mjs",
+              "owner": "src/infra/deferred-plugin-migrations.ts",
+              "exports": [
+                "runOpenClawStateWorkerOperation"
+              ]
+            },
+            {
+              "importer": "deferred-plugin-migrations-Ds53ELH9.mjs",
+              "owner": "src/infra/deferred-plugin-migrations.ts",
+              "exports": [
+                "runOpenClawStateWorkerOperation"
+              ]
+            }
+          ],
+          "exports": [
+            {
+              "exported": "runOpenClawStateWorkerOperation",
+              "origin": {
+                "module": "src/state/openclaw-state-worker-store.ts",
+                "symbol": "runOpenClawStateWorkerOperation"
+              }
+            }
+          ]
+        },
+        {
+          "path": "plugin-lifecycle-lease-DO5BHP1b.mjs",
+          "imports": [
+            {
+              "importer": "deferred-plugin-migrations-Ds53ELH9.mjs",
+              "owner": "src/infra/deferred-plugin-migrations.ts",
+              "exports": [
+                "withPluginLifecycleLease"
+              ]
+            }
+          ],
+          "exports": [
+            {
+              "exported": "withPluginLifecycleLease",
+              "origin": {
+                "module": "src/plugins/plugin-lifecycle-lease.ts",
+                "symbol": "withPluginLifecycleLease"
               }
             }
           ]
