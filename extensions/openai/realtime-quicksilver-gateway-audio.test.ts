@@ -44,6 +44,7 @@ describe("GPT-Live gateway telephony audio", () => {
                 input.push(audio);
               },
               sendAudio: (audio) => input.push(audio),
+              drainOutputAudio: vi.fn(),
               close: () => {},
             };
           },
