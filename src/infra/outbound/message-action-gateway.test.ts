@@ -128,7 +128,13 @@ describe("runMessageAction plugin dispatch", () => {
       );
     });
 
-    it("carries inferred-channel namespace provenance through scheduled Gateway delegation", async () => {
+    it.each([
+      ["ordinary", undefined],
+      [
+        "scheduled",
+        { scheduled: { policy: { version: 1, mode: "trusted" as const }, assertCurrent: () => {} } },
+      ],
+    ])("carries inferred-channel namespace provenance through %s Gateway delegation", async (_, authorization) => {
       const handleActionEntry = vi.fn(async () => jsonResult({ ok: true, local: true }));
       const gatewayPlugin = createGatewayActionPlugin({
         pluginId: "gatewaychat",
@@ -148,9 +154,7 @@ describe("runMessageAction plugin dispatch", () => {
           messageId: "message-1",
           message: "updated",
         },
-        messageActionAuthorization: {
-          scheduled: { policy: { version: 1, mode: "trusted" }, assertCurrent: () => {} },
-        },
+        messageActionAuthorization: authorization,
         gateway: {
           resolveAgentRuntimeIdentityToken: async () => "agent-runtime-token",
           clientName: "cli",

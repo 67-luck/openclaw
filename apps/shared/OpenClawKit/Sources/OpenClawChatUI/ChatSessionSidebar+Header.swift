@@ -77,8 +77,12 @@ extension ChatSessionSidebar {
             .accessibilityLabel(String(localized: "View options"))
             .accessibilityIdentifier("chat-sidebar-view-options")
             .popover(isPresented: self.$isPresentingFilters) {
-                ChatSessionSidebarFilters(options: self.filterBinding, ownership: ownership)
-                    .onExitCommand { self.isPresentingFilters = false }
+                VStack(spacing: 0) {
+                    ChatSessionSidebarFilters(options: self.filterBinding, ownership: ownership)
+                    ChatSidebarCatalogVisibilityOptions(data: self.catalogData, ownerFilter: self.$sessionOwnerFilter)
+                        .padding(16)
+                }
+                .onExitCommand { self.isPresentingFilters = false }
             }
         }
         .padding(.top, 14)
@@ -190,7 +194,6 @@ extension ChatSessionSidebar {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 12)
-        .background(.bar)
     }
 }
 

@@ -1,5 +1,3 @@
-// Target prefix helpers separate provider-owned prefixes from generic target
-// kind prefixes and validate selected-channel mismatches.
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { AnyChannelPlugin as ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import { normalizeMessageChannel } from "../../utils/message-channel-core.js";
@@ -58,15 +56,12 @@ export function stripTargetTopicSuffix(
   return trimmed.replace(/:topic:.*$/i, "").trim();
 }
 
-/** Parsed provider prefix and the channel that owns it. */
-type ChannelTargetProviderPrefix = {
-  prefix: string;
-  channel: string;
-};
-
-function resolvePluginTargetPrefix(prefix: string): string | undefined {
-  const normalizedPrefix = normalizeOptionalLowercaseString(prefix);
-  if (!normalizedPrefix) {
+function resolveChannelTargetProviderPrefix(
+  raw?: string | null,
+): { prefix: string; channel: string } | undefined {
+  const match = /^\s*([a-z][a-z0-9_-]*):/i.exec(raw ?? "");
+  const prefix = normalizeOptionalLowercaseString(match?.[1]);
+  if (!prefix || TARGET_KIND_PREFIXES.has(prefix)) {
     return undefined;
   }
   for (const plugin of listRuntimeVisibleChannelPlugins()) {
@@ -74,26 +69,12 @@ function resolvePluginTargetPrefix(prefix: string): string | undefined {
     const candidates = plugin.messaging?.targetPrefixes ?? [];
     if (
       channelId &&
-      candidates.some(
-        (candidate) => normalizeOptionalLowercaseString(candidate) === normalizedPrefix,
-      )
+      candidates.some((candidate) => normalizeOptionalLowercaseString(candidate) === prefix)
     ) {
-      return channelId;
+      return { prefix, channel: channelId };
     }
   }
   return undefined;
-}
-
-function resolveChannelTargetProviderPrefix(
-  raw?: string | null,
-): ChannelTargetProviderPrefix | undefined {
-  const match = /^\s*([a-z][a-z0-9_-]*):/i.exec(raw ?? "");
-  const prefix = normalizeOptionalLowercaseString(match?.[1]);
-  if (!prefix || TARGET_KIND_PREFIXES.has(prefix)) {
-    return undefined;
-  }
-  const channel = resolvePluginTargetPrefix(prefix);
-  return channel ? { prefix, channel } : undefined;
 }
 
 /** Resolves the channel implied by a plugin-owned target prefix, if any. */

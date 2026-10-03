@@ -42,6 +42,20 @@ serveOwnedWorkerTasks(
       .releaseOpenClawAgentDatabaseReadValidation;
     // SAFETY: The paired runtime constructs this request; the SQLite snapshot validates admission.
     const request = input as SessionTranscriptWorkerInput | UsageCostWorkerInput;
+    if (request.kind === "cli-process-history") {
+      if (!channel) {
+        throw new Error("Process-held history requires its host reader channel");
+      }
+      const { readProcessHeldCliHistoryInWorker } =
+        await import("../../gateway/cli-session-history.process-held.js");
+      return {
+        ok: true,
+        value: {
+          kind: "rpc",
+          page: await readProcessHeldCliHistoryInWorker(request.params, channel),
+        },
+      };
+    }
     if (request.kind === "sqlite-target") {
       const { resolveSqliteTargetFromSessionStorePath } =
         await import("./session-sqlite-target.js");
@@ -305,49 +319,15 @@ serveOwnedWorkerTasks(
         const { readSessionDiagnosticText } = await import("./session-entry-read.worker.js");
         return readSessionDiagnosticText(request);
       }
-      if (request.kind === "session-entry-read") {
-        const { loadSessionEntryReadOnlyResultInScope } =
-          await import("./session-accessor.sqlite-exact-read.js");
-        let source: SessionTranscriptWorkerValues["session-entry-read"]["source"];
-        const read = loadSessionEntryReadOnlyResultInScope(
-          {
-            ...request.scope,
-            env: cloneEnvWithPlatformSemantics(request.scope.env ?? process.env),
-          },
-          request.continuation,
-          (readSource) => {
-            if (typeof readSource.databaseIdentity !== "string") {
-              throw new Error("Private session entry requires its process-held owner");
-            }
-            source = { ...readSource, databaseIdentity: readSource.databaseIdentity };
-          },
-        );
-        if (!read.ok) {
-          const readError = encodeSessionTranscriptWorkerError(read.error);
-          if (!readError || readError.kind === "fence") {
-            throw read.error;
-          }
-          return {
-            kind: "session-entry-read" as const,
-            entry: undefined,
-            source,
-            readError,
-          };
-        }
-        return { kind: "session-entry-read" as const, entry: read.value, source };
+      if (request.kind === "session-entry-read" || request.kind === "session-runtime-target") {
+        const { readSessionEntryWorkerRequest } = await import("./session-entry-read.worker.js");
+        return readSessionEntryWorkerRequest(request);
       }
       if (request.kind === "session-entry-list") {
-        const { listSessionEntriesReadOnly } =
-          await import("./session-accessor.sqlite-entry-list.read.js");
+        const { readSessionEntryList } = await import("./session-entry-read.worker.js");
         return {
           kind: "session-entry-list" as const,
-          entries: listSessionEntriesReadOnly(
-            {
-              ...request.scope,
-              env: cloneEnvWithPlatformSemantics(request.scope.env ?? process.env),
-            },
-            { continuation: request.continuation },
-          ),
+          entries: readSessionEntryList(request),
         };
       }
       if (request.kind === "session-store-summary") {

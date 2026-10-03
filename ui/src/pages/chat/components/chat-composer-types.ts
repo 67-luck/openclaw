@@ -58,7 +58,8 @@ type ChatQueuedEditProps = {
 
 export type CapabilityMenuProps = ChatComposerCapabilityMenuProps;
 
-type ChatComposerDisabledBannerContent = {
+export type ChatComposerDisabledBanner = {
+  kind: "above-composer" | "composer-replacement";
   title?: string;
   text: string;
   tone?: "info" | "neutral";
@@ -68,9 +69,6 @@ type ChatComposerDisabledBannerContent = {
   busyLabel?: string;
   disabledReason?: string;
 } & ({ actionLabel: string; onAction: () => void } | { actionLabel?: never; onAction?: never });
-
-export type ChatComposerDisabledBanner = ChatComposerDisabledBannerContent &
-  ({ kind: "above-composer" } | { kind: "composer-replacement" });
 
 export type ChatComposerProps = ChatAttachmentControlsProps & {
   paneId: string;
@@ -158,6 +156,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   onTypingChange?: (typing: boolean, preview?: string) => void;
   composerControls?: TemplateResult | typeof nothing;
   footerContent?: TemplateResult | typeof nothing;
+  composerRecovery?: TemplateResult | typeof nothing;
   notices?: TemplateResult | typeof nothing;
   permissionPicker?: ChatPermissionPickerProps;
   onDraftChange: (next: string, mentions?: readonly HumanMention[]) => void;

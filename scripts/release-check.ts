@@ -864,6 +864,7 @@ export function writePackedBundledPluginActivationConfig(homeDir: string): void 
         },
         plugins: {
           enabled: true,
+          allow: ["telegram"],
           entries: {
             telegram: {
               enabled: true,
@@ -878,12 +879,21 @@ export function writePackedBundledPluginActivationConfig(homeDir: string): void 
   );
 }
 
-function runPackedBundledPluginActivationSmoke(packageRoot: string, tmpRoot: string): void {
+export function createPackedBundledPluginActivationSmokeEnv(
+  env: NodeJS.ProcessEnv,
+  tmpRoot: string,
+): NodeJS.ProcessEnv {
   const homeDir = join(tmpRoot, "activation-home");
-  mkdirSync(homeDir, { recursive: true });
-  const env = createPackedCliSmokeEnv(process.env, {
+  return createPackedCliSmokeEnv(env, {
     HOME: homeDir,
+    OPENCLAW_STATE_DIR: join(homeDir, ".openclaw"),
   });
+}
+
+function runPackedBundledPluginActivationSmoke(packageRoot: string, tmpRoot: string): void {
+  const env = createPackedBundledPluginActivationSmokeEnv(process.env, tmpRoot);
+  const homeDir = expectDefined(env.HOME, "packed activation smoke home");
+  mkdirSync(homeDir, { recursive: true });
 
   writePackedBundledPluginActivationConfig(homeDir);
   runReleaseCheckCommand(
@@ -1326,12 +1336,14 @@ export async function checkPackedTargetBootstrap(
   const workerBundlePath = resolve(targetRoot, "src/shared/worker-bundle-hash.ts");
   // Frozen targets can have shared hash helpers without a deploy entrypoint.
   const hasWorkerProducer = existsSync(workerProducerPath);
+  let targetWorkerBundle: Record<string, unknown> | undefined;
   let workerArtifactDeclarations: Array<[string, unknown]> = [];
   if (hasWorkerProducer) {
     const target = await importToolingTypeScript(
       pathToFileURL(workerBundlePath).href,
       import.meta.url,
     );
+    targetWorkerBundle = target;
     if (Object.hasOwn(target, "WORKER_BUNDLE_ARTIFACT_PATHS")) {
       const paths = target.WORKER_BUNDLE_ARTIFACT_PATHS;
       if (!Array.isArray(paths) || paths.length === 0) {
@@ -1390,14 +1402,67 @@ export async function checkPackedTargetBootstrap(
   ) {
     throw new Error("release-check: unsupported target gateway run chunk metadata version.");
   }
-  checkCliBootstrapExternalImports({
-    rootDir: packedRoot,
-    workerDeployEntrypoints,
-    legacyGatewayChunkDiscovery: locatorModule === undefined,
-    logger: {
-      error: (message: string) => console.error(`release-check: ${message}`),
-    },
-  });
+  let materializedWorkerRoot: string | undefined;
+  if (hasWorkerProducer && !existsSync(resolve(packedRoot, "dist/worker"))) {
+    const archiveDirectory = resolve(packedRoot, "dist/worker-artifacts");
+    const archives = readdirSync(archiveDirectory, { withFileTypes: true });
+    if (archives.length !== 1 || !archives[0]!.isFile()) {
+      throw new Error("release-check: packaged worker bundle must contain one regular archive.");
+    }
+    const archiveMatch = /^([a-f0-9]{64})\.tar\.gz$/u.exec(archives[0]!.name);
+    if (!archiveMatch) {
+      throw new Error("release-check: packaged worker bundle archive name is invalid.");
+    }
+    const archivePath = resolve(archiveDirectory, archives[0]!.name);
+    if (lstatSync(archivePath).isSymbolicLink()) {
+      throw new Error("release-check: packaged worker bundle archive must not be a symlink.");
+    }
+    const archiveModulePath = resolve(targetRoot, "src/shared/worker-bundle-archive.ts");
+    const targetArchive = await importToolingTypeScript(
+      pathToFileURL(archiveModulePath).href,
+      import.meta.url,
+    );
+    const readManifest = targetArchive.readWorkerBundleArchiveManifest;
+    const extractArchive = targetArchive.extractWorkerBundleArchive;
+    const limits = targetArchive.DEFAULT_WORKER_BUNDLE_ARCHIVE_LIMITS;
+    const hashManifest = targetWorkerBundle?.hashWorkerBundleManifest;
+    if (
+      typeof readManifest !== "function" ||
+      typeof extractArchive !== "function" ||
+      typeof hashManifest !== "function" ||
+      !limits
+    ) {
+      throw new Error("release-check: target worker archive contract is incomplete.");
+    }
+    const manifest = await readManifest(archivePath, limits);
+    const bundleHash = hashManifest(manifest);
+    if (bundleHash !== archiveMatch[1]) {
+      throw new Error(
+        "release-check: packaged worker bundle archive name does not match its manifest.",
+      );
+    }
+    materializedWorkerRoot = resolve(packedRoot, "dist/worker");
+    await extractArchive({
+      tarballPath: archivePath,
+      destination: materializedWorkerRoot,
+      expectedBundleHash: bundleHash,
+      limits,
+    });
+  }
+  try {
+    checkCliBootstrapExternalImports({
+      rootDir: packedRoot,
+      workerDeployEntrypoints,
+      legacyGatewayChunkDiscovery: locatorModule === undefined,
+      logger: {
+        error: (message: string) => console.error(`release-check: ${message}`),
+      },
+    });
+  } finally {
+    if (materializedWorkerRoot) {
+      rmSync(materializedWorkerRoot, { recursive: true, force: true });
+    }
+  }
 }
 
 async function verifyPackedContents(

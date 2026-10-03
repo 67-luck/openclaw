@@ -143,7 +143,12 @@ export function executeDevicePairingMutation<Key extends keyof DevicePairingWork
     context.admission.assertCurrent();
     options.assertCurrent?.();
     const publication = captureDevicePairingPublication(context.admission);
-    const mutation = publication.beginMutation();
+    // Runtime facts preserve pairing identity; publishing them must not interrupt live node work.
+    const mutation = publication.beginMutation(
+      captured.type !== "node.updateSessionHost" &&
+        captured.type !== "node.recordHostStats" &&
+        captured.type !== "node.updateBins",
+    );
     let admission: SqliteWorkerOperationAdmission | undefined;
     let published = false;
     let publishEnvironment: ReturnType<typeof reserveWorkerEnvironmentNativePublication>;
@@ -234,9 +239,13 @@ export function executeDevicePairingMutation<Key extends keyof DevicePairingWork
 export async function withCurrentDevicePairingSnapshot<T>(
   baseDir: string | undefined,
   prepare: (paired: readonly PairedDevice[]) => { start: () => T | Promise<T> } | undefined,
+  preparePublication?: () => Promise<void>,
 ): Promise<T | undefined> {
   const begun = await withDevicePairingLock(async () => {
     const { paired } = await listDevicePairingStoreRecordsReadOnly(baseDir, true);
+    if (preparePublication) {
+      await preparePublication();
+    }
     const action = prepare(paired);
     return { value: action?.start() };
   });

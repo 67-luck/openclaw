@@ -156,6 +156,7 @@ async function resolveActionTarget(params: {
       input: toRaw,
       accountId: params.accountId ?? undefined,
       allowNativeChannelNamespace: params.allowNativeChannelNamespace,
+      nativeTargetMode: "explicit",
       plugin: params.plugin,
     });
     params.args.to = resolved.to;
@@ -169,6 +170,7 @@ async function resolveActionTarget(params: {
       input: channelIdRaw,
       accountId: params.accountId ?? undefined,
       allowNativeChannelNamespace: params.allowNativeChannelNamespace,
+      nativeTargetMode: "explicit",
       plugin: params.plugin,
       preferredKind: "group",
     });

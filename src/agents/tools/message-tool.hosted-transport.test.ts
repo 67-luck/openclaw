@@ -209,6 +209,15 @@ it("dispatches a hosted message action without connecting to either Gateway endp
       sessionKey,
       operationalRunInstance,
     });
+    expect(
+      resolveTrustedMessageActionToolContext({
+        client: expectDefined(dispatched.mock.calls[0]?.[0].client, "bound Gateway client"),
+        request: { sessionKey, allowNativeChannelNamespace: false },
+      }),
+    ).toMatchObject({
+      ok: true,
+      messageActionAuthorization: { allowNativeChannelNamespace: false },
+    });
     expect(result.details).toMatchObject({
       ok: true,
       listener: "hosted-local",

@@ -78,8 +78,16 @@ import type {
   SessionEntryCurrentSource,
 } from "./session-entry-current.types.js";
 import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
+import type {
+  SessionEntryReadWorkerInput,
+  SessionEntryReadWorkerResult,
+  SessionRuntimeTargetWorkerInput,
+  SessionRuntimeTargetWorkerResult,
+} from "./session-entry-read.types.js";
 import type { PublishedSessionTranscriptArchive } from "./session-history-archive-pruning.types.js";
 import type {
+  ChatHistoryPage,
+  ChatHistoryPageParams,
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
   SessionHistoryDelta,
@@ -89,6 +97,7 @@ import type {
   PendingInputHistoryWorkerInput,
   PendingInputHistorySnapshot,
 } from "./session-pending-input-history.types.js";
+import type * as PendingInputSourceWorker from "./session-pending-input-source.types.js";
 import type {
   SessionMembersWorkerInput,
   SessionMembershipFactsWorkerInput,
@@ -285,13 +294,6 @@ type SessionUsageCacheWorkerInput = {
   env: NodeJS.ProcessEnv;
 };
 
-type SessionEntryReadWorkerInput = {
-  kind: "session-entry-read";
-  database: { agentId: string; path: string };
-  scope: SessionEntryReadScope & { databaseAgentId: string };
-  continuation?: CanonicalSessionReaderContinuation;
-};
-
 export type SessionEntryCurrentWorkerInput = Omit<SessionEntryReadWorkerInput, "kind"> & {
   kind: "session-entry-current";
   source?: SessionEntryCurrentSource;
@@ -311,21 +313,10 @@ export type SessionDiagnosticTextWorkerInput = {
   admission?: UserTurnTranscriptAdmissionReceipt;
 };
 
-type SessionEntryReadWorkerResult = {
-  kind: "session-entry-read";
-  source?: CapturedSessionEntryReadSource & { databaseIdentity: string };
-} & (
-  | { entry: import("./types.js").SessionEntry | undefined; readError?: never }
-  | {
-      entry: undefined;
-      readError: import("./session-transcript-worker-error.types.js").SessionTranscriptWorkerReadError;
-    }
-);
-
-type SessionEntryListWorkerInput = {
+export type SessionEntryListWorkerInput = {
   kind: "session-entry-list";
   database: { agentId: string; path: string };
-  scope: SessionEntryListScope;
+  scope: SessionEntryListScope & { cleanupSession?: string };
   continuation?: CanonicalSessionReaderContinuation;
 };
 
@@ -454,6 +445,7 @@ type SessionArchivedEvictionCandidatesWorkerInput = Omit<
 > & { archived: ArchivedSessionEvictionQuery };
 
 export type SessionHistoryWorkerInput =
+  | { kind: "cli-process-history"; params: ChatHistoryPageParams }
   | LifecycleArtifactCleanupRequest
   | { kind: "prewarm"; database: { agentId: string; path: string }; env: NodeJS.ProcessEnv }
   | SessionHistoricalEvictionCandidatesWorkerInput
@@ -482,11 +474,13 @@ export type SessionHistoryWorkerInput =
   | SessionProgressCardWorkerInput
   | PendingInputHistoryWorkerInput
   | SessionPendingInputReceiptsWorkerInput
+  | PendingInputSourceWorker.Input
   | SessionGoalOperationReceiptWorkerInput
   | ConversationRowsWorkerInput
   | ConversationDeliveryWorkerInput
   | SessionEntryListWorkerInput
   | SessionEntryReadWorkerInput
+  | SessionRuntimeTargetWorkerInput
   | SessionEntryCurrentWorkerInput
   | SessionDiagnosticTextWorkerInput
   | SessionStoreSummaryWorkerInput
@@ -514,6 +508,7 @@ export type SessionHistoryWorkerPreparedInput =
   PreparedHistoryInput<SessionHistoryDatabaseWorkerInput>;
 
 export type SessionTranscriptWorkerValues = SessionTranscriptInventoryWorkerValues & {
+  "cli-process-history": { kind: "rpc"; page: ChatHistoryPage };
   "conversation-rows": { kind: "conversation-rows"; rows: ConversationRecord[] };
   "conversation-delivery": { kind: "conversation-delivery"; record?: ConversationDeliveryRecord };
   prewarm: { kind: "prewarm" };
@@ -565,6 +560,7 @@ export type SessionTranscriptWorkerValues = SessionTranscriptInventoryWorkerValu
     kind: "goal-operation-receipt";
     result: SessionGoalOperationLookupResult;
   };
+  "session-pending-input-source": PendingInputSourceWorker.Value;
   "session-pending-input-history": {
     kind: "session-pending-input-history";
     snapshot: PendingInputHistorySnapshot;
@@ -581,6 +577,7 @@ export type SessionTranscriptWorkerValues = SessionTranscriptInventoryWorkerValu
     >;
   };
   "session-entry-read": SessionEntryReadWorkerResult;
+  "session-runtime-target": SessionRuntimeTargetWorkerResult;
   "session-entry-current": SessionEntryCurrentWorkerResult;
   "session-diagnostic-text": {
     kind: "session-diagnostic-text";
@@ -659,6 +656,10 @@ export type SessionHistoryWorkerDatabase = SessionTranscriptInventoryReaders & {
     PublishedSessionTranscriptArchive[]
   >;
   readColdMetadata: SessionHistoryReader<SessionColdMetadataWorkerInput>;
+  readRuntimeTarget: SessionHistoryReader<
+    SessionRuntimeTargetWorkerInput,
+    SessionTranscriptWorkerValues["session-runtime-target"]["target"]
+  >;
   readColdStorageInventory: SessionHistoryReader<SessionColdStorageInventoryWorkerInput>;
   searchTranscripts: (
     params: SessionTranscriptSearchWorkerInput["params"],
@@ -739,6 +740,7 @@ export type SessionHistoryWorkerDatabase = SessionTranscriptInventoryReaders & {
     SessionGoalOperationReceiptWorkerInput,
     SessionGoalOperationLookupResult
   >;
+  readPendingInputSource: PendingInputSourceWorker.Reader;
   readPendingInputHistory: SessionHistoryReader<
     PendingInputHistoryWorkerInput,
     PendingInputHistorySnapshot
