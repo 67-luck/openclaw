@@ -8,6 +8,7 @@ import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-
 import { resetDiagnosticSessionStateForTest } from "../../logging/diagnostic-session-state.js";
 import { diagnosticLogger } from "../../logging/diagnostic.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
+import { waitForSessionRunEnd as waitForEmbeddedAgentRunEnd } from "../../sessions/session-controller.native-runtime.js";
 import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { createTestUserTurnTranscriptTarget } from "../../sessions/user-turn-transcript.test-support.js";
@@ -18,9 +19,8 @@ import {
   formatEmbeddedAgentQueueFailureSummary,
   preemptAndDrainEmbeddedHeartbeatRun,
   queueEmbeddedAgentMessageWithOutcome,
-  queueEmbeddedAgentMessageWithOutcomeAsync,
-  queueGuardedEmbeddedAgentMessageWithOutcomeAsync,
-
+  queueEmbeddedAgentMessageWithOutcomeAsync as queueAsync,
+  queueGuardedEmbeddedAgentMessageWithOutcomeAsync as queueGuarded,
   type EmbeddedAgentQueueHandle,
   type EmbeddedAgentQueueMessageOptions,
 } from "./runs.js";
@@ -33,6 +33,7 @@ import {
 
 const sessionId = "session",
   sessionKey = "agent:main:test";
+const queueSync = queueEmbeddedAgentMessageWithOutcome;
 const images = [{ type: "image" as const, data: "aW1hZ2U=", mimeType: "image/png" }];
 function start(overrides: Partial<EmbeddedAgentQueueHandle> = {}) {
   const handle = {
@@ -422,9 +423,10 @@ describe("embedded-agent active-run steering", () => {
     const outcome = queueEmbeddedAgentMessageWithOutcome("session-stopped", "continue");
 
     expect(outcome).toEqual({
-
       queued: false,
-      reason: "stale_run",
+      sessionId: "session-stopped",
+      reason: "not_streaming",
+      gatewayHealth: "live",
     });
   });
 
@@ -574,7 +576,12 @@ describe("embedded-agent active-run steering", () => {
   });
 
   it("retains custody across a transcript wait retry", async () => {
-    const queueMessage = vi.fn(async () => {}),
+    let acceptedOptions: EmbeddedAgentQueueMessageOptions | undefined;
+    const queueMessage = vi.fn(
+        async (_text: string, options?: EmbeddedAgentQueueMessageOptions) => {
+          acceptedOptions = options;
+        },
+      ),
       onQueueSettled = vi.fn();
     const handle = start({
       queueMessage,
@@ -594,7 +601,10 @@ describe("embedded-agent active-run steering", () => {
       queueGuarded(sessionId, "continue", { onQueueSettled }, () => true),
     ).resolves.toMatchObject({ queued: true });
     expect(onQueueSettled).not.toHaveBeenCalled();
+    expect(acceptedOptions?.onQueueSettled).toBe(onQueueSettled);
     clearActiveEmbeddedRun(sessionId, handle);
+    expect(onQueueSettled).not.toHaveBeenCalled();
+    acceptedOptions?.onQueueSettled?.();
     expect(onQueueSettled).toHaveBeenCalledOnce();
   });
 

@@ -25,8 +25,7 @@ import {
 } from "../../sessions/session-controller.queries.js";
 import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
 import { withGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
-import { type EmbeddedAgentQueueHandle } from "./run-state.js";
-
+import type { EmbeddedAgentQueueHandle } from "./run-state.js";
 import {
   prepareEmbeddedAgentRunCompletionClaim,
   queueEmbeddedAgentMessageWithOutcomeAsync,
@@ -84,6 +83,7 @@ vi.mock("../../infra/agent-events.js", async (importOriginal) => ({
 function createRunHandle(
   params: {
     abort?: EmbeddedAgentQueueHandle["abort"];
+    compacting?: boolean;
     diagnosticOwner?: DiagnosticEmbeddedRunOwner;
     queueMessage?: EmbeddedAgentQueueHandle["queueMessage"];
     runId?: string;
@@ -100,7 +100,7 @@ function createRunHandle(
     queueMessage: params.queueMessage ?? vi.fn(async () => {}),
     isStreaming: () => true,
     isAbortable: () => false,
-    isCompacting: () => false,
+    isCompacting: () => params.compacting === true,
     abort: params.abort ?? (() => {}),
   };
 }
@@ -209,7 +209,6 @@ describe("embedded run registry lifecycle generations", () => {
   });
 
   it("rejects a delayed prior-lifecycle registration for a current session owner", async () => {
-
     const priorLifecycleGeneration = getAgentEventLifecycleGeneration();
     const staleQueueMessage = vi.fn(async () => {});
     const staleAbort = vi.fn();
@@ -250,7 +249,8 @@ describe("embedded run registry lifecycle generations", () => {
     expect(staleQueueMessage).not.toHaveBeenCalled();
     expect(staleAbort).toHaveBeenCalledWith("restart");
     expect(currentAbort).not.toHaveBeenCalled();
-    expect(listActiveSessionRunIds()).toContain("shared-session");
+    expect(listActiveSessionRunIds()).toContain(sessionId);
+    expect(listActiveSessionRunIds()).not.toContain("shared-session");
     expect(listActiveSessionRunKeys()).toEqual(["agent:main:current"]);
 
     expect(resolveActiveEmbeddedRunHandleSessionId("agent:main:stale")).toBeUndefined();
@@ -311,22 +311,22 @@ describe("embedded run registry lifecycle generations", () => {
   });
 
   it("rejects a current-lifecycle handle after its diagnostic owner closes", () => {
-    const ref = { sessionId: "closed-session", sessionKey: "agent:main:closed" };
+    const closedRef = { sessionId: "closed-session", sessionKey: "agent:main:closed" };
 
     const abort = vi.fn();
-    const diagnosticOwner = createDiagnosticEmbeddedRunOwner({ ...ref, runId: "closed-run" });
+    const diagnosticOwner = createDiagnosticEmbeddedRunOwner({ ...closedRef, runId: "closed-run" });
     const handle = createRunHandle({
       abort,
       diagnosticOwner,
       runId: "closed-run",
     });
-    setActiveEmbeddedRun(ref.sessionId, handle, ref.sessionKey);
-    clearActiveEmbeddedRun(ref.sessionId, handle, ref.sessionKey);
+    setActiveEmbeddedRun(closedRef.sessionId, handle, closedRef.sessionKey);
+    clearActiveEmbeddedRun(closedRef.sessionId, handle, closedRef.sessionKey);
 
-    setActiveEmbeddedRun(ref.sessionId, handle, ref.sessionKey);
+    setActiveEmbeddedRun(closedRef.sessionId, handle, closedRef.sessionKey);
 
     expect(abort).toHaveBeenCalledWith("restart");
-    expect(listActiveSessionRunIds()).not.toContain(ref.sessionId);
+    expect(listActiveSessionRunIds()).not.toContain(closedRef.sessionId);
   });
 
   it("propagates failure to abort a delayed prior-lifecycle registration", () => {
@@ -447,13 +447,13 @@ describe("embedded run registry lifecycle generations", () => {
   });
 
   it("closes queued diagnostic authority before rotation eviction and abort failure", async () => {
-    const ref = { sessionId: "rotation-session", sessionKey: "agent:main:rotation" };
+    const rotationRef = { sessionId: "rotation-session", sessionKey: "agent:main:rotation" };
 
     const runId = "rotation-run";
-    const owner = createDiagnosticEmbeddedRunOwner({ ...ref, runId });
+    const owner = createDiagnosticEmbeddedRunOwner({ ...rotationRef, runId });
     startDiagnosticRunActivityTracking();
     setActiveEmbeddedRun(
-      ref.sessionId,
+      rotationRef.sessionId,
       createRunHandle({
         abort: () => {
           throw new Error("rotation abort failed");
@@ -461,35 +461,38 @@ describe("embedded run registry lifecycle generations", () => {
         diagnosticOwner: owner,
         runId,
       }),
-      ref.sessionKey,
+      rotationRef.sessionKey,
     );
     emitRequest(owner, runId);
 
     expect(() => rotateAgentEventLifecycleGeneration()).toThrow(
       "Failed to retire stale agent lifecycle owners",
     );
-    expect(getDiagnosticSessionActivitySnapshot(ref).activeWorkKind).toBeUndefined();
+    expect(getDiagnosticSessionActivitySnapshot(rotationRef).activeWorkKind).toBeUndefined();
     await waitForDiagnosticEventsDrained();
-    expect(getDiagnosticSessionActivitySnapshot(ref).activeWorkKind).toBeUndefined();
+    expect(getDiagnosticSessionActivitySnapshot(rotationRef).activeWorkKind).toBeUndefined();
   });
 
   it("preserves a current diagnostic owner installed synchronously by stale abort", async () => {
-    const ref = { sessionId: "rotation-replacement", sessionKey: "agent:main:replacement" };
+    const replacementRef = {
+      sessionId: "rotation-replacement",
+      sessionKey: "agent:main:replacement",
+    };
     const runId = "reused-rotation-run";
-    const staleOwner = createDiagnosticEmbeddedRunOwner({ ...ref, runId });
+    const staleOwner = createDiagnosticEmbeddedRunOwner({ ...replacementRef, runId });
     let currentOperation: ReturnType<typeof createReplyOperation> | undefined;
     const staleHandle = createRunHandle({
       abort: () => {
-        clearActiveEmbeddedRun(ref.sessionId, staleHandle, ref.sessionKey);
+        clearActiveEmbeddedRun(replacementRef.sessionId, staleHandle, replacementRef.sessionKey);
         staleOperation.complete();
         const successor = createReplyOperation({
-          sessionKey: ref.sessionKey,
-          sessionId: ref.sessionId,
+          sessionKey: replacementRef.sessionKey,
+          sessionId: replacementRef.sessionId,
           resetTriggered: false,
         });
         currentOperation = successor;
         const currentOwner = createDiagnosticEmbeddedRunOwner({
-          ...ref,
+          ...replacementRef,
           runId,
           watchdogAttempt: successor.watchdog.attachAttempt({
             assertCurrent: () => assertSessionControllerOperation(successor),
@@ -500,17 +503,21 @@ describe("embedded run registry lifecycle generations", () => {
           queueMessage: vi.fn(async () => {}),
           runId,
         });
-        setActiveEmbeddedRun(ref.sessionId, currentHandle, ref.sessionKey);
+        setActiveEmbeddedRun(replacementRef.sessionId, currentHandle, replacementRef.sessionKey);
       },
       diagnosticOwner: staleOwner,
       queueMessage: vi.fn(async () => {}),
       runId,
     });
     startDiagnosticRunActivityTracking();
-    const staleOperation = setActiveEmbeddedRun(ref.sessionId, staleHandle, ref.sessionKey);
+    const staleOperation = setActiveEmbeddedRun(
+      replacementRef.sessionId,
+      staleHandle,
+      replacementRef.sessionKey,
+    );
     emitCoreModelRequestStartedDiagnosticEvent(
       {
-        ...ref,
+        ...replacementRef,
         runId,
         callId: "stale-call",
         provider: "mock",
@@ -518,17 +525,13 @@ describe("embedded run registry lifecycle generations", () => {
       },
       staleOwner.generation,
       300_000,
-
     );
-    const stale = createRunHandle({ abort: staleAbort, diagnosticOwner: staleOwner, runId });
-    startDiagnosticRunActivityTracking();
-    setActiveEmbeddedRun(sessionId, stale, oldRef.sessionKey, "/tmp/stale.jsonl");
-    emitRequest(staleOwner, runId, oldRef);
     await waitForDiagnosticEventsDrained();
+
     rotateAgentEventLifecycleGeneration();
 
     try {
-      expect(getDiagnosticSessionActivitySnapshot(ref)).toMatchObject({
+      expect(getDiagnosticSessionActivitySnapshot(replacementRef)).toMatchObject({
         activeWorkKind: "embedded_run",
         hasActiveEmbeddedRun: true,
         activeModelCallRequestTimeoutMs: undefined,
@@ -565,6 +568,5 @@ describe("embedded run registry lifecycle generations", () => {
     expect(replyRunsB.isSessionRunActive("hot-loaded-session")).toBe(true);
     operation.complete();
     expect(replyRunsB.isSessionRunActive("hot-loaded-session")).toBe(false);
-
   });
 });

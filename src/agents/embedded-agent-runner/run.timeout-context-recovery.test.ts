@@ -1,19 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../context-engine/host-compat.js";
 import { buildContextEngineRuntimeSettings } from "../../context-engine/runtime-settings.js";
+import { isSessionRunActive } from "../../sessions/session-controller.queries.js";
 import { testing as deliveryTesting } from "../subagents/announce/subagent-announce-delivery.test-support.js";
 import { sendSubagentAnnounceDirectly } from "../subagents/announce/subagent-announce-direct-delivery.js";
 import { makeAttemptResult, makeCompactionSuccess } from "./run.overflow-compaction.fixture.js";
 import { createEmbeddedRunContextRecoveryState } from "./run/context-recovery-state.js";
 import { recoverEmbeddedRunTimeout } from "./run/timeout-context-recovery.js";
-import type { EmbeddedRunAttemptResult } from "./run/types.js";
-import { resolveEmbeddedRunAbandonment, markActiveEmbeddedRunAbandoned } from "./runs.js";
 import {
+  markActiveEmbeddedRunAbandoned,
+  markEmbeddedRunRecoveringTimeout,
+  resolveEmbeddedRunAbandonment,
+  restoreEmbeddedRunTimeoutAbandonment,
+} from "./runs.js";
+import {
+  clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   createEmbeddedRunHandle,
   testing as runsTesting,
 } from "./runs.test-support.js";
-
 import { createUsageAccumulator } from "./usage-accumulator.js";
 
 const mocks = vi.hoisted(() => ({ compact: vi.fn(), postCompactionSideEffects: vi.fn() }));
@@ -271,7 +276,7 @@ describe("timeout recovery", () => {
       getRuntimeConfig: () => ({}),
       getRequesterSessionActivity: () => ({
         sessionId,
-        isActive: isEmbeddedAgentRunActive(sessionId),
+        isActive: isSessionRunActive(sessionId),
       }),
       loadRequesterSessionEntry: (requestedKey) => ({
         cfg: {},
