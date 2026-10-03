@@ -18,7 +18,6 @@ import {
   progressCardRefreshRunProjection,
 } from "../../sessions/input-provenance.js";
 import {
-  interruptReplyRunTarget,
   type ReplyMessageInjectionTarget,
   type ReplyOperation,
   captureCurrentSessionRunInterruptTarget,
@@ -36,7 +35,6 @@ import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-cont
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { registerChatAbortController, resolveChatRunExpiresAtMs } from "../chat-abort.js";
 import { ExpectedProfileMismatchError } from "../expected-profile.js";
-import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import { PENDING_CHAT_SEND_DEDUPE_PREFIX, type DedupeEntry } from "../server-shared.js";
 import {
   buildAbortedChatSendPayload,
@@ -69,6 +67,7 @@ import {
   admitChatSendUploads,
   assertChatSendExclusiveAdmission,
   createChatSendWorkAdmission,
+  prepareChatSendInterruptAdmission,
   releaseChatSendCallerAuthority,
 } from "./chat-send-work-admission.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -397,18 +396,21 @@ export async function admitChatSend(
     }
   };
 
-  let interruptedActiveRun = false;
+  let capturedOperator: Awaited<ReturnType<typeof prepareChatSendInterruptAdmission>>["operator"];
+  let releaseCapturedOperator = () => {};
+  let interruptedActiveRun: boolean;
   try {
-    if (runInterruptTarget) {
-      params.assertCurrent?.();
-      assertSessionTargetCurrent();
-      admittedRunAbort.controller.signal.throwIfAborted();
-      const interruption = await interruptReplyRunTarget(runInterruptTarget, null);
-      interruptedActiveRun = interruption.aborted;
-      params.assertCurrent?.();
-      assertSessionTargetCurrent();
-      admittedRunAbort.controller.signal.throwIfAborted();
-    }
+    const preparedInterrupt = await prepareChatSendInterruptAdmission({
+      operator: { ...params, runId: clientRunId },
+      interruptTarget: runInterruptTarget,
+      entry: admittedRunAbort.entry,
+      assertCurrent: params.assertCurrent,
+      assertSessionTargetCurrent,
+      abortSignal: admittedRunAbort.controller.signal,
+    });
+    capturedOperator = preparedInterrupt.operator;
+    releaseCapturedOperator = capturedOperator.release;
+    interruptedActiveRun = preparedInterrupt.interruptedActiveRun;
     gatewayWorkAdmission = await beginSessionEffect({
       sourceInput: admittedRunAbort.entry?.input,
       target: captureSessionTarget({
@@ -464,6 +466,7 @@ export async function admitChatSend(
     clearPendingChatSendReservation();
     admittedRunAbort?.cleanup();
     gatewayWorkAdmission?.release();
+    releaseCapturedOperator();
     if (err instanceof ExpectedProfileMismatchError) {
       throw err;
     }
@@ -487,6 +490,7 @@ export async function admitChatSend(
     clearPendingChatSendReservation();
     admittedRunAbort?.cleanup();
     gatewayWorkAdmission.release();
+    capturedOperator.release();
     respond(false, undefined, retainedRequestConflict);
     return { ok: false as const };
   }
@@ -508,6 +512,7 @@ export async function admitChatSend(
   const activeRunAbort = admittedRunAbort;
   if (reservationSuperseded) {
     gatewayWorkAdmission.release();
+    capturedOperator.release();
     const supersedingCached =
       supersedingResult ?? readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (supersedingCached) {
@@ -532,6 +537,7 @@ export async function admitChatSend(
       activeRunAbort.cleanup();
     }
     gatewayWorkAdmission.release();
+    capturedOperator.release();
     if (!readChatSendDedupeResponse(context.dedupe, clientRunId)) {
       writePreRegisteredChatAbort({
         context,
@@ -549,6 +555,7 @@ export async function admitChatSend(
   }
   if (!activeRunAbort) {
     gatewayWorkAdmission.release();
+    capturedOperator.release();
     const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (aborted) {
       respond(aborted.ok, aborted.payload, aborted.error, {
@@ -562,6 +569,7 @@ export async function admitChatSend(
   }
   if (!activeRunAbort.registered) {
     gatewayWorkAdmission.release();
+    capturedOperator.release();
     respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
       cached: true,
       runId: clientRunId,
@@ -570,7 +578,6 @@ export async function admitChatSend(
   }
   let releaseGatewayRootContinuation = () => {};
   let releaseCallerAuthority: (() => void) | undefined;
-  let capturedOperator: Awaited<ReturnType<typeof retainGatewayOperatorRun>>;
   // Until dispatch takes custody, interruption and callback failures release every admission hold.
   const cleanupPreDispatchAdmission = () => {
     try {
@@ -583,16 +590,8 @@ export async function admitChatSend(
     }
   };
   try {
-    capturedOperator = await retainGatewayOperatorRun({
-      ...params,
-      runId: clientRunId,
-      entry: activeRunAbort.entry,
-    });
     releaseCallerAuthority = () =>
       releaseChatSendCallerAuthority({ operator: capturedOperator, request, session });
-    params.assertCurrent?.();
-    activeRunAbort.controller.signal.throwIfAborted();
-    capturedOperator.authority?.assertCurrent();
     assertSourceAuthority = () => {
       capturedOperator.authority?.assertCurrent();
       assertSessionTargetCurrent();

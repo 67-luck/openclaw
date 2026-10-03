@@ -2,13 +2,19 @@ import { hasPendingFollowupQueueWork } from "../../auto-reply/reply/queue/state.
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { retireProviderReviewAcknowledgment } from "../../sessions/provider-review.js";
-import { isSessionRunActiveForKey } from "../../sessions/session-controller.js";
+import type { ReplyRunInterruptTarget } from "../../sessions/session-controller.contracts.js";
+import {
+  interruptReplyRunTarget,
+  isSessionRunActiveForKey,
+} from "../../sessions/session-controller.js";
 import {
   isCompetingSessionControllerWorkActive,
   type SessionEffectRef,
 } from "../../sessions/session-controller.lifecycle.js";
+import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
 import type { registerChatAbortController } from "../chat-abort.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
+import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { captureGatewayClientUploadCommitGuard } from "../upload-policy.js";
@@ -59,6 +65,36 @@ export function releaseChatSendCallerAuthority(params: {
     } finally {
       params.session.releaseSessionTarget();
     }
+  }
+}
+
+/** Retain the caller before an interrupt can change session state. */
+export async function prepareChatSendInterruptAdmission(params: {
+  operator: Parameters<typeof retainGatewayOperatorRun>[0];
+  interruptTarget?: ReplyRunInterruptTarget;
+  entry?: RpcSourceRef;
+  assertCurrent?: () => void;
+  assertSessionTargetCurrent: () => void;
+  abortSignal: AbortSignal;
+}) {
+  const operator = await retainGatewayOperatorRun({ ...params.operator, entry: params.entry });
+  try {
+    params.assertCurrent?.();
+    params.abortSignal.throwIfAborted();
+    operator.authority?.assertCurrent();
+    if (!params.interruptTarget) {
+      return { operator, interruptedActiveRun: false };
+    }
+    params.assertSessionTargetCurrent();
+    const interruption = await interruptReplyRunTarget(params.interruptTarget, null);
+    params.assertCurrent?.();
+    operator.authority?.assertCurrent();
+    params.assertSessionTargetCurrent();
+    params.abortSignal.throwIfAborted();
+    return { operator, interruptedActiveRun: interruption.aborted };
+  } catch (error) {
+    operator.release();
+    throw error;
   }
 }
 
