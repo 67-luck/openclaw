@@ -72,6 +72,8 @@ export type ConfirmAndStartUpdateParams = {
     updateAvailable: UpdateAvailable | null;
     updateSchedule: UpdateScheduleState | null;
   } | null>;
+  /** Reads current application-owned authority immediately before native dispatch. */
+  canStartNativeUpdate?: () => boolean;
   /** Reconfirm a fresh Gateway target if the native bridge disappears. */
   prepareGatewayFallback?: ConfirmAndStartUpdateParams["prepareRetry"];
   onReviewUpdate?: () => void;

@@ -316,24 +316,38 @@ export async function confirmAndStartUpdateRuntime(
       }
     }
 
-    function restoreNativeOwner(): boolean {
+    function checkNativePermission(): boolean {
+      if (params.canStartNativeUpdate?.() === false) {
+        statusCheck = { error: t("updates.adminRequired") };
+        draw();
+        return false;
+      }
+      return true;
+    }
+
+    function restoreNativeOwner(): "unchanged" | "restored" | "denied" {
       if (
         (!params.viaNativeApp && !params.prepareGatewayFallback) ||
         viaNativeApp ||
         !hasNativeUpdateBridge()
       ) {
-        return false;
+        return "unchanged";
+      }
+      if (!checkNativePermission()) {
+        return "denied";
       }
       viaNativeApp = true;
       prepareRetry = undefined;
-      return true;
+      return "restored";
     }
 
     async function retry() {
       if (statusCheck === "pending" || latestProgress?.connected === false) {
         return;
       }
-      restoreNativeOwner();
+      if (restoreNativeOwner() === "denied") {
+        return;
+      }
       if (prepareRetry && !(await refreshTarget(prepareRetry))) {
         return;
       }
@@ -370,12 +384,18 @@ export async function confirmAndStartUpdateRuntime(
       if (phase.kind !== "confirm" || statusCheck === "pending") {
         return;
       }
-      if (restoreNativeOwner()) {
-        statusCheck = "idle";
-        draw();
+      const nativeOwner = restoreNativeOwner();
+      if (nativeOwner !== "unchanged") {
+        if (nativeOwner === "restored") {
+          statusCheck = "idle";
+          draw();
+        }
         return;
       }
       if (viaNativeApp) {
+        if (!checkNativePermission()) {
+          return;
+        }
         if (postNativeUpdate()) {
           finish();
           return;
