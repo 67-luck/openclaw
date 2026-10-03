@@ -16,6 +16,7 @@ import { updateStatusHandlers } from "./update-status.js";
 
 const history = vi.hoisted(() => vi.fn(async () => ({ activeRun: undefined, lastRun: undefined })));
 const install = vi.hoisted(() => vi.fn());
+vi.mock("../../version.js", () => ({ VERSION: "2026.9.7" }));
 vi.mock("../../infra/update-run-ledger.js", () => ({
   getUpdateRunStatusAsync: history,
   reconcileAbandonedUpdateRunsAsync: async () => {},
