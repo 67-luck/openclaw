@@ -3906,19 +3906,6 @@ describe("subagent registry lifecycle hardening", () => {
           delivered: false,
           path: "direct",
           error: "UNAVAILABLE: requester wake failed",
-          phases: [
-            {
-              phase: "direct-primary",
-              delivered: false,
-              path: "direct",
-              error: "UNAVAILABLE: requester wake failed",
-            },
-            {
-              phase: "steer-fallback",
-              delivered: false,
-              path: "none",
-            },
-          ],
         });
         return "retryable" as const;
       },
@@ -3942,13 +3929,10 @@ describe("subagent registry lifecycle hardening", () => {
         runId: entry.runId,
         childSessionKey: entry.childSessionKey,
       }),
-      reason:
-        "UNAVAILABLE: requester wake failed; direct-primary: UNAVAILABLE: requester wake failed",
+      reason: "UNAVAILABLE: requester wake failed",
       suspendedReason: "expiry",
     });
-    expect(readLifecycleRun(entry).delivery?.lastError).toBe(
-      "UNAVAILABLE: requester wake failed; direct-primary: UNAVAILABLE: requester wake failed",
-    );
+    expect(readLifecycleRun(entry).delivery?.lastError).toBe("UNAVAILABLE: requester wake failed");
     expect(readLifecycleRun(entry).delivery?.status).toBe("suspended");
     expect(readLifecycleRun(entry).delivery?.suspendedAt).toBeTypeOf("number");
     expect(readLifecycleRun(entry).delivery?.suspendedReason).toBe("expiry");
@@ -5072,6 +5056,7 @@ describe("requester settle wake trigger", () => {
       });
       const runSubagentAnnounceFlow: LifecycleControllerParams["runSubagentAnnounceFlow"] = vi.fn(
         async (announceParams) => {
+          expect(announceParams.controllerInput).toBeUndefined();
           await announceParams.onDeliveryResult?.({
             delivered: false,
             path: "none",

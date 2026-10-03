@@ -41,6 +41,7 @@ import type { SubagentRunRecord } from "./registry/subagent-registry.types.js";
 import { isSameSubagentRunOwner } from "./registry/subagent-run-generation.js";
 import {
   consumeRequesterCronAuthorityAdmission,
+  captureRequesterContinuationCaller,
   prepareRequesterCronAuthority,
   replaceRequesterCronAuthorityEntry,
   revokeRequesterCronAuthority,
@@ -304,6 +305,59 @@ function consume(
 }
 
 describe("requester cron authority lifetime", () => {
+  it("captures one immutable yielded route and revalidates its operator owner", async () => {
+    const operator = createAdmittedRunOperatorAuthority({
+      profileId: "yield-requester",
+      scopes: ["operator.read"],
+      assertCurrent: () => {},
+    });
+    const batch = createBatch("yield-owner");
+    await inAdminRun(
+      "yield-owner",
+      async () => expect(await mark(batch)).toBe(1),
+      undefined,
+      undefined,
+      undefined,
+      operator,
+    );
+    expect(await settle(batch)).toBe(true);
+    const route = {
+      channel: "discord",
+      to: "channel:original",
+      deliveryIntent: { id: "intent-1", kind: "outbound_queue" as const },
+    };
+    const caller = captureRequesterContinuationCaller({
+      requesterSessionKey: SESSION,
+      requesterSessionId: "requester-session",
+      requesterAgentId: "main",
+      batch,
+      rearmGeneration: batch[0]?.requesterSettleWake?.rearmGeneration,
+      runId: "yield-continuation",
+      isCurrent: () => true,
+      deliveryRoute: route,
+    });
+
+    const currentDispatch = vi.fn(async () => {
+      expect(readOperatorToolGatewayAuthority()?.operatorRunAuthority).toBe(operator);
+    });
+    await caller.run(currentDispatch);
+    expect(currentDispatch).toHaveBeenCalledOnce();
+    route.to = "channel:mutated";
+    route.deliveryIntent.id = "intent-mutated";
+    expect(caller.deliveryRoute).toEqual({
+      channel: "discord",
+      to: "channel:original",
+      deliveryIntent: { id: "intent-1", kind: "outbound_queue" },
+    });
+    fixture.session.lifecycleRevision = "replacement";
+    const replacementDispatch = vi.fn(async () => {
+      expect(readOperatorToolGatewayAuthority()).toBeUndefined();
+    });
+    await caller.run(replacementDispatch);
+    expect(replacementDispatch).toHaveBeenCalledOnce();
+    expect(caller.deliveryRoute?.to).toBe("channel:original");
+  });
+
   it.each(["completion", "scope ended", "reset"] as const)(
     "retains the full cohort's authority across a scoped child pause until %s",
     async (outcome) => {
@@ -360,9 +414,11 @@ describe("requester cron authority lifetime", () => {
       );
       expect(pauseAdmission!.isCurrent()).toBe(false);
       if (outcome === "reset") {
-        const work = vi.fn(async () => {});
-        await expect(dispatch(batch, work)).rejects.toThrow("no longer current");
-        expect(work).not.toHaveBeenCalled();
+        const work = vi.fn(async () => {
+          expect(readOperatorToolGatewayAuthority()).toBeUndefined();
+        });
+        await expect(dispatch(batch, work)).resolves.toBeUndefined();
+        expect(work).toHaveBeenCalledOnce();
         return;
       }
       if (outcome === "scope ended") {
@@ -499,17 +555,25 @@ describe("requester cron authority lifetime", () => {
         });
       }
       const work = vi.fn(async () => {
-        expect(() => source.assertCurrent()).not.toThrow();
+        if (outcome === "complete" || outcome === "source revoked during dispatch") {
+          expect(readOperatorToolGatewayAuthority()?.operatorRunAuthority).toBe(source);
+          source.assertCurrent();
+        } else {
+          expect(readOperatorToolGatewayAuthority()).toBeUndefined();
+        }
         expect(consume(batch)).toBeUndefined();
       });
       if (outcome === "complete") {
         await dispatch(batch, work);
         expect(work).toHaveBeenCalledOnce();
         revokeRequesterCronAuthority(SESSION);
-      } else {
-        await expect(dispatch(batch, work)).rejects.toThrow("no longer current");
+      } else if (outcome === "source revoked during dispatch") {
         await expect(dispatch(batch, work)).rejects.toThrow("no longer current");
         expect(work).not.toHaveBeenCalled();
+      } else {
+        await expect(dispatch(batch, work)).resolves.toBeUndefined();
+        await expect(dispatch(batch, work)).resolves.toBeUndefined();
+        expect(work).toHaveBeenCalledTimes(2);
       }
       expect(holds).toBe(0);
       expect(() => source.assertCurrent()).toThrow();

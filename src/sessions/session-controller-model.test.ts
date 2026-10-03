@@ -5,12 +5,14 @@ import { applyQueueDropPolicy } from "../utils/queue-helpers.js";
 import {
   generatePilotSequence,
   initialPilotState,
+  modelParentMailbox,
   stepPilot,
   stepPilotMailbox,
   type PilotCustody,
   type PilotEvent,
   type PilotInput,
   type PilotMailbox,
+  type PilotParentInput,
 } from "./session-controller-model.test-support.js";
 import type { ReplyMessageInjectionAttempt } from "./session-controller.contracts.js";
 import {
@@ -22,6 +24,13 @@ import {
   beginSessionEffect,
   startSessionControllerInterruption,
 } from "./session-controller.lifecycle.js";
+import {
+  clearSessionControllerMailbox,
+  claimSessionControllerTask,
+  releaseSessionControllerClaim,
+  reserveSessionControllerSource,
+  retireSessionControllerInput,
+} from "./session-controller.mailbox.js";
 import { beginReplyMessageInjectionTarget } from "./session-controller.message-injection.js";
 
 /** Calls public owner operations, never the runtime reducer under test. */
@@ -203,6 +212,96 @@ async function replay(events: readonly PilotEvent[], label: string) {
 }
 
 describe("session controller executable pilot", () => {
+  it("gives each owed completion and settle identity exactly one FIFO parent turn", async () => {
+    const key = "agent:main:completion-mailbox-model";
+    const active = createReplyOperation({
+      sessionKey: key,
+      sessionId: "active",
+      resetTriggered: false,
+    });
+    active.setPhase("running");
+    const offered: PilotParentInput[] = [
+      { id: "user-before", kind: "user", owedAt: 1 },
+      { id: "completion:a:1", kind: "completion", owedAt: 2 },
+      { id: "completion:a:1", kind: "completion", owedAt: 2 },
+      { id: "settle:batch:1:0", kind: "settle", owedAt: 3 },
+      { id: "user-after", kind: "user", owedAt: 4 },
+    ];
+    const expected = modelParentMailbox(offered);
+    const sources = offered.map((input, index) =>
+      reserveSessionControllerSource(key, {
+        reservationId: input.kind === "user" ? undefined : input.id,
+        protocolRunId: input.kind === "user" ? `${input.id}:${index}` : input.id,
+        policy: { mode: "followup" },
+      }),
+    );
+    expect(sources[1]).toBe(sources[2]);
+    const unique = sources.filter((source, index) => sources.indexOf(source) === index);
+    const sourceIds = new Map(
+      unique.map((source) => [source, offered[sources.indexOf(source)]!.id]),
+    );
+    const turns: string[] = [];
+    const pending = unique.map((source) =>
+      claimSessionControllerTask(source, () => {
+        turns.push(sourceIds.get(source)!);
+      }),
+    );
+    active.abortByUser();
+    active.complete();
+    try {
+      for (const claim of pending) {
+        const admitted = await claim;
+        releaseSessionControllerClaim(admitted);
+        await admitted.settlement.promise;
+      }
+      expect(turns).toEqual(expected.map((input) => input.id));
+      expect(turns.filter((id) => id === "completion:a:1")).toHaveLength(1);
+      expect(turns.filter((id) => id === "settle:batch:1:0")).toHaveLength(1);
+    } finally {
+      for (const source of unique) {
+        retireSessionControllerInput(source);
+      }
+      clearSessionControllerMailbox(unique[0]!.mailbox, () => {});
+    }
+  });
+
+  it("rebuilds reset completion and settle obligations once in persisted owed order", async () => {
+    const key = "agent:main:completion-mailbox-reset-model";
+    const owed = modelParentMailbox([
+      { id: "settle:later", kind: "settle", owedAt: 20 },
+      { id: "completion:earlier", kind: "completion", owedAt: 10 },
+    ]).toSorted((a, b) => a.owedAt - b.owedAt);
+    const initial = owed.map((input) =>
+      reserveSessionControllerSource(key, {
+        reservationId: input.id,
+        policy: { mode: "followup" },
+      }),
+    );
+    clearSessionControllerMailbox(initial[0]!.mailbox, () => {});
+    await Promise.allSettled(initial.map((source) => source.settlement.promise));
+    const rebuilt = owed.map((input) =>
+      reserveSessionControllerSource(key, {
+        reservationId: input.id,
+        policy: { mode: "followup" },
+      }),
+    );
+    const turns: string[] = [];
+    try {
+      for (const source of rebuilt) {
+        const claim = await claimSessionControllerTask(source, () => {
+          turns.push(source.sourceTurnId!);
+        });
+        releaseSessionControllerClaim(claim);
+        await claim.settlement.promise;
+      }
+      expect(turns).toEqual(["completion:earlier", "settle:later"]);
+    } finally {
+      for (const source of rebuilt) {
+        retireSessionControllerInput(source);
+      }
+    }
+  });
+
   it("replays 2048 state-aware sequences with delayed receipts (48 generated steps each)", async () => {
     vi.useFakeTimers();
     try {

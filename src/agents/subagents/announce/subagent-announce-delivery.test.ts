@@ -867,18 +867,6 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
       delivered: fallsBack,
       path: fallsBack ? "direct" : "none",
       ...(fallsBack ? {} : { reason: "steer_dropped" }),
-      phases: [
-        {
-          phase: "steer-primary",
-          delivered: false,
-          path: "none",
-          error: undefined,
-          ...(fallsBack ? {} : { reason: "steer_dropped" }),
-        },
-        ...(fallsBack
-          ? [{ phase: "direct-primary", delivered: true, path: "direct", error: undefined }]
-          : []),
-      ],
     });
     expect(callGateway).toHaveBeenCalledTimes(fallsBack ? 1 : 0);
   });
@@ -1732,89 +1720,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
-  it("persists fallback-steered completion provenance after the requester session rotates", async () => {
-    const previousTestFast = process.env.OPENCLAW_TEST_FAST;
-    process.env.OPENCLAW_TEST_FAST = "1";
-    try {
-      const transcriptA = await createRequesterTranscriptFixture("requester-session-direct");
-      const transcriptB = await createRequesterTranscriptFixture("requester-session-fallback");
-      let currentTranscript = transcriptA;
-      let activityReadCount = 0;
-      const callGateway = vi.fn(async () => {
-        throw new Error("UNAVAILABLE: gateway lost final output");
-      }) as unknown as typeof runtimeCallGateway;
-      let firstRecorder: unknown;
-      let queueCallCount = 0;
-      const queueEmbeddedAgentMessageWithOutcome = vi.fn<QueueEmbeddedAgentMessageWithOutcome>(
-        async (sessionId, _text, options) => {
-          queueCallCount += 1;
-          if (queueCallCount === 1) {
-            expect(sessionId).toBe(transcriptA.sessionId);
-            firstRecorder = options?.userTurnTranscriptRecorder;
-            currentTranscript = transcriptB;
-            return {
-              queued: false,
-              sessionId,
-              reason: "not_streaming",
-              gatewayHealth: "live",
-            };
-          }
-          expect(sessionId).toBe(transcriptB.sessionId);
-          expect(options?.userTurnTranscriptRecorder).not.toBe(firstRecorder);
-          await options?.userTurnTranscriptRecorder?.persistApproved();
-          return {
-            queued: true,
-            sessionId,
-            target: "embedded_run",
-            gatewayHealth: "live",
-          };
-        },
-      );
-
-      const result = await deliverSlackThreadAnnouncement({
-        callGateway,
-        isActive: true,
-        directIdempotencyKey: "announce-retryable-direct-fallback",
-        queueEmbeddedAgentMessageWithOutcome,
-        requesterSessionActivity: () => ({
-          sessionId: activityReadCount++ === 0 ? transcriptA.sessionId : transcriptB.sessionId,
-          isActive: true,
-        }),
-        requesterTranscriptFixture: () => currentTranscript,
-        internalEvents: taskCompletionEvents({
-          childSessionId: "child-session-id",
-          taskLabel: "fallback persistence smoke",
-        }),
-      });
-
-      expectRecordFields(result, {
-        delivered: true,
-        path: "steered",
-      });
-      expect(callGateway).toHaveBeenCalledTimes(4);
-      expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledTimes(2);
-
-      expect(await readRequesterTranscriptMessages(transcriptA)).toEqual([]);
-      const rawMessages = await readRequesterTranscriptMessages(transcriptB);
-      expect(rawMessages).toEqual([
-        expect.objectContaining({
-          role: "user",
-          content: "child done",
-          provenance: expect.objectContaining({
-            kind: "inter_session",
-            sourceTool: "subagent_announce",
-          }),
-        }),
-      ]);
-    } finally {
-      if (previousTestFast === undefined) {
-        delete process.env.OPENCLAW_TEST_FAST;
-      } else {
-        process.env.OPENCLAW_TEST_FAST = previousTestFast;
-      }
-    }
-  });
-
   it("does not restart an abandoned requester session for late completion delivery", async () => {
     const callGateway = createPayloadGatewayMock({ text: "child completion output" });
     const sendMessage = createSendMessageMock();
@@ -1837,20 +1742,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       reason: "requester_abandoned",
       error: "requester session abandoned after timeout",
     });
-    expect(result.phases).toEqual([
-      expect.objectContaining({
-        phase: "direct-primary",
-        delivered: false,
-        path: "none",
-        reason: "requester_abandoned",
-        error: "requester session abandoned after timeout",
-      }),
-      expect.objectContaining({
-        phase: "steer-fallback",
-        delivered: false,
-        path: "none",
-      }),
-    ]);
     expect(callGateway).not.toHaveBeenCalled();
     expect(sendMessage).not.toHaveBeenCalled();
     expect(queueEmbeddedAgentMessageWithOutcome).not.toHaveBeenCalled();
@@ -2358,7 +2249,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     });
     expect(queueEmbeddedAgentMessageWithOutcome).not.toHaveBeenCalled();
     expect(callGateway).toHaveBeenCalledTimes(1);
-    expect(result.phases?.map((phase) => phase.phase)).toEqual(["direct-primary"]);
   });
 
   it.each(["accepted", "in_flight", "yielded"] as const)(
@@ -2386,7 +2276,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
             }
           : { delivered: true, path: "direct" },
       );
-      expect(result.phases?.map((phase) => phase.phase)).toEqual(["direct-primary"]);
       expect(callGateway).toHaveBeenCalledTimes(1);
     },
   );
@@ -2806,7 +2695,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     ...["accepted", "in_flight"].map((status) =>
       settleCase(`retains an ${status} settle handoff until terminal evidence`, undefined, {
         status,
-        expected: { delivered: false, reason: "requester_turn_pending", disposition: "retryable" },
+        expected: { delivered: false, disposition: "session_queued" },
       }),
     ),
     settleCase(
@@ -3094,7 +2983,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     });
     expect(callGateway).toHaveBeenCalledTimes(attempts);
     if (route === "active") {
-      expect(result.phases?.map((phase) => phase.phase)).toEqual(["direct-primary"]);
       expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledTimes(1);
     }
     if (route === "direct") {

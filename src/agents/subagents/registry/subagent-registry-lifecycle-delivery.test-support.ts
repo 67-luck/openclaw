@@ -142,34 +142,24 @@ export function registerLifecycleDeliveryReceiptCases({
   it.each([
     {
       name: "persists a newly failed completion",
-      previousDropReason: undefined,
       reusePreviousError: false,
       previousDisposition: undefined,
       persistCalls: 1,
     },
     {
-      name: "persists a changed drop reason when the direct error is unchanged",
-      previousDropReason: "sink_unavailable" as const,
-      reusePreviousError: true,
-      previousDisposition: "retryable" as const,
-      persistCalls: 1,
-    },
-    {
       name: "persists a changed disposition when completion diagnostics are otherwise unchanged",
-      previousDropReason: "steer_dropped" as const,
       reusePreviousError: true,
       previousDisposition: undefined,
       persistCalls: 1,
     },
     {
       name: "does not persist unchanged completion diagnostics",
-      previousDropReason: "steer_dropped" as const,
       reusePreviousError: true,
       previousDisposition: "retryable" as const,
       persistCalls: 0,
     },
   ])("$name before stalled announce bookkeeping settles", async (scenario) => {
-    const lastError = "failed; visible_reply_missing; direct-primary: failed";
+    const lastError = "failed; visible_reply_missing";
     const persist = vi.fn();
     const entry = createRunEntry({
       endedAt: 4_000,
@@ -179,7 +169,6 @@ export function registerLifecycleDeliveryReceiptCases({
         status: "pending",
         disposition: scenario.previousDisposition,
         ...(scenario.reusePreviousError ? { lastError } : {}),
-        ...(scenario.previousDropReason ? { lastDropReason: scenario.previousDropReason } : {}),
       },
     });
     const receiptObserved = createDeferredCore();
@@ -227,7 +216,7 @@ export function registerLifecycleDeliveryReceiptCases({
       ).resolves.toBeUndefined();
       await receiptObserved.promise;
       expect(readLifecycleRun(entry).delivery?.disposition).toBe("retryable");
-      expect(readLifecycleRun(entry).delivery?.lastDropReason).toBe("steer_dropped");
+      expect(readLifecycleRun(entry).delivery?.lastDropReason).toBeUndefined();
       expect(readLifecycleRun(entry).delivery?.lastError).toBe(lastError);
       expect(readLifecycleRun(entry).cleanupCompletedAt).toBeUndefined();
       expect(persist).toHaveBeenCalledTimes(scenario.persistCalls);

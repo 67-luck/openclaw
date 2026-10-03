@@ -9,11 +9,10 @@ import {
   INTERNAL_PROVENANCE_SOURCE_CHANNEL,
   isAgentMediatedCompletionSourceTool,
 } from "../../../sessions/input-provenance.js";
+import type { SessionControllerInput } from "../../../sessions/session-controller.mailbox.js";
 import { isCronRunSessionKey } from "../../../sessions/session-key-utils.js";
-import type { UserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.types.js";
 import { isIncognitoSessionKey } from "../../../shared/incognito-session-key.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
-import { sessionDeliveryChannel } from "../../../utils/delivery-context.read.js";
 import {
   isGatewayMessageChannel,
   normalizeMessageChannel,
@@ -22,22 +21,14 @@ import {
   buildAgentRunTerminalOutcomeFromWaitResult,
   classifyAgentRunTerminalOutcome,
 } from "../../agent-run-terminal-outcome.js";
-import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runner/run-state.js";
-import {
-  formatEmbeddedAgentQueueFailureSummary,
-  resolveEmbeddedRunAbandonment,
-} from "../../embedded-agent-runner/runs.js";
+import { resolveEmbeddedRunAbandonment } from "../../embedded-agent-runner/runs.js";
 import {
   hasFailedSubagentNoOutputCompletion,
   hasVisibleCompletionResult,
 } from "../../internal-event-contract.js";
 import type { AgentInternalEvent } from "../../internal-events.js";
 import type { GatewayToolCallerReceiptAdmission } from "../../tools/gateway-caller-receipt.types.js";
-import {
-  SOURCE_OWNER_CHANGED,
-  resolveActiveWakeWithRetries,
-  resolveRequesterSessionActivity,
-} from "./subagent-announce-active-wake.js";
+import { resolveRequesterSessionActivity } from "./subagent-announce-active-wake.js";
 import {
   deliverCompletionDirect,
   isDirectMessageDeliveryTarget,
@@ -57,7 +48,6 @@ import {
   getSubagentAnnounceRuntimeConfig,
   loadRequesterSessionEntry,
   resolveExternalBestEffortDeliveryTarget,
-  resolveQueueSettings,
 } from "./subagent-announce-delivery.runtime.js";
 import { createDirectAnnounceResponseClassifier } from "./subagent-announce-direct-response.js";
 import {
@@ -96,10 +86,10 @@ export type SubagentAnnounceDirectParams = {
   isSourceSessionAdmissionAllowed?: () => boolean;
   isCompletionOwnedByRequesterYield?: () => boolean;
   requesterIsSubagent: boolean;
-  createUserTurnTranscriptRecorder?: (sessionId: string) => UserTurnTranscriptRecorder;
   onDeliveryResult?: (delivery: SubagentAnnounceDeliveryResult) => void | Promise<void>;
   signal?: AbortSignal;
   resolveGatewayContext?: import("../../../gateway/server-methods/types.js").GatewayContextResolver;
+  controllerInput?: SessionControllerInput;
 };
 
 /** Another owner (a yielded requester or an idle cron turn) settles this completion. */
@@ -130,7 +120,7 @@ export async function sendSubagentAnnounceDirectly(
   try {
     // A partial completion origin must retain the target from the requester's
     // recorded delivery context or the generated reply becomes undeliverable.
-    const { directOrigin, requesterSessionOrigin, effectiveDirectOrigin } =
+    const { requesterSessionOrigin, effectiveDirectOrigin } =
       resolveCompletionDeliveryOrigins(params);
     const sessionOnlyOrigin = effectiveDirectOrigin?.channel
       ? effectiveDirectOrigin
@@ -296,64 +286,6 @@ export async function sendSubagentAnnounceDirectly(
         ? "message_tool_only"
         : undefined;
     const shouldDeliverAgentFinal = deliveryTarget.deliver && !requiresMessageToolDelivery;
-    const requesterQueueSettings = resolveQueueSettings({
-      cfg,
-      channel:
-        sessionDeliveryChannel(requesterEntry) ??
-        requesterSessionOrigin?.channel ??
-        directOrigin?.channel,
-      sessionEntry: requesterEntry,
-    });
-    if (
-      !parentOnly &&
-      params.expectsCompletionMessage &&
-      requesterActivity.sessionId &&
-      requesterActivity.isActive
-    ) {
-      const wakeOptions: EmbeddedAgentQueueMessageOptions = {
-        deliveryTimeoutMs: announceTimeoutMs,
-        steeringMode: "all",
-        ...(completionSourceReplyDeliveryMode
-          ? { sourceReplyDeliveryMode: completionSourceReplyDeliveryMode }
-          : {}),
-        ...(requesterQueueSettings.debounceMs !== undefined
-          ? { debounceMs: requesterQueueSettings.debounceMs }
-          : {}),
-        waitForTranscriptCommit: true,
-        ...(params.createUserTurnTranscriptRecorder
-          ? {
-              userTurnTranscriptRecorder: params.createUserTurnTranscriptRecorder(
-                requesterActivity.sessionId,
-              ),
-            }
-          : {}),
-      };
-      // Ordinary subagent and harness handoffs must wait through compaction
-      // and transcript retries before treating an active wake as failed.
-      const wakeOutcome = await resolveActiveWakeWithRetries(
-        requesterActivity.sessionId,
-        params.triggerMessage,
-        wakeOptions,
-        params.signal,
-        isCompletionDeliveryAllowed,
-        params.isSourceSessionAdmissionAllowed,
-      );
-      if (wakeOutcome === SOURCE_OWNER_CHANGED) {
-        return sourceOwnerChangedResult();
-      }
-      if (wakeOutcome.queued) {
-        return {
-          delivered: true,
-          deliveredAt: wakeOutcome.deliveredAtMs,
-          enqueuedAt: wakeOutcome.enqueuedAtMs,
-          path: "steered",
-        };
-      }
-      const wakeFailure = formatEmbeddedAgentQueueFailureSummary(wakeOutcome);
-      defaultRuntime.log(
-        `[warn] Active requester session could not be woken for subagent completion; falling back to requester-agent handoff: active requester session could not be woken${wakeFailure ? `: ${wakeFailure}` : ""}`,
-      );
-    }
     if (
       params.expectsCompletionMessage &&
       isCronRunSessionKey(canonicalRequesterSessionKey) &&
@@ -444,6 +376,7 @@ export async function sendSubagentAnnounceDirectly(
               }
               return await runAnnounceAgentCall({
                 agentParams: directAgentParams,
+                controllerInput: params.controllerInput,
                 // A resumed parent has no inbound channel dispatcher to keep activity visible.
                 typing:
                   sourceToolId === "subagent_settle" &&

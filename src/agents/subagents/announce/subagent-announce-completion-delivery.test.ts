@@ -1,5 +1,15 @@
 // Completion predicates read recorded facts, not rendered placeholder wording.
 import { describe, expect, it, vi } from "vitest";
+import {
+  readOperatorToolGatewayAuthority,
+  runWithOperatorToolGatewayAuthority,
+} from "../../../gateway/operator-tool-gateway-authority.js";
+import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
+import {
+  reserveSessionControllerSource,
+  retireSessionControllerInput,
+} from "../../../sessions/session-controller.mailbox.js";
+import { createAdmittedRunOperatorAuthority } from "../../admitted-run-context.js";
 import { hasFailedSubagentNoOutputCompletion } from "../../internal-event-contract.js";
 import { runAnnounceAgentCall } from "./subagent-announce-completion-delivery.js";
 import { setSubagentAnnounceDeliveryDepsForTest } from "./subagent-announce-overrides.test-support.js";
@@ -27,6 +37,73 @@ it("does not dispatch a private handoff after its caller has already cancelled",
     setSubagentAnnounceDeliveryDepsForTest();
   }
 });
+
+it.each([
+  ["current", true],
+  ["stale", false],
+] as const)(
+  "revalidates a %s continuation caller immediately before dispatch",
+  async (_name, current) => {
+    const route = Object.freeze({ channel: "discord", to: "channel:continuation" });
+    const operatorAuthority = createAdmittedRunOperatorAuthority({
+      profileId: "continuation-owner",
+      scopes: ["operator.read"],
+      assertCurrent: () => {
+        if (!current) {
+          throw new Error("continuation owner retired");
+        }
+      },
+    });
+    const input = reserveSessionControllerSource("agent:main:continuation", {
+      target: captureSessionTarget({
+        storeScope: "/synthetic/continuation-caller",
+        sessionKey: "agent:main:continuation",
+        incarnation: "continuation-session",
+      }),
+      reservationId: `subagent-settle:continuation:${current}`,
+      policy: { mode: "followup" },
+      continuationCaller: Object.freeze({
+        deliveryRoute: route,
+        run: async <T>(run: () => Promise<T>) => {
+          try {
+            operatorAuthority.assertCurrent();
+          } catch {
+            return run();
+          }
+          return runWithOperatorToolGatewayAuthority(
+            {
+              operatorRunAuthority: operatorAuthority,
+              scopes: operatorAuthority.scopes,
+              signal: operatorAuthority.signal ?? new AbortController().signal,
+            },
+            run,
+          );
+        },
+      }),
+    });
+    const observedAuthority = vi.fn();
+    const dispatch = vi.fn(async () => {
+      observedAuthority(readOperatorToolGatewayAuthority()?.operatorRunAuthority);
+      return { status: "ok" };
+    });
+    setSubagentAnnounceDeliveryDepsForTest({ dispatchGatewayMethodInProcess: dispatch });
+    try {
+      await expect(
+        runAnnounceAgentCall({
+          agentParams: {},
+          controllerInput: input,
+          isExecutionAllowed: () => true,
+        }),
+      ).resolves.toEqual({ status: "ok" });
+      expect(observedAuthority).toHaveBeenCalledWith(current ? operatorAuthority : undefined);
+      expect(input.continuationCaller?.deliveryRoute).toBe(route);
+    } finally {
+      setSubagentAnnounceDeliveryDepsForTest();
+      retireSessionControllerInput(input);
+      await input.settlement.promise;
+    }
+  },
+);
 
 describe("hasFailedSubagentNoOutputCompletion", () => {
   it.each([

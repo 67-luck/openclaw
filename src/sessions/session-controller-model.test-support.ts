@@ -172,6 +172,27 @@ export function stepPilotMailbox(
   };
 }
 
+export type PilotParentInput = Readonly<{
+  id: string;
+  kind: "user" | "completion" | "settle";
+  owedAt: number;
+}>;
+
+/** Durable completion identities rebuild once; user inputs remain process-local FIFO entries. */
+export function modelParentMailbox(inputs: readonly PilotParentInput[]): PilotParentInput[] {
+  const owed = new Set<string>();
+  return inputs.filter((input) => {
+    if (input.kind === "user") {
+      return true;
+    }
+    if (owed.has(input.id)) {
+      return false;
+    }
+    owed.add(input.id);
+    return true;
+  });
+}
+
 /** Seed is printed with the complete event prefix on failure; no external property-test dependency. */
 export function pilotRandom(seed: number): (bound: number) => number {
   let value = (seed ^ 0x9e3779b9) >>> 0;

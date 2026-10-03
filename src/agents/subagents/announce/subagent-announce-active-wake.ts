@@ -1,5 +1,4 @@
 import { isFastTestRuntimeEnv } from "../../../infra/env.js";
-import type { UserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.types.js";
 import { sessionDeliveryChannel } from "../../../utils/delivery-context.read.js";
 import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runner/run-state.js";
 import {
@@ -93,22 +92,6 @@ export async function resolveActiveWakeWithRetries(
       outcome = SOURCE_OWNER_CHANGED;
       break;
     }
-    if (
-      outcome.reason === "source_reply_delivery_mode_mismatch" &&
-      currentOptions.sourceReplyDeliveryMode !== undefined
-    ) {
-      // Active requester runs own the final delivery mode. Direct-completion
-      // policy must not make an already-running automatic parent unreachable.
-      const activeRunOptions = { ...currentOptions };
-      delete activeRunOptions.sourceReplyDeliveryMode;
-      currentOptions = activeRunOptions;
-      const retryOptions = resolveRetryOptions();
-      if (!retryOptions) {
-        break;
-      }
-      outcome = await attemptWake(retryOptions);
-      continue;
-    }
     if (outcome.reason === "compacting") {
       const remainingDeliveryTimeoutMs =
         compactionDeadlineMs === undefined ? undefined : compactionDeadlineMs - Date.now();
@@ -152,7 +135,6 @@ export async function maybeSteerSubagentAnnounce(params: {
   requesterSessionKey: string;
   requesterAgentId?: string;
   steerMessage: string;
-  createUserTurnTranscriptRecorder?: (sessionId: string) => UserTurnTranscriptRecorder;
   signal?: AbortSignal;
   isSourceSessionEffectsAllowed?: () => boolean;
   isSourceSessionAdmissionAllowed?: () => boolean;
@@ -189,9 +171,6 @@ export async function maybeSteerSubagentAnnounce(params: {
     steeringMode: "all",
     ...(queueSettings.debounceMs !== undefined ? { debounceMs: queueSettings.debounceMs } : {}),
     waitForTranscriptCommit: true,
-    ...(params.createUserTurnTranscriptRecorder
-      ? { userTurnTranscriptRecorder: params.createUserTurnTranscriptRecorder(sessionId) }
-      : {}),
   };
   const queueOutcome = await resolveActiveWakeWithRetries(
     sessionId,

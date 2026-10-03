@@ -16,6 +16,7 @@ import {
 import { emitSessionLifecycleEvent } from "../../../sessions/session-lifecycle-events.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
+import { reserveRestoredSubagentControllerSources } from "../announce/subagent-announce-controller-source.js";
 import { applySubagentLaunchAuthorization } from "../spawn/subagent-launch-authorization.js";
 import { retrySubagentCleanup } from "../spawn/subagent-spawn-cleanup.js";
 import { readGatewayRunId } from "../spawn/subagent-spawn-gateway.js";
@@ -228,6 +229,7 @@ export function createSubagentRegistryRestorer(config: {
       }
     };
     const cfg = getRuntimeConfig();
+    reserveRestoredSubagentControllerSources([...runs.values()]);
     const requesterTurns = new Map<string, Map<string, SubagentRunRecord[]>>();
     const resolveRequesterAgentId = (entry: SubagentRunRecord) =>
       resolveSubagentRequesterAgentId(cfg, entry);

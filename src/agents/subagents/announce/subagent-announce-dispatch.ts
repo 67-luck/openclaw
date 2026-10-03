@@ -13,7 +13,6 @@ type SubagentAnnounceDeliveryFailureReason =
   | "generated_media_missing"
   | "message_tool_delivery_missing"
   | "requester_abandoned"
-  | "requester_turn_pending"
   | "source_owner_changed"
   | "steer_dropped"
   | "visible_reply_missing";
@@ -39,19 +38,15 @@ export type SubagentAnnounceDeliveryResult = {
   terminal?: boolean;
   disposition?: SubagentAnnounceDeliveryDisposition;
   missingMediaUrls?: string[];
-  phases?: SubagentAnnounceDispatchPhaseResult[];
-};
-
-type SubagentAnnounceDispatchPhase = "steer-primary" | "direct-primary" | "steer-fallback";
-
-type SubagentAnnounceDispatchPhaseResult = {
-  phase: SubagentAnnounceDispatchPhase;
-  delivered: boolean;
-  path: SubagentDeliveryPath;
-  deliveredAt?: number;
-  enqueuedAt?: number;
-  reason?: SubagentAnnounceDeliveryFailureReason;
-  error?: string;
+  phases?: Array<{
+    phase: "steer-primary" | "direct-primary" | "steer-fallback";
+    delivered: boolean;
+    path: SubagentDeliveryPath;
+    deliveredAt?: number;
+    enqueuedAt?: number;
+    reason?: SubagentAnnounceDeliveryFailureReason;
+    error?: string;
+  }>;
 };
 
 export function sourceOwnerChangedResult(): SubagentAnnounceDeliveryResult {
@@ -93,76 +88,20 @@ export async function runSubagentAnnounceDispatch(params: {
   steer: () => Promise<SubagentAnnounceSteerOutcome>;
   direct: () => Promise<SubagentAnnounceDeliveryResult>;
 }): Promise<SubagentAnnounceDeliveryResult> {
-  const phases: SubagentAnnounceDispatchPhaseResult[] = [];
-  const appendPhase = (
-    phase: SubagentAnnounceDispatchPhase,
-    result: SubagentAnnounceDeliveryResult,
-  ) => {
-    phases.push({
-      phase,
-      delivered: result.delivered,
-      path: result.path,
-      deliveredAt: result.deliveredAt,
-      enqueuedAt: result.enqueuedAt,
-      ...(result.reason ? { reason: result.reason } : {}),
-      error: result.error,
-    });
-  };
-  const withPhases = (result: SubagentAnnounceDeliveryResult): SubagentAnnounceDeliveryResult => ({
-    ...result,
-    phases,
-  });
-
   if (params.signal?.aborted) {
-    return withPhases({
-      delivered: false,
-      path: "none",
-    });
+    return { delivered: false, path: "none" };
   }
 
-  // Settle synthesis needs its own delivery turn; steering can inherit a
-  // message-tool-only completion turn and silently suppress the final reply.
-  const allowSteerFallback = !params.requireDirectDelivery && params.expectsCompletionMessage;
   if (!params.requireDirectDelivery && !params.expectsCompletionMessage) {
     const primarySteerOutcome = await params.steer();
     const primarySteer = mapSteerOutcomeToDeliveryResult(primarySteerOutcome);
-    appendPhase("steer-primary", primarySteer);
     if (
       primarySteer.delivered ||
       primarySteer.terminal ||
       primarySteerOutcome.status === "dropped"
     ) {
-      return withPhases(primarySteer);
+      return primarySteer;
     }
   }
-
-  // Completion handoff prefers direct delivery first so the completion agent's
-  // final visible message wins before falling back to steering.
-  const primaryDirect = await params.direct();
-  appendPhase("direct-primary", primaryDirect);
-  if (
-    !allowSteerFallback ||
-    primaryDirect.delivered ||
-    primaryDirect.reason === "requester_turn_pending" ||
-    primaryDirect.disposition === "session_queued" ||
-    primaryDirect.disposition === "intentional_non_delivery" ||
-    primaryDirect.disposition === "ambiguous" ||
-    primaryDirect.disposition === "permanent_failure"
-  ) {
-    return withPhases(primaryDirect);
-  }
-
-  if (params.signal?.aborted) {
-    return withPhases(primaryDirect);
-  }
-
-  const fallbackSteerOutcome = await params.steer();
-  const fallbackSteer = mapSteerOutcomeToDeliveryResult(fallbackSteerOutcome);
-  appendPhase("steer-fallback", fallbackSteer);
-  if (fallbackSteer.delivered || fallbackSteer.terminal) {
-    return withPhases(fallbackSteer);
-  }
-
-  // Keep the direct failure authoritative; dropped fallback remains in its phase.
-  return withPhases(primaryDirect);
+  return await params.direct();
 }

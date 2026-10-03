@@ -1899,15 +1899,6 @@ describe("subagent announce formatting", () => {
     expect(delivery.delivered).toBe(false);
     expect(delivery.reason).toBe("steer_dropped");
     expect(delivery.terminal).toBeUndefined();
-    expect(delivery.phases).toEqual([
-      {
-        phase: "steer-primary",
-        delivered: false,
-        path: "none",
-        reason: "steer_dropped",
-        error: undefined,
-      },
-    ]);
     expect(direct).not.toHaveBeenCalled();
   });
 
@@ -1964,34 +1955,6 @@ describe("subagent announce formatting", () => {
     expect(idempotencyKeys).toContain(firstKey);
     expect(idempotencyKeys).toContain(secondKey);
     expect(new Set(idempotencyKeys).size).toBe(2);
-  });
-
-  it("falls back to steering when an active completion wake cannot be injected", async () => {
-    embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
-    sessionStore = {
-      "agent:main:main": {
-        sessionId: "session-collect",
-        lastChannel: "whatsapp",
-        lastTo: "+1555",
-        queueMode: "collect",
-        queueDebounceMs: 0,
-      },
-    };
-    const direct = vi.fn(async () => ({
-      delivered: false,
-      path: "direct" as const,
-      error: "direct delivery unavailable",
-    }));
-    const delivery = await runSubagentAnnounceDispatch({
-      expectsCompletionMessage: true,
-      direct,
-      steer: async () => ({ status: "steered" }),
-    });
-
-    expect(delivery.delivered).toBe(true);
-    expect(delivery.path).toBe("steered");
-    expect(direct).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to internal requester-session injection when completion route is missing", async () => {
@@ -2055,31 +2018,6 @@ describe("subagent announce formatting", () => {
       deliver: false,
     });
     expect(getAgentCall().params?.sourceReplyDeliveryMode).toBe("message_tool_only");
-  });
-
-  it("returns failure for completion-mode when direct delivery fails and steering fallback is unavailable", async () => {
-    embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
-    sessionStore = {
-      "agent:main:main": {
-        sessionId: "session-direct-only",
-        lastChannel: "whatsapp",
-        lastTo: "+1555",
-      },
-    };
-    agentSpy.mockRejectedValueOnce(new Error("direct delivery unavailable"));
-
-    const didAnnounce = await runSubagentAnnounceFlow({
-      ...defaultOutcomeAnnounce,
-      childSessionKey: "agent:main:subagent:worker",
-      childRunId: "run-completion-direct-fail",
-      requesterSessionKey: "main",
-      expectsCompletionMessage: true,
-    });
-
-    expect(didAnnounce).toBe("retryable");
-    expect(sendSpy).not.toHaveBeenCalled();
-    expect(agentSpy).toHaveBeenCalledTimes(1);
   });
 
   it("uses assistant output for completion-mode when latest assistant text exists", async () => {

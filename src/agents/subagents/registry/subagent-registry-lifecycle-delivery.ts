@@ -39,13 +39,7 @@ import { hasSubagentRunEnded } from "./subagent-run-liveness.js";
 const DELIVERY_MIRROR_HISTORY_MAX_CHARS = 128 * 1024;
 
 export const formatAnnounceDeliveryError = (delivery: SubagentAnnounceDeliveryResult): string => {
-  const errors = [
-    delivery.error,
-    delivery.reason,
-    ...(delivery.phases ?? []).map((phase) =>
-      phase.error ? `${phase.phase}: ${phase.error}` : undefined,
-    ),
-  ]
+  const errors = [delivery.error, delivery.reason]
     .map((value) => value?.trim())
     .filter((value): value is string => Boolean(value));
   return errors.length > 0
@@ -65,10 +59,7 @@ export const recordAnnounceDeliveryResult = (
   if (!delivery.delivered && delivery.disposition !== "intentional_non_delivery") {
     if (delivery.reason === "message_tool_delivery_missing") {
       deliveryState.lastDropReason = "message_tool_delivery_missing";
-    } else if (
-      delivery.reason === "steer_dropped" ||
-      delivery.phases?.some((phase) => phase.reason === "steer_dropped")
-    ) {
+    } else if (delivery.reason === "steer_dropped") {
       deliveryState.lastDropReason = "steer_dropped";
     } else if (delivery.path === "none") {
       deliveryState.lastDropReason = "sink_unavailable";

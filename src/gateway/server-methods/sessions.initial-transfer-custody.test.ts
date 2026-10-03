@@ -261,7 +261,7 @@ it("finishes the initial handoff after the same child completes during promotion
       }
     });
     const settleRootWork = observeRootWork();
-    fixture.announce.mockResolvedValue("requester_turn_pending");
+    fixture.announce.mockResolvedValue("session_queued");
     try {
       emitAgentEvent({
         runId: entry.runId,

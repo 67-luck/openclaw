@@ -4,6 +4,7 @@ import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-requ
 import { defaultRuntime } from "../../../runtime.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
+import { reserveSubagentCompletionControllerSource } from "../announce/subagent-announce-controller-source.js";
 import { loadSessionEntryByKey } from "../announce/subagent-announce-delivery.runtime.js";
 import { matchesSubagentChildSessionOwner } from "./subagent-child-owner-match.js";
 import {
@@ -407,6 +408,10 @@ export const startSubagentAnnounceCleanupFlow = (
     );
   };
 
+  const controllerInput =
+    entry.expectsCompletionMessage === true && !requesterOwnsCompletion()
+      ? reserveSubagentCompletionControllerSource(entry)
+      : undefined;
   const announceParams: Parameters<RunSubagentAnnounceFlow>[0] = {
     childSessionKey: pendingPayload.childSessionKey,
     childRunId: pendingPayload.childRunId,
@@ -445,6 +450,7 @@ export const startSubagentAnnounceCleanupFlow = (
       );
     },
     isCompletionOwnedByRequesterYield: requesterOwnsCompletion,
+    controllerInput,
     onBeforeDeleteChildSession:
       cleanup === "delete"
         ? async () => {
@@ -501,8 +507,6 @@ export const startSubagentAnnounceCleanupFlow = (
         });
         return;
       }
-      const requesterTurnPending =
-        !delivery.delivered && delivery.reason === "requester_turn_pending";
       await commit(
         (draft, previous) => {
           if (
@@ -513,28 +517,26 @@ export const startSubagentAnnounceCleanupFlow = (
           }
           recordAnnounceDeliveryResult(draft, delivery, params.runs);
           const deliveryState = ensureDeliveryState(draft);
-          latestDeliveryError =
-            delivery.delivered || requesterTurnPending
-              ? undefined
-              : formatAnnounceDeliveryError(delivery);
+          latestDeliveryError = delivery.delivered
+            ? undefined
+            : formatAnnounceDeliveryError(delivery);
           if (delivery.delivered) {
             deliveryState.status = "delivered";
             deliveryState.announcedAt = deliveryState.deliveredAt ?? Date.now();
             clearSubagentPendingDelivery(draft);
-          } else if (!requesterTurnPending) {
+          } else {
             if (delivery.reason === "delivery_suppressed") {
               deliveryState.status = "failed";
             }
             deliveryState.lastError = latestDeliveryError;
           }
           if (
-            requesterTurnPending ||
-            (!delivery.delivered &&
-              previous.delivery?.lastError === latestDeliveryError &&
-              previous.delivery?.lastDropReason === deliveryState.lastDropReason &&
-              previous.delivery?.disposition === deliveryState.disposition &&
-              previous.delivery?.enqueuedAt === deliveryState.enqueuedAt &&
-              previous.delivery?.status === deliveryState.status)
+            !delivery.delivered &&
+            previous.delivery?.lastError === latestDeliveryError &&
+            previous.delivery?.lastDropReason === deliveryState.lastDropReason &&
+            previous.delivery?.disposition === deliveryState.disposition &&
+            previous.delivery?.enqueuedAt === deliveryState.enqueuedAt &&
+            previous.delivery?.status === deliveryState.status
           ) {
             return false;
           }

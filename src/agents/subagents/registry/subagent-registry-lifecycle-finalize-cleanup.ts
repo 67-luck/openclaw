@@ -212,21 +212,16 @@ export const finalizeSubagentCleanup = async (
         draft.wakeOnDescendantSettle = true;
         resumeDelayMs = deferredDecision.delayMs;
       } else {
-        const requesterTurnPending = announceOutcome === "requester_turn_pending";
-        if (!requesterTurnPending) {
-          markPendingFinalDelivery({
-            entry: draft,
-            error: "announce deferred or direct delivery failed",
-          });
-        }
+        markPendingFinalDelivery({
+          entry: draft,
+          error: "announce deferred or direct delivery failed",
+        });
         const delivery = ensureDeliveryState(draft);
         delivery.status = "pending";
         delivery.payload ??= loadPendingFinalDeliveryPayload(draft);
         delivery.windowStartedAt ??= draft.execution.endedAt ?? now;
         delivery.deadlineAt ??= delivery.windowStartedAt + ANNOUNCE_COMPLETION_HARD_EXPIRY_MS;
-        resumeDelayMs = requesterTurnPending
-          ? Math.min(MIN_ANNOUNCE_RETRY_DELAY_MS, delivery.deadlineAt - now)
-          : deferredDecision.resumeDelayMs;
+        resumeDelayMs = deferredDecision.resumeDelayMs;
         delivery.nextAttemptAt = now + (resumeDelayMs ?? 0);
       }
       draft.cleanupHandled = false;

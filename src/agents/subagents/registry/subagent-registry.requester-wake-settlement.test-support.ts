@@ -1,14 +1,6 @@
-import { expect, it, vi } from "vitest";
-import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
+import { expect, it } from "vitest";
 import { createSubagentRunParams } from "../../subagent-test-fixtures.test-helpers.js";
 import { createSessionsYieldTool } from "../../tools/sessions-yield-tool.js";
-import { maybeWakeRequesterAfterAllChildrenSettled } from "../announce/subagent-announce.requester-settle-wake.js";
-import {
-  mutateRequesterSettleWakeBatch,
-  settleRequesterCompletionBatch,
-} from "../completion/subagent-completion-admission.store.js";
-import { subagentRuns } from "./subagent-registry-memory.js";
-import { countActiveDescendantRunsFromRuns } from "./subagent-registry-queries.js";
 import type { GatewayRequest } from "./subagent-registry.lifecycle-fixture.test-support.js";
 import * as registry from "./subagent-registry.test-helpers.js";
 
@@ -19,7 +11,7 @@ export function registerRequesterWakeSettlementBoundaryTests({
   flushOwnedWork,
   waitForDeliveredCleanup,
   getRequesterWakeCalls,
-  useGlobalSessionScope,
+  useGlobalSessionScope: _useGlobalSessionScope,
 }: {
   requesterSessionKey: string;
   spawnVisibleChild: (params: {
@@ -113,126 +105,5 @@ export function registerRequesterWakeSettlementBoundaryTests({
       delivery: { status: "pending" },
     });
     expect(registry.getSubagentRunByRunId("old-grandchild")?.cleanupCompletedAt).toBeUndefined();
-  });
-
-  it("caps a stale requester batch despite foreign active work in a global session", async () => {
-    vi.setSystemTime(100_000);
-    useGlobalSessionScope();
-    await registry.addSubagentRunForTests({
-      runId: "run-main-batch",
-      childSessionKey: "agent:main:subagent:batch",
-      requesterSessionKey,
-      requesterDisplayKey: "main",
-      requesterAgentId: "main",
-      task: "main completed batch",
-      cleanup: "keep",
-      createdAt: 1_000,
-      execution: {
-        status: "terminal",
-        startedAt: 1_100,
-        endedAt: 1_200,
-        outcome: { status: "ok" },
-      },
-      expectsCompletionMessage: true,
-      delivery: { status: "pending" },
-      requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
-        batchRunIds: ["run-main-batch"],
-        requesterYieldBatch: true,
-        rearmGeneration: 1,
-        deferralCount: 8,
-      },
-    });
-    await registry.addSubagentRunForTests({
-      runId: "run-main-stale",
-      childSessionKey: "agent:main:subagent:stale",
-      requesterSessionKey: "agent:main:subagent:batch",
-      requesterDisplayKey: "main",
-      requesterAgentId: "main",
-      task: "main stale settle blocker",
-      cleanup: "keep",
-      createdAt: 2_000,
-      execution: {
-        status: "terminal",
-        startedAt: 2_100,
-        endedAt: 2_200,
-        outcome: { status: "ok" },
-      },
-      expectsCompletionMessage: true,
-      delivery: { status: "pending" },
-    });
-    await registry.addSubagentRunForTests({
-      runId: "run-research-active",
-      childSessionKey: "agent:research:subagent:active",
-      requesterSessionKey,
-      requesterDisplayKey: "main",
-      requesterAgentId: "research",
-      task: "unrelated research work",
-      cleanup: "keep",
-      createdAt: 3_000,
-      execution: { status: "running", startedAt: 3_100 },
-    });
-
-    const transitions: Array<{ deferralCount?: number; nextAttemptAt?: number }> = [];
-    const completions: Array<{ delivered: boolean; error?: string }> = [];
-    const runWake = () => {
-      const batch = registry.getSubagentRunByRunId("run-main-batch");
-      if (!batch) {
-        throw new Error("expected main requester batch");
-      }
-      return maybeWakeRequesterAfterAllChildrenSettled({
-        isSourceCurrent: () => true,
-        requesterSessionKey,
-        settledEntry: batch,
-        transitionBatch: async (entries, state, onPublished) => {
-          const publication = await mutateRequesterSettleWakeBatch({
-            entries,
-            operation: { kind: "transition", state },
-            context: captureOpenClawStateWorkerContext(),
-            assertCurrent: () => {},
-            onCommitted: () => {},
-            onPublished: () =>
-              onPublished(entries.map((entry) => registry.getSubagentRunByRunId(entry.runId)!)),
-          });
-          expect(publication).toEqual({ applied: true, publication: "published" });
-          transitions.push({
-            deferralCount: state.deferralCount,
-            nextAttemptAt: state.nextAttemptAt,
-          });
-        },
-        completeBatch: async (entries, _rearmGeneration, outcome) => {
-          if (!outcome) {
-            throw new Error("Expected the exhausted requester deferral outcome");
-          }
-          const publication = await settleRequesterCompletionBatch({
-            entries: entries.map((subagent) => ({ subagent })),
-            outcome,
-            isCurrent: () => true,
-          });
-          expect(publication).toEqual({ applied: true, publication: "published" });
-          completions.push({ delivered: outcome.delivered, error: outcome.error });
-        },
-      });
-    };
-
-    await expect(runWake()).resolves.toBe(false);
-    expect(transitions).toEqual([{ deferralCount: 9, nextAttemptAt: 130_000 }]);
-    expect(completions).toEqual([]);
-
-    await expect(runWake()).resolves.toBe(false);
-    expect(transitions).toHaveLength(1);
-
-    await vi.advanceTimersByTimeAsync(30_000);
-    await expect(runWake()).resolves.toBe(false);
-    expect(completions).toEqual([
-      {
-        delivered: false,
-        error: "requester settle wake deferred too many times",
-      },
-    ]);
-    expect(registry.getSubagentRunByRunId("run-main-batch")?.requesterSettleWake).toBeUndefined();
-    expect(countActiveDescendantRunsFromRuns(subagentRuns, requesterSessionKey)).toBe(1);
-    expect(countActiveDescendantRunsFromRuns(subagentRuns, requesterSessionKey, "main")).toBe(0);
   });
 }

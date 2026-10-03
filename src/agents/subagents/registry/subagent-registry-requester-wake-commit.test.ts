@@ -312,7 +312,6 @@ describe("requester settle wake commit retry", () => {
     { progress: "status", wake: { status: "pending" as const } },
     { progress: "attempt count", wake: { attemptCount: 4 } },
     { progress: "replay count", wake: { replayCount: 1 } },
-    { progress: "deferral count", wake: { deferralCount: 1 } },
     { progress: "retry deadline", wake: { nextAttemptAt: 20_000 } },
     { progress: "pause notice", wake: { pauseNotice: { acknowledgment: "Waiting for input" } } },
   ])(

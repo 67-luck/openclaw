@@ -10,7 +10,9 @@ import {
   getAgentRunLifecycleGeneration,
 } from "../../infra/agent-run-registry.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
+import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
+import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import {
   assertAdmittedRunOperatorAuthority,
   type AdmittedRunOperatorAuthority,
@@ -511,9 +513,6 @@ export async function withRequesterCronAuthority<T>(
   };
   if (!current()) {
     discard(authority);
-    if (authority.operatorAuthority) {
-      throw new Error("Requester operator authority is no longer current");
-    }
     return await run();
   }
   const dispatch: RequesterCronAuthorityDispatch = {
@@ -551,6 +550,25 @@ export async function withRequesterCronAuthority<T>(
       discard(authority);
     }
   }
+}
+
+/** Captures the exact requester identity reference for one yielded continuation source. */
+export function captureRequesterContinuationCaller(params: {
+  requesterSessionKey: string;
+  requesterSessionId: string;
+  requesterAgentId?: string;
+  batch: readonly SubagentRunRecord[];
+  rearmGeneration: number | undefined;
+  runId: string;
+  isCurrent: () => boolean;
+  deliveryRoute?: DeliveryContext;
+}): NonNullable<SessionControllerInput["continuationCaller"]> {
+  const deliveryRoute =
+    params.deliveryRoute && Object.freeze(structuredClone(params.deliveryRoute));
+  return Object.freeze({
+    deliveryRoute,
+    run: <T>(run: () => Promise<T>) => withRequesterCronAuthority(params, run),
+  });
 }
 
 /** Child followup results return the captured owner only to their exact requester. */

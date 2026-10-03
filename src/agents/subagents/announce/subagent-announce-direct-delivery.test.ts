@@ -251,8 +251,6 @@ describe("late exact requester recovery", () => {
   }>([
     ...[
       { name: "empty final", response: { status: "ok", result: { payloads: [] } } },
-      { name: "accepted turn", response: { status: "accepted" } },
-      { name: "in-flight turn", response: { status: "in_flight" } },
       { name: "restart interruption", response: { status: "error", stopReason: "restart" } },
       { name: "old keyed-input rejection", error: new Error("old keyed input rejected") },
     ].map((outcome) =>
@@ -268,8 +266,8 @@ describe("late exact requester recovery", () => {
           restartRecoveryDeliverySourceRunId: sourceRunId,
           restartRecoveryDeliveryRunId: "successor",
         },
-        reason: "requester_turn_pending",
-        disposition: "retryable",
+        reason: undefined,
+        disposition: "session_queued",
       },
       {
         name: "terminal without receipt",
@@ -308,7 +306,7 @@ describe("late exact requester recovery", () => {
     ].map(({ reason, ...outcome }) =>
       Object.assign(outcome, {
         response: { status: "ok", result: { payloads: [] } },
-        expected: { delivered: false, reason },
+        expected: { delivered: false, ...(reason ? { reason } : {}) },
       }),
     ),
   ])("reconciles the exact late receipt for $name without replay", async (outcome) => {
@@ -441,7 +439,7 @@ describe("late exact requester recovery", () => {
       const delivery = fixture.startDelivery();
       await fixture.dispatchEntered.promise;
       fixture.state.entry = { ...fixture.state.entry, ...finalReceipt };
-      fixture.dispatchDone.resolve({ status: "accepted" });
+      fixture.dispatchDone.reject(new Error("gateway unavailable before admission"));
       await Promise.race([
         fixture.readEntered.promise,
         delivery.then(() => {
@@ -461,13 +459,7 @@ describe("late exact requester recovery", () => {
       }
       const result = await delivery;
       expect(result).toMatchObject({ delivered: false });
-      expect(result.reason).toBe(
-        change === "source retired"
-          ? "source_owner_changed"
-          : change === "read failed"
-            ? "requester_turn_pending"
-            : undefined,
-      );
+      expect(result.reason).toBe(change === "source retired" ? "source_owner_changed" : undefined);
       expect(fixture.dispatch).toHaveBeenCalledOnce();
       expect(fixture.send).not.toHaveBeenCalled();
     },

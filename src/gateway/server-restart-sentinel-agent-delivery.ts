@@ -15,6 +15,8 @@ import {
   formatGeneratedMediaDeliveryRetryForPrompt,
 } from "../agents/internal-events.js";
 import type { RuntimeContextFragment } from "../agents/internal-runtime-context.js";
+import { reserveSubagentCompletionControllerSource } from "../agents/subagents/announce/subagent-announce-controller-source.js";
+import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { resolveDurableCompletionDeliveryMode } from "../auto-reply/reply/completion-delivery-policy.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
@@ -46,6 +48,7 @@ import {
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { normalizeMediaReferenceForComparison } from "../media/media-reference-comparison.js";
 import { getMediaDir } from "../media/store.js";
+import { retireSessionControllerInput } from "../sessions/session-controller.mailbox.js";
 import { readAssistantDisplayContent } from "../shared/assistant-display-content.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel.js";
@@ -575,6 +578,11 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
   // Fence before gateway admission. Recovery clears it only for an explicit
   // pre-acceptance safe retry; accepted or deduped runs may already have effects.
   await markSessionDeliveryAttemptStarted(entry, params.queueContext);
+  const completionOwner =
+    entry.owner?.kind === "subagent_completion" ? subagentRuns.get(entry.owner.runId) : undefined;
+  const controllerInput = completionOwner
+    ? reserveSubagentCompletionControllerSource(completionOwner, queuedRunId)
+    : undefined;
   let accepted = false;
   let response: unknown;
   try {
@@ -606,6 +614,7 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
         idempotencyKey: queuedRunId,
       },
       {
+        controllerInput,
         ...(cronSessionId ? { allowSyntheticCronRunContinuation: true } : {}),
         expectFinal: true,
         ...(binding ? { assertAdmissionCurrent: assertRequesterAdmissionCurrent } : {}),
@@ -632,6 +641,9 @@ export async function deliverQueuedGeneratedMediaAgentTurn(params: {
     );
   } catch (error) {
     if (error instanceof SessionDeliveryDeadLetteredError) {
+      if (controllerInput && !controllerInput.custody.rpcAdopted) {
+        retireSessionControllerInput(controllerInput);
+      }
       return deadLetterSessionDelivery(entry, error.message, params.queueContext);
     }
     if (!accepted) {

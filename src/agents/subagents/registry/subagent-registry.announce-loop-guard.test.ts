@@ -207,61 +207,6 @@ describe("announce loop guard (#18264)", () => {
     expect(mocks.persistRegistryRows).toHaveBeenCalledWith(expect.any(Map), [entry.runId]);
   });
 
-  test.each([
-    {
-      name: "pending requester turns preserve the failure budget and schedule another observation",
-      outcome: "requester_turn_pending",
-      attemptCount: 3,
-    },
-  ])("$name", async ({ outcome, attemptCount }) => {
-    mocks.runSubagentAnnounceFlow.mockResolvedValue(outcome);
-
-    const now = Date.now();
-    const entry: SubagentRunRecord = {
-      runId: "test-retry-budget",
-      childSessionKey: "agent:main:subagent:retry-budget",
-      requesterSessionKey: "agent:main:main",
-      requesterDisplayKey: "agent:main:main",
-      task: "retry window test",
-      cleanup: "keep",
-      createdAt: now - 2 * 60_000,
-      execution: {
-        status: "terminal",
-        startedAt: now - 90_000,
-        endedAt: now - 60_000,
-      },
-      expectsCompletionMessage: true,
-      completion: { required: true },
-      delivery: { status: "pending", attemptCount: 3, lastAttemptAt: now - 30_000 },
-    };
-    mocks.loadSubagentRegistryFromSqlite.mockReturnValue(new Map([[entry.runId, entry]]));
-
-    await hydrateAndActivateRegistry();
-    const resumed = await waitForRun(
-      entry.runId,
-      (run) =>
-        run.delivery?.attemptCount === attemptCount &&
-        typeof run.delivery.nextAttemptAt === "number",
-    );
-
-    expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(1);
-    expect(resumed.cleanupCompletedAt).toBeUndefined();
-    expect(resumed.delivery).toMatchObject({
-      status: "pending",
-      attemptCount,
-      windowStartedAt: entry.execution.endedAt,
-      deadlineAt: entry.execution.endedAt! + 30 * 60_000,
-    });
-    expect(resumed.delivery!.nextAttemptAt).toBeGreaterThan(now);
-    if (outcome === "requester_turn_pending") {
-      mocks.runSubagentAnnounceFlow.mockResolvedValue("retryable");
-      await vi.advanceTimersByTimeAsync(resumed.delivery!.nextAttemptAt! - Date.now());
-      const retried = await waitForRun(entry.runId, (run) => run.delivery?.attemptCount === 4);
-      expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledTimes(2);
-      expect(retried.delivery?.deadlineAt).toBe(entry.execution.endedAt! + 30 * 60_000);
-    }
-  });
-
   test("announce rejection resets cleanupHandled so retries can resume", async () => {
     mocks.runSubagentAnnounceFlow.mockRejectedValueOnce(new Error("announce failed"));
 

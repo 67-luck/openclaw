@@ -188,7 +188,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
         expect(retry).toMatchObject(
           transport
             ? { status: "dispatching", attemptCount: 1, replayCount: 1, nextAttemptAt: 40_000 }
-            : { status: "pending", attemptCount: 0, deferralCount: 1, nextAttemptAt: 40_000 },
+            : { status: "pending", attemptCount: 0, nextAttemptAt: 40_000 },
         );
         if (elapsed) {
           now = 40_001;
@@ -197,7 +197,7 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
         await expect(first).resolves.toBe(false);
         for (const child of children) {
           expect(child.requesterSettleWake).toEqual(
-            elapsed ? { ...retry, nextAttemptAt: 70_001, deferralCount: transport ? 1 : 2 } : retry,
+            elapsed ? { ...retry, nextAttemptAt: 70_001 } : retry,
           );
         }
         expect(deliverSpy).toHaveBeenCalledTimes(transport ? 1 : 0);
@@ -843,64 +843,6 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     expect(deliverSpy).not.toHaveBeenCalled();
   });
 
-  describe("restart-persistent outbox", () => {
-    it("keeps active overlap pending and only caps a stale settle blocker", async () => {
-      const child = makeSettledChild({
-        runId: "run-a",
-        delivery: { status: "pending" },
-        requesterSettleWake: {
-          status: "pending",
-          attemptCount: 0,
-          batchRunIds: ["run-a"],
-          requesterYieldBatch: true,
-          rearmGeneration: 1,
-        },
-      });
-      registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue([child]);
-      readDescendantFacts.mockResolvedValue({ unsettled: true, active: 1 });
-
-      vi.useFakeTimers();
-      vi.setSystemTime(0);
-      try {
-        for (let recheck = 0; recheck < 12; recheck += 1) {
-          await maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child }));
-          await vi.advanceTimersByTimeAsync(30_000);
-        }
-
-        expect(child.requesterSettleWake?.deferralCount).toBe(0);
-
-        readDescendantFacts.mockResolvedValue({ unsettled: false, active: 1 });
-        await expect(
-          maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child })),
-        ).resolves.toBe(true);
-
-        vi.clearAllMocks();
-        child.requesterSettleWake = {
-          status: "pending",
-          attemptCount: 0,
-          batchRunIds: ["run-a"],
-          rearmGeneration: 1,
-          deferralCount: 8,
-        };
-        readDescendantFacts.mockResolvedValue({ unsettled: true, active: 0 });
-
-        await maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child }));
-        await maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child }));
-        expect(transitionBatchSpy).toHaveBeenCalledOnce();
-        expect(completeBatchSpy).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(30_000);
-        await maybeWakeRequesterAfterAllChildrenSettled(wakeParams({ settledEntry: child }));
-        expect(completeBatchSpy).toHaveBeenCalledWith(["run-a"], 1, {
-          delivered: false,
-          path: "none",
-          error: "requester settle wake deferred too many times",
-        });
-        expect(deliverSpy).not.toHaveBeenCalled();
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-  });
   it("delivers the complete final source reply after a same-run silent terminal", async () => {
     const text = `${"<source-reply>".repeat(400)}required source reply tail`;
     const child = makeSettledChild({

@@ -10,6 +10,10 @@ import {
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { withPluginRuntimeGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../../../runtime.js";
+import {
+  retireSessionControllerInput,
+  type SessionControllerInput,
+} from "../../../sessions/session-controller.mailbox.js";
 import { waitForSessionRunEnd } from "../../../sessions/session-controller.native-runtime.js";
 import { isSessionRunActive } from "../../../sessions/session-controller.queries.js";
 import { isCronSessionKey } from "../../../sessions/session-key-utils.js";
@@ -82,9 +86,9 @@ const loadSubagentRegistryRuntime = createLazyPromise(
 
 export { captureSubagentCompletionReply } from "./subagent-announce-output.js";
 
-export type SubagentAnnounceFlowOutcome =
-  | NonNullable<SubagentAnnounceDeliveryResult["disposition"]>
-  | "requester_turn_pending";
+export type SubagentAnnounceFlowOutcome = NonNullable<
+  SubagentAnnounceDeliveryResult["disposition"]
+>;
 
 function buildAnnounceReplyInstruction(params: {
   requesterIsSubagent: boolean;
@@ -163,6 +167,8 @@ type SubagentAnnounceFlowParams = {
   /** Live owner check for requester delivery after awaited phases. */
   isCompletionDeliveryAllowed?: () => boolean;
   isCompletionOwnedByRequesterYield?: () => boolean;
+  /** Exact source reserved synchronously by the durable registry handoff. */
+  controllerInput?: SessionControllerInput;
   signal?: AbortSignal;
   onDeliveryResult?: (delivery: SubagentAnnounceDeliveryResult) => void | Promise<void>;
   onBeforeDeleteChildSession?: () => boolean | Promise<boolean>;
@@ -614,12 +620,10 @@ async function runSubagentAnnounceFlowBound(
       onDeliveryResult: reportDeliveryResult,
       signal: params.signal,
       resolveGatewayContext: params.resolveGatewayContext,
+      controllerInput: params.controllerInput,
     });
     await reportDeliveryResult(delivery);
-    announceOutcome =
-      delivery.reason === "requester_turn_pending"
-        ? "requester_turn_pending"
-        : (delivery.disposition ?? (delivery.delivered ? "delivered" : "retryable"));
+    announceOutcome = delivery.disposition ?? (delivery.delivered ? "delivered" : "retryable");
   } catch (err) {
     shouldDeleteChildSession = false;
     if (hasSqliteWorkerOutcomeUnknown(err)) {
@@ -628,6 +632,13 @@ async function runSubagentAnnounceFlowBound(
     defaultRuntime.error?.(`Subagent announce failed: ${String(err)}`);
     // Best-effort follow-ups; ignore failures to avoid breaking the caller response.
   } finally {
+    if (
+      params.controllerInput &&
+      announceOutcome !== "session_queued" &&
+      !params.controllerInput.custody.rpcAdopted
+    ) {
+      retireSessionControllerInput(params.controllerInput);
+    }
     if (
       shouldDeleteChildSession &&
       (await prepareChildSessionEffects()) &&

@@ -10,10 +10,7 @@ import {
   normalizeMainKey,
   parseAgentSessionKey,
 } from "../../../routing/session-key.js";
-import {
-  resolveActiveSessionRunId,
-  isSessionRunActive,
-} from "../../../sessions/session-controller.queries.js";
+import { resolveActiveSessionRunId } from "../../../sessions/session-controller.queries.js";
 import { resolveRequesterStoreKey } from "./subagent-requester-store-key.js";
 export { resolveQueueSettings } from "../../../auto-reply/reply/queue.js";
 export { resolveExternalBestEffortDeliveryTarget } from "../../../infra/outbound/best-effort-delivery.js";
@@ -87,22 +84,18 @@ export function loadRequesterSessionEntry(
 }
 
 export function getSubagentRequesterSessionActivity(
-  requesterSessionKey: string,
-  requester: Pick<RequesterSessionEntryResult, "agentId" | "entry">,
+  _requesterSessionKey: string,
+  requester: Pick<RequesterSessionEntryResult, "agentId" | "canonicalKey" | "entry">,
 ) {
   if (!requester.agentId) {
     return { isActive: false };
   }
   const storedSessionId = requester.entry?.sessionId;
-  // Unscoped active-run keys are ambiguous across agents. An explicit owner
-  // must use its logical store entry instead of accepting another agent's run.
-  const activeSessionId = parseAgentSessionKey(requesterSessionKey)
-    ? resolveActiveSessionRunId(requesterSessionKey)
-    : undefined;
+  const activeSessionId = resolveActiveSessionRunId(requester.canonicalKey);
   const sessionId = activeSessionId ?? storedSessionId;
   return {
     sessionId,
-    isActive: Boolean(sessionId && isSessionRunActive(sessionId)),
+    isActive: activeSessionId !== undefined,
   };
 }
 
