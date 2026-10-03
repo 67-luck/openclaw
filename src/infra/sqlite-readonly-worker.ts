@@ -445,7 +445,7 @@ async function runSqliteAuthProfileWorker(
   }
 }
 
-export function runSqliteReadOnlyWorkerOnce(
+function runSqliteReadOnlyWorkerOnce(
   pathname: string,
   options: SqliteReadOnlyWorkerOptions,
   launch?: Pick<SqliteReadOnlyWorkerLaunch, "env" | "cwd"> & {
