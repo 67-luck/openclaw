@@ -4,6 +4,7 @@ import type { SubagentCompletionToolHandoffRegistration } from "../agents/subage
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { GatewayNativeApprovalRuntime } from "../infra/approval-gateway-runtime.types.js";
 import type { ChannelApprovalKind } from "../infra/approval-types.js";
+import type { SessionControllerInput } from "../sessions/session-controller.mailbox.js";
 import type {
   AgentTurnStartOwner,
   InternalAgentTurnFacadeFactory,
@@ -11,6 +12,8 @@ import type {
 import type { AgentRunRequest } from "./server-methods/agent-request-types.js";
 
 export type GatewayInstanceAgentDispatchOptions = {
+  /** Exact process-local source reserved by a durable lifecycle owner. */
+  controllerInput?: SessionControllerInput;
   assertAdmissionCurrent?: () => void;
   allowModelOverride?: boolean;
   allowSyntheticModelOverride?: boolean;

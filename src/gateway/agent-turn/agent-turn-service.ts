@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import { registerChatAbortController } from "../chat-abort.js";
@@ -42,6 +43,7 @@ import type { RequesterSettleWakeReplay } from "./internal-facade.types.js";
 import type { AgentTurnIo, AgentTurnPrincipal } from "./types.js";
 
 type AgentTurnStartRequest = {
+  controllerInput?: SessionControllerInput;
   privateCompletion?: true;
   settleWakeReplay?: RequesterSettleWakeReplay;
   assertAdmissionCurrent?: () => void;
@@ -58,6 +60,7 @@ export function createAgentTurnService(
   assertContextCurrent?: () => void,
 ) {
   const startTurn = async ({
+    controllerInput,
     privateCompletion,
     settleWakeReplay,
     assertAdmissionCurrent,
@@ -211,6 +214,7 @@ export function createAgentTurnService(
             onRegistered: (registration) => {
               earlyRunAbort = registration;
             },
+            controllerInput,
           }),
       }).catch(dedupeLifecycle.handlePreparationFailure(assertAdmissionCurrent));
       if (!content) {
@@ -439,6 +443,7 @@ export function createAgentTurnService(
               !suppressVisibleSessionEffects &&
               !isSubagentCoordinationInputProvenance(inputProvenance),
             operationalRunInstance: createOperationalRunInstanceRef(runId),
+            sourceInput: controllerInput,
           });
           admissionController.setAdmittedRunAbort(earlyRunAbort);
           if (earlyRunAbort.entry) {

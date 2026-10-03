@@ -215,6 +215,36 @@ describe("registerChatAbortController", () => {
     expect(rpcSourceTesting.get("run-internal-agent")?.adapter.controlUiVisible).toBe(false);
   });
 
+  it("adopts a reserved source without allocating a second mailbox sequence", async () => {
+    rpcSourceTesting.clear();
+    const target = captureSessionTarget({
+      storeScope: "/synthetic/adopted-chat-registration",
+      sessionKey: "main",
+      incarnation: "sess-adopted",
+    });
+    const input = reserveSessionControllerSource("main", {
+      target,
+      reservationId: "subagent-completion:run-adopted:0",
+      policy: { mode: "followup" },
+    });
+    const sequence = input.sequence;
+    const registration = registerChatAbortController({
+      target,
+      sourceInput: input,
+      runId: "run-adopted",
+      sessionId: "sess-adopted",
+      sessionKey: "main",
+      timeoutMs: 60_000,
+    });
+
+    expect(registration.entry?.input).toBe(input);
+    expect(input.sequence).toBe(sequence);
+    expect(input.mailbox.entries).toEqual([input]);
+    expect(input.custody.rpcAdopted).toBe(true);
+    registration.cleanup();
+    await input.settlement.promise;
+  });
+
   it("keeps preparing sources cancellable without starting an execution timeout", async () => {
     vi.useFakeTimers();
     rpcSourceTesting.clear();

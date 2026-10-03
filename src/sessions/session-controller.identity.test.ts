@@ -18,6 +18,7 @@ import {
   captureSessionControllerSettlement,
 } from "./session-controller.lifecycle.js";
 import {
+  adoptSessionControllerSource,
   reserveSessionControllerSource,
   claimSessionControllerTask,
   captureSessionControllerSourceSettlement,
@@ -160,6 +161,102 @@ it("aliases of one physical incarnation share the same selector", async () => {
   expect(selected).toHaveBeenCalledOnce();
   releaseSessionControllerClaim(nextClaim);
   await nextClaim.settlement.promise;
+});
+
+it("deduplicates one reserved delivery identity and rejects conflicting reuse", () => {
+  const physical = target("/stores/reservation.sqlite");
+  const first = reserveSessionControllerSource(key, {
+    target: physical,
+    reservationId: "subagent-completion:run-1:0",
+    protocolRunId: "run-1",
+    policy: { mode: "followup" },
+  });
+  const second = reserveSessionControllerSource(key, {
+    target: physical,
+    reservationId: "subagent-completion:run-1:0",
+    protocolRunId: "run-1",
+    policy: { mode: "followup" },
+  });
+
+  expect(second).toBe(first);
+  expect(first.mailbox.entries).toEqual([first]);
+  expect(() =>
+    reserveSessionControllerSource(key, {
+      target: physical,
+      reservationId: "subagent-completion:run-1:0",
+      protocolRunId: "different-run",
+      policy: { mode: "followup" },
+    }),
+  ).toThrow("different delivery");
+  expect(() =>
+    reserveSessionControllerSource(key, {
+      target: physical,
+      reservationId: "subagent-completion:run-1:0",
+      protocolRunId: "run-1",
+      policy: { mode: "steer" },
+    }),
+  ).toThrow("different delivery");
+  expect(() =>
+    reserveSessionControllerSource(key, {
+      target: target("/stores/other.sqlite"),
+      reservationId: "subagent-completion:run-1:0",
+      protocolRunId: "run-1",
+      policy: { mode: "followup" },
+    }),
+  ).toThrow("different delivery");
+});
+
+it("adopts only the exact unclaimed reserved source", async () => {
+  const physical = target("/stores/rpc-adoption.sqlite");
+  const adapter = {};
+  const input = reserveSessionControllerSource(key, {
+    target: physical,
+    reservationId: "subagent-settle:batch:0",
+    policy: { mode: "followup" },
+  });
+
+  expect(() =>
+    adoptSessionControllerSource(input, {
+      protocolRunId: "settle-run",
+      target: target("/stores/foreign.sqlite"),
+      policy: { mode: "followup" },
+      adapter,
+    }),
+  ).toThrow("foreign or claimed");
+  adoptSessionControllerSource(input, {
+    protocolRunId: "settle-run",
+    target: physical,
+    policy: { mode: "followup" },
+    adapter,
+  });
+  expect(input.protocolRunId).toBe("settle-run");
+  expect(input.sourceAdapter).toBe(adapter);
+  expect(input.custody.rpcAdopted).toBe(true);
+  expect(() =>
+    adoptSessionControllerSource(input, {
+      protocolRunId: "settle-run",
+      target: physical,
+      policy: { mode: "followup" },
+      adapter,
+    }),
+  ).toThrow("foreign or claimed");
+
+  const claimedTarget = target("/stores/rpc-claimed.sqlite");
+  const claimed = reserveSessionControllerSource(key, {
+    target: claimedTarget,
+    policy: { mode: "followup" },
+  });
+  const claim = await claimSessionControllerTask(claimed, () => {});
+  expect(() =>
+    adoptSessionControllerSource(claimed, {
+      protocolRunId: "claimed-run",
+      target: claimedTarget,
+      policy: { mode: "followup" },
+      adapter: {},
+    }),
+  ).toThrow("foreign or claimed");
+  releaseSessionControllerClaim(claim);
+  await claim.settlement.promise;
 });
 
 it("moves one unbound command source into target ordering without replacing its receipt", async () => {

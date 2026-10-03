@@ -125,6 +125,20 @@ export function* sessionControllerMailboxes() {
   }
 }
 
+const queueSettingKeys = ["mode", "debounceMs", "cap", "dropPolicy"] as const;
+const sameQueueSettings = (a: QueueSettings, b: QueueSettings) =>
+  queueSettingKeys.every((key) => a[key] === b[key]);
+const isUnboundPreparingSource = (input: SessionControllerInput) =>
+  input.phase === "preparing" &&
+  !input.claim &&
+  !input.injection &&
+  !input.source &&
+  !input.task &&
+  !input.ready &&
+  !input.retirementRequested &&
+  !input.withdrawalHolds &&
+  !input.custody.enqueued;
+
 export function claimSessionControllerInput(
   source: FollowupRun,
 ): Promise<SessionControllerMailboxClaim> {
@@ -577,18 +591,42 @@ export function reserveSessionControllerSource(
     sourceTurnId?: string;
     protocolRunId?: string;
     sourceSessionId?: string;
+    reservationId?: string;
+    continuationCaller?: SessionControllerInput["continuationCaller"];
     policy: QueueSettings;
     adapter?: SessionControllerSourceAdapter;
     target?: SessionTarget;
   },
 ): SessionControllerInput {
-  const mailbox = getSessionControllerMailbox(
-    key,
+  const target =
     params.target ??
-      (params.adapter?.scope
-        ? captureSessionTarget({ storeScope: params.adapter.scope, sessionKey: key })
-        : undefined),
-  );
+    (params.adapter?.scope
+      ? captureSessionTarget({ storeScope: params.adapter.scope, sessionKey: key })
+      : undefined);
+  const reservationId = params.reservationId?.trim();
+  if (reservationId) {
+    const existing = Array.from(sessionControllerMailboxes())
+      .flatMap((mailbox) => mailbox.entries)
+      .find(
+        (input) =>
+          input.sourceTurnId === reservationId &&
+          input.phase !== "consumed" &&
+          !input.retirementRequested,
+      );
+    if (existing) {
+      if (
+        (existing.protocolRunId !== undefined &&
+          params.protocolRunId !== undefined &&
+          existing.protocolRunId !== params.protocolRunId) ||
+        !sameQueueSettings(existing.policy, params.policy) ||
+        (target && existing.mailbox.owner !== findSessionControllerEntry(target.sessionKey, target))
+      ) {
+        throw new Error("Reserved source identity belongs to a different delivery");
+      }
+      return existing;
+    }
+  }
+  const mailbox = getSessionControllerMailbox(key, target);
   const cancellation = new AbortController();
   const signals = [
     cancellation.signal,
@@ -600,13 +638,14 @@ export function reserveSessionControllerSource(
     abortSignal: signals.length > 1 ? AbortSignal.any(signals) : cancellation.signal,
     instance: Object.freeze({ id: randomUUID() }),
     sequence: ++mailbox.nextSequence,
-    sourceTurnId: params.sourceTurnId,
+    sourceTurnId: reservationId ?? params.sourceTurnId,
     protocolRunId: params.protocolRunId,
     sourceSessionId: params.sourceSessionId,
     policy: Object.freeze({ ...params.policy }),
     mailbox,
     sourceAdapter: params.adapter,
-    target: params.target ?? mailbox.owner.target,
+    target: target ?? mailbox.owner.target,
+    continuationCaller: params.continuationCaller,
     custody: {},
     settlement: createDeferredCore(),
     phase: "preparing",
@@ -635,6 +674,38 @@ export function reserveSessionControllerSource(
     signal.addEventListener("abort", abort, { once: true });
   }
   return input;
+}
+
+/** Transfers one unclaimed in-process reservation into its Gateway turn owner. */
+export function adoptSessionControllerSource(
+  input: SessionControllerInput,
+  params: {
+    protocolRunId: string;
+    target: SessionTarget;
+    policy: QueueSettings;
+    adapter: SessionControllerSourceAdapter;
+  },
+): void {
+  const assertAdoptable = () => {
+    if (
+      (input.protocolRunId !== undefined && input.protocolRunId !== params.protocolRunId) ||
+      !sameQueueSettings(input.policy, params.policy) ||
+      input.mailbox.owner !== findSessionControllerEntry(params.target.sessionKey, params.target) ||
+      input.mailbox.owner.mailbox !== input.mailbox ||
+      !input.mailbox.entries.includes(input) ||
+      !isUnboundPreparingSource(input) ||
+      input.custody.rpcAdopted
+    ) {
+      throw new Error("Cannot adopt a foreign or claimed session controller source");
+    }
+    input.abortSignal.throwIfAborted();
+  };
+  assertAdoptable();
+  params.adapter.authority?.assertCurrent();
+  assertAdoptable();
+  input.protocolRunId = params.protocolRunId;
+  input.sourceAdapter = params.adapter;
+  input.custody.rpcAdopted = true;
 }
 
 function resolveSourceTarget(key: string, source: FollowupRun): SessionTarget {
@@ -690,17 +761,7 @@ export function retargetSessionControllerSource(
   transfer: "same-store" | "command-target" = "same-store",
 ): void {
   const assertUnbound = () => {
-    if (
-      input.phase !== "preparing" ||
-      input.claim ||
-      input.source ||
-      input.injection ||
-      input.task ||
-      input.ready ||
-      input.retirementRequested ||
-      input.withdrawalHolds ||
-      input.custody.enqueued
-    ) {
+    if (!isUnboundPreparingSource(input)) {
       throw new Error("Only unbound preparing sources may change execution target");
     }
     input.abortSignal.throwIfAborted();

@@ -365,6 +365,7 @@ export async function dispatchGatewayMethodInProcess<T>(
       });
       return method === "agent"
         ? await facade.dispatch<T>(params as AgentRunRequest, {
+            controllerInput: options?.controllerInput,
             prepareDispatchCurrent: options?.prepareDispatchCurrent,
             assertAdmissionCurrent: () => {
               resolved.assertInvocationCurrent();

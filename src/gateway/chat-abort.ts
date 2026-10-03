@@ -19,8 +19,10 @@ import {
 } from "../infra/agent-run-registry.js";
 import type { SessionTarget } from "../sessions/session-controller.lifecycle.js";
 import {
+  adoptSessionControllerSource,
   reserveSessionControllerSource,
   trackSessionControllerSourceWork,
+  type SessionControllerInput,
   type SessionControllerSourceAdapter,
 } from "../sessions/session-controller.mailbox.js";
 import {
@@ -161,11 +163,14 @@ export function registerChatAbortController(params: {
   sourceWork?: Promise<unknown>;
   now?: number;
   expiresAtMs?: number;
+  sourceInput?: SessionControllerInput;
 }): RegisteredChatAbortController {
   // Sessionless RPCs retain prepared authority without a fabricated session owner.
   if (!params.sessionKey || hasRpcSource(params.runId)) {
+    if (params.sessionKey && params.sourceInput) {
+      throw new Error("Reserved source cannot adopt an existing RPC registration");
+    }
     const controller = new AbortController();
-
     return {
       controller,
       registered: false,
@@ -190,14 +195,25 @@ export function registerChatAbortController(params: {
     kind: params.kind,
     turnKind: params.turnKind,
   };
-  const input = reserveSessionControllerSource(params.sessionKey, {
-    protocolRunId: params.runId,
-    sourceTurnId: params.runId,
-    sourceSessionId: params.sessionId,
-    policy: params.policy ?? { mode: "followup" },
-    target: params.target,
-    adapter,
-  });
+  const policy = params.policy ?? { mode: "followup" };
+  const input =
+    params.sourceInput ??
+    reserveSessionControllerSource(params.sessionKey, {
+      protocolRunId: params.runId,
+      sourceTurnId: params.runId,
+      sourceSessionId: params.sessionId,
+      policy,
+      target: params.target,
+      adapter,
+    });
+  if (params.sourceInput) {
+    adoptSessionControllerSource(input, {
+      protocolRunId: params.runId,
+      target: params.target,
+      policy,
+      adapter,
+    });
+  }
   if (params.sourceWork) {
     trackSessionControllerSourceWork(input, params.sourceWork);
   }

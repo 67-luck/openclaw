@@ -1,5 +1,6 @@
 import type { FollowupRun, QueueSettings } from "../auto-reply/reply/queue/types.js";
 import type { createDeferredCore } from "../shared/deferred.js";
+import type { DeliveryContext } from "../utils/delivery-context.types.js";
 import type { ReplyOperation, ReplyTurnKind } from "./session-controller.contracts.js";
 import type { inputCancellation } from "./session-controller.mailbox-source.js";
 import type { SessionControllerEntry } from "./session-controller.state.js";
@@ -17,6 +18,8 @@ export type SessionControllerSourceCustody = {
   releaseAuthority?: () => void;
   failure?: unknown;
   disposeSource?: () => void;
+  /** One in-process Gateway registration may adopt a pre-reserved source. */
+  rpcAdopted?: boolean;
 };
 
 export type SessionControllerInput = {
@@ -25,7 +28,7 @@ export type SessionControllerInput = {
   readonly instance: Readonly<{ id: string }>;
   sequence: number;
   readonly sourceTurnId?: string;
-  readonly protocolRunId?: string;
+  protocolRunId?: string;
   policy: Readonly<QueueSettings>;
   mailbox: SessionControllerMailbox;
   readonly custody: SessionControllerSourceCustody;
@@ -35,7 +38,12 @@ export type SessionControllerInput = {
   /** Source admission identity survives later mailbox incarnation bindings. */
   target?: SessionTarget;
   source?: FollowupRun;
-  readonly sourceAdapter?: SessionControllerSourceAdapter;
+  sourceAdapter?: SessionControllerSourceAdapter;
+  /** Process-local requester identity reference; never serialized or accepted over RPC. */
+  readonly continuationCaller?: Readonly<{
+    deliveryRoute?: DeliveryContext;
+    run<T>(run: () => Promise<T>): Promise<T>;
+  }>;
   phase: "preparing" | "waiting" | "injecting" | "claimed" | "consumed";
   injection?: {
     predecessor: Promise<boolean>;

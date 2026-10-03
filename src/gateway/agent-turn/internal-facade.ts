@@ -287,6 +287,7 @@ export function createInternalAgentTurnFacade(
                 { context, isWebchatConnect },
                 options.assertContextCurrent,
               ).startTurn({
+                controllerInput: dispatchOptions.controllerInput,
                 preflight,
                 principal,
                 io,

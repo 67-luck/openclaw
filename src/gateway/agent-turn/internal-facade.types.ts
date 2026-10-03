@@ -1,5 +1,6 @@
 import type { AgentWaitParams } from "../../../packages/gateway-protocol/src/index.js";
 import type { ConnectParams } from "../../../packages/gateway-protocol/src/schema/frames.js";
+import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import type { GatewayMethodDispatchResponse } from "../server-in-process-dispatch.types.js";
 import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
 import type { GatewayClient } from "../server-methods/client-types.js";
@@ -29,6 +30,8 @@ export type RequesterSettleWakeReplay = {
 };
 
 export type InternalAgentTurnDispatchOptions = {
+  /** Exact in-process mailbox source reserved by the input owner. */
+  controllerInput?: SessionControllerInput;
   /** Internal completion delivery owns its hidden input and durable processing receipt. */
   privateCompletion?: true;
   settleWakeReplay?: RequesterSettleWakeReplay;

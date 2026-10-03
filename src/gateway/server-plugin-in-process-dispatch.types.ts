@@ -2,6 +2,7 @@ import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-contex
 import type { SubagentCompletionToolHandoffRegistration } from "../agents/subagents/announce/subagent-announce-handoff.js";
 import type { PluginSubagentRequesterContext } from "../plugins/runtime/subagent-requester-context.js";
 import type { RuntimePluginToolGrant } from "../plugins/runtime/tool-grant.js";
+import type { SessionControllerInput } from "../sessions/session-controller.mailbox.js";
 import type { RequesterSettleWakeReplay } from "./agent-turn/internal-facade.types.js";
 import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
 import type {
@@ -21,6 +22,8 @@ export type PrepareInProcessAgentExecutionOptions = {
 };
 
 export type DispatchGatewayMethodInProcessOptions = {
+  /** Exact host-owned source reference for an in-process agent continuation. */
+  controllerInput?: SessionControllerInput;
   privateCompletion?: true;
   settleWakeReplay?: RequesterSettleWakeReplay;
   allowSyntheticModelOverride?: boolean;
