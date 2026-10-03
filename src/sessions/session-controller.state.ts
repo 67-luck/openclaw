@@ -53,7 +53,12 @@ export function findSessionControllerEntries(
   key: string,
   target?: SessionTarget,
 ): SessionControllerEntry[] {
-  const aliases = target?.aliases ?? [key.trim()];
+  const normalizedKey = key.trim();
+  const exact = target ? undefined : controllerStorage.sessionControllers.get(normalizedKey);
+  if (exact) {
+    return [exact];
+  }
+  const aliases = target?.aliases ?? [normalizedKey];
   const matches = [...controllerStorage.sessionControllers.values()].filter(
     (entry) =>
       (!target || !entry.target || entry.target.storeScope === target.storeScope) &&
