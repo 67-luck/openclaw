@@ -287,8 +287,9 @@ function assertRecovery(gatewayLog, updateResult) {
   const recoveryRows = inspectRecoveryRows(sourceDatabasePath(), fixture);
   assert(recoveryRows.length > 0, "Activated candidate did not record candidate-era recovery");
   const log = fs.readFileSync(gatewayLog, "utf8").slice(fixture.candidateLogOffset);
-  assert(
-    log.includes("gateway restart-loop breaker recovered; channel auto-start restored"),
+  assertLogIncludes(
+    log,
+    "[gateway] restart-loop breaker recovered; channel auto-start restored",
     "Activated candidate did not report channel autostart recovery",
   );
   writeJson(proofPath(), {
