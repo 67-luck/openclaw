@@ -54,7 +54,10 @@ export type ChannelStopCapture = {
 };
 
 function matchesStopCandidate(
-  candidate: ReturnType<typeof captureSessionControllerStopCandidates>[number],
+  candidate: Pick<
+    ReturnType<typeof captureSessionControllerStopCandidates>[number],
+    "aliases" | "agentId" | "storeScope"
+  >,
   params: { key: string; storePath: string; agentId?: string },
 ): boolean {
   if (!candidate.aliases.has(params.key)) {
