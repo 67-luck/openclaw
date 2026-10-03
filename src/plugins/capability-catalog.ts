@@ -3,7 +3,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { PluginCapabilityCatalogHostContext } from "./capability-catalog-context.types.js";
 import type { PluginCapabilityCatalog } from "./capability-catalog.types.js";
 import { unwrapDefaultModuleExport } from "./module-export.js";
-import { wrapCurrentPluginInstance } from "./plugin-instance-scope.js";
+import { getPluginValueInstance, wrapCurrentPluginInstance } from "./plugin-instance-scope.js";
 
 export const capabilityCatalogFamilies = [
   "speechProviders",
@@ -38,6 +38,8 @@ export function resolvePluginCapabilityCatalog(
   context: PluginCapabilityCatalogHostContext,
 ): PluginCapabilityCatalog {
   const entry = unwrapDefaultModuleExport(module);
+  const instance =
+    typeof entry === "function" || isRecord(entry) ? getPluginValueInstance(entry) : undefined;
   const catalog = typeof entry === "function" ? entry(context) : entry;
   if (isPromiseLike(catalog)) {
     void Promise.resolve(catalog).catch(() => {});
@@ -51,6 +53,7 @@ export function resolvePluginCapabilityCatalog(
     realtimeTranscriptionProviders: "createSession",
     realtimeVoiceProviders: "createBridge",
   } as const;
+  const registrations: Record<string, unknown> = {};
   for (const [family, providers] of Object.entries(catalog)) {
     if (!Object.hasOwn(methods, family)) {
       throw new Error(`unknown capability catalog family: ${family}`);
@@ -71,8 +74,15 @@ export function resolvePluginCapabilityCatalog(
     ) {
       throw new Error(`${family} must contain complete provider descriptors`);
     }
+    if (instance) {
+      const bound: unknown[] = [];
+      for (let index = 0; index < providers.length; index++) {
+        bound.push(instance.wrap(providers[index]));
+      }
+      registrations[family] = bound;
+    }
   }
-  // Retain the objects so hidden methods and registrar-bound identity survive.
+  // Native array iteration must yield bound descriptors, including static exports.
   // SAFETY: every family and required descriptor field/method was checked above.
-  return catalog as PluginCapabilityCatalog;
+  return (instance ? registrations : catalog) as PluginCapabilityCatalog;
 }

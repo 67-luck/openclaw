@@ -486,3 +486,45 @@ it.each([false, true])(
     );
   },
 );
+
+it("fences frozen static catalog descriptors without losing their receiver or hidden fields", async () => {
+  await withFactoryPlugin(
+    'throw new Error("catalog inspection must not load full runtime");',
+    async (options, root) => {
+      fs.writeFileSync(
+        path.join(root, "plugin", "catalog.cjs"),
+        `class Provider {
+          #configured = true;
+          id = "factory-owner";
+          label = "Catalog owner";
+          isConfigured() { return this.#configured; }
+          synthesize() { throw new Error("inspection cannot synthesize"); }
+        }
+        const provider = new Provider();
+        Object.defineProperty(provider, Symbol.for("fixture.capability-context"), { value: "hidden" });
+        const providers = [Object.freeze(provider)];
+        Object.defineProperty(providers, "map", { value: () => providers });
+        module.exports = Object.freeze({ speechProviders: Object.freeze(providers) });`,
+      );
+      const cache = createPluginCache();
+      const context = { cfg: {}, providerConfig: {}, timeoutMs: 1000 };
+      try {
+        const registry = withPluginCache(cache, () =>
+          loadOpenClawPlugins({
+            ...options,
+            cache: false,
+            capabilityCatalog: { family: "speechProviders", context: createContext() },
+          }),
+        );
+        const provider = registry.speechProviders[0]!.provider;
+        expect(provider.isConfigured(context)).toBe(true);
+        expect(Reflect.get(provider, contextSymbol)).toBe("hidden");
+        await retirePluginCache(cache);
+        expect(() => provider.isConfigured(context)).toThrow(/reloaded|disabled|retir/);
+      } finally {
+        await retirePluginCache(cache);
+      }
+    },
+    { capabilityCatalogEntry: "./catalog.cjs", contracts: { speechProviders: ["factory-owner"] } },
+  );
+});
