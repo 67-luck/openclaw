@@ -170,6 +170,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         // A heartbeat may consume only its prepared generic selection, never
         // dedicated reminders or arrivals that were not part of this turn.
         events: context.isHeartbeat ? (eventContext?.events ?? []) : undefined,
+        deferredEventIds: context.isHeartbeat ? eventContext?.deferredEventIds : undefined,
       });
       if (eventsBlock) {
         drainedSystemEventBlocks.push(eventsBlock);
@@ -216,8 +217,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
           sessionId,
           isFirstTurnInSession,
           workspaceDir: context.skillsWorkspaceDir,
-          executionWorkspaceDir:
-            sessionEntry?.worktree?.canonicalWorkspaceDir ?? context.workspaceDir,
+          executionWorkspaceDir: context.workspaceDir,
           cfg,
           execOverrides: params.execOverrides,
           skillFilter: opts?.skillFilter,

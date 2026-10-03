@@ -283,7 +283,6 @@ async function runLegacyStateHealth(ctx: DoctorHealthFlowContext): Promise<void>
         detected: legacyState,
         config: ctx.cfg,
         ...(doctorOnlyStateMigrations ? { doctorOnlyStateMigrations: true } : {}),
-        recoverCorruptTargetStore: ctx.options.repair === true || ctx.options.yes === true,
         legacySessionSurfaces,
       });
       recordDoctorHealthWarnings(
@@ -529,7 +528,7 @@ async function runDoctorHealthContributionList(
   if (deferred.length > 0) {
     const { note } = await loadNoteModule();
     note(
-      `Omitted during update: ${deferred.map((contribution) => contribution.option.label).join(", ")}.\nRun \`openclaw doctor\` after the update to inspect these diagnostics.`,
+      `Omitted during update: ${deferred.map((contribution) => contribution.label).join(", ")}.\nRun \`openclaw doctor\` after the update to inspect these diagnostics.`,
       "Update Doctor scope",
     );
   }
@@ -563,7 +562,7 @@ async function runDoctorHealthContributionList(
           (contribution.healthCheckIds.length
             ? contribution.healthCheckIds
             : [`core/doctor/${contribution.id.replace(/^doctor:/, "")}`]
-          ).map((id) => ({ id, label: contribution.option.label })),
+          ).map((id) => ({ id, label: contribution.label })),
         )
       ) {
         continue;

@@ -35,7 +35,7 @@ import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/age
 import { waitForChatAbortTerminalPersistence } from "../chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
-import { resolveSessionKeyForRun } from "../server-session-key.js";
+import { resolveSessionForRun } from "../server-session-key.js";
 import { persistGatewaySessionLifecycleEvent } from "../session-lifecycle-state.js";
 import {
   resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId,
@@ -49,7 +49,7 @@ import {
   resolveStoredSessionOwnerAgentId,
 } from "../session-store-key.js";
 import { loadSessionEntry } from "../session-utils.js";
-import { resolveWorkerInferenceTarget } from "../worker-environments/inference-control-internal.js";
+import { getWorkerInferenceSessionControl } from "../worker-environments/inference-control-internal.js";
 import { resolveChatAbortRequester } from "./chat-abort-authorization.js";
 import { handleChatAbortRequestWithLifecycle } from "./chat-abort-handler.js";
 import {
@@ -172,7 +172,9 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const requestedParamAgentId = normalizeOptionalString(p.agentId);
     const clearQueued = p.clearQueued === true;
     const workerRunTarget = requestedRunId
-      ? resolveWorkerInferenceTarget(context.workerEnvironmentService, requestedRunId)
+      ? getWorkerInferenceSessionControl(
+          context.workerEnvironmentService,
+        )?.resolveSessionTargetForRunId(requestedRunId)
       : undefined;
     const embeddedRun = requestedRunId
       ? resolveActiveEmbeddedRunOwnerByRunId(requestedRunId)
@@ -231,10 +233,10 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       scopedRequestedKey ??
       scopedActiveRunSessionKey ??
       (requestedRunId
-        ? resolveSessionKeyForRun(requestedRunId, {
+        ? resolveSessionForRun(requestedRunId, {
             agentId: requestedRunAgentId,
             projection: getSessionRowProjection(context),
-          })
+          })?.sessionKey
         : undefined) ??
       workerRunTarget?.sessionKey ??
       embeddedRunSessionKey;

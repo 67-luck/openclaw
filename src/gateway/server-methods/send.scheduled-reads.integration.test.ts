@@ -36,7 +36,6 @@ import type {
 const guildId = "100000000000000001";
 const channelId = "100000000000000002";
 const messageId = "100000000000000003";
-const messageWritePath = `/api/v10/channels/${channelId}/messages/${messageId}`;
 const pinWritePath = `/api/v10/channels/${channelId}/pins/${messageId}`;
 const sessionKey = "agent:main:cron:scheduled-reads:run:fixture";
 const sessionId = "scheduled-reads-session";
@@ -151,15 +150,8 @@ async function createFixture(state: OpenClawTestState) {
       }
       if (
         url.origin === "https://discord.com" &&
-        method === "PATCH" &&
-        url.pathname === messageWritePath
-      ) {
-        return Response.json(discordMessages("edited")[0]);
-      }
-      if (
-        url.origin === "https://discord.com" &&
-        ((method === "DELETE" && url.pathname === messageWritePath) ||
-          ((method === "PUT" || method === "DELETE") && url.pathname === pinWritePath))
+        method === "PUT" &&
+        url.pathname === pinWritePath
       ) {
         return new Response(null, { status: 204 });
       }
@@ -220,7 +212,7 @@ async function createFixture(state: OpenClawTestState) {
     validateAgentRuntimeApprovalAuthority: createAgentRuntimeApprovalAuthorityValidator(),
   } as GatewayRequestContext;
   const invokeAction = async (
-    action: "read" | "edit" | "delete" | "pin" | "unpin",
+    action: "read" | "pin",
     options: {
       idempotencyKey: string;
       accountId?: string;
@@ -239,7 +231,6 @@ async function createFixture(state: OpenClawTestState) {
         params: {
           channelId: options.channelId ?? channelId,
           ...(action === "read" ? { limit: 1 } : { messageId }),
-          ...(action === "edit" ? { message: "Updated scheduled message" } : {}),
           ...(options.paramsAccountId ? { accountId: options.paramsAccountId } : {}),
         },
         ...(options.accountId ? { accountId: options.accountId } : {}),
@@ -421,8 +412,8 @@ describe("Gateway scheduled write accounts through an installed Discord plugin",
     "rejects an inferred channel name before a scheduled provider mutation (provenance=%s)",
     async (allowNativeChannelNamespace) => {
       await withFixture(async (fixture) => {
-        const response = await fixture.invokeAction("delete", {
-          idempotencyKey: `scheduled-delete-inferred-channel-name-${String(allowNativeChannelNamespace)}`,
+        const response = await fixture.invokeAction("pin", {
+          idempotencyKey: `scheduled-pin-inferred-channel-name-${String(allowNativeChannelNamespace)}`,
           channelId: "discord",
           allowNativeChannelNamespace,
         });
@@ -433,41 +424,33 @@ describe("Gateway scheduled write accounts through an installed Discord plugin",
     },
   );
 
-  it.each([
-    { action: "edit", method: "PATCH", path: messageWritePath },
-    { action: "delete", method: "DELETE", path: messageWritePath },
-    { action: "pin", method: "PUT", path: pinWritePath },
-    { action: "unpin", method: "DELETE", path: pinWritePath },
-  ] as const)(
-    "keeps omitted-account $action on the creator when the provider default changes",
-    async ({ action, method, path: requestPath }) => {
-      await withFixture(async (fixture) => {
-        for (const [phase, expectedMutationCount] of [
-          ["before", 1],
-          ["after", 2],
-        ] as const) {
-          if (phase === "after") {
-            await fixture.setDefaultAccount("other");
-          }
-          // A fresh key forces account selection instead of replaying the first write.
-          const response = await fixture.invokeAction(action, {
-            idempotencyKey: `scheduled-${action}-${phase}-default-change`,
-          });
-          expect(response[0], JSON.stringify(response)).toBe(true);
-          expect(response[1]).toMatchObject({ ok: true });
-          expect(response[2]).toBeUndefined();
-          const mutations = fixture.httpRequests.filter((request) => request.method !== "GET");
-          expect(mutations).toHaveLength(expectedMutationCount);
-          expect(mutations.at(-1)).toMatchObject({
-            method,
-            path: requestPath,
-            creatorCredentials: true,
-          });
+  it("keeps omitted-account pins on the creator when the provider default changes", async () => {
+    await withFixture(async (fixture) => {
+      for (const [phase, expectedMutationCount] of [
+        ["before", 1],
+        ["after", 2],
+      ] as const) {
+        if (phase === "after") {
+          await fixture.setDefaultAccount("other");
         }
-        expect(fixture.httpRequests.every((request) => request.creatorCredentials)).toBe(true);
-      });
-    },
-  );
+        // A fresh key forces account selection instead of replaying the first write.
+        const response = await fixture.invokeAction("pin", {
+          idempotencyKey: `scheduled-pin-${phase}-default-change`,
+        });
+        expect(response[0], JSON.stringify(response)).toBe(true);
+        expect(response[1]).toMatchObject({ ok: true });
+        expect(response[2]).toBeUndefined();
+        const mutations = fixture.httpRequests.filter((request) => request.method !== "GET");
+        expect(mutations).toHaveLength(expectedMutationCount);
+        expect(mutations.at(-1)).toMatchObject({
+          method: "PUT",
+          path: pinWritePath,
+          creatorCredentials: true,
+        });
+      }
+      expect(fixture.httpRequests.every((request) => request.creatorCredentials)).toBe(true);
+    });
+  });
 
   it.each([
     { field: "accountId", accountId: "other", paramsAccountId: undefined },

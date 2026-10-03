@@ -1,5 +1,5 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
+import type { AnyChannelPlugin as ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import type { ChannelDirectoryEntryKind, ChannelId } from "../../channels/plugins/types.public.js";
 import { getRuntimeVisibleChannelPlugin } from "./runtime-visible-channels.js";
 import { stripProviderTargetPrefixes, stripTargetPrefixes } from "./target-resolution-results.js";

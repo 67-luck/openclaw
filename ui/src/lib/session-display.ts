@@ -6,6 +6,7 @@ import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { isCronSessionDisplayKey } from "../../../src/shared/session-list-visibility.ts";
 import type { GatewaySessionRow } from "../api/types.ts";
 import { t } from "../i18n/index.ts";
+import { pathDisplayName } from "./path-display.ts";
 
 const CHANNEL_LABELS = new Map<string, string>([
   ["imessage", "iMessage"],
@@ -75,11 +76,6 @@ export type SessionWorkContext =
   | { kind: "project"; name: string; path: string; cwd?: string; branch?: string }
   | { kind: "workspace"; name: string; path: string };
 
-/** Basename shown for a repository path on every Control UI surface. */
-export function repoName(repoRoot: string): string {
-  return repoRoot.split(/[\\/]/).findLast(Boolean) ?? repoRoot;
-}
-
 export function resolveSessionWorkContext(
   row: SessionWorktreeDisplayRow,
 ): SessionWorkContext | undefined {
@@ -100,7 +96,7 @@ export function resolveSessionWorkContext(
       normalizeOptionalString(row.worktree?.branch);
     return {
       kind: "project",
-      name: repoName(repoRoot),
+      name: pathDisplayName(repoRoot),
       // Project grouping uses the source repository, not this task checkout.
       path: repoRoot,
       cwd: row.repository ? repositoryDirectory : normalizeOptionalString(row.spawnedCwd),
@@ -117,7 +113,7 @@ export function resolveSessionWorkContext(
     ? normalizeOptionalString(row.execCwd)
     : (normalizeOptionalString(row.spawnedWorkspaceDir) ?? normalizeOptionalString(row.spawnedCwd));
   return workspacePath
-    ? { kind: "workspace", name: repoName(workspacePath), path: workspacePath }
+    ? { kind: "workspace", name: pathDisplayName(workspacePath), path: workspacePath }
     : undefined;
 }
 
@@ -138,8 +134,8 @@ export function resolveSessionWorkSubtitle(row: SessionWorktreeDisplayRow): stri
       : rawBranch;
   const checkout = repoRoot
     ? branch
-      ? `${repoName(repoRoot)} ⎇ ${branch}`
-      : repoName(repoRoot)
+      ? `${pathDisplayName(repoRoot)} ⎇ ${branch}`
+      : pathDisplayName(repoRoot)
     : undefined;
   if (checkout && node) {
     // Checkout first: it names the work; the node is routing detail.
@@ -167,10 +163,6 @@ type SessionDisplayRow = {
   accountId?: string;
 } & SessionWorktreeDisplayRow;
 
-type SessionDisplayOptions = {
-  includeSubagentPrefix?: boolean;
-};
-
 export function formatSessionChannelLabel(channel: string): string {
   return CHANNEL_LABELS.get(channel) ?? channel.charAt(0).toUpperCase() + channel.slice(1);
 }
@@ -184,7 +176,7 @@ function parseSessionKey(key: string): SessionKeyInfo {
 
   if (key.includes(":subagent:")) {
     const prefix = t("sessionsView.subagentPrefix");
-    return { kind: "subagent", prefix, fallbackName: prefix };
+    return { kind: "subagent", prefix, fallbackName: prefix.replace(/:\s*$/u, "") };
   }
 
   // Automation (cron) job. Session keys keep the `cron:` prefix; only the
@@ -254,11 +246,7 @@ function parseSessionKey(key: string): SessionKeyInfo {
   return { prefix: "", fallbackName: key };
 }
 
-export function resolveSessionDisplayName(
-  key: string,
-  row?: SessionDisplayRow,
-  options: SessionDisplayOptions = {},
-): string {
+export function resolveSessionDisplayName(key: string, row?: SessionDisplayRow): string {
   const label = normalizeOptionalString(row?.label);
   const displayName = normalizeOptionalString(row?.displayName);
   const derivedTitle = normalizeOptionalString(row?.derivedTitle);
@@ -279,7 +267,7 @@ export function resolveSessionDisplayName(
         ? rawName.replace(/^cron(\s+job)?:\s*/i, "").trim() || rawName
         : rawName;
     const prefixPattern = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*`, "i");
-    if (kind === "subagent" && options.includeSubagentPrefix === false) {
+    if (kind === "subagent") {
       return name.replace(prefixPattern, "").trim() || fallbackName;
     }
     return prefixPattern.test(name) ? name : `${prefix} ${name}`;

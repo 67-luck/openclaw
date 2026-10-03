@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
-import { resolveHeartbeatDeliveryTarget } from "./targets.js";
+import { resolveHeartbeatDeliveryTargetWithSessionRoute } from "./targets.js";
 import { createTestChannelPlugin, createTargetsTestRegistry } from "./targets.test-helpers.js";
 
 const mocks = vi.hoisted(() => ({
@@ -49,7 +49,7 @@ async function resolveNamespaceHeartbeat(
 ) {
   setActivePluginRegistry(createTargetsTestRegistry([plugin]));
   mocks.resolveOutboundChannelPlugin.mockReturnValue(plugin);
-  return await resolveHeartbeatDeliveryTarget({
+  return await resolveHeartbeatDeliveryTargetWithSessionRoute({
     cfg: { channels: { alpha: {} } } as OpenClawConfig,
     agentId: "main",
     heartbeat: { target, to: target, directPolicy },

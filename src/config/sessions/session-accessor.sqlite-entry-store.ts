@@ -20,6 +20,7 @@ import {
   publishSessionEntryCacheInvalidation,
   trackSessionEntryCacheWrite,
 } from "./session-accessor.sqlite-entry-cache.js";
+import { sessionSharingEntriesEqual } from "./session-accessor.sqlite-entry-cache.types.js";
 import {
   sqliteSessionEntriesEqual,
   type SqliteLifecycleTargetSnapshot,
@@ -150,7 +151,8 @@ export function readUnchangedLifecycleTargetSnapshot(
       .where("session_key", "in", sqliteStringSet(persisted.lookupKeys))
       .orderBy("session_key", "asc"),
   ).rows;
-  return isDeepStrictEqual(rows, persisted.rows) ? prepared : undefined;
+  // Worker transport reconstructs SQLite's null-prototype rows as ordinary objects.
+  return isDeepStrictEqual(rows, persisted.rows, { skipPrototype: true }) ? prepared : undefined;
 }
 
 export function resolveLifecyclePrimaryEntry(
@@ -645,7 +647,18 @@ export function writeSessionEntry(
     {
       sessionKey,
       entry: normalizedEntry,
+      sharingUnchanged:
+        !options.allowStoredAliases &&
+        sessionSharingEntriesEqual(canonicalPreviousEntry, {
+          ...normalizedEntry,
+          owner: canonicalPreviousEntry?.owner,
+        }),
       entryJson: persisted.entryJson,
+      sideMetadata: structuredClone({
+        owner: canonicalPreviousEntry?.owner,
+        participants: canonicalPreviousEntry?.participants,
+        participantCount: canonicalPreviousEntry?.participantCount,
+      }),
       previousEntry: canonicalPreviousEntry,
       ...(!options.allowStoredAliases
         ? {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
-import { resolveHeartbeatDeliveryTarget } from "./targets.js";
+import { resolveHeartbeatDeliveryTargetWithSessionRoute } from "./targets.js";
 import { createTestChannelPlugin, createTargetsTestRegistry } from "./targets.test-helpers.js";
 
 const mocks = vi.hoisted(() => ({
@@ -48,7 +48,7 @@ describe("heartbeat target policy", () => {
     setActivePluginRegistry(createTargetsTestRegistry([plugin]));
     mocks.resolveOutboundChannelPlugin.mockReturnValue(plugin);
 
-    const resolved = await resolveHeartbeatDeliveryTarget({
+    const resolved = await resolveHeartbeatDeliveryTargetWithSessionRoute({
       cfg: {},
       agentId: "main",
       heartbeat: {
@@ -73,7 +73,7 @@ describe("heartbeat target policy", () => {
     setActivePluginRegistry(createTargetsTestRegistry([plugin]));
     mocks.resolveOutboundChannelPlugin.mockReturnValue(plugin);
 
-    const resolved = await resolveHeartbeatDeliveryTarget({
+    const resolved = await resolveHeartbeatDeliveryTargetWithSessionRoute({
       cfg: {},
       agentId: "main",
       entry: {

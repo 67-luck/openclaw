@@ -36,9 +36,9 @@ import {
 import { runWithSessionEntryCreationPublication } from "../config/sessions/session-accessor.sqlite-entry-cache.js";
 import type { SessionEntryCreationOperation } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import { createSessionDiffBaselineCaptureClaim } from "../config/sessions/session-diff-baseline-capture.js";
+import { buildSessionParentLink } from "../config/sessions/session-entry-lineage.js";
 import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
 import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
-import { inheritSessionSelection } from "../config/sessions/session-entry-selection.js";
 import {
   createInternalHookEvent,
   hasInternalHookListeners,
@@ -63,7 +63,6 @@ import {
   isSessionWorkAdmissionActive,
   runExclusiveSessionLifecycleMutation,
 } from "../sessions/session-lifecycle-admission.js";
-import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "./operator-role-policy.js";
 import { ADMIN_SCOPE } from "./operator-scopes.js";
@@ -78,6 +77,7 @@ import {
 import { existingSessionSelectionWouldChange } from "./session-create-existing-selection.js";
 import { buildForkedGatewaySessionEntry } from "./session-create-fork-entry.js";
 import {
+  inheritSessionCreateParentFields,
   prepareSessionCreateParent,
   resolveSessionCreateInheritance,
   resolveSessionCreateSpawnPolicy,
@@ -107,6 +107,7 @@ import {
   resolveSessionCreateChildIntentError,
   rollbackGatewaySessionPreparation,
 } from "./session-lifecycle-preparation.js";
+import { loadSessionLifecycleRuntime } from "./session-lifecycle-runtime-loader.js";
 import { resolvePluginSessionOwnershipError } from "./session-plugin-ownership.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
 import { invalidSessionRequest, sessionCreationFailure } from "./session-request-error.js";
@@ -116,10 +117,6 @@ import {
 } from "./session-utils.js";
 import { resolveSessionWorkerPlacementContext } from "./session-worker-placement-context.js";
 import { projectSessionsPatchEntry } from "./sessions-patch.js";
-
-const loadSessionLifecycleRuntime = createLazyRuntimeModule(
-  () => import("./server-methods/sessions.runtime.js"),
-);
 
 export async function createGatewaySession(
   params: CreateGatewaySessionParams,
@@ -961,22 +958,13 @@ export async function createGatewaySession(
         };
         const explicitParentSessionKey =
           canonicalParentSessionKey ?? normalizeOptionalString(initializedEntry.parentSessionKey);
-        const storedParentSessionKey = explicitParentSessionKey ?? dashboardParentSessionKey;
-        const inheritedSelection =
-          !canonicalParentSessionKey || catalogModel || normalizeOptionalString(params.model)
-            ? {}
-            : inheritSessionSelection(currentParentSessionEntry);
-        if (requestedToolOverrides) {
-          delete inheritedSelection.toolOverrides;
-        }
-        if (requestedFastMode !== undefined) {
-          // The create-time choice belongs to the new session; parent inheritance must not
-          // replace it after the canonical patch has validated and stored it.
-          delete inheritedSelection.fastMode;
-        }
         const entry: SessionEntry = {
           ...initializedEntry,
-          ...inheritedSelection,
+          ...inheritSessionCreateParentFields({
+            parent: currentParentSessionEntry,
+            existing: existingEntry,
+            overrides: params,
+          }),
           // Main groups dashboard roots; it must not supply their reply-time model.
           ...(createdNewEntry &&
           dashboardParentSessionKey &&
@@ -984,10 +972,13 @@ export async function createGatewaySession(
           !initializedEntry.modelOverride
             ? { modelOverrideSource: "default" as const }
             : {}),
-          ...(storedParentSessionKey ? { parentSessionKey: storedParentSessionKey } : {}),
-          ...(canonicalParentSessionKey && currentParentSessionEntry?.sessionId
-            ? { parentSessionId: currentParentSessionEntry.sessionId }
-            : {}),
+          ...buildSessionParentLink({
+            parentSessionKey: explicitParentSessionKey ?? dashboardParentSessionKey,
+            parent: canonicalParentSessionKey ? currentParentSessionEntry : undefined,
+            captureSpawnAuthority:
+              createdNewEntry && params.creation?.via === "spawn" && Boolean(spawnToolPolicy),
+            requesterSenderIsOwner: params.creation?.requesterSenderIsOwner,
+          }),
         };
         let validateAccountModel: (() => ErrorShape | undefined) | undefined;
         if (params.fork !== true) {
@@ -1108,7 +1099,7 @@ export async function createGatewaySession(
             forkResult.transcript,
             {
               sessionKey: forkParentSessionKey,
-              sessionId: currentParentSessionEntry.sessionId,
+              entry: currentParentSessionEntry,
             },
             existingEntry,
           ),

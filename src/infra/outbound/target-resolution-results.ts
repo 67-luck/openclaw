@@ -1,5 +1,6 @@
-import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
+import type { AnyChannelPlugin as ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import type { ChannelDirectoryEntryKind, ChannelId } from "../../channels/plugins/types.public.js";
+import { stripNormalizedTargetProviderPrefixes } from "./target-normalization.js";
 
 /** Canonical outbound target produced by plugin, directory, or normalized fallback resolution. */
 export type ResolvedMessagingTarget = {
@@ -18,16 +19,7 @@ export function stripProviderTargetPrefixes(
   const providerPrefixes = [channel, plugin?.id, ...(plugin?.messaging?.targetPrefixes ?? [])]
     .map((prefix) => prefix?.trim().toLowerCase() ?? "")
     .filter(Boolean);
-  let target = value.trim();
-  while (target) {
-    const lowered = target.toLowerCase();
-    const prefix = providerPrefixes.find((candidate) => lowered.startsWith(`${candidate}:`));
-    if (!prefix) {
-      break;
-    }
-    target = target.slice(prefix.length + 1).trim();
-  }
-  return target;
+  return stripNormalizedTargetProviderPrefixes(value, providerPrefixes);
 }
 
 export function stripTargetPrefixes(

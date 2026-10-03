@@ -2,11 +2,18 @@ import type {
   SandboxRegistryInsert,
   SandboxRegistryWrite,
 } from "../agents/sandbox/registry.kernel.js";
-import type { SubagentRegistryWrite } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
+import type {
+  SubagentRegistryWrite,
+  SubagentRegistryWriteReceipt,
+} from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import type {
   WorkspaceAttestation,
   WorkspaceAttestationInput,
 } from "../agents/workspace-state-store.kernel.js";
+import type {
+  WorkspaceStateGuard,
+  WorkspaceStateWorkerOperations,
+} from "../agents/workspace-state-store.worker-contract.js";
 import type { ClawInstallSchemaVersionRow } from "../claws/provenance-runtime-read.kernel.js";
 import type { ConfigHealthPatch } from "../config/io.health-state.kernel.js";
 import type {
@@ -25,7 +32,6 @@ import type {
 } from "../gateway/session-group-catalog.types.js";
 import type * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import type { DeviceIdentity } from "../infra/device-identity-store.js";
-import type { PreparedSqliteAuditRecord } from "../infra/sqlite-audit-record.kernel.js";
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
 import type {
   SqliteWalPeriodicRequest,
@@ -66,6 +72,7 @@ export type OpenClawStateWorkerOpenPreparation = { type: "deviceIdentity"; ident
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
 export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
+  WorkspaceStateWorkerOperations &
   UpdateRunReconciliationOperations &
   UpdateRunWriteOperations &
   CaptureWorkerOperations &
@@ -83,7 +90,7 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
     "sandboxRegistry.insertIfMissing": { input: SandboxRegistryInsert; output: void };
     "sandboxRegistry.write": { input: SandboxRegistryWrite; output: void };
     "workspace.replaceAttestation": {
-      input: WorkspaceAttestationInput;
+      input: WorkspaceAttestationInput & Pick<WorkspaceStateGuard, "recoveryHoldPredicate">;
       output: WorkspaceAttestation;
     };
     "updateRuns.reconcileInterrupted": {
@@ -149,7 +156,10 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
       input: SecretStoreConfigRefWrite;
       output: { name: string };
     };
-    "subagents.persistChanges": { input: SubagentRegistryWrite; output: { writeId: string } };
+    "subagents.persistChanges": {
+      input: SubagentRegistryWrite;
+      output: SubagentRegistryWriteReceipt;
+    };
     "sessionUpstream.listWatched": { input: undefined; output: SessionUpstreamLink[] };
     "backup.recordOutcome": { input: PreparedBackupRunRecord; output: void };
     "sessionGroups.mutate": {
@@ -172,14 +182,6 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
         expected: ConfigHealthEntryBasis | null | undefined;
         updatedAtMs: number;
       };
-      output: boolean;
-    };
-    "diagnostic.register": {
-      input: { scope: string; maxEntries: number; record: PreparedSqliteAuditRecord };
-      output: void;
-    };
-    "config.snapshot.upsert": {
-      input: { record: PreparedSqliteAuditRecord; expectedPayloadJson?: string | null };
       output: boolean;
     };
   };
