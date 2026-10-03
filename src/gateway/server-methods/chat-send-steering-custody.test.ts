@@ -843,9 +843,8 @@ describe("steering input custody", () => {
             receipt: recorder.getAdmissionReceipt(),
             sourceTerminal: fixture.context.dedupe.get(`chat:${fixture.params.idempotencyKey}`),
             sourceErrors,
-            pendingInputs: listSessionPendingInputs(fixture.scope),
+            pendingInputs: await listSessionPendingInputs(fixture.scope),
             sourceOwners: rpcSourceTesting.size,
-
           }).toMatchObject({
             ack: originalAck,
             freshDispatchCalls: 0,
@@ -980,8 +979,7 @@ describe("steering input custody", () => {
           );
           expect(loadTranscriptEventsSync(fixture.scope)).toEqual(transcript);
           expect(rpcSourceTesting.size).toBe(0);
-          expect(listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
-
+          expect(await listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
         }
       } catch (error) {
         failures.add(error);
