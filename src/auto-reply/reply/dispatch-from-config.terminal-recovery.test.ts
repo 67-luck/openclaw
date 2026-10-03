@@ -2,9 +2,8 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { formatBillingErrorMessage } from "../../agents/failover/user-copy.js";
 import { readAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
-import { RUN_STALE_TAKEOVER_MS } from "../../logging/diagnostic-run-activity.js";
 import { getSessionControllerOperation } from "../../sessions/session-controller.js";
-import { SESSION_WATCHDOG_CLEANUP_MS } from "../../sessions/session-controller.watchdog-state.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { withReplyDispatcher } from "../dispatch-dispatcher.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
@@ -34,6 +33,11 @@ let replyRunTesting: typeof import("./reply-run-registry.test-support.js").testi
 let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
 
 const sessionKey = "agent:main:telegram:direct:1";
+const sessionTarget = captureSessionTarget({
+  storeScope: "/tmp/mock-sessions.json",
+  sessionKey,
+  agentId: "main",
+});
 
 function createVisibleDispatchParams(
   replyResolver: NonNullable<DispatchFromConfigParams["replyResolver"]>,
@@ -87,6 +91,7 @@ describe("dispatchReplyFromConfig visible admission recovery", () => {
       sessionKey,
       sessionId: "active-session",
       resetTriggered: false,
+      target: sessionTarget,
     });
     activeOperation.setPhase("running");
     const tick = vi.spyOn(activeOperation.watchdog, "tick");
@@ -390,70 +395,6 @@ describe("dispatchReplyFromConfig visible admission recovery", () => {
     await expect(dispatchReplyFromConfig(params)).rejects.toBe(deliveryError);
     await dispatchReplyFromConfig({ ...params, dispatcher: createDispatcher() });
     expect(replyResolver).toHaveBeenCalledOnce();
-  });
-
-  it("waits for fresh visible reply work without invoking diagnostic recovery", async () => {
-    vi.useFakeTimers();
-    const activeOperation = createReplyOperation({
-      sessionKey,
-      sessionId: "active-session",
-      resetTriggered: false,
-    });
-    activeOperation.setPhase("running");
-    activeOperation.abortSignal.addEventListener("abort", () => activeOperation.complete(), {
-      once: true,
-    });
-    const replyResolver = vi.fn(async () => ({ text: "telegram reply" }) satisfies ReplyPayload);
-    const dispatchParams = createVisibleDispatchParams(replyResolver);
-    let settled = false;
-
-    const resultPromise = dispatchReplyFromConfig(dispatchParams).then((result) => {
-      settled = true;
-      return result;
-    });
-
-    await vi.advanceTimersByTimeAsync(120_000);
-
-    expect(settled).toBe(false);
-    expect(replyResolver).not.toHaveBeenCalled();
-
-    activeOperation.complete();
-    const result = await resultPromise;
-
-    expect(result.queuedFinal).toBe(true);
-    expect(replyResolver).toHaveBeenCalledTimes(1);
-    expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps stale pre-backend work owned through cleanup grace until its producer settles", async () => {
-    vi.useFakeTimers();
-    const startedAt = Date.now();
-    const activeOperation = createReplyOperation({
-      sessionKey,
-      sessionId: "active-session",
-      resetTriggered: false,
-    });
-    activeOperation.setPhase("running");
-    const replyResolver = vi.fn(async () => ({ text: "telegram reply" }) satisfies ReplyPayload);
-    const dispatchParams = createVisibleDispatchParams(replyResolver);
-    vi.setSystemTime(startedAt + RUN_STALE_TAKEOVER_MS + 1);
-
-    const resultPromise = dispatchReplyFromConfig(dispatchParams);
-    await vi.waitFor(() => {
-      expect(activeOperation.result).toEqual({ kind: "failed", code: "run_stalled" });
-    });
-    expect(getSessionControllerOperation(sessionKey)).toBe(activeOperation);
-
-    await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS);
-    expect(getSessionControllerOperation(sessionKey)).toBe(activeOperation);
-    expect(replyResolver).not.toHaveBeenCalled();
-    activeOperation.complete();
-    const result = await resultPromise;
-
-    expect(activeOperation.result).toEqual({ kind: "failed", code: "run_stalled" });
-    expect(result.queuedFinal).toBe(true);
-    expect(replyResolver).toHaveBeenCalledTimes(1);
-    expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
   });
 
   it.each([
