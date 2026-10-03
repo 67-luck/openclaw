@@ -370,7 +370,6 @@ describe("WebChat message tool internal source reply", () => {
     });
     const { replyPayloads: payloads } = await buildReplyPayloads({
       payloads: embeddedPayloads,
-      isHeartbeat: false,
       didLogHeartbeatStrip: false,
       blockStreamingEnabled: false,
       blockReplyPipeline: null,

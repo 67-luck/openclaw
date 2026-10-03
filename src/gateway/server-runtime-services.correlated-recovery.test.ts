@@ -42,9 +42,6 @@ import { activateGatewayScheduledServices } from "./server-runtime-services.js";
 
 const { resume } = vi.hoisted(() => ({ resume: vi.fn() }));
 vi.mock("../agents/subagents/registry/subagent-registry.js", () => ({ resumeSubagentRun: resume }));
-vi.mock("../infra/heartbeat-runner-scheduler.js", () => ({
-  startHeartbeatRunner: () => ({ stop() {}, updateConfig() {} }),
-}));
 vi.mock("../sessions/session-upstream-monitor.js", () => ({
   startSessionUpstreamMonitor: () => ({ stop() {} }),
 }));
@@ -71,7 +68,6 @@ describe("registered correlated completion recovery custody", () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       resetGatewayWorkAdmission();
       const cfg = {
-        agents: { defaults: { heartbeat: { every: "0m" } } },
         skills: { workshop: { autonomous: { mode: "off" as const } } },
       };
       setRuntimeConfigSnapshot(cfg);
@@ -296,7 +292,7 @@ describe("registered correlated completion recovery custody", () => {
             expect(await restoreSubagentRunsFromDisk({ runs: subagentRuns, mergeOnly: true })).toBe(
               1,
             );
-            services.heartbeatRunner.stop();
+            await services.stopScheduledServices();
             services = startServices();
             await clock.advanceBy(1_250);
             await services.stopDeliveryRecovery();
@@ -329,7 +325,7 @@ describe("registered correlated completion recovery custody", () => {
             vi.unstubAllEnvs();
             // Reconstitute the live owner through canonical restoration, without a receipt closure.
             expect(await restoreSubagentRunsFromDisk({ runs: subagentRuns })).toBe(1);
-            services.heartbeatRunner.stop();
+            await services.stopScheduledServices();
             services = startServices();
             await clock.advanceBy(1_250);
             await services.stopDeliveryRecovery();
@@ -379,7 +375,7 @@ describe("registered correlated completion recovery custody", () => {
           }
         } finally {
           await services.stopDeliveryRecovery();
-          services.heartbeatRunner.stop();
+          await services.stopScheduledServices();
           await scheduler.stop();
           subagentRuns.delete(child.runId);
           vi.unstubAllEnvs();
