@@ -2,6 +2,7 @@ import fsSync from "node:fs";
 /** Stable CLI acquisition uses the same npm and selection owners as plugin maintenance. */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { sha256FileSync } from "@openclaw/fs-safe/durability";
 import { extractArchive } from "openclaw/plugin-sdk/archive";
 import {
   installFromValidatedNpmSpecArchive,
@@ -245,7 +246,15 @@ function captureRuntimeFiles(root: string): () => void {
     if (process.getuid && stat.uid !== BigInt(process.getuid())) {
       throw new Error("Codex runtime files must be owned by this user.");
     }
-    return [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs].join(":");
+    // Timestamp resolution can hide same-size writes; bind qualification to bytes and entries.
+    const content = stat.isFile()
+      ? sha256FileSync(file).digest
+      : stat.isDirectory()
+        ? JSON.stringify(fsSync.readdirSync(file).sort())
+        : fsSync.readlinkSync(file);
+    return [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs, content].join(
+      ":",
+    );
   };
   const visit = (file: string) => {
     files.set(file, identity(file));

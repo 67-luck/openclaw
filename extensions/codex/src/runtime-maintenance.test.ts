@@ -13,10 +13,8 @@ import type { probeCodexDesktopRuntime } from "./app-server/desktop-runtime-prob
 import * as probes from "./app-server/desktop-runtime-probe.js";
 import * as binaries from "./app-server/managed-binary.js";
 import * as cliUpdates from "./app-server/managed-cli-update.js";
-import {
-  createCodexRuntimeMaintenanceChecks,
-  createCodexRuntimeMaintenanceService,
-} from "./runtime-maintenance.js";
+import { createCodexRuntimeMaintenanceService } from "./runtime-maintenance-service.js";
+import { createCodexRuntimeMaintenanceChecks } from "./runtime-maintenance.js";
 
 describe("selected Codex runtime maintenance", () => {
   const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -34,7 +32,7 @@ describe("selected Codex runtime maintenance", () => {
           model: { primary: "openai/gpt-5.6-sol" },
           models: { "openai/gpt-5.6-sol": { agentRuntime: { id: "codex" } } },
         },
-        list: [{ id: "main", agentDir: path.join(root, "agent") }],
+        entries: { main: { agentDir: path.join(root, "agent") } },
       },
       plugins: {
         entries: { codex: { enabled: true, config: { computerUse: { enabled: true } } } },
@@ -83,7 +81,7 @@ describe("selected Codex runtime maintenance", () => {
   function automaticFixture() {
     vi.useFakeTimers();
     const f = fixture();
-    f.cfg.plugins!.entries!.codex!.config = { appServer: { managedCommandOrder: "package-only" } };
+    f.cfg.plugins!.entries!.codex!.config = { appServer: { homeScope: "agent" } };
     vi.spyOn(binaries, "resolveManagedCodexAppServerStartOptions").mockImplementation(
       async (start) => ({
         ...start,

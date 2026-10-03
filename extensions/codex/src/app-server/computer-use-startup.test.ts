@@ -86,6 +86,15 @@ describe.each(["service", "cache"])("createIsolatedCodexAppServerClient %s refre
       vi.spyOn(desktopPaths, "resolveMacOSDesktopCodexAppPathCandidates").mockReturnValue(
         desktopCandidates,
       );
+      vi.spyOn(
+        desktopPaths,
+        "resolveMacOSDesktopCodexAppPathCandidatesForCommand",
+      ).mockImplementation((selectedCommand) => ({
+        desktopCandidates,
+        exactDesktopCandidate: desktopCandidates.find(
+          (candidate) => candidate.appServerCommandPath === selectedCommand,
+        ),
+      }));
       vi.spyOn(service, "resolveCodexComputerUseServiceAppSourcePath").mockImplementation(
         (params) =>
           resolveServiceSource({

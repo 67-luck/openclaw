@@ -270,12 +270,16 @@ export function createCodexAppServerModelCatalog(
       }
       const scheduler = getScheduler?.();
       const background =
-        resultCurrent && scheduler && !scheduler.signal.aborted ? scheduler : undefined;
+        params.refresh !== true && resultCurrent && scheduler && !scheduler.signal.aborted
+          ? scheduler
+          : undefined;
       if (
-        (!resultCurrent || background) &&
+        (!resultCurrent || background || params.refresh === true) &&
         !current.pending &&
         Date.now() >= current.retryAt &&
-        (!resultCurrent || Date.now() - current.refreshedAt >= 5 * 60_000)
+        (!resultCurrent ||
+          params.refresh === true ||
+          Date.now() - current.refreshedAt >= 5 * 60_000)
       ) {
         const signal = background
           ? AbortSignal.any([lifetime.signal, background.signal])
@@ -418,7 +422,12 @@ export function createCodexAppServerModelCatalog(
             pending.delete(work);
           });
       }
-      const result = resultCurrent ? current.result : await current.pending;
+      const result =
+        params.refresh === true && current.pending
+          ? await current.pending
+          : resultCurrent
+            ? current.result
+            : await current.pending;
       if (
         lifetime.signal.aborted ||
         !result ||

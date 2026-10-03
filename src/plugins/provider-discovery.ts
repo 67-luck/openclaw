@@ -147,8 +147,9 @@ export async function runProviderCatalog(params: {
   }
   let active = true;
   const isActive = () => active && params.isActive?.() !== false;
-  const result = await hook
-    .run({
+  let result: Awaited<ReturnType<typeof hook.run>>;
+  try {
+    result = await hook.run({
       config: params.config,
       agentDir: params.agentDir,
       workspaceDir: params.workspaceDir,
@@ -188,10 +189,10 @@ export async function runProviderCatalog(params: {
         }
         return "runtimeVersion" in catalog ? catalog.runtimeVersion : undefined;
       },
-    })
-    .finally(() => {
-      active = false;
     });
+  } finally {
+    active = false;
+  }
   if (params.isActive?.() === false) {
     return undefined;
   }

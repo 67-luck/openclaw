@@ -5,15 +5,9 @@ import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type {
   HealthCheck,
   HealthCheckContext,
-  HealthRepairContext,
   HealthFinding,
   PluginRuntimeMaintenanceContextV1,
 } from "openclaw/plugin-sdk/health";
-import type {
-  OpenClawPluginServiceV2,
-  OpenClawPluginServiceContextV2,
-  PluginServiceSchedulerV1,
-} from "openclaw/plugin-sdk/plugin-entry";
 import { commandProcessCleanup } from "openclaw/plugin-sdk/process-runtime";
 import { resolveCodexAppServerLocalHomeDir } from "./app-server/auth-start-options.js";
 import { codexConfigEnablesNativeComputerUse } from "./app-server/config-reviewer-policy.js";
@@ -35,7 +29,6 @@ import {
 import { resolveManagedCodexAppServerStartOptions } from "./app-server/managed-binary.js";
 
 const CHECK_ID = "codex/selected-runtime";
-const MAINTENANCE_INTERVAL_MS = 24 * 60 * 60_000;
 
 type DesktopTarget = {
   path: string;
@@ -250,107 +243,4 @@ export function createCodexRuntimeMaintenanceChecks(
       },
     },
   ];
-}
-
-/** The plugin service lifetime owns automatic invocation of the manual maintenance path. */
-export function createCodexRuntimeMaintenanceService(params: {
-  pluginRoot?: string;
-  getConfig: () => OpenClawPluginServiceContextV2["config"];
-}): OpenClawPluginServiceV2 & { getScheduler: () => PluginServiceSchedulerV1 | undefined } {
-  let context: OpenClawPluginServiceContextV2 | undefined;
-  return {
-    apiVersion: 2,
-    id: "codex-runtime-maintenance",
-    getScheduler: () => context?.scheduler,
-    start(ctx) {
-      context = ctx;
-      let failures = 0;
-      const schedule = (delayMs: number) =>
-        ctx.scheduler.schedule({
-          id: "stable-runtime-update",
-          delayMs,
-          run: async () => {
-            const cfg = params.getConfig();
-            const assertCurrent = () => {
-              ctx.scheduler.signal.throwIfAborted();
-              if (context !== ctx || params.getConfig() !== cfg) {
-                throw new Error("Codex maintenance service retired.");
-              }
-            };
-            try {
-              assertCurrent();
-              // Match the host's explicit non-updating/rehearsal environments.
-              if (
-                process.env.OPENCLAW_NO_AUTO_UPDATE === "1" ||
-                process.env.OPENCLAW_NIX_MODE === "1"
-              ) {
-                return;
-              }
-              if (!params.pluginRoot) {
-                throw new Error(
-                  "Codex maintenance needs the installed plugin root; reload the Codex plugin.",
-                );
-              }
-              const checks = createCodexRuntimeMaintenanceChecks({
-                operation: "update",
-                pluginRoot: params.pluginRoot,
-                signal: ctx.scheduler.signal,
-                assertCurrent,
-              });
-              const healthContext: HealthRepairContext = {
-                mode: "fix",
-                cfg,
-                env: process.env,
-                runtime: {
-                  log: (...args) => ctx.logger.info(args.map(String).join(" ")),
-                  error: (...args) => ctx.logger.error(args.map(String).join(" ")),
-                  exit: (code) => {
-                    throw new Error(`Unexpected maintenance exit ${code}`);
-                  },
-                },
-              };
-              for (const check of checks) {
-                const findings = await check.detect(healthContext);
-                assertCurrent();
-                if (findings.length && check.repair) {
-                  const result = await check.repair(healthContext, findings);
-                  assertCurrent();
-                  if (result.status === "failed") {
-                    throw new Error(result.warnings?.join("; ") || "Codex maintenance failed.");
-                  }
-                  for (const change of result.changes) {
-                    ctx.logger.info(change);
-                  }
-                }
-              }
-              failures = 0;
-              ctx.serviceHealth?.clearFailure();
-            } catch (error) {
-              if (ctx.scheduler.signal.aborted || context !== ctx) {
-                return;
-              }
-              failures++;
-              ctx.serviceHealth?.reportFailure(error);
-              ctx.logger.warn(
-                `Automatic Codex runtime update retained the working selection: ${coerceErrorMessage(error)}`,
-              );
-            }
-            if (context === ctx && !ctx.scheduler.signal.aborted) {
-              schedule(
-                failures
-                  ? Math.min(MAINTENANCE_INTERVAL_MS, 30 * 60_000 * 2 ** Math.min(failures - 1, 6))
-                  : MAINTENANCE_INTERVAL_MS,
-              );
-            }
-          },
-        });
-      schedule(60_000);
-    },
-    async stop() {
-      const retiring = context;
-      context = undefined;
-      retiring?.scheduler.beginClose();
-      await retiring?.scheduler.stop();
-    },
-  };
 }

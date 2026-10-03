@@ -61,7 +61,7 @@ import {
   createCodexNodeExecServerCommand,
   createCodexNodeExecServerInvokePolicy,
 } from "./src/node-exec-server.js";
-import { createCodexRuntimeMaintenanceService } from "./src/runtime-maintenance.js";
+import { createCodexRuntimeMaintenanceService } from "./src/runtime-maintenance-service.js";
 import {
   CODEX_CATALOG_STATE_NAMESPACE,
   type StoredCodexCatalogEntry,

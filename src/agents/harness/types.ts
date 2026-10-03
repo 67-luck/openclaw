@@ -435,6 +435,8 @@ type AgentHarnessMcpCatalogParams = {
 };
 
 export type AgentHarnessModelCatalogParams = {
+  /** Explicit inventory refresh; ordinary reads may use a current cached observation. */
+  refresh?: boolean;
   /** Keep native discovery bound to an explicitly selected provider account. */
   authProfileId?: string;
   config: OpenClawConfig;

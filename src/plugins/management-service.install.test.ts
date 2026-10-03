@@ -275,10 +275,13 @@ describe("managed plugin installation", () => {
       message: failure.error,
       details: {
         pluginInstallRejected: true,
-        pluginInstallCode: failure.code,
+        ...(failure.code ? { pluginInstallCode: failure.code } : {}),
         pluginInstallSource: { source: "npm" },
       },
     });
+    expect(pluginLifecycleError(rejected, { entered: true }).details?.pluginInstallCode).toBe(
+      failure.code,
+    );
     expect(mocks.clawhubInstall).not.toHaveBeenCalled();
     expect(mocks.persistInstall).not.toHaveBeenCalled();
   });
