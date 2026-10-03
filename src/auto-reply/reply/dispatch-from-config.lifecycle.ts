@@ -36,6 +36,7 @@ import {
   resolveCommandTurnContext,
   resolveCommandTurnTargetSessionKey,
 } from "../command-turn-context.js";
+import { isExplicitCommandTurnContext } from "../command-turn-detection.js";
 import { isActiveRunSafeCommandTurn } from "../commands-registry.js";
 import type { FinalizedMsgContext } from "../templating.js";
 import {
@@ -61,10 +62,7 @@ import {
   resolveReplyTurnKind,
   runWithReplyOperationLifecycleAdmission,
 } from "./reply-turn-admission.js";
-import {
-  isExplicitSourceReplyCommand,
-  isUnauthorizedTextSlashCommand,
-} from "./source-reply-delivery-mode.js";
+import { isUnauthorizedTextSlashCommand } from "./source-reply-delivery-mode.js";
 
 type DispatchReplyOperationAcquisition =
   | { status: "ready" }
@@ -130,7 +128,6 @@ async function restoreArchivedDispatchSession(params: {
     }
   };
   return await runSessionMutation({
-
     scope: storePath,
     identities: [sessionKey, snapshotSessionId],
     run: async () => {
@@ -191,6 +188,7 @@ export function createDispatchReplyOperationCoordinator(params: {
   let dispatchAbortOperation: ReplyOperation | undefined;
   let preDispatchAbortOperation: ReplyOperation | undefined;
   let preDispatchLifecycleAdmission: SessionEffectRef | undefined;
+  let removePreDispatchLifecycleAbortListener: (() => void) | undefined;
 
   let preDispatchLifecycleAbortController: AbortController | undefined;
   let dispatchLifecycleAbortController: AbortController | undefined;
@@ -384,7 +382,7 @@ export function createDispatchReplyOperationCoordinator(params: {
       ? sourceInput.mailbox.owner.active
       : getSessionControllerOperation(dispatchOperationSessionKey);
     const commandRequiresTurn =
-      (isExplicitSourceReplyCommand(params.ctx, params.cfg) ||
+      (isExplicitCommandTurnContext(params.ctx, params.cfg) ||
         isUnauthorizedTextSlashCommand(params.ctx)) &&
       !isActiveRunSafeCommandTurn({
         commandTurn: resolveCommandTurnContext(params.ctx),

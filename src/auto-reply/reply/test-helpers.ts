@@ -65,6 +65,7 @@ export function createMockReplyOperation(
     staleExpiryReason: undefined,
     startedAtMs: Date.now(),
     lastActivityAtMs: Date.now(),
+    hasOwnedSessionId: (candidateSessionId) => candidateSessionId === sessionId,
     captureOwnedSessionIds: vi.fn(() => new Set([sessionId])),
     recordActivity: vi.fn(),
     setPhase: vi.fn(),

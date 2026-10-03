@@ -27,8 +27,8 @@ import {
   buildRecoverablePendingFinalDeliveryText,
   normalizePendingFinalDeliveryPayloads,
 } from "./pending-final-delivery.js";
+import { claimNextQueuedFollowupRequestFrom, enqueueFollowupRun } from "./queue.js";
 import { admitFollowupRunLifecycle } from "./queue/lifecycle.js";
-
 import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
 import { recordReplyOperationAgentTurn } from "./reply-operation-run-state.js";
 import { createReplyRestartRecoveryClaimController } from "./restart-recovery-claim.js";
@@ -406,22 +406,6 @@ export function createReplyAgentRestartRecoveryController(
       : opts?.sourceReplyDeliveryMode,
     ...(storePath ? { storePath } : {}),
   });
-  const admitUserTurnWithSourceBinding: typeof admitUserTurn = async (...args) => {
-    const result = await admitUserTurn(...args);
-    if (result === "admitted") {
-      const sourceTurnId = resolveReplySourceTurnId({
-        sourceTurnId: restartRecoverySourceTurnId,
-        admissionRunId,
-        ingressProvider: sessionCtx.Provider ?? sessionCtx.Surface,
-        entry: getActiveSessionEntry(),
-      });
-      if (sourceTurnId) {
-        bindSessionControllerSourceTurnId(replyOperation, sourceTurnId);
-      }
-    }
-    return result;
-  };
-
   return {
     ...recovery,
     admitUserTurn: async (...args: Parameters<typeof recovery.admitUserTurn>) => {
@@ -434,7 +418,7 @@ export function createReplyAgentRestartRecoveryController(
           entry: getActiveSessionEntry(),
         });
         if (sourceTurnId) {
-          replyRunRegistry.bindSourceTurnId(replyOperation, sourceTurnId);
+          bindSessionControllerSourceTurnId(replyOperation, sourceTurnId);
         }
       }
       return result;

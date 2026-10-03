@@ -26,6 +26,7 @@ import {
   createChildDiagnosticTraceContext,
   freezeDiagnosticTraceContext,
 } from "../../infra/diagnostic-trace-context.js";
+import { getSessionControllerOperation } from "../../sessions/session-controller.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { estimateAggregateUsageCost } from "../../utils/usage-format.js";
 import {
@@ -62,7 +63,6 @@ import type { PendingContinuationSettlement } from "./get-reply.types.js";
 import { attachMcpAppChannelAction, attachMcpConnectChannelAction } from "./mcp-channel-actions.js";
 import { normalizeReplyPayload } from "./normalize-reply.js";
 import { resolveReplyOperationRunState } from "./reply-operation-run-state.js";
-import { replyRunRegistry } from "./reply-run-registry.js";
 import { createReplyToModeFilterForChannel } from "./reply-threading.js";
 import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
 import { resolveStrandedReplyRecovery } from "./stranded-reply-recovery.js";
@@ -502,10 +502,8 @@ export async function prepareReplyAgentPayloads(state: {
     const emptyPayloads = await buildFinalPayloads([
       buildStrandedRetryMissingDeliveryDiagnostic() ?? emptyInteractiveReplyPayload,
     ]);
-    replyPayloads = [...replyPayloads, ...emptyPayloadResult.replyPayloads];
-    didLogHeartbeatStrip = emptyPayloadResult.didLogHeartbeatStrip;
-    if (emptyPayloadResult.replyPayloads.length > 0) {
-
+    replyPayloads = [...replyPayloads, ...emptyPayloads];
+    if (emptyPayloads.length > 0) {
       replyOperation.fail(
         "run_failed",
         new Error("interactive agent run completed without a visible reply"),
@@ -576,7 +574,7 @@ export async function prepareReplyAgentPayloads(state: {
       assertSubagentRegistryWriteSourceCurrent(stateContext);
       // Abort can still owe non-yielded cleanup; replacement cannot inherit this cohort.
       if (
-        replyRunRegistry.get(operationKey) !== replyOperation ||
+        getSessionControllerOperation(operationKey) !== replyOperation ||
         replyOperation.key !== operationKey ||
         replyOperation.sessionId !== operationSessionId
       ) {

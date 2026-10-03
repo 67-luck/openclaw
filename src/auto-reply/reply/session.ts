@@ -144,7 +144,7 @@ import {
 } from "./session-reset-cleanup.js";
 import { resolveAuthorizedSessionResetCommand } from "./session-reset-command.js";
 import { runReplySessionRolloverMutation } from "./session-rollover-mutation.js";
-
+import { resolveReplySessionRolloverState } from "./session-rollover-state.js";
 import { stripThreadFromSessionRoute, stripThreadId } from "./session-route-reset.js";
 
 const log = createSubsystemLogger("session-init");

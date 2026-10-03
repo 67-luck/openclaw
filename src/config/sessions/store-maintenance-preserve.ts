@@ -138,10 +138,8 @@ export async function prepareSessionMaintenancePreservation(storePath: string): 
         assertProvidersCurrent();
         return {
           providerKeys: [...keys].toSorted(),
-          workIdentities: [
-            ...(collectActiveSessionWorkAdmissions().get(storePath) ?? []),
-          ].toSorted(),
-          lifecycleIdentities: collectActiveSessionLifecycleMutationIdentities(storePath),
+          workIdentities: [...(collectSessionControllerTargets().get(storePath) ?? [])].toSorted(),
+          lifecycleIdentities: collectSessionMutationIdentities(storePath),
         };
       },
     };

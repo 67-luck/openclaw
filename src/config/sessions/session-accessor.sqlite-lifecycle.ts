@@ -7,7 +7,7 @@ import {
   MODEL_SELECTION_LOCK_REMOVAL_MESSAGE,
   resolveAgentHarnessSessionStoreEntryError,
 } from "../../sessions/agent-harness-session-key.js";
-import { collectActiveSessionWorkAdmissions } from "../../sessions/session-lifecycle-admission.js";
+import { collectSessionControllerTargets } from "../../sessions/session-controller.lifecycle.js";
 import { emitSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
 import { preparePersonalGitHubSessionReceiptDeletion } from "../../state/github-personal-publication-lifecycle.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
@@ -290,7 +290,7 @@ async function deleteSqliteSessionEntryLifecycleLocked(
             deleteParams,
             archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
             admissionIdentities: [
-              ...(collectActiveSessionWorkAdmissions().get(params.storePath) ?? []),
+              ...(collectSessionControllerTargets().get(params.storePath) ?? []),
             ],
             allowLockedEntryRemoval,
             expectedPluginOwnerId,
@@ -375,7 +375,7 @@ async function deleteSqliteSessionEntryLifecycleLocked(
                   archiveDirectory: prepared.archiveDirectory,
                   archiveTranscript: params.archiveTranscript,
                   admissionIdentities: [
-                    ...(collectActiveSessionWorkAdmissions().get(params.storePath) ?? []),
+                    ...(collectSessionControllerTargets().get(params.storePath) ?? []),
                   ],
                 },
               },
@@ -405,7 +405,7 @@ async function deleteSqliteSessionEntryLifecycleLocked(
                     validation: generationValidation,
                     sessionId,
                     admissionIdentities: [
-                      ...(collectActiveSessionWorkAdmissions().get(params.storePath) ?? []),
+                      ...(collectSessionControllerTargets().get(params.storePath) ?? []),
                     ],
                   },
                 },

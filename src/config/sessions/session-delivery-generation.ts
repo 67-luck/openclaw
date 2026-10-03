@@ -331,7 +331,12 @@ async function prepareSessionGenerationLease(
         if (
           delivery &&
           [...paths].some((scope) =>
-            isSessionMutationActive(scope, [generation.sessionKey, generation.sessionId]),
+            isSessionMutationActive(
+              scope,
+              generation.sessionId
+                ? [generation.sessionKey, generation.sessionId]
+                : [generation.sessionKey],
+            ),
           )
         ) {
           throw new SessionDeliveryGenerationUnavailableError();

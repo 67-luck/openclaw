@@ -13,14 +13,8 @@ import {
 import * as controllerMailbox from "../../sessions/session-controller.mailbox.js";
 import type { TemplateContext } from "../templating.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
-import {
-  clearSessionQueues,
-  enqueueFollowupRun,
-  reserveSteerCandidate,
-  type FollowupRun,
-} from "./queue.js";
-import { getExistingFollowupQueue } from "./queue/state.js";
-
+import { enqueueFollowupRun, reserveSteerCandidate, type FollowupRun } from "./queue.js";
+import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
 import {
   REPLY_OPERATION_RUN_STATE,
   type ReplyOperationRunState,
@@ -108,7 +102,6 @@ export function registerSteeringReceiptCases({
         expect(getExistingFollowupQueue("main")?.items).toEqual([retained]);
       } finally {
         clearFollowupQueue("main");
-        clearFollowupDrainCallback("main");
         active.complete();
       }
     },
@@ -227,7 +220,6 @@ export function registerSteeringReceiptCases({
       firstAcceptance.resolve(true);
       await Promise.allSettled([firstRun, ...(secondRun ? [secondRun] : [])]);
       clearFollowupQueue("main");
-      clearFollowupDrainCallback("main");
       active.complete();
       injection.mockRestore();
     }

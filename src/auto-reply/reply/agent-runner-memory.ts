@@ -36,10 +36,7 @@ import {
   type InternalSessionEntry as SessionEntry,
 } from "../../config/sessions.js";
 import {
-  persistCompactionBoundaryWithSessionEntrySync,
-  readRecentSessionTranscriptActiveEvents,
-  readSessionTranscriptActiveStats,
-
+  persistCompactionBoundaryWithSessionEntryAsync,
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
@@ -61,7 +58,6 @@ import { resolveSessionPinnedHarnessId } from "../../sessions/agent-harness-sess
 import type { ReplyOperation } from "../../sessions/session-controller.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
-import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { formatTokenCount } from "../../utils/token-format.js";
 import type { VerboseLevel } from "../thinking.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
@@ -249,214 +245,6 @@ function hasUsableProviderPromptUsage(
 
 // Leave room for large assistant outputs when checking near-threshold usage.
 const TRANSCRIPT_OUTPUT_READ_BUFFER_TOKENS = 8192;
-const SQLITE_USAGE_TAIL_MAX_EVENTS = 512;
-
-function deriveTranscriptUsageSnapshot(
-  usage: NonNullable<ReturnType<typeof normalizeUsage>>,
-  trailingMessages: AgentMessage[],
-): SessionTranscriptUsageSnapshot | undefined {
-  const promptTokens = deriveContextPromptTokens({ lastCallUsage: usage });
-  const outputTokens = asPositiveFiniteNumber(usage.output);
-  if (!(typeof promptTokens === "number") && !(typeof outputTokens === "number")) {
-    return undefined;
-  }
-  return {
-    promptTokens,
-    outputTokens,
-    trailingMessages,
-  };
-}
-
-function readTranscriptAccountingSnapshot(
-  visit: (visitor: (event: unknown) => void) => void,
-  options: { includeUsage: boolean; includeTurnTaint?: boolean },
-): {
-  boundaryFound: boolean;
-  eventCount: number;
-  hasLeafControl: boolean;
-  tainted: boolean;
-  usage?: SessionTranscriptUsageSnapshot;
-} {
-  let scanUsage = options.includeUsage;
-  let scanTaint = options.includeTurnTaint === true;
-  let latestUsage: ReturnType<typeof normalizeUsage>;
-  const trailingMessages: AgentMessage[] = [];
-  let boundaryFound = false;
-  let tainted = false;
-  let eventCount = 0;
-  let hasLeafControl = false;
-  visit((event) => {
-    eventCount += 1;
-    hasLeafControl ||= isSessionTranscriptLeafControl(event);
-    if (!event || typeof event !== "object" || Array.isArray(event)) {
-      return;
-    }
-    const record = event as { message?: unknown; type?: unknown; usage?: UsageLike };
-    const message =
-      record.message && typeof record.message === "object" && !Array.isArray(record.message)
-        ? (record.message as AgentMessage & { api?: unknown; usage?: UsageLike })
-        : undefined;
-    if (scanUsage) {
-      const rawUsage = message?.usage ?? record.usage;
-      if (
-        record.type === "compaction" ||
-        record.type === "reset" ||
-        (message?.api === "cli" && rawUsage && rawUsage.contextUsage === undefined)
-      ) {
-        scanUsage = false;
-        trailingMessages.length = 0;
-      } else {
-        const usage = normalizeUsage(rawUsage);
-        if (usage && isUnavailableContextBarrier(usage)) {
-          scanUsage = false;
-          trailingMessages.length = 0;
-        } else if (usage && hasNonzeroUsage(usage)) {
-          latestUsage = usage;
-          scanUsage = false;
-        } else if (message) {
-          trailingMessages.push(message);
-        }
-      }
-    }
-    if (scanTaint && message) {
-      if (message.role === "user") {
-        boundaryFound = true;
-        scanTaint = false;
-      } else {
-        const metadata = (message as { __openclaw?: unknown })["__openclaw"];
-        if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
-          const openClaw = metadata as { resultContentSource?: unknown; turnTainted?: unknown };
-          if (openClaw.turnTainted === true || openClaw.resultContentSource === "network") {
-            tainted = true;
-            scanTaint = false;
-          }
-        }
-      }
-    }
-  });
-  return {
-    boundaryFound,
-    eventCount,
-    hasLeafControl,
-    tainted,
-    usage: latestUsage
-      ? deriveTranscriptUsageSnapshot(latestUsage, trailingMessages.toReversed())
-      : undefined,
-  };
-}
-
-function readTranscriptAccountingEvents(
-  events: unknown[],
-  params: { includeTurnTaint?: boolean; includeUsage: boolean },
-) {
-  const visitNewestFirst = (visitor: (event: unknown) => void) => {
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      visitor(events[index]);
-    }
-  };
-  const result = readTranscriptAccountingSnapshot(visitNewestFirst, params);
-  if (!result.hasLeafControl) {
-    return result;
-  }
-  const activeEvents = selectSessionTranscriptLeafControlledPath(events) ?? events;
-  return {
-    ...readTranscriptAccountingSnapshot((visitor) => {
-      for (let index = activeEvents.length - 1; index >= 0; index -= 1) {
-        visitor(activeEvents[index]);
-      }
-    }, params),
-    eventCount: result.eventCount,
-  };
-}
-
-function usesProcessHeldSessionLog(params: {
-  agentId: string;
-  sessionKey?: string;
-  storePath: string;
-}) {
-  return (
-    isIncognitoSessionKey(params.sessionKey) ||
-    isIncognitoOpenClawAgentSqlitePath(params.storePath, {
-      agentId: params.agentId,
-      env: process.env,
-    })
-  );
-}
-
-async function readSessionLogSnapshot(params: {
-  agentId?: string;
-  sessionId?: string;
-  sessionKey?: string;
-  storePath?: string;
-  includeByteSize: boolean;
-  includeTurnTaint?: boolean;
-  includeUsage: boolean;
-  usageEventLimit?: number;
-}): Promise<SessionLogSnapshot> {
-  const agentId = params.agentId ?? resolveAgentIdFromSessionKey(params.sessionKey);
-  if (!params.sessionId || !params.storePath || !agentId) {
-    return params.includeTurnTaint ? { turnTainted: true } : {};
-  }
-  const scope = {
-    agentId,
-    sessionId: params.sessionId,
-    ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
-    storePath: params.storePath,
-  };
-  const snapshot: SessionLogSnapshot = {};
-  try {
-    const maxEvents =
-      params.includeUsage || params.includeTurnTaint
-        ? (params.usageEventLimit ?? SQLITE_USAGE_TAIL_MAX_EVENTS)
-        : undefined;
-    const accounting = usesProcessHeldSessionLog({ ...scope, storePath: params.storePath })
-      ? {
-          stats: params.includeByteSize ? readSessionTranscriptActiveStats(scope) : undefined,
-          events:
-            maxEvents === undefined
-              ? undefined
-              : readRecentSessionTranscriptActiveEvents(scope, maxEvents),
-        }
-      : await import("../../config/sessions/session-transcript-worker-runtime.js").then(
-          ({ readSessionTranscriptAccountingInWorker }) =>
-            readSessionTranscriptAccountingInWorker(scope, {
-              includeStats: params.includeByteSize,
-              maxEvents,
-            }),
-        );
-    if (accounting.stats) {
-      const stats = accounting.stats;
-      snapshot.byteSize = stats.sizeBytes;
-      snapshot.eventCount = stats.eventCount;
-    }
-    if (accounting.events) {
-      const transcriptAccounting = readTranscriptAccountingEvents(accounting.events, params);
-      if (params.includeUsage) {
-        snapshot.usage = transcriptAccounting.usage;
-      }
-      if (params.includeTurnTaint) {
-        snapshot.turnTainted =
-          transcriptAccounting.tainted ||
-          (!transcriptAccounting.boundaryFound &&
-            transcriptAccounting.eventCount >= SQLITE_USAGE_TAIL_MAX_EVENTS);
-      }
-    }
-  } catch {
-    if (params.includeTurnTaint) {
-      snapshot.turnTainted = true;
-    }
-  }
-  return snapshot;
-}
-
-type SessionLogSnapshot = {
-  byteSize?: number;
-  eventCount?: number;
-  turnTainted?: boolean;
-  usage?: SessionTranscriptUsageSnapshot;
-};
-
-
 type TranscriptTokenEstimate = {
   promptTokens: number;
   promptTokenSource:
@@ -529,7 +317,6 @@ async function estimatePromptTokensFromSessionTranscript({
           includeByteSize: false,
           includeUsage: true,
           usageEventLimit: snapshot.eventCount,
-
         })
       ).usage;
     }
@@ -878,7 +665,6 @@ export async function runSessionCompactionIfNeeded(params: {
               sessionId: acceptedEntry.sessionId,
               includeByteSize: true,
               includeUsage: false,
-
             })
           ).byteSize
         : undefined;
@@ -1457,8 +1243,7 @@ export async function runMemoryFlushIfNeeded(params: {
       phase: "memory_flushing",
     });
   }
-  const { turnAdoptionLifecycle } = params.followupRun;
-  const stopHeartbeat = startFollowupRunPreAdoptionHeartbeat(turnAdoptionLifecycle, abortSignal);
+  const stopHeartbeat = startFollowupRunPreAdoptionHeartbeat(params.followupRun, abortSignal);
   // Only runnable maintenance owns a run context. The matching finally is
   // the sole cleanup path so setup, execution, and persistence exits cannot orphan it.
   try {

@@ -52,20 +52,17 @@ export function canSelfServeLocalPaths(params: {
     sessionKey: policySessionKey,
     runSessionKey: policySessionKey === params.sessionKey ? undefined : params.sessionKey,
     agentId: params.agentId,
-    agentDir: params.agentDir,
     agentAccountId: params.ctx.AccountId,
     messageProvider: resolveOriginMessageProvider({
       originatingChannel: params.ctx.OriginatingChannel,
       provider: params.ctx.Provider ?? params.ctx.Surface,
     }),
-    chatType: params.ctx.ChatType,
     conversationToolPolicy: params.ctx.ConversationToolPolicy,
     groupId: resolveGroupSessionKey(params.ctx)?.id,
     groupChannel:
       normalizeOptionalString(params.ctx.GroupChannel) ??
       normalizeOptionalString(params.ctx.GroupSubject),
     groupSpace: normalizeOptionalString(params.ctx.GroupSpace),
-    memberRoleIds: params.ctx.MemberRoleIds,
     spawnedBy: params.spawnedBy,
     senderId: normalizeOptionalString(params.ctx.SenderId),
     senderName: normalizeOptionalString(params.ctx.SenderName),

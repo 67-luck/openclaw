@@ -253,9 +253,6 @@ function setupAgentRunnerMocks(): void {
     compacted: false,
     reason: "test-preflight-disabled",
   });
-  clearSessionQueuesMock.mockReset();
-  clearSessionQueuesMock.mockReturnValue({ followupCleared: 0, keys: [] });
-
   refreshQueuedFollowupSessionMock.mockReset();
   refreshQueuedFollowupSessionMock.mockResolvedValue(undefined);
   vi.mocked(enqueueFollowupRun).mockReset();

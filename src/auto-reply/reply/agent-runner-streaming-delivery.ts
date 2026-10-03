@@ -2,7 +2,7 @@ import { logVerbose } from "../../globals.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import type { RunReplyAgentParams } from "./agent-runner-core.js";
 import { isAudioPayload } from "./agent-runner-helpers.js";
-import { createAudioAsVoiceBuffer, createBlockReplyPipeline } from "./block-reply-pipeline.js";
+import { createBlockReplyPipeline } from "./block-reply-pipeline.js";
 import { resolveEffectiveBlockStreamingConfig } from "./block-streaming.js";
 import {
   type CompactionNoticePhase,
@@ -66,7 +66,7 @@ export function prepareReplyStreamingDelivery(
           },
           timeoutMs: blockReplyTimeoutMs,
           coalescing: blockReplyCoalescing,
-          buffer: createAudioAsVoiceBuffer({ isAudioPayload }),
+          isAudioPayload,
         })
       : null;
   return { sendDirectCompactionNotice, blockReplyPipeline };

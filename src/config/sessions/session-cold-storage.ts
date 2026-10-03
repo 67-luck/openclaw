@@ -4,7 +4,7 @@ import { hasErrnoCode } from "../../infra/errno.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
-import { collectActiveSessionWorkAdmissions } from "../../sessions/session-lifecycle-admission.js";
+import { collectSessionControllerTargets } from "../../sessions/session-controller.lifecycle.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import {
   retainOpenClawAgentDatabaseReadOnly,
@@ -260,7 +260,7 @@ async function archiveSessionColdBatch(options: ColdBatchOptions): Promise<ColdB
     const input: SessionColdPreparationWorkerData["input"] = {
       databaseOptions: workerDatabaseOptions(options.databaseOptions),
       admissionIdentities: [
-        ...(collectActiveSessionWorkAdmissions().get(options.ownerStorePath) ?? []),
+        ...(collectSessionControllerTargets().get(options.ownerStorePath) ?? []),
       ],
       cooledSessionIds: [...cooled],
       beforeMs: options.beforeMs,
@@ -321,7 +321,7 @@ async function archiveSessionColdBatch(options: ColdBatchOptions): Promise<ColdB
             },
             () => {
               assertCurrent();
-              const admissions = collectActiveSessionWorkAdmissions().get(options.ownerStorePath);
+              const admissions = collectSessionControllerTargets().get(options.ownerStorePath);
               if (
                 [...(admissions ?? [])].some((identity) =>
                   batch.protectionKeys.includes(normalizeStoreSessionKey(identity)),

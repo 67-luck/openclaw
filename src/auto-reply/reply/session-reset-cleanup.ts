@@ -7,10 +7,17 @@ import {
   consumeSelectedSystemEventEntries,
   peekSystemEventEntries,
 } from "../../infra/system-events.js";
-import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
-import { clearReplyRunForResetBySessionId } from "../../sessions/session-controller.js";
+import {
+  agentSessionKeysMatchByRequestKey,
+  normalizeAgentId,
+  normalizeOptionalAgentId,
+  parseAgentSessionKey,
+} from "../../routing/session-key.js";
+import {
+  clearReplyRunForResetBySessionId,
+  resolveActiveReplyOperationForSessionId,
+} from "../../sessions/session-controller.js";
 import { clearSessionQueues, type ClearSessionQueueResult } from "./queue/cleanup.js";
-
 
 export class SessionResetCleanupError extends Error {}
 
@@ -104,13 +111,7 @@ export function clearSessionResetRuntimeState(
 ): ClearSessionResetRuntimeStateResult {
   opts.assertCurrent();
   clearEmbeddedSessionPromptStates([opts.activeReplySessionId]);
-  const cleared = clearSessionLifecycleQueues({
-    keys,
-    agentId: opts.agentId,
-    sessionKey: opts.sessionKey,
-    sessionId: opts.activeReplySessionId,
-    assertCurrent: opts.assertCurrent,
-  });
+  const cleared = clearSessionQueues(keys);
   let systemEventsCleared = 0;
 
   for (const key of cleared.keys) {

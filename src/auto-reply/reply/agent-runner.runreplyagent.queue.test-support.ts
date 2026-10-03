@@ -1,6 +1,5 @@
 import { expect, vi } from "vitest";
 import {
-  clearSessionQueues,
   enqueueFollowupRun,
   refreshQueuedFollowupSession,
   reserveSteerCandidate,
@@ -12,6 +11,7 @@ import {
   enqueueFollowupRun as enqueueActualFollowupRun,
   reserveSteerCandidate as reserveActualSteerCandidate,
 } from "./queue/enqueue.js";
+import { clearFollowupQueue } from "./queue/state.js";
 
 /** Real source custody with observable scheduling, not simulated queue publication. */
 export function createReplyQueueFixture() {
@@ -26,9 +26,11 @@ export function createReplyQueueFixture() {
     },
     async settle() {
       // Join real cleanup before deleting stores or resetting the next case.
-      clearSessionQueues([
-        ...new Set(Array.from(sources, (source) => source.run.sessionKey ?? source.run.sessionId)),
-      ]);
+      for (const key of new Set(
+        Array.from(sources, (source) => source.run.sessionKey ?? source.run.sessionId),
+      )) {
+        clearFollowupQueue(key);
+      }
       await Promise.allSettled(
         [...sources].flatMap((source) => {
           const input = source.controllerInput;

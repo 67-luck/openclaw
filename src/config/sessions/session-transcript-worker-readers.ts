@@ -328,12 +328,6 @@ export function createSessionHistoryWorkerReaders(
       (input) => ({ kind: "usage-cache", ...input }),
       (value) => value,
     ),
-    readTranscriptAccounting: reader(
-      "transcript-accounting",
-      "transcript accounting",
-      (input) => ({ kind: "transcript-accounting", ...input }),
-      (value) => value,
-    ),
     readMembershipFacts: reader(
       "session-membership-facts",
       "membership facts",

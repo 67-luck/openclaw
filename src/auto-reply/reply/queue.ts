@@ -2,10 +2,10 @@
 
 export { scheduleFollowupDrain } from "./queue/drain.js";
 export {
+  claimNextQueuedFollowupRequestFrom,
   enqueueFollowupRun,
   getFollowupQueueDepth,
   reserveSteerCandidate,
-
 } from "./queue/enqueue.js";
 export { resolveQueueSettings } from "./queue/settings-runtime.js";
 export { clearRemovedQueuedAuthProfiles, refreshQueuedFollowupSession } from "./queue/state.js";

@@ -385,7 +385,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       return attachment && "handle" in attachment ? attachment.operation.sessionId : undefined;
     }
     return (
-      (embeddedAgentRuntime ? resolveActiveSessionRunId(sessionKey) : undefined) ??
+      (embeddedAgentRuntime && sessionKey ? resolveActiveSessionRunId(sessionKey) : undefined) ??
       embeddedAgentRuntime?.resolveActiveEmbeddedRunSessionIdBySessionFile?.(sessionFile)
     );
   };
@@ -627,7 +627,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       },
       resolveBusyState: resolveQueueBusyState,
     });
-    if (queueState.kind === "reply") {
+    if (queueReply) {
       if (prioritySource) {
         retireSessionControllerInput(prioritySource);
       }

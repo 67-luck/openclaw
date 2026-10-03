@@ -33,7 +33,6 @@ import {
   type SessionStopHookContext,
   type SessionStopRequest,
 } from "../../sessions/session-controller.stop.js";
-
 import { resolveCommandAuthorization } from "../command-auth.js";
 import type { FinalizedRuntimeMsgContext } from "../templating.js";
 import { resolveAbortCutoffFromContext, shouldPersistAbortCutoff } from "./abort-cutoff.js";
@@ -84,7 +83,6 @@ function captureChannelStopResources(
   const mcpSessionIds = new Map<ChannelStopTarget, readonly string[]>();
   for (const operation of controller.operations) {
     mcpSessionIds.set(operation, [...operation.captureOwnedSessionIds()]);
-
   }
   for (const input of controller.activeInputs) {
     const sessionId = input.source?.run.sessionId ?? capturedSessionId;
@@ -192,11 +190,11 @@ function resolveStoredSessionId(params: {
     sessionKey: params.sessionKey,
     config: params.cfg,
     fallbackAgentId: params.agentId,
-
   });
+  const storePath = resolveSessionStorePathCore(params.cfg.session?.store, { agentId });
   try {
     return loadSessionEntry({
-      agentId: params.agentId,
+      agentId,
       clone: false,
       sessionKey: params.sessionKey,
       storePath,
@@ -230,6 +228,18 @@ async function resolveBoundAcpAbortTargetSessionKey(params: {
   });
 }
 
+function normalizeRequesterSessionKey(
+  cfg: OpenClawConfig,
+  key: string | undefined,
+): string | undefined {
+  const cleaned = normalizeOptionalString(key);
+  if (!cleaned) {
+    return undefined;
+  }
+  const { alias } = resolveMainSessionAlias(cfg);
+  return resolveInternalSessionKey({ key: cleaned, alias });
+}
+
 export async function stopSubagentsForRequester(params: {
   cfg: OpenClawConfig;
   requesterSessionKey?: string;
@@ -240,12 +250,9 @@ export async function stopSubagentsForRequester(params: {
   const requesterKey = normalizeRequesterSessionKey(params.cfg, params.requesterSessionKey);
   if (!requesterKey) {
     params.assertCurrent?.();
-
     await params.beforeKill?.();
     return { stopped: 0, failed: 0 };
   }
-  const { alias } = resolveMainSessionAlias(params.cfg);
-  const requesterKey = resolveInternalSessionKey({ key: cleaned, alias });
   const controllerAgentId = resolveSessionAgentId({
     config: params.cfg,
     sessionKey: requesterKey,
@@ -331,7 +338,6 @@ export async function executeFastAbortRequest(
           sessionId ?? resolveStoredSessionId({ cfg, sessionKey: key, agentId: ownerAgentId }),
         storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: ownerAgentId }),
         agentId: ownerAgentId,
-
       });
     };
     // Capture both possible native targets now. Binding I/O may finish after either

@@ -6,12 +6,12 @@ import { setImmediate } from "node:timers/promises";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
-
 import {
   emptySqliteCounts,
   observeParentSqlite,
   sqliteMethods,
 } from "../../../test/helpers/sqlite-parent-observer.js";
+import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { buildCurrentRunRestartRecoveryClaim } from "../../agents/agent-command-restart-recovery.js";
 import { buildEmbeddedRunPayloads } from "../../agents/embedded-agent-runner/run/payloads.js";
 import type { EmbeddedAgentRunResult } from "../../agents/embedded-agent-runner/types.js";
@@ -51,8 +51,8 @@ import {
   type ReplyOperation,
   getSessionControllerOperation,
   captureCurrentReplyMessageInjectionTarget,
+  waitForReplyRunSuccessorAdmission,
 } from "../../sessions/session-controller.js";
-
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
@@ -66,7 +66,6 @@ import { registerReplyAdmissionCases } from "./agent-runner.runreplyagent.admiss
 import { registerImmediateFailurePolicyCases } from "./agent-runner.runreplyagent.failure-policy.cases.js";
 import { registerOverflowPresentationCases } from "./agent-runner.runreplyagent.overflow.cases.js";
 import { createReplyQueueFixture } from "./agent-runner.runreplyagent.queue.test-support.js";
-
 import { registerRequiredReplyCompletionCases } from "./agent-runner.runreplyagent.required-reply.cases.js";
 import { registerSteeringReceiptCases } from "./agent-runner.runreplyagent.steering-receipts.cases.js";
 import { registerWaitingStatusCases } from "./agent-runner.runreplyagent.waiting-status.cases.js";
@@ -78,7 +77,7 @@ import {
   type FollowupRun,
   type QueueSettings,
 } from "./queue.js";
-import { clearFollowupQueueForTest } from "./queue.test-helpers.js";
+import { clearSessionQueues } from "./queue/cleanup.js";
 import { REPLY_ADMISSION_TICKET, reserveReplyAdmissionTicket } from "./reply-admission-ticket.js";
 import {
   REPLY_OPERATION_RUN_STATE,
@@ -149,7 +148,6 @@ function countMatching<T>(items: readonly T[], predicate: (item: T) => boolean):
   return count;
 }
 
-
 const requireRecord = createRequireRecord("record", "expected-label-object");
 
 function mockCallArgs(mock: ReturnType<typeof vi.fn>, label: string, callIndex = 0): unknown[] {
@@ -178,7 +176,6 @@ async function createSessionStoreFile(entry: SessionEntry, sessionKey = "main"):
   await replaceSessionEntry({ agentId: "main", storePath, sessionKey }, entry);
   return storePath;
 }
-
 
 function makeSessionEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
   return {
@@ -352,7 +349,7 @@ beforeAll(async () => {
 });
 
 beforeEach(() => {
-  clearFollowupQueueForTest("main");
+  clearSessionQueues(["main"]);
   replyRunTesting.resetReplyRunRegistry();
   state.compactEmbeddedAgentSessionMock.mockReset();
   state.compactEmbeddedAgentSessionMock.mockResolvedValue({
@@ -678,7 +675,6 @@ describe("runReplyAgent active steering", () => {
   });
 
   it("retains canceled admission before admitting a replacement source", async () => {
-
     const { sessionEntry, sessionStore, storePath } = await makeSessionFixture();
     const sourceContext = {
       Provider: "discord",
@@ -751,7 +747,7 @@ describe("runReplyAgent active steering", () => {
     );
     let replacement: ReplyOperation | undefined;
     try {
-      await withinTest(committed.promise, signal);
+      await withTestTimeout(committed.promise, 5_000, "first source admission did not persist");
       expect(requireStoredSessionEntry(storePath).restartRecoveryDeliverySourceRunId).toBe(
         "source-first",
       );
@@ -3280,7 +3276,7 @@ describe("runReplyAgent pending final delivery capture", () => {
       });
     } finally {
       // The rejected turn releases its durable recovery owner after run() settles.
-      await getSessionWorkAdmissionRelease({ scope: storePath, identities: ["main"] });
+      await waitForReplyRunSuccessorAdmission("main", null);
     }
   });
 

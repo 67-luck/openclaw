@@ -23,6 +23,7 @@ export function createReplyTurnRotationEvidence(params: {
 }) {
   const controller = params.controller ?? getSessionControllerEntry(params.sessionKey);
   const waitedRotations = new Map<ReplyRotationSource["databaseIdentity"], ReplyRotationSource>();
+  const observedOperations = new Map<ReplyOperation, OpenClawAgentDatabaseIdentity | undefined>();
   // Barrier snapshots retain their source lane after rekeying; active owners do not.
   const isCurrent = (source: ReplyRotationSource) =>
     !isReplyOperationAbortedForRestart(source.operation) &&

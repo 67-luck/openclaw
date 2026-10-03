@@ -11,12 +11,7 @@ import {
   findSessionControllerSourceMailbox,
 } from "../../../sessions/session-controller.mailbox.js";
 import { extractTextFromChatContent } from "../../../shared/chat-content.js";
-import {
-  applyQueueDropPolicy,
-  countPendingQueueItems,
-  shouldSkipQueueItem,
-} from "../../../utils/queue-helpers.js";
-
+import { applyQueueDropPolicy, countPendingQueueItems } from "../../../utils/queue-helpers.js";
 import {
   createOverflowSummaryRetrySource,
   resolveFollowupAuthorizationKey,
@@ -132,7 +127,6 @@ function appendQueueItem(params: {
   }
 }
 
-
 export function enqueueFollowupRun(
   key: string,
   run: FollowupRun,
@@ -173,9 +167,8 @@ export function enqueueFollowupRun(
   const dedupe = dedupeMode === "none" ? undefined : isRunAlreadyQueued;
 
   // Deduplicate: skip if the same message is already queued.
-  if (shouldSkipQueueItem({ item: run, items: queue.items, dedupe })) {
+  if (dedupe?.(run, queue.items)) {
     retireSessionControllerInput(input);
-
     return false;
   }
   // Preserve later prompts while an older steer decides between same-turn
@@ -196,15 +189,10 @@ export function enqueueFollowupRun(
     });
     return true;
   }
-
   // drop:new rejects this source without mutating the existing queue. Do not
   // publish an external queued identity for work that will never be admitted.
-  if (
-    !deferOverflow &&
-    queue.dropPolicy === "new" &&
-    queue.cap > 0 &&
-    countPendingQueueItems(queue.items, queue.inFlight) >= queue.cap
-  ) {
+  const pendingCount = countPendingQueueItems(queue.items, queue.inFlight);
+  if (queue.dropPolicy === "new" && queue.cap > 0 && pendingCount >= queue.cap) {
     run.onQueueDisposition?.("queue-cap-new");
     completeFollowupRunLifecycle(run);
     return false;
@@ -213,56 +201,18 @@ export function enqueueFollowupRun(
     retireSessionControllerInput(input);
     return false;
   }
-  if (deferOverflow) {
-    if (options.steerCandidate) {
-      const { promise: acceptance, resolve: settle } = createDeferredCore<boolean>();
-      run.steerPending = { phase: "waiting", predecessor: queue.steerAcceptanceTail, settle };
-      // A canceled waiter can settle before its predecessor. Its successors
-      // must still wait for every earlier attempt to settle.
-      queue.steerAcceptanceTail = queue.steerAcceptanceTail.then(() => acceptance);
-    }
-  } else if (!applyFollowupQueueOverflow(queue, run)) {
+  if (!applyFollowupQueueOverflow(queue, run)) {
     return false;
   }
-  const front = options.position === "front" && (!deferOverflow || options.steerCandidate === true);
-  queue.lastEnqueuedAt = Date.now();
-  queue.lastRun = run.run;
-  run.queueAbortSignal = queue.abortController.signal;
-  queue.items[front ? "unshift" : "push"](run);
-  if (recentMessageIdKey) {
-    recordRecentQueueMessageId(run, recentMessageIdKey);
-  }
-  if (runFollowup) {
-    rememberFollowupDrainCallback(key, runFollowup);
-  }
-  const signal = resolveFollowupAbortSignal({
-    abortSignal: run.abortSignal,
-    operatorAuthority: run.operatorAuthority,
+  appendQueueItem({
+    key,
+    queue,
+    run,
+    recentMessageIdKey,
+    runFollowup,
+    restartIfIdle,
+    front: options.position === "front",
   });
-  const lifecycle = run.turnAdoptionLifecycle;
-  if (signal && lifecycle && runFollowup) {
-    const onAbort = () => {
-      const currentQueue = getExistingFollowupQueue(key);
-      if (currentQueue) {
-        // Cancellation must release pending ownership even while normal draining is dormant.
-        void dropAbortedFollowups(currentQueue, runFollowup).catch((error: unknown) => {
-          defaultRuntime.error?.(`followup queue cancellation failed: ${String(error)}`);
-        });
-      }
-    };
-    const onSettled = lifecycle.onSettled;
-    lifecycle.onSettled = () => {
-      signal.removeEventListener("abort", onAbort);
-      onSettled?.();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    if (signal.aborted) {
-      onAbort();
-    }
-  }
-  if (restartIfIdle && !queue.draining) {
-    kickFollowupDrainIfIdle(key);
-  }
   return true;
 }
 
@@ -326,12 +276,14 @@ function applyFollowupQueueOverflow(
           compactSource.controllerInput.source = compactSource;
         }
         if (lastElision?.contextKey === contextKey) {
+          lastElision.count += 1;
           lastElision.sources.push(compactSource);
           lastElision.summaryLines.push(summaryLine);
           lastElision.sourceRefs.set(item, compactSource);
         } else {
           queue.summaryElisions.push({
             contextKey,
+            count: 1,
             sources: [compactSource],
             summaryLines: [summaryLine],
             sourceRefs: new Map([[item, compactSource]]),
@@ -360,8 +312,31 @@ export function getFollowupQueueDepth(key: string): number {
   return countPendingQueueItems(queue.items, queue.inFlight);
 }
 
-function reapplyDeferredOverflow(queue: ReturnType<typeof getFollowupQueue>): void {
+/** Claims the next pending user request from the same route and principal. */
+export function claimNextQueuedFollowupRequestFrom(
+  key: string,
+  source: FollowupRun,
+): FollowupRun | undefined {
+  const queue = getExistingFollowupQueue(key);
+  const next = queue?.items.find(
+    (item) =>
+      !queue.inFlight.has(item) &&
+      !isFollowupRunAborted(item) &&
+      item.run.terminalReplyExpectation === "required" &&
+      item.strandedReplyRetry !== true,
+  );
+  if (
+    !next ||
+    followupMessageRouteIdentityKey(next) !== followupMessageRouteIdentityKey(source) ||
+    resolveFollowupAuthorizationKey(next) !== resolveFollowupAuthorizationKey(source)
+  ) {
+    return undefined;
+  }
+  next.protectFromQueueOverflow = true;
+  return next;
+}
 
+function reapplyDeferredOverflow(queue: ReturnType<typeof getFollowupQueue>): void {
   if (
     queue.entries.some((item) => item.injection) ||
     countPendingQueueItems(queue.items, queue.inFlight) <= queue.cap
@@ -480,7 +455,6 @@ export function reserveSteerCandidate(
         // runnable fallback. No native handoff has occurred in this frame.
         finish(true);
         throw error;
-
       }
     },
     accepted: (accepted) => injection.accepted(accepted),

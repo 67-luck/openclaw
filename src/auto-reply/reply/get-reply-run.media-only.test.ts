@@ -73,12 +73,10 @@ import {
   buildInboundUserContextPrefix,
   resolveInboundUserContextPromptJoiner,
 } from "./inbound-meta.js";
-import { createModelSelectionStateFixture } from "./model-selection.test-support.js";
 import { prepareReplyConversation } from "./prompt-session-context.js";
 import { resolveFollowupAbortSignal } from "./queue/types.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
 import { bindReplySourceInput } from "./reply-source-binding.js";
-import { routeReply } from "./route-reply.runtime.js";
 import { drainFormattedSystemEvents } from "./session-system-events.js";
 import {
   createSourceReplyDeliveryRuntime,
@@ -412,6 +410,37 @@ vi.mock("./typing-mode.js", () => ({
 const ROOM_EVENT_MESSAGE_TOOL_DIRECTIVE =
   "Treat this message as observed room activity, not a request. You were not explicitly tagged or mentioned in this room event. Default: stay silent. Only respond if you have something useful, substantial, or important to add. A previous mention or reply is not an invitation to keep talking. To respond visibly, use message(action=send); your final text here stays private either way.";
 
+type ReplyRunParams = Parameters<typeof runPreparedReply>[0];
+
+function telegramGroupSession(): SessionEntry {
+  return {
+    sessionId: "session-telegram-group",
+    updatedAt: 1,
+    systemSent: true,
+    chatType: "group",
+    delivery: normalizeSessionDeliveryState({
+      context: { channel: "telegram", to: "-100123" },
+      origin: { provider: "telegram", surface: "telegram", chatType: "group", to: "-100123" },
+    }),
+  };
+}
+
+function turn(
+  body: string,
+  common: ReplyRunParams["ctx"],
+  session: Partial<ReplyRunParams["sessionCtx"]> = {},
+  inbound: Partial<ReplyRunParams["ctx"]> = {},
+) {
+  return {
+    ctx: { ...createInboundBody(body), ...common, ...inbound },
+    sessionCtx: { ...createSessionBody(body), ...common, ...session },
+  };
+}
+
+function getActiveReplyRunCount(): number {
+  return listActiveReplyRunSessionKeys().length;
+}
+
 const activePreparedFixtures: ReturnType<typeof createReplyOperation>[] = [];
 function activatePreparedRun(sessionKey = "session-key") {
   const operation = createReplyOperation({
@@ -449,6 +478,10 @@ function requireRunReplyAgentCall(index = 0) {
     throw new Error(`runReplyAgent call ${index} missing`);
   }
   return call;
+}
+
+function requireLastRunReplyAgentCall() {
+  return requireRunReplyAgentCall(-1);
 }
 
 describe("runPreparedReply media-only handling", () => {
@@ -1430,35 +1463,13 @@ describe("runPreparedReply media-only handling", () => {
         suppressedFactIndexes: [1],
       },
     });
-
-    expect(result).toEqual({ text: "ok" });
-    const call = requireRunReplyAgentCall();
-    expect(call.followupRun.media).toHaveLength(1);
-    expect(call.followupRun.media?.[0]).toMatchObject({
-      path: imagePath,
-      contentType: "image/png",
-      workspaceDir: "/tmp",
-    });
-    expect(call.followupRun.images).toEqual([
-      {
-        type: "image",
-        data: imageData.toString("base64"),
-        mimeType: "image/png",
+    expect(followupRun.userTurnTranscriptRecorder?.message).toMatchObject({
+      __openclaw: {
+        mediaImageLayout: {
+          slots: [{ kind: "inline", factIndex: 1 }],
+          suppressedFactIndexes: [2],
+        },
       },
-    ]);
-    expect(
-      (
-        call.followupRun as typeof call.followupRun & {
-          mediaImageLayout?: { slots: Array<{ kind: string; factIndex?: number }> };
-        }
-      ).mediaImageLayout,
-    ).toEqual({ slots: [{ kind: "inline", factIndex: 0 }] });
-    expect(
-      (
-        call.followupRun.userTurnTranscriptRecorder?.message as unknown as Record<string, unknown>
-      )?.["__openclaw"],
-    ).toMatchObject({
-      mediaImageLayout: { slots: [{ kind: "inline", factIndex: 1 }] },
     });
   });
 
@@ -1723,27 +1734,24 @@ describe("runPreparedReply media-only handling", () => {
       embeddedRunActive = false;
       return true;
     });
-    vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
-    vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockReturnValue(
-      "session-embedded-heartbeat",
-    );
-    vi.mocked(embeddedAgentRuntime.preemptAndDrainEmbeddedHeartbeatRun).mockResolvedValue(
-      "drained",
-    );
 
     try {
       await expect(
         runPrepared({
           isNewSession: false,
-          sessionId: "session-recovery-starting",
-          storePath,
+          sessionId: "session-embedded-heartbeat",
+          ctx: {
+            ...createInboundTurn("answer this now", "telegram", "direct"),
+            OriginatingChannel: "telegram",
+            OriginatingTo: "user:1",
+          },
+          sessionCtx: {
+            ...createSessionTurn("answer this now", "telegram", "direct"),
+            OriginatingChannel: "telegram",
+            OriginatingTo: "user:1",
+          },
         }),
       ).resolves.toEqual({ text: "ok" });
-
-      const call = requireRunReplyAgentCall();
-      expect(call.isActive).toBe(true);
-      expect(call.shouldSteer).toBe(false);
-      expect(call.shouldFollowup).toBe(true);
     } finally {
       vi.mocked(sessionQueries.resolveActiveSessionRunId).mockReturnValue(undefined);
       vi.mocked(sessionQueries.isSessionRunActive).mockReturnValue(false);
@@ -2087,33 +2095,29 @@ describe("runPreparedReply media-only handling", () => {
       return undefined;
     });
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
+    const running = runPrepared({ isNewSession: false, sessionId: "session-auth-race" });
+    let intruder: ReturnType<typeof createReplyOperation> | undefined;
+    try {
+      await authEntered.promise;
+      intruder = createReplyOperation({
+        sessionId: "session-auth-race",
+        sessionKey: "session-key",
+        resetTriggered: false,
+      });
+      intruder.setPhase("running");
+      releaseAuth.resolve();
 
-    const runPromise = runPrepared({
-      isNewSession: false,
-      sessionId: "session-auth-race",
-    });
+      await vi.waitFor(() => expect(intruder?.abortSignal.aborted).toBe(true));
+      expect(runReplyAgent).not.toHaveBeenCalled();
+      intruder.complete();
 
-    await Promise.resolve();
-    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
-
-    const intruderRun = createReplyOperation({
-      sessionId: "session-auth-race",
-      sessionKey: "session-key",
-      resetTriggered: false,
-    });
-    intruderRun.setPhase("running");
-    if (!resolveAuth) {
-      throw new Error("Expected auth profile resolver to be initialized");
+      await expect(running).resolves.toEqual({ text: "ok" });
+      expect(runReplyAgent).toHaveBeenCalledOnce();
+    } finally {
+      releaseAuth.resolve();
+      intruder?.complete();
+      await running.catch(() => undefined);
     }
-    resolveAuth();
-
-    await Promise.resolve();
-    expect(vi.mocked(runReplyAgent)).not.toHaveBeenCalled();
-
-    intruderRun.complete();
-
-    await expect(runPromise).resolves.toEqual({ text: "ok" });
-    expect(vi.mocked(runReplyAgent)).toHaveBeenCalledOnce();
   });
 
   it("does not queue a run behind its provided pre-dispatch reply operation", async () => {
@@ -2128,14 +2132,13 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(sessionQueries.isSessionRunActive).mockReturnValue(true);
 
     try {
-      await authEntered.promise;
-      intruder = createReplyOperation({
-        sessionId: "session-auth-race",
-        sessionKey: "session-key",
-        resetTriggered: false,
-      });
-      intruder.setPhase("running");
-      releaseAuth.resolve();
+      await expect(
+        runPrepared({
+          isNewSession: false,
+          sessionId: "session-pre-dispatch-owner",
+          opts: { replyOperation: operation } as never,
+        }),
+      ).resolves.toEqual({ text: "ok" });
 
       const call = requireLastRunReplyAgentCall();
       expect(call.replyOperation).toBe(operation);

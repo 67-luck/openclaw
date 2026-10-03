@@ -36,7 +36,10 @@ import {
   type AdmittedFollowupTurn,
   type FollowupRunnerParams,
 } from "./reply-agent-turn-preparation.js";
-
+import {
+  isReplyOperationStalledBeforeOutput,
+  STALLED_TURN_NOTICE_TEXT,
+} from "./stalled-turn-recovery.js";
 
 type FollowupDrainDisposition = { kind: "consumed" } | { kind: "retry"; error: unknown };
 
@@ -192,7 +195,6 @@ export function createFollowupRunner(
           turn.sendPolicy = resolveQueuedTurnSendPolicy(turn);
           if (turn.sendPolicy === "deny") {
             return;
-
           }
           const currentMessageId =
             queued.run.inputProvenance?.kind === "internal_system" &&
@@ -396,7 +398,7 @@ export function createFollowupRunner(
         }
         completeFollowupRunLifecycle(queued);
       }
-      if (disposition.kind !== "deferred" && admittedRunId) {
+      if (admittedRunId) {
         clearAgentRunContext(admittedRunId);
       }
       operation?.complete();

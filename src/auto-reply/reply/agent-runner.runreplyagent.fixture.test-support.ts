@@ -3,8 +3,8 @@ import { afterEach } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import { waitForReplyRunSuccessorAdmission } from "../../sessions/session-controller.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
-import { waitForReplyRunSuccessorAdmission } from "./reply-run-registry.js";
 
 export function createReplyAgentSessionFixture() {
   const sessionKeys = new Set<string>();

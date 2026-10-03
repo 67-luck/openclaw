@@ -45,7 +45,6 @@ import { createShouldEmitToolOutput, createShouldEmitToolResult } from "./agent-
 import { runReplyQuestionInput } from "./agent-runner-question-input.js";
 import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
 import { prepareReplyStreamingDelivery } from "./agent-runner-streaming-delivery.js";
-
 import { createFollowupRunner } from "./followup-runner.js";
 import { REPLY_RUN_STILL_SHUTTING_DOWN_TEXT } from "./get-reply-run-queue.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
@@ -420,7 +419,6 @@ export async function runReplyAgent(
         "message-id",
         queuedRunFollowupTurn,
         false,
-
       );
       if (!enqueued) {
         releaseAdmissionTicket();
@@ -579,7 +577,6 @@ export async function runReplyAgent(
     activeSessionStore = turn.sessionStore;
     const replyOperation = turn.operation;
     const {
-
       applyReplyToMode,
       blockReplyPipeline,
       cfg,
@@ -607,6 +604,19 @@ export async function runReplyAgent(
     try {
       replyOperation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(followupRun));
       bindReplyOperationTyping(replyOperation, typing);
+      if (replyOperationRunState && !isHeartbeat && replyExpectation === "required") {
+        // Dispatch owns the stall notice; this owner holds the queue facts needed to answer
+        // instead. The same sender's next queued request inherits the guidance; otherwise one
+        // recovery run bound to this turn's route and authority is queued.
+        replyOperationRunState.continueStalledTurn = () =>
+          continueStalledReplyTurn({
+            followupRun,
+            queueKey,
+            resolvedQueue,
+            replyOperation,
+            runFollowupTurn,
+          });
+      }
       restartRecovery = createReplyAgentRestartRecoveryController({
         activeSessionStore,
         cfg,
