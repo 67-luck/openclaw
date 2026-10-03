@@ -1818,7 +1818,7 @@ struct OnboardingAISetupTests {
         await gateway.shutdown()
     }
 
-    private static let lateAdmissionCancellationOrders: [(commitLocked: Bool, startFirst: Bool)] = [
+    private nonisolated static let lateAdmissionCancellationOrders: [(commitLocked: Bool, startFirst: Bool)] = [
         (false, false), (false, true), (true, false), (true, true),
     ]
 
