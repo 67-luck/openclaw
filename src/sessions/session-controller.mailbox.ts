@@ -31,6 +31,7 @@ import type {
 import {
   getSessionControllerEntry,
   findSessionControllerEntries,
+  findSessionControllerEntry,
   sessionControllers,
   pruneSessionControllerEntry,
 } from "./session-controller.state.js";
