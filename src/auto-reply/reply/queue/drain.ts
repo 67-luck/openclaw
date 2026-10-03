@@ -201,10 +201,11 @@ async function executeClaim(
       },
     };
   }
+  let adoptionRefused = false;
   try {
     await execute(run);
   } catch (error) {
-    const adoptionRefused = sources.some((item) => {
+    adoptionRefused = sources.some((item) => {
       const custody = item.controllerInput?.custody;
       return (
         custody && !custody.adopted && custody.failure !== undefined && custody.failure === error
@@ -231,6 +232,7 @@ async function executeClaim(
           return (
             !isFollowupRunAborted(item) &&
             !item.controllerInput?.retirementRequested &&
+            (!adoptionRefused || !item.controllerInput?.custody.adopted) &&
             !item.controllerInput?.custody.completed
           );
         })
