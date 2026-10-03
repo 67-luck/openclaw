@@ -161,6 +161,11 @@ export async function runReplyAgent(
         }
       : opts;
     const replyOperationRunState = replyRunState.resolveReplyOperationRunState(opts);
+    if (replyOperationRunState && !isHeartbeat && replyExpectation === "required") {
+      // Dispatch may observe a preflight stall before controller admission finishes.
+      // Until this run owns the queue facts, the continuation must decline explicitly.
+      replyOperationRunState.continueStalledTurn = () => false;
+    }
     if (replyOperationRunState) {
       replyOperationRunState.replyCompletion = resolveReplyCompletion(
         followupRun.run.terminalReplyExpectation,

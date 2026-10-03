@@ -44,6 +44,8 @@ export function buildStalledTurnRecoveryRun(base: FollowupRun): FollowupRun {
     images: undefined,
     imageOrder: undefined,
     media: undefined,
+    controllerInput: undefined,
+    controllerClaim: undefined,
     // The stalled turn's signal, adoption lifecycle, and receipts belong to the
     // aborted dispatch; sharing them would cancel or settle this run with it.
     abortSignal: undefined,
