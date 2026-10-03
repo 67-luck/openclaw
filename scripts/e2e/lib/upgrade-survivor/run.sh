@@ -2534,7 +2534,7 @@ if [ "$SCENARIO" = "gateway-boot-lifecycle" ]; then
     assert-recovery "$SYSTEMCTL_SHIM_DAEMON_LOG" "$UPDATE_JSON"
   phase stop-recovered-gateway stop_update_restart_probe_gateway "$COMMAND_TIMEOUT"
   phase seed-genuine-gateway-failures node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs \
-    seed-genuine "$SYSTEMCTL_SHIM_DAEMON_LOG"
+    seed-genuine
   phase start-suppressed-gateway run_update_restart_probe_gateway start 18789 "$COMMAND_TIMEOUT"
   phase probe-suppressed-gateway check_gateway_probes
   phase assert-genuine-gateway-suppression node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs \

@@ -313,7 +313,7 @@ function assertRecovery(gatewayLog, updateResult) {
   });
 }
 
-function seedGenuineFailures(gatewayLog) {
+function seedGenuineFailures() {
   const fixture = readJson(fixturePath());
   const seededAtMs = Date.now();
   const insideWindowAtMs = seededAtMs - 4 * 60_000 - 5_000;
@@ -351,7 +351,6 @@ function seedGenuineFailures(gatewayLog) {
     ...fixture,
     genuineSeededAtMs: seededAtMs,
     genuineRows: rows,
-    suppressionLogOffset: fs.statSync(gatewayLog).size,
   });
 }
 
@@ -367,10 +366,11 @@ function assertSuppressed(gatewayLog) {
     }),
     "Genuine crash fixture did not remain between four and five minutes old",
   );
-  const log = fs.readFileSync(gatewayLog, "utf8").slice(fixture.suppressionLogOffset);
+  // The managed start owner snapshots the prior log and truncates this path before launching.
+  const log = fs.readFileSync(gatewayLog, "utf8");
   assertLogIncludes(
     log,
-    "gateway restart-loop breaker tripped: 3 unclean boot(s)",
+    "[gateway] restart-loop breaker tripped: 3 unclean boot(s)",
     "Candidate did not count the recent genuine/open startup failures",
   );
   assertLogIncludes(
