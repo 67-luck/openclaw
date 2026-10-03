@@ -118,14 +118,15 @@ async function copyFileExclusive(
         hash.update(chunk);
       },
     });
-    await assertMutationFingerprintUnchanged(source, sourceFingerprint, targetPath);
+    const content = { sha256: hash.digest("hex"), sizeBytes: offset };
+    await assertMutationFingerprintUnchanged(source, sourceFingerprint, targetPath, content);
     await target.sync();
     const currentIdentity = await fs.lstat(targetPath);
     if (!sameFileIdentity(targetIdentity, currentIdentity)) {
       throw new Error(`SQLite snapshot target changed during publication: ${targetPath}`);
     }
     return {
-      content: { sha256: hash.digest("hex"), sizeBytes: offset },
+      content,
       identity: currentIdentity,
     };
   } catch (error) {
@@ -144,10 +145,21 @@ async function assertMutationFingerprintUnchanged(
   handle: FileHandle,
   expected: FileMutationFingerprint,
   filePath: string,
+  expectedContent: SqliteFileContent,
 ): Promise<void> {
   const current = await handle.stat({ bigint: true });
   if (!sameFileMutationFingerprint(current, expected)) {
-    throw new Error(`SQLite snapshot file changed while reading: ${filePath}`);
+    if (
+      current.dev !== expected.dev ||
+      current.ino !== expected.ino ||
+      current.birthtimeNs !== expected.birthtimeNs ||
+      current.size !== expected.size
+    ) {
+      throw new Error(`SQLite snapshot file changed while reading: ${filePath}`);
+    }
+    // Re-read the pinned snapshot when FUSE timestamps settle after copying or hashing.
+    const { digest, bytes } = await sha256File(handle);
+    assertExpectedContent({ sha256: digest, sizeBytes: bytes }, expectedContent, filePath);
   }
 }
 
@@ -197,22 +209,35 @@ async function hashOpenPublishedFile(
   await assertOpenFileIdentity(handle, filePath, expectedIdentity);
   const fingerprint = await handle.stat({ bigint: true });
   const { digest, bytes } = await sha256File(handle);
-  await assertMutationFingerprintUnchanged(handle, fingerprint, filePath);
+  const content = { sha256: digest, sizeBytes: bytes };
+  await assertMutationFingerprintUnchanged(handle, fingerprint, filePath, content);
   await assertOpenFileIdentity(handle, filePath, expectedIdentity);
-  return { sha256: digest, sizeBytes: bytes };
+  return content;
 }
 
-function assertPublishedFileIdentitySync(filePath: string, expectedIdentity: Stats): void {
+function assertPublishedFileIdentitySync(
+  filePath: string,
+  expectedIdentity: Stats,
+  expectedContent: SqliteFileContent,
+): void {
   const currentIdentity = fsSync.lstatSync(filePath);
   if (
     !currentIdentity.isFile() ||
     !sameFileIdentity(expectedIdentity, currentIdentity) ||
     expectedIdentity.size !== currentIdentity.size ||
-    expectedIdentity.mtimeMs !== currentIdentity.mtimeMs ||
-    expectedIdentity.ctimeMs !== currentIdentity.ctimeMs ||
     expectedIdentity.birthtimeMs !== currentIdentity.birthtimeMs
   ) {
     throw new Error(`SQLite snapshot file changed: ${filePath}`);
+  }
+  if (
+    expectedIdentity.mtimeMs !== currentIdentity.mtimeMs ||
+    expectedIdentity.ctimeMs !== currentIdentity.ctimeMs
+  ) {
+    assertExpectedContent(
+      hashPublishedFileSync(filePath, expectedIdentity),
+      expectedContent,
+      filePath,
+    );
   }
 }
 
@@ -241,7 +266,16 @@ function hashPublishedFileSync(filePath: string, expectedIdentity: Stats): Sqlit
     const content = hashFileDescriptorSync(fileDescriptor);
     const finalStat = fsSync.fstatSync(fileDescriptor, { bigint: true });
     if (!sameFileMutationFingerprint(initialStat, finalStat)) {
-      throw new Error(`SQLite snapshot file changed while reading: ${filePath}`);
+      if (
+        initialStat.dev !== finalStat.dev ||
+        initialStat.ino !== finalStat.ino ||
+        initialStat.birthtimeNs !== finalStat.birthtimeNs ||
+        initialStat.size !== finalStat.size
+      ) {
+        throw new Error(`SQLite snapshot file changed while reading: ${filePath}`);
+      }
+      // FUSE may settle timestamps after publication; only matching bytes can admit that drift.
+      assertExpectedContent(hashFileDescriptorSync(fileDescriptor), content, filePath);
     }
     assertOpenFileIdentitySync(fileDescriptor, filePath, expectedIdentity);
     return content;
@@ -497,12 +531,12 @@ async function publishSqliteFile(
         const content = hashPublishedFileSync(options.targetPath, expectedIdentity);
         assertExpectedContent(content, expectedContent, options.targetPath);
         assertSynchronousCallbackResult(finalCheck?.(), "SQLite publication final check");
-        assertPublishedFileIdentitySync(options.targetPath, expectedIdentity);
+        assertPublishedFileIdentitySync(options.targetPath, expectedIdentity, expectedContent);
       },
       assertTargetUnchanged: (finalCheck) => {
-        assertPublishedFileIdentitySync(options.targetPath, expectedIdentity);
+        assertPublishedFileIdentitySync(options.targetPath, expectedIdentity, expectedContent);
         assertSynchronousCallbackResult(finalCheck?.(), "SQLite publication final check");
-        assertPublishedFileIdentitySync(options.targetPath, expectedIdentity);
+        assertPublishedFileIdentitySync(options.targetPath, expectedIdentity, expectedContent);
       },
     };
     if (options.afterPublish) {

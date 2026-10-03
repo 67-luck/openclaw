@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -127,7 +128,7 @@ async function unchangedFiles(fixture: RestoreFixture) {
 }
 
 it.each([false, true, "existing"] as const)(
-  "retires cached and worker owners before restoring data (linked=%s)",
+  "retires cached and worker owners through timestamp drift (linked=%s)",
   async (linked) => {
     await withFixture(async (fixture) => {
       await recordBackupRunOutcome({
@@ -138,7 +139,20 @@ it.each([false, true, "existing"] as const)(
       });
       expect(fixture.shared.db.isOpen).toBe(true);
       expect(fixture.agent.db.isOpen).toBe(true);
-      const displaced = await fixture.restore();
+      let timestampChanged = false;
+      const displaced = await fixture.restore(() => {
+        if (
+          !timestampChanged &&
+          fsSync.existsSync(fixture.agent.path) &&
+          fsSync.existsSync(`${fixture.agent.path}.migrated-${fixture.run.runId}`)
+        ) {
+          // Settle metadata after the final guard hashes the restored bytes.
+          const stat = fsSync.statSync(fixture.agent.path);
+          fsSync.utimesSync(fixture.agent.path, stat.atime, new Date(stat.mtimeMs + 1_000));
+          timestampChanged = true;
+        }
+      });
+      expect(timestampChanged).toBe(true);
       expect(fixture.shared.db.isOpen).toBe(false);
       expect(fixture.agent.db.isOpen).toBe(false);
       if (fixture.canonicalAgent) {
