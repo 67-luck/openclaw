@@ -12,6 +12,7 @@ import {
   patchSessionEntry,
 } from "../../plugin-sdk/session-store-runtime.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { resetSessionControllerStateForTest } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
@@ -181,6 +182,45 @@ describe.each(["fast", "command"] as const)("%s Stop current owner", (pathKind) 
     }
   });
 
+  it("does not stop the same agent and alias in another store", async () => {
+    const state = await setupStop();
+    const createOperation = (storeScope: string, sessionId: string) =>
+      createReplyOperation({
+        agentId: "main",
+        sessionKey,
+        sessionId,
+        resetTriggered: false,
+        target: captureSessionTarget({
+          storeScope,
+          sessionKey,
+          incarnation: sessionId,
+          agentId: "main",
+        }),
+      });
+    const selected = createOperation(state.storePath, state.entry.sessionId);
+    const foreign = createOperation(
+      path.join(state.params.workspaceDir, "foreign.json"),
+      "foreign",
+    );
+    for (const operation of [selected, foreign]) {
+      operation.attachBackend({
+        kind: "embedded",
+        cancel: () => queueMicrotask(() => operation.complete()),
+        isStreaming: () => true,
+      });
+    }
+    try {
+      await (pathKind === "fast"
+        ? tryFastAbortFromMessage(state)
+        : handleStopCommand(state.params, true));
+      expect(selected.abortSignal.aborted).toBe(true);
+      expect(foreign.abortSignal.aborted).toBe(false);
+    } finally {
+      selected.complete();
+      foreign.complete();
+    }
+  });
+
   it.each([
     { agentId: "selected", activeAgentId: "selected", otherAgentId: "other" },
     { agentId: "main", activeAgentId: "main", otherAgentId: "research" },
@@ -230,11 +270,18 @@ describe.each(["fast", "command"] as const)("%s Stop current owner", (pathKind) 
       const isCommandTargetCurrent = () =>
         loadSessionEntry(scope)?.sessionId === state.entry.sessionId;
       const ownsActiveRun = agentId === activeAgentId;
+      const activeScope = ownsActiveRun ? scope : otherScope;
       const operation = createReplyOperation({
         agentId: activeAgentId,
         sessionKey: globalKey,
         sessionId: ownsActiveRun ? state.entry.sessionId : otherEntry.sessionId,
         resetTriggered: false,
+        target: captureSessionTarget({
+          storeScope: activeScope.storePath,
+          sessionKey: globalKey,
+          incarnation: ownsActiveRun ? state.entry.sessionId : otherEntry.sessionId,
+          agentId: activeAgentId,
+        }),
       });
       operation.attachBackend({
         kind: "embedded",
@@ -250,6 +297,7 @@ describe.each(["fast", "command"] as const)("%s Stop current owner", (pathKind) 
           followup.run = {
             ...followup.run,
             agentId: ownerAgentId,
+            config: cfg,
             sessionKey: globalKey,
             sessionId,
           };

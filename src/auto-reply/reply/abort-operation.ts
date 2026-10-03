@@ -63,9 +63,14 @@ function matchesStopCandidate(
   if (!candidate.aliases.has(params.key)) {
     return false;
   }
-  return candidate.agentId && params.agentId
-    ? normalizeAgentId(candidate.agentId) === normalizeAgentId(params.agentId)
-    : !candidate.storeScope || candidate.storeScope === params.storePath;
+  if (candidate.storeScope && candidate.storeScope !== params.storePath) {
+    return false;
+  }
+  return (
+    !candidate.agentId ||
+    !params.agentId ||
+    normalizeAgentId(candidate.agentId) === normalizeAgentId(params.agentId)
+  );
 }
 
 /** Physical identity and runtime references are captured together, before channel I/O. */
@@ -99,8 +104,8 @@ export function captureChannelSessionStop(params: {
           }),
         ]
       : [],
-    inputs: candidates.flatMap((candidate) => [...candidate.capture.inputs]),
-    operations: candidates.flatMap((candidate) => [...candidate.capture.operations]),
+    inputs: candidates.flatMap((candidate) => candidate.capture.inputs),
+    operations: candidates.flatMap((candidate) => candidate.capture.operations),
     includeQueued: params.includeQueued,
   });
   return captureChannelStopResources(controller, params.sessionId);
