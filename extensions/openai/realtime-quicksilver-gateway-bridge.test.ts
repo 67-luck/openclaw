@@ -66,6 +66,7 @@ describe("GPT-Live gateway relay bridge", () => {
     const peer = {
       createOffer: vi.fn(async () => "v=offer\r\n"),
       applyAnswer: vi.fn(async () => undefined),
+      drainOutputAudio: vi.fn(),
       adoptPendingAudio: vi.fn(),
       sendAudio: vi.fn(),
       close: vi.fn(),
@@ -144,7 +145,10 @@ describe("GPT-Live gateway relay bridge", () => {
       });
       const onResponseDone = vi.fn(() => callbacks.push("completed"));
       const harness = createPendingPeerBridge({
-        audioFormat: { encoding, sampleRateHz: encoding === "pcm16" ? 24_000 : 8_000, channels: 1 },
+        audioFormat:
+          encoding === "pcm16"
+            ? { encoding, sampleRateHz: 24_000, channels: 1 }
+            : { encoding, sampleRateHz: 8_000, channels: 1 },
         onAudio: (audio) => {
           deliveredAudio.push(audio);
           callbacks.push("audio");
@@ -239,6 +243,63 @@ describe("GPT-Live gateway relay bridge", () => {
       await harness.bridge.close();
     }
   });
+
+  it.each(["request", "transcript", "clear"] as const)(
+    "keeps resumed output open when a prior media drain finishes (%s)",
+    async (resume) => {
+      let resolveDrain!: () => void;
+      const drain = new Promise<void>((resolve) => {
+        resolveDrain = resolve;
+      });
+      let publishFinal!: () => void;
+      const final = new Promise<void>((resolve) => {
+        publishFinal = resolve;
+      });
+      const onAudio = vi.fn();
+      const onResponseDone = vi.fn();
+      const harness = createPendingPeerBridge({
+        onAudio,
+        onResponseDone,
+        onTranscript: (_role, text, done) => {
+          if (done && text === "Prior reply") {
+            publishFinal();
+          }
+        },
+      });
+      harness.peer.drainOutputAudio.mockImplementationOnce(() => drain);
+      try {
+        await harness.waitForPeerStart();
+        harness.resolvePeer();
+        await harness.connection;
+        const socket = harness.getSocket();
+        emitSideband(socket, {
+          type: "turn.done",
+          turn: { role: "assistant", transcript: "Prior reply" },
+        });
+        expect(onResponseDone).not.toHaveBeenCalled();
+        if (resume === "request") {
+          harness.bridge.sendUserMessage("Next question");
+        } else if (resume === "transcript") {
+          emitSideband(socket, { type: "output_transcript.added", item: { text: "Next reply" } });
+        } else {
+          emitSideband(socket, { type: "output_audio_buffer.cleared" });
+        }
+        resolveDrain();
+        await final;
+        harness.triggerPeerAudio(Buffer.alloc(960));
+        expect(onAudio).toHaveBeenCalledOnce();
+        expect(onResponseDone).not.toHaveBeenCalled();
+        emitSideband(socket, {
+          type: "turn.done",
+          turn: { role: "assistant", transcript: "Next reply" },
+        });
+        expect(onResponseDone).toHaveBeenCalledExactlyOnceWith({ status: "completed" });
+      } finally {
+        resolveDrain();
+        await harness.bridge.close();
+      }
+    },
+  );
 
   it("admits delegation final audio before its first transcript after a completed spoken receipt", async () => {
     let resolveConsult!: (result: { text: string }) => void;
@@ -608,6 +669,7 @@ describe("GPT-Live gateway relay bridge", () => {
     resolvePeer?.({
       createOffer: vi.fn(async () => "v=offer\r\n"),
       applyAnswer: vi.fn(async () => undefined),
+      drainOutputAudio: vi.fn(),
       adoptPendingAudio: vi.fn(),
       sendAudio: vi.fn(),
       close: closePeer,
@@ -625,6 +687,7 @@ describe("GPT-Live gateway relay bridge", () => {
       createOffer,
       applyAnswer,
       adoptPendingAudio,
+      drainOutputAudio: vi.fn(),
       sendAudio: vi.fn(),
       close: closePeer,
     };
@@ -780,6 +843,7 @@ describe("GPT-Live gateway relay bridge", () => {
         createPeer: vi.fn(async () => ({
           createOffer: vi.fn(async () => "v=offer\r\n"),
           applyAnswer: vi.fn(async () => undefined),
+          drainOutputAudio: vi.fn(),
           adoptPendingAudio: vi.fn(),
           sendAudio: vi.fn(),
           close: vi.fn(),

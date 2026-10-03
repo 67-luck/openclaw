@@ -25,6 +25,7 @@ export type QuicksilverAudioWorkerCommand =
   | { type: "audio"; audio: Uint8Array }
   | { type: "audio-ack" }
   | { type: "clear-output"; generation: number }
+  | { type: "drain-output"; id: number }
   | { type: "rtp-ack" }
   | { type: "media-error-ack" }
   | { type: "close" };
@@ -153,6 +154,10 @@ export class OpenAIQuicksilverAudioPeer implements OpenAIQuicksilverAudioPeerCon
     if (!this.closed) {
       this.post({ type: "clear-output", generation: ++this.outputGeneration });
     }
+  }
+
+  async drainOutputAudio(): Promise<void> {
+    await this.request({ type: "drain-output", id: ++this.nextRequestId });
   }
 
   close(): void {

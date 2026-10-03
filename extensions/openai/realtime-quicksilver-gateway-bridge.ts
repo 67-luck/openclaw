@@ -1,5 +1,6 @@
 // Gateway-owned GPT-Live bridge over released WebRTC and unlisted direct transport.
 import { createDeferred } from "openclaw/plugin-sdk/concurrency-runtime";
+import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import type { PluginLogger } from "openclaw/plugin-sdk/plugin-entry";
 import type {
   RealtimeVoiceAudioOutputPort,
@@ -104,6 +105,7 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
   private closeReason: "completed" | "error" = "completed";
   private providerSessionClosed = false;
   private providerOutputComplete = false;
+  private outputCompletion: object | undefined;
   private peer: OpenAIQuicksilverAudioPeerContract | undefined;
   private audioOutput: RealtimeVoiceAudioOutputPort | undefined;
   private pendingAudio = new OpenAIQuicksilverPendingAudio();
@@ -494,12 +496,18 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
             this.config.onTranscript?.(role, text, done);
             return;
           }
-          if (!this.closed && role === "assistant" && done && this.providerOutputComplete) {
+          if (
+            !this.closed &&
+            role === "assistant" &&
+            done &&
+            (this.providerOutputComplete || this.outputCompletion)
+          ) {
             return;
           }
           if (role === "user" || !done) {
             const continuing = role === "assistant" && this.providerOutputComplete && !this.closed;
             this.providerOutputComplete = false;
+            this.outputCompletion = undefined;
             if (continuing) {
               // A delegation can speak its final answer after a completed spoken receipt.
               this.config.onEvent?.({ direction: "server", type: "response.created" });
@@ -507,25 +515,24 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
           }
           const completed = role === "assistant" && done && !this.closed;
           if (completed) {
-            this.audio.finishOutput();
-            this.providerOutputComplete = true;
+            this.completeOutput(text);
+            return;
           }
           this.config.onTranscript?.(role, text, done);
-          if (completed && !this.closed) {
-            this.config.onResponseDone?.({ status: "completed" });
-          }
         },
         onResponseRequest: () => {
           if (this.closed || isOpenAIGptLiveApiModel(this.config.model)) {
             return;
           }
           this.providerOutputComplete = false;
+          this.outputCompletion = undefined;
           this.config.onEvent?.({ direction: "client", type: "response.create" });
         },
         handleDelegationInput: this.config.handleDelegationInput,
         onWireEventType: (eventType) => {
           this.config.onEvent?.({ direction: "server", type: eventType });
           if (eventType === "output_audio_buffer.cleared") {
+            this.outputCompletion = undefined;
             this.audio.reset();
             // Retire the worker backlog even when the consumer uses callbacks.
             if (this.transport === "webrtc") {
@@ -541,6 +548,39 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
       },
       this.runtime.formatErrorMessage,
     );
+  }
+
+  private completeOutput(text: string): void {
+    const completion = {};
+    this.outputCompletion = completion;
+    const finish = () => {
+      if (this.closed) {
+        return;
+      }
+      if (this.outputCompletion === completion) {
+        this.audio.finishOutput();
+        if (this.closed) {
+          return;
+        }
+        if (this.outputCompletion === completion) {
+          this.providerOutputComplete = true;
+        }
+      }
+      this.config.onTranscript?.("assistant", text, true);
+      if (!this.closed && this.outputCompletion === completion && this.providerOutputComplete) {
+        this.config.onResponseDone?.({ status: "completed" });
+      }
+    };
+    const drained = this.peer?.drainOutputAudio();
+    if (drained) {
+      void drained.then(finish).catch((error: unknown) => {
+        if (!this.closed) {
+          this.fail(toErrorObject(error, "GPT-Live output drain failed"));
+        }
+      });
+    } else {
+      finish();
+    }
   }
 
   private sendSocketEvent(event: object): void {

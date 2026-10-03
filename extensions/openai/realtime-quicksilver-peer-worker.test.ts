@@ -174,9 +174,11 @@ describe("GPT-Live audio thread", () => {
 
     const peer = await OpenAIQuicksilverAudioPeer.create({ callbacks, iceServers: [] });
     const offer = peer.createOffer();
+    const drain = peer.drainOutputAudio();
     peer.close();
     peer.close();
     await expect(offer).rejects.toThrow("closed");
+    await expect(drain).rejects.toThrow("closed");
     await expect(peer.createOffer()).rejects.toThrow("closed");
     peer.sendAudio(Buffer.alloc(960));
     expect(errors).toEqual([]);

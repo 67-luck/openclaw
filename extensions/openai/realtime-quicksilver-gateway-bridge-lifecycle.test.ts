@@ -26,6 +26,7 @@ function createBridge(params: {
   const createPeer = vi.fn(async () => ({
     createOffer: vi.fn(async () => "v=offer\r\n"),
     applyAnswer: vi.fn(async () => undefined),
+    drainOutputAudio: vi.fn(),
     adoptPendingAudio: vi.fn(),
     sendAudio: vi.fn(),
     close: vi.fn(),
