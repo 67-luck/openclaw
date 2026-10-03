@@ -12,6 +12,7 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
@@ -42,6 +43,7 @@ it.each([
   setRuntimeConfigSnapshot(cfg);
   const foreignAgentId = agentId === "main" ? "research" : "main";
   const target = resolveGatewaySessionStoreTarget({ cfg, key, agentId });
+  const foreignTarget = resolveGatewaySessionStoreTarget({ cfg, key, agentId: foreignAgentId });
   const targetId = `${agentId}-session`;
   const foreignId = `${foreignAgentId}-session`;
   await upsertSessionEntryCore(
@@ -52,6 +54,13 @@ it.each([
     sessionKey: key,
     sessionId: foreignId,
     agentId: foreignAgentId,
+    target: captureSessionTarget({
+      storeScope: foreignTarget.storePath,
+      sessionKey: foreignTarget.canonicalKey,
+      aliases: [key, ...foreignTarget.storeKeys],
+      incarnation: foreignId,
+      agentId: foreignAgentId,
+    }),
     resetTriggered: false,
   });
   operation.abortSignal.addEventListener("abort", () => operation.complete(), { once: true });
@@ -126,6 +135,12 @@ it.each(["sessions.delete", "sessions.reset", "sessions.patch"])(
       sessionKey: key,
       sessionId,
       agentId: "main",
+      target: captureSessionTarget({
+        storeScope: resolveGatewaySessionStoreTarget({ cfg, key, agentId: "main" }).storePath,
+        sessionKey: key,
+        incarnation: sessionId,
+        agentId: "main",
+      }),
       resetTriggered: false,
     });
     operation.setPhase("running");
