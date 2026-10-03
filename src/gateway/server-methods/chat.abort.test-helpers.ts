@@ -163,7 +163,7 @@ export function createChatAbortContext(
     getRuntimeConfig: () => ({}),
     broadcast: vi.fn(),
     nodeSendToSession: vi.fn(),
-    logGateway: { warn: vi.fn() },
+    logGateway: { info: vi.fn(), warn: vi.fn() },
     ...contextOverrides,
   } as unknown as ChatAbortTestContext;
   // Synthetic registrations retire through the real index owner only after the
