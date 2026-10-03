@@ -76,6 +76,7 @@ describe("runReplyAgent visible work delivery", () => {
               run: { config: cfg, sessionKey: ctx.SessionKey },
               reply: {
                 opts,
+                queueKey: ctx.SessionKey,
                 replyOperation: opts?.replyOperation,
                 sessionKey: ctx.SessionKey,
                 storePath,
