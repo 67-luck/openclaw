@@ -1,11 +1,11 @@
-import { clearSessionLifecycleQueues } from "../auto-reply/reply/queue/cleanup.js";
+import { clearSessionQueues } from "../auto-reply/reply/queue/cleanup.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
 import {
-  interruptSessionWorkAdmissions,
-  runExclusiveSessionLifecycleMutation,
-  SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-} from "../sessions/session-lifecycle-admission.js";
+  interruptSessionControllerEffects,
+  runSessionMutation,
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+} from "../sessions/session-controller.lifecycle.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import {
   loadWorkerPlacementSessionRuntimeModule,
@@ -51,7 +51,7 @@ export function createGatewayWorkerPlacementLocalDispatchBarrier(params: {
     });
     const lifecycleIdentities = [sessionKey, target.canonicalKey, ...target.storeKeys, sessionId];
     let placement: Awaited<ReturnType<typeof startDispatch>> | undefined;
-    return await runExclusiveSessionLifecycleMutation("placement-dispatch", {
+    return await runSessionMutation({
       scope: target.storePath,
       identities: lifecycleIdentities,
       signal,
@@ -95,29 +95,22 @@ export function createGatewayWorkerPlacementLocalDispatchBarrier(params: {
         assertCurrent(getRuntimeConfig());
         authorize?.();
         placement = await startDispatch();
-        clearSessionLifecycleQueues({
-          keys: lifecycleIdentities,
-          agentId: currentTarget.agentId,
-          sessionKey: currentTarget.canonicalKey,
-          sessionId,
-          // Dispatch committed; settling its old local queues must survive authority changes.
-          assertCurrent: () => {},
-        });
+        clearSessionQueues(lifecycleIdentities);
         params.revokeSessionAuthority({
           sessionId,
           sessionKeys: lifecycleIdentities,
         });
         await params.awaitTurnClaimRelease(sessionId, async () => {
-          const released = await interruptSessionWorkAdmissions({
+          const released = await interruptSessionControllerEffects({
             scope: target.storePath,
             identities: lifecycleIdentities,
-            timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+            timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
           });
           if (!released) {
             throw new Error(`Session ${sessionKey} is still active; dispatch stopped`);
           }
           await params.placements.waitForTurnClaimRelease(sessionId, {
-            timeoutMs: SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
+            timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
             signal,
           });
         });

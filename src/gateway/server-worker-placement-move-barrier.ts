@@ -1,4 +1,4 @@
-import { clearSessionLifecycleQueues } from "../auto-reply/reply/queue/cleanup.js";
+import { clearSessionQueues } from "../auto-reply/reply/queue/cleanup.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
 import {
@@ -7,9 +7,10 @@ import {
   SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
   startSessionControllerInterruption,
 } from "../sessions/session-controller.lifecycle.js";
-import type { WorkerPlacementSessionRuntime } from "./server-worker-placement-reclaim.js";
-import { resolveWorkerPlacementSessionTarget } from "./server-worker-placement-session-target.js";
-
+import {
+  resolveWorkerPlacementSessionTarget,
+  type WorkerPlacementSessionRuntime,
+} from "./server-worker-placement-session-target.js";
 import type { WorkerPlacementMoveBarrier } from "./worker-environments/placement-move-service.js";
 import type { WorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 
@@ -45,8 +46,7 @@ export function createGatewayWorkerPlacementMoveBarrier(params: {
     });
     const lifecycleIdentities = [sessionKey, target.canonicalKey, ...target.storeKeys, sessionId];
     let begun: Awaited<ReturnType<typeof begin>> | undefined;
-    await runSessionMutation({
-
+    return await runSessionMutation({
       scope: target.storePath,
       identities: lifecycleIdentities,
       signal,
@@ -70,14 +70,7 @@ export function createGatewayWorkerPlacementMoveBarrier(params: {
             authorize?.();
           }
         });
-        clearSessionLifecycleQueues({
-          keys: lifecycleIdentities,
-          agentId: resolved.target.agentId,
-          sessionKey: resolved.target.canonicalKey,
-          sessionId,
-          // The move committed; settling its source queues must survive authority changes.
-          assertCurrent: () => {},
-        });
+        clearSessionQueues(lifecycleIdentities);
         params.revokeSessionAuthority({ sessionId, sessionKeys: lifecycleIdentities });
         if (sourceDisposition === "abandon") {
           // Explicit abandonment revokes the old owner locally; its unreachable
@@ -88,17 +81,19 @@ export function createGatewayWorkerPlacementMoveBarrier(params: {
           });
           return;
         }
-        const released = await interruptSessionControllerEffects({
-          scope: target.storePath,
-          identities: lifecycleIdentities,
-          timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
-        });
-        if (!released) {
-          throw new Error(`Session ${sessionKey} is still active; placement move interrupted`);
-        }
-        await params.placements.waitForTurnClaimRelease(sessionId, {
-          timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
-
+        await params.awaitTurnClaimRelease(sessionId, async () => {
+          const released = await interruptSessionControllerEffects({
+            scope: target.storePath,
+            identities: lifecycleIdentities,
+            timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+          });
+          if (!released) {
+            throw new Error(`Session ${sessionKey} is still active; placement move interrupted`);
+          }
+          await params.placements.waitForTurnClaimRelease(sessionId, {
+            timeoutMs: SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+            signal,
+          });
         });
         await runExclusiveSessionStoreWrite(target.storePath, async () => {}, {
           reentrant: true,

@@ -1,7 +1,6 @@
 import { getRuntimeConfig } from "../config/config.js";
 import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
-import type { WorkerPlacementSessionRuntime } from "./server-worker-placement-reclaim.js";
-
+import type { WorkerPlacementSessionRuntime } from "./server-worker-placement-session-target.js";
 import {
   WorkerPlacementAdmissionTargetError,
   type WorkerPlacementDispatchAdmission,

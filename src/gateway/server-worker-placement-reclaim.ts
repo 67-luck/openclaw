@@ -231,10 +231,8 @@ export function createGatewayWorkerPlacementReclaimBarriers(
         sessionKey,
         agentId,
       });
-    let workspace: WorkerSessionWorkspace | undefined;
-    let reclaimedPlacement: Awaited<ReturnType<typeof reclaim>> | undefined;
-    await runSessionMutation({
-
+    let assertBindingCurrent: (() => void) | undefined;
+    return await runSessionMutation({
       scope: target.storePath,
       identities: lifecycleIdentities,
       prepare: async (lifecycle) => {
@@ -332,9 +330,7 @@ export function createGatewayWorkerPlacementReclaimBarriers(
         // fence before provider cleanup or the failed-to-local transition becomes durable.
         authorize?.();
       };
-      let reclaimedPlacement: Awaited<ReturnType<typeof reclaim>> | undefined;
-      await runSessionMutation({
-
+      return await runSessionMutation({
         scope: target.storePath,
         identities: lifecycleIdentities,
         prepare: async (lifecycle) => {
