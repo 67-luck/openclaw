@@ -7,6 +7,7 @@ import { expect, it as baseIt, vi, type Mock } from "vitest";
 import { reconcileCodexComputerUseStartArtifacts as reconcileArtifacts } from "./auth-bridge.js";
 import type { CodexAppServerStartOptions } from "./config.js";
 import { resolveMacOSDesktopCodexAppPathCandidates } from "./desktop-app-paths.js";
+import { resolveCodexManagedRuntimeAppPath } from "./managed-runtime-installation.js";
 
 /** Uses the auth suite's canonical mock reset and private-home fixture. */
 export function registerAuthBridgeDesktopTests({
@@ -60,10 +61,11 @@ export function registerAuthBridgeDesktopTests({
     await withTempDir("openclaw-codex-retained-artifacts-", async (home) => {
       const homedir = vi.spyOn(os, "homedir").mockReturnValue(home);
       try {
-        const app = path.join(
-          home,
-          "Library/Application Support/OpenClaw/Codex/versions/retained/ChatGPT.app",
-        );
+        const app = resolveCodexManagedRuntimeAppPath({
+          version: 1,
+          appName: "ChatGPT.app",
+          generation: "retained",
+        });
         const command = path.join(app, relativeCommand);
         await fs.mkdir(path.dirname(command), { recursive: true, mode: 0o700 });
         await fs.writeFile(command, "retained executable fixture", { mode: 0o700 });

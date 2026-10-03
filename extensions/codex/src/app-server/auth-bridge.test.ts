@@ -465,7 +465,10 @@ describe("Codex auth bridge", () => {
     expectApiKeyLogin(request, "platform-api-key", true);
   });
 
-  registerAuthBridgeDesktopTests({ desktop, it, createStartOptions });
+  // These macOS fixtures use POSIX paths and executable modes; account/CLI auth stays cross-platform.
+  describe.runIf(process.platform !== "win32")("Desktop artifact reconciliation", () => {
+    registerAuthBridgeDesktopTests({ desktop, it, createStartOptions });
+  });
 
   it("uses the native user Codex home for coexistence mode", async ({ agentDir: root }) => {
     const agentDir = path.join(root, "agent");
