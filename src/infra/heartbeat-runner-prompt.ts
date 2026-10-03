@@ -55,7 +55,6 @@ type HeartbeatPreflight = HeartbeatWakePayloadFlags & {
   deferredEventEntries: SystemEvent[];
   selectedDeliveryRouteKey?: string;
   turnSourceDeliveryContext: ReturnType<typeof resolveSystemEventDeliveryContext>;
-  hasTaggedCronEvents: boolean;
   shouldInspectPendingEvents: boolean;
   authoritativeScheduledTick: boolean;
   skipReason?: HeartbeatSkipReason;
@@ -196,7 +195,6 @@ export async function resolveHeartbeatPreflight(params: {
       ? { selectedDeliveryRouteKey: eventRouteSelection.routeKey }
       : {}),
     turnSourceDeliveryContext,
-    hasTaggedCronEvents,
     shouldInspectPendingEvents,
     authoritativeScheduledTick:
       typeof params.scheduledEveryMs === "number" &&
@@ -230,17 +228,12 @@ export async function resolveHeartbeatPreflight(params: {
       skipReason: HEARTBEAT_SKIP_NO_PENDING_EVENT,
     };
   }
-  if (shouldBypassScratchGates) {
-    return basePreflight;
-  }
-  // Cron owns task due-ness. Task wakes still receive ordinary scratch prose,
-  // but empty or missing scratch must never suppress the independently scheduled job.
-  if (params.scheduledTasks?.length) {
-    return basePreflight;
-  }
-  if (heartbeatScratchContent === undefined) {
-    // Without scratch, the model still gets the generic monitor prompt and
-    // decides whether anything needs attention.
+  // Payload/task wakes bypass the empty-scratch gate; absent scratch uses the generic prompt.
+  if (
+    shouldBypassScratchGates ||
+    params.scheduledTasks?.length ||
+    heartbeatScratchContent === undefined
+  ) {
     return basePreflight;
   }
   if (isHeartbeatContentEffectivelyEmpty(heartbeatScratchContent)) {

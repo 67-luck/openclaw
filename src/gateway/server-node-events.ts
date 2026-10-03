@@ -1,6 +1,8 @@
 // Gateway node event dispatcher.
 // Handles device/node-originated events and routes them to sessions/channels.
 import { randomUUID } from "node:crypto";
+import { safeParseJson } from "@openclaw/normalization-core/json-coercion";
+import { asNullableObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -20,17 +22,12 @@ import { getRuntimeConfig } from "../config/io.js";
 import { resolveSystemMainSessionTarget } from "../config/sessions/main-session.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { loadOrCreateProcessDeviceIdentity } from "../infra/device-identity.js";
 import { updatePairedDevicePresence, type NodePairingGeneration } from "../infra/device-pairing.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { requestHeartbeat } from "../infra/heartbeat-wake.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { buildOutboundSessionContext } from "../infra/outbound/session-context.js";
 import { resolveOutboundTarget } from "../infra/outbound/targets.js";
-import {
-  ApnsRegistrationPairingChangedError,
-  registerApnsRegistration,
-} from "../infra/push-apns.js";
 import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import type { PromptImageOrderEntry } from "../media/prompt-image-order.js";
@@ -420,10 +417,10 @@ function pairingChangedResult(event: string): NodeEventHandleResult {
 }
 
 async function cleanupNodeEventMedia(
-  ids: Iterable<string>,
+  media: Iterable<{ id: string }>,
   ctx: Pick<NodeEventContext, "logGateway">,
 ): Promise<void> {
-  for (const id of ids) {
+  for (const { id } of media) {
     try {
       await deleteMediaBuffer(id);
     } catch (cleanupErr) {
@@ -435,18 +432,7 @@ async function cleanupNodeEventMedia(
 }
 
 function parsePayloadObject(payloadJSON?: string | null): Record<string, unknown> | null {
-  if (!payloadJSON) {
-    return null;
-  }
-  let payload: unknown;
-  try {
-    payload = JSON.parse(payloadJSON) as unknown;
-  } catch {
-    return null;
-  }
-  return typeof payload === "object" && payload !== null
-    ? (payload as Record<string, unknown>)
-    : null;
+  return payloadJSON ? asNullableObjectRecord(safeParseJson(payloadJSON)) : null;
 }
 
 async function sendReceiptAck(params: {
@@ -671,10 +657,7 @@ export const handleNodeEvent = async (
             acceptNonImage: false,
           });
           if (!(await isNodeEventConnectionCurrent(opts))) {
-            await cleanupNodeEventMedia(
-              (parsed.offloadedRefs ?? []).map((ref) => ref.id),
-              ctx,
-            );
+            await cleanupNodeEventMedia(parsed.offloadedRefs ?? [], ctx);
             return pairingChangedResult(evt.event);
           }
           message = parsed.message.trim();
@@ -686,10 +669,7 @@ export const handleNodeEvent = async (
               `agent.request message exceeds limit after attachment parsing (length=${message.length})`,
             );
             if (parsed.offloadedRefs && parsed.offloadedRefs.length > 0) {
-              await cleanupNodeEventMedia(
-                parsed.offloadedRefs.map((ref) => ref.id),
-                ctx,
-              );
+              await cleanupNodeEventMedia(parsed.offloadedRefs, ctx);
             }
             return undefined;
           }
@@ -715,10 +695,7 @@ export const handleNodeEvent = async (
       const now = Date.now();
       const sessionId = entry?.sessionId ?? randomUUID();
       if (!(await isNodeEventConnectionCurrent(opts))) {
-        await cleanupNodeEventMedia(
-          (offloadedRefs ?? []).map((ref) => ref.id),
-          ctx,
-        );
+        await cleanupNodeEventMedia(offloadedRefs ?? [], ctx);
         return pairingChangedResult(evt.event);
       }
       await touchSessionStore({
@@ -729,10 +706,7 @@ export const handleNodeEvent = async (
         now,
       });
       if (!(await isNodeEventConnectionCurrent(opts))) {
-        await cleanupNodeEventMedia(
-          (offloadedRefs ?? []).map((ref) => ref.id),
-          ctx,
-        );
+        await cleanupNodeEventMedia(offloadedRefs ?? [], ctx);
         return pairingChangedResult(evt.event);
       }
 
@@ -759,10 +733,7 @@ export const handleNodeEvent = async (
       }
 
       if (!(await isNodeEventConnectionCurrent(opts))) {
-        await cleanupNodeEventMedia(
-          (offloadedRefs ?? []).map((ref) => ref.id),
-          ctx,
-        );
+        await cleanupNodeEventMedia(offloadedRefs ?? [], ctx);
         return pairingChangedResult(evt.event);
       }
       const persistedTranscriptMedia = await persistInboundImagesForTranscript({
@@ -772,10 +743,7 @@ export const handleNodeEvent = async (
         logContext: "agent.request",
       });
       if (!(await isNodeEventConnectionCurrent(opts))) {
-        await cleanupNodeEventMedia(
-          persistedTranscriptMedia.entries.map((media) => media.id),
-          ctx,
-        );
+        await cleanupNodeEventMedia(persistedTranscriptMedia.entries, ctx);
         return pairingChangedResult(evt.event);
       }
       if (persistedTranscriptMedia.omission === "inline-image-save-failed") {
@@ -833,11 +801,7 @@ export const handleNodeEvent = async (
           allowModelOverride: false,
         },
         opts?.isConnectionCurrent,
-        () =>
-          cleanupNodeEventMedia(
-            persistedTranscriptMedia.entries.map((media) => media.id),
-            ctx,
-          ),
+        () => cleanupNodeEventMedia(persistedTranscriptMedia.entries, ctx),
       );
       return undefined;
     }
@@ -1013,12 +977,7 @@ export const handleNodeEvent = async (
       if (!obj) {
         return undefined;
       }
-      const result = await registerNodeApnsEvent(ctx, nodeId, obj, opts, {
-        ApnsRegistrationPairingChangedError,
-        registerApnsRegistration,
-        loadOrCreateProcessDeviceIdentity,
-        formatForLog,
-      });
+      const result = await registerNodeApnsEvent(ctx, nodeId, obj, opts);
       return result === "pairing-changed" ? pairingChangedResult(evt.event) : undefined;
     }
     case NODE_HOST_STATS_EVENT: {

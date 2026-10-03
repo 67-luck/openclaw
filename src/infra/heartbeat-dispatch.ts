@@ -153,6 +153,7 @@ async function prepareHeartbeatDispatchReply(
       heartbeatTerminalToolFailure: failure,
       replyPayload: selected,
     },
+    useHeartbeatFailureCopy: prepared.useHeartbeatFailureCopy,
     hasRelayableExecCompletion: prepared.hasRelayableExecCompletion,
     suppressUnmarkedSourceReplies:
       resolveSourceReplyDeliveryMode({
@@ -205,7 +206,7 @@ async function prepareHeartbeatDispatchReply(
       await suppressPendingFinalDelivery(reply, { preserveActivity: true });
     }
   }
-  const finish = (
+  const finish = async (
     event: Parameters<typeof emitHeartbeatEvent>[0],
     consume = true,
     holdDelivery = false,
@@ -220,11 +221,11 @@ async function prepareHeartbeatDispatchReply(
     if (preflight.shouldInspectPendingEvents) {
       const queueKey = resolveSystemEventQueueKey(sessionKey, agentId);
       if (consume || dedicatedCompleted) {
-        consumePreparedSystemEventEntries({
+        await consumePreparedSystemEventEntries({
           agentId,
           sessionKey,
           events: consume
-            ? prepared.inspectedSystemEventsToConsume
+            ? [...prepared.inspectedSystemEventsToConsume, ...prepared.deferredGenericEvents]
             : prepared.inspectedSystemEventsToConsume.filter(
                 (entry) =>
                   !isExecCompletionSystemEvent(entry) && !prepared.genericEvents.includes(entry),
@@ -349,7 +350,7 @@ async function prepareHeartbeatDispatchReply(
       return {};
     }
     if (committed.matchingRoute) {
-      finish({
+      await finish({
         status: "sent",
         to: delivery.to,
         preview: truncateHeartbeatPreview(committed.routeSentTexts.join("\n")),
@@ -361,7 +362,7 @@ async function prepareHeartbeatDispatchReply(
       return {};
     }
     if (runState.backgroundWorkStarted) {
-      finish(
+      await finish(
         {
           status: "skipped",
           reason: "background-work",
@@ -408,7 +409,7 @@ async function prepareHeartbeatDispatchReply(
             if (policy.deliveryError) {
               log.warn(`heartbeat: HEARTBEAT_OK delivery failed: ${policy.deliveryError}`);
             }
-            finish(
+            await finish(
               { ...event, silent: result !== "delivered" },
               !prepared.retainGenericEventsUntilDelivery || result === "delivered",
               result !== "delivered",
@@ -418,7 +419,7 @@ async function prepareHeartbeatDispatchReply(
         };
       }
     }
-    finish(
+    await finish(
       { ...event, silent: true },
       !prepared.retainGenericEventsUntilDelivery,
       prepared.retainGenericEventsUntilDelivery,
@@ -456,7 +457,7 @@ async function prepareHeartbeatDispatchReply(
     ) {
       await restoreActivity();
       await suppressSelected();
-      finish(
+      await finish(
         { status: "skipped", reason: "duplicate", preview, hasMedia: false, channel },
         !prepared.retainGenericEventsUntilDelivery,
       );
@@ -472,7 +473,7 @@ async function prepareHeartbeatDispatchReply(
       }
       await suppressSelected();
     }
-    finish(
+    await finish(
       failed
         ? { ...event, silent: true }
         : {
@@ -498,7 +499,7 @@ async function prepareHeartbeatDispatchReply(
   if (readiness && !readiness.ok) {
     await unconfirmed(readiness.reason ?? HEARTBEAT_SKIP_CHANNEL_NOT_READY);
     await restoreActivity();
-    finish(
+    await finish(
       {
         ...event,
         status: failed ? "failed" : "skipped",
@@ -556,7 +557,7 @@ async function prepareHeartbeatDispatchReply(
           },
         );
       }
-      finish(
+      await finish(
         failed
           ? { ...event, silent: !sent || normalized.silent === true }
           : {
@@ -607,7 +608,12 @@ export async function deliverHeartbeatDispatch(
       if (!internalProjection || policy.projectTarget === false) {
         return { visibleReplySent: false };
       }
-      const occurrenceIds = policy.prepared.inspectedSystemEventsToConsume.map((event) => event.id);
+      // Restart continuations are admitted as generic prompt text, so their queue
+      // identities join the publication key alongside inspected completions.
+      const occurrenceIds = [
+        ...policy.prepared.inspectedSystemEventsToConsume,
+        ...policy.prepared.deferredGenericEvents,
+      ].map((event) => event.id);
       if (!occurrenceIds.every((id): id is string => typeof id === "string" && id.length > 0)) {
         policy.deliveryReason = "exec completion occurrence identity unavailable";
         return { visibleReplySent: false };

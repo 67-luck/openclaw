@@ -20,6 +20,6 @@ export function formatQueuedEvents(
     isMainSession: false,
     isNewSession: false,
     events: event?.events ?? [],
-    consume: event?.consumeEvents !== false,
+    deferredEventIds: event?.deferredEventIds,
   });
 }

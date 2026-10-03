@@ -80,21 +80,28 @@ export async function publishHeartbeatSessionReply(params: {
     };
     // Delivery is already admitted. Preserve its fence through the queued write;
     // waiting for all session admissions here would wait for this very delivery.
-    const assertCurrent = (messageId?: string) => {
+    const assertCurrent = () => {
       params.signal?.throwIfAborted();
       assertOwnedWrite();
+      if (
+        authority &&
+        (authority.sessionKey !== scope.sessionKey ||
+          (authority.agentId !== undefined && authority.agentId !== scope.agentId) ||
+          authority.expectedSessionId !== scope.sessionId ||
+          (authority.expectedLifecycleRevision !== undefined &&
+            authority.expectedLifecycleRevision !== params.expectedGeneration.lifecycleRevision))
+      ) {
+        throw new Error("heartbeat publication no longer owns the active transcript");
+      }
+    };
+    const assertTargetCurrent = (messageId?: string) => {
+      assertCurrent();
       const current = loadSessionEntryReadOnly({ ...scope, readConsistency: "latest" });
       if (
         !scope.sessionId ||
         current?.sessionId !== scope.sessionId ||
         current.lifecycleRevision !== params.expectedGeneration.lifecycleRevision ||
         current.activeWriterRunId !== writerRunId ||
-        (authority &&
-          (authority.sessionKey !== scope.sessionKey ||
-            (authority.agentId !== undefined && authority.agentId !== scope.agentId) ||
-            authority.expectedSessionId !== scope.sessionId ||
-            (authority.expectedLifecycleRevision !== undefined &&
-              authority.expectedLifecycleRevision !== current.lifecycleRevision))) ||
         (messageId && !readActiveTranscriptEntryAnchor({ ...scope, entryId: messageId }))
       ) {
         throw new Error("heartbeat publication no longer owns the active transcript");
@@ -107,7 +114,7 @@ export async function publishHeartbeatSessionReply(params: {
         throw new Error(unavailable);
       }
     };
-    assertCurrent();
+    assertTargetCurrent();
     const mirror = metadata?.sourceReplyTranscriptMirror?.transcriptOwner
       ? metadata.sourceReplyTranscriptMirror
       : undefined;
@@ -184,7 +191,7 @@ export async function publishHeartbeatSessionReply(params: {
     ) {
       return { ok: false, reason: "heartbeat runtime final has no matching committed receipt" };
     }
-    assertCurrent(priorId);
+    assertTargetCurrent(priorId);
     const content: SessionTranscriptAssistantMessage["content"] = [
       { type: "text", text: text.trim() },
     ];
@@ -212,21 +219,31 @@ export async function publishHeartbeatSessionReply(params: {
         ? (await import("../gateway/managed-image-attachments.js"))
             .attachManagedOutgoingMediaToMessage
         : undefined;
-    assertCurrent(priorId);
+    assertTargetCurrent(priorId);
     // Exact replay preserves runtime rows and rejects changed notification bytes.
     // The transaction guard also prevents resurrecting a removed/abandoned row.
     const committed = await persistSessionTranscriptTurn(scope, {
       ...expected,
       config: params.cfg,
+      assertCurrent,
+      acceptedResultGuard: {
+        expectedWriterRunId: writerRunId ?? null,
+        errorMessage: "heartbeat publication no longer owns the active transcript",
+      },
       messages: [
         {
           message,
-          ...(priorId ? { eventId: priorId } : {}),
+          ...(priorId
+            ? {
+                eventId: priorId,
+                predicate: {
+                  kind: "active-entry" as const,
+                  entryId: priorId,
+                  errorMessage: "heartbeat publication no longer owns the active transcript",
+                },
+              }
+            : {}),
           idempotencyLookup: "scan",
-          shouldAppendInTransaction: () => {
-            assertCurrent(priorId);
-            return true;
-          },
         },
       ],
       touchSessionEntry: !owned,
@@ -234,10 +251,10 @@ export async function publishHeartbeatSessionReply(params: {
       // A later drain failure cannot revoke a notification already published here.
       updateMode: "none",
       onMessageCommitted: (receipt, acceptCompletion) => {
-        assertCurrent(receipt.messageId);
+        assertTargetCurrent(receipt.messageId);
         const publish = (): Promise<HeartbeatSessionPublication> => {
           const messageSeq = readCommittedTranscriptMessageSequence(receipt);
-          assertCurrent(receipt.messageId);
+          assertTargetCurrent(receipt.messageId);
           // Replays invalidate history without emitting the assistant message again.
           return publishTranscriptUpdate(
             scope,

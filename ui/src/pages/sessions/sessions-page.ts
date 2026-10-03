@@ -14,7 +14,7 @@ import { requestCloudWorkerStop } from "../../components/cloud-worker-stop.runti
 import { resolveCloudWorkerStopAction } from "../../components/cloud-worker-stop.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import { fetchSessionMenuWork } from "../../components/session-menu-work.ts";
-import type { SessionMenuAction, SessionMenuWork } from "../../components/session-menu.ts";
+import type { SessionMenuWork } from "../../components/session-menu.ts";
 import "../../components/session-menu.ts";
 import {
   formatBatchSessionRemovalError,
@@ -27,7 +27,7 @@ import { t } from "../../i18n/index.ts";
 import { watchAgentScope } from "../../lib/agents/index.ts";
 import { openEditor } from "../../lib/editor-links.ts";
 import { formatUiError } from "../../lib/format-error.ts";
-import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
+import { canCallGatewayMethod } from "../../lib/gateway-methods.ts";
 import { openExternalUrlSafe } from "../../lib/open-external-url.ts";
 import {
   readSessionMethodAccess,
@@ -1214,13 +1214,13 @@ class SessionsPage extends OpenClawLightDomElement {
     );
     void fetchSessionMenuWork({
       client: scope.client,
-      loadPullRequests:
-        isGatewayMethodAdvertised(
-          scope.context.gateway.snapshot,
-          SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD,
-        ) === true
-          ? () => store.load(this, pullRequestKey)
-          : undefined,
+      loadPullRequests: canCallGatewayMethod(
+        scope.context.gateway.snapshot,
+        SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD,
+        "operator.read",
+      )
+        ? () => store.load(this, pullRequestKey)
+        : undefined,
       worktreeId: row.worktree.id,
       execNode: row.execNode,
     }).then((work) => {
@@ -1250,7 +1250,7 @@ class SessionsPage extends OpenClawLightDomElement {
       groups: this.knownCategories(),
       work: this.sessionMenuWork,
       onClose: () => this.closeSessionMenu(),
-      onAction: (action: SessionMenuAction) => {
+      onAction: (action) => {
         switch (action.kind) {
           case "open-pr":
             openExternalUrlSafe(action.url);

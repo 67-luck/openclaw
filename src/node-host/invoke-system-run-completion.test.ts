@@ -14,6 +14,28 @@ describe("publishSystemRunCompletion", () => {
     );
   });
 
+  it("preserves result failure when the shared agent runner has no terminal event", async () => {
+    const failure = new Error("agent result failed");
+    await expect(
+      publishSystemRunCompletion(
+        {
+          sendInvokeResult: async () => {
+            throw failure;
+          },
+        },
+        {
+          sessionKey: "agent:main:main",
+          runId: "agent-run",
+          commandText: "printf done",
+          suppressNotifyOnExit: true,
+          notifyOnExit: false,
+        },
+        { exitCode: 0, timedOut: false, success: true, stdout: "done", stderr: "" },
+        "{}",
+      ),
+    ).rejects.toBe(failure);
+  });
+
   it("publishes the terminal event when invoke-result delivery rejects", async () => {
     const sendInvokeResult = vi.fn(async () => {
       throw new Error("result transport failed");

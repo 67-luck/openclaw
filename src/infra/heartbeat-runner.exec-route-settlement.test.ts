@@ -210,7 +210,7 @@ it.each(["configured", "requested"] as const)(
           isMainSession: false,
           isNewSession: false,
           events: events?.events ?? [],
-          consume: events?.consumeEvents !== false,
+          deferredEventIds: events?.deferredEventIds,
         });
         const input = String(ctx.Body) + "\n" + (formatted ?? "");
         inputs.push(input);
@@ -452,7 +452,7 @@ it.each(["explicit", "last", "keyless", "partial", "direct"] as const)(
         kind === "partial"
           ? { target: "telegram" }
           : kind === "last"
-            ? { target: "last" }
+            ? { target: "last", to: "2234567890", accountId: "personal" }
             : kind === "direct"
               ? { target: "last", to: "2234567890", accountId: "personal" }
               : { target: "telegram", to: "2234567890", accountId: "work" };

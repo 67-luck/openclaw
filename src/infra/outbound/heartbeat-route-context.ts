@@ -1,5 +1,5 @@
 import { normalizeChatType, type ChatType } from "../../channels/chat-type.js";
-import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
+import type { AnyChannelPlugin as ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import { channelRouteDedupeKey } from "../../plugin-sdk/channel-route.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import { isDeliverableMessageChannel } from "../../utils/message-channel.js";

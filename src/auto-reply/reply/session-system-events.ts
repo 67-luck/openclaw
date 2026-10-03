@@ -11,11 +11,13 @@ import {
   resolveTimezone,
 } from "../../infra/format-time/format-datetime.ts";
 import { isExecCompletionSystemEvent } from "../../infra/heartbeat-events-filter.js";
-import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
+import {
+  isSystemEventStoreCurrent,
+  resolveSystemEventQueueKey,
+} from "../../infra/system-event-ownership.js";
 import {
   consumeSelectedSystemEventEntries,
   peekSystemEventEntries,
-  selectQueuedSystemEventEntries,
   type SystemEvent,
 } from "../../infra/system-events.js";
 import { channelRouteDedupeKey } from "../../plugin-sdk/channel-route.js";
@@ -88,20 +90,30 @@ function formatSystemEventTimestamp(ts: number, cfg: OpenClawConfig) {
   );
 }
 
-export function consumePreparedSystemEventEntries(params: {
+export async function consumePreparedSystemEventEntries(params: {
   agentId: string;
   sessionKey: string;
   events: readonly SystemEvent[];
-}): SystemEvent[] {
+  deferredEventIds?: readonly string[];
+}): Promise<SystemEvent[]> {
   const queueKey = resolveSystemEventQueueKey(params.sessionKey, params.agentId);
-  const consumed = consumeSelectedSystemEventEntries(queueKey, params.events);
-  const sessionStateTargets = consumed
-    .map((event) =>
-      event.contextKey ? decodeSessionStateNoticeContextKey(event.contextKey) : undefined,
-    )
-    .filter((target): target is string => target !== undefined);
-  if (sessionStateTargets.length > 0) {
-    acknowledgeSessionStateNotices(params.sessionKey, sessionStateTargets);
+  const consumed = consumeSelectedSystemEventEntries(queueKey, params.events, {
+    deferredEventIds: params.deferredEventIds,
+  });
+  const deferredIds = new Set(params.deferredEventIds);
+  const sessionStateNotices = consumed.flatMap((event) => {
+    if (event.id && deferredIds.has(event.id)) {
+      return [];
+    }
+    const targetSessionKey = event.contextKey
+      ? decodeSessionStateNoticeContextKey(event.contextKey)
+      : undefined;
+    return targetSessionKey === undefined
+      ? []
+      : [{ targetSessionKey, watcherStorePath: event.sessionStorePath ?? null }];
+  });
+  if (sessionStateNotices.length > 0) {
+    await acknowledgeSessionStateNotices(params.sessionKey, sessionStateNotices);
   }
   return consumed;
 }
@@ -114,7 +126,7 @@ export async function drainFormattedSystemEvents(params: {
   isMainSession: boolean;
   isNewSession: boolean;
   events?: readonly SystemEvent[];
-  consume?: boolean;
+  deferredEventIds?: readonly string[];
   deliveryContext?: DeliveryContext;
 }): Promise<string | undefined> {
   const systemLines: string[] = [];
@@ -136,15 +148,17 @@ export async function drainFormattedSystemEvents(params: {
         channelRouteDedupeKey(event.deliveryContext) === requestedRouteKey
       );
     });
-  const queued =
-    params.consume === false
-      ? selectQueuedSystemEventEntries(queueKey, selected)
-      : consumePreparedSystemEventEntries({
-          agentId: params.agentId,
-          sessionKey: params.sessionKey,
-          events: selected,
-        });
+  const queued = await consumePreparedSystemEventEntries({
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    events: selected,
+    deferredEventIds: params.deferredEventIds,
+  });
   for (const event of queued) {
+    // A same-store resolver handoff does not retire already-consumed events.
+    if (!isSystemEventStoreCurrent(params.sessionKey, event.sessionStorePath, params.agentId)) {
+      continue;
+    }
     const compacted = compactSystemEvent(event);
     if (!compacted) {
       continue;

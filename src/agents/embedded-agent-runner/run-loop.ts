@@ -8,8 +8,8 @@ import {
 } from "../admitted-run-context.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
 import type { ToolOutcomeObservation } from "../agent-tools.before-tool-call.js";
-import type { FailoverReason } from "../embedded-agent-helpers.js";
 import { isStrictAgenticExecutionContractActive } from "../execution-contract.js";
+import type { FailoverReason } from "../failover/signal.js";
 import { resolveToolLoopDetectionConfig } from "../tool-loop-detection-config.js";
 import { normalizeUsage } from "../usage.js";
 import { log } from "./logger.js";
@@ -32,10 +32,6 @@ import { resolveRunFailoverDecision } from "./run/failover-policy.js";
 import { createEmbeddedRunFailoverRetryController } from "./run/failover-retry-controller.js";
 import { buildErrorAgentMeta, resolveMaxRunRetryIterations } from "./run/helpers.js";
 import { createIdleTimeoutBreakerState } from "./run/idle-timeout-breaker.js";
-import {
-  DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT,
-  DEFAULT_REASONING_ONLY_RETRY_LIMIT,
-} from "./run/incomplete-turn-recovery.js";
 import { createEmbeddedRunPermissionChanges } from "./run/permission-change.js";
 import { measureEmbeddedAgentPreparation } from "./run/preparation-timing.js";
 import { createProviderReviewRun } from "./run/provider-review-run.js";
@@ -148,10 +144,14 @@ export async function runPreparedEmbeddedLoop(
     } = preparedRuntime.snapshot());
   };
   const traceAttempts: TraceAttempt[] = [];
+  // Same-model retry diagnostics inform exhaustion, not model-routing authority.
   const resolveRuntimeFallbackReason = (): string | null =>
     traceAttempts.findLast(
       (attempt) => attempt.result === "fallback_model" && typeof attempt.reason === "string",
-    )?.reason ?? lastRetryFailoverReason;
+    )?.reason ??
+    (params.modelRoutingProvenance?.stage === "fallback"
+      ? (params.modelRoutingProvenance.fallbackReason ?? null)
+      : null);
   const { sessionKey, config, agentId } = params;
   const { sessionAgentId } = resolveSessionAgentIds({ sessionKey, config, agentId });
   const strictAgenticActive = isStrictAgenticExecutionContractActive({
@@ -635,8 +635,6 @@ export async function runPreparedEmbeddedLoop(
         attemptToolSummary,
         failureSignal,
         terminalToolFailure,
-        maxReasoningOnlyRetryAttempts: DEFAULT_REASONING_ONLY_RETRY_LIMIT,
-        maxEmptyResponseRetryAttempts: DEFAULT_EMPTY_RESPONSE_RETRY_LIMIT,
         attemptCompactionCount: terminalAttemptCompactionCount,
         replayState: accumulatedReplayState,
         activePromptPersisted: sessionPromptState.activePrompt.persisted,
@@ -670,8 +668,6 @@ export async function runPreparedEmbeddedLoop(
         pluginHarnessOwnsAuthBootstrap,
         reportedModelRef,
         traceAttempts,
-        traceAttemptUsesFallback: (traceAttempt) =>
-          traceAttempt.result === "rotate_profile" || traceAttempt.result === "fallback_model",
         thinkLevel,
         contextRecoveryState,
       });

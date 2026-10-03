@@ -56,26 +56,6 @@ export type ExecEventPayload = {
   invokeResultSentFirst?: boolean;
 };
 
-export type ExecFinishedResult = {
-  stdout?: string;
-  stderr?: string;
-  error?: string | null;
-  exitCode?: number | null;
-  timedOut?: boolean;
-  success?: boolean;
-};
-
-export type ExecFinishedEventParams = {
-  sessionKey: string;
-  runId: string;
-  commandText: string;
-  result: ExecFinishedResult;
-  suppressNotifyOnExit?: boolean;
-  notifyOnExit?: boolean;
-  /** The node attempted node.invoke.result before emitting this terminal event. */
-  invokeResultSentFirst?: boolean;
-};
-
 export type SkillBinsProvider = {
   current(force?: boolean): Promise<SkillBinTrustEntry[]>;
 };

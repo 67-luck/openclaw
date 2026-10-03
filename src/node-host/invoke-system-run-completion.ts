@@ -1,4 +1,19 @@
-import type { ExecFinishedEventParams, ExecFinishedResult } from "./invoke-types.js";
+import type { RunResult } from "./invoke-types.js";
+
+export type ExecFinishedResult = Pick<
+  RunResult,
+  "exitCode" | "timedOut" | "success" | "stdout" | "stderr" | "error"
+>;
+
+export type ExecFinishedEventParams = {
+  sessionKey: string;
+  runId: string;
+  commandText: string;
+  result: ExecFinishedResult;
+  suppressNotifyOnExit?: boolean;
+  notifyOnExit?: boolean;
+  invokeResultSentFirst?: boolean;
+};
 
 export type SystemRunExecutionContext = {
   sessionKey: string;
@@ -10,7 +25,7 @@ export type SystemRunExecutionContext = {
 
 type CompletionSenders = {
   sendInvokeResult: (params: { ok: true; payloadJSON: string }) => Promise<unknown>;
-  sendExecFinishedEvent: (params: ExecFinishedEventParams) => Promise<unknown>;
+  sendExecFinishedEvent?: (params: ExecFinishedEventParams) => Promise<unknown>;
 };
 
 export function resolveSystemRunNotifyOnExit(params: {
@@ -26,6 +41,11 @@ export async function publishSystemRunCompletion(
   result: ExecFinishedResult,
   payloadJSON: string,
 ): Promise<void> {
+  if (!senders.sendExecFinishedEvent) {
+    // Agent CLI runs share execution policy but own their completion stream.
+    await senders.sendInvokeResult({ ok: true, payloadJSON });
+    return;
+  }
   try {
     await senders.sendInvokeResult({ ok: true, payloadJSON });
   } catch {

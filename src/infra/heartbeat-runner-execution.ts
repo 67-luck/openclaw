@@ -43,7 +43,10 @@ import {
   resolveHeartbeatConfig,
   type HeartbeatConfig,
 } from "./heartbeat-config.js";
-import { isExecCompletionSystemEvent } from "./heartbeat-events-filter.js";
+import {
+  isExecCompletionSystemEvent,
+  isRestartContinuationEvent,
+} from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent } from "./heartbeat-events.js";
 import { heartbeatLog as log } from "./heartbeat-log.js";
 import {
@@ -389,10 +392,15 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   const projectionSessionKey = run.kind === "isolated" ? run.baseSessionKey : sessionKey;
   // Capture the client-owned generation before routing can await. The inspected
   // completion queue owns publication eligibility, not the coalesced wake source.
+  // Session-owned work: a background command completion, or the continuation of a turn
+  // interrupted by a Gateway restart. Both answer the session that owns them.
+  const isSessionOwnedEvent = (event: (typeof preflight.pendingEventEntries)[number]) =>
+    isExecCompletionSystemEvent(event) ||
+    (wake.wakeSource === "restart-sentinel" && isRestartContinuationEvent(event));
   const projectionCandidate =
     scheduledTasks.length === 0 &&
     preflight.shouldInspectPendingEvents &&
-    preflight.pendingEventEntries.some((event) => isExecCompletionSystemEvent(event)) &&
+    preflight.pendingEventEntries.some(isSessionOwnedEvent) &&
     !preflight.session.suppressOriginatingContext &&
     !isInternalSessionEffectsKey(projectionSessionKey) &&
     conversationEntry?.delivery?.kind === "internal" &&
@@ -417,7 +425,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     scheduledTasks.length === 0 &&
     preflight.turnSourceDeliveryContext !== undefined &&
     preflight.selectedEventEntries.some((event) => isExecCompletionSystemEvent(event));
-  const delivery = await resolveHeartbeatDeliveryTargetWithSessionRoute({
+  const resolvedDelivery = await resolveHeartbeatDeliveryTargetWithSessionRoute({
     cfg,
     agentId,
     entry: conversationEntry,
@@ -435,14 +443,28 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   // an explicit target that never resolves to a route also reports `target-none`.
   // Gate here so neither the relay prompt nor the session publication path can
   // see a projection target the resolver already declined to deliver to.
-  const rejectedExternalExecRoute =
-    execOwnsRoute &&
-    delivery.channel === "none" &&
-    !isInternalMessageChannel(preflight.turnSourceDeliveryContext?.channel);
+  // A captured external conversation is authoritative even when its model
+  // session is also visible in the Control UI. Never redirect that result into
+  // internal publication, including when external validation rejects its route.
+  const externalExecOwnsRoute =
+    execOwnsRoute && !isInternalMessageChannel(preflight.turnSourceDeliveryContext?.channel);
   const internalProjection =
-    delivery.reason === "target-none" || rejectedExternalExecRoute
+    resolvedDelivery.reason === "target-none" || externalExecOwnsRoute
       ? undefined
       : projectionCandidate;
+  // Session-owned work in an internal session (the same eligibility as the routeless
+  // projection above: Control UI/WebChat and other operator-owned internal sessions)
+  // answers in that session. The heartbeat target is for heartbeat output and must not
+  // capture it. Mixed batches keep the resolved route for their other events. If the
+  // session write fails, the events stay queued for a later wake; there is no channel
+  // fallback.
+  const sessionOwnedCompletion =
+    internalProjection !== undefined &&
+    preflight.pendingEventEntries.length > 0 &&
+    preflight.pendingEventEntries.every(isSessionOwnedEvent);
+  const delivery: typeof resolvedDelivery = sessionOwnedCompletion
+    ? { ...resolvedDelivery, channel: "none", to: undefined, reason: "session-owned-completion" }
+    : resolvedDelivery;
   // Routeless ambient polls are pure model burn, but only they may skip:
   // triggered wakes (hook/manual/cron/exec), polls with queued events, and
   // scheduled-task wakes must still run to process their payloads even when
@@ -626,6 +648,19 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     outboundPolicySessionKey,
     internalProjection,
     ...heartbeatRunPrompt,
+    // Selected work outranks a coalesced wake; periodic tasks own their prompt even on an exec wake.
+    useHeartbeatFailureCopy:
+      scheduledTasks.length > 0 ||
+      (!heartbeatRunPrompt.hasTaskContinuation &&
+        !heartbeatRunPrompt.hasCronEvents &&
+        (wake.wakeSource === undefined ||
+          wake.wakeSource === "interval" ||
+          wake.wakeSource === "manual")),
+    // Session publication owns restart custody through commit, not prompt admission.
+    deferredGenericEvents:
+      internalProjection && delivery.channel === "none"
+        ? heartbeatRunPrompt.genericEvents.filter(isRestartContinuationEvent)
+        : [],
   } as const;
 }
 

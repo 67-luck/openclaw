@@ -46,6 +46,7 @@ import {
   resolveRestartSafeChatAdmission,
 } from "./chat-restart-recovery.js";
 import { assertExpectedLeafActive } from "./chat-send-active-leaf.js";
+import { prepareGoalChatSendRetry } from "./chat-send-goal-retry.js";
 import {
   inspectGoalChatSendRetry,
   readChatSendDedupeResponse,
@@ -81,6 +82,7 @@ export async function admitChatSend(
   params.assertCurrent?.();
   const { request, session, respond, context, client } = params;
   const { p, explicitOrigin, normalizedAttachments, turnKind } = request;
+  const requestIdentity = request.goalOperation?.requestFingerprint ?? request.requestIdentity;
   const progressRefresh = isProgressCardRefreshInputProvenance(request.systemInputProvenance);
   const {
     rawSessionKey,
@@ -130,7 +132,14 @@ export async function admitChatSend(
       entry: context.dedupe.get(pendingChatSendKey),
       keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
     });
-  const goalRetry = inspectGoalChatSendRetry(params);
+  const preparedGoalRetry = request.goalOperation
+    ? await prepareGoalChatSendRetry(params)
+    : undefined;
+  if (request.goalOperation) {
+    params.assertCurrent?.();
+    assertSessionTargetCurrent();
+  }
+  const goalRetry = inspectGoalChatSendRetry({ ...params, prepared: preparedGoalRetry });
   if (goalRetry.kind !== "new") {
     if (goalRetry.kind === "replay") {
       respond(true, { ...goalRetry.receipt, replayed: true }, undefined, {
@@ -162,7 +171,7 @@ export async function admitChatSend(
   context.dedupe.set(pendingChatSendKey, {
     ts: now,
     ok: true,
-    requestIdentity: request.requestIdentity,
+    requestIdentity,
     payload: {
       runId: clientRunId,
       attemptId: pendingAttemptId,
@@ -195,13 +204,15 @@ export async function admitChatSend(
   let admittedRunAbort: ReturnType<typeof registerChatAbortController> | undefined;
   let restartSafeAdmission: ReturnType<typeof resolveRestartSafeChatAdmission>;
   let initialSessionEntry: SessionEntry | undefined;
+  let admittedSessionEntry: SessionEntry | undefined;
   let admittedSessionSettings: ReturnType<typeof captureAdmittedChatSendSessionSettings>;
   let assertInitialSkillSelection: (() => void) | undefined;
   let messageInjectionTarget: ReplyMessageInjectionTarget | undefined;
   let runInterruptTarget: ReturnType<typeof replyRunRegistry.resolveCurrentInterruptTarget>;
   let reservationSuperseded = false;
   let supersedingResult: DedupeEntry | undefined;
-  const commitChatWorkAdmission = () => {
+  let preparedGoalEntry: Awaited<ReturnType<typeof prepareChatSendSessionEntry>> | undefined;
+  const commitChatWorkAdmission = async (): Promise<void> => {
     params.assertCurrent?.();
     const retainedRequestConflict = resolveChatSendRequestConflict(params);
     if (retainedRequestConflict) {
@@ -249,6 +260,7 @@ export async function admitChatSend(
     }
     const latestSession = loadCurrentChatSendSession(session);
     const latestEntry = latestSession.entry;
+    admittedSessionEntry = latestEntry;
     const requestConflict = resolveChatSendRequestConflict({
       ...params,
       session: { ...session, entry: latestEntry },
@@ -317,12 +329,17 @@ export async function admitChatSend(
     // Retain compaction lineage before attachment/context preparation can outlive this owner.
     expectedActiveReplyOperation = replyRunRegistry.get(activeRunScopeKey);
     if (request.goalOperation?.action === "start" && !latestEntry && !requestedSessionId) {
-      const prepared = prepareChatSendSessionEntry({
-        cfg: latestSession.cfg,
-        client,
-        agentId,
-        getRuntimeConfig: context.getRuntimeConfig,
-      });
+      if (!preparedGoalEntry) {
+        preparedGoalEntry = await prepareChatSendSessionEntry({
+          cfg: latestSession.cfg,
+          client,
+          agentId,
+          getRuntimeConfig: context.getRuntimeConfig,
+        });
+        // Preparation only read facts; re-enter all current reservation and authority checks once.
+        return commitChatWorkAdmission();
+      }
+      const prepared = preparedGoalEntry;
       initialSessionEntry = prepared.entry;
       assertInitialSkillSelection = prepared.assertSkillSelection;
       admittedSessionId = initialSessionEntry.sessionId;
@@ -439,7 +456,6 @@ export async function admitChatSend(
     return { ok: false as const };
   }
   if (
-    !request.goalOperation &&
     admittedRunAbort?.registered &&
     !reservationSuperseded &&
     !readChatSendDedupeResponse(context.dedupe, clientRunId)
@@ -449,7 +465,7 @@ export async function admitChatSend(
     context.dedupe.set(`chat:${clientRunId}`, {
       ts: Date.now(),
       ok: true,
-      requestIdentity: request.requestIdentity,
+      requestIdentity,
     });
   }
   clearPendingChatSendReservation();
@@ -678,6 +694,7 @@ export async function admitChatSend(
       sessionBinding,
       onSessionPrepared,
       initialSessionEntry,
+      admittedSessionEntry,
       chatSendTraceAttributes,
       assertInitialSkillSelection,
       assertSessionTargetCurrent,
@@ -689,6 +706,7 @@ export async function admitChatSend(
       messageInjectionTarget,
       originatingRoute,
       rejectSessionRoutingChanged,
+      releaseSourceWorkAdmission: retainedWork.release,
       retainGatewayWorkAdmission: retainedWork.retain,
       setPendingInputCleanup: retainedWork.setPendingInputCleanup,
       assertClientUploadAllowed: uploadAdmission.assertClientUploadAllowed,
