@@ -20,6 +20,10 @@ import {
   withPluginRuntimeGatewayRequestScope,
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
+import {
+  getRpcSource,
+  isRpcSourceExecuting,
+} from "../../../sessions/session-controller.rpc-sources.js";
 import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
 import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import { normalizeAcceptedSessionSpawnResult } from "../../accepted-session-spawn.js";
@@ -499,7 +503,7 @@ export function readBoundExecutionState(
   const receipt = childRunId ? context.dedupe.get(`agent:${childRunId}`) : undefined;
   const payload = asOptionalRecord(receipt?.payload);
   const cause = asOptionalRecord(asOptionalRecord(receipt?.error)?.cause);
-  const controller = childRunId ? context.chatAbortControllers.get(childRunId) : undefined;
+  const controller = childRunId ? getRpcSource(childRunId) : undefined;
   const execution = childRunId ? subagentRuns.get(childRunId)?.execution : undefined;
   const collector = childRunId ? subagentRuns.get(childRunId) : undefined;
   const label = (value: unknown, allowed: readonly string[]) =>
@@ -520,8 +524,8 @@ export function readBoundExecutionState(
       "FailoverError",
     ]),
     controllerPresent: controller !== undefined,
-    controllerAborted: controller?.controller.signal.aborted,
-    executionStarted: controller?.executionStarted,
+    controllerAborted: controller?.input.abortSignal.aborted,
+    executionStarted: isRpcSourceExecuting(controller),
     executionStatus: label(execution?.status, ["queued", "running", "interrupted", "terminal"]),
     runStatus: label(
       childRunId ? resolveSubagentSessionStatus(subagentRuns.get(childRunId)) : undefined,

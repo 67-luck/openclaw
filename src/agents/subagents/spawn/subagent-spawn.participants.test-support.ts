@@ -10,7 +10,7 @@ import {
 import type { createGatewayInstanceRuntime } from "../../../gateway/server-instance-runtime.js";
 import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
-import { getSessionWorkAdmissionRelease } from "../../../sessions/session-lifecycle-admission.js";
+import { getRpcSource } from "../../../sessions/session-controller.rpc-sources.js";
 import {
   getAdmittedRunDelegatedAuthority,
   readAdmittedRunOperatorAuthority,
@@ -137,10 +137,7 @@ export function registerParticipantSpawnCases(options: {
                 );
                 const settled = visible
                   ? expectDefined(
-                      getSessionWorkAdmissionRelease({
-                        scope: bound.storePath,
-                        identities: [details.childSessionKey, entry.sessionId],
-                      }),
+                      getRpcSource(details.runId)?.input.settlement.promise,
                       "visible child execution custody",
                     )
                   : undefined;

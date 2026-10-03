@@ -23,15 +23,11 @@ import {
 import { createLazyImportLoader } from "../../../shared/lazy-promise.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import { createAgentRunDirectAbortError } from "../../run-termination.js";
-import type {
-  SubagentCancellationControl,
-  SubagentKillInputSnapshot,
-  SubagentKillTargetState,
-} from "./subagent-control.types.js";
 import type { SubagentKillSession } from "./subagent-control-session.js";
 import {
   SUBAGENT_KILL_TASK_ERROR,
   type SubagentCancellationControl,
+  type SubagentKillInputSnapshot,
   type SubagentKillTargetState,
 } from "./subagent-control.types.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
@@ -291,10 +287,10 @@ export async function mutateSubagentRunForKill(
       return cancellationFailure(error, true);
     }
   };
-  const isKilledTarget = (target: SubagentKillTargetState) =>
-    target.state === "terminal" &&
-    target.task.status === "cancelled" &&
-    target.task.error === SUBAGENT_KILL_TASK_ERROR;
+  const isKilledTarget = (state: SubagentKillTargetState) =>
+    state.state === "terminal" &&
+    state.task.status === "cancelled" &&
+    state.task.error === SUBAGENT_KILL_TASK_ERROR;
   const ownsKillIntent = (
     current: SubagentRunRecord | undefined,
     claim: NonNullable<typeof killClaim>,
@@ -419,7 +415,8 @@ export async function mutateSubagentRunForKill(
       // The session fence is active before resolving/signaling other owners.
       // A refused full-session Stop must not interrupt their admissions or this collector.
       const execution = captureExecution()?.execution;
-      const alreadyAborted = execution?.controller.signal.aborted;
+      const executionAborted = () => execution?.input.abortSignal.aborted === true;
+      const alreadyAborted = executionAborted();
       try {
         if (params.beforeSessionKill?.() === false) {
           admission = "declined";
@@ -427,8 +424,7 @@ export async function mutateSubagentRunForKill(
         }
       } finally {
         // A caller hook can accept this exact abort before refusing or throwing.
-        stopAcceptance.accepted ||=
-          !alreadyAborted && execution?.controller.signal.aborted === true;
+        stopAcceptance.accepted ||= !alreadyAborted && executionAborted();
       }
       if (!isCurrent()) {
         return;
@@ -485,8 +481,7 @@ export async function mutateSubagentRunForKill(
       const preparationStop = cancelCapturedSessionControllerSource(capturedPreparation, {
         assertCurrent: assertCancellationCurrent,
       });
-      stopAcceptance.accepted ||=
-        preparationStop.activeCancelled > 0 && killOwnerCurrent();
+      stopAcceptance.accepted ||= preparationStop.activeCancelled > 0 && killOwnerCurrent();
       assertCancellationCurrent();
       captureExecution();
       const interruption = startSessionControllerInterruption({

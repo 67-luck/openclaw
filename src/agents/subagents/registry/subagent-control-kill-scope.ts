@@ -28,10 +28,7 @@ import {
 } from "./subagent-control-session.js";
 import type { SubagentCancellationControl } from "./subagent-control.types.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
-import {
-  captureSubagentExecution,
-  getSubagentExecutionCleanup,
-} from "./subagent-registry-execution-cleanup.js";
+import { captureSubagentExecution } from "./subagent-registry-execution-cleanup.js";
 import { persistSubagentSessionTiming } from "./subagent-registry-helpers.js";
 import { getCurrentSubagentRunOwner, subagentRuns } from "./subagent-registry-memory.js";
 import { assertSubagentRegistryWriteSourceCurrent } from "./subagent-registry-persistence.js";
@@ -522,12 +519,13 @@ export async function withSubagentKillScope<T>(
   completeRetirementPublications.forEach((complete) => complete());
   const settleQueued = async (tree: KillTree): Promise<void> => {
     const { entry, session, dispatchHold } = tree;
-    const executionTail =
-      session &&
-      (captureSubagentExecution({ entry, session })?.execution.executionSettlement ??
-        getSubagentExecutionCleanup(entry, session.entry)?.settlement);
-    if (executionTail && !executionTail.cleanupSettled) {
-      return;
+    const capturedExecution = session && captureSubagentExecution({ entry, session });
+    if (capturedExecution) {
+      try {
+        await capturedExecution.execution.input.settlement.promise;
+      } catch {
+        return;
+      }
     }
     if (
       tree.errors.size !== 0 ||

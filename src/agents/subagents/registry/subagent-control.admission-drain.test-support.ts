@@ -1,10 +1,9 @@
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
-  beginSessionWorkAdmission,
-  getActiveSessionLifecycleMutationCount,
-  SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
-} from "../../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+} from "../../../sessions/session-controller.lifecycle.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
 import { testing as swarmSchedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
@@ -50,16 +49,16 @@ export function registerAdmissionDrainControlTests({
         [childSessionKey]: { sessionId, updatedAt: Date.now() },
       });
       const interrupted = createDeferred();
-      const admission = await beginSessionWorkAdmission({
+      const admission = await beginSessionEffect({
         scope: storePath,
         identities: [childSessionKey, sessionId],
         assertAllowed: () => {},
         onInterrupt: () => interrupted.resolve(),
       });
       setSubagentControlDepsForTest({
-        isEmbeddedAgentRunActive: () => false,
+        isTargetSessionRunActive: () => false,
         abortEmbeddedAgentRun: () => false,
-        clearSessionLifecycleQueues: () => ({ followupCleared: 0, laneCleared: 0, keys: [] }),
+        clearSessionQueues: () => ({ followupCleared: 0, keys: [] }),
       });
 
       const dispatch = vi.fn(async () => {});
@@ -86,13 +85,17 @@ export function registerAdmissionDrainControlTests({
             throw new Error("Cancellation settled before interrupting the held admission");
           }),
         ]);
-        expect(getActiveSessionLifecycleMutationCount()).toBeGreaterThan(0);
+        let admissionReleased = false;
+        void admission.released.then(() => {
+          admissionReleased = true;
+        });
+        expect(admissionReleased).toBe(false);
         if (queued) {
           releaseSwarmRun("holder");
         }
         await Promise.resolve();
         expect(dispatch).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS);
+        await vi.advanceTimersByTimeAsync(SESSION_CONTROLLER_DRAIN_TIMEOUT_MS);
 
         await expect(pendingKill).resolves.toMatchObject({
           status: "error",

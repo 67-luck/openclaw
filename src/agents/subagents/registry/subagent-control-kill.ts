@@ -1,10 +1,8 @@
 import { resolveSubagentLabel } from "../../../auto-reply/reply/subagents-utils.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import { isCurrentChatAbortExecution } from "../../../gateway/chat-abort-lifecycle-internal.js";
-import type { ChatAbortControllerEntry } from "../../../gateway/chat-abort.types.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
-import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
+import { getCurrentSessionControllerOwner } from "../../../sessions/session-controller.context.js";
 import { getRpcSource } from "../../../sessions/session-controller.rpc-sources.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import { mutateSubagentRunForKill } from "./subagent-control-kill-runtime.js";
@@ -27,10 +25,7 @@ import {
 import type { SubagentAdminKillParams, SubagentAdminKillResult } from "./subagent-control.types.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "./subagent-control.types.js";
 import { resolveSubagentKillTargetState } from "./subagent-registry-completion.js";
-import {
-  captureSubagentExecution,
-  getSubagentExecutionCleanup,
-} from "./subagent-registry-execution-cleanup.js";
+import { captureSubagentExecution } from "./subagent-registry-execution-cleanup.js";
 import { getCurrentSubagentRunOwner, subagentRuns } from "./subagent-registry-memory.js";
 import {
   listSubagentRunsForController,
@@ -42,17 +37,12 @@ async function killSubagentRun(
   params: Parameters<typeof mutateSubagentRunForKill>[0],
 ): ReturnType<typeof mutateSubagentRunForKill> {
   let captured = captureSubagentExecution(params);
-  let retiredCleanup = captured
-    ? undefined
-    : getSubagentExecutionCleanup(params.entry, params.session.entry);
   const stopAcceptance = { accepted: false };
   let result: Awaited<ReturnType<typeof mutateSubagentRunForKill>> = {
     killed: false,
     targetState: resolveSubagentKillTargetState(params.entry),
   };
-  let settlementFailure:
-    | { error: unknown; settlement: NonNullable<ChatAbortControllerEntry["executionSettlement"]> }
-    | undefined;
+  let settlementFailure: { error: unknown; settlement: Promise<void> } | undefined;
   try {
     result = await mutateSubagentRunForKill(
       params,
@@ -65,25 +55,20 @@ async function killSubagentRun(
   } finally {
     // Disposal may mutate the session. Join outside the exclusive mutation while
     // the caller still owns this execution's retirement and scheduler holds.
+    captured ??= captureSubagentExecution(params);
     const execution = captured?.execution;
-    retiredCleanup ??= captured
-      ? undefined
-      : getSubagentExecutionCleanup(params.entry, params.session.entry);
-    const settlement = execution?.executionSettlement ?? retiredCleanup?.settlement;
+    const settlement = execution?.input.settlement.promise;
     if (
       settlement &&
-      !(execution ? isCurrentChatAbortExecution(execution) : retiredCleanup?.isSelf()) &&
+      getCurrentSessionControllerOwner() !== execution.input.claim?.operation &&
       (result.killed ||
         result.targetState ||
         stopAcceptance.accepted ||
-        settlement.status === "rejected" ||
         (!result.declined &&
-          (retiredCleanup ||
-            execution?.controller.signal.aborted ||
-            execution?.registrationCleanupRequested)))
+          (execution.input.abortSignal.aborted || execution.input.retirementRequested)))
     ) {
       try {
-        await settlement.completion;
+        await settlement;
       } catch (error) {
         settlementFailure = { error, settlement };
       }
@@ -94,35 +79,10 @@ async function killSubagentRun(
   }
   if (captured) {
     const entry = getCurrentSubagentRunOwner(subagentRuns, params.entry) ?? captured.entry;
-    const resolver = getGatewayContextResolver(entry);
-    const cleanup =
-      resolver === undefined ? getSubagentExecutionCleanup(entry, params.session.entry) : undefined;
-    const releasedToSelfCleanup =
-      cleanup !== undefined &&
-      cleanup.settlement === captured.execution.executionSettlement &&
-      cleanup.isCurrent() &&
-      cleanup.isSelf();
-    if (releasedToSelfCleanup) {
-      params.session.assertCurrent();
-    }
-    const releasedBinding =
-      resolver === undefined &&
-      (captured.execution.executionSettlement?.cleanupSettled === true || releasedToSelfCleanup);
     const rpcSource = getRpcSource(captured.runId);
     if (
       entry.runId !== captured.runId ||
-      (resolver !== captured.resolver && !releasedBinding) ||
-      captured.resolver?.() !== captured.context ||
-      (rpcSource !== undefined &&
-        rpcSource.adapter.operationalRunInstance !== captured.execution.operationalRunInstance)
-    ) {
-      throw new Error("Subagent execution owner changed during cancellation");
-    }
-  } else if (retiredCleanup) {
-    params.session.assertCurrent();
-    if (
-      !retiredCleanup.isCurrent() ||
-      (!retiredCleanup.isSelf() && !retiredCleanup.settlement.cleanupSettled)
+      (rpcSource !== undefined && rpcSource !== captured.execution)
     ) {
       throw new Error("Subagent execution owner changed during cancellation");
     }
@@ -130,11 +90,7 @@ async function killSubagentRun(
   if (settlementFailure) {
     const message = `Subagent execution settlement failed: ${formatErrorMessage(settlementFailure.error)}`;
     const { settlement } = settlementFailure;
-    if (
-      (captured?.execution.executionSettlement ?? retiredCleanup?.settlement) === settlement &&
-      settlement.status === "rejected" &&
-      settlement.cleanupSettled
-    ) {
+    if (captured?.execution.input.settlement.promise === settlement) {
       result = { ...result, completedCleanupError: message };
     } else {
       result = { ...result, error: [result.error, message].filter(Boolean).join(" ") };
@@ -287,9 +243,7 @@ async function killSubagentRunTree(
         if (
           !tree.entry.execution.endedAt ||
           (tree.session &&
-            (captureSubagentExecution({ entry: tree.entry, session: tree.session })?.execution
-              .executionSettlement ||
-              getSubagentExecutionCleanup(tree.entry, tree.session.entry))) ||
+            captureSubagentExecution({ entry: tree.entry, session: tree.session }) !== undefined) ||
           tree.entry.pauseReason === "sessions_yield" ||
           (params.suppressTaskDelivery && suppressCompletedWakes && tree.entry.requesterSettleWake)
         ) {

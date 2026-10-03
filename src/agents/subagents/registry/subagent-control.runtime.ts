@@ -5,7 +5,7 @@ import {
   captureSessionControllerStop,
 } from "../../../sessions/session-controller.stop.js";
 import type { SessionTarget } from "../../../sessions/session-controller.target.js";
-export { clearSessionQueues } from "../../../auto-reply/reply/queue.js";
+export { clearSessionQueues } from "../../../auto-reply/reply/queue/cleanup.js";
 
 export function isTargetSessionRunActive(sessionId: string, target: SessionTarget): boolean {
   return [...selectedOperations([target])].some(

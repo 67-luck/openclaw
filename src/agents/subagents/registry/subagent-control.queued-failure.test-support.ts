@@ -108,7 +108,7 @@ export function registerQueuedReservationFailureTests({
       ),
     );
     setSubagentControlDepsForTest({
-      isEmbeddedAgentRunActive: () => {
+      isTargetSessionRunActive: () => {
         if (failure === "session replacement") {
           replaceSessionEntrySync(
             { storePath, sessionKey: entry.childSessionKey },
@@ -118,7 +118,7 @@ export function registerQueuedReservationFailureTests({
         return ["abort refusal", "claim release"].includes(failure);
       },
       abortEmbeddedAgentRun: () => !["abort refusal", "claim release"].includes(failure),
-      clearSessionLifecycleQueues: () => ({ followupCleared: 0, laneCleared: 0, keys: [] }),
+      clearSessionQueues: () => ({ followupCleared: 0, keys: [] }),
     });
     const reservationReleases: Promise<void>[] = [];
     try {

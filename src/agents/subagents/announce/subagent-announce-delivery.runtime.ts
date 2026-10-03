@@ -14,15 +14,6 @@ import {
   resolveActiveSessionRunId,
   isSessionRunActive,
 } from "../../../sessions/session-controller.queries.js";
-import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runner/run-state.js";
-import {
-  formatEmbeddedAgentQueueFailureSummary,
-  queueEmbeddedAgentMessageWithOutcomeAsync,
-  queueGuardedEmbeddedAgentMessageWithOutcomeAsync,
-  resolveEmbeddedRunAbandonment,
-  type EmbeddedAgentQueueMessageOutcome,
-} from "../../embedded-agent-runner/runs.js";
-import { dispatchGatewayMethodInProcess } from "./subagent-announce.runtime.js";
 import { resolveRequesterStoreKey } from "./subagent-requester-store-key.js";
 export { resolveQueueSettings } from "../../../auto-reply/reply/queue.js";
 export { resolveExternalBestEffortDeliveryTarget } from "../../../infra/outbound/best-effort-delivery.js";

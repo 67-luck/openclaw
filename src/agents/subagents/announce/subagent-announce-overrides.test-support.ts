@@ -32,7 +32,7 @@ type OutputTestDeps = Pick<
 export type SubagentAnnounceDeliveryTestDeps = AnnounceTestDeps & {
   getRequesterSessionActivity: typeof deliveryRuntime.getSubagentRequesterSessionActivity;
   isSessionRunActive: typeof sessionQueries.isSessionRunActive;
-  resolveRequesterSessionAbandonment: typeof deliveryRuntime.resolveSubagentRequesterSessionAbandonment;
+  resolveRequesterSessionAbandonment: typeof embeddedRuns.resolveEmbeddedRunAbandonment;
   loadSessionEntry: typeof sessionAccessor.loadSessionEntryReadOnly;
   loadSessionEntryByKey: typeof deliveryRuntime.loadSessionEntryByKey;
   loadRequesterSessionEntry: typeof deliveryRuntime.loadRequesterSessionEntry;
