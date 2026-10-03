@@ -216,7 +216,11 @@ export function primeMainAgentRun(params?: { sessionId?: string; cfg?: Record<st
     { sessionId: params?.sessionId ?? "existing-session-id" },
     params?.cfg ?? {},
   );
-  mocks.updateSessionStore.mockResolvedValue(undefined);
+  const loaded = mocks.loadSessionEntry();
+  const store = {
+    [loaded.canonicalKey]: structuredClone(loaded.entry),
+  };
+  mocks.updateSessionStore.mockImplementation(async (_path, updater) => await updater(store));
   mocks.agentCommand.mockResolvedValue({
     payloads: [{ text: "ok" }],
     meta: { durationMs: 100 },

@@ -368,6 +368,13 @@ vi.mock("../../agents/subagents/registry/subagent-registry.js", async (importOri
   replaceSubagentRunAfterSteerCore: mocks.replaceSubagentRunAfterSteer,
 }));
 
+vi.mock("../session-lifecycle-plugin-hooks.js", () => ({
+  emitGatewaySessionEndPluginHook: (...args: unknown[]) =>
+    (mocks.emitGatewaySessionEndPluginHook as (...args: unknown[]) => unknown)(...args),
+  emitGatewaySessionStartPluginHook: (...args: unknown[]) =>
+    (mocks.emitGatewaySessionStartPluginHook as (...args: unknown[]) => unknown)(...args),
+}));
+
 vi.mock("../session-reset-service.js", () => ({
   emitGatewaySessionEndPluginHook: (...args: unknown[]) =>
     (mocks.emitGatewaySessionEndPluginHook as (...args: unknown[]) => unknown)(...args),

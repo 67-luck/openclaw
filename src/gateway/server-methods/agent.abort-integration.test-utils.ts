@@ -8,10 +8,10 @@ import {
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import * as agentHandlerHelpers from "../agent-turn/agent-handler-helpers.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
-import type { GatewaySessionRow } from "../session-utils.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { registerAgentAbortSubagentTests } from "./agent.abort-subagents.test-utils.js";
 import { registerAgentPreDispatchFailureTests } from "./agent.pre-dispatch-failure.test-utils.js";
+import { registerAgentGlobalGoalEventTest } from "./agent.session-events.test-utils.js";
 import {
   getAgentTestMocks,
   operatorWriteCliClient,
@@ -70,70 +70,7 @@ describe("gateway agent handler chat.abort integration", () => {
     expect(abortEntry.input.abortSignal.aborted).toBe(false);
   });
 
-  it("keeps selected-global goals on agent session change events", async () => {
-    const goal = {
-      schemaVersion: 1,
-      id: "goal-work-global",
-      objective: "Finish work global task",
-      status: "active",
-      createdAt: 1,
-      updatedAt: 2,
-      tokenStart: 0,
-      tokensUsed: 5,
-      continuationTurns: 0,
-    } satisfies NonNullable<GatewaySessionRow["goal"]>;
-    mocks.listAgentIds.mockReturnValue(["main", "work"]);
-    mocks.resolveExplicitAgentSessionKey.mockReturnValue("global");
-    mocks.loadSessionEntry.mockReturnValue({
-      cfg: { agents: { list: [{ id: "main" }, { id: "work" }] }, session: { scope: "global" } },
-      storePath: "/tmp/sessions.json",
-      entry: {
-        sessionId: "global-session-id",
-        updatedAt: Date.now(),
-      },
-      canonicalKey: "global",
-    });
-    const sessionRow = {
-      key: "global",
-      sessionId: "global-session-id",
-      kind: "global",
-      updatedAt: Date.now(),
-      goal,
-    } satisfies GatewaySessionRow;
-    mocks.updateSessionStore.mockResolvedValue(undefined);
-    mocks.agentCommand.mockReturnValue(new Promise(() => {}));
-
-    const context = makeContext({ agentId: "work", row: sessionRow });
-    context.getSessionEventSubscriberConnIds = () => new Set(["conn-1"]);
-    const runId = "idem-agent-global-goal-event";
-    await invokeAgent(
-      {
-        message: "hi",
-        agentId: "work",
-        idempotencyKey: runId,
-      },
-      { context, reqId: runId },
-    );
-
-    await waitForAssertion(() => {
-      expect(context.addChatRun).toHaveBeenCalledWith(
-        runId,
-        expect.objectContaining({ sessionKey: "global", agentId: "work" }),
-      );
-      expect(getRpcSourceIdentity(rpcSourceTesting.get(runId)!).agentId).toBe("work");
-      expect(context.broadcastToConnIds).toHaveBeenCalledWith(
-        "sessions.changed",
-        expect.objectContaining({
-          sessionKey: "global",
-          agentId: "work",
-          goal: expect.objectContaining({ id: "goal-work-global" }),
-          session: expect.objectContaining({ key: "global", sessionId: "global-session-id", goal }),
-        }),
-        new Set(["conn-1"]),
-        { agentId: "work", dropIfSlow: true, sessionKeys: ["global"] },
-      );
-    });
-  });
+  registerAgentGlobalGoalEventTest();
 
   it("yields after the accepted ack before dispatching heavy agent work", async () => {
     prime();
@@ -292,6 +229,7 @@ describe("gateway agent handler chat.abort integration", () => {
       client: null,
       isWebchatConnect: () => false,
     });
+    await flushScheduledDispatchStep();
 
     expectRecordFields(mockCallArg(stopRespond, 0, 1), {
       aborted: true,
@@ -1116,6 +1054,10 @@ describe("gateway agent handler chat.abort integration", () => {
 
   it("does not dispatch a duplicate sessionless run while its reservation is active", async () => {
     prime();
+    const dispatchGate = createDeferred();
+    const dispatchYield = vi
+      .spyOn(agentHandlerHelpers, "yieldAfterAgentAcceptedAck")
+      .mockReturnValue(dispatchGate.promise);
     let finishRun!: (result: {
       payloads: Array<{ text: string }>;
       meta: { durationMs: number };
@@ -1134,29 +1076,36 @@ describe("gateway agent handler chat.abort integration", () => {
       sessionId: "sessionless-existing-session",
       idempotencyKey: runId,
     };
-    await invokeAgent(request, { context, reqId: runId });
-    expect(rpcSourceTesting.has(runId)).toBe(false);
-    expect(mocks.agentCommand).toHaveBeenCalledTimes(1);
+    try {
+      await invokeAgent(request, { context, reqId: runId, flushDispatch: false });
+      expect(rpcSourceTesting.has(runId)).toBe(false);
+      expect(mocks.agentCommand).not.toHaveBeenCalled();
 
-    const duplicateRespond = vi.fn();
-    await invokeAgent(request, {
-      context,
-      reqId: `${runId}-duplicate`,
-      respond: duplicateRespond,
-    });
+      const duplicateRespond = vi.fn();
+      await invokeAgent(request, {
+        context,
+        reqId: `${runId}-duplicate`,
+        respond: duplicateRespond,
+      });
 
-    expect(mocks.agentCommand).toHaveBeenCalledTimes(1);
-    expect(duplicateRespond).toHaveBeenCalledWith(
-      true,
-      { runId, status: "in_flight", agentId: "main" },
-      undefined,
-      {
-        cached: true,
-        runId,
-      },
-    );
+      expect(mocks.agentCommand).not.toHaveBeenCalled();
+      expect(duplicateRespond).toHaveBeenCalledWith(
+        true,
+        { runId, status: "in_flight", agentId: "main" },
+        undefined,
+        {
+          cached: true,
+          runId,
+        },
+      );
 
-    finishRun({ payloads: [{ text: "ok" }], meta: { durationMs: 1 } });
+      dispatchGate.resolve();
+      await waitForAssertion(() => expect(mocks.agentCommand).toHaveBeenCalledTimes(1));
+    } finally {
+      dispatchGate.resolve();
+      finishRun({ payloads: [{ text: "ok" }], meta: { durationMs: 1 } });
+      dispatchYield.mockRestore();
+    }
   });
 
   it("keeps a sessionless run from replacing an active projected run", async () => {

@@ -523,7 +523,8 @@ export async function prepareAgentRunDispatch(
     const capturedEntry = activeRunAbort.entry;
     if (
       (entry !== capturedEntry && (!terminal || entry !== undefined)) ||
-      capturedEntry?.adapter.operationalRunInstance !== operationalRunInstance ||
+      (capturedEntry !== undefined &&
+        capturedEntry.adapter.operationalRunInstance !== operationalRunInstance) ||
       (!terminal && capturedEntry?.input.retirementRequested)
     ) {
       throw new Error("agent input admission no longer owns this run");
