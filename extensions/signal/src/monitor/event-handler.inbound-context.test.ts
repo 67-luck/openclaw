@@ -6,9 +6,11 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "openclaw/plugin-sdk/runtime-config-snapshot";
+import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveSignalReplyContextWithPersistence } from "../reply-authors.js";
 import { resetSignalReplyAuthorsForTests } from "../reply-authors.test-helpers.js";
+import type { TestDispatchResult } from "./event-handler.test-harness.js";
 import type {
   SignalDataMessage,
   SignalEnvelope,
@@ -34,25 +36,6 @@ type DispatchInboundMessageMockParams = {
     onToolStart?: (payload: { name?: string }) => boolean | void | Promise<boolean | void>;
     onCompactionStart?: () => boolean | void | Promise<boolean | void>;
     onCompactionEnd?: () => boolean | void | Promise<boolean | void>;
-  };
-};
-
-type TestDispatchResult = {
-  queuedFinal: boolean;
-  counts: Record<"tool" | "block" | "final", number>;
-  failedCounts?: Partial<Record<"tool" | "block" | "final", number>>;
-  settledReceipt?: {
-    counts: Record<
-      "tool" | "block" | "final",
-      {
-        delivered: number;
-        deliveredNotVisible: number;
-        cancelled: number;
-        failedBeforeSend: number;
-        failedAfterSend: number;
-      }
-    >;
-    anyVisibleDelivered: boolean;
   };
 };
 
@@ -160,7 +143,9 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", async () => {
           channel: resolved.channel,
           accountId: resolved.accountId,
           routeSessionKey: resolved.route.sessionKey,
-          storePath: "/tmp/openclaw/signal-sessions.json",
+          storePath: resolveStorePath(resolved.cfg.session?.store, {
+            agentId: resolved.route.agentId,
+          }),
           ctxPayload: resolved.ctxPayload,
           recordInboundSession: recordInboundSessionMock,
           afterRecord: resolved.afterRecord,

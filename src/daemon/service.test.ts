@@ -905,37 +905,30 @@ describe("startGatewayService", () => {
     ])("$kind program", ({ kind, program }) => {
       it.each([
         { layout: "runtime executable", args: [program, heapFlag, entrypoint] },
-        { layout: "ordinary entrypoint", args: [process.execPath, program] },
-        { layout: "entrypoint after heap flag", args: [process.execPath, heapFlag, program] },
+        { layout: "ordinary entrypoint", args: ["node", program] },
+        { layout: "entrypoint after heap flag", args: ["node", heapFlag, program] },
         {
           layout: "entrypoint after a preload named gateway",
-          args: [process.execPath, "--require", "gateway", heapFlag, program],
+          args: ["node", "--require", "gateway", heapFlag, program],
         },
         {
           layout: "entrypoint after separate heap flag values",
-          args: [
-            process.execPath,
-            "--max-old-space-size",
-            "16384",
-            "--max-semi-space-size",
-            "64",
-            program,
-          ],
+          args: ["node", "--max-old-space-size", "16384", "--max-semi-space-size", "64", program],
         },
         {
           layout: "relative entrypoint after heap flag",
-          args: [process.execPath, heapFlag, path.basename(program)],
+          args: ["node", heapFlag, path.basename(program)],
           workingDirectory: path.dirname(program),
         },
         { layout: "direct wrapper", args: [program] },
         {
           layout: "node-host entrypoint",
-          args: [process.execPath, program],
+          args: ["node", program],
           subcommand: ["node", "run"],
         },
         {
           layout: "node-host entrypoint after dev loader",
-          args: [process.execPath, "--import", "tsx", program],
+          args: ["node", "--import", "tsx", program],
           subcommand: ["node", "run"],
         },
       ])(
@@ -966,22 +959,15 @@ describe("startGatewayService", () => {
     });
 
     it.each([
-      { layout: "ordinary entrypoint", args: [process.execPath, entrypoint] },
+      { layout: "ordinary entrypoint", args: ["node", entrypoint] },
       {
         layout: "heap flags and unrelated preload path",
-        args: [
-          process.execPath,
-          "--max-old-space-size",
-          "16384",
-          "--require",
-          temporary,
-          entrypoint,
-        ],
+        args: ["node", "--max-old-space-size", "16384", "--require", temporary, entrypoint],
         workingDirectory: os.tmpdir(),
       },
       {
         layout: "relative entrypoint",
-        args: [process.execPath, heapFlag, path.basename(entrypoint)],
+        args: ["node", heapFlag, path.basename(entrypoint)],
         workingDirectory: path.dirname(entrypoint),
       },
       { layout: "direct wrapper", args: [entrypoint] },

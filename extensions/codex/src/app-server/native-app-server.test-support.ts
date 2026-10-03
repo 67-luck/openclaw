@@ -9,7 +9,9 @@ export async function createCodexNativeTestState(root: string) {
   const codexHome = path.join(home, ".codex");
   const cwd = path.join(root, "workspace");
   const tmp = path.join(root, "tmp");
-  await Promise.all([codexHome, cwd, tmp].map((dir) => fs.mkdir(dir, { recursive: true })));
+  await Promise.all(
+    [codexHome, cwd, tmp].map((dir) => fs.mkdir(dir, { recursive: true, mode: 0o700 })),
+  );
   const require = createRequire(import.meta.url);
   const launcher = path.join(
     path.dirname(require.resolve("@openai/codex/package.json")),

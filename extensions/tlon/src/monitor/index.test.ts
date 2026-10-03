@@ -460,7 +460,8 @@ describe("monitorTlonProvider reply prefixes", () => {
     realUrbitFixture.config = {
       session: { store: join(stateDir, "sessions.json") },
       agents: { list: [{ id: "main", identity: { name: "Test Bot" } }] },
-      messages: { responsePrefix: "[global]" },
+      // Pin delivery before holding maintenance timers; provider defaults can load plugins.
+      messages: { responsePrefix: "[global]", visibleReplies: "automatic" },
       channels: {
         tlon: {
           code: "code",
