@@ -15,7 +15,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { loadCronJobsStore, resolveCronJobsStorePath, saveCronJobsStore } from "../cron/store.js";
 import { executeSqliteQueryTakeFirstSync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { spawnTerminalPty } from "../process/terminal-pty.js";
-import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../state/openclaw-agent-db.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import {
@@ -28,7 +31,8 @@ import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { getFreePort } from "../test-utils/ports.js";
 
-function runDoctor(env: NodeJS.ProcessEnv) {
+async function runDoctor(env: NodeJS.ProcessEnv) {
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
   const result = spawnSync(
     process.execPath,
@@ -45,6 +49,7 @@ function runDoctor(env: NodeJS.ProcessEnv) {
 }
 
 async function runInteractiveDoctor(env: NodeJS.ProcessEnv, expectImport: boolean) {
+  await closeOpenClawAgentDatabasesAsync();
   closeOpenClawAgentDatabasesForTest();
   const ptyEnv: Record<string, string> = {};
   for (const [key, value] of Object.entries({
