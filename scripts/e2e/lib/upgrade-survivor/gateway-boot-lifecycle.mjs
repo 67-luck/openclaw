@@ -3,7 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
-import { isMainThread } from "node:worker_threads";
 
 const WINDOW_MS = 5 * 60_000;
 const STOPPED_REASON = "gateway.tailscale_backend_stopped";
@@ -41,6 +40,10 @@ function readJson(file) {
 
 function writeJson(file, value) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+}
+
+function assertLogIncludes(log, message, error) {
+  assert(log.includes(message), error);
 }
 
 function readRows(databasePath, bootIds) {
@@ -150,25 +153,6 @@ function seed() {
   process.stdout.write(`Seeded ${rows.length} preexisting Gateway boot lifecycle rows.\n`);
 }
 
-function installedIdentity() {
-  let root = path.dirname(fs.realpathSync(process.argv[1]));
-  for (let depth = 0; depth < 5; depth++, root = path.dirname(root)) {
-    const manifestPath = path.join(root, "package.json");
-    const buildPath = path.join(root, "dist", "build-info.json");
-    if (!fs.existsSync(manifestPath) || !fs.existsSync(buildPath)) {
-      continue;
-    }
-    const manifest = readJson(manifestPath);
-    if (manifest.name !== "openclaw") {
-      continue;
-    }
-    const build = readJson(buildPath);
-    assert.equal(build.version, manifest.version);
-    return { version: manifest.version, commit: build.commit };
-  }
-  throw new Error("Could not resolve the candidate canary package identity");
-}
-
 function inspectRecoveryRows(databasePath, fixture) {
   const database = new DatabaseSync(databasePath, { readOnly: true });
   try {
@@ -183,44 +167,82 @@ function inspectRecoveryRows(databasePath, fixture) {
   }
 }
 
-function observeCopiedCanary() {
-  const fixtureFile = process.env.OPENCLAW_UPGRADE_SURVIVOR_GATEWAY_BOOT_FIXTURE;
-  if (!isMainThread || !fixtureFile || !process.argv.includes("--update-canary")) {
-    return;
+function writeCanaryPlugin(root) {
+  fs.mkdirSync(root, { recursive: true, mode: 0o700 });
+  writeJson(path.join(root, "package.json"), {
+    name: "@openclaw/gateway-boot-lifecycle-canary",
+    version: "0.0.0",
+    main: "index.cjs",
+    openclaw: { extensions: ["./index.cjs"] },
+  });
+  writeJson(path.join(root, "openclaw.plugin.json"), {
+    id: "gateway-boot-lifecycle-canary",
+    activation: { onStartup: true },
+    configSchema: { type: "object", additionalProperties: false, properties: {} },
+  });
+  const fixtureFile = fixturePath();
+  const receiptFile = path.join(
+    requireEnv("OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"),
+    "gateway-boot-lifecycle-canary.json",
+  );
+  fs.rmSync(receiptFile, { force: true });
+  fs.writeFileSync(
+    path.join(root, "index.cjs"),
+    `const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const { DatabaseSync } = require("node:sqlite");
+const fixtureFile = ${JSON.stringify(fixtureFile)};
+const receiptFile = ${JSON.stringify(receiptFile)};
+const windowMs = ${WINDOW_MS};
+const stoppedReason = ${JSON.stringify(STOPPED_REASON)};
+const recoveredReason = ${JSON.stringify(RECOVERED_REASON)};
+
+function readJson(file) { return JSON.parse(fs.readFileSync(file, "utf8")); }
+function installedIdentity() {
+  let root = path.dirname(fs.realpathSync(process.argv[1]));
+  for (let depth = 0; depth < 5; depth += 1, root = path.dirname(root)) {
+    const manifestPath = path.join(root, "package.json");
+    const buildPath = path.join(root, "dist", "build-info.json");
+    if (!fs.existsSync(manifestPath) || !fs.existsSync(buildPath)) continue;
+    const manifest = readJson(manifestPath);
+    if (manifest.name !== "openclaw") continue;
+    const build = readJson(buildPath);
+    assert.equal(build.version, manifest.version);
+    return { version: manifest.version, commit: build.commit };
   }
+  throw new Error("Could not resolve the candidate canary package identity");
+}
+function observeCopiedState() {
+  if (!process.argv.includes("--update-canary")) return;
   const fixture = readJson(fixtureFile);
-  const databasePath = sourceDatabasePath();
-  const sourcePath = fixture.sourceDatabasePath;
-  const receipt = {
-    status: "admitting",
-    identity: installedIdentity(),
-    observedAtMs: Date.now(),
-    copiedState: fs.realpathSync(databasePath) !== sourcePath,
-  };
-  const completedStopped = fixture.rows.filter((row) => row.startup_reason === STOPPED_REASON);
+  const databasePath = path.join(process.env.OPENCLAW_STATE_DIR || "", "state", "openclaw.sqlite");
+  const receipt = { status: "admitting", identity: installedIdentity(), observedAtMs: Date.now() };
   try {
-    assert(receipt.copiedState, "Candidate canary did not use copied state");
-    assertRows(databasePath, fixture.rows, "Candidate canary input");
-    assert(
-      completedStopped.every(
-        (row) =>
-          receipt.observedAtMs >= row.completed_at_ms &&
-          receipt.observedAtMs - row.completed_at_ms < WINDOW_MS,
-      ),
-      "Completed stopped-daemon rows expired before candidate canary admission",
-    );
+    assert.notEqual(fs.realpathSync(databasePath), fixture.sourceDatabasePath, "Candidate canary did not use copied state");
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    try {
+      const read = database.prepare("SELECT boot_id, pid, started_at_ms, completed_at_ms, outcome, startup_reason, reason FROM gateway_boot_lifecycle WHERE boot_id = ?");
+      const rows = fixture.rows.map((expected) => Object.assign({}, read.get(expected.boot_id)));
+      assert.deepEqual(rows, fixture.rows, "Candidate canary input changed copied preexisting Gateway boot history");
+      const completedStopped = fixture.rows.filter((row) => row.startup_reason === stoppedReason);
+      assert(completedStopped.every((row) => receipt.observedAtMs >= row.completed_at_ms && receipt.observedAtMs - row.completed_at_ms < windowMs), "Completed stopped-daemon rows expired before candidate canary admission");
+      const recovery = database.prepare("SELECT boot_id FROM gateway_boot_lifecycle WHERE startup_reason = ? AND started_at_ms >= ? ORDER BY started_at_ms").all(recoveredReason, fixture.candidateBoundaryMs);
+      assert(recovery.length > 0, "Candidate canary did not record copied-history recovery");
+      receipt.copiedRows = rows.length;
+      receipt.recoveryRows = recovery.length;
+    } finally {
+      database.close();
+    }
   } catch (error) {
     receipt.error = String(error);
   }
-  const receiptFile = path.join(
-    path.dirname(fixtureFile),
-    `gateway-boot-lifecycle-canary-${process.pid}.json`,
+  fs.writeFileSync(receiptFile, JSON.stringify({ ...receipt, status: receipt.error ? "failed" : "admitted" }, null, 2) + "\\n", { mode: 0o600 });
+}
+module.exports = { id: "gateway-boot-lifecycle-canary", name: "Gateway Boot Lifecycle Canary", register() { observeCopiedState(); } };
+`,
+    { mode: 0o600 },
   );
-  writeJson(receiptFile, {
-    ...receipt,
-    status: receipt.error ? "failed" : "admitted",
-    copiedRows: receipt.error ? undefined : fixture.rows.length,
-  });
 }
 
 function captureCandidateBoundary(gatewayLog) {
@@ -234,10 +256,8 @@ function captureCandidateBoundary(gatewayLog) {
 }
 
 function canaryReceipts(artifacts) {
-  return fs
-    .readdirSync(artifacts)
-    .filter((name) => /^gateway-boot-lifecycle-canary-[0-9]+\.json$/u.test(name))
-    .map((name) => readJson(path.join(artifacts, name)));
+  const receipt = path.join(artifacts, "gateway-boot-lifecycle-canary.json");
+  return fs.existsSync(receipt) ? [readJson(receipt)] : [];
 }
 
 function assertRecovery(gatewayLog, updateResult) {
@@ -248,7 +268,12 @@ function assertRecovery(gatewayLog, updateResult) {
   assert.equal(receipts.length, 1, "Expected one candidate canary lifecycle receipt");
   const canary = receipts[0];
   assert.equal(canary.status, "admitted", canary.error ?? "Candidate canary admission failed");
+  assert(
+    canary.observedAtMs >= fixture.candidateBoundaryMs,
+    "Candidate canary receipt predates this update",
+  );
   assert.equal(canary.copiedRows, fixture.rows.length, "Candidate canary did not admit every row");
+  assert(canary.recoveryRows > 0, "Candidate canary did not recover copied history");
   assert.equal(
     canary.identity.commit,
     requireEnv("OPENCLAW_DOCKER_E2E_SELECTED_SHA"),
@@ -342,18 +367,16 @@ function assertSuppressed(gatewayLog) {
     "Genuine crash fixture did not remain between four and five minutes old",
   );
   const log = fs.readFileSync(gatewayLog, "utf8").slice(fixture.suppressionLogOffset);
-  for (const [message, error] of [
-    [
-      "gateway restart-loop breaker tripped: 3 unclean boot(s)",
-      "Candidate did not count the recent genuine/open startup failures",
-    ],
-    [
-      "suppressing channel/provider account auto-start",
-      "Candidate did not preserve channel autostart suppression for genuine failures",
-    ],
-  ]) {
-    assert(log.indexOf(message) !== -1, error);
-  }
+  assertLogIncludes(
+    log,
+    "gateway restart-loop breaker tripped: 3 unclean boot(s)",
+    "Candidate did not count the recent genuine/open startup failures",
+  );
+  assertLogIncludes(
+    log,
+    "suppressing channel/provider account auto-start",
+    "Candidate did not preserve channel autostart suppression for genuine failures",
+  );
   const database = new DatabaseSync(sourceDatabasePath(), { readOnly: true });
   let breakerRows;
   try {
@@ -385,11 +408,12 @@ function assertSuppressed(gatewayLog) {
   process.stdout.write(`GATEWAY_BOOT_LIFECYCLE_PROOF ${JSON.stringify(readJson(proofPath()))}\n`);
 }
 
-observeCopiedCanary();
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const [command, ...args] = process.argv.slice(2);
   if (command === "seed") {
     seed();
+  } else if (command === "write-canary-plugin") {
+    writeCanaryPlugin(...args);
   } else if (command === "capture-candidate-boundary") {
     captureCandidateBoundary(...args);
   } else if (command === "assert-recovery") {

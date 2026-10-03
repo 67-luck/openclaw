@@ -1563,10 +1563,6 @@ update_candidate() {
     update_node_options+=" --import=$PWD/scripts/e2e/lib/upgrade-survivor/cron-owner-doctor.mjs"
     update_env+=("OPENCLAW_UPGRADE_SURVIVOR_CRON_OWNER_FIXTURE=$ARTIFACT_ROOT/cron-owner-fixture.json")
   fi
-  if [ "$SCENARIO" = "gateway-boot-lifecycle" ]; then
-    update_node_options+=" --import=$PWD/scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs"
-    update_env+=("OPENCLAW_UPGRADE_SURVIVOR_GATEWAY_BOOT_FIXTURE=$ARTIFACT_ROOT/gateway-boot-lifecycle-fixture.json")
-  fi
   if [ "$SCENARIO" = "legacy-operator-state" ] && [ "$UPDATE_RESTART_MODE" = "manual" ] &&
     { [ "${baseline_version:-}" = "2026.9.3" ] || [ "${baseline_version:-}" = "2026.9.4" ]; }; then
     update_node_options+=" --import=$PWD/scripts/e2e/lib/upgrade-survivor/legacy-operator-cron-history.mjs"
@@ -2495,6 +2491,15 @@ if [ "$SCENARIO" = "update-report-recovery" ]; then
   echo "Update report recovery passed: published updater installed the candidate; rejected uploads retry and uncertain uploads only reconcile."
   exit 0
 fi
+install_gateway_boot_canary_plugin() {
+  local plugin_root="$ARTIFACT_ROOT/gateway-boot-lifecycle-canary-plugin"
+  node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs \
+    write-canary-plugin "$plugin_root"
+  openclaw_e2e_fixture_plugin_command openclaw -- \
+    plugins install "$plugin_root" --force \
+    >"$ARTIFACT_ROOT/gateway-boot-lifecycle-canary-plugin-install.log" 2>&1
+}
+
 if [ "$SCENARIO" = "gateway-boot-lifecycle" ]; then
   if [ "$baseline_spec" != "openclaw@2026.9.6" ] || [ "$CANDIDATE_KIND" != "tarball" ] ||
     [ "$UPDATE_RESTART_MODE" != "auto-auth" ] || [ "$ROOT_MANAGED_VPS" != "0" ] || [ "$LIVE_ENABLED" != "0" ]; then
@@ -2502,6 +2507,7 @@ if [ "$SCENARIO" = "gateway-boot-lifecycle" ]; then
     exit 2
   fi
   phase configure-gateway-boot-baseline apply_baseline_config_recipe
+  phase install-gateway-boot-canary-plugin install_gateway_boot_canary_plugin
   phase validate-gateway-boot-baseline validate_baseline_config
   phase resolve-gateway-boot-candidate resolve_candidate_version
   phase capture-gateway-boot-candidate node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs \
