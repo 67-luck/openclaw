@@ -2,10 +2,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { resolveNpmJsonEntries } from "../scripts/lib/npm-json-output.mts";
 import {
   resolvePluginNpmCommand,
   withAugmentedPluginNpmManifestForPackage,
 } from "../scripts/lib/plugin-npm-package-manifest.mts";
+import { isRecord } from "../scripts/lib/record-shared.mjs";
 import { inspectPackageTarballBytes } from "../scripts/plugin-publication-artifact.mjs";
 import { cleanupTempDirs, makeTempDir } from "./helpers/temp-dir.js";
 import { writeJsonFile } from "./helpers/temp-repo.js";
@@ -63,8 +65,8 @@ function pack(packageDir: string, destination: string) {
     windowsVerbatimArguments: invocation.windowsVerbatimArguments,
   });
   expect(result.status, result.stderr).toBe(0);
-  const [packed] = JSON.parse(result.stdout) as Array<{ filename: string }>;
-  if (!packed) {
+  const [packed] = resolveNpmJsonEntries(JSON.parse(result.stdout));
+  if (!isRecord(packed) || typeof packed.filename !== "string" || !packed.filename) {
     throw new Error("npm pack returned no artifact");
   }
   return inspectPackageTarballBytes(readFileSync(join(destination, packed.filename)));
