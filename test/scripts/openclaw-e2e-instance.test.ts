@@ -486,11 +486,28 @@ describe("scripts/lib/openclaw-e2e-instance.sh", () => {
         `openclaw_e2e_probe_http() { printf 'probe\n' >>${shellQuote(probePath)}; return 0; }`,
         `sleep() { printf '[gateway] restart-loop breaker tripped: 3 unclean boot(s)\n' >>${shellQuote(logPath)}; }`,
         'gateway_pid="$$"',
-        `openclaw_e2e_wait_gateway_ready "$gateway_pid" ${shellQuote(logPath)} 2 18789 strict 'restart-loop breaker tripped: 3 unclean boot'`,
+        `openclaw_e2e_wait_gateway_ready "$gateway_pid" ${shellQuote(logPath)} 2 18789 strict 'restart-loop breaker tripped: 3 unclean boot(s)'`,
       ]);
 
       expectShellSuccess(result);
       expect(fs.readFileSync(probePath, "utf8").trim().split("\n")).toEqual(["probe"]);
+    });
+  });
+
+  it("matches required startup evidence literally in a large scan chunk", () => {
+    withTempDir("openclaw-e2e-literal-startup-log-", (tempDir) => {
+      const logPath = path.join(tempDir, "gateway.log");
+      fs.writeFileSync(
+        logPath,
+        `${"x".repeat(128 * 1024)}\n[gateway] restart-loop breaker tripped: 3 unclean boot(s) within 300000ms\n[gateway] ready\n`,
+      );
+      const result = runBashWithHelper([
+        "openclaw_e2e_probe_http() { return 0; }",
+        'gateway_pid="$$"',
+        `openclaw_e2e_wait_gateway_ready "$gateway_pid" ${shellQuote(logPath)} 1 18789 strict '[gateway] restart-loop breaker tripped: 3 unclean boot(s) within 300000ms'`,
+      ]);
+
+      expectShellSuccess(result);
     });
   });
 
