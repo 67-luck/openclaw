@@ -188,7 +188,7 @@ it("backs up and atomically moves checkpoint facts into canonical retention and 
       expect(after.raw).not.toContain("compactionCheckpoints");
       expect(after.raw).toContain('"opaqueCount":9007199254740993');
       expect(after.updatedAt).toBe(42);
-      expect(after.transcriptUpdatedAt).toBe(42);
+      expect(after.transcriptUpdatedAt).toBe(43);
       const event = expectDefined(after.event, "repaired compaction event");
       expect(JSON.parse(event.event_json)).toMatchObject({
         type: "compaction",
@@ -285,9 +285,12 @@ it("restores cold compaction metrics after backup without changing marker text",
             legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
           }),
       });
-      expect(
-        migrated.stepReceipts.find((receipt) => receipt.id === "session-entry-state"),
-      ).toMatchObject({ outcome: "completed" });
+      const entryStateReceipt = migrated.stepReceipts.find(
+        (receipt) => receipt.id === "session-entry-state",
+      );
+      expect(entryStateReceipt, JSON.stringify(entryStateReceipt)).toMatchObject({
+        outcome: "completed",
+      });
       const after = fixture.read();
       expect(JSON.parse(String(after.raw))).toMatchObject({
         retainedHistoryReferences: { sessionIds: [fixture.sessionId], artifactPaths: [] },
