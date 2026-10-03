@@ -147,7 +147,8 @@ export function resolveFollowupDeliveryContextKey(run: FollowupRun): string {
   ]);
 }
 
-function resolveFollowupReplyAnchor(run: FollowupRun): string | undefined {
+/** Resolves the message/thread identity that keeps routed reply batches separate. */
+export function resolveFollowupReplyAnchor(run: FollowupRun): string | undefined {
   if (run.originatingReplyToMode === "off") {
     return undefined;
   }

@@ -670,7 +670,11 @@ describe("followup queue collect routing", () => {
           originatingChatType: "channel",
         });
       }
-      await q.drain();
+      const inputs = getExistingFollowupQueue(q.key)!.entries.slice();
+      q.start();
+      await q.done.promise;
+      await Promise.all(inputs.map((input) => input.settlement.promise));
+      await inputs.at(-1)?.claim?.settlement.promise;
       return q.calls;
     };
     const firstCalls = await drainRoute("channel:A");
@@ -1904,7 +1908,60 @@ describe("followup queue collect routing", () => {
     },
   );
 
-  it("keeps queue cancellation connected after collect admission", async () => {
+  it("does not replay an adopted source when a later collected admission rejects", async () => {
+    const q = createQueueCase({ mode: "collect", debounceMs: 0 }, 1);
+    const firstComplete = vi.fn();
+    const secondComplete = vi.fn();
+    const first = createRun({ prompt: "first" });
+    first.turnAdoptionLifecycle = {
+      admission: "cancel-only",
+      onAdopted: vi.fn(async () => {}),
+      onSettled: firstComplete,
+    };
+    const second = createRun({ prompt: "second" });
+    second.turnAdoptionLifecycle = {
+      admission: "cancel-only",
+      onAdopted: vi
+        .fn<() => Promise<void>>()
+        .mockRejectedValueOnce(new Error("second admission failed"))
+        .mockResolvedValueOnce(),
+      onSettled: secondComplete,
+    };
+    q.add(first);
+    q.add(second);
+    q.start(async (run) => {
+      q.calls.push(run);
+      await admitFollowupRunLifecycle(run);
+      q.done.resolve();
+    });
+
+    await q.done.promise;
+    expect(q.calls).toHaveLength(2);
+    expect(q.calls[0]?.prompt).toContain("first");
+    expect(q.calls[0]?.prompt).toContain("second");
+    expect(q.calls[1]?.prompt).not.toContain("first");
+    expect(q.calls[1]?.prompt).toContain("second");
+    expect(first.turnAdoptionLifecycle.onAdopted).toHaveBeenCalledTimes(1);
+    expect(second.turnAdoptionLifecycle.onAdopted).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(secondComplete).toHaveBeenCalledOnce());
+    expect(firstComplete).toHaveBeenCalledOnce();
+  });
+
+  it("does not treat an undefined callback rejection as an adoption refusal", async () => {
+    const q = createQueueCase({ mode: "followup", debounceMs: 0 }, 1);
+    const source = createRun({ prompt: "generic failure" });
+    q.add(source);
+    q.start(async (run) => {
+      q.calls.push(run);
+      throw undefined;
+    });
+
+    await expect(source.controllerInput!.settlement.promise).resolves.toBeUndefined();
+    expect(q.calls).toHaveLength(1);
+    expect(getExistingFollowupQueue(q.key)).toBeUndefined();
+  });
+
+  it("keeps queue-case cancellation connected after collect admission", async () => {
     const q = createQueueCase({ mode: "collect", debounceMs: 0 }, 1);
     q.add(createRun({ prompt: "first" }));
     q.add(createRun({ prompt: "second" }));
@@ -1941,7 +1998,7 @@ describe("followup queue collect routing", () => {
       if (q.calls.length === 1) {
         canceled.abort();
         expect(run.abortSignal?.aborted).toBe(true);
-        return;
+        rejectQueuePreparation(run, new Error("source cancelled during preparation"));
       }
       q.done.resolve();
     });
@@ -1955,7 +2012,7 @@ describe("followup queue collect routing", () => {
     expect(canceledComplete).toHaveBeenCalledTimes(1);
   });
 
-  it("removes an aborted elided source without leaking it into the summary", async () => {
+  it("removes a pre-aborted queue-case elision without leaking it into the summary", async () => {
     const q = createQueueCase({ mode: "followup", cap: 1 }, 1);
     const elidedComplete = vi.fn();
     const elided = new AbortController();
@@ -1983,7 +2040,7 @@ describe("followup queue collect routing", () => {
     expect(elidedComplete).toHaveBeenCalledTimes(1);
   });
 
-  it("does not replay elided sources after an admitted summary failure", async () => {
+  it("does not replay queue-case elisions after an admitted summary failure", async () => {
     const q = createQueueCase({ mode: "followup", cap: 1 }, 1);
     const elidedComplete = vi.fn();
     const retainedComplete = vi.fn();

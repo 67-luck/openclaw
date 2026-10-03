@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
 import { runAgentHarnessBeforeMessageWriteHook } from "../../../agents/harness/hook-helpers.js";
 import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../../../agents/prepared-model-runtime-generation-scope.js";
+import { normalizeChatType } from "../../../channels/chat-type.js";
+import { channelRouteDedupeKey } from "../../../plugin-sdk/channel-route.js";
 import {
   getGatewayRestartDrainSignal,
   isGatewayRestartDrainError,
@@ -7,6 +10,7 @@ import {
   runWithGatewayDetachedWorkContinuation,
 } from "../../../process/gateway-work-admission.js";
 import { defaultRuntime } from "../../../runtime.js";
+import { deferSessionControllerClaimBeforeExecution } from "../../../sessions/session-controller.mailbox-claim.js";
 import {
   detachSessionControllerSources,
   getExistingSessionControllerMailbox,
@@ -16,11 +20,10 @@ import {
   type SessionControllerMailbox,
   type SessionControllerMailboxClaim,
 } from "../../../sessions/session-controller.mailbox.js";
-import { hasReplyOperationExecutionStarted } from "../../../sessions/session-controller.state.js";
 import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.js";
 import { buildCollectPrompt, previewQueueSummaryPrompt } from "../../../utils/queue-helpers.js";
 import { resolveCollectedRun } from "./collected-run.js";
-import { collectRuntimeMetadata } from "./delivery-context.js";
+import { collectRuntimeMetadata, resolveFollowupReplyAnchor } from "./delivery-context.js";
 import {
   buildCollectTranscriptInput,
   collectQueuedPromptMedia,
@@ -41,6 +44,29 @@ import { consumeQueueSummaryDelivery } from "./summary-consumption.js";
 import { isFollowupRunAborted, type FollowupRun } from "./types.js";
 
 let followedRestartDrainSignal: AbortSignal | undefined;
+
+// Overflow retries must reuse one transcript identity, while the same provider-local
+// message ID on a different channel route remains an independent user turn.
+function buildOverflowTranscriptIdempotencyKey(source: FollowupRun, prompt: string): string {
+  const promptHash = createHash("sha256").update(prompt).digest("hex");
+  const routeHash = createHash("sha256")
+    .update(
+      JSON.stringify([
+        channelRouteDedupeKey({
+          channel: source.originatingChannel,
+          to: source.originatingTo,
+          accountId: source.originatingAccountId,
+          threadId: source.originatingThreadId,
+        }),
+        resolveFollowupReplyAnchor(source) ?? "",
+        source.originatingReplyToMode ?? "",
+        normalizeChatType(source.originatingChatType) ?? "",
+      ]),
+    )
+    .digest("hex");
+  return `followup-overflow:${source.run.sessionId}:${routeHash}:${source.messageId ?? source.enqueuedAt}:${promptHash}`;
+}
+
 function bindRestart(): void {
   const signal = getGatewayRestartDrainSignal();
   if (followedRestartDrainSignal === signal) {
@@ -122,9 +148,7 @@ async function executeClaim(
       ? createUserTurnTranscriptRecorder({
           input: {
             text: prompt,
-            idempotencyKey:
-              "mailbox-summary:" +
-              sources.map((item) => item.controllerInput!.instance.id).join(":"),
+            idempotencyKey: buildOverflowTranscriptIdempotencyKey(source, prompt),
             senderIsOwner: source.run.senderIsOwner,
             provenance: source.run.inputProvenance,
           },
@@ -180,13 +204,22 @@ async function executeClaim(
   try {
     await execute(run);
   } catch (error) {
+    const adoptionRefused = sources.some((item) => {
+      const custody = item.controllerInput?.custody;
+      return (
+        custody && !custody.adopted && custody.failure !== undefined && custody.failure === error
+      );
+    });
+    if (adoptionRefused) {
+      // Adoption is the last reversible producer boundary before model/tool work.
+      // Match the custody owner's exact rejection so later execution errors cannot replay.
+      deferSessionControllerClaimBeforeExecution(claim);
+    }
     defaultRuntime.error?.("mailbox execution failed for " + queue.key + ": " + String(error));
   } finally {
     // Only the execution producer can return an explicit pre-execution refusal.
-    // Generic throws/returns never grant replayability.
-    if (claim.operation && hasReplyOperationExecutionStarted(claim.operation)) {
-      claim.retryBeforeExecution = false;
-    }
+    // Generic throws/returns and the operation's broader preparation marker never
+    // grant or revoke replayability; the producer-local receipt is authoritative.
     const preparationRefused = claim.retryBeforeExecution === true;
     const retrySources = claim.retryBeforeExecution
       ? sources.filter((item) => {
@@ -198,6 +231,7 @@ async function executeClaim(
           return (
             !isFollowupRunAborted(item) &&
             !item.controllerInput?.retirementRequested &&
+            !item.controllerInput?.custody.adopted &&
             !item.controllerInput?.custody.completed
           );
         })

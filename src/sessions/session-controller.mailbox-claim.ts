@@ -10,7 +10,6 @@ import { retireSessionControllerInput } from "./session-controller.mailbox-sourc
 import type { SessionControllerMailboxClaim } from "./session-controller.mailbox.types.js";
 import {
   isCurrentSessionControllerOperation,
-  hasReplyOperationExecutionStarted,
   getSessionControllerEntryForOperation,
 } from "./session-controller.state.js";
 
@@ -92,8 +91,7 @@ export function deferSessionControllerClaimBeforeExecution(
     claim.mailbox.claim !== claim ||
     !claim.sources.length ||
     claim.custody.completed ||
-    claim.inputs.some((input) => input.injection) ||
-    (claim.operation && hasReplyOperationExecutionStarted(claim.operation))
+    claim.inputs.some((input) => input.injection)
   ) {
     return false;
   }
@@ -141,9 +139,9 @@ export function releaseSessionControllerClaim(claim: SessionControllerMailboxCla
           input.claim === claim &&
           input.phase === "claimed" &&
           claim.retryBeforeExecution &&
-          (!claim.operation || !hasReplyOperationExecutionStarted(claim.operation)) &&
           !input.retirementRequested &&
           !input.abortSignal.aborted &&
+          !input.custody.adopted &&
           !input.custody.completed;
         if (retry) {
           // The completed claim request cannot receive a second selection.
