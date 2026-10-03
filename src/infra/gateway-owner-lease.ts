@@ -73,7 +73,7 @@ export function assertGatewayOwnerLeaseStopped(
     ({ db }) => {
       readStoppedGatewayOwnerLease(db);
     },
-    { env },
+    { env, ...(openStateSchemaReadAdmission ? { allowQuarantinedRead: true } : {}) },
     openStateSchemaReadAdmission,
   );
 }

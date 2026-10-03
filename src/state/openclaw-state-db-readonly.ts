@@ -551,11 +551,16 @@ export function withExistingOpenClawStateDatabaseCurrentReadOnly<T>(
   options: OpenClawStateDatabaseOptions & {
     /** Existing host mutation guards may read natively outside worker admission grants. */
     allowNativeRead?: true;
+    /** Doctor may inspect lifecycle rows before repairing a quarantined schema. */
+    allowQuarantinedRead?: true;
   } = {},
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
 ): T | undefined {
   const pathname = resolveReadOnlyPath(options);
   return stateSnapshotReads.exit(() => {
+    if (options.allowQuarantinedRead && !openStateSchemaReadAdmission) {
+      throw new Error("Quarantined state reads require explicit schema-read admission");
+    }
     // Maintenance admission belongs to a fresh private reader, never a cached writer.
     if (!openStateSchemaReadAdmission) {
       const reused = withOpenClawStateDatabaseReadOnlyIfOpen(operation, pathname, true);
@@ -566,10 +571,12 @@ export function withExistingOpenClawStateDatabaseCurrentReadOnly<T>(
     if (existingPathOrUndefined(pathname) === undefined) {
       return undefined;
     }
-    openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
-      pathname,
-      options.env ?? process.env,
-    );
+    if (!options.allowQuarantinedRead) {
+      openClawStateDatabaseCache.assertOpenClawStateDatabaseFreshOpenAllowedAtPath(
+        pathname,
+        options.env ?? process.env,
+      );
+    }
     return withOpenClawStateReadOnlyLocation(
       operation,
       pathname,
