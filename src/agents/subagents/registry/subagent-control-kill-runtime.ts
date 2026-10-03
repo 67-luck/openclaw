@@ -175,6 +175,7 @@ export async function mutateSubagentRunForKill(
   const target = captureSessionTarget({
     storeScope: resolved.storePath,
     sessionKey: childSessionKey,
+    agentId: resolved.agentId,
     incarnation: sessionId,
   });
   let capturedStop: ReturnType<typeof captureSessionControllerStop> | undefined;

@@ -101,7 +101,7 @@ export async function reconcileDurableSubagentKillIntent(params: {
     isAgentEventLifecycleGenerationCurrent(killIntent.lifecycleGeneration) &&
     isSameSubagentRunOwner(getLatestSubagentRunForChild(childRuns(), params.entry), params.entry);
   const cfg = getRuntimeConfig();
-  const { storePath } = resolveSubagentChildSessionOwner(params.entry, cfg);
+  const { agentId, storePath } = resolveSubagentChildSessionOwner(params.entry, cfg);
   let session: SubagentKillSession | undefined;
   const ownsSessionIncarnation = () => {
     try {
@@ -144,6 +144,7 @@ export async function reconcileDurableSubagentKillIntent(params: {
   const target = captureSessionTarget({
     storeScope: storePath,
     sessionKey: params.entry.childSessionKey,
+    agentId,
     incarnation: killIntent.sessionId,
   });
   const identities = target.aliases;
