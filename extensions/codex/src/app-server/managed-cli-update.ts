@@ -250,7 +250,7 @@ function captureRuntimeFiles(root: string): () => void {
     const content = stat.isFile()
       ? sha256FileSync(file).digest
       : stat.isDirectory()
-        ? JSON.stringify(fsSync.readdirSync(file).sort())
+        ? JSON.stringify(fsSync.readdirSync(file).toSorted())
         : fsSync.readlinkSync(file);
     return [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs, content].join(
       ":",

@@ -16,11 +16,6 @@ import {
   resolveClientManagedBundledMarketplacePath,
 } from "./computer-use-marketplace.js";
 import {
-  CODEX_COMPUTER_USE_NODE_REPL_SERVER,
-  hasCodexComputerUseNodeReplOwnership,
-  isCodexComputerUseNodeReplClient,
-} from "./computer-use-node-repl.js";
-import {
   createComputerUseRequest,
   runCodexComputerUseLiveTest,
   type CodexComputerUseRequest,
@@ -614,37 +609,12 @@ async function readComputerUseTools(params: {
   installPlugin: boolean;
   releaseNativeConfigFence?: () => void;
 }): Promise<CodexComputerUseStatus> {
-  let config = params.config;
-  const usesOfficialNativeBridge =
-    config.mcpServerName === "computer-use" &&
-    params.plugin.summary.id === "computer-use@openai-bundled" &&
-    params.plugin.mcpServers.length === 0;
-  let ownershipRejected = false;
-  const readServer = async () => {
-    if (
-      (usesOfficialNativeBridge ||
-        (config.mcpServerName === CODEX_COMPUTER_USE_NODE_REPL_SERVER &&
-          isCodexComputerUseNodeReplClient(params.client))) &&
-      !(await hasCodexComputerUseNodeReplOwnership(params))
-    ) {
-      ownershipRejected = true;
-      return undefined;
-    }
-    if (!usesOfficialNativeBridge) {
-      return await readMcpServerStatus(params.request, config.mcpServerName);
-    }
-    const native = await readMcpServerStatus(params.request, CODEX_COMPUTER_USE_NODE_REPL_SERVER);
-    if (!native?.tools?.js) {
-      return undefined;
-    }
-    config = { ...config, mcpServerName: CODEX_COMPUTER_USE_NODE_REPL_SERVER };
-    return native;
-  };
-  let server = await readServer();
+  const config = params.config;
+  let server = await readMcpServerStatus(params.request, config.mcpServerName);
   let tools = Object.keys(server?.tools ?? {}).toSorted();
-  if ((!server || tools.length === 0) && params.installPlugin && !ownershipRejected) {
+  if ((!server || tools.length === 0) && params.installPlugin) {
     await params.request("config/mcpServer/reload", undefined);
-    server = await readServer();
+    server = await readMcpServerStatus(params.request, config.mcpServerName);
     tools = Object.keys(server?.tools ?? {}).toSorted();
   }
   if (!server || tools.length === 0) {

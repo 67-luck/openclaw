@@ -635,6 +635,40 @@ describe("Codex app-server model catalog", () => {
     expect(withCodexAppServerJsonClient).toHaveBeenCalledTimes(2);
   });
 
+  it.each(["background", "peer"] as const)(
+    "revokes removed-model readiness in existing scopes after a successful %s refresh",
+    async (refresh) => {
+      const removed = opaqueCatalog().models[0]!;
+      const retained = { ...removed, id: "synthetic-retained", model: "synthetic-retained" };
+      listModelsMock.mockResolvedValue({ models: [removed, retained] });
+      const peer = { ...catalogParams, agentId: "peer", agentDir: "/tmp/peer-agent" };
+      await owner.load(catalogParams, nativePluginConfig);
+      await owner.load(peer, nativePluginConfig);
+      expect(read({}, nativePluginConfig)).toBeDefined();
+      listModelsMock.mockResolvedValue({ models: [retained] });
+      if (refresh === "background") {
+        await vi.advanceTimersByTimeAsync(5 * 60_000);
+        expect(await owner.load(catalogParams, nativePluginConfig)).toHaveLength(2);
+        await vi.advanceTimersByTimeAsync(0);
+      } else {
+        await owner.load({ ...peer, refresh: true }, nativePluginConfig);
+      }
+      for (const scope of [catalogParams, peer]) {
+        expect(
+          owner.read({ ...scope, provider: "openai", modelId: removed.id }, nativePluginConfig),
+        ).toBeUndefined();
+        expect(
+          owner.read({ ...scope, provider: "openai", modelId: retained.id }, nativePluginConfig),
+        ).toEqual({ accountType: "apiKey", authMode: "api_key" });
+      }
+      expect((await owner.load(catalogParams, nativePluginConfig)).map(({ id }) => id)).toEqual([
+        retained.id,
+      ]);
+      expect(withCodexAppServerJsonClient).toHaveBeenCalledTimes(2);
+      expect(listModelsMock).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("returns cached models immediately during one stale refresh and backs off failed refreshes", async () => {
     vi.useFakeTimers();
     listModelsMock.mockResolvedValue(opaqueCatalog());

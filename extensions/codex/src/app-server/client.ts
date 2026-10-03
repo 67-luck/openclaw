@@ -34,7 +34,6 @@ import {
   type CodexServerNotificationHandler,
 } from "./client-notifications.js";
 import { dispatchCodexAppServerResponse } from "./client-response.js";
-import { bindCodexComputerUseNodeReplClient } from "./computer-use-node-repl.js";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import {
   type CodexAppServerRequestMethod,
@@ -259,9 +258,8 @@ export class CodexAppServerClient {
       await createCodexAppServerTransport(
         options,
         assertCurrent,
-        (child, startOptions) => {
+        (child) => {
           client = new CodexAppServerClient(child);
-          bindCodexComputerUseNodeReplClient(client, startOptions);
         },
         processScope,
       );

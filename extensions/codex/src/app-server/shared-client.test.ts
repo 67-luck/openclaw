@@ -81,9 +81,6 @@ const mocks = vi.hoisted(() => ({
   readCodexDesktopGenerationCandidates: vi.fn<
     () => readonly import("./desktop-app-paths.js").MacOSDesktopCodexAppPathCandidate[] | undefined
   >(() => []),
-  resolveCodexComputerUseNodeReplStartArgs: vi.fn(
-    async (params: { args?: string[] }) => params.args ?? ["app-server"],
-  ),
 }));
 mocks.waitForCodexDesktopGeneration.mockImplementation(async () => mocks.desktopGeneration);
 
@@ -123,11 +120,6 @@ vi.mock("./desktop-generation.js", () => ({
     generation.fingerprint === mocks.desktopGeneration?.fingerprint,
   waitForCodexDesktopGeneration: mocks.waitForCodexDesktopGeneration,
   readCodexDesktopGenerationCandidates: mocks.readCodexDesktopGenerationCandidates,
-}));
-
-vi.mock("./computer-use-node-repl.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./computer-use-node-repl.js")>()),
-  resolveCodexComputerUseNodeReplStartArgs: mocks.resolveCodexComputerUseNodeReplStartArgs,
 }));
 
 vi.mock("openclaw/plugin-sdk/agent-harness-registration", async (importOriginal) => ({
@@ -335,10 +327,6 @@ describe("shared Codex app-server client", () => {
     mocks.readCodexDesktopGenerationCandidates.mockReturnValue([]);
     mocks.waitForCodexDesktopGeneration.mockReset();
     mocks.waitForCodexDesktopGeneration.mockImplementation(async () => mocks.desktopGeneration);
-    mocks.resolveCodexComputerUseNodeReplStartArgs.mockReset();
-    mocks.resolveCodexComputerUseNodeReplStartArgs.mockImplementation(
-      async (params: { args?: string[] }) => params.args ?? ["app-server"],
-    );
     mocks.resolveManagedCodexNativeCommand.mockClear();
     mocks.resolveManagedCodexNativeCommand.mockImplementation(
       (command: string) => `${command}.native`,

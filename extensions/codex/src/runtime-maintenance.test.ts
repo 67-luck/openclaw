@@ -139,6 +139,29 @@ describe("selected Codex runtime maintenance", () => {
     }
   });
 
+  it("reports a committed automatic selection even when its cleanup needs attention", async () => {
+    const f = automaticFixture();
+    vi.spyOn(cliUpdates, "updateCodexManagedCli").mockResolvedValue({
+      status: "updated",
+      version: "99.3.0",
+      warnings: ["Selected runtime, but staging cleanup failed"],
+    });
+    try {
+      await f.service.start(f.ctx);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(f.ctx.logger.info).toHaveBeenCalledWith(expect.stringContaining("selected: 99.3.0"));
+      expect(f.ctx.logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining("staging cleanup failed"),
+      );
+      expect(f.ctx.logger.warn).not.toHaveBeenCalledWith(
+        expect.stringContaining("retained the working selection"),
+      );
+      expect(f.ctx.serviceHealth!.reportFailure).toHaveBeenCalledOnce();
+    } finally {
+      await f.service.stop?.(f.ctx);
+    }
+  });
+
   it.each(["OPENCLAW_NO_AUTO_UPDATE", "OPENCLAW_NIX_MODE"])(
     "does not acquire a runtime in %s environments",
     async (key) => {
@@ -202,12 +225,46 @@ describe("selected Codex runtime maintenance", () => {
       1,
       expect.objectContaining({
         appBundlePath: "/staged/ChatGPT.app",
-        agents: [expect.objectContaining({ model: "gpt-5.6-sol", requiresComputerUse: true })],
+        agents: [expect.objectContaining({ models: ["gpt-5.6-sol"], requiresComputerUse: true })],
       }),
     );
     await expect(f.check.detect(f.ctx, { findings })).resolves.toEqual([]);
     expect(f.deps.probe).toHaveBeenCalledOnce();
     expect(f.deps.resolveCommand).toHaveBeenCalledTimes(3);
+  });
+
+  it("qualifies alternate and aliased fallback Codex routes even with a non-Codex primary", async () => {
+    const f = fixture();
+    f.cfg.agents!.defaults = {
+      model: { primary: "anthropic/claude", fallbacks: ["backup"] },
+      models: {
+        "openai/gpt-5.6-sol": { alias: "backup", agentRuntime: { id: "codex" } },
+        "openai/other-codex-model": { agentRuntime: { id: "codex" } },
+      },
+    };
+    f.cfg.agents!.entries!.other = {
+      agentDir: path.join(f.root, "other"),
+      model: "anthropic/claude",
+      models: { "openai/private-model": { agentRuntime: { id: "codex" } } },
+    };
+    const findings = await f.check.detect(f.ctx);
+    expect(findings).toHaveLength(1);
+    const result = await f.check.repair!({ ...f.ctx, mode: "fix" }, findings);
+    expect(result.status).toBe("repaired");
+    expect(f.deps.probe).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        agents: [
+          expect.objectContaining({
+            models: ["gpt-5.6-sol", "other-codex-model"],
+            codexHome: path.join(f.root, "agent/codex-home"),
+          }),
+          expect.objectContaining({
+            models: ["gpt-5.6-sol", "other-codex-model", "private-model"],
+            codexHome: path.join(f.root, "other/codex-home"),
+          }),
+        ],
+      }),
+    );
   });
 
   it("includes native-only Computer Use instead of trusting just OpenClaw's flag", async () => {

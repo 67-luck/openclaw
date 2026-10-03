@@ -1,7 +1,4 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
-import { withTempDir } from "openclaw/plugin-sdk/test-env";
 import { expect, it, vi, type Mock } from "vitest";
 import { CodexAppServerClient } from "./client.js";
 import type { CodexAppServerStartOptions } from "./config.js";
@@ -25,7 +22,6 @@ export function registerSharedClientDesktopStartupTests({
     waitForCodexDesktopGeneration: Mock;
     readCodexDesktopGenerationCandidates: Mock;
     resolveManagedCodexAppServerStartOptions: Mock;
-    resolveCodexComputerUseNodeReplStartArgs: Mock;
   };
   createInitializingClientHarness: () => ReturnType<typeof createClientHarness>;
   createStartOptions: (options: Partial<CodexAppServerStartOptions>) => CodexAppServerStartOptions;
@@ -35,110 +31,34 @@ export function registerSharedClientDesktopStartupTests({
   ) => Promise<void>;
 }) {
   it.each(["resolved-managed", "config"] as const)(
-    "only prepares owned desktop commands without a generation service (%s)",
+    "preserves native MCP ownership by starting without overriding its config layers (%s)",
     async (commandSource) => {
       const harness = createInitializingClientHarness();
       const startSpy = vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(harness.client);
       const originalArgs = ["app-server"];
-      const bridgeArgs = ["app-server", "-c", "mcp_servers.node_repl.enabled=true"];
-      mocks.resolveCodexComputerUseNodeReplStartArgs.mockResolvedValue(bridgeArgs);
       const client = await getLeasedSharedCodexAppServerClient({
         timeoutMs: 1_000,
         agentDir: "/tmp/openclaw-agent",
         startOptions: {
           transport: "stdio",
           homeScope: "agent",
-          command: "/Applications/ChatGPT.app/Contents/Resources/codex",
           commandSource,
+          command: "/Applications/ChatGPT.app/Contents/Resources/codex",
           args: originalArgs,
           headers: {},
         },
       });
-      expect(readCodexAppServerClientDesktopGeneration(client)).toBeUndefined();
-      if (commandSource === "resolved-managed") {
-        expect(mocks.resolveCodexComputerUseNodeReplStartArgs).toHaveBeenCalledOnce();
-        expect(startSpy).toHaveBeenCalledWith(
-          expect.objectContaining({ args: bridgeArgs }),
-          expect.any(Function),
-        );
-      } else {
-        expect(mocks.resolveCodexComputerUseNodeReplStartArgs).not.toHaveBeenCalled();
-        expect(startSpy).toHaveBeenCalledWith(
+      try {
+        expect(readCodexAppServerClientDesktopGeneration(client)).toBeUndefined();
+        expect(startSpy).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({ args: originalArgs }),
           expect.any(Function),
         );
+      } finally {
+        expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
       }
-      expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
     },
   );
-
-  it.each([
-    {
-      name: "explicitly named official marketplace",
-      computerUse: { enabled: true, marketplaceName: "openai-bundled" },
-      nativeEnabled: false,
-      ownsBridge: true,
-    },
-    {
-      name: "native-only official plugin",
-      computerUse: { enabled: false },
-      nativeEnabled: true,
-      ownsBridge: true,
-    },
-    ...[
-      { marketplaceName: "custom-marketplace" },
-      { pluginName: "custom-plugin" },
-      { mcpServerName: "custom-server" },
-      { marketplaceSource: "https://example.invalid/plugins" },
-      { marketplacePath: "/custom/marketplace.json" },
-    ].map((integration) => ({
-      name: `custom ${Object.keys(integration)[0]} with an enabled native plugin`,
-      computerUse: { enabled: true, ...integration },
-      nativeEnabled: true,
-      ownsBridge: false,
-    })),
-  ])("respects startup ownership for $name", async ({ computerUse, nativeEnabled, ownsBridge }) => {
-    await withTempDir("codex-native-ownership-", async (agentDir) => {
-      const nativeConfig = path.join(agentDir, "codex-home", "config.toml");
-      if (nativeEnabled) {
-        await fs.mkdir(path.dirname(nativeConfig), { recursive: true });
-        await fs.writeFile(nativeConfig, '[plugins."computer-use@openai-bundled"]\nenabled=true\n');
-      }
-      const harness = createInitializingClientHarness();
-      const startSpy = vi.spyOn(CodexAppServerClient, "start").mockResolvedValue(harness.client);
-      const originalArgs = ["app-server"];
-      const bridgeArgs = ["app-server", "-c", "mcp_servers.node_repl.enabled=true"];
-      mocks.resolveCodexComputerUseNodeReplStartArgs.mockResolvedValue(bridgeArgs);
-      const client = await getLeasedSharedCodexAppServerClient({
-        timeoutMs: 1_000,
-        agentDir,
-        pluginConfig: { computerUse },
-        startOptions: {
-          transport: "stdio",
-          homeScope: "agent",
-          command: "/Applications/ChatGPT.app/Contents/Resources/codex",
-          commandSource: "resolved-managed",
-          args: originalArgs,
-          headers: {},
-        },
-      });
-      if (ownsBridge) {
-        expect(mocks.resolveCodexComputerUseNodeReplStartArgs).toHaveBeenCalledExactlyOnceWith(
-          expect.objectContaining({
-            codexHome: path.dirname(nativeConfig),
-            enabled: computerUse.enabled,
-          }),
-        );
-      } else {
-        expect(mocks.resolveCodexComputerUseNodeReplStartArgs).not.toHaveBeenCalled();
-      }
-      expect(startSpy).toHaveBeenCalledWith(
-        expect.objectContaining({ args: ownsBridge ? bridgeArgs : originalArgs }),
-        expect.any(Function),
-      );
-      expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
-    });
-  });
 
   it("rejects a lost generation snapshot through the existing bounded selection retry classifier", async () => {
     mocks.desktopGeneration = { epoch: 1, fingerprint: "superseded" };

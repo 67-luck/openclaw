@@ -11,23 +11,14 @@ const fake = vi.hoisted(() => ({
   request: vi.fn(),
   close: vi.fn(),
   closeAndWait: vi.fn(),
-  marketplace: vi.fn(),
   service: vi.fn(),
-  bridge: vi.fn(),
   readiness: vi.fn(),
   tempRoot: vi.fn(),
   getServerVersion: vi.fn(),
 }));
 vi.mock("openclaw/plugin-sdk/temp-path", () => ({ resolvePreferredOpenClawTmpDir: fake.tempRoot }));
 vi.mock("./client.js", () => ({ CodexAppServerClient: { start: fake.start } }));
-vi.mock("./computer-use-marketplace.js", () => ({
-  ensureCodexManagedBundledMarketplace: fake.marketplace,
-}));
 vi.mock("./computer-use-service.js", () => ({ ensureCodexComputerUseServiceApp: fake.service }));
-vi.mock("./computer-use-node-repl.js", () => ({
-  resolveCodexComputerUseNodeReplStartArgs: fake.bridge,
-  assertCodexDesktopComputerUseProbeSupported: vi.fn(),
-}));
 vi.mock("./computer-use.js", () => ({ readCodexComputerUseStatus: fake.readiness }));
 
 function probeHome(): string {
@@ -65,24 +56,18 @@ describe("disposable selected-runtime validation", () => {
           }
         : {},
     );
-    fake.marketplace.mockImplementation(async ({ codexHome }) => {
-      const marketplace = path.join(codexHome, "marketplace");
-      await fs.mkdir(marketplace);
-      return marketplace;
-    });
     fake.service.mockImplementation(async ({ codexHome }) => ({
       status: "installed",
       targetPath: path.join(codexHome, "computer-use", "Codex Computer Use.app"),
     }));
-    fake.bridge.mockImplementation(async ({ args }) => args);
     fake.readiness.mockResolvedValue({ ready: true, liveTest: { ok: true } });
   });
 
-  async function fixture(requiresComputerUse = false) {
+  async function fixture(requiresComputerUse = false, commandRelative = "codex") {
     const root = dirs.make("codex-probe-test-");
     const appBundlePath = path.join(root, "ChatGPT.app");
     const command = requiresComputerUse
-      ? path.join(appBundlePath, "Contents/Resources/codex")
+      ? path.join(appBundlePath, "Contents/Resources", commandRelative)
       : path.join(root, "cli", "bin", "codex.js");
     await fs.mkdir(path.dirname(command), { recursive: true });
     await fs.writeFile(command, "synthetic executable", { mode: 0o700 });
@@ -93,13 +78,27 @@ describe("disposable selected-runtime validation", () => {
       );
       await fs.mkdir(plugin, { recursive: true });
       await fs.writeFile(path.join(plugin, "plugin.json"), '{"version":"1.0.0"}');
+      const marketplace = path.join(
+        appBundlePath,
+        "Contents/Resources/plugins/openai-bundled/.agents/plugins",
+      );
+      await fs.mkdir(marketplace, { recursive: true });
+      await fs.writeFile(
+        path.join(marketplace, "marketplace.json"),
+        JSON.stringify({
+          name: "openai-bundled",
+          plugins: [
+            { name: "computer-use", source: { source: "local", path: "./plugins/computer-use" } },
+          ],
+        }),
+      );
     }
     const codexHome = path.join(root, "real-home");
     await fs.mkdir(codexHome);
     await fs.writeFile(path.join(codexHome, "auth.json"), "fixture-not-a-real-secret");
     const controller = new AbortController();
     const agent = {
-      model: "test-model",
+      models: ["test-model"],
       codexHome,
       computerUse: resolveCodexComputerUseConfig({
         pluginConfig: { computerUse: { enabled: requiresComputerUse, autoInstall: true } },
@@ -115,6 +114,44 @@ describe("disposable selected-runtime validation", () => {
       controller,
       root,
     };
+  }
+
+  async function writeUnifiedRuntimeFixture(resources: string) {
+    const plugin = path.join(resources, "plugins/openai-bundled/plugins/unified-computer-use");
+    const files: Array<[string, string]> = [
+      [
+        path.join(plugin, ".codex-plugin/plugin.json"),
+        JSON.stringify({
+          name: "unified-computer-use",
+          version: "2.0.0",
+          mcpServers: "./.mcp.json",
+        }),
+      ],
+      [
+        path.join(plugin, ".mcp.json"),
+        JSON.stringify({
+          mcpServers: { cua_repl: { command: "node", args: [], enabled: false } },
+        }),
+      ],
+      ...[
+        "bin/node",
+        "bin/node_repl",
+        "lib/node_modules/@oai/cua-repl/bin/cua-repl.mjs",
+        "lib/node_modules/@oai/sky/package.json",
+        "lib/node_modules/@oai/cua/entry.js",
+      ].map((relative): [string, string] => [
+        path.join(resources, "cua_node", relative),
+        "fixture",
+      ]),
+      [
+        path.join(resources, "cua_node/lib/node_modules/@oai/cua/package.json"),
+        JSON.stringify({ exports: { "./tinyskyAlt": "./entry.js" } }),
+      ],
+    ];
+    for (const [file, content] of files) {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, content, { mode: 0o700 });
+    }
   }
 
   it("uses hidden metadata without credentials or inference and joins the client before cleanup", async () => {
@@ -173,6 +210,19 @@ describe("disposable selected-runtime validation", () => {
     expect(fake.closeAndWait).toHaveBeenCalledOnce();
   });
 
+  it("rejects a missing fallback using one candidate process and one shared catalog", async () => {
+    const f = await fixture();
+    await expect(
+      probeCodexDesktopRuntime({
+        ...f,
+        agents: [{ ...f.agents[0], models: ["test-model", "required-fallback"] }],
+      }),
+    ).rejects.toThrow("required-fallback is missing");
+    expect(fake.start).toHaveBeenCalledOnce();
+    expect(fake.request.mock.calls.filter(([method]) => method === "model/list")).toHaveLength(1);
+    expect(fake.closeAndWait).toHaveBeenCalledOnce();
+  });
+
   // Computer Use inspects a real macOS executable; shared protocol tests above use package CLI.
   it.runIf(process.platform !== "win32")(
     "canonicalizes temporary home and marketplace aliases before native config admission",
@@ -194,6 +244,66 @@ describe("disposable selected-runtime validation", () => {
       });
       await probeCodexDesktopRuntime(f);
       expect(fake.readiness).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["codex", "codex-cli/CodexCLI.app/Contents/MacOS/codex"])(
+    "qualifies the native unified plugin in %s without a process MCP override",
+    async (commandRelative) => {
+      const f = await fixture(true, commandRelative);
+      const resources = path.join(f.appBundlePath!, "Contents/Resources");
+      await writeUnifiedRuntimeFixture(resources);
+      fake.readiness.mockImplementation(async ({ overrides }) => {
+        expect(overrides).toMatchObject({
+          pluginName: "unified-computer-use",
+          mcpServerName: "cua_repl",
+        });
+        const cached = path.join(
+          probeHome(),
+          "plugins/cache/openai-bundled/unified-computer-use/2.0.0/.mcp.json",
+        );
+        expect(JSON.parse(await fs.readFile(cached, "utf8"))).toMatchObject({
+          mcpServers: { cua_repl: { enabled: true } },
+        });
+        return { ready: true, liveTest: { ok: true } };
+      });
+      await probeCodexDesktopRuntime(f);
+      expect(fake.start).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          args: ["app-server", "--listen", "stdio://"],
+          command: path.join(resources, commandRelative),
+        }),
+        expect.any(Function),
+        { signal: f.signal, ownership: "retained-tree" },
+      );
+      expect(fake.readiness).toHaveBeenCalledOnce();
+      expect(fake.closeAndWait).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["replacement disablement", '[plugins."unified-computer-use@openai-bundled"]\nenabled = false'],
+    [
+      "legacy plugin MCP policy",
+      '[plugins."computer-use@openai-bundled".mcp_servers.computer-use]\nenabled_tools = ["list_apps"]',
+    ],
+    [
+      "replacement plugin MCP policy",
+      '[plugins."unified-computer-use@openai-bundled".mcp_servers.cua_repl]\ndisabled_tools = ["js"]',
+    ],
+  ])(
+    "preserves %s instead of certifying an unrestricted replacement",
+    async (_name, nativePolicy) => {
+      const f = await fixture(true);
+      await writeUnifiedRuntimeFixture(path.join(f.appBundlePath!, "Contents/Resources"));
+      const configPath = path.join(f.agents[0].codexHome, "config.toml");
+      const config = `[plugins."computer-use@openai-bundled"]\nenabled = true\n${nativePolicy}\n`;
+      await fs.writeFile(configPath, config);
+      await expect(probeCodexDesktopRuntime(f)).rejects.toThrow("cannot be updated automatically");
+      expect(fake.start).not.toHaveBeenCalled();
+      expect(fake.service).not.toHaveBeenCalled();
+      expect(await fs.readFile(configPath, "utf8")).toBe(config);
+      expect(await fs.readdir(fake.tempRoot())).toEqual([]);
     },
   );
 
@@ -264,7 +374,7 @@ describe("disposable selected-runtime validation", () => {
       const config = `[marketplaces.openai-bundled]\nsource_type="local"\nsource=${JSON.stringify(retained)}\n`;
       await fs.writeFile(path.join(f.agents[0].codexHome, "config.toml"), config);
       await expect(probeCodexDesktopRuntime(f)).rejects.toThrow(
-        "autoInstall is disabled and its retained marketplace differs",
+        "the native marketplace is owned by another source",
       );
       expect(fake.start).not.toHaveBeenCalled();
       expect(fake.service).not.toHaveBeenCalled();

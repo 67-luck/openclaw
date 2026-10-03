@@ -1,4 +1,9 @@
-import { resolveDefaultModelForAgent } from "openclaw/plugin-sdk/agent-runtime";
+import {
+  buildModelAliasIndex,
+  parseModelRef,
+  resolveDefaultModelForAgent,
+  resolveModelRefFromString,
+} from "openclaw/plugin-sdk/agent-runtime";
 import { listAgentIds, resolveAgentDir } from "openclaw/plugin-sdk/agent-scope-runtime";
 import { resolveEffectiveAgentRuntime } from "openclaw/plugin-sdk/command-auth-native";
 import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
@@ -8,6 +13,7 @@ import type {
   HealthFinding,
   PluginRuntimeMaintenanceContextV1,
 } from "openclaw/plugin-sdk/health";
+import { collectConfiguredModelRefs } from "openclaw/plugin-sdk/model-ref-parse";
 import { commandProcessCleanup } from "openclaw/plugin-sdk/process-runtime";
 import { resolveCodexAppServerLocalHomeDir } from "./app-server/auth-start-options.js";
 import { codexConfigEnablesNativeComputerUse } from "./app-server/config-reviewer-policy.js";
@@ -83,15 +89,40 @@ export function createCodexRuntimeMaintenanceChecks(
     const computerUse = resolveCodexComputerUseConfig({ pluginConfig, env });
     const targets = new Map<string, DesktopTarget>();
     for (const agentId of listAgentIds(ctx.cfg)) {
-      const model = resolveDefaultModelForAgent({ cfg: ctx.cfg, agentId });
-      if (
-        resolveEffectiveAgentRuntime({
-          cfg: ctx.cfg,
-          provider: model.provider,
-          modelId: model.model,
-          agentId,
-        }) !== "codex"
-      ) {
+      const primary = resolveDefaultModelForAgent({ cfg: ctx.cfg, agentId });
+      const scope = { cfg: ctx.cfg, agentId, defaultProvider: primary.provider };
+      const aliasIndex = buildModelAliasIndex(scope);
+      const refs = collectConfiguredModelRefs({
+        ...ctx.cfg,
+        agents: {
+          ...ctx.cfg.agents,
+          entries: { [agentId]: ctx.cfg.agents?.entries?.[agentId] ?? {} },
+        },
+      });
+      const models = [
+        ...new Set(
+          [
+            primary,
+            ...refs.map(({ value, kind }) =>
+              kind === "literal"
+                ? parseModelRef(value, primary.provider)
+                : resolveModelRefFromString({ ...scope, raw: value, aliasIndex })?.ref,
+            ),
+          ]
+            .filter(
+              (model) =>
+                model &&
+                resolveEffectiveAgentRuntime({
+                  cfg: ctx.cfg,
+                  provider: model.provider,
+                  modelId: model.model,
+                  agentId,
+                }) === "codex",
+            )
+            .map((model) => model!.model),
+        ),
+      ];
+      if (models.length === 0) {
         continue;
       }
       const agentDir = resolveAgentDir(ctx.cfg, agentId, env);
@@ -120,7 +151,7 @@ export function createCodexRuntimeMaintenanceChecks(
         agents: [],
       };
       target.agents.push({
-        model: model.model,
+        models,
         codexHome: resolveCodexAppServerLocalHomeDir(start, agentDir, env),
         startArgs: start.args,
         selectedAppServerCommand: selected.command,

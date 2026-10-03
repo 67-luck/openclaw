@@ -407,6 +407,23 @@ async function resolveMacOSHostArchitecture(
   try {
     hardware = (await exec("/usr/sbin/sysctl", ["-n", "hw.optional.arm64"])).stdout.trim();
   } catch (error) {
+    // Intel XNU may omit the ARM-only OID. Only that settled failure permits
+    // a second hardware query; cancellation and uncertain cleanup remain errors.
+    if (
+      !commandProcessCleanup.isUncertain(error) &&
+      isRecord(error) &&
+      error.exitCode === 1 &&
+      !error.timedOut &&
+      !error.isCanceled &&
+      !error.signal &&
+      typeof error.stderr === "string" &&
+      /unknown oid ['"]?hw\.optional\.arm64\b/u.test(error.stderr)
+    ) {
+      const cpuType = (await exec("/usr/sbin/sysctl", ["-n", "hw.cputype"])).stdout.trim();
+      if (cpuType === "7" || cpuType === "16777223") {
+        return "x64";
+      }
+    }
     throw new Error("Could not establish Mac host architecture; desktop update was not started.", {
       cause: error,
     });

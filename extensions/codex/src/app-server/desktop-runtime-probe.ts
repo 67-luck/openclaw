@@ -10,19 +10,17 @@ import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { parse as parseToml } from "smol-toml";
 import { CodexAppServerClient } from "./client.js";
 import { ensureCodexManagedBundledMarketplace } from "./computer-use-marketplace.js";
-import {
-  assertCodexDesktopComputerUseProbeSupported,
-  resolveCodexComputerUseNodeReplStartArgs,
-} from "./computer-use-node-repl.js";
 import { ensureCodexComputerUseServiceApp } from "./computer-use-service.js";
+import { resolveManagedCodexComputerUseConfig } from "./computer-use-unified.js";
 import { readCodexComputerUseStatus } from "./computer-use.js";
 import type { ResolvedCodexComputerUseConfig } from "./config.js";
 import { findMacOSDesktopCodexExecutable } from "./desktop-app-layout.js";
+import { assertCodexDesktopComputerUseProbeSupported } from "./desktop-computer-use-policy.js";
 import { listAllCodexAppServerModels } from "./models.js";
 import type { CodexAppServerScopedRequest } from "./request.js";
 
 export type CodexDesktopRuntimeProbeAgent = {
-  model: string;
+  models: readonly string[];
   codexHome: string;
   computerUse: ResolvedCodexComputerUseConfig;
   requiresComputerUse: boolean;
@@ -71,19 +69,14 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
       );
       const env = { CODEX_HOME: home, HOME: home, USERPROFILE: home };
       let marketplace: string | undefined;
-      let args = ["app-server", "--listen", "stdio://"];
+      const args = ["app-server", "--listen", "stdio://"];
+      let computerUse = agent.computerUse;
       if (agent.requiresComputerUse) {
         if (!desktop) {
           throw new Error(
             "Package CLI Computer Use requires a qualified desktop distribution; retained the selected runtime.",
           );
         }
-        await assertCodexDesktopComputerUseProbeSupported({
-          codexHome: agent.codexHome,
-          args: agent.startArgs,
-          enabled: agent.computerUse.enabled,
-          appServerCommand: agent.selectedAppServerCommand ?? desktop.appServerCommandPath,
-        });
         // A custom native integration has a different owner; never certify it with an
         // unrelated official fixture or silently replace its configuration.
         if (
@@ -98,11 +91,6 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
             "Selected Computer Use has a custom source; update and validate that integration explicitly.",
           );
         }
-        const pluginSource = path.join(desktop.bundledMarketplacePath, "plugins", "computer-use");
-        if (!agent.computerUse.autoInstall) {
-          await assertRetainedComputerUseSourceMatches(agent.codexHome, pluginSource);
-          assertCurrent();
-        }
         marketplace = await ensureCodexManagedBundledMarketplace({
           codexHome: home,
           ownershipRoot: root,
@@ -115,6 +103,23 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
           throw new Error("Candidate desktop has no official Computer Use marketplace.");
         }
         marketplace = await fs.realpath(marketplace);
+        computerUse = await resolveManagedCodexComputerUseConfig(agent.computerUse, marketplace);
+        await assertCodexDesktopComputerUseProbeSupported({
+          codexHome: agent.codexHome,
+          args: agent.startArgs,
+          enabled: agent.computerUse.enabled,
+          candidatePluginName: computerUse.pluginName,
+          appServerCommand: agent.selectedAppServerCommand ?? desktop.appServerCommandPath,
+        });
+        const retainedPluginSource = path.join(
+          desktop.bundledMarketplacePath,
+          "plugins",
+          "computer-use",
+        );
+        if (!agent.computerUse.autoInstall) {
+          await assertRetainedComputerUseSourceMatches(agent.codexHome, retainedPluginSource);
+          assertCurrent();
+        }
         // autoInstall:false keeps its existing signed service; only the disposable
         // probe copy is written. The real home and auth remain untouched.
         const service = await ensureCodexComputerUseServiceApp({
@@ -131,6 +136,7 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
             "No compatible signed Computer Use service is available for the selected policy.",
           );
         }
+        const pluginSource = path.join(marketplace, "plugins", computerUse.pluginName);
         const manifest: unknown = JSON.parse(
           await fs.readFile(path.join(pluginSource, ".codex-plugin", "plugin.json"), "utf8"),
         );
@@ -146,20 +152,18 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
         assertCurrent();
         await fs.cp(
           pluginSource,
-          path.join(home, "plugins", "cache", "openai-bundled", "computer-use", manifest.version),
+          path.join(
+            home,
+            "plugins",
+            "cache",
+            "openai-bundled",
+            computerUse.pluginName,
+            manifest.version,
+          ),
           { recursive: true },
         );
-        const config = `[plugins."computer-use@openai-bundled"]\nenabled = true\n[marketplaces.openai-bundled]\nsource_type = "local"\nsource = ${JSON.stringify(marketplace)}\n`;
+        const config = `[plugins."${computerUse.pluginName}@openai-bundled"]\nenabled = true\n[marketplaces.openai-bundled]\nsource_type = "local"\nsource = ${JSON.stringify(marketplace)}\n`;
         await fs.writeFile(path.join(home, "config.toml"), config, { mode: 0o600 });
-        args = await resolveCodexComputerUseNodeReplStartArgs({
-          appServerCommand: desktop.appServerCommandPath,
-          codexHome: home,
-          codexConfigToml: config,
-          args,
-          enabled: true,
-          serviceAppPath: service.targetPath,
-          platform: "darwin",
-        });
       }
       let client: CodexAppServerClient | undefined;
       const abort = () => client?.close();
@@ -199,13 +203,19 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
               timeoutMs: 20_000,
             }),
         });
-        if (
-          models.truncated ||
-          !models.models.some((model) => model.id === agent.model || model.model === agent.model)
-        ) {
-          throw new Error(
-            `Selected model ${agent.model} is missing from the candidate Codex metadata.`,
-          );
+        if (models.truncated) {
+          throw new Error("Candidate Codex model metadata is incomplete.");
+        }
+        for (const requiredModel of agent.models) {
+          if (
+            !models.models.some(
+              (model) => model.id === requiredModel || model.model === requiredModel,
+            )
+          ) {
+            throw new Error(
+              `Selected model ${requiredModel} is missing from the candidate Codex metadata.`,
+            );
+          }
         }
         if (marketplace) {
           await client.request(
@@ -218,7 +228,7 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
             signal: params.signal,
             assertCurrent,
             overrides: {
-              ...agent.computerUse,
+              ...computerUse,
               enabled: true,
               autoInstall: false,
               autoRepair: false,

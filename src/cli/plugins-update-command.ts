@@ -7,7 +7,11 @@ import {
   readConfigFileSnapshotForWrite,
   replaceConfigFile,
 } from "../config/config.js";
-import { containsConfigIncludeDirective } from "../config/io.read-helpers.js";
+import {
+  coerceConfig,
+  containsConfigIncludeDirective,
+  resolveConfigForRead,
+} from "../config/io.read-helpers.js";
 import { createMergePatch, applyMergePatch } from "../config/merge-patch.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
@@ -538,6 +542,7 @@ async function runPluginUpdateCommandUnlocked(
           )
         : { config: pluginResult.config, changed: false, outcomes: [] };
 
+    let maintenanceConfig = withoutPluginInstallRecords(hookResult.config);
     if (!params.opts.dryRun) {
       const sourceSnapshot = mutationSnapshot ?? (await sourceSnapshotPromise);
       if (pluginResult.changed) {
@@ -654,6 +659,13 @@ async function runPluginUpdateCommandUnlocked(
           });
         }
       }
+      // Persistence keeps authored references; maintenance consumes the committed
+      // activation settings resolved through the same config read owner.
+      maintenanceConfig = coerceConfig(
+        resolveConfigForRead(nextConfig, {
+          ...(sourceSnapshot?.writeOptions.envSnapshotForRestore ?? process.env),
+        }).resolvedConfigRaw,
+      );
     }
 
     if (params.opts.dryRun) {
@@ -672,7 +684,7 @@ async function runPluginUpdateCommandUnlocked(
         .map((outcome) => outcome.pluginId);
       const warnings = await runPluginRuntimeMaintenance({
         operation: "update",
-        config: withoutPluginInstallRecords(hookResult.config),
+        config: maintenanceConfig,
         pluginIds: [
           ...new Set([
             ...bundledMaintenanceIds,

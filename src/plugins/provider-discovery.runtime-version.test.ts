@@ -34,7 +34,7 @@ describe("provider catalog runtime metadata", () => {
   function discover(run: NonNullable<ProviderPlugin["catalog"]>["run"], isActive?: () => boolean) {
     return runProviderCatalog({
       provider: { id: "test-provider", label: "Test", auth: [], catalog: { run } },
-      config: { agents: { entries: { chosen: { default: true } } } },
+      config: { agents: { entries: { chosen: {} } } },
       agentDir: "/fixture/agent",
       workspaceDir: "/fixture/workspace",
       env: {},

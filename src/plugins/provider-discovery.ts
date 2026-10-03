@@ -19,7 +19,6 @@ const providerRuntimeLoader = createLazyImportLoader(
 
 type PreparedProviderStaticCatalogEntry = Readonly<{
   provider: ProviderPlugin;
-  result: Awaited<ReturnType<typeof runProviderStaticCatalog>>;
   providerConfigs: Readonly<Record<string, ModelProviderConfig>>;
 }>;
 
@@ -251,7 +250,6 @@ export async function prepareProviderStaticCatalog(params: {
       entries.push(
         Object.freeze({
           provider,
-          result,
           providerConfigs: normalizePluginDiscoveryResult({ provider, result }),
         }),
       );

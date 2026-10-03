@@ -55,7 +55,6 @@ export function createComputerUseRequest(params: {
   marketplaceAvailableAfterListCalls?: number;
   liveTestFailures?: number;
   liveTestResultErrors?: number;
-  liveTestText?: string;
   reloadFailures?: number;
   mcpToolsAvailable?: boolean;
   remoteMarketplace?: {
@@ -217,12 +216,7 @@ export function createComputerUseRequest(params: {
         threadId: `computer-use-probe-thread-${threadStartCalls}`,
         server: mcpServerName,
         tool,
-        arguments:
-          tool === "js"
-            ? {
-                code: mcpServerName === "node_repl" ? expect.any(String) : "await cua.listApps();",
-              }
-            : {},
+        arguments: tool === "js" ? { code: "await cua.listApps();" } : {},
       });
       if (liveTestFailures > 0) {
         liveTestFailures -= 1;
@@ -232,14 +226,7 @@ export function createComputerUseRequest(params: {
         liveTestResultErrors -= 1;
         return { content: [{ type: "text", text: `${tool} failed` }], isError: true };
       }
-      return {
-        content: [
-          {
-            type: "text",
-            text: params.liveTestText ?? (mcpServerName === "node_repl" ? '{"appCount":0}' : "[]"),
-          },
-        ],
-      };
+      return { content: [{ type: "text", text: "[]" }] };
     }
     if (method === "thread/unsubscribe") {
       expect(requestParams).toEqual({ threadId: `computer-use-probe-thread-${threadStartCalls}` });
@@ -258,7 +245,7 @@ function marketplaceEntry(marketplaceName: string, installed: boolean) {
   };
 }
 
-export function pluginSummary(
+function pluginSummary(
   installed: boolean,
   marketplaceName = "desktop-tools",
   enabled = installed,

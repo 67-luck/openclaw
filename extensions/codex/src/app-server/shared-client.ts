@@ -41,10 +41,7 @@ import {
   withCodexAppServerAcquireDeadline,
 } from "./client-startup-retry.js";
 import { CodexAppServerClient, isUnsupportedCodexAppServerVersionError } from "./client.js";
-import {
-  prepareManagedCodexComputerUseStartOptions,
-  shouldTrackDesktopGeneration,
-} from "./computer-use-start-options.js";
+import { shouldTrackDesktopGeneration } from "./computer-use-start-options.js";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import {
   codexAppServerStartOptionsKey,
@@ -895,7 +892,7 @@ async function startInitializedCodexAppServerClientOnce(
   };
   const startOptionsCandidates = resolveManagedFallbackStartOptions(params.startOptions);
   for (const [index, candidateStartOptions] of startOptionsCandidates.entries()) {
-    let startOptions = candidateStartOptions;
+    const startOptions = candidateStartOptions;
     params.assertCurrent?.();
     observeAcquire(params, { boundary: "prestart-artifact-drain" });
     const desktopCommand = isManagedCodexDesktopCommand(startOptions.command);
@@ -941,11 +938,6 @@ async function startInitializedCodexAppServerClientOnce(
         assertCurrent: assertStartupCurrent,
         ownsIsolatedCodexHome,
       });
-      startOptions = await prepareManagedCodexComputerUseStartOptions(
-        startOptions,
-        computerUseConfig,
-        params.agentDir,
-      );
       assertStartupCurrent();
     } catch (error) {
       if (isCodexComputerUseCandidateArtifactsUnavailableError(error)) {

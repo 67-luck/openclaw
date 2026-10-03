@@ -271,7 +271,8 @@ describe("managed plugin installation", () => {
       env: {},
     }).catch((error: unknown) => error);
     expect(rejected).toMatchObject({ message: failure.error });
-    expect(pluginLifecycleError(rejected, { entered: true })).toMatchObject({
+    const serialized = pluginLifecycleError(rejected, { entered: true });
+    expect(serialized).toMatchObject({
       message: failure.error,
       details: {
         pluginInstallRejected: true,
@@ -279,9 +280,9 @@ describe("managed plugin installation", () => {
         pluginInstallSource: { source: "npm" },
       },
     });
-    expect(pluginLifecycleError(rejected, { entered: true }).details?.pluginInstallCode).toBe(
-      failure.code,
-    );
+    if (!failure.code) {
+      expect(serialized.details).not.toHaveProperty("pluginInstallCode");
+    }
     expect(mocks.clawhubInstall).not.toHaveBeenCalled();
     expect(mocks.persistInstall).not.toHaveBeenCalled();
   });

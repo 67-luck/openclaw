@@ -81,6 +81,57 @@ export function registerRuntimeMaintenanceUpdateTests({
     },
   );
 
+  it("maintains the committed migrated runtime settings while preserving authored env refs", async () => {
+    const before: OpenClawConfig = {
+      plugins: { entries: { alpha: { enabled: true, config: { command: "old" } } } },
+    };
+    const migrated: OpenClawConfig = {
+      plugins: {
+        entries: { alpha: { enabled: true, config: { command: "${PR157920_RUNTIME}" } } },
+      },
+    };
+    primeUpdateConfigSnapshot({ config: before });
+    setInstalledPluginIndexInstallRecords({
+      alpha: { source: "npm", spec: "@acme/alpha", installPath: "/tmp/alpha" },
+    });
+    primePluginUpdate(before, [{ pluginId: "alpha", status: "unchanged", message: "Current." }]);
+    const migrationModule =
+      await import("../commands/doctor/shared/plugin-update-config-migration.js");
+    const migration = vi
+      .spyOn(migrationModule, "preparePluginUpdateConfigMigration")
+      .mockResolvedValue({
+        config: migrated,
+        changed: true,
+        async [Symbol.asyncDispose]() {},
+        async publish(_config, commit) {
+          return await commit();
+        },
+      });
+    const previous = process.env.PR157920_RUNTIME;
+    process.env.PR157920_RUNTIME = "/new/selected/codex";
+    try {
+      await runPluginsCommand(["plugins", "update", "alpha"]);
+      expect(runtimeErrors).toEqual([]);
+      expect(configWriteMock).toHaveBeenCalledWith(migrated);
+      expect(runtimeMaintenance).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          config: {
+            plugins: {
+              entries: { alpha: { enabled: true, config: { command: "/new/selected/codex" } } },
+            },
+          },
+        }),
+      );
+    } finally {
+      migration.mockRestore();
+      if (previous === undefined) {
+        delete process.env.PR157920_RUNTIME;
+      } else {
+        process.env.PR157920_RUNTIME = previous;
+      }
+    }
+  });
+
   it.each([false, true])(
     "routes an enabled bundled codex runtime without package ownership (dry-run=%s)",
     async (dryRun) => {

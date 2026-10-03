@@ -1,39 +1,6 @@
-/** Desktop startup composes generation ownership with the official native bridge. */
-import { resolveCodexAppServerLocalHomeDir } from "./auth-start-options.js";
-import { resolveCodexComputerUseNodeReplStartArgs } from "./computer-use-node-repl.js";
-import type {
-  CodexAppServerStartOptions,
-  ResolvedCodexComputerUseConfig,
-} from "./config-contracts.js";
+/** Desktop generation tracking shares the native plugin artifact owner. */
+import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import { resolveCodexComputerUseConfig } from "./config-runtime.js";
-import { isManagedCodexDesktopCommand } from "./managed-binary.js";
-
-export async function prepareManagedCodexComputerUseStartOptions(
-  startOptions: CodexAppServerStartOptions,
-  computerUseConfig: ResolvedCodexComputerUseConfig,
-  agentDir?: string,
-): Promise<CodexAppServerStartOptions> {
-  if (
-    (startOptions.commandSource !== "managed" &&
-      startOptions.commandSource !== "resolved-managed") ||
-    !isManagedCodexDesktopCommand(startOptions.command) ||
-    computerUseConfig.pluginName !== "computer-use" ||
-    computerUseConfig.mcpServerName !== "computer-use" ||
-    computerUseConfig.marketplaceSource ||
-    computerUseConfig.marketplacePath ||
-    (computerUseConfig.marketplaceName && computerUseConfig.marketplaceName !== "openai-bundled")
-  ) {
-    return startOptions;
-  }
-  const args = await resolveCodexComputerUseNodeReplStartArgs({
-    appServerCommand: startOptions.command,
-    codexHome: resolveCodexAppServerLocalHomeDir(startOptions, agentDir),
-    args: startOptions.args,
-    // The native plugin can be enabled independently of OpenClaw's hint.
-    enabled: computerUseConfig.enabled,
-  });
-  return args === startOptions.args ? startOptions : { ...startOptions, args };
-}
 
 export function shouldTrackDesktopGeneration(
   startOptions: CodexAppServerStartOptions,

@@ -202,7 +202,10 @@ export function createCodexAppServerModelCatalog(
       }
       const current = entries.get(observation.accountKey);
       const result = current?.result;
-      return current?.ready && result?.accountType && result.isCurrent()
+      return current?.ready &&
+        result?.accountType &&
+        result.isCurrent() &&
+        result.models.some((model) => model.id === params.modelId)
         ? {
             accountType: result.accountType,
             ...(result.authMode ? { authMode: result.authMode } : {}),

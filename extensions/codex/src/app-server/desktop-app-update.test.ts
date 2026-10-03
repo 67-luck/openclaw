@@ -264,6 +264,30 @@ describe.runIf(process.platform !== "win32")("official Codex desktop update tran
     );
   });
 
+  it("confirms Intel hardware when the ARM-only sysctl OID is absent", async () => {
+    const f = await fixture(NEW, "Codex.app");
+    f.params.deps.arch = "x64";
+    const execute = f.execute.getMockImplementation()!;
+    f.execute.mockImplementation(async (command, args, options) => {
+      if (command === "/usr/sbin/sysctl") {
+        if (args.includes("hw.optional.arm64")) {
+          throw Object.assign(new Error("unknown oid"), {
+            exitCode: 1,
+            stderr: "sysctl: unknown oid 'hw.optional.arm64'",
+          });
+        }
+        expect(args).toEqual(["-n", "hw.cputype"]);
+        return { stdout: "16777223\n", stderr: "" };
+      }
+      return await execute(command, args, options);
+    });
+    const result = await updateCodexDesktopApp(f.params);
+    expect(result.status).toBe("updated");
+    expect(f.events.find((event) => event.startsWith("curl"))).toContain(
+      "https://persistent.oaistatic.com/codex-app-prod/Codex-latest-x64.dmg",
+    );
+  });
+
   it("uses the Apple Silicon installer when Node runs under Rosetta", async () => {
     const f = await fixture(NEW, "Codex.app");
     f.params.deps.arch = "x64";

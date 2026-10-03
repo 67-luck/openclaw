@@ -74,11 +74,13 @@ export function createCodexRuntimeMaintenanceService(params: {
                 if (findings.length && check.repair) {
                   const result = await check.repair(healthContext, findings);
                   assertCurrent();
-                  if (result.status === "failed") {
-                    throw new Error(result.warnings?.join("; ") || "Codex maintenance failed.");
-                  }
+                  // Selection may have committed before a cleanup warning. Report
+                  // those facts even when maintenance still needs a retry.
                   for (const change of result.changes) {
                     ctx.logger.info(change);
+                  }
+                  if (result.status === "failed") {
+                    throw new Error(result.warnings?.join("; ") || "Codex maintenance failed.");
                   }
                 }
               }
@@ -91,7 +93,7 @@ export function createCodexRuntimeMaintenanceService(params: {
               failures++;
               ctx.serviceHealth?.reportFailure(error);
               ctx.logger.warn(
-                `Automatic Codex runtime update retained the working selection: ${coerceErrorMessage(error)}`,
+                `Automatic Codex runtime maintenance needs attention: ${coerceErrorMessage(error)}`,
               );
             }
             if (context === ctx && !ctx.scheduler.signal.aborted) {
