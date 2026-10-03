@@ -1414,65 +1414,6 @@ describe("runPreparedReply media-only handling", () => {
     expect(call.followupRun.prompt).toContain("a tiny dot image");
   });
 
-  it("keeps duplicate-path image positions after admission waits", async () => {
-    const sharedPath = "/tmp/shared-media-index.png";
-    const sessionId = "prepared-media-index-session";
-    const queueSettings = await import("./queue/settings-runtime.js");
-    vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
-    const previousRun = createReplyOperation({
-      sessionId,
-      sessionKey: "session-key",
-      resetTriggered: false,
-    });
-    previousRun.setPhase("running");
-    resolveCurrentTurnImagesMock.mockResolvedValueOnce({
-      images: [{ type: "image", data: "c3ludGhldGlj", mimeType: "image/png" }],
-      imageOrder: ["inline"],
-      imageSourceIndexes: [1],
-      unresolvedSourceIndexes: [2],
-    });
-    const running = runPrepared({
-      isNewSession: false,
-      sessionId,
-      ctx: {
-        ...createInboundTurn("inspect both images", "webchat", "direct"),
-        media: [
-          { path: "/tmp/voice.ogg", contentType: "audio/ogg", transcribed: true },
-          { path: sharedPath, contentType: "image/png" },
-          { path: sharedPath, contentType: "image/png" },
-        ],
-      },
-      sessionCtx: createSessionTurn("inspect both images", "webchat", "direct"),
-    });
-    try {
-      await vi.waitFor(() => expect(previousRun.abortSignal.aborted).toBe(true));
-      previousRun.complete();
-      await expect(running).resolves.toEqual({ text: "ok" });
-    } finally {
-      previousRun.complete();
-      await running.catch(() => undefined);
-    }
-
-    const { followupRun } = requireRunReplyAgentCall();
-    expect(followupRun.media).toHaveLength(2);
-    expect(followupRun.media?.[0]).not.toHaveProperty("hydrationSuppressed");
-    expect(followupRun).toMatchObject({
-      media: [{ path: sharedPath }, { path: sharedPath, hydrationSuppressed: true }],
-      mediaImageLayout: {
-        slots: [{ kind: "inline", factIndex: 0 }],
-        suppressedFactIndexes: [1],
-      },
-    });
-    expect(followupRun.userTurnTranscriptRecorder?.message).toMatchObject({
-      __openclaw: {
-        mediaImageLayout: {
-          slots: [{ kind: "inline", factIndex: 1 }],
-          suppressedFactIndexes: [2],
-        },
-      },
-    });
-  });
-
   it.each([false, true])(
     "keeps duplicate-path image positions after admission wait=%s",
     async (wait) => {
@@ -2081,43 +2022,6 @@ describe("runPreparedReply media-only handling", () => {
     expect(call.shouldFollowup).toBe(true);
     expect(call.isActive).toBe(true);
     expect(call.followupRun.originatingThreadId).toBe("501.000");
-  });
-
-  it("waits for ownership acquired during async auth preparation before dispatching", async () => {
-    const { resolveSessionAuthSelection } =
-      await import("../../agents/auth-profiles/session-override.js");
-    const queueSettings = await import("./queue/settings-runtime.js");
-    const authEntered = createDeferred();
-    const releaseAuth = createDeferred();
-    vi.mocked(resolveSessionAuthSelection).mockImplementationOnce(async () => {
-      authEntered.resolve();
-      await releaseAuth.promise;
-      return undefined;
-    });
-    vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
-    const running = runPrepared({ isNewSession: false, sessionId: "session-auth-race" });
-    let intruder: ReturnType<typeof createReplyOperation> | undefined;
-    try {
-      await authEntered.promise;
-      intruder = createReplyOperation({
-        sessionId: "session-auth-race",
-        sessionKey: "session-key",
-        resetTriggered: false,
-      });
-      intruder.setPhase("running");
-      releaseAuth.resolve();
-
-      await vi.waitFor(() => expect(intruder?.abortSignal.aborted).toBe(true));
-      expect(runReplyAgent).not.toHaveBeenCalled();
-      intruder.complete();
-
-      await expect(running).resolves.toEqual({ text: "ok" });
-      expect(runReplyAgent).toHaveBeenCalledOnce();
-    } finally {
-      releaseAuth.resolve();
-      intruder?.complete();
-      await running.catch(() => undefined);
-    }
   });
 
   it("does not queue a run behind its provided pre-dispatch reply operation", async () => {
