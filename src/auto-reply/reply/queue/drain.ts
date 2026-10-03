@@ -231,7 +231,6 @@ async function executeClaim(
           return (
             !isFollowupRunAborted(item) &&
             !item.controllerInput?.retirementRequested &&
-            !item.controllerInput?.custody.adopted &&
             !item.controllerInput?.custody.completed
           );
         })

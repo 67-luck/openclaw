@@ -141,7 +141,6 @@ export function releaseSessionControllerClaim(claim: SessionControllerMailboxCla
           claim.retryBeforeExecution &&
           !input.retirementRequested &&
           !input.abortSignal.aborted &&
-          !input.custody.adopted &&
           !input.custody.completed;
         if (retry) {
           // The completed claim request cannot receive a second selection.
