@@ -21,7 +21,11 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { isAcpSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
+import {
+  isAcpSessionKey,
+  isSubagentSessionKey,
+  normalizeAgentId,
+} from "../../routing/session-key.js";
 import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
@@ -49,6 +53,18 @@ export type ChannelStopCapture = {
   idleSessionIds: readonly string[];
 };
 
+function matchesStopCandidate(
+  candidate: ReturnType<typeof captureSessionControllerStopCandidates>[number],
+  params: { key: string; storePath: string; agentId?: string },
+): boolean {
+  if (!candidate.aliases.has(params.key)) {
+    return false;
+  }
+  return candidate.agentId && params.agentId
+    ? normalizeAgentId(candidate.agentId) === normalizeAgentId(params.agentId)
+    : !candidate.storeScope || candidate.storeScope === params.storePath;
+}
+
 /** Physical identity and runtime references are captured together, before channel I/O. */
 export function captureChannelSessionStop(params: {
   key?: string;
@@ -59,6 +75,15 @@ export function captureChannelSessionStop(params: {
   includeQueued?: boolean;
 }): ChannelStopCapture {
   const key = normalizeOptionalString(params.key);
+  const candidates = key
+    ? captureSessionControllerStopCandidates().filter((candidate) =>
+        matchesStopCandidate(candidate, {
+          key,
+          storePath: params.storePath,
+          agentId: params.agentId,
+        }),
+      )
+    : [];
   const controller = captureSessionControllerStop({
     targets: key
       ? [
@@ -71,6 +96,8 @@ export function captureChannelSessionStop(params: {
           }),
         ]
       : [],
+    inputs: candidates.flatMap((candidate) => [...candidate.capture.inputs]),
+    operations: candidates.flatMap((candidate) => [...candidate.capture.operations]),
     includeQueued: params.includeQueued,
   });
   return captureChannelStopResources(controller, params.sessionId);
@@ -351,6 +378,7 @@ export async function executeFastAbortRequest(
     // discover cancellation authority for a replacement admitted while it awaited.
     const boundCandidates = captureSessionControllerStopCandidates().map((candidate) => ({
       storeScope: candidate.storeScope,
+      agentId: candidate.agentId,
       aliases: candidate.aliases,
       channel: captureChannelStopResources(candidate.capture),
     }));
@@ -466,10 +494,12 @@ export async function executeFastAbortRequest(
               });
               captures.push(
                 ...boundCandidates
-                  .filter(
-                    (candidate) =>
-                      (!candidate.storeScope || candidate.storeScope === boundStore) &&
-                      candidate.aliases.has(boundAcpTargetKey),
+                  .filter((candidate) =>
+                    matchesStopCandidate(candidate, {
+                      key: boundAcpTargetKey,
+                      storePath: boundStore,
+                      agentId: boundAgentId,
+                    }),
                   )
                   .map((candidate) => candidate.channel),
               );

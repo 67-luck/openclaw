@@ -31,6 +31,7 @@ import type {
 import {
   getSessionControllerEntry,
   findSessionControllerEntry,
+  findSessionControllerEntries,
   sessionControllers,
   pruneSessionControllerEntry,
 } from "./session-controller.state.js";
@@ -111,7 +112,10 @@ export function getSessionControllerMailbox(
 }
 
 export function getExistingSessionControllerMailbox(key: string, target?: SessionTarget) {
-  return findSessionControllerEntry(key.trim(), target)?.mailbox;
+  const matches = findSessionControllerEntries(key.trim(), target).flatMap((entry) =>
+    entry.mailbox ? [entry.mailbox] : [],
+  );
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
 export function* sessionControllerMailboxes() {
@@ -311,6 +315,10 @@ function pumpSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
   const summaries = summaryCandidates(mailbox);
   const eligible = mailbox.entries.filter((input) => input.phase !== "consumed");
   const first = priority ?? eligible[0];
+  if (!first) {
+    disposeSessionControllerMailbox(mailbox);
+    return;
+  }
   const admission = evaluateTurnAdmission(owner, {
     kind:
       first?.taskTurnKind ??
@@ -320,10 +328,6 @@ function pumpSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
     selectedInput: first ?? null,
   });
   if (!admission.admitted) {
-    return;
-  }
-  if (!first) {
-    disposeSessionControllerMailbox(mailbox);
     return;
   }
   if (

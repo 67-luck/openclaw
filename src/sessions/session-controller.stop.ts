@@ -109,14 +109,43 @@ export function captureSessionControllerStop(params: {
 
 /** Request-local selection for a target discovered by asynchronous routing. */
 export function captureSessionControllerStopCandidates() {
-  return [...sessionControllers.values()].map((entry) => ({
-    storeScope: entry.target?.storeScope,
-    aliases: new Set(entry.aliases),
-    capture: captureSessionControllerStop({
-      inputs: entry.mailbox?.entries.filter((input) => input.phase !== "consumed"),
-      operations: [entry.active],
-    }),
-  }));
+  return [...sessionControllers.values()].flatMap((entry) => {
+    // Storeless aliases such as `global` overlap across agents. Group the captured
+    // resources by their admitted agent so a mixed transitional entry cannot give
+    // one agent Stop authority over a peer's operation or queued input.
+    const resources = new Map<
+      string | undefined,
+      { inputs: SessionControllerInput[]; operations: ReplyOperation[] }
+    >();
+    const group = (agentId: string | undefined) => {
+      const existing = resources.get(agentId);
+      if (existing) {
+        return existing;
+      }
+      const created = { inputs: [], operations: [] };
+      resources.set(agentId, created);
+      return created;
+    };
+    for (const input of entry.mailbox?.entries ?? []) {
+      if (input.phase !== "consumed") {
+        group(
+          input.source?.run.agentId ??
+            input.claim?.operation?.agentId ??
+            input.target?.agentId ??
+            entry.target?.agentId,
+        ).inputs.push(input);
+      }
+    }
+    if (entry.active) {
+      group(entry.active.agentId ?? entry.target?.agentId).operations.push(entry.active);
+    }
+    return [...resources].map(([agentId, captured]) => ({
+      storeScope: entry.target?.storeScope,
+      agentId,
+      aliases: new Set(entry.aliases),
+      capture: captureSessionControllerStop(captured),
+    }));
+  });
 }
 
 export type SessionControllerStopResult = {

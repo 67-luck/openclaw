@@ -236,7 +236,11 @@ describe.each(["fast", "command"] as const)("%s Stop current owner", (pathKind) 
         sessionId: ownsActiveRun ? state.entry.sessionId : otherEntry.sessionId,
         resetTriggered: false,
       });
-      operation.attachBackend({ kind: "embedded", cancel: () => {}, isStreaming: () => true });
+      operation.attachBackend({
+        kind: "embedded",
+        cancel: () => queueMicrotask(() => operation.complete()),
+        isStreaming: () => true,
+      });
       try {
         const followups = [
           { ownerAgentId: agentId, sessionId: state.entry.sessionId },
