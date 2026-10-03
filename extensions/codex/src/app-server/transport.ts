@@ -26,6 +26,8 @@ export function hasCodexAppServerNaturalExit(child: CodexAppServerTransport): bo
 
 /** Child-process-like transport shape consumed by the Codex app-server client. */
 export type CodexAppServerTransport = {
+  /** Retained process owner; bypasses ancestry-only raw child shutdown. */
+  closeOwnedAndWait?: () => Promise<CodexAppServerCloseResult>;
   startupFailure?: { error?: Error; complete(): void };
   maxFrameBytes?: number;
   stdin: {
@@ -58,6 +60,10 @@ export function closeCodexAppServerTransport(
   child: CodexAppServerTransport,
   options: TransportCloseOptions = {},
 ): void {
+  if (child.closeOwnedAndWait) {
+    void child.closeOwnedAndWait().catch(() => undefined);
+    return;
+  }
   void beginCodexAppServerTransportClose(child, options).closing;
 }
 
@@ -82,12 +88,7 @@ function beginCodexAppServerTransportClose(
       finishCodexAppServerTransportClose(child, options, forceKill);
       return "uncertain";
     }
-    let contained;
-    try {
-      contained = await terminateCodexAppServerDescendants(child);
-    } catch {
-      contained = undefined;
-    }
+    const contained = await terminateCodexAppServerDescendants(child).catch(() => undefined);
     if (contained === "exited") {
       return "natural";
     }
@@ -146,6 +147,9 @@ export async function closeCodexAppServerTransportAndWait(
   child: CodexAppServerTransport,
   options: TransportCloseOptions & { exitTimeoutMs?: number } = {},
 ): Promise<CodexAppServerCloseResult> {
+  if (child.closeOwnedAndWait) {
+    return await child.closeOwnedAndWait();
+  }
   const drained = options.drainStdio
     ? Promise.all(
         [child.stdout, child.stderr].map((stream) => finished(stream, { cleanup: true })),
@@ -183,9 +187,7 @@ export async function closeCodexAppServerTransportAndWait(
 }
 
 function hasCodexAppServerTransportExited(child: CodexAppServerTransport): boolean {
-  return child.exitCode !== null && child.exitCode !== undefined
-    ? true
-    : child.signalCode !== null && child.signalCode !== undefined;
+  return child.exitCode != null || child.signalCode != null;
 }
 
 async function waitForCodexAppServerTransportExit(

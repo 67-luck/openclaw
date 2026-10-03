@@ -17,7 +17,7 @@ import {
 import { ensureCodexComputerUseServiceApp } from "./computer-use-service.js";
 import { readCodexComputerUseStatus } from "./computer-use.js";
 import type { ResolvedCodexComputerUseConfig } from "./config.js";
-import { resolveMacOSDesktopCodexAppPathCandidates } from "./desktop-app-paths.js";
+import { findMacOSDesktopCodexExecutable } from "./desktop-app-layout.js";
 import { listAllCodexAppServerModels } from "./models.js";
 import type { CodexAppServerScopedRequest } from "./request.js";
 
@@ -31,7 +31,9 @@ export type CodexDesktopRuntimeProbeAgent = {
 };
 
 type ProbeParams = {
-  appBundlePath: string;
+  appBundlePath?: string;
+  command?: string;
+  expectedVersion?: string;
   agents: readonly CodexDesktopRuntimeProbeAgent[];
   signal: AbortSignal;
   assertCurrent: () => void;
@@ -49,32 +51,33 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
     params.assertCurrent();
   };
   assertCurrent();
-  const root = await fs.mkdtemp(
-    path.join(resolvePreferredOpenClawTmpDir(), "openclaw-codex-probe-"),
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(resolvePreferredOpenClawTmpDir(), "openclaw-codex-probe-")),
   );
   let cleanupConfirmed = true;
   try {
     for (const agent of params.agents) {
       assertCurrent();
       const home = await fs.mkdtemp(path.join(root, "home-"));
-      const template = resolveMacOSDesktopCodexAppPathCandidates("darwin").find(
-        (candidate) => candidate.appName === path.basename(params.appBundlePath),
-      );
-      if (!template) {
-        throw new Error("Unsupported Codex desktop distribution.");
+      const desktop = params.appBundlePath
+        ? findMacOSDesktopCodexExecutable(params.appBundlePath)
+        : undefined;
+      const command = params.command ?? desktop?.appServerCommandPath;
+      if (!command || (params.appBundlePath && !desktop)) {
+        throw new Error("Unsupported Codex runtime or executable layout.");
       }
-      const relocate = (value: string) =>
-        path.join(params.appBundlePath, path.relative(template.appBundlePath, value));
-      const desktop = {
-        ...template,
-        appBundlePath: params.appBundlePath,
-        appServerCommandPath: relocate(template.appServerCommandPath),
-        bundledMarketplacePath: relocate(template.bundledMarketplacePath),
-        computerUseServiceAppPaths: template.computerUseServiceAppPaths.map(relocate),
-      };
+      const clearEnv = Object.keys(process.env).filter((key) =>
+        /(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/iu.test(key),
+      );
+      const env = { CODEX_HOME: home, HOME: home, USERPROFILE: home };
       let marketplace: string | undefined;
       let args = ["app-server", "--listen", "stdio://"];
       if (agent.requiresComputerUse) {
+        if (!desktop) {
+          throw new Error(
+            "Package CLI Computer Use requires a qualified desktop distribution; retained the selected runtime.",
+          );
+        }
         await assertCodexDesktopComputerUseProbeSupported({
           codexHome: agent.codexHome,
           args: agent.startArgs,
@@ -111,6 +114,7 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
         if (!marketplace) {
           throw new Error("Candidate desktop has no official Computer Use marketplace.");
         }
+        marketplace = await fs.realpath(marketplace);
         // autoInstall:false keeps its existing signed service; only the disposable
         // probe copy is written. The real home and auth remain untouched.
         const service = await ensureCodexComputerUseServiceApp({
@@ -164,20 +168,24 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
         client = await CodexAppServerClient.start(
           {
             transport: "stdio",
-            commandSource: "config",
-            command: desktop.appServerCommandPath,
+            commandSource: "resolved-managed",
+            command,
             args,
             cwd: home,
-            env: { CODEX_HOME: home },
-            clearEnv: Object.keys(process.env).filter((key) =>
-              /(?:KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/iu.test(key),
-            ),
+            env,
+            clearEnv,
           },
           assertCurrent,
+          { signal: params.signal, ownership: "retained-tree" },
         );
         assertCurrent();
         await client.initialize();
         assertCurrent();
+        if (params.expectedVersion && client.getServerVersion() !== params.expectedVersion) {
+          throw new Error(
+            "Candidate app-server version does not match its official package metadata.",
+          );
+        }
         const acquired = client;
         const models = await listAllCodexAppServerModels({
           includeHidden: true,
@@ -228,8 +236,8 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
         assertCurrent();
       } finally {
         params.signal.removeEventListener("abort", abort);
-        // Raw native clients are not SDK command children: explicitly join them before
-        // deleting their private home or allowing artifact publication.
+        // Join the retained process-tree owner before deleting its private home or
+        // allowing artifact publication; root exit alone is not settlement.
         if (client) {
           await closeProbeClient(client, root, () => {
             cleanupConfirmed = false;

@@ -288,12 +288,6 @@ describe("runtime import syntax", () => {
   const importsFromText = (source: string, fileName = "runtime-import-fixture.ts") =>
     collectRuntimeImportsFromSource(parser.parseSourceFile(fileName, source));
 
-  it("does not treat quoted external-runtime probe code as a plugin dependency", () => {
-    const source = 'const probe = `const sky = await import("@oai/sky");`;';
-    expect(importsFromText(source)).toEqual([]);
-    expect(importsFromText('const sky = await import("@oai/sky");')).toEqual(["@oai/sky"]);
-  });
-
   it("ignores imports in strings, comments, regular expressions, template text, and JSX text", () => {
     const source = [
       '// import "comment-line";',

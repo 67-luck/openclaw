@@ -4,8 +4,13 @@ import type { CodexAppServerClient } from "./client.js";
 import { startCodexComputerUseHealthMonitor } from "./computer-use-health.js";
 import type { ResolvedCodexComputerUseConfig } from "./config.js";
 
+const openClients = new Set<() => void>();
+
 describe("Codex Computer Use periodic health", () => {
   afterEach(() => {
+    for (const close of openClients) {
+      close();
+    }
     vi.useRealTimers();
   });
 
@@ -75,7 +80,7 @@ describe("Codex Computer Use periodic health", () => {
           threadId: "health-probe-thread-1",
           server: mcpServerName,
           tool: "js",
-          arguments: { code: "await cua.getState();" },
+          arguments: { code: "await cua.listApps();" },
         },
         { timeoutMs: 60_000 },
       );
@@ -243,16 +248,15 @@ function createClient(options: { liveTestFailures?: number } = {}) {
     request,
     addCloseHandler,
   } as unknown as CodexAppServerClient;
-  return {
-    client,
-    request,
-    addCloseHandler,
-    close: () => {
-      for (const handler of closeHandlers) {
-        handler(client);
-      }
-    },
+  const close = () => {
+    for (const handler of closeHandlers) {
+      handler(client);
+    }
+    closeHandlers.clear();
+    openClients.delete(close);
   };
+  openClients.add(close);
+  return { client, request, addCloseHandler, close };
 }
 
 function computerUseConfig(

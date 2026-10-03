@@ -6,17 +6,23 @@ import { constants as fsConstants, existsSync, realpathSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
-import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { resolveGlobalSingleton } from "openclaw/plugin-sdk/global-singleton";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { valid } from "semver";
 import type { CodexAppServerStartOptions, CodexManagedCommandOrder } from "./config.js";
 import {
-  resolveMacOSDesktopCodexAppPathCandidateForBundle,
+  resolveMacOSDesktopCodexAppPathCandidatesForCommand,
   resolveMacOSDesktopCodexAppServerCommandCandidates,
   resolveSelectedMacOSDesktopCodexAppPathCandidates,
   type MacOSDesktopCodexAppPathCandidate,
 } from "./desktop-app-paths.js";
-import type { CodexManagedDesktopStateOptions } from "./managed-desktop-installation.js";
-import { MANAGED_CODEX_APP_SERVER_PACKAGE } from "./version.js";
+import {
+  readCodexManagedRuntimeSelection,
+  resolveCodexManagedRuntimeRoot,
+  isCodexManagedRuntimeAppPath,
+  type CodexManagedRuntimeStateOptions,
+} from "./managed-runtime-installation.js";
+import { CODEX_APP_SERVER_VERSION, MANAGED_CODEX_APP_SERVER_PACKAGE } from "./version.js";
 
 // Registration and lazy runtime artifacts can load separate module copies.
 // They must resolve dependencies from the same loader-owned plugin root.
@@ -25,8 +31,9 @@ const registeredCodexPlugin = resolveGlobalSingleton<{ root?: string }>(
   () => ({}),
 );
 
-type ResolveManagedCodexAppServerOptions = CodexManagedDesktopStateOptions & {
+type ResolveManagedCodexAppServerOptions = CodexManagedRuntimeStateOptions & {
   managedRoot?: string;
+  managedCliRoot?: string;
   /** Supplied only by the lifecycle generation acquired for this startup. */
   desktopCandidates?: readonly MacOSDesktopCodexAppPathCandidate[];
   platform?: NodeJS.Platform;
@@ -69,13 +76,22 @@ export async function resolveManagedCodexAppServerStartOptions(
     options,
   );
   const pathExists = options.pathExists ?? commandPathExists;
-  const commandPaths = await findManagedCodexAppServerCommandPaths({
-    candidateCommandPaths,
-    pathExists,
-    platform,
-  });
-  const commandPath = expectDefined(commandPaths[0], "resolved managed Codex command path");
-  const managedFallbackCommandPaths = commandPaths.slice(1);
+  const commandPaths: string[] = [];
+  for (const commandPath of candidateCommandPaths) {
+    if (await pathExists(commandPath, platform)) {
+      commandPaths.push(commandPath);
+    }
+  }
+  const [commandPath, ...managedFallbackCommandPaths] = commandPaths;
+  if (commandPath === undefined) {
+    throw new Error(
+      [
+        `Managed Codex app-server binary was not found for ${MANAGED_CODEX_APP_SERVER_PACKAGE}.`,
+        "Reinstall or update OpenClaw, or run pnpm install in a source checkout.",
+        "Set plugins.entries.codex.config.appServer.command or OPENCLAW_CODEX_APP_SERVER_BIN to use a custom Codex binary.",
+      ].join(" "),
+    );
+  }
 
   return {
     ...startOptions,
@@ -135,6 +151,34 @@ export function resolvePackagedCodexNativeCommand(entrypoint: string): string | 
   return resolveManagedCodexNativeCommand(entrypoint);
 }
 
+/** Doctor checks a retained generation against its own manifest, not the bootstrap pin. */
+export async function readManagedCodexExpectedVersion(command: string): Promise<string> {
+  const packageRoot = resolveManagedCodexPackageRootForCommand(command, process.platform);
+  if (
+    !packageRoot ||
+    !isCodexManagedRuntimeAppPath(packageRoot, resolveCodexManagedRuntimeRoot("cli"))
+  ) {
+    return CODEX_APP_SERVER_VERSION;
+  }
+  const { readJsonFileWithFallback } = await import("openclaw/plugin-sdk/json-store");
+  const { value } = await readJsonFileWithFallback<unknown>(
+    path.join(packageRoot, "package.json"),
+    undefined,
+  );
+  if (
+    !isRecord(value) ||
+    value.name !== MANAGED_CODEX_APP_SERVER_PACKAGE ||
+    typeof value.version !== "string" ||
+    !/^\d+\.\d+\.\d+$/u.test(value.version) ||
+    !valid(value.version)
+  ) {
+    throw new Error(
+      "invalid managed Codex package manifest; restore or replace the retained runtime before retrying",
+    );
+  }
+  return value.version;
+}
+
 /** Returns whether a command is one of the standard macOS desktop app executables. */
 export function isManagedCodexDesktopCommand(
   command: string,
@@ -143,11 +187,9 @@ export function isManagedCodexDesktopCommand(
   if (resolveMacOSDesktopCodexAppServerCommandCandidates(platform).includes(command)) {
     return true;
   }
-  const candidate = resolveMacOSDesktopCodexAppPathCandidateForBundle(
-    path.dirname(path.dirname(path.dirname(command))),
-    { platform },
+  return Boolean(
+    resolveMacOSDesktopCodexAppPathCandidatesForCommand(command, platform).exactDesktopCandidate,
   );
-  return candidate?.appServerCommandPath === command;
 }
 
 function resolveManagedCodexPackageRootForCommand(
@@ -155,6 +197,13 @@ function resolveManagedCodexPackageRootForCommand(
   platform: NodeJS.Platform,
 ): string | undefined {
   const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const managedPackageRoot = path.dirname(path.dirname(command));
+  if (
+    path.basename(command) === "codex.js" &&
+    isCodexManagedRuntimeAppPath(managedPackageRoot, resolveCodexManagedRuntimeRoot("cli"))
+  ) {
+    return managedPackageRoot;
+  }
   const commandPaths = [command];
   try {
     commandPaths.unshift(realpathSync(command));
@@ -226,7 +275,16 @@ async function resolveManagedCodexAppServerCommandCandidates(
   options: ResolveManagedCodexAppServerOptions,
 ): Promise<string[]> {
   const packageCommand = resolveManagedCodexPackageEntrypoint(pluginRoot);
-  const packageCommandPaths = packageCommand ? [packageCommand] : [];
+  const selected = await readCodexManagedRuntimeSelection(
+    options.managedCliRoot ?? resolveCodexManagedRuntimeRoot("cli"),
+    options,
+  );
+  const packageCommandPaths = [
+    ...(selected?.selection.appName === "cli"
+      ? [path.join(selected.appBundlePath, "bin", "codex.js")]
+      : []),
+    ...(packageCommand ? [packageCommand] : []),
+  ];
   if (managedCommandOrder === "package-only") {
     return packageCommandPaths;
   }
@@ -238,7 +296,7 @@ async function resolveManagedCodexAppServerCommandCandidates(
       options,
     ))
   ).map((candidate) => candidate.appServerCommandPath);
-  // Ordinary turns must honor the pinned package version. Computer Use opts
+  // The packaged version is a bootstrap fallback. Computer Use opts
   // into the desktop app owner because its macOS TCC permissions live there.
   return managedCommandOrder === "desktop-first"
     ? [...desktopCommandPaths, ...packageCommandPaths]
@@ -246,39 +304,25 @@ async function resolveManagedCodexAppServerCommandCandidates(
 }
 
 export function resolveManagedCodexPackageEntrypoint(pluginRoot: string): string | undefined {
-  try {
-    // Use the pinned package's official launcher on every OS. It owns platform
-    // selection, manager environment markers, signal forwarding, and exit status.
-    return createRequire(path.join(pluginRoot, "package.json")).resolve(
-      `${MANAGED_CODEX_APP_SERVER_PACKAGE}/bin/codex.js`,
-    );
-  } catch {
-    return undefined;
-  }
-}
-
-async function findManagedCodexAppServerCommandPaths(params: {
-  candidateCommandPaths: readonly string[];
-  pathExists: (filePath: string, platform: NodeJS.Platform) => Promise<boolean>;
-  platform: NodeJS.Platform;
-}): Promise<string[]> {
-  const commandPaths: string[] = [];
-  for (const commandPath of params.candidateCommandPaths) {
-    if (await params.pathExists(commandPath, params.platform)) {
-      commandPaths.push(commandPath);
+  const require = createRequire(path.join(pluginRoot, "package.json"));
+  // Only the plugin's dependency ancestry owns its bootstrap runtime. Bare
+  // resolution also searches NODE_PATH and user-global packages, which can
+  // silently substitute an unrelated runtime when the managed package is absent.
+  for (let owner = path.resolve(pluginRoot); ; owner = path.dirname(owner)) {
+    if (path.basename(owner) !== "node_modules") {
+      try {
+        // Resolve links through Node so pnpm's external store remains supported.
+        return require.resolve(
+          path.join(owner, "node_modules", MANAGED_CODEX_APP_SERVER_PACKAGE, "bin", "codex.js"),
+        );
+      } catch {
+        // A hoisted dependency can belong to the next enclosing install owner.
+      }
+    }
+    if (path.dirname(owner) === owner) {
+      return undefined;
     }
   }
-  if (commandPaths.length > 0) {
-    return commandPaths;
-  }
-
-  throw new Error(
-    [
-      `Managed Codex app-server binary was not found for ${MANAGED_CODEX_APP_SERVER_PACKAGE}.`,
-      "Reinstall or update OpenClaw, or run pnpm install in a source checkout.",
-      "Set plugins.entries.codex.config.appServer.command or OPENCLAW_CODEX_APP_SERVER_BIN to use a custom Codex binary.",
-    ].join(" "),
-  );
 }
 
 async function commandPathExists(filePath: string, platform: NodeJS.Platform): Promise<boolean> {
@@ -288,4 +332,26 @@ async function commandPathExists(filePath: string, platform: NodeJS.Platform): P
   } catch {
     return false;
   }
+}
+
+/** Preserves the fallback tail for each concrete managed spawn attempt. */
+export function resolveManagedFallbackStartOptions(
+  startOptions: CodexAppServerStartOptions,
+): CodexAppServerStartOptions[] {
+  const commands = [startOptions.command, ...(startOptions.managedFallbackCommandPaths ?? [])];
+  const candidates: CodexAppServerStartOptions[] = [];
+  for (const [index, command] of commands.entries()) {
+    const managedFallbackCommandPaths = commands.slice(index + 1);
+    const candidate = {
+      ...startOptions,
+      command,
+    };
+    if (managedFallbackCommandPaths.length === 0) {
+      delete candidate.managedFallbackCommandPaths;
+    } else {
+      candidate.managedFallbackCommandPaths = managedFallbackCommandPaths;
+    }
+    candidates.push(candidate);
+  }
+  return candidates;
 }

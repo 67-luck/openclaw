@@ -159,13 +159,16 @@ describe("worker placement session evidence", () => {
         sessionId: `session-${kind}`,
         sessionKey: `agent:main:${kind}`,
       }));
-      const claim = placements.claimTurn({
+      const claim = await placements.claimTurn({
         ...identities[3]!,
         owner: { kind: "local" },
         claimId: "live-claim",
         runId: "live-run",
       });
-      const requested = identities.map((identity) => placements.startDispatch(identity));
+      const requested: WorkerSessionPlacementRecord[] = [];
+      for (const identity of identities) {
+        requested.push(await placements.startDispatch(identity));
+      }
       for (const identity of identities.slice(0, 2)) {
         await sessionAccessor.upsertSessionEntryCore(identity, {
           sessionId: identity.sessionId,
@@ -173,6 +176,12 @@ describe("worker placement session evidence", () => {
         });
       }
       const database = openOpenClawAgentDatabase({ agentId: "main" });
+      // Retain an admitted reader so one later corrupt row does not block unrelated evidence.
+      expect(
+        readSessionIdentityEvidenceInDatabase(database, identities.slice(0, 2)).map(
+          (row) => row.status,
+        ),
+      ).toEqual(["current", "current"]);
       database.db
         .prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
         .run("{", identities[1]!.sessionKey);
@@ -393,6 +402,9 @@ describe("worker placement session evidence", () => {
         const read = vi.fn(async () => ({
           result: { status: "unavailable" as const },
           assertCurrent() {},
+          followRegistration() {
+            throw new Error("Unavailable placement registry reads cannot follow registration");
+          },
         }));
         const registry = vi
           .spyOn(registryListing, "prepareOpenClawAgentDatabaseRegistrySnapshotRead")

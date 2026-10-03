@@ -175,7 +175,9 @@ describe("renderPluginConsentDialog", () => {
   });
 
   it("highlights newly declared capability groups since the previous acceptance", () => {
+    const reviewToken = "a".repeat(64);
     const inspection = createInspectResult({
+      reviewToken,
       declared: {
         ...createInspectResult().declared,
         tools: ["workboard_review"],
@@ -191,7 +193,7 @@ describe("renderPluginConsentDialog", () => {
         fallback: { name: "Workboard" },
         details: buildCapabilityConsentErrorDetails({
           pluginId: "workboard",
-          reviewToken: inspection.reviewToken,
+          reviewToken,
           widened: {
             tools: ["workboard_review"],
             contracts: ["gatewayMethodDispatch: workboard.dispatch"],
@@ -271,14 +273,10 @@ it("tries the author image after a broken package image, then retains initials u
   const container = document.createElement("div");
   document.body.append(container);
   const tile = (url: string) =>
-    renderArtTile(
-      "lossless-claw",
-      "Lossless Context Management",
-      url,
-      undefined,
-      "plugins-tile",
-      "blob:author",
-    );
+    renderArtTile("lossless-claw", "Lossless Context Management", {
+      iconUrl: url,
+      authorIconUrl: "blob:author",
+    });
   render(tile("blob:package"), container);
   expect(container.querySelector("img")?.getAttribute("src")).toBe("blob:package");
   container.querySelector("img")!.dispatchEvent(new Event("error"));

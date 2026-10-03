@@ -5,7 +5,6 @@ import {
   buildModelAliasIndex,
   resolveDefaultModelForAgent,
   resolveModelRefFromString,
-  type ModelAliasIndex,
 } from "../../agents/model-selection.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
@@ -76,21 +75,6 @@ export function createShouldEmitVerboseProgress(params: {
   };
 }
 
-function resolveHarnessDefaultChannel(params: {
-  ctx: FinalizedMsgContext;
-  entry?: SessionEntry;
-}): string | undefined {
-  const originatingChannel =
-    typeof params.ctx.OriginatingChannel === "string" ? params.ctx.OriginatingChannel : undefined;
-
-  return (
-    sessionDeliveryChannel(params.entry) ??
-    originatingChannel ??
-    params.ctx.Provider ??
-    params.ctx.Surface
-  );
-}
-
 export function resolveTurnModelOverride(
   replyOptions: { isHeartbeat?: boolean; heartbeatModelOverride?: string } | undefined,
 ): string | undefined {
@@ -98,90 +82,6 @@ export function resolveTurnModelOverride(
     return undefined;
   }
   return normalizeOptionalString(replyOptions.heartbeatModelOverride);
-}
-
-function resolveChannelModelCandidate(params: {
-  aliasIndex: ModelAliasIndex;
-  cfg: OpenClawConfig;
-  ctx: FinalizedMsgContext;
-  defaultProvider: string;
-  entry?: SessionEntry;
-  parentSessionKey?: string;
-}): HarnessDefaultCandidate | undefined {
-  if (!params.cfg.channels?.modelByChannel) {
-    return undefined;
-  }
-
-  const channel = resolveHarnessDefaultChannel({
-    ctx: params.ctx,
-    entry: params.entry,
-  });
-  const channelModelOverride = resolveChannelModelOverride({
-    cfg: params.cfg,
-    channel,
-    groupId: params.entry?.groupId,
-    groupChatType: params.entry?.chatType ?? params.ctx.ChatType,
-    groupChannel: params.entry?.groupChannel ?? params.ctx.GroupChannel,
-    groupSubject: params.entry?.subject ?? params.ctx.GroupSubject,
-    parentSessionKey: params.parentSessionKey,
-    directUserIds: [
-      sessionDeliveryOrigin(params.entry)?.nativeDirectUserId,
-      sessionDeliveryOrigin(params.entry)?.from,
-      sessionDeliveryOrigin(params.entry)?.to,
-      params.ctx.OriginatingTo,
-      params.ctx.From,
-      params.ctx.SenderId,
-    ],
-  });
-  if (!channelModelOverride) {
-    return undefined;
-  }
-
-  return resolveModelRefFromString({
-    raw: channelModelOverride.model,
-    defaultProvider: params.defaultProvider,
-    aliasIndex: params.aliasIndex,
-  })?.ref;
-}
-
-function resolveStoredModelCandidate(params: {
-  cfg: OpenClawConfig;
-  defaultProvider: string;
-  entry?: SessionEntry;
-  parentSessionKey?: string;
-  sessionAgentId: string;
-  sessionKey?: string;
-  sessionStore?: Record<string, SessionEntry>;
-}): HarnessDefaultCandidate | undefined {
-  const storedModelRef = resolveStoredModelOverride({
-    loadSessionEntry: (sessionKey) => {
-      const agentId = resolveSessionAgentId({
-        sessionKey,
-        config: params.cfg,
-        fallbackAgentId: params.sessionAgentId,
-      });
-      const storePath = resolveSessionStorePathCore(params.cfg.session?.store, { agentId });
-      return loadSessionStoreEntry({
-        agentId,
-        storePath,
-        sessionKey,
-        readConsistency: "latest",
-        clone: false,
-      });
-    },
-    sessionEntry: params.entry,
-    sessionStore: params.sessionStore,
-    sessionKey: params.sessionKey,
-    parentSessionKey: params.parentSessionKey,
-    defaultProvider: params.defaultProvider,
-  });
-  if (!storedModelRef) {
-    return undefined;
-  }
-  return {
-    provider: storedModelRef.provider ?? params.defaultProvider,
-    model: storedModelRef.model,
-  };
 }
 
 /**
@@ -250,23 +150,64 @@ function resolveHarnessSourceVisibleRepliesDefault(params: {
       params.entry?.parentSessionKey ??
       params.ctx.ModelParentSessionKey ??
       params.ctx.ParentSessionKey;
-    const channelModelCandidate = resolveChannelModelCandidate({
-      aliasIndex,
-      cfg: params.cfg,
-      ctx: params.ctx,
-      defaultProvider: defaultModelRef.provider,
-      entry: params.entry,
-      parentSessionKey,
-    });
-    const storedModelCandidate = resolveStoredModelCandidate({
-      cfg: params.cfg,
-      defaultProvider: defaultModelRef.provider,
-      entry: params.entry,
-      parentSessionKey,
-      sessionAgentId: params.sessionAgentId,
-      sessionKey: params.sessionKey,
+    const channelModelOverride = params.cfg.channels?.modelByChannel
+      ? resolveChannelModelOverride({
+          cfg: params.cfg,
+          channel:
+            sessionDeliveryChannel(params.entry) ??
+            params.ctx.OriginatingChannel ??
+            params.ctx.Provider ??
+            params.ctx.Surface,
+          groupId: params.entry?.groupId,
+          groupChatType: params.entry?.chatType ?? params.ctx.ChatType,
+          groupChannel: params.entry?.groupChannel ?? params.ctx.GroupChannel,
+          groupSubject: params.entry?.subject ?? params.ctx.GroupSubject,
+          parentSessionKey,
+          directUserIds: [
+            sessionDeliveryOrigin(params.entry)?.nativeDirectUserId,
+            sessionDeliveryOrigin(params.entry)?.from,
+            sessionDeliveryOrigin(params.entry)?.to,
+            params.ctx.OriginatingTo,
+            params.ctx.From,
+            params.ctx.SenderId,
+          ],
+        })
+      : undefined;
+    const channelModelCandidate = channelModelOverride
+      ? resolveModelRefFromString({
+          raw: channelModelOverride.model,
+          defaultProvider: defaultModelRef.provider,
+          aliasIndex,
+        })?.ref
+      : undefined;
+    const storedModelRef = resolveStoredModelOverride({
+      loadSessionEntry: (sessionKey) => {
+        const agentId = resolveSessionAgentId({
+          sessionKey,
+          config: params.cfg,
+          fallbackAgentId: params.sessionAgentId,
+        });
+        const storePath = resolveSessionStorePathCore(params.cfg.session?.store, { agentId });
+        return loadSessionStoreEntry({
+          agentId,
+          storePath,
+          sessionKey,
+          readConsistency: "latest",
+          clone: false,
+        });
+      },
+      sessionEntry: params.entry,
       sessionStore: params.sessionStore,
+      sessionKey: params.sessionKey,
+      parentSessionKey,
+      defaultProvider: defaultModelRef.provider,
     });
+    const storedModelCandidate = storedModelRef
+      ? {
+          provider: storedModelRef.provider ?? defaultModelRef.provider,
+          model: storedModelRef.model,
+        }
+      : undefined;
     const turnModelCandidate = params.turnModelOverride
       ? resolveModelRefFromString({
           raw: params.turnModelOverride,
@@ -274,7 +215,7 @@ function resolveHarnessSourceVisibleRepliesDefault(params: {
           aliasIndex,
         })?.ref
       : undefined;
-    const resolveCandidateDefault = (candidate: { provider: string; model?: string }) => {
+    const resolveCandidateDefault = (candidate: HarnessDefaultCandidate) => {
       const agentHarnessRuntimeOverride = resolveSessionRuntimeOverrideForProvider({
         provider: candidate.provider,
         entry: params.entry,

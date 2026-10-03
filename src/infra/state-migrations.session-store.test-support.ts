@@ -1,6 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { OpenClawConfig } from "../config/config.js";
 import type { SessionAcpMeta } from "../config/sessions/types.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../state/openclaw-agent-db.js";
+import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+
+export async function drainSessionMigrationFixture(root: string): Promise<void> {
+  await closeOpenClawAgentDatabasesAsync(root);
+  closeOpenClawAgentDatabasesForTest();
+  closeOpenClawStateDatabaseForTest();
+}
 
 export function createLegacyAcpSessionEntry(
   sessionId: string,
@@ -39,4 +51,24 @@ export function writeLegacySessionsFixture(params: {
     fs.writeFileSync(path.join(legacySessionsDir, fileName), content, "utf-8");
   }
   return legacySessionsDir;
+}
+
+export function createConfig(): OpenClawConfig {
+  return {
+    agents: {
+      list: [{ id: "worker-1", default: true }],
+    },
+    session: {
+      mainKey: "desk",
+    },
+    channels: {
+      chatapp: {
+        defaultAccount: "alpha",
+        accounts: {
+          beta: {},
+          alpha: {},
+        },
+      },
+    },
+  } as OpenClawConfig;
 }

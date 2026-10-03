@@ -30,7 +30,10 @@ import {
 } from "../../infra/diagnostic-trace-context.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import * as sessionLifecycle from "../../sessions/session-lifecycle-admission.js";
-import { sessionChanges } from "../../sessions/session-row-changes.js";
+import {
+  isSessionStoreTopologyChange,
+  sessionChanges,
+} from "../../sessions/session-row-changes.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { getOpenIncognitoAgentDatabase } from "../../state/openclaw-agent-db-lifecycle.js";
 import {
@@ -580,8 +583,8 @@ test("patch timing covers preparation and lifecycle finalization before cleanup"
     const runMutation = sessionLifecycle.runExclusiveSessionLifecycleMutation;
     const lifecycle = vi
       .spyOn(sessionLifecycle, "runExclusiveSessionLifecycleMutation")
-      .mockImplementation((params) =>
-        runMutation({
+      .mockImplementation((operation, params) =>
+        runMutation(operation, {
           ...params,
           prepare: async (owner) => {
             await params.prepare?.(owner);
@@ -785,7 +788,7 @@ test("patchMany retains original RAM facts while its cold durable sibling publis
     const response = vi.fn();
     const ramLifetimesAtStoresPublication: boolean[] = [];
     const stop = sessionChanges.subscribe((change) => {
-      if ("all" in change && change.scope === "stores") {
+      if (isSessionStoreTopologyChange(change)) {
         ramLifetimesAtStoresPublication.push(
           getOpenIncognitoAgentDatabase("main", ramPath) === originalRam && originalRam.db.isOpen,
         );

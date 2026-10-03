@@ -2,7 +2,6 @@ import { StickerFormatType, type APIAttachment, type APIStickerItem } from "disc
 import {
   formatMediaPlaceholderText,
   type ChannelInboundMediaInput,
-  type MediaPlaceholderTextFact,
 } from "openclaw/plugin-sdk/channel-inbound";
 import { getFileExtension, normalizeMimeType } from "openclaw/plugin-sdk/media-mime";
 import { saveRemoteMedia, type FetchLike } from "openclaw/plugin-sdk/media-runtime";
@@ -26,6 +25,7 @@ import {
   resolveDiscordReferencedReplyMessage,
   resolveDiscordSnapshotStickers,
 } from "./message-forwarded.js";
+import { withAbortTimeout } from "./timeouts.js";
 
 const AUDIO_ATTACHMENT_EXTENSIONS = new Set([
   ".aac",
@@ -233,64 +233,36 @@ export async function resolveReferencedReplyMediaList(
     : [];
 }
 
-async function fetchDiscordMedia(params: {
-  url: string;
-  filePathHint: string;
-  maxBytes: number;
-  fetchImpl?: FetchLike;
-  ssrfPolicy?: SsrFPolicy;
-  readIdleTimeoutMs?: number;
-  totalTimeoutMs?: number;
-  abortSignal?: AbortSignal;
-  endpointRuntime: DiscordEndpointRuntime | null;
-  fallbackContentType?: string;
-  originalFilename?: string;
-}) {
-  const endpointGuard = resolveDiscordEndpointMediaGuard(params.url, params.endpointRuntime);
-  const timeoutAbortController = params.totalTimeoutMs ? new AbortController() : undefined;
-  const signal =
-    params.abortSignal && timeoutAbortController
-      ? AbortSignal.any([params.abortSignal, timeoutAbortController.signal])
-      : (params.abortSignal ?? timeoutAbortController?.signal);
-  let timedOut = false;
-  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
-  const savePromise = saveRemoteMedia({
-    url: params.url,
-    filePathHint: params.filePathHint,
-    maxBytes: params.maxBytes,
-    // Endpoint media owns its pinned transport. An account proxy fetcher would
-    // otherwise replace the SSRF guard's dispatcher and leak the endpoint URL.
-    fetchImpl: endpointGuard ? undefined : params.fetchImpl,
-    ssrfPolicy: endpointGuard?.ssrfPolicy ?? params.ssrfPolicy,
-    ...(endpointGuard ? { maxRedirects: endpointGuard.maxRedirects } : {}),
-    readIdleTimeoutMs: params.readIdleTimeoutMs,
-    fallbackContentType: params.fallbackContentType,
-    originalFilename: params.originalFilename,
-    ...(signal ? { requestInit: { signal } } : {}),
-  }).catch((error: unknown) => {
-    if (timedOut) {
-      return new Promise<never>(() => {});
-    }
-    throw error;
-  });
-  try {
-    if (!params.totalTimeoutMs) {
-      return await savePromise;
-    }
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutHandle = setTimeout(() => {
-        timedOut = true;
-        timeoutAbortController?.abort();
-        reject(new Error(`discord media download timed out after ${params.totalTimeoutMs}ms`));
-      }, params.totalTimeoutMs);
-      timeoutHandle.unref?.();
+async function fetchDiscordMedia(
+  operation: Omit<DiscordMediaOperation, "out">,
+  params: {
+    url: string;
+    filePathHint: string;
+    fallbackContentType?: string;
+    originalFilename?: string;
+  },
+) {
+  const endpointGuard = resolveDiscordEndpointMediaGuard(params.url, operation.endpointRuntime);
+  const save = (signal?: AbortSignal) =>
+    saveRemoteMedia({
+      ...params,
+      maxBytes: operation.maxBytes,
+      // Endpoint media owns its pinned transport; an account proxy must not replace it.
+      fetchImpl: endpointGuard ? undefined : operation.fetchImpl,
+      ssrfPolicy: endpointGuard?.ssrfPolicy ?? operation.ssrfPolicy,
+      ...(endpointGuard ? { maxRedirects: endpointGuard.maxRedirects } : {}),
+      readIdleTimeoutMs: operation.readIdleTimeoutMs,
+      ...(signal ? { requestInit: { signal } } : {}),
     });
-    return await Promise.race([savePromise, timeoutPromise]);
-  } finally {
-    if (timeoutHandle) {
-      clearTimeout(timeoutHandle);
-    }
-  }
+  return operation.totalTimeoutMs
+    ? withAbortTimeout({
+        timeoutMs: operation.totalTimeoutMs,
+        createTimeoutError: () =>
+          new Error(`discord media download timed out after ${operation.totalTimeoutMs}ms`),
+        run: (signal) =>
+          save(operation.abortSignal ? AbortSignal.any([operation.abortSignal, signal]) : signal),
+      })
+    : save(operation.abortSignal);
 }
 
 async function appendResolvedMediaFromAttachments(
@@ -313,16 +285,9 @@ async function appendResolvedMediaFromAttachments(
       continue;
     }
     try {
-      const saved = await fetchDiscordMedia({
+      const saved = await fetchDiscordMedia(params, {
         url: attachmentUrl,
         filePathHint: attachment.filename ?? attachmentUrl,
-        maxBytes: params.maxBytes,
-        fetchImpl: params.fetchImpl,
-        ssrfPolicy: params.ssrfPolicy,
-        readIdleTimeoutMs: params.readIdleTimeoutMs,
-        totalTimeoutMs: params.totalTimeoutMs,
-        abortSignal: params.abortSignal,
-        endpointRuntime: params.endpointRuntime,
         fallbackContentType: attachment.content_type,
         originalFilename: attachment.filename,
       });
@@ -343,10 +308,7 @@ async function appendResolvedMediaFromAttachments(
       getChildLogger({ module: "discord-media" }).warn(
         `${params.errorPrefix} ${id}: ${String(err)}`,
       );
-      const classification = resolveDiscordMediaClassification({ attachment });
-      params.out.push({
-        ...classification,
-      });
+      params.out.push(resolveDiscordMediaClassification({ attachment }));
     }
   }
 }
@@ -418,16 +380,9 @@ async function appendResolvedMediaFromStickers(
     let lastError: unknown;
     for (const candidate of candidates) {
       try {
-        const saved = await fetchDiscordMedia({
+        const saved = await fetchDiscordMedia(params, {
           url: candidate.url,
           filePathHint: candidate.fileName,
-          maxBytes: params.maxBytes,
-          fetchImpl: params.fetchImpl,
-          ssrfPolicy: params.ssrfPolicy,
-          readIdleTimeoutMs: params.readIdleTimeoutMs,
-          totalTimeoutMs: params.totalTimeoutMs,
-          abortSignal: params.abortSignal,
-          endpointRuntime: params.endpointRuntime,
           fallbackContentType: inferStickerContentType(sticker),
           originalFilename: candidate.fileName,
         });
@@ -448,13 +403,10 @@ async function appendResolvedMediaFromStickers(
       getChildLogger({ module: "discord-media" }).warn(
         `${params.errorPrefix} ${sticker.id}: ${formatStickerError(lastError)}`,
       );
-      const fallback = candidates[0];
-      if (fallback) {
-        params.out.push({
-          contentType: inferStickerContentType(sticker),
-          kind: "sticker",
-        });
-      }
+      params.out.push({
+        contentType: inferStickerContentType(sticker),
+        kind: "sticker",
+      });
     }
   }
 }
@@ -471,23 +423,15 @@ function isImageAttachment(attachment: APIAttachment): boolean {
   return /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/.test(name);
 }
 
-function resolveDiscordTextMediaFacts(params: {
-  attachments?: APIAttachment[];
-  stickers?: APIStickerItem[];
-}): MediaPlaceholderTextFact[] {
-  return [
-    ...(params.attachments ?? []).map((attachment) => {
-      const classification = resolveDiscordMediaClassification({ attachment });
-      return classification;
-    }),
-    ...(params.stickers ?? []).map(() => ({ kind: "sticker" as const })),
-  ];
-}
-
 /** Renders native Discord media only for transcript surfaces that cannot carry facts. */
 export function formatDiscordMediaText(params: {
   attachments?: APIAttachment[];
   stickers?: APIStickerItem[];
 }): string {
-  return formatMediaPlaceholderText(resolveDiscordTextMediaFacts(params));
+  return formatMediaPlaceholderText([
+    ...(params.attachments ?? []).map((attachment) =>
+      resolveDiscordMediaClassification({ attachment }),
+    ),
+    ...(params.stickers ?? []).map(() => ({ kind: "sticker" as const })),
+  ]);
 }

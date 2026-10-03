@@ -1,11 +1,13 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { parse as parseToml } from "smol-toml";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   assertCodexDesktopComputerUseProbeSupported,
   bindCodexComputerUseNodeReplClient,
+  CODEX_COMPUTER_USE_NODE_REPL_PROBE,
   hasCodexComputerUseNodeReplOwnership,
   isCodexComputerUseNodeReplClient,
   resolveCodexComputerUseNodeReplStartArgs,
@@ -20,7 +22,7 @@ describe("desktop Computer Use node_repl process config", () => {
     await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
   });
 
-  async function fixture() {
+  async function fixture(layout: "legacy" | "signed" = "legacy") {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-node-repl-"));
     roots.push(root);
     const resources = path.join(root, "staged/ChatGPT.app/Contents/Resources");
@@ -44,12 +46,39 @@ describe("desktop Computer Use node_repl process config", () => {
       service,
       home,
       params: {
-        appServerCommand: path.join(resources, "codex"),
+        appServerCommand: path.join(
+          resources,
+          layout === "signed" ? "codex-cli/CodexCLI.app/Contents/MacOS/codex" : "codex",
+        ),
         codexHome: home,
         platform: "darwin" as const,
       },
     };
   }
+
+  it.each([{ apps: [{ name: "one" }, { name: "two" }] }, { apps: { one: {}, two: {} } }])(
+    "executes the native read-only probe against upstream list_apps and nodeRepl.write",
+    async ({ apps }) => {
+      const { root } = await fixture();
+      const sky = path.join(root, "node_modules", "@oai", "sky");
+      await fs.mkdir(sky, { recursive: true });
+      await fs.writeFile(
+        path.join(sky, "package.json"),
+        JSON.stringify({ name: "@oai/sky", type: "module", exports: "./index.mjs" }),
+      );
+      await fs.writeFile(
+        path.join(sky, "index.mjs"),
+        `export const sky = { list_apps: async () => (${JSON.stringify(apps)}) };`,
+      );
+      const script = path.join(root, "probe.mjs");
+      await fs.writeFile(
+        script,
+        `export const output = []; const nodeRepl = { write: value => output.push(value) }; await (async () => { ${CODEX_COMPUTER_USE_NODE_REPL_PROBE} })();`,
+      );
+      const { output } = await import(/* @vite-ignore */ pathToFileURL(script).href);
+      expect(output).toEqual(['{"appCount":2}']);
+    },
+  );
 
   it.each(["official", "copied args", "changed args", "other command", "other home"])(
     "binds only the actual canonical launch (%s)",
@@ -111,17 +140,21 @@ describe("desktop Computer Use node_repl process config", () => {
     expect(request).toHaveBeenCalledExactlyOnceWith("config/read", { includeLayers: false });
   });
 
-  it.each([undefined, false])(
-    "wires an enabled native plugin without changing config or service (OpenClaw enabled: %s)",
-    async (enabled) => {
-      const { params, home, service } = await fixture();
+  it.each(
+    (["legacy", "signed"] as const).flatMap((layout) =>
+      [undefined, false].map((enabled) => ({ layout, enabled })),
+    ),
+  )(
+    "wires native plugin in $layout layout without mutations (OpenClaw enabled: $enabled)",
+    async ({ layout, enabled }) => {
+      const { params, home, service, root } = await fixture(layout);
       const before = await fs.readFile(path.join(home, "config.toml"), "utf8");
       const args = await resolveCodexComputerUseNodeReplStartArgs({ ...params, enabled });
       const config = parseToml(args.filter((_, index) => args[index - 1] === "-c").join("\n")) as {
         mcp_servers: { node_repl: { command: string; env: Record<string, string> } };
       };
-      expect(config.mcp_servers.node_repl.command).toContain(
-        "staged/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl",
+      expect(config.mcp_servers.node_repl.command).toBe(
+        path.join(root, "staged/ChatGPT.app/Contents/Resources/cua_node/bin/node_repl"),
       );
       expect(config.mcp_servers.node_repl.env).toMatchObject({
         CODEX_HOME: home,

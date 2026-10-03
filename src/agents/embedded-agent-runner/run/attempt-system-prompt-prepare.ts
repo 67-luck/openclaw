@@ -4,8 +4,12 @@ import {
   resolveProviderSystemPromptContribution,
   transformProviderSystemPrompt,
 } from "../../../plugins/provider-runtime.js";
+import { joinPresentTextSegments } from "../../../shared/text/join-segments.js";
 import { isReasoningTagProvider } from "../../../utils/provider-utils.js";
-import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
+import {
+  readAdmittedRunOperatorAuthority,
+  resolveAdmittedRunActiveAssertion,
+} from "../../admitted-run-context.js";
 import {
   buildBootstrapPromptWarningNotice,
   buildBootstrapTruncationReportMeta,
@@ -19,19 +23,17 @@ import {
 } from "../../project-memory-bootstrap.js";
 import { resolveAgentPromptSurfaceForSessionKey } from "../../prompt-surface.js";
 import { resolveAgentRuntimePrompt } from "../../runtime-prompt.js";
-import { withSandboxRuntimeStatusInWorker } from "../../sandbox/runtime-status.js";
 import { buildSystemPromptReport } from "../../system-prompt-report.js";
-import { withPreparedToolConstruction } from "../../tool-construction-preparation.js";
 import { toolPolicyRestrictsTools } from "../../tool-policy.js";
 import type { ToolSearchCatalogRef } from "../../tool-search.js";
 import { buildToolSchemaDirectoryPrompt } from "../../tool-search.js";
-import { prepareWatchedSessionsPrompt } from "../../watched-sessions-prompt.js";
+import { prepareWatchedSessionsPromptAsync } from "../../watched-sessions-prompt.js";
 import { buildEmbeddedSandboxInfo, resolveEmbeddedSandboxInfoExecPolicy } from "../sandbox-info.js";
 import { buildEmbeddedSystemPrompt } from "../system-prompt.js";
 import type { prepareEmbeddedAttemptBootstrap } from "./attempt-bootstrap-prepare.js";
 import { resolvePromptModeForSession } from "./attempt-prompt-helpers.js";
 import type { EmbeddedAttemptSetup } from "./attempt-setup.js";
-import { buildAttemptSystemPrompt } from "./attempt-system-prompt.js";
+import { buildAttemptSystemPrompt, type SystemPromptRefresh } from "./attempt-system-prompt.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 type PreparedBootstrap = Awaited<ReturnType<typeof prepareEmbeddedAttemptBootstrap>>;
@@ -150,6 +152,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
     channel: attempt.messageChannel ?? attempt.messageProvider,
     accountId: attempt.agentAccountId,
     chatType: attempt.chatType,
+    requesterProfileId: readAdmittedRunOperatorAuthority(attempt.admittedRunContext)?.profileId,
   });
   const promptMode =
     attempt.promptMode ??
@@ -164,7 +167,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
     cwd: params.setup.effectiveCwd,
     moduleUrl: import.meta.url,
   });
-  const promptContributionContext = {
+  const buildProviderPromptContext = () => ({
     config: attempt.config,
     agentDir: attempt.agentDir,
     workspaceDir: params.setup.effectiveWorkspace,
@@ -174,8 +177,8 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
     runtimeChannel,
     runtimeCapabilities,
     agentId: params.setup.sessionAgentId,
-    trigger: attempt.trigger,
-  };
+  });
+  const promptContributionContext = { ...buildProviderPromptContext(), trigger: attempt.trigger };
   const promptContribution =
     attempt.runtimePlan?.prompt.resolveSystemPromptContribution(promptContributionContext) ??
     resolveProviderSystemPromptContribution({
@@ -205,11 +208,15 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
         agentId: runtimeInfo.agentId,
         agentSessionKey: runtimeInfo.sessionKey,
       }),
-      preparedWatchedSessions: prepareWatchedSessionsPrompt({
+      preparedWatchedSessions: await prepareWatchedSessionsPromptAsync({
         ...toolContext,
         enabled: effectivePromptMode === "full",
         config: attempt.config,
         sessionKey: attempt.sessionKey,
+        assertCurrent: () => {
+          policyPreparation.signal?.throwIfAborted();
+          policyPreparation.assertCurrent?.();
+        },
       }),
     };
   };
@@ -225,19 +232,31 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
           cfg: attempt.config ?? {},
           agentId: params.setup.sessionAgentId,
           activeProjectKeys,
+          context: policyPreparation.assertCurrent
+            ? {
+                authority: attempt.sessionKey
+                  ? {
+                      kind: "session",
+                      sessionKey: attempt.sessionKey,
+                      sessionId: attempt.sessionId,
+                      sandboxed: sandboxInfo?.enabled === true,
+                      audience: attempt.memoryAudience,
+                    }
+                  : { kind: "host", operation: "project-memory-bootstrap" },
+                assertCurrent: policyPreparation.assertCurrent,
+                signal: policyPreparation.signal,
+              }
+            : undefined,
         })
       : [];
   const projectMemoryWriteInstruction = buildProjectMemoryWriteInstruction(
     attempt.preparedModelRuntime?.projectKey,
   );
-  const extraSystemPrompt =
-    [
-      attempt.extraSystemPrompt,
-      projectMemoryWriteInstruction,
-      buildModelToolsUnavailablePrompt(params.modelToolsEnabled),
-    ]
-      .filter((value): value is string => Boolean(value))
-      .join("\n\n") || undefined;
+  const extraSystemPrompt = joinPresentTextSegments([
+    attempt.extraSystemPrompt,
+    projectMemoryWriteInstruction,
+    buildModelToolsUnavailablePrompt(params.modelToolsEnabled),
+  ]);
 
   const promptInputs: Parameters<typeof buildAttemptSystemPrompt>[0] = {
     isRawModelRun: params.isRawModelRun,
@@ -301,38 +320,12 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
       provider: attempt.provider,
       config: attempt.config,
       workspaceDir: params.setup.effectiveWorkspace,
-      context: {
-        config: attempt.config,
-        agentDir: attempt.agentDir,
-        workspaceDir: params.setup.effectiveWorkspace,
-        provider: attempt.provider,
-        modelId: attempt.modelId,
-        promptMode: effectivePromptMode,
-        runtimeChannel,
-        runtimeCapabilities,
-        agentId: params.setup.sessionAgentId,
-      },
+      context: buildProviderPromptContext(),
     },
   };
-  const attemptSystemPrompt = buildAttemptSystemPrompt(promptInputs);
-  const sandboxReport = await withPreparedToolConstruction(
-    attempt.config,
-    policyPreparation,
-    async (shared) =>
-      withSandboxRuntimeStatusInWorker(
-        {
-          cfg: shared.config,
-          agentId:
-            attempt.sandboxAgentId ??
-            (params.setup.sandboxSessionKey === (attempt.sessionKey?.trim() || attempt.sessionId)
-              ? params.setup.sessionAgentId
-              : undefined),
-          sessionKey: params.setup.sandboxSessionKey,
-        },
-        shared,
-        async (runtime) => ({ mode: runtime.mode, sandboxed: runtime.sandboxed }),
-      ),
-  );
+  const attemptSystemPrompt = await buildAttemptSystemPrompt(promptInputs);
+  policyPreparation.signal?.throwIfAborted();
+  policyPreparation.assertCurrent?.();
   const reportInputs: Parameters<typeof buildSystemPromptReport>[0] = {
     source: "run",
     generatedAt: Date.now(),
@@ -348,10 +341,10 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
       warningMode: params.bootstrap.bootstrapPromptWarningMode,
       warning: params.bootstrap.bootstrapPromptWarning,
     }),
-    sandbox: sandboxReport,
+    sandbox: params.setup.sandboxReport,
     systemPrompt: attemptSystemPrompt.systemPrompt,
     injectedWorkspaceFiles: params.bootstrap.bootstrapInjectionStats,
-    skillsPrompt: params.skillsPrompt,
+    skillsPrompt: attemptSystemPrompt.skillsPrompt,
     tools: params.effectiveTools,
   };
   const systemPromptReport = buildSystemPromptReport(reportInputs);
@@ -363,7 +356,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
     capabilities: string[];
     catalogEntries: NonNullable<ToolSearchCatalogRef["current"]>["entries"] | undefined;
     permissionChanged: boolean;
-    promise: Promise<(currentSystemPrompt: string) => string>;
+    promise: Promise<SystemPromptRefresh>;
   } = {
     mode: attempt.permissionMode,
     tools: [...params.effectiveTools],
@@ -381,7 +374,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
     prepareToolPrompt: (
       effectiveTools: PromptTools = params.effectiveTools,
       { permissionChanged = false }: { permissionChanged?: boolean } = {},
-    ) => {
+    ): Promise<SystemPromptRefresh> => {
       const mode = attempt.permissionMode;
       const capabilities = [...params.capabilityToolNames].toSorted();
       const catalogEntries = params.toolSearchCatalogRef?.current?.entries;
@@ -418,14 +411,14 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
             refreshedSandboxInfo?.enabled === true,
           ),
         );
-        const nextSystemPrompt = buildAttemptSystemPrompt({
+        const nextSystemPrompt = await buildAttemptSystemPrompt({
           ...promptInputs,
           embeddedSystemPrompt,
         });
         const permissionNotice = permissionChanged
           ? `## Permission change\nThe operator changed workspace permissions to ${mode ?? "configured defaults"}. Continue the current task with the updated tools and permissions. Inspect interrupted actions before retrying; do not repeat completed actions.`
           : undefined;
-        return (currentSystemPrompt: string) => {
+        const refresh: SystemPromptRefresh = (currentSystemPrompt) => {
           if (params.isRawModelRun) {
             return currentSystemPrompt;
           }
@@ -441,11 +434,14 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
               ...reportInputs,
               generatedAt: Date.now(),
               systemPrompt,
+              skillsPrompt: nextSystemPrompt.skillsPrompt,
               tools,
             }),
           );
           return systemPrompt;
         };
+        refresh.freshlyRendered = !params.isRawModelRun;
+        return refresh;
       })();
       toolPromptPreparation = {
         mode,

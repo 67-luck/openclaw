@@ -13,10 +13,10 @@ import {
   setManagedCodexPluginRoot,
 } from "./managed-binary.js";
 import {
-  observeCodexManagedDesktopSelection,
-  publishCodexManagedDesktopSelection,
-  resolveCodexManagedDesktopAppPath,
-} from "./managed-desktop-installation.js";
+  observeCodexManagedRuntimeSelection,
+  publishCodexManagedRuntimeSelection,
+  resolveCodexManagedRuntimeAppPath,
+} from "./managed-runtime-installation.js";
 
 function startOptions(
   commandSource: CodexAppServerStartOptions["commandSource"],
@@ -60,75 +60,89 @@ async function writePackageLauncher(owner: string): Promise<string> {
 const MACOS_DESKTOP_CODEX_APP_SERVER_COMMAND = "/Applications/Codex.app/Contents/Resources/codex";
 const MACOS_DESKTOP_CHATGPT_APP_SERVER_COMMAND =
   "/Applications/ChatGPT.app/Contents/Resources/codex";
+const MACOS_DESKTOP_CHATGPT_SIGNED_APP_SERVER_COMMAND =
+  "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex";
 
 describe("managed Codex app-server binary", () => {
   let root: string;
   beforeEach(async () => {
     root = await realpath(await mkdtemp(path.join(os.tmpdir(), "openclaw-codex-owner-")));
+    vi.stubEnv("OPENCLAW_STATE_DIR", path.join(root, "state"));
+    vi.spyOn(os, "homedir").mockReturnValue(root);
   });
   afterEach(async () => {
     setManagedCodexPluginRoot(undefined);
     await closeOpenClawStateDatabaseByPathAsync(
       path.join(root, "state", "state", "openclaw.sqlite"),
     );
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await rm(root, { recursive: true, force: true });
   });
 
-  it("observes committed managed selection while an acquired generation keeps its pinned candidate", async () => {
-    const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
-    const managedRoot = path.join(root, "managed");
-    const authority = {
-      root: managedRoot,
-      env,
-      signal: new AbortController().signal,
-      assertCurrent: () => {},
-    };
-    const first = { version: 1 as const, appName: "ChatGPT.app" as const, generation: "old" };
-    const second = { ...first, generation: "new" };
-    const oldCommand = path.join(
-      resolveCodexManagedDesktopAppPath(first, managedRoot),
-      "Contents/Resources/codex",
-    );
-    const newCommand = path.join(
-      resolveCodexManagedDesktopAppPath(second, managedRoot),
-      "Contents/Resources/codex",
-    );
-    await writeExecutable(oldCommand);
-    await writeExecutable(newCommand);
-    await writePackageLauncher(root);
-    const missing = await observeCodexManagedDesktopSelection(authority);
-    await publishCodexManagedDesktopSelection({
-      ...authority,
-      selection: first,
-      expectedComparison: missing.comparison,
-    });
-    const pinned = await resolveSelectedMacOSDesktopCodexAppPathCandidates("darwin", managedRoot, {
-      env,
-    });
-    const before = await observeCodexManagedDesktopSelection(authority);
-    await publishCodexManagedDesktopSelection({
-      ...authority,
-      selection: second,
-      expectedComparison: before.comparison,
-    });
-    const options = { env, platform: "darwin" as const, pluginRoot: root, managedRoot };
-    expect(
-      (
-        await resolveManagedCodexAppServerStartOptions(
-          startOptions("managed", "desktop-first"),
-          options,
-        )
-      ).command,
-    ).toBe(newCommand);
-    expect(
-      (
-        await resolveManagedCodexAppServerStartOptions(startOptions("managed", "desktop-first"), {
-          ...options,
-          desktopCandidates: pinned,
-        })
-      ).command,
-    ).toBe(oldCommand);
-  });
+  // Real Desktop inspection requires POSIX executable modes, unavailable on Windows.
+  it.runIf(process.platform !== "win32")(
+    "observes committed managed selection while an acquired generation keeps its pinned candidate",
+    async () => {
+      const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
+      const managedRoot = path.join(root, "managed");
+      const authority = {
+        root: managedRoot,
+        env,
+        signal: new AbortController().signal,
+        assertCurrent: () => {},
+      };
+      const first = { version: 1 as const, appName: "ChatGPT.app" as const, generation: "old" };
+      const second = { ...first, generation: "new" };
+      const oldCommand = path.join(
+        resolveCodexManagedRuntimeAppPath(first, managedRoot),
+        "Contents/Resources/codex",
+      );
+      const newCommand = path.join(
+        resolveCodexManagedRuntimeAppPath(second, managedRoot),
+        "Contents/Resources/codex",
+      );
+      await writeExecutable(oldCommand);
+      await writeExecutable(newCommand);
+      await writePackageLauncher(root);
+      const missing = await observeCodexManagedRuntimeSelection(authority);
+      await publishCodexManagedRuntimeSelection({
+        ...authority,
+        selection: first,
+        expectedComparison: missing.comparison,
+      });
+      const pinned = await resolveSelectedMacOSDesktopCodexAppPathCandidates(
+        "darwin",
+        managedRoot,
+        {
+          env,
+        },
+      );
+      const before = await observeCodexManagedRuntimeSelection(authority);
+      await publishCodexManagedRuntimeSelection({
+        ...authority,
+        selection: second,
+        expectedComparison: before.comparison,
+      });
+      const options = { env, platform: "darwin" as const, pluginRoot: root, managedRoot };
+      expect(
+        (
+          await resolveManagedCodexAppServerStartOptions(
+            startOptions("managed", "desktop-first"),
+            options,
+          )
+        ).command,
+      ).toBe(newCommand);
+      expect(
+        (
+          await resolveManagedCodexAppServerStartOptions(startOptions("managed", "desktop-first"), {
+            ...options,
+            desktopCandidates: pinned,
+          })
+        ).command,
+      ).toBe(oldCommand);
+    },
+  );
 
   it.each([
     { arch: "x64", triple: "x86_64-apple-darwin" },
@@ -199,14 +213,38 @@ describe("managed Codex app-server binary", () => {
     }
   });
 
-  it("reports the desktop bundle binary as its native artifact", () => {
+  it.each([
+    MACOS_DESKTOP_CHATGPT_APP_SERVER_COMMAND,
+    MACOS_DESKTOP_CHATGPT_SIGNED_APP_SERVER_COMMAND,
+  ])("reports the desktop bundle binary %s as its native artifact", (command) => {
     expect(
-      resolveManagedCodexNativeCommand(MACOS_DESKTOP_CHATGPT_APP_SERVER_COMMAND, {
+      resolveManagedCodexNativeCommand(command, {
         platform: "darwin",
         arch: "arm64",
       }),
-    ).toBe(MACOS_DESKTOP_CHATGPT_APP_SERVER_COMMAND);
+    ).toBe(command);
   });
+
+  it.runIf(process.platform !== "win32")(
+    "recognizes both retained executable layouts when a bundle contains both",
+    async () => {
+      const bundle = resolveCodexManagedRuntimeAppPath({
+        version: 1,
+        appName: "ChatGPT.app",
+        generation: "retained-both",
+      });
+      const commands = [
+        path.join(bundle, "Contents/Resources/codex"),
+        path.join(bundle, "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"),
+      ];
+      for (const command of commands) {
+        await writeExecutable(command);
+      }
+      for (const command of commands) {
+        expect(resolveManagedCodexNativeCommand(command, { platform: "darwin" })).toBe(command);
+      }
+    },
+  );
 
   it.each([true, false])(
     "uses embedded vendor binaries only when the platform package is absent (present=%s)",
@@ -332,32 +370,27 @@ describe("managed Codex app-server binary", () => {
     ).resolves.toMatchObject({ command: launcher });
   });
 
-  it.each(["config", "env"] as const)(
-    "preserves the %s override without managed discovery",
-    async (source) => {
-      const explicit = resolveCodexAppServerRuntimeOptions({
-        pluginConfig:
-          source === "config" ? { appServer: { command: "/operator/config-codex" } } : {},
-        env: { OPENCLAW_CODEX_APP_SERVER_BIN: "/operator/env-codex" },
-        codexConfigToml: null,
-        requirementsToml: null,
-      }).start;
-      const pathExists = vi.fn(async () => false);
-      expect(explicit.commandSource).toBe(source);
-      expect(explicit.command).toBe(`/operator/${source}-codex`);
-      await expect(
-        resolveManagedCodexAppServerStartOptions(explicit, {
-          pathExists,
-        }),
-      ).resolves.toBe(explicit);
-      expect(pathExists).not.toHaveBeenCalled();
-    },
-  );
+  it("preserves an explicit command override without managed discovery", async () => {
+    const explicit = resolveCodexAppServerRuntimeOptions({
+      pluginConfig: { appServer: { command: "/operator/config-codex" } },
+      env: { OPENCLAW_CODEX_APP_SERVER_BIN: "/operator/env-codex" },
+      codexConfigToml: null,
+      requirementsToml: null,
+    }).start;
+    const pathExists = vi.fn(async () => false);
+    expect(explicit.commandSource).toBe("config");
+    expect(explicit.command).toBe("/operator/config-codex");
+    await expect(resolveManagedCodexAppServerStartOptions(explicit, { pathExists })).resolves.toBe(
+      explicit,
+    );
+    expect(pathExists).not.toHaveBeenCalled();
+  });
 
   it.each([
     { order: "package-only", desktop: "both" },
     { order: "package-first", desktop: "both" },
     { order: "desktop-first", desktop: "both" },
+    { order: "desktop-first", desktop: "signed" },
     { order: "desktop-first", desktop: "legacy" },
     { order: "desktop-first", desktop: "none" },
   ] as const)(
@@ -367,9 +400,11 @@ describe("managed Codex app-server binary", () => {
       const desktopCommands =
         desktop === "both"
           ? [MACOS_DESKTOP_CHATGPT_APP_SERVER_COMMAND, MACOS_DESKTOP_CODEX_APP_SERVER_COMMAND]
-          : desktop === "legacy"
-            ? [MACOS_DESKTOP_CODEX_APP_SERVER_COMMAND]
-            : [];
+          : desktop === "signed"
+            ? [MACOS_DESKTOP_CHATGPT_SIGNED_APP_SERVER_COMMAND]
+            : desktop === "legacy"
+              ? [MACOS_DESKTOP_CODEX_APP_SERVER_COMMAND]
+              : [];
       const commands =
         order === "package-only"
           ? [launcher]

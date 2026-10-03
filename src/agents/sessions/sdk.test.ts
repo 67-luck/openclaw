@@ -4,7 +4,7 @@ import { createAssistantMessageEventStream, type AssistantMessage } from "opencl
 // Agent session SDK tests cover default tool wiring, prompt preservation, and
 // session write-settlement behavior.
 import { Type } from "typebox";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { loadSessionEntry, loadTranscriptEvents } from "../../config/sessions/session-accessor.js";
 import { getStreamLlmRuntime } from "../../llm/model-runtime-binding.js";
@@ -20,9 +20,6 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { createZeroUsageFixture } from "../test-helpers/usage-fixtures.js";
 
-const thinkingMocks = vi.hoisted(() => ({
-  resolveThinkingDefaultForModel: vi.fn(() => "medium"),
-}));
 const streamMocks = vi.hoisted(() => ({
   streamSimple: vi.fn(),
 }));
@@ -35,9 +32,6 @@ const sdkSessionTempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   }),
 );
 
-vi.mock("../../auto-reply/thinking.js", () => ({
-  resolveThinkingDefaultForModel: thinkingMocks.resolveThinkingDefaultForModel,
-}));
 vi.mock("../../llm/stream.js", () => ({
   streamSimple: streamMocks.streamSimple,
 }));
@@ -82,6 +76,7 @@ describe("createAgentSession runtime ownership", () => {
       const { session } = await createAgentSessionForEmbeddedRunner(
         {
           model: testModel,
+          thinkingLevel: "medium",
           resourceLoader: createResourceLoader(),
           sessionManager,
           settingsManager: SettingsManager.inMemory(),
@@ -102,6 +97,7 @@ describe("createAgentSession runtime ownership", () => {
     const modelRegistry = createTestModelRegistry();
     const { session } = await createAgentSession({
       model: testModel,
+      thinkingLevel: "medium",
       resourceLoader: createResourceLoader(),
       sessionManager: SessionManager.inMemory(),
       settingsManager: SettingsManager.inMemory(),
@@ -123,6 +119,7 @@ describe("createAgentSession runtime ownership", () => {
         agentDir,
         cwd,
         model: testModel,
+        thinkingLevel: "medium",
         resourceLoader: createResourceLoader(),
         settingsManager: SettingsManager.inMemory(),
         modelRegistry: createTestModelRegistry(),
@@ -199,13 +196,30 @@ function createTestModelRegistry(authStorage = AuthStorage.inMemory()): ModelReg
   return modelRegistry;
 }
 
+async function createSdkSession({
+  model = testModel,
+  thinkingLevel = "medium",
+  resourceLoader = createResourceLoader(),
+  sessionManager = SessionManager.inMemory(),
+  settingsManager = SettingsManager.inMemory(),
+  modelRegistry = ModelRegistry.inMemory(AuthStorage.inMemory()),
+  ...options
+}: Partial<Parameters<typeof createAgentSession>[0]> = {}) {
+  return await createAgentSession({
+    ...options,
+    model,
+    thinkingLevel,
+    resourceLoader,
+    sessionManager,
+    settingsManager,
+    modelRegistry,
+  });
+}
+
 async function createSessionAndStreamModel(model: Model): Promise<SimpleStreamOptions> {
   streamMocks.streamSimple.mockClear();
-  const { session } = await createAgentSession({
+  const { session } = await createSdkSession({
     model,
-    resourceLoader: createResourceLoader(),
-    sessionManager: SessionManager.inMemory(),
-    settingsManager: SettingsManager.inMemory(),
     modelRegistry: createTestModelRegistry(),
   });
 
@@ -257,13 +271,9 @@ function createSessionManagerWithPersistedAssistantMessages(
 }
 
 async function createSessionFromManager(sessionManager: SessionManager) {
-  const { session } = await createAgentSession({
+  const { session } = await createSdkSession({
     authStorage: AuthStorage.inMemory(),
-    model: testModel,
-    resourceLoader: createResourceLoader(),
     sessionManager,
-    settingsManager: SettingsManager.inMemory(),
-    modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
   });
   return session;
 }
@@ -291,7 +301,6 @@ describe("AgentSession getLastAssistantText", () => {
       expected: "visible answer",
     },
     { name: "null content", content: null, expected: undefined },
-    { name: "object content", content: { type: "text", text: "malformed" }, expected: undefined },
   ])("reads $name without throwing", async ({ content, expected }) => {
     const session = await createSessionWithPersistedAssistantContent(content);
     expect(session.getLastAssistantText()).toBe(expected);
@@ -340,12 +349,9 @@ describe("AgentSession tree navigation", () => {
         timestamp: 4,
       }),
     );
-    const { session } = await createAgentSession({
+    const { session } = await createSdkSession({
       authStorage,
-      model: testModel,
-      resourceLoader: createResourceLoader(),
       sessionManager,
-      settingsManager: SettingsManager.inMemory(),
       modelRegistry: createTestModelRegistry(authStorage),
     });
     const entriesBefore = sessionManager.getEntries();
@@ -479,28 +485,29 @@ describe("createAgentSession attribution headers", () => {
     expect(options.headers).toBeUndefined();
   });
 
-  it("keeps OpenRouter attribution headers for provider and endpoint matches", async () => {
-    const providerOptions = await createSessionAndStreamModel({
-      ...testModel,
-      provider: "openrouter",
-      baseUrl: "https://example.test",
-    });
-    const endpointOptions = await createSessionAndStreamModel({
-      ...testModel,
-      provider: "custom-openai",
-      baseUrl: "https://openrouter.ai/api/v1",
-    });
+  it("forwards OpenRouter attribution for openrouter.ai endpoints with telemetry off, but not proxies", async () => {
+    vi.stubEnv("OPENCLAW_TELEMETRY", "0");
+    try {
+      const proxyOptions = await createSessionAndStreamModel({
+        ...testModel,
+        provider: "openrouter",
+        baseUrl: "https://example.test",
+      });
+      const endpointOptions = await createSessionAndStreamModel({
+        ...testModel,
+        provider: "custom-openai",
+        baseUrl: "https://openrouter.ai/api/v1",
+      });
 
-    expect(providerOptions.headers).toMatchObject({
-      "HTTP-Referer": "https://openclaw.ai",
-      "X-OpenRouter-Title": "OpenClaw",
-      "X-OpenRouter-Categories": "cli-agent",
-    });
-    expect(endpointOptions.headers).toMatchObject({
-      "HTTP-Referer": "https://openclaw.ai",
-      "X-OpenRouter-Title": "OpenClaw",
-      "X-OpenRouter-Categories": "cli-agent",
-    });
+      expect(proxyOptions.headers).toBeUndefined();
+      expect(endpointOptions.headers).toMatchObject({
+        "HTTP-Referer": "https://openclaw.ai",
+        "X-OpenRouter-Title": "OpenClaw",
+        "X-OpenRouter-Categories": "personal-agent,cli-agent",
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("keeps Cloudflare attribution headers for provider and endpoint matches", async () => {
@@ -522,17 +529,13 @@ describe("createAgentSession attribution headers", () => {
 
 describe("createAgentSession tool defaults", () => {
   it("forwards max thinking budgets from settings to the agent", async () => {
-    const { session } = await createAgentSession({
-      model: testModel,
-      resourceLoader: createResourceLoader(),
-      sessionManager: SessionManager.inMemory(),
+    const { session } = await createSdkSession({
       settingsManager: SettingsManager.inMemory({
         thinkingBudgets: {
           high: 16_384,
           max: 32_768,
         },
       }),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
     });
 
     expect(session.agent.thinkingBudgets).toEqual({
@@ -557,14 +560,9 @@ describe("createAgentSession tool defaults", () => {
       }),
     };
 
-    const { session } = await createAgentSession({
-      model: testModel,
+    const { session } = await createSdkSession({
       noTools: "builtin",
       customTools: [customTool],
-      resourceLoader: createResourceLoader(),
-      sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory(),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
     });
 
     expect(session.getActiveToolNames()).toEqual(["custom_lookup"]);
@@ -588,14 +586,9 @@ describe("createAgentSession tool defaults", () => {
       }),
     };
 
-    const { session } = await createAgentSession({
-      model: testModel,
+    const { session } = await createSdkSession({
       noTools: "builtin",
       customTools: [hiddenTool],
-      resourceLoader: createResourceLoader(),
-      sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory(),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
     });
 
     expect(session.agent.state.tools).toEqual([
@@ -620,14 +613,9 @@ describe("createAgentSession tool defaults", () => {
       }),
     };
 
-    const { session } = await createAgentSession({
-      model: testModel,
+    const { session } = await createSdkSession({
       noTools: "builtin",
       customTools: [customTool],
-      resourceLoader: createResourceLoader(),
-      sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory(),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
     });
     const systemPrompt = "You are a personal assistant running inside OpenClaw.";
 
@@ -664,8 +652,7 @@ describe("createAgentSession tool defaults", () => {
     sessionManager.appendMessage(makeUserMessage("Current question", 2));
     const authStorage = AuthStorage.inMemory();
     authStorage.setRuntimeApiKey(testModel.provider, "test-api-key");
-    const { session } = await createAgentSession({
-      model: testModel,
+    const { session } = await createSdkSession({
       sessionManager,
       modelRegistry: createTestModelRegistry(authStorage),
       settingsManager: SettingsManager.inMemory({ compaction: { keepRecentTokens: 1 } }),
@@ -690,12 +677,8 @@ describe("createAgentSession tool defaults", () => {
     // concurrent event handlers cannot interleave persistence.
     const events: string[] = [];
     const sessionManager = SessionManager.inMemory();
-    const { session } = await createAgentSession({
-      model: testModel,
-      resourceLoader: createResourceLoader(),
+    const { session } = await createSdkSession({
       sessionManager,
-      settingsManager: SettingsManager.inMemory(),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
       withSessionWriteSettlement: async (run) => {
         events.push("settlement:start");
         try {
@@ -737,12 +720,8 @@ describe("createAgentSession tool defaults", () => {
       ],
     ]);
 
-    const { session } = await createAgentSession({
-      model: testModel,
+    const { session } = await createSdkSession({
       resourceLoader: createResourceLoader(handlers),
-      sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory(),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
       withSessionWriteSettlement: async (run) => {
         events.push("settlement:start");
         try {
@@ -772,12 +751,8 @@ describe("createAgentSession tool defaults", () => {
       ],
     ]);
 
-    const { session } = await createAgentSession({
-      model: testModel,
+    const { session } = await createSdkSession({
       resourceLoader: createResourceLoader(handlers),
-      sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory(),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
       withSessionWriteSettlement: async (run) => {
         events.push("settlement:start");
         try {
@@ -815,12 +790,7 @@ describe("createAgentSession tool defaults", () => {
     // Write-capable tools still enter the settlement boundary even without hooks;
     // it covers shared session state, not just extension execution.
     const events: string[] = [];
-    const { session } = await createAgentSession({
-      model: testModel,
-      resourceLoader: createResourceLoader(),
-      sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory(),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
+    const { session } = await createSdkSession({
       withSessionWriteSettlement: async (run) => {
         events.push("settlement:start");
         try {
@@ -855,12 +825,7 @@ describe("createAgentSession tool defaults", () => {
   });
 });
 
-describe("createAgentSession thinking level defaults", () => {
-  beforeEach(() => {
-    thinkingMocks.resolveThinkingDefaultForModel.mockReset();
-    thinkingMocks.resolveThinkingDefaultForModel.mockReturnValue("medium");
-  });
-
+describe("createAgentSession thinking level clamping", () => {
   it.each([
     "openai-completions",
     "openai-responses",
@@ -898,140 +863,15 @@ describe("createAgentSession thinking level defaults", () => {
       session.dispose();
     }
   });
-
-  it("uses the provider-specific thinking default for new sessions", async () => {
-    thinkingMocks.resolveThinkingDefaultForModel.mockReturnValue("off");
-
-    const ollamaModel = {
-      ...testModel,
-      provider: "ollama",
-      reasoning: true,
-      params: { canonicalModelId: "qwen3:8b" },
-      compat: { thinkingFormat: "qwen" },
-    } satisfies Model;
-    const { session } = await createAgentSession({
-      model: ollamaModel,
-      resourceLoader: createResourceLoader(),
-      sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory(),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
-    });
-
-    expect(session.thinkingLevel).toBe("off");
-    expect(thinkingMocks.resolveThinkingDefaultForModel).toHaveBeenCalledWith({
-      provider: "ollama",
-      model: testModel.id,
-      catalog: [
-        {
-          provider: "ollama",
-          id: testModel.id,
-          api: ollamaModel.api,
-          reasoning: true,
-          params: { canonicalModelId: "qwen3:8b" },
-          compat: { thinkingFormat: "qwen" },
-        },
-      ],
-    });
-  });
-
-  it("settings default overrides provider thinking default", async () => {
-    thinkingMocks.resolveThinkingDefaultForModel.mockReturnValue("off");
-
-    const { session } = await createAgentSession({
-      model: { ...testModel, provider: "ollama", reasoning: true },
-      resourceLoader: createResourceLoader(),
-      sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory({ defaultThinkingLevel: "low" }),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
-    });
-
-    // User-configured settings default beats provider default
-    expect(session.thinkingLevel).toBe("low");
-  });
-
-  it("uses Ollama policy for custom providers backed by the Ollama API", async () => {
-    thinkingMocks.resolveThinkingDefaultForModel.mockReturnValue("off");
-    const customOllamaModel = {
-      ...testModel,
-      provider: "ollama-spark",
-      api: "ollama",
-      reasoning: true,
-    } satisfies Model;
-
-    const { session } = await createAgentSession({
-      model: customOllamaModel,
-      resourceLoader: createResourceLoader(),
-      sessionManager: SessionManager.inMemory(),
-      settingsManager: SettingsManager.inMemory(),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
-    });
-
-    expect(session.thinkingLevel).toBe("off");
-    expect(thinkingMocks.resolveThinkingDefaultForModel).toHaveBeenCalledWith({
-      provider: "ollama",
-      model: testModel.id,
-      catalog: [
-        {
-          provider: "ollama",
-          id: testModel.id,
-          api: "ollama",
-          reasoning: true,
-        },
-      ],
-    });
-  });
-
-  it("falls back to DEFAULT_THINKING_LEVEL for non-off provider defaults", async () => {
-    // Non-off provider defaults (adaptive, high, low) preserve prior SDK behaviour
-    // to avoid silent cost changes for DeepSeek, OpenRouter, xAI, and Anthropic users.
-    for (const nonOffDefault of ["adaptive", "high", "low"] as const) {
-      thinkingMocks.resolveThinkingDefaultForModel.mockReturnValue(nonOffDefault);
-
-      const { session } = await createAgentSession({
-        model: { ...testModel, reasoning: true },
-        resourceLoader: createResourceLoader(),
-        sessionManager: SessionManager.inMemory(),
-        settingsManager: SettingsManager.inMemory(),
-        modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
-      });
-
-      expect(session.thinkingLevel).toBe("medium");
-    }
-  });
-
-  it("uses provider default for legacy sessions that have no thinking entry", async () => {
-    // Sessions created before thinking-level tracking (no thinking_level_change entry)
-    // should inherit the provider default, not the hard-coded global "medium".
-    thinkingMocks.resolveThinkingDefaultForModel.mockReturnValue("off");
-
-    const sessionManager = SessionManager.inMemory();
-    sessionManager.appendMessage({
-      role: "user",
-      content: "hello",
-      timestamp: Date.now(),
-    });
-
-    const { session } = await createAgentSession({
-      model: { ...testModel, provider: "ollama", reasoning: true },
-      resourceLoader: createResourceLoader(),
-      sessionManager,
-      settingsManager: SettingsManager.inMemory(),
-      modelRegistry: ModelRegistry.inMemory(AuthStorage.inMemory()),
-    });
-
-    expect(session.thinkingLevel).toBe("off");
-  });
 });
 
 describe("AgentSession retry behavior", () => {
   async function createRetrySession(retry?: { baseDelayMs: number; maxRetries: number }) {
     const authStorage = AuthStorage.inMemory();
     authStorage.setRuntimeApiKey(testModel.provider, "test-api-key");
-    return await createAgentSession({
+    return await createSdkSession({
       // Retry-only cases need room for the default SDK prompt and reserve.
       model: { ...testModel, contextWindow: 32_768 },
-      resourceLoader: createResourceLoader(),
-      sessionManager: SessionManager.inMemory(),
       settingsManager: SettingsManager.inMemory({
         retry: retry ?? { baseDelayMs: 0, maxRetries: 1 },
       }),

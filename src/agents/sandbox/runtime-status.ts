@@ -1,8 +1,3 @@
-/**
- * Sandbox runtime status and tool-policy diagnostics.
- *
- * Resolves whether a session is sandboxed and explains policy blocks before tool execution.
- */
 import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
@@ -54,50 +49,6 @@ type SandboxRuntimeIsolation =
       workspaceAccess: SandboxWorkspaceAccess;
     };
 
-function shouldSandboxSession(
-  cfg: SandboxConfig,
-  sessionKey: string,
-  mainSessionKey: string,
-  sandboxRequired: boolean,
-  sandboxMode?: SessionEntry["sandboxMode"],
-) {
-  if (sandboxRequired) {
-    return true;
-  }
-  if (sandboxMode === "off" || cfg.mode === "off") {
-    return false;
-  }
-  if (cfg.mode === "all") {
-    return true;
-  }
-  return sessionKey.trim() !== mainSessionKey.trim();
-}
-
-function resolveMainSessionKeyForSandbox(params: {
-  cfg?: OpenClawConfig;
-  agentId: string;
-}): string {
-  if (params.cfg?.session?.scope === "global") {
-    return "global";
-  }
-  return resolveAgentMainSessionKey({
-    cfg: params.cfg,
-    agentId: params.agentId,
-  });
-}
-
-function resolveComparableSessionKeyForSandbox(params: {
-  cfg?: OpenClawConfig;
-  agentId: string;
-  sessionKey: string;
-}): string {
-  return canonicalizeMainSessionAlias({
-    cfg: params.cfg,
-    agentId: params.agentId,
-    sessionKey: params.sessionKey,
-  });
-}
-
 type SandboxRuntimeStatusParams = {
   cfg?: OpenClawConfig;
   sessionKey?: string;
@@ -109,9 +60,8 @@ type SandboxRuntimeStatusParams = {
   preparedSessionEntry?: Pick<SessionEntry, "sandbox" | "sandboxMode" | "createdActor"> | null;
 };
 
-/** Resolves sandbox mode, effective session scope, and tool policy for a session. */
 export function resolveSandboxRuntimeStatus(params: SandboxRuntimeStatusParams) {
-  return resolveSandboxRuntimeStatusWithRead(params, resolveSessionEntry);
+  return resolveSandboxRuntimeStatusForClassification(params);
 }
 
 /** Keep the classification read's captured owner alive through one asynchronous policy preparation. */
@@ -125,9 +75,8 @@ export async function withSandboxRuntimeStatusInWorker<T>(
   const prepare = (entry: SessionEntry | undefined) => {
     source.assertCurrent();
     return consume(
-      resolveSandboxRuntimeStatusWithRead(
+      resolveSandboxRuntimeStatusForClassification(
         { ...params, preparedSessionEntry: entry ?? null },
-        resolveSessionEntry,
         classification,
       ),
     );
@@ -180,7 +129,7 @@ export function resolveSandboxRuntimeStatusesForPersistedSessions(
       }),
       projection: "list" as const,
       sessionKeys: params.sessionKeys.map((sessionKey) =>
-        resolveComparableSessionKeyForSandbox({ ...params, sessionKey }),
+        canonicalizeMainSessionAlias({ ...params, sessionKey }),
       ),
     })),
   );
@@ -190,15 +139,18 @@ export function resolveSandboxRuntimeStatusesForPersistedSessions(
       throw result.error;
     }
     const byKey = new Map(result.value.map(({ sessionKey, entry }) => [sessionKey, entry]));
-    const readSession: typeof resolveSessionEntry = ({ sessionKey }) => ({
-      existing: byKey.get(sessionKey),
-      normalizedKey: sessionKey,
-      legacyKeys: [],
-    });
     // Retained or removed entries still need the configured mode classification.
-    return params.sessionKeys.map((sessionKey) =>
-      resolveSandboxRuntimeStatusWithRead({ ...params, sessionKey }, readSession),
-    );
+    return params.sessionKeys.map((sessionKey) => {
+      const classification = resolveSandboxClassification({ ...params, sessionKey });
+      return resolveSandboxRuntimeStatusForClassification(
+        {
+          ...params,
+          sessionKey,
+          preparedSessionEntry: byKey.get(classification.comparableSessionKey) ?? null,
+        },
+        classification,
+      );
+    });
   });
 }
 
@@ -219,8 +171,11 @@ function resolveSandboxClassification(params: SandboxRuntimeStatusParams) {
   });
   const cfg = params.cfg;
   const sandboxCfg = resolveSandboxConfigForAgent(cfg, classificationAgentId);
-  const mainSessionKey = resolveMainSessionKeyForSandbox({ cfg, agentId: classificationAgentId });
-  const comparableSessionKey = resolveComparableSessionKeyForSandbox({
+  const mainSessionKey =
+    cfg?.session?.scope === "global"
+      ? "global"
+      : resolveAgentMainSessionKey({ cfg, agentId: classificationAgentId });
+  const comparableSessionKey = canonicalizeMainSessionAlias({
     cfg,
     agentId: classificationAgentId,
     sessionKey: classificationSessionKey,
@@ -237,9 +192,8 @@ function resolveSandboxClassification(params: SandboxRuntimeStatusParams) {
   };
 }
 
-function resolveSandboxRuntimeStatusWithRead(
+function resolveSandboxRuntimeStatusForClassification(
   params: SandboxRuntimeStatusParams,
-  readSession: typeof resolveSessionEntry,
   classification = resolveSandboxClassification(params),
 ): {
   agentId: string;
@@ -266,7 +220,7 @@ function resolveSandboxRuntimeStatusWithRead(
     params.preparedSessionEntry !== undefined
       ? { existing: params.preparedSessionEntry ?? undefined, normalizedKey: comparableSessionKey }
       : classificationSessionKey
-        ? readSession(
+        ? resolveSessionEntry(
             {
               agentId: classificationAgentId,
               clone: false,
@@ -290,15 +244,12 @@ function resolveSandboxRuntimeStatusWithRead(
         workspaceAccess: sandboxCfg.workspaceAccess === "rw" ? "ro" : sandboxCfg.workspaceAccess,
       }
     : { sandboxRequired: false };
-  const sandboxed = classificationSessionKey
-    ? shouldSandboxSession(
-        sandboxCfg,
-        comparableSessionKey,
-        mainSessionKey,
-        sandboxRequired,
-        session?.existing?.sandboxMode,
-      )
-    : false;
+  const sandboxed =
+    Boolean(classificationSessionKey) &&
+    (sandboxRequired ||
+      (session?.existing?.sandboxMode !== "off" &&
+        sandboxCfg.mode !== "off" &&
+        (sandboxCfg.mode === "all" || comparableSessionKey.trim() !== mainSessionKey.trim())));
   return {
     agentId,
     sessionKey,
@@ -310,10 +261,6 @@ function resolveSandboxRuntimeStatusWithRead(
     sandboxed,
     toolPolicy: resolveSandboxToolPolicyForAgent(cfg, classificationAgentId),
   };
-}
-
-function sanitizeForSingleLineDisplay(value: string): string {
-  return escapeControlCharsVisible(value);
 }
 
 function hasUnsafeControlChars(value: string): boolean {
@@ -331,14 +278,13 @@ function redactSessionKey(value: string): string {
   if (trimmed.length <= 12) {
     return "(redacted)";
   }
-  return `${sanitizeForSingleLineDisplay(truncateUtf16Safe(trimmed, 6))}…${sanitizeForSingleLineDisplay(sliceUtf16Safe(trimmed, -6))}`;
+  return `${escapeControlCharsVisible(truncateUtf16Safe(trimmed, 6))}…${escapeControlCharsVisible(sliceUtf16Safe(trimmed, -6))}`;
 }
 
 function shellEscapeSingleArg(value: string): string {
   return `'${value.replaceAll("'", `'\\''`)}'`;
 }
 
-/** Formats the user-facing denial message when sandbox tool policy blocks a tool. */
 export function formatSandboxToolPolicyBlockedMessage(params: {
   cfg?: OpenClawConfig;
   sessionKey?: string;

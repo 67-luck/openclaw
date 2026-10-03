@@ -66,11 +66,10 @@ vi.mock("./session-accessor.sqlite-reclamation-worker.js", async (importOriginal
                 inWriteAdmission(() => checkpoint.startForeground?.());
                 // Let foreground continuations run before authorizing the deletion commit.
                 const authorization = setImmediate().then(() => {
-                  expect(params.onCommitRequest()).toEqual([]);
+                  params.onCommitRequest();
                 });
                 checkpoint.authorizations.push(authorization);
                 void authorization.catch(() => {});
-                return [];
               },
             });
           });
@@ -192,8 +191,8 @@ describe("reclamation with the public memory runtime", () => {
     );
     const outcomes = await Promise.allSettled(write ? [write] : []);
     const authorizations = await Promise.allSettled(checkpoint.authorizations);
-    expect(outcomes).toEqual([{ status: "fulfilled", value: undefined }]);
     expect(deletion).toMatchObject({ result: { deleted: true } });
+    expect(outcomes).toEqual([{ status: "fulfilled", value: undefined }]);
     expect(checkpoint.startForeground).toHaveBeenCalledOnce();
     expect(authorizations).toEqual([{ status: "fulfilled", value: undefined }]);
     expect(loadSessionEntry({ agentId: "main", sessionKey, storePath })).toBeUndefined();

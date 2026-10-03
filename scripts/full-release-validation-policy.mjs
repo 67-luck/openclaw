@@ -11,6 +11,7 @@ import {
   validatePublicationAdmissionBinding,
   validatePublicationSourceBinding,
 } from "./full-release-publication-contract.mjs";
+import { sortJsonValueKeys } from "./lib/canonical-json.mjs";
 import { hasRequiredCrossOsSuites } from "./lib/cross-os-release-checks/suite-filter.mjs";
 import { candidateArtifactJsonFromBinding } from "./lib/full-release-candidate-reuse.mjs";
 import {
@@ -22,31 +23,68 @@ import { classifyReleaseTrain, parseReleaseVersion } from "./lib/release-version
 
 export { MAX_RELEASE_ARTIFACT_BYTES, serializeReleaseArtifact };
 
+function validateReleaseAdvisoryJobs(value) {
+  const expected = [];
+  const recorded = value === undefined ? [] : value;
+  if (!Array.isArray(recorded) || jsonSha256(recorded) !== jsonSha256(expected)) {
+    throw new Error("Release advisory jobs differ from the release policy evidence");
+  }
+  return expected;
+}
+
+export function validateReleaseManifestAdvisoryJobs(manifest) {
+  if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) {
+    throw new Error("Release advisory manifest is invalid");
+  }
+  if (
+    manifest.childEvidence !== undefined &&
+    (!manifest.childEvidence ||
+      typeof manifest.childEvidence !== "object" ||
+      Array.isArray(manifest.childEvidence))
+  ) {
+    throw new Error("Release advisory child evidence is invalid");
+  }
+  const normalCi = manifest.childEvidence?.normalCi;
+  if (normalCi !== undefined) {
+    if (!normalCi || !Array.isArray(normalCi.jobs)) {
+      throw new Error("Release advisory child evidence is invalid");
+    }
+    if (normalCi.jobs.some(isFailedJob)) {
+      throw new Error("Release manifest contains failed selected job evidence");
+    }
+  }
+  return validateReleaseAdvisoryJobs(manifest.advisoryJobs);
+}
+
+export function releaseManifestChildEvidence(child) {
+  return {
+    runId: child.runId,
+    plannedRunAttempt: child.plannedRunAttempt,
+    effectiveRunAttempt: child.runAttempt,
+    observedRunAttempts: child.observedRunAttempts,
+    compositeJobsSha256: child.compositeJobsSha256,
+    dispatchActor: child.dispatchActor,
+    triggeringActor: child.triggeringActor,
+    repository: child.repository,
+    jobs: child.timing.jobs.map(
+      ({ name, status, conclusion, acceptedRunAttempt, startedAt, completedAt, url }) => ({
+        name,
+        status,
+        conclusion,
+        acceptedRunAttempt,
+        startedAt,
+        completedAt,
+        url,
+      }),
+    ),
+  };
+}
+
 export function buildReleaseValidationManifest({ plan, drain, context }) {
   const childEvidence = Object.fromEntries(
     Object.entries(drain?.children ?? {}).map(([key, child]) => [
       key,
-      {
-        runId: child.runId,
-        plannedRunAttempt: child.plannedRunAttempt,
-        effectiveRunAttempt: child.runAttempt,
-        observedRunAttempts: child.observedRunAttempts,
-        compositeJobsSha256: child.compositeJobsSha256,
-        dispatchActor: child.dispatchActor,
-        triggeringActor: child.triggeringActor,
-        repository: child.repository,
-        jobs: child.timing.jobs.map(
-          ({ name, status, conclusion, acceptedRunAttempt, startedAt, completedAt, url }) => ({
-            name,
-            status,
-            conclusion,
-            acceptedRunAttempt,
-            startedAt,
-            completedAt,
-            url,
-          }),
-        ),
-      },
+      releaseManifestChildEvidence(child),
     ]),
   );
   const current = {
@@ -62,6 +100,7 @@ export function buildReleaseValidationManifest({ plan, drain, context }) {
     candidateBinding: plan.candidate,
     publicationArtifacts: context.publicationArtifacts ?? { npmPreflight: null, docker: null },
     publishInputs: context.publishInputs,
+    advisoryJobs: [],
     childEvidence,
     executionPlanSha256: plan.sha256,
     sourceParentRunAttempt: Number(plan.parentRunAttempt),
@@ -258,6 +297,14 @@ const REVIEWED_TELEGRAM_WAIVERS = new Map([
   ["2026.8.1-owner-approved", ["telegram"]],
   ["2026.9.1-owner-approved", ["telegram"]],
   ["2026.9.5-owner-approved", ["telegram", "matrix"]],
+  // Peter approved waiving minor live-channel QA for 2026.9.7 (2026-09-29 00:40 PT) when
+  // repair is not possible before release: QA Live Matrix 7/24 deterministic on
+  // 01d71319 (FRV 36534008742, jobs 109299525565 and rerun 109316259401) and Telegram
+  // QA 4/25 on 56fb8872 and e61efb6c (job 109279074202).
+  ["2026.9.7-owner-approved", ["telegram", "matrix"]],
+  // The release owner approved the same Telegram and Matrix QA-live scope for 2026.9.8
+  // on 2026-10-02. Every other stable-release gate remains blocking.
+  ["2026.9.8-owner-approved", ["telegram", "matrix"]],
 ]);
 const HARD_GH_TRANSPORT_PATTERN =
   /HTTP (?:400|401|403|404|410|422)\b|Bad credentials|authentication required|not authenticated|gh auth login|unknown (?:command|flag)|Usage: gh\b|ENOENT|EACCES/iu;
@@ -372,6 +419,12 @@ const CHILD_SPECS = Object.freeze([
     suffix: "",
     workflow: "openclaw-performance.yml",
   },
+]);
+const UNPHASED_CHILD_SPECS = Object.freeze([
+  CHILD_SPECS.find((spec) => spec.key === "normalCi"),
+  ...LEGACY_CHILD_SPECS,
+  CHILD_SPECS.find((spec) => spec.key === "npmTelegram"),
+  CHILD_SPECS.find((spec) => spec.key === "productPerformance"),
 ]);
 const HISTORICAL_EXECUTION_PLAN_KEYS = Object.freeze(
   [
@@ -493,21 +546,6 @@ function positiveInteger(value) {
   return Number.isSafeInteger(normalized) && normalized > 0 ? normalized : undefined;
 }
 
-function canonicalValue(value) {
-  if (Array.isArray(value)) {
-    return value.map(canonicalValue);
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([, entry]) => entry !== undefined)
-        .toSorted(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, canonicalValue(entry)]),
-    );
-  }
-  return value;
-}
-
 function booleanValue(value) {
   return value === true || value === "true";
 }
@@ -523,7 +561,7 @@ export function normalizeReleaseCoveragePolicy({
   candidateVersion,
   crossOsSuiteFilter = "",
 }) {
-  // All-group evidence records every OS Gateway lane; only Linux outcomes are proof.
+  // Full qualification requires install and upgrade proof on every supported OS.
   if (rerunGroup === "all" && !hasRequiredCrossOsSuites(crossOsSuiteFilter)) {
     throw new Error(
       "release coverage policy requires all Linux, Windows, and macOS cross-OS suites",
@@ -637,21 +675,6 @@ export function normalizeReleaseTelegramWaiver({
   return telegramWaiver;
 }
 
-// The explicit first-hop escape hatch is bound to the sealed plan and manifest,
-// never to the raw dispatch input. Other non-proof lanes are advisory by default.
-export function normalizeReleaseLaneWaiver(value) {
-  return boundedString(value, MAX_MESSAGE_LENGTH);
-}
-
-export function validateReleaseLaneWaiverBinding(plan, validationInputs = {}) {
-  if (
-    normalizeReleaseLaneWaiver(validationInputs.laneWaiver) !==
-    normalizeReleaseLaneWaiver(plan?.laneWaiver)
-  ) {
-    throw new Error("lane waiver differs from the sealed execution plan");
-  }
-}
-
 export function releaseWaivedIntegrationChannels(input) {
   return [...(REVIEWED_TELEGRAM_WAIVERS.get(normalizeReleaseTelegramWaiver(input)) ?? [])];
 }
@@ -670,8 +693,12 @@ export function validateReleaseTelegramWaiverBinding(plan, validationInputs = {}
   }
 }
 
+export function releaseChildSpecs() {
+  return [...CHILD_SPECS, ...LEGACY_CHILD_SPECS];
+}
+
 export function releaseChildSpec(key) {
-  const spec = [...CHILD_SPECS, ...LEGACY_CHILD_SPECS].find((entry) => entry.key === key);
+  const spec = releaseChildSpecs().find((entry) => entry.key === key);
   if (!spec) {
     throw new Error(`release child key is invalid: `);
   }
@@ -732,20 +759,13 @@ export function validateReleaseChildRunProvenance(run, expected = {}) {
   };
 }
 
-function compositeJobsDigestPayload(value) {
-  return {
-    effectiveRunAttempt: value.effectiveRunAttempt,
-    jobs: value.jobs,
-    plannedRunAttempt: value.plannedRunAttempt,
-  };
-}
-
 function jsonSha256(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
 export function releaseCompositeJobsSha256(value) {
-  return jsonSha256(canonicalValue(compositeJobsDigestPayload(value)));
+  const { effectiveRunAttempt, jobs, plannedRunAttempt } = value;
+  return jsonSha256(sortJsonValueKeys({ effectiveRunAttempt, jobs, plannedRunAttempt }));
 }
 
 export function composeReleaseAttemptJobs(attempts, expected = {}) {
@@ -778,11 +798,19 @@ export function composeReleaseAttemptJobs(attempts, expected = {}) {
       throw new Error("release child attempt evidence is gapped");
     }
     const names = new Set();
+    const completedNames = new Set(
+      expectedAttempt < effectiveRunAttempt
+        ? attempt.jobs.filter((job) => job?.status === "completed").map((job) => job.name)
+        : [],
+    );
     for (const rawJob of attempt.jobs) {
       const job = normalizedAttemptJob(rawJob, expectedAttempt);
-      // Completed skipped jobs never executed, so they cannot contribute attempt
-      // evidence. Drop them before identity checks because placeholders may collide.
-      if (job.status === "completed" && job.conclusion === "skipped") {
+      // Skipped jobs and GitHub's runnerless, stepless queued rerun copies (beside a
+      // completed sibling in a superseded attempt) never executed, so they carry no
+      // evidence. Drop them before identity checks because such copies may collide.
+      const ghost = job.status === "queued" && !rawJob.runner_name && rawJob.steps?.length === 0;
+      const skipped = job.status === "completed" && job.conclusion === "skipped";
+      if (skipped || (ghost && completedNames.has(job.name))) {
         continue;
       }
       if (names.has(job.name)) {
@@ -968,14 +996,7 @@ export function buildReleaseExecutionPlan(input) {
       stringValue(input.releasePackageSpec).trim(),
     );
   const phasedChildren = Number(input.childPhaseVersion) === 3;
-  const childSpecs = phasedChildren
-    ? CHILD_SPECS
-    : [
-        CHILD_SPECS.find((spec) => spec.key === "normalCi"),
-        ...LEGACY_CHILD_SPECS,
-        CHILD_SPECS.find((spec) => spec.key === "npmTelegram"),
-        CHILD_SPECS.find((spec) => spec.key === "productPerformance"),
-      ];
+  const childSpecs = phasedChildren ? CHILD_SPECS : UNPHASED_CHILD_SPECS;
   const children = childSpecs.map((spec) => {
     const raw = childInputs[spec.key] ?? {};
     const required = releaseExecutionChildRequired(spec, input, npmTelegramForAll);
@@ -1002,12 +1023,6 @@ export function buildReleaseExecutionPlan(input) {
       name: "Resolve target ref",
       required: true,
       result: stringValue(input.resolveTargetResult, "missing"),
-    },
-    {
-      name: "Verify Docker runtime image assets",
-      required:
-        !reused && rerunGroup === "all" && stringValue(input.targetVersion).includes("-alpha."),
-      result: stringValue(input.dockerPreflightResult, "skipped"),
     },
     {
       name: phasedChildren ? "Acquire full release candidate" : "Prepare shared release candidate",
@@ -1128,7 +1143,6 @@ function releaseExecutionPlanShape(payload) {
       ...(Object.hasOwn(payload, "childReuse") ? ["childReuse"] : []),
       ...(Object.hasOwn(payload, "telegramWaiver") ? ["targetVersion", "telegramWaiver"] : []),
       ...(Object.hasOwn(payload, "coveragePolicy") ? ["targetVersion", "coveragePolicy"] : []),
-      ...(Object.hasOwn(payload, "laneWaiver") ? ["laneWaiver"] : []),
       ...(Object.hasOwn(payload, "sourceAdmissionContract")
         ? ["sourceAdmissionContract", "sourceAdmission"]
         : []),
@@ -1172,42 +1186,21 @@ function executionPlanDigestPayload(plan) {
   const coverage = Object.hasOwn(plan, "coveragePolicy")
     ? { targetVersion: plan.targetVersion, coveragePolicy: plan.coveragePolicy }
     : {};
-  const lane = Object.hasOwn(plan, "laneWaiver") ? { laneWaiver: plan.laneWaiver } : {};
-  if (!Object.hasOwn(plan, "attemptEvidenceVersion")) {
-    return {
-      ...source,
-      ...publication,
-      ...waiver,
-      ...lane,
-      blockers: plan.blockers,
-      children: plan.children,
-      errors: plan.errors,
-      evidenceReuse: plan.evidenceReuse,
-      gates: plan.gates,
-      kind: plan.kind,
-      parentRunAttempt: plan.parentRunAttempt,
-      parentRunId: plan.parentRunId,
-      releaseProfile: plan.releaseProfile,
-      rerunGroup: plan.rerunGroup,
-      targetSha: plan.targetSha,
-      trustedWorkflow: plan.trustedWorkflow,
-      version: plan.version,
-      workflowRef: plan.workflowRef,
-      workflowSha: plan.workflowSha,
-    };
-  }
+  const attemptAware = Object.hasOwn(plan, "attemptEvidenceVersion");
   return {
     ...source,
     ...publication,
     ...waiver,
-    ...coverage,
-    ...(plan.childReuse !== undefined ? { childReuse: plan.childReuse } : {}),
-    ...(Object.hasOwn(plan, "knownFlakyJobs") ? { knownFlakyJobs: plan.knownFlakyJobs } : {}),
-    ...lane,
-    attemptEvidenceVersion: plan.attemptEvidenceVersion,
+    ...(attemptAware
+      ? {
+          ...coverage,
+          ...(plan.childReuse !== undefined ? { childReuse: plan.childReuse } : {}),
+          ...(Object.hasOwn(plan, "knownFlakyJobs") ? { knownFlakyJobs: plan.knownFlakyJobs } : {}),
+          attemptEvidenceVersion: plan.attemptEvidenceVersion,
+        }
+      : {}),
     blockers: plan.blockers,
-    candidate: plan.candidate,
-    candidateRequest: plan.candidateRequest,
+    ...(attemptAware ? { candidate: plan.candidate, candidateRequest: plan.candidateRequest } : {}),
     children: plan.children,
     errors: plan.errors,
     evidenceReuse: plan.evidenceReuse,
@@ -1216,7 +1209,7 @@ function executionPlanDigestPayload(plan) {
     parentRunAttempt: plan.parentRunAttempt,
     parentRunId: plan.parentRunId,
     releaseProfile: plan.releaseProfile,
-    repository: plan.repository,
+    ...(attemptAware ? { repository: plan.repository } : {}),
     rerunGroup: plan.rerunGroup,
     targetSha: plan.targetSha,
     trustedWorkflow: plan.trustedWorkflow,
@@ -1241,7 +1234,6 @@ export function buildReleaseExecutionPlanArtifact({
   evidenceReuse,
   expected,
   gates,
-  laneWaiver,
   releaseProfile,
   rerunGroup,
   sourceAdmissionContract,
@@ -1252,7 +1244,6 @@ export function buildReleaseExecutionPlanArtifact({
   telegramWaiver,
   trustedWorkflow,
 }) {
-  const lane = normalizeReleaseLaneWaiver(laneWaiver);
   const waiver = normalizeReleaseTelegramWaiver({
     telegramWaiver,
     targetVersion,
@@ -1277,15 +1268,7 @@ export function buildReleaseExecutionPlanArtifact({
       { sourceParentAttempt: attemptAware },
     );
   });
-  const artifactSpecs =
-    normalizedAttemptEvidenceVersion === 3
-      ? CHILD_SPECS
-      : [
-          CHILD_SPECS.find((spec) => spec.key === "normalCi"),
-          ...LEGACY_CHILD_SPECS,
-          CHILD_SPECS.find((spec) => spec.key === "npmTelegram"),
-          CHILD_SPECS.find((spec) => spec.key === "productPerformance"),
-        ];
+  const artifactSpecs = normalizedAttemptEvidenceVersion === 3 ? CHILD_SPECS : UNPHASED_CHILD_SPECS;
   for (const spec of artifactSpecs) {
     if (
       !normalizedChildren.some((child) => child.key === spec.key) &&
@@ -1310,7 +1293,6 @@ export function buildReleaseExecutionPlanArtifact({
     ...(waiver ? { telegramWaiver: waiver, targetVersion } : {}),
     ...(coveragePolicy !== undefined ? { coveragePolicy, targetVersion } : {}),
     ...(childReuse !== undefined ? { childReuse: structuredClone(childReuse) } : {}),
-    ...(lane ? { laneWaiver: lane } : {}),
     version: 1,
     kind: "openclaw.full-release-execution-plan",
     parentRunId: String(expected.parentRunId),
@@ -1458,17 +1440,6 @@ export function validateReleaseExecutionPlanArtifact(payload, expected = {}) {
     throw new Error("Telegram waiver differs from the expected execution plan");
   }
   if (
-    (Object.hasOwn(payload, "laneWaiver") &&
-      (typeof payload.laneWaiver !== "string" ||
-        normalizeReleaseLaneWaiver(payload.laneWaiver) !== payload.laneWaiver ||
-        !payload.laneWaiver)) ||
-    (expected.laneWaiver !== undefined &&
-      normalizeReleaseLaneWaiver(payload.laneWaiver) !==
-        normalizeReleaseLaneWaiver(expected.laneWaiver))
-  ) {
-    throw new Error("lane waiver differs from the expected execution plan");
-  }
-  if (
     payload.version !== 1 ||
     payload.kind !== "openclaw.full-release-execution-plan" ||
     !/^[1-9][0-9]*$/u.test(String(payload.parentRunId ?? "")) ||
@@ -1557,202 +1528,41 @@ function blockerIndex(issues) {
   return issues.map((issue) => jsonSha256(blockerEvidence(issue))).toSorted();
 }
 
-// Publication requires package and upgrade proof; all other execution lanes
-// remain recorded confidence evidence regardless of the release profile.
-const REQUIRED_PROOF_JOB_PATTERNS = [
-  /install[-_ ]smoke/iu,
-  /upgrade-survivor/u,
-  /update-first-hop-compat/u,
-  /pack budget|npm-pack|Qualify release npm/iu,
-  /Package integrity/u,
-  /resolve_target/u,
-  // Linux Gateway install/upgrade lanes are proof; Windows/macOS variants are advisory.
-  /cross_os_release_checks \/ Linux \//u,
-];
-const DERIVATIVE_GATE_JOB_PATTERN =
-  /^(?:openclaw\/ci-gate|Verify release checks|Run package acceptance \/ Verify package acceptance)$/u;
-const FIRST_HOP_JOB_PATTERN = /update-first-hop-compat/u;
-const SURVIVOR_JOB_PATTERN = /upgrade-survivor/u;
-const POLICY_CHILD_KEYS = new Set([...CHILD_SPECS, ...LEGACY_CHILD_SPECS].map(({ key }) => key));
-
-function isRequiredProofJob(jobName) {
-  return REQUIRED_PROOF_JOB_PATTERNS.some((pattern) => pattern.test(jobName));
-}
-
-function isReleaseChecksChild(key) {
-  return ["releaseChecks", "releaseChecksIndependent", "releaseChecksCandidate"].includes(key);
-}
-
-// The recorded lane waiver is an escape hatch for these children only; it
-// never widens the advisory set beyond the first-hop proof lane below.
-const LANE_WAIVER_CHILD_KEYS = new Set([
-  "normalCi",
-  "pluginPrerelease",
-  "pluginPrereleaseIndependent",
-  "pluginPrereleaseCandidate",
-  "releaseChecks",
-  "releaseChecksIndependent",
-  "releaseChecksCandidate",
-  "productPerformance",
-]);
-
 function isFailedJob(job) {
   return (
     job.status === "completed" && !SUCCESSFUL_JOB_CONCLUSIONS.has(String(job.conclusion ?? ""))
   );
 }
 
-function survivorLanesGreen(jobs) {
-  const survivors = jobs.filter((job) => SURVIVOR_JOB_PATTERN.test(stringValue(job.name)));
-  return (
-    survivors.length > 0 &&
-    survivors.every((job) => job.status === "completed" && job.conclusion === "success")
-  );
+export function terminalPolicyPass(child) {
+  const failures = child.jobs.filter(isFailedJob);
+  return child.status === "completed" && child.conclusion === "success" && failures.length === 0;
 }
 
-function isLaneAdvisory({ childKey, jobName, laneWaiver, jobs }) {
-  if (!POLICY_CHILD_KEYS.has(childKey)) {
-    return false;
+/** Choose the single GitHub rerun request that can repair a terminal child's blocking jobs. */
+export function planReleaseChildRerun({ childKey, jobs }) {
+  const failed = jobs
+    .filter(isFailedJob)
+    .map((job) => job.name)
+    .toSorted();
+  if (failed.length === 0) {
+    throw new Error(`${childKey} has no blocking failed job to rerun`);
   }
-  if (FIRST_HOP_JOB_PATTERN.test(jobName) && laneWaiver && LANE_WAIVER_CHILD_KEYS.has(childKey)) {
-    // The retained explicit escape hatch requires green survivor proof.
-    return survivorLanesGreen(jobs);
-  }
-  return !isRequiredProofJob(jobName);
-}
-
-function isReleaseJobAdvisory({
-  childKey,
-  jobName,
-  releaseProfile,
-  workflowRef,
-  laneWaiver = "",
-  jobs = [],
-}) {
-  const context = {
-    childKey,
-    releaseProfile,
-    workflowRef,
-    laneWaiver: normalizeReleaseLaneWaiver(laneWaiver),
-    jobs,
-  };
-  if (DERIVATIVE_GATE_JOB_PATTERN.test(jobName)) {
-    if (!POLICY_CHILD_KEYS.has(childKey)) {
-      return false;
-    }
-    // A gate failing without any failed lane is its own finding and blocks.
-    const lanes = jobs.filter(
-      (job) => isFailedJob(job) && !DERIVATIVE_GATE_JOB_PATTERN.test(stringValue(job.name)),
-    );
-    return (
-      lanes.length > 0 &&
-      lanes.every((job) => isLaneAdvisory({ ...context, jobName: stringValue(job.name) }))
-    );
-  }
-  return isLaneAdvisory({ ...context, jobName });
-}
-
-// "" blocks, "policy" is advisory regardless, "lane_waiver" only under the waiver.
-export function releaseJobAdvisoryReason(input) {
-  if (isReleaseJobAdvisory({ ...input, laneWaiver: "" })) {
-    return "policy";
-  }
-  return isReleaseJobAdvisory(input) ? "lane_waiver" : "";
-}
-
-function failedJobsForPolicy(child, releaseProfile, workflowRef, laneWaiver = "") {
-  return child.jobs.filter(
-    (job) =>
-      isFailedJob(job) &&
-      !isReleaseJobAdvisory({
-        childKey: child.key,
-        jobName: stringValue(job.name),
-        releaseProfile,
-        workflowRef,
-        laneWaiver,
-        jobs: child.jobs,
-      }),
-  );
-}
-
-export function releaseWaivedJobs(children, { releaseProfile, workflowRef, laneWaiver }) {
-  return children.flatMap((child) =>
-    (child.jobs ?? [])
-      .filter(
-        (job) =>
-          isFailedJob(job) &&
-          releaseJobAdvisoryReason({
-            childKey: child.key,
-            jobName: stringValue(job.name),
-            releaseProfile,
-            workflowRef,
-            laneWaiver,
-            jobs: child.jobs,
-          }) === "lane_waiver",
-      )
-      .map((job) => ({ child: child.key, job: stringValue(job.name), conclusion: job.conclusion })),
-  );
-}
-
-// Failed advisory lanes of a sealed state artifact, for the Release Decision
-// warning that names each lane so it is fixed in parallel with publication.
-export function releaseAdvisoryJobFailures(payload) {
-  return Object.entries(payload.children ?? {}).flatMap(([childKey, child]) => {
-    const jobs = child.timing?.jobs ?? [];
-    return jobs
-      .filter(
-        (job) =>
-          isFailedJob(job) &&
-          isReleaseJobAdvisory({
-            childKey,
-            jobName: stringValue(job.name),
-            releaseProfile: payload.releaseProfile,
-            workflowRef: payload.workflowRef,
-            laneWaiver: payload.laneWaiver ?? "",
-            jobs,
-          }),
-      )
-      .map((job) => ({ child: childKey, conclusion: job.conclusion, job: job.name, url: job.url }));
-  });
-}
-
-export function formatAdvisoryJobFailure(failure) {
-  return `${failure.child} advisory lane ${failure.job} ended ${failure.conclusion}; fix it in parallel, it does not block npm/ClawHub publication${failure.url ? ` (${failure.url})` : ""}`;
-}
-
-export function terminalPolicyPass(child, releaseProfile, workflowRef, laneWaiver = "") {
-  if (child.status !== "completed") {
-    return false;
-  }
-  if (child.conclusion === "success") {
-    return failedJobsForPolicy(child, releaseProfile, workflowRef, laneWaiver).length === 0;
-  }
+  // These consumers bind their producer's artifact to the current run attempt, so a
+  // failed-jobs rerun that leaves the green producer behind stays red (#161317).
+  const producer = "install_smoke_release_checks / installer_smoke_candidate_payload";
+  const producerJob = jobs.find((job) => job.name === producer);
   if (
-    ["npmTelegram", "productPerformance"].includes(child.key) &&
-    failedJobsForPolicy(child, releaseProfile, workflowRef, laneWaiver).length === 0
+    producerJob?.status === "completed" &&
+    producerJob.conclusion === "success" &&
+    [
+      "install_smoke_release_checks / installer_smoke_nonroot_image",
+      "install_smoke_release_checks / installer_smoke_nonroot",
+    ].some((name) => failed.includes(name))
   ) {
-    return true;
+    return { failed, mode: "producer", producer };
   }
-  const gate = isReleaseChecksChild(child.key)
-    ? "Verify release checks"
-    : child.key === "normalCi"
-      ? "openclaw/ci-gate"
-      : undefined;
-  if (!POLICY_CHILD_KEYS.has(child.key)) {
-    return false;
-  }
-  // A failed workflow passes only with complete terminal job evidence whose
-  // failures are all advisory; the aggregator must have finished with a verdict.
-  return (
-    child.jobs.length > 0 &&
-    child.jobs.every((job) => job.status === "completed") &&
-    (gate === undefined ||
-      child.jobs.some(
-        (job) =>
-          job.name === gate && (job.conclusion === "success" || job.conclusion === "failure"),
-      )) &&
-    failedJobsForPolicy(child, releaseProfile, workflowRef, laneWaiver).length === 0
-  );
+  return { failed, mode: "failed-jobs" };
 }
 
 function dispatchBlockers(children) {
@@ -1798,10 +1608,7 @@ export function classifyReleaseSnapshot({
   children,
   extraBlockers = [],
   extraErrors = [],
-  laneWaiver = "",
   localFailures = [],
-  releaseProfile,
-  workflowRef,
 }) {
   const selected = children.filter((child) => child.selected);
   const active = selected.filter(
@@ -1811,7 +1618,7 @@ export function classifyReleaseSnapshot({
     (child.errors ?? []).filter((error) => error.kind !== "dispatch_missing"),
   );
   const childJobBlockers = selected.flatMap((child) =>
-    failedJobsForPolicy(child, releaseProfile, workflowRef, laneWaiver).map((job) => ({
+    child.jobs.filter(isFailedJob).map((job) => ({
       child: child.key,
       conclusion: job.conclusion,
       job: job.name,
@@ -1833,7 +1640,7 @@ export function classifyReleaseSnapshot({
         child.runId &&
         child.runAttempt &&
         child.status === "completed" &&
-        !terminalPolicyPass(child, releaseProfile, workflowRef, laneWaiver) &&
+        !terminalPolicyPass(child) &&
         !childJobBlockerKeys.has(`${child.key}:${child.runId}`),
     )
     .map((child) => ({
@@ -1862,6 +1669,7 @@ export function classifyReleaseSnapshot({
     .toSorted((left, right) => String(left.primaryAt).localeCompare(String(right.primaryAt), "en"));
   return {
     activeRunIds,
+    advisoryJobs: [],
     blockerCount: rawBlockers.length,
     blockerIndex: blockerIndex(rawBlockers),
     blockers,
@@ -1963,6 +1771,7 @@ export function buildReleaseStateArtifact({
     rerunGroup,
     executionPlanSha256: executionPlan.sha256,
     state: decision.state,
+    advisoryJobs: decision.advisoryJobs ?? [],
     activeRunIds,
     blockerCount: decision.blockerCount ?? completeBlockerIndex.length,
     blockerIndex: completeBlockerIndex,
@@ -2034,16 +1843,7 @@ function validatePlan(value, options = {}) {
 }
 
 function validateExecutionPlanChildBindings(children, payload) {
-  const expectedKeys = (
-    payload.attemptEvidenceVersion === 3
-      ? CHILD_SPECS
-      : [
-          CHILD_SPECS.find((spec) => spec.key === "normalCi"),
-          ...LEGACY_CHILD_SPECS,
-          CHILD_SPECS.find((spec) => spec.key === "npmTelegram"),
-          CHILD_SPECS.find((spec) => spec.key === "productPerformance"),
-        ]
-  )
+  const expectedKeys = (payload.attemptEvidenceVersion === 3 ? CHILD_SPECS : UNPHASED_CHILD_SPECS)
     .map((spec) => spec.key)
     .toSorted();
   if (
@@ -2367,6 +2167,7 @@ export function validateReleaseStateArtifact(payload, expected, expectedMode) {
   return {
     ...payload,
     activeRunIds,
+    advisoryJobs: validateReleaseAdvisoryJobs(payload.advisoryJobs),
     blockerCount: machineEvidence ? payload.blockerCount : null,
     blockerIndex: completeBlockerIndex,
     blockers,
@@ -2391,27 +2192,11 @@ export function releasePlanGateFailures(gates) {
     }));
 }
 
-export function releaseStateChildEvidence(child) {
-  return canonicalValue({
-    compositeJobsSha256: child.compositeJobsSha256,
+function releaseStateChildEvidence(child) {
+  return sortJsonValueKeys({
+    ...releaseManifestChildEvidence(child),
     conclusion: child.conclusion,
-    dispatchActor: child.dispatchActor,
-    effectiveRunAttempt: child.runAttempt,
-    jobs: child.timing.jobs.map((job) => ({
-      acceptedRunAttempt: job.acceptedRunAttempt,
-      completedAt: job.completedAt,
-      conclusion: job.conclusion,
-      name: job.name,
-      startedAt: job.startedAt,
-      status: job.status,
-      url: job.url,
-    })),
-    observedRunAttempts: child.observedRunAttempts,
-    plannedRunAttempt: child.plannedRunAttempt,
-    repository: child.repository,
-    runId: child.runId,
     status: child.status,
-    triggeringActor: child.triggeringActor,
     workflow: child.workflow,
     workflowRef: child.workflowRef,
     workflowSha: child.workflowSha,
@@ -2488,6 +2273,7 @@ function verifyStateStructure(state, executionPlan, label) {
     }
     return Object.assign({}, child, snapshot, {
       jobs: snapshot.timing.jobs.map((job) => ({
+        acceptedRunAttempt: job.acceptedRunAttempt,
         conclusion: job.conclusion,
         html_url: job.url,
         name: job.name,
@@ -2512,10 +2298,7 @@ function verifyStateStructure(state, executionPlan, label) {
     children: snapshots,
     extraBlockers: executionPlan.blockers,
     extraErrors: executionPlan.errors,
-    laneWaiver: executionPlan.laneWaiver,
     localFailures: releasePlanGateFailures(executionPlan.gates),
-    releaseProfile: executionPlan.releaseProfile,
-    workflowRef: executionPlan.workflowRef,
   });
   if (JSON.stringify(state.activeRunIds) !== JSON.stringify(baseline.activeRunIds)) {
     throw new Error(`${label} activeRunIds differs from canonical release policy`);
@@ -2716,14 +2499,14 @@ function releaseStateDetailLines(payload, maxItems = MAX_SUMMARY_ISSUES) {
   for (const error of payload.errors.slice(0, normalizedMax)) {
     lines.push(issueSummary("Collector error", error));
   }
+  for (const advisory of payload.advisoryJobs ?? []) {
+    lines.push(issueSummary(`Advisory [${advisory.class}]`, advisory));
+  }
   const omitted =
     Math.max(0, payload.blockers.length - normalizedMax) +
     Math.max(0, payload.errors.length - normalizedMax);
   if (omitted > 0) {
     lines.push(`- ${omitted} additional blocker/error item(s) omitted`);
-  }
-  for (const failure of releaseAdvisoryJobFailures(payload)) {
-    lines.push(`- Advisory: ${formatAdvisoryJobFailure(failure)}`);
   }
   return lines;
 }

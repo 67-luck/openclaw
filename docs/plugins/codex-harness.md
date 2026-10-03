@@ -1,4 +1,5 @@
 ---
+doc-schema-version: 1
 summary: "Run OpenClaw embedded agent turns through the official Codex app-server harness"
 title: "Codex harness"
 read_when:
@@ -46,7 +47,11 @@ display rows and is invalidated by resident row changes. Complete, unfiltered
 queries reuse it directly; live status and workspace settings still apply per page.
 This memory-only boundary is the local
 resident query. The Gateway also reads session entries from its resident session-row
-projection once ready; mutations can require exact-key refreshes before delivery.
+projection once its metadata is ready; mutations can require exact-key metadata refreshes
+before delivery. Catalog requests do not prepare unrelated session display rows, and
+sharing and adoption checks still use current metadata before each delivery.
+Display-only catalog refreshes retain prepared metadata selections; stored-entry,
+identity, and topology changes still invalidate them.
 Native adoption bindings still use their storage owner, and paired-node enumeration
 can use network I/O. Previews remain limited to 500 characters;
 native hydration and catalog pages remain limited to 64 rows each. Native `thread/list` has no bounded metadata projection, so wire JSON can still be
@@ -107,8 +112,9 @@ backoff schedule; abandoning a request releases its probe without recording a ne
 host failure. Background hydration keeps its separate grouped attempt and can
 walk the home to completion without consuming a foreground request's budget.
 
-Explicit homes hydrate in the background when the plugin activates. An implicit
-process home waits for an authorized catalog request. A home without a valid,
+Homes hydrate on the first authorized catalog request, including explicitly
+configured homes. Plugin activation does not start catalog-only app-servers for
+the configured agent fleet. A home without a valid,
 complete saved snapshot walks native `thread/list` pages once, yielding between
 pages. Progressive lists serve resident rows immediately. If a local home is still
 loading after 250 ms, the list returns that host as pending, preserving previously
@@ -132,8 +138,8 @@ Snapshot restoration waits for earlier cache writes, and mutations received duri
 restoration fence stale saved rows from publication. Background work then
 reconciles changed files and native metadata. A
 database-only native metadata walk recovers changes made while the Gateway was
-stopped. A full safety walk repeats every 15 minutes, including renames, Git branch and other displayed metadata, and the selected rollout
-path after a native revert. Metadata changes and explicit clears are applied even
+stopped. A full safety walk becomes due after 15 minutes and runs in the background on the next resident catalog read, including renames, Git branch and other displayed metadata, and the selected rollout
+path after a native revert. An idle catalog does not re-list native history, and the first resident read after an idle interval can return cached rows before the walk finishes. Metadata changes and explicit clears are applied even
 when native activity timestamps do not change. Newer Gateway observations fence
 older background pages. These coalesced background walks reuse previews for
 unchanged rows and do not ask Codex to scan or repair rollouts. Requests over a
@@ -161,8 +167,7 @@ restores the stored metadata. Resume publication uses
 the response's current cwd, which can differ from the thread's persisted cwd.
 For remote app-servers without local filesystem access, the saved snapshot is
 available immediately and a background native walk reconciles changes made while
-the Gateway was stopped or its app-server connection was unavailable. The full
-15-minute safety walk reconciles remote membership and metadata.
+the Gateway was stopped or its app-server connection was unavailable. A full safety walk becomes due after 15 minutes and reconciles remote membership and metadata on resident catalog demand.
 Unchanged display rows reuse their bounded resident previews before delivery.
 Unchanged rows are not rewritten to SQLite.
 
@@ -172,19 +177,19 @@ It reads database-only pages in descending recency order and stops after a whole
 page leaves the resident metadata unchanged, or at the 20,000-row retained limit.
 The comparison includes timestamps, selected path, fingerprint, and bounded display
 metadata; exposed timestamp ties keep their existing ordering. An unvisited tail
-is never treated as deleted. With no activity, ticks issue no native requests or
-file scans between safety walks. These checks reuse the existing preview cache
+is never treated as deleted. With no activity, ticks issue no native requests; local file safety scans remain on their own 15-minute cycle. These checks reuse the existing preview cache
 after JSON decoding; they reduce wire parsing by requesting fewer pages.
 
 Silent changes outside the checked prefix, including timestamp-preserving metadata
 edits and remote deletions or archives, appear at the next successful full safety
-walk. Local file disappearance is checked on the same cycle; native database
-omission alone still cannot delete a local row. Safety cycles start 15 minutes
-apart, subject to timer scheduling, in-flight work, and
-scan/walk duration. A failed background check records its error and waits for new
-activity or the next safety cycle, subject to source backoff. It does not retry on
-every idle tick. File scans keep an independent deadline, so native failures
-neither repeat the scan nor postpone its next check.
+walk after resident catalog demand. Local file disappearance is checked on its independent
+15-minute cycle; native database omission alone still cannot delete a local row.
+Native walks become due 15 minutes after the previous walk attempt and start on a
+subsequent resident catalog read. Native-backed overflow requests do not
+start a second full walk. A failed native walk records its error and waits for
+the next safety interval and catalog demand, subject to source backoff; it does
+not retry on idle ticks or on every busy catalog read.
+File scans retain their independent deadline and failure handling.
 Notifications and acknowledged catalog actions continue to update rows immediately.
 
 Native lifecycle notifications update affected threads, and successful catalog
@@ -195,10 +200,19 @@ an interrupted read logs that its metadata refresh is deferred for automatic
 recovery by the current catalog owner, retaining the original cause. Genuine read,
 reconciliation, and storage failures still log background update warnings.
 Observations do not keep retired clients alive. A startup scan and
-the 15-minute stat-only safety scan discover external rollout changes; no
-recursive filesystem watcher retains a directory inventory. The scan streams
-directory entries and retains at most 20,000 file fingerprints while separately
-checking the presence of resident paths. Only changed or
+the 15-minute safety scan discover external rollout changes. Each resident home
+caches at most 20,000 fingerprints across 256 watched day directories. Directory
+identity and timestamps detect replacements and membership changes; file-change
+notifications invalidate the containing directory for in-place appends. Unchanged
+directories reuse their fingerprints without statting each rollout. Unwatchable
+directories, watcher failures, and directories beyond the cache bounds use a full
+stat scan. Restart rebuilds this memory-only cache, and retiring the home closes its
+watchers. On macOS, a full read after the watcher has armed closes its startup
+notification gap before fingerprints can be reused. Parent directories are still
+enumerated to discover new days.
+Scans, snapshot restoration, and reconciliation yield between bounded batches.
+The scan streams directory entries and retains at most 20,000 candidate fingerprints
+while separately checking the presence of resident paths. Only changed or
 new files are read: at most 128 KiB each from the head and tail of a plain rollout,
 or a bounded 128 KiB compressed head. A missing first-user preview stays missing
 until a later change makes it discoverable. Native titles are preserved when a
@@ -269,7 +283,10 @@ entries in each named structure; a home with 490 current rows can still have
 20,000 historical field or queue entries.
 With those independent field and scan-path indexes full, settled string payload is
 bounded by 472.164 MiB for 490 current rows, or 936.165 MiB for 20,000 rows. These
-figures exclude active work and object/engine overhead.
+figures exclude active work and object/engine overhead. The watched-directory cache
+can additionally retain 20,000 rollout paths (156.250 MiB at the maximum string
+length) and 256 directory keys (2 MiB). Unchanged generations share fingerprint
+objects with the scan result; these are conservative independent bounds.
 
 | Retained string payload                        | 490 entries | 20,000 entries |
 | ---------------------------------------------- | ----------: | -------------: |
@@ -399,6 +416,9 @@ its tool row records **Outcome unknown** and explains that the process is still
 running. This is not command success or failure. Collect the retained handle
 with the native process-wait tool to obtain its output and exit code. The
 continuation records that result without rewriting the earlier turn's snapshot.
+Confirmed background commands keep their native thread subscribed until their
+matching completion or source closure, including when the sandbox exec-server
+is disabled. Idle conversation eviction does not interrupt that work.
 The existing unknown-outcome audit diagnostic remains; cancellation and a
 command with no confirmed live owner retain their failure handling.
 
@@ -464,26 +484,41 @@ Proxy launch arguments are rejected to avoid changing a shared daemon's login.
 
 ## Native subagent status
 
-Native Codex subagents appear under their parent in OpenClaw's task view.
-Their current execution, task result, and result delivery are separate facts.
+Native Codex subagents use Codex's execution and collaboration controls, not
+OpenClaw's retired Tasks view. Their current execution, assignment result, and
+result delivery remain separate facts.
+
+Retirement revokes captured requester authority immediately, then joins accepted
+native submission and assignment writes before releasing child subscriptions.
+Client disposal joins those writes before releasing retained owners.
+
 An approval or input request shows what needs attention. A native mailbox wait
 shows that the agent is waiting for messages; it does not invent a list of child
 dependencies. Idle, interrupted, or unloaded native threads do not prove that
 the delegated task succeeded. A resumed native turn clears the previous turn's
-current tool activity while retaining the task identity.
+current tool activity while retaining the native assignment identity.
 
-Follow-up work after a native child has finished creates a separate task run on
-the same Codex thread. Earlier results and their delivery status remain intact.
-Each task's transcript links to the full native child conversation, including later follow-ups.
-Interrupted work keeps its task identity when the native turn resumes.
+Follow-up work after a native child has finished creates a separate assignment
+on the same Codex thread. Earlier results and their delivery status remain intact.
+The native thread retains its conversation; there is no shared Tasks transcript
+viewer. Interrupted work keeps its assignment identity when the native turn resumes.
 If a recovered turn's end is still unknown, OpenClaw waits for native history or
-an end event before deciding whether later work resumes that task or starts a new one.
-Older tasks without enough native turn information remain unresolved instead of
-borrowing another turn's result.
+an end event before deciding whether later work resumes that assignment or starts
+a new one. Older assignments without enough native turn information remain
+unresolved instead of borrowing another turn's result.
+
+Pending native assignments retain their run, child-thread, native-parent, and
+known native-turn identities in metadata on the existing parent binding. This
+adds no SQL table and does not migrate old Tasks rows. On parent registration,
+OpenClaw can restore observation from those saved identities and native history
+only under fresh completion authority for the same requester session, lifecycle,
+and connection. Native-parent thread rotation can preserve those assignments;
+resetting the requester or changing the connection does not adopt them. Missing
+assignment metadata is not reconstructed from retired Tasks history.
 
 For Codex V1 follow-ups, OpenClaw retains a successful submission receipt with
-the parent binding until it records the matching native turn as a task. This
-allows recovery when the parent yields or the Gateway restarts before observing
+the parent binding until it records the matching native turn as an assignment.
+This allows recovery when the parent yields or the Gateway restarts before observing
 the child turn. A receipt alone does not keep an idle native connection alive.
 Observation follows the existing warm-thread lifetime; an unmatched receipt
 remains available for later recovery. Resetting the parent or replacing its native connection
@@ -494,18 +529,21 @@ when updating it.
 Closing a native child applies to the assignment selected when the close starts.
 OpenClaw waits for Codex to confirm that the child's runtime is absent before
 marking unfinished work canceled; a delayed close cannot cancel a later assignment.
-If confirmation is unavailable, the task asks you to retry the close request.
+If confirmation is unavailable, the close remains unresolved; retry the close
+request rather than treating it as successful cancellation.
 Native result receipts do not identify the child's turn. If an earlier result
 is still being recovered or repeated identical results make a receipt ambiguous,
 OpenClaw preserves the later pending delivery instead of risking a lost result;
 this can cause an additional continuation.
 
 Codex owns native subagent execution and controls. Follow up through the parent
-session, which can use Codex's native collaboration tools. OpenClaw's task view
-observes those children and delivers results after a parent yields. The native
-foreground parent already receives completion messages, so OpenClaw does not
+session, which can use Codex's native collaboration tools. For an admitted native
+assignment, OpenClaw's harness observes the child and routes results after the
+parent yields. The native foreground parent already receives completion messages, so OpenClaw does not
 send another continuation for a result it has consumed. Explicit OpenClaw or ACP
-delegation continues to use `sessions_spawn`.
+delegation continues to use `sessions_spawn`. Stored submission and result
+receipts are recovery evidence, not permission to adopt a child or deliver to a
+replacement parent.
 
 For native Codex V1 agents, a completed `wait` result also records delivery to
 the foreground parent. OpenClaw does not start another continuation for that
@@ -515,8 +553,8 @@ same child result after the parent replies.
 
 - The official `@openclaw/codex` plugin installed. Include `codex` in
   `plugins.allow` if your config uses an allowlist.
-- Managed Codex app-server `0.155.1`. The plugin ships and manages
-  `@openai/codex` `0.155.1` by default, so a `codex` command on `PATH` does not
+- Managed Codex app-server `0.160.0`. The plugin ships and manages
+  `@openai/codex` `0.160.0` by default, so a `codex` command on `PATH` does not
   affect normal startup. Explicit custom, remote, and macOS desktop-owned
   app-servers must report a parseable semantic version of `0.149.0` or newer.
   Newer versions continue with a compatibility warning and normal runtime
@@ -605,43 +643,66 @@ openclaw doctor --lint --only codex/managed-app-server --json
 ```
 
 For an effective Codex route using the managed stdio app-server, this
-default-disabled check resolves the platform-native executable and requires the
-exact Codex version pinned by OpenClaw. It does not execute custom, remote, or
+default-disabled check resolves the platform-native executable and requires it
+to match the retained managed package's version, or OpenClaw's exact bootstrap
+pin when using the bundled package. It does not execute custom, remote, or
 macOS desktop-owned app-servers.
 
-### Selected desktop runtime updates
+<a id="selected-desktop-runtime-updates" />
 
-On macOS, explicit plugin installation, `openclaw plugins update codex`, and
-`openclaw update` also maintain the desktop distribution when managed Codex
-routes select it. This check runs even when the plugin package itself is
-unchanged. Ordinary Doctor runs and conversation startup do not download desktop
-updates. Dry runs and update rehearsals do not change the host's desktop runtime.
+### Managed runtime updates
 
-The updater downloads the latest official distribution, verifies its Apple/OpenAI
-signatures, and checks the selected models and required Computer Use bridge in a
-disposable Codex home. Validation does not copy credentials, submit model turns,
-or perform desktop input. An incompatible candidate leaves the previous selection
-intact and produces an actionable warning; OpenClaw does not downgrade a newer
-installed build.
+Managed Codex runtimes update independently of OpenClaw and plugin releases.
+The Codex plugin checks the official stable distribution one minute after its
+Gateway service starts, then daily. Failures retain the working selection and
+retry after 30 minutes, with exponential backoff up to a day. The service owns
+and joins this work; conversation startup and messages never check for releases
+or download runtimes. `OPENCLAW_NO_AUTO_UPDATE=1` and Nix environments disable
+automatic checks.
 
-Verified distributions live in immutable directories under
-`~/Library/Application Support/OpenClaw/Codex/versions`. Retained Codex plugin state
-in OpenClaw's SQLite database selects the concrete executable, marketplace, and
-native service together. Activation uses compare-and-set so a concurrent update
-cannot overwrite a newer selection. The
-updater does not replace `/Applications/ChatGPT.app` or `/Applications/Codex.app`.
-Existing conversations retain their original files and generation; new clients
-select the verified distribution after the normal plugin reload/generation handoff.
-The update report identifies the retained previous runtime for recovery. Previous
-distributions are not automatically deleted.
+To check immediately, run `openclaw plugins update codex`. Explicit plugin
+installation and `openclaw update` also maintain selected runtimes, even when
+the plugin package is unchanged. `--dry-run` does not download or change runtime
+selection. Update rehearsals do not change the host's runtime.
 
-Custom executables, remote servers, and custom native Computer Use integrations
-remain operator-owned. `autoInstall: false` does not authorize writes to native
-service or marketplace state. If the retained native marketplace does not resolve
-to the candidate's exact plugin source, the update keeps the previous runtime and
-reports that manual validation is required. Supported validation uses a disposable
-copy of the retained service, and startup wiring is process-local. The package-only Codex runtime still
-uses OpenClaw's tested package pin rather than resolving npm `latest` on each turn.
+Package-only routes acquire stable `@openai/codex` from npm through OpenClaw's
+script-disabled package installer and verify registry integrity. The package
+bundled with OpenClaw remains the bootstrap fallback, not an update ceiling.
+On macOS, desktop-selected routes acquire the official signed distribution and
+verify its Apple/OpenAI signatures. The updater does not replace
+`/Applications/ChatGPT.app` or `/Applications/Codex.app` or downgrade a newer
+selected version.
+
+Before activation, OpenClaw checks the candidate protocol, selected model
+metadata, and required Computer Use bridge in a disposable Codex home.
+Validation does not copy credentials, submit model turns, or perform desktop
+input. An incompatible candidate leaves the previous selection intact and
+produces an actionable warning. A new upstream protocol or integration that
+OpenClaw does not support can still require an OpenClaw code update.
+
+Verified distributions live in immutable generation directories. The retained
+Codex plugin state in OpenClaw's SQLite database selects the concrete runtime;
+compare-and-set prevents a competing update from overwriting a newer selection.
+On macOS, generations live under
+`~/Library/Application Support/OpenClaw/Codex` (`cli/versions` for package-only
+routes). Existing conversations keep their executable and files; new clients
+resolve the verified selection. Previous generations are not automatically
+deleted.
+
+Model discovery uses the selected runtime's `model/list` and initialize version,
+scoped to its account and runtime. Cached reads return immediately. A live
+plugin service shares a bounded stale refresh after five minutes, coalesces
+concurrent requests, and backs off failures. HTTP discovery uses that same
+runtime version rather than a compiled client-version constant; if no runtime
+version is available, it retains static hints without guessing a version.
+
+Custom executables, pinned commands, remote servers, and custom native Computer
+Use integrations remain operator-owned. `autoInstall: false` does not authorize
+writes to native service or marketplace state. If the retained native
+marketplace differs from the candidate plugin, the update keeps the previous
+runtime and reports that manual validation is required. Package-only Computer
+Use candidates without a qualified desktop distribution are rejected rather
+than selected with an unverified bridge.
 
 `/status` reports the resolved OpenClaw Fast policy (`on`, `off`, or `auto`)
 and the selected runtime. It does not report the upstream service tier actually

@@ -50,3 +50,11 @@ export {
   isPidDefinitelyDead,
 } from "../shared/pid-alive.js";
 export { prepareSecretInputStdio, type SpawnStdioEntry } from "../process/spawn-secret-input.js";
+
+// Retained process-tree ownership for bounded native protocol qualification.
+export {
+  createOwnedStdioProcess,
+  closeOwnedStdioProcess,
+  OwnedStdioCleanupError,
+  type OwnedStdioProcess,
+} from "../process/owned-stdio.js";

@@ -1,6 +1,6 @@
 // Global Commander pre-action hook: startup presentation, config guard, logging, and plugin preflight.
 import type { Command } from "commander";
-import type { ConfigFileSnapshot } from "../../config/types.js";
+import type { StartupConfigPreflightOptions } from "../../commands/startup-config-preflight.js";
 import { setVerbose } from "../../globals.js";
 import type { LogLevel } from "../../logging/levels.js";
 import { resolvePluginInstallInvalidConfigPolicy } from "../../plugins/install-config.js";
@@ -12,7 +12,6 @@ import {
   applyCliExecutionStartupPresentation,
   ensureCliExecutionBootstrap,
 } from "../command-execution-startup.js";
-import { inheritOptionFromParent } from "../command-options.js";
 import { resolveCliCommandPathPolicy } from "../command-path-policy.js";
 import { resolveCliStartupPolicy } from "../command-startup-policy.js";
 import { applyResolvedCommandOutputMode } from "../json-output-mode.js";
@@ -52,17 +51,6 @@ function getCliLogLevel(actionCommand: Command): LogLevel | undefined {
   }
   const logLevel = actionCommand.optsWithGlobals<{ logLevel?: unknown }>().logLevel;
   return typeof logLevel === "string" ? (logLevel as LogLevel) : undefined;
-}
-
-function getStateMigrationAgentId(actionCommand: Command): string | undefined {
-  if (!actionCommand.options.some((option) => option.attributeName() === "agent")) {
-    return undefined;
-  }
-  const value =
-    actionCommand.getOptionValueSource("agent") === "cli"
-      ? actionCommand.getOptionValue("agent")
-      : inheritOptionFromParent(actionCommand, "agent", "cli");
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
 function isBareParentDefaultHelpInvocation(actionCommand: Command, argv: string[]): boolean {
@@ -160,6 +148,7 @@ export function registerPreActionHooks(program: Command, programVersion: string)
     applyResolvedCommandOutputMode(jsonOutputMode, machineOutputMode);
     const startupPolicy = resolveCliStartupPolicy({
       argv,
+      options: actionCommand.opts(),
       commandPath,
       jsonOutputMode,
       machineOutputMode,
@@ -199,17 +188,11 @@ export function registerPreActionHooks(program: Command, programVersion: string)
       });
       return;
     }
-    let beforeStateMigrations: ((snapshot?: ConfigFileSnapshot) => Promise<boolean>) | undefined;
-    let skipPristineStartupStateMigrations = false;
-    let skipPristineCoreStateMigrations = false;
+    let beforeStatePreparation: StartupConfigPreflightOptions["beforeStatePreparation"];
     let allowInvalid = shouldAllowInvalidConfigForAction(actionCommand, commandPath);
     if (isGatewayRunAction(actionCommand)) {
-      const {
-        prepareGatewayRunBootstrap,
-        recheckGatewayRunBootstrap,
-        wasPreparedGatewayRunCoreStatePristine,
-        wasPreparedGatewayRunStatePristine,
-      } = await import("../gateway-cli/pre-bootstrap.js");
+      const { prepareGatewayRunBootstrap, recheckGatewayRunBootstrap } =
+        await import("../gateway-cli/pre-bootstrap.js");
       const { resolveGatewayRunOptions } = await import("../gateway-cli/run-options.js");
       const resolvedOptions = resolveGatewayRunOptions(actionCommand.opts(), actionCommand);
       allowInvalid ||= resolvedOptions.allowUnconfigured === true;
@@ -218,46 +201,21 @@ export function registerPreActionHooks(program: Command, programVersion: string)
       if (!shouldBootstrap) {
         return;
       }
-      skipPristineStartupStateMigrations = wasPreparedGatewayRunStatePristine();
-      skipPristineCoreStateMigrations = wasPreparedGatewayRunCoreStatePristine();
-      beforeStateMigrations = (snapshot) =>
+      beforeStatePreparation = (snapshot) =>
         recheckGatewayRunBootstrap({
           opts,
           runtime: defaultRuntime,
           ...(snapshot ? { snapshot } : {}),
         });
     }
-    const stateMigrationAgentId = getStateMigrationAgentId(actionCommand);
-    if (stateMigrationAgentId) {
-      const existingGuard = beforeStateMigrations;
-      beforeStateMigrations = async (snapshot) => {
-        if (snapshot) {
-          const { isValidAgentId, normalizeAgentId } =
-            await import("@openclaw/normalization-core/agent-id");
-          if (isValidAgentId(stateMigrationAgentId)) {
-            const [{ listAgentIds }, { retainLegacyDefaultAgentId }] = await Promise.all([
-              import("../../agents/agent-scope-config.js"),
-              import("../../config/legacy.default-agent-owner.js"),
-            ]);
-            const agentId = normalizeAgentId(stateMigrationAgentId);
-            if (listAgentIds(snapshot.sourceConfig).includes(agentId)) {
-              retainLegacyDefaultAgentId(snapshot.sourceConfig, agentId);
-            }
-          }
-        }
-        return (await existingGuard?.(snapshot)) ?? true;
-      };
-    }
     await ensureCliExecutionBootstrap({
       runtime: defaultRuntime,
       commandPath,
       startupPolicy,
       allowInvalid,
-      ...(beforeStateMigrations ? { beforeStateMigrations } : {}),
-      ...(skipPristineStartupStateMigrations ? { skipPristineStartupStateMigrations: true } : {}),
-      ...(skipPristineCoreStateMigrations ? { skipPristineCoreStateMigrations: true } : {}),
+      ...(beforeStatePreparation ? { beforeStatePreparation } : {}),
     });
-    if (beforeStateMigrations && isGatewayRunAction(actionCommand)) {
+    if (beforeStatePreparation && isGatewayRunAction(actionCommand)) {
       const { reloadTrustedGatewayRunEnvironment } =
         await import("../gateway-cli/pre-bootstrap.js");
       await reloadTrustedGatewayRunEnvironment({ runtime: defaultRuntime });

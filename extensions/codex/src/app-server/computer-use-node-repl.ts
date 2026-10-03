@@ -5,7 +5,10 @@ import path from "node:path";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { parse as parseToml } from "smol-toml";
 import { defineCodexBuildState } from "../build-state.js";
-import { resolveMacOSDesktopCodexAppPathCandidateForBundle } from "./desktop-app-paths.js";
+import {
+  resolveMacOSDesktopCodexAppPathCandidateForBundle,
+  resolveMacOSDesktopCodexAppBundlePath,
+} from "./desktop-app-paths.js";
 import { normalizeCodexAppServerArgs, readCodexAppServerConfigOptions } from "./launch-args.js";
 
 export const CODEX_COMPUTER_USE_NODE_REPL_SERVER = "node_repl";
@@ -118,16 +121,11 @@ export async function resolveCodexComputerUseNodeReplStartArgs(
   if ((params.platform ?? process.platform) !== "darwin") {
     return args;
   }
-  const resources = path.dirname(params.appServerCommand);
-  const bundle = path.dirname(path.dirname(resources));
-  if (
-    path.basename(params.appServerCommand) !== "codex" ||
-    path.basename(resources) !== "Resources" ||
-    path.basename(path.dirname(resources)) !== "Contents" ||
-    !["ChatGPT.app", "Codex.app"].includes(path.basename(bundle))
-  ) {
+  const bundle = resolveMacOSDesktopCodexAppBundlePath(params.appServerCommand);
+  if (!bundle || !["ChatGPT.app", "Codex.app"].includes(path.basename(bundle))) {
     return args;
   }
+  const resources = path.join(bundle, "Contents", "Resources");
   if (await readComputerUseOwnershipFailure(params)) {
     return args;
   }
@@ -244,9 +242,13 @@ async function readComputerUseOwnershipFailure(
   if (marketplace.source_type !== "local" || typeof marketplace.source !== "string") {
     return "the native marketplace is not the selected desktop's local bundle";
   }
+  const bundle = resolveMacOSDesktopCodexAppBundlePath(params.appServerCommand);
+  if (!bundle) {
+    return "the selected runtime has no official desktop bundle";
+  }
   const bundledPlugin = path.join(
-    path.dirname(params.appServerCommand),
-    "plugins/openai-bundled/plugins/computer-use",
+    bundle,
+    "Contents/Resources/plugins/openai-bundled/plugins/computer-use",
   );
   const [configuredPlugin, selectedPlugin] = await Promise.all([
     fs.realpath(path.join(marketplace.source, "plugins/computer-use")).catch(() => undefined),

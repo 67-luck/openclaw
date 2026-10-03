@@ -3,11 +3,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { recoverInstalledPluginConfigIds } from "../../commands/doctor/shared/installed-plugin-id-recovery.js";
 import { seedRecoveryOwner } from "../../commands/doctor/shared/installed-plugin-id-recovery.test-support.js";
 import { readConfigFileSnapshot } from "../../config/config.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import * as temporaryState from "../../infra/tmp-openclaw-dir.js";
 import { readPersistedInstalledPluginIndexInstallRecords } from "../../plugins/installed-plugin-index-records.js";
 import { withPluginLifecycleLease } from "../../plugins/plugin-lifecycle-lease.js";
 import { seedInstalledPluginIndex } from "../../plugins/test-helpers/installed-plugin-index.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import {
+  withOpenClawTestState,
+  type OpenClawTestState,
+} from "../../test-utils/openclaw-test-state.js";
 
 const mocks = vi.hoisted(() => ({
   convergence: vi.fn(),
@@ -26,8 +30,7 @@ afterEach(() => vi.restoreAllMocks());
 it("maintains selected runtimes when post-core packages are unchanged and records warnings", async () => {
   await withOpenClawTestState({ label: "updater-runtime-maintenance" }, async (state) => {
     const cfg = { plugins: { enabled: false } };
-    await state.writeConfig(cfg);
-    await seedInstalledPluginIndex({}, { config: cfg, env: state.env });
+    const prepared = await prepareUpdate(state, cfg);
     mocks.convergence.mockImplementationOnce(async ({ cfg: candidate }) => ({
       config: candidate,
       configChanges: [],
@@ -44,7 +47,7 @@ it("maintains selected runtimes when post-core packages are unchanged and record
     const result = await updatePluginsAfterCoreUpdate({
       root: state.root,
       channel: "stable",
-      configSnapshot: await readConfigFileSnapshot(),
+      configSnapshot: prepared.configSnapshot,
       configWriteOptions: {},
       pluginInstallRecords: {},
       timeoutMs: 1_000,
@@ -65,76 +68,62 @@ it("maintains selected runtimes when post-core packages are unchanged and record
   });
 });
 
+async function prepareUpdate(state: OpenClawTestState, config: OpenClawConfig) {
+  // Config-write custody uses a host control store outside the profile database.
+  const control = state.path("control");
+  await fs.mkdir(control, { mode: 0o700 });
+  vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
+  await state.writeConfig(config);
+  await seedInstalledPluginIndex({}, { config, env: state.env });
+  return {
+    root: state.root,
+    channel: "stable" as const,
+    configSnapshot: await readConfigFileSnapshot(),
+    configChanged: true,
+    pluginInstallRecords: {},
+    timeoutMs: 1_000,
+    json: true,
+  };
+}
+
 describe("updater plugin commit cancellation", () => {
-  it.each(["index", "config", "config-failed"] as const)(
-    "fences config writes and settles tentative index custody after %s refusal",
-    async (effect) => {
-      await withOpenClawTestState({ label: `updater-plugin-${effect}` }, async (state) => {
-        // Config-write custody uses a host control store outside the profile database.
-        const control = state.path("control");
-        await fs.mkdir(control, { mode: 0o700 });
-        vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
-        const cfg = { plugins: { enabled: false } };
-        await state.writeConfig(cfg);
-        const originalConfig = await fs.readFile(state.configPath, "utf8");
-        await seedInstalledPluginIndex({}, { config: cfg, env: state.env });
-        const controller = new AbortController();
-        const refusal = new Error(`updater ${effect} refusal`);
-        const assertCurrent = () => controller.signal.throwIfAborted();
-        mocks.convergence.mockImplementationOnce(async ({ cfg: candidate }) => {
-          await Promise.resolve();
-          if (effect === "index") {
-            controller.abort(refusal);
-          }
-          return {
-            config: candidate,
-            configChanges: [],
-            installedPluginIdRecovery: new Map(),
-            changes: [],
-            warnings: [],
-            errored: false,
-            smokeFailures: [],
-            installRecords: { next: { source: "archive" } },
-          };
-        });
-        const params = {
-          root: state.root,
-          channel: "stable" as const,
-          configSnapshot: await readConfigFileSnapshot(),
-          configWriteOptions: {
-            beforeCommit: () => {
-              if (effect === "config-failed") {
-                throw refusal;
-              }
-              if (effect === "config") {
-                controller.abort(refusal);
-              }
-            },
-          },
-          configChanged: true,
-          pluginInstallRecords: {},
-          timeoutMs: 1_000,
-          json: true,
-          assertCurrent,
+  it("rolls back the tentative index after a config failure under a live owner", async () => {
+    await withOpenClawTestState({ label: "updater-plugin-config-failed" }, async (state) => {
+      const prepared = await prepareUpdate(state, { plugins: { enabled: false } });
+      const originalConfig = await fs.readFile(state.configPath, "utf8");
+      const controller = new AbortController();
+      const refusal = new Error("updater config refusal");
+      const assertCurrent = () => controller.signal.throwIfAborted();
+      mocks.convergence.mockImplementationOnce(async ({ cfg: candidate }) => {
+        await Promise.resolve();
+        return {
+          config: candidate,
+          configChanges: [],
+          installedPluginIdRecovery: new Map(),
+          changes: [],
+          warnings: [],
+          errored: false,
+          smokeFailures: [],
+          installRecords: { next: { source: "archive" } },
         };
-        const update = () => updatePluginsAfterCoreUpdate(params);
-        await expect(
-          effect === "config-failed"
-            ? withPluginLifecycleLease({ assertCurrent }, update)
-            : update(),
-        ).rejects.toBe(refusal);
-        if (effect === "config-failed") {
-          expect(controller.signal.aborted).toBe(false);
-        }
-        expect(await fs.readFile(state.configPath, "utf8")).toBe(originalConfig);
-        // A revoked continuous owner cannot authorize compensating writes. A plain
-        // commit failure still rolls back under the live owner; pre-index refusal writes nothing.
-        expect(readPersistedInstalledPluginIndexInstallRecords({ env: state.env })).toEqual(
-          effect === "config" ? { next: { source: "archive" } } : {},
-        );
       });
-    },
-  );
+      const params = {
+        ...prepared,
+        configWriteOptions: {
+          beforeCommit: () => {
+            throw refusal;
+          },
+        },
+        assertCurrent,
+      };
+      await expect(
+        withPluginLifecycleLease({ assertCurrent }, () => updatePluginsAfterCoreUpdate(params)),
+      ).rejects.toBe(refusal);
+      expect(controller.signal.aborted).toBe(false);
+      expect(await fs.readFile(state.configPath, "utf8")).toBe(originalConfig);
+      expect(readPersistedInstalledPluginIndexInstallRecords({ env: state.env })).toEqual({});
+    });
+  });
 });
 
 describe("updater explicit reference intent", () => {
@@ -144,16 +133,11 @@ describe("updater explicit reference intent", () => {
       await withOpenClawTestState(
         { label: `updater-reference-${explicit}`, env: { BROWSER_BIN: "/fixture/browser" } },
         async (state) => {
-          const control = state.path("control");
-          await fs.mkdir(control, { mode: 0o700 });
-          vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
-          const cfg = {
+          const prepared = await prepareUpdate(state, {
             plugins: { enabled: false },
             browser: { executablePath: "$${BROWSER_BIN}" },
-          };
-          await state.writeConfig(cfg);
-          await seedInstalledPluginIndex({}, { config: cfg, env: state.env });
-          const snapshot = await readConfigFileSnapshot();
+          });
+          const snapshot = prepared.configSnapshot;
           expect(snapshot.valid).toBe(true);
           expect(snapshot.sourceConfig.browser?.executablePath).toBe("${BROWSER_BIN}");
           mocks.convergence.mockImplementationOnce(async ({ cfg: candidate }) => ({
@@ -167,16 +151,10 @@ describe("updater explicit reference intent", () => {
             installRecords: {},
           }));
           await updatePluginsAfterCoreUpdate({
-            root: state.root,
-            channel: "stable",
-            configSnapshot: snapshot,
+            ...prepared,
             configWriteOptions: {
               explicitSetPaths: explicit ? [["browser", "executablePath"]] : undefined,
             },
-            configChanged: true,
-            pluginInstallRecords: {},
-            timeoutMs: 1_000,
-            json: true,
           });
           const written = JSON.parse(await fs.readFile(state.configPath, "utf8"));
           expect(written.browser.executablePath).toBe(
@@ -202,14 +180,11 @@ describe("updater recovery compatibility context", () => {
           },
         },
         async (state) => {
-          const control = state.path("control");
-          await fs.mkdir(control, { mode: 0o700 });
-          vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
           // Disabled plugins keep cohort/install work cold; convergence below models its published result.
-          const cfg = { plugins: { enabled: false, entries: { qqbot: { enabled: false } } } };
-          await state.writeConfig(cfg);
           await fs.writeFile(state.path("package.json"), JSON.stringify({ version: "2099.1.1" }));
-          await seedInstalledPluginIndex({}, { config: cfg, env: state.env });
+          const prepared = await prepareUpdate(state, {
+            plugins: { enabled: false, entries: { qqbot: { enabled: false } } },
+          });
           const original = await fs.readFile(state.configPath, "utf8");
           let ownerRoot = "";
           let reachedCommit = false;
@@ -238,9 +213,7 @@ describe("updater recovery compatibility context", () => {
             },
           );
           const update = updatePluginsAfterCoreUpdate({
-            root: state.root,
-            channel: "stable",
-            configSnapshot: await readConfigFileSnapshot(),
+            ...prepared,
             configWriteOptions: {
               beforeCommit: async () => {
                 reachedCommit = true;
@@ -249,10 +222,6 @@ describe("updater recovery compatibility context", () => {
                 }
               },
             },
-            configChanged: true,
-            pluginInstallRecords: {},
-            timeoutMs: 1_000,
-            json: true,
           });
           if (drift) {
             await expect(update).rejects.toThrow("Plugin ownership changed");

@@ -1,4 +1,3 @@
-/** Session update helpers for skill snapshots and completed compaction accounting. */
 import crypto from "node:crypto";
 import type { EmbeddedAgentCompactResult } from "../../agents/embedded-agent-runner/types.js";
 import {
@@ -12,10 +11,10 @@ import {
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { projectCompactionAccountingPatch } from "../../config/sessions/session-entry-projection.js";
-import { projectCanonicalSessionEntryShape } from "../../config/sessions/store-entry-shape.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isFastTestRuntimeEnv } from "../../infra/env.js";
+import { resolveSessionSkillExecutionWorkspace } from "../../skills/loading/workspace-skill-roots.js";
 import { getRemoteSkillEligibility } from "../../skills/runtime/remote.js";
 import { resolveReusableWorkspaceSkillSnapshot } from "../../skills/runtime/session-snapshot.js";
 import type { ReplySessionEntryHandle } from "./session-entry-handle.js";
@@ -46,7 +45,7 @@ async function persistSkillSnapshot(params: {
   expectedSession: Pick<SessionEntry, "sessionId" | "lifecycleRevision"> | undefined;
   sessionEntryHandle?: ReplySessionEntryHandle;
   sessionStore?: Record<string, SessionEntry>;
-  sessionKey?: string;
+  sessionKey: string;
   sessionId?: string;
   storePath?: string;
   currentEntry: SessionEntry;
@@ -54,22 +53,15 @@ async function persistSkillSnapshot(params: {
   isFirstTurnInSession: boolean;
 }): Promise<{ entry: SessionEntry | undefined; updated: boolean }> {
   const updates = {
-    sessionId: params.sessionId ?? params.currentEntry.sessionId ?? crypto.randomUUID(),
+    sessionId: params.sessionId ?? params.currentEntry.sessionId,
     updatedAt: Date.now(),
     ...(params.isFirstTurnInSession ? { systemSent: true } : {}),
     skillsSnapshot: params.skillsSnapshot,
   };
-  if (!params.sessionEntryHandle && (!params.sessionStore || !params.sessionKey)) {
-    return { entry: undefined, updated: false };
-  }
-  if (!params.storePath || !params.sessionKey) {
+  if (!params.storePath) {
     const current = params.sessionEntryHandle
-      ? params.sessionKey
-        ? params.sessionEntryHandle.get(params.sessionKey)
-        : params.sessionEntryHandle.getCurrent()
-      : params.sessionKey
-        ? params.sessionStore?.[params.sessionKey]
-        : undefined;
+      ? params.sessionEntryHandle.get(params.sessionKey)
+      : params.sessionStore?.[params.sessionKey];
     if (
       current?.sessionId !== params.expectedSession?.sessionId ||
       current?.lifecycleRevision !== params.expectedSession?.lifecycleRevision
@@ -96,10 +88,7 @@ async function persistSkillSnapshot(params: {
     },
   );
   publishSessionEntry(params, persistedEntry ?? undefined);
-  if (persistedEntry) {
-    return { entry: persistedEntry, updated };
-  }
-  return { entry: undefined, updated: false };
+  return { entry: persistedEntry ?? undefined, updated: Boolean(persistedEntry) && updated };
 }
 
 /** Ensures a session entry has the reusable skill snapshot needed for reply runs. */
@@ -166,9 +155,10 @@ export async function ensureSkillSnapshot(params: {
   const resolveSnapshot = (snapshot: SessionEntry["skillsSnapshot"]) =>
     resolveReusableWorkspaceSkillSnapshot({
       workspaceDir,
-      ...(params.executionWorkspaceDir
-        ? { executionWorkspaceDir: params.executionWorkspaceDir }
-        : {}),
+      ...resolveSessionSkillExecutionWorkspace(
+        nextEntry?.worktree?.canonicalWorkspaceDir,
+        params.executionWorkspaceDir,
+      ),
       config: cfg,
       agentId,
       skillFilter,
@@ -195,15 +185,11 @@ export async function ensureSkillSnapshot(params: {
         ? initialSnapshotState.snapshot
         : (await resolveSnapshot(current.skillsSnapshot)).snapshot;
     const { entry: persistedEntry, updated } = await persistSkillSnapshot({
+      ...params,
       expectedSession,
-      sessionEntryHandle,
-      sessionStore,
       sessionKey,
-      sessionId,
-      storePath,
       currentEntry: current,
       skillsSnapshot: skillSnapshot,
-      isFirstTurnInSession,
     });
     if (!updated) {
       return {
@@ -233,15 +219,11 @@ export async function ensureSkillSnapshot(params: {
       updatedAt: Date.now(),
     };
     const { entry: persistedEntry, updated } = await persistSkillSnapshot({
+      ...params,
       expectedSession,
-      sessionEntryHandle,
-      sessionStore,
       sessionKey,
-      sessionId,
-      storePath,
       currentEntry: current,
       skillsSnapshot,
-      isFirstTurnInSession,
     });
     if (!updated) {
       return {
@@ -287,7 +269,7 @@ export async function incrementCompactionCount(params: {
   sessionEntry?: SessionEntry;
   sessionStore?: Record<string, SessionEntry>;
   sessionKey?: string;
-  storePath?: string;
+  storePath: string;
   now?: number;
   amount?: number;
   tokensAfter?: number;
@@ -302,7 +284,7 @@ export async function incrementCompactionCount(params: {
   authorize?: () => boolean;
 }): Promise<number | undefined> {
   const { sessionStore, sessionKey, storePath, authorize } = params;
-  if (!sessionKey || (!storePath && !sessionStore)) {
+  if (!sessionKey || !storePath) {
     return undefined;
   }
   const cachedEntry = sessionStore?.[sessionKey] ?? params.sessionEntry;
@@ -327,49 +309,40 @@ export async function incrementCompactionCount(params: {
     // The writer-serialized row owns the count, not the caller's pre-await cache.
     return projectCompactionAccountingPatch(current, params);
   };
-  if (storePath) {
-    let committed = false;
-    const authorityRevoked = new Error("compaction accounting authority revoked");
-    let persisted: InternalSessionEntry | null;
-    try {
-      persisted = await patchSessionEntryCore(
-        { agentId: params.agentId, storePath, sessionKey },
-        update,
-        {
-          onCommitted: (entry) => {
-            committed = true;
-            // Publish while this commit owns the row, before maintenance yields to a new writer.
-            if (sessionStore) {
-              sessionStore[sessionKey] = entry;
-            }
-          },
-          ...(authorize
-            ? {
-                assertCommitAllowed: () => {
-                  if (!authorize()) {
-                    throw authorityRevoked;
-                  }
-                },
-              }
-            : {}),
+  let committed = false;
+  const authorityRevoked = new Error("compaction accounting authority revoked");
+  let persisted: InternalSessionEntry | null;
+  try {
+    persisted = await patchSessionEntryCore(
+      { agentId: params.agentId, storePath, sessionKey },
+      update,
+      {
+        onCommitted: (entry) => {
+          committed = true;
+          // Publish while this commit owns the row, before maintenance yields to a new writer.
+          if (sessionStore) {
+            sessionStore[sessionKey] = entry;
+          }
         },
-      );
-    } catch (error) {
-      if (error === authorityRevoked) {
-        return undefined;
-      }
-      throw error;
-    }
-    if (!committed || !persisted) {
+        ...(authorize
+          ? {
+              assertCommitAllowed: () => {
+                if (!authorize()) {
+                  throw authorityRevoked;
+                }
+              },
+            }
+          : { workerGuard: {} }),
+      },
+    );
+  } catch (error) {
+    if (error === authorityRevoked) {
       return undefined;
     }
-    return persisted.compactionCount;
+    throw error;
   }
-  const patch = cachedEntry && update(cachedEntry);
-  if (!sessionStore || !cachedEntry || !patch) {
+  if (!committed || !persisted) {
     return undefined;
   }
-  const nextEntry = projectCanonicalSessionEntryShape({ ...cachedEntry, ...patch });
-  sessionStore[sessionKey] = nextEntry;
-  return nextEntry.compactionCount;
+  return persisted.compactionCount;
 }

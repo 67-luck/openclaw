@@ -1,11 +1,19 @@
+import { DEFAULT_ACCOUNT_ID } from "openclaw/plugin-sdk/account-id";
 import {
   buildLegacyDmAccountAllowlistAdapter,
   createAccountScopedAllowlistNameResolver,
   createNestedAllowlistOverrideResolver,
 } from "openclaw/plugin-sdk/allowlist-config-edit";
-import { createChatChannelPlugin } from "openclaw/plugin-sdk/channel-core";
+import { createChatChannelPlugin, type ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import { createChannelMessageAdapterFromOutbound } from "openclaw/plugin-sdk/channel-outbound";
 import { createPairingPrefixStripper } from "openclaw/plugin-sdk/channel-pairing";
+import {
+  buildTokenChannelStatusSummary,
+  PAIRING_APPROVED_MESSAGE,
+  projectCredentialSnapshotFields,
+  resolveConfiguredFromCredentialStatuses,
+} from "openclaw/plugin-sdk/channel-status";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   createChannelDirectoryAdapter,
   createRuntimeDirectoryLiveAdapter,
@@ -32,15 +40,6 @@ import {
 import { getDiscordApprovalCapability } from "./approval-native.js";
 import { resolveRequiredDiscordChannelPermissions } from "./audit-core.js";
 import { discordMessageActions } from "./channel-actions.js";
-import {
-  buildTokenChannelStatusSummary,
-  DEFAULT_ACCOUNT_ID,
-  PAIRING_APPROVED_MESSAGE,
-  projectCredentialSnapshotFields,
-  resolveConfiguredFromCredentialStatuses,
-  type ChannelPlugin,
-  type OpenClawConfig,
-} from "./channel-api.js";
 import {
   buildDiscordCrossContextPresentation,
   matchDiscordAcpConversation,
@@ -243,8 +242,8 @@ const resolveDiscordAllowlistNames = createAccountScopedAllowlistNameResolver({
     (await loadDiscordResolveUsersModule()).resolveDiscordUserAllowlist({ token, entries }),
 });
 
-export const discordPlugin: ChannelPlugin<ResolvedDiscordAccount, DiscordProbe> =
-  createChatChannelPlugin<ResolvedDiscordAccount, DiscordProbe>({
+export const discordPlugin: ChannelPlugin<ResolvedDiscordAccount, DiscordProbe, unknown, 2> =
+  createChatChannelPlugin<ResolvedDiscordAccount, DiscordProbe, unknown, 2>({
     base: {
       ...createDiscordPluginBase({
         setupContract: discordSetupContract,
@@ -596,6 +595,7 @@ export const discordPlugin: ChannelPlugin<ResolvedDiscordAccount, DiscordProbe> 
         },
       }),
       gateway: {
+        apiVersion: 2,
         startAccount: async (ctx) => {
           const readConfig = createRuntimeConfigReader(ctx.cfg);
           const account = ctx.account;
@@ -635,6 +635,7 @@ export const discordPlugin: ChannelPlugin<ResolvedDiscordAccount, DiscordProbe> 
             );
           }
           return (await loadDiscordProviderRuntime()).monitorDiscordProvider({
+            scheduler: ctx.scheduler,
             token,
             accountId: account.accountId,
             config: ctx.cfg,
@@ -668,6 +669,16 @@ export const discordPlugin: ChannelPlugin<ResolvedDiscordAccount, DiscordProbe> 
     security: discordSecurityAdapter,
     threading: {
       matchesToolContextTarget: matchesDiscordToolContextTarget,
+      // A Discord thread is addressed by its own channel id, so only a send to
+      // that thread's channel carries the current thread. Parent and sibling
+      // channels stay unthreaded; this never redirects a send into the thread.
+      resolveAutoThreadId: ({ to, toolContext }) => {
+        const threadId = normalizeOptionalString(toolContext?.currentThreadTs);
+        if (!threadId) {
+          return undefined;
+        }
+        return normalizeDiscordMessagingTarget(to) === `channel:${threadId}` ? threadId : undefined;
+      },
       scopedAccountReplyToMode: {
         resolveAccount: (cfg, accountId) => resolveDiscordAccount({ cfg, accountId }),
         resolveReplyToMode: (account) => account.config.replyToMode,

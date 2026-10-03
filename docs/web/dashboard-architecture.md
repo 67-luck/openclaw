@@ -43,15 +43,15 @@ Principles:
 
 ## Concepts
 
-| Concept             | Definition                                                                                                                                                                                                                                                                                              |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Session (thread)    | Existing gateway session, keyed by stable `sessionKey`. Owned by an agent.                                                                                                                                                                                                                              |
-| Board               | The widget board of one session. Exists iff the session has widgets/tabs. Survives `/new`/`/reset` (attached to `sessionKey`, not the transcript).                                                                                                                                                      |
-| Tab                 | A presentation page of a board: which widgets and their arrangement. Boards start with one implicit tab.                                                                                                                                                                                                |
-| Widget              | Named content cell owned by the session: a native report, HTML/JS, MCP App, or plugin widget. Addressed as `sessionKey` + `name`.                                                                                                                                                                       |
-| Capability manifest | Per-widget declaration of reach: `data` (read bindings), `actions` (allowlisted verbs), `prompt` (send to session), `net` (allowed origins).                                                                                                                                                            |
-| Pin (widget)        | Moving a transcript widget onto the session's board (user affordance or agent tool arg). Unpin removes it from the board.                                                                                                                                                                               |
-| Pin (session)       | Root sessions and ordinary Home-linked dashboard sessions can be pinned; spawned, subagent, and nested-child sessions reject pin requests. Subagent runs appear in transcript activity and Tasks views, outside sidebar navigation. Opening a pinned session restores that browser's saved task layout. |
+| Concept             | Definition                                                                                                                                                                                                                                                                              |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Session (thread)    | Existing gateway session, keyed by stable `sessionKey`. Owned by an agent.                                                                                                                                                                                                              |
+| Board               | The widget board of one session. Exists iff the session has widgets/tabs. Survives `/new`/`/reset` (attached to `sessionKey`, not the transcript).                                                                                                                                      |
+| Tab                 | A presentation page of a board: which widgets and their arrangement. Boards start with one implicit tab.                                                                                                                                                                                |
+| Widget              | Named content cell owned by the session: a native report, HTML/JS, MCP App, or plugin widget. Addressed as `sessionKey` + `name`.                                                                                                                                                       |
+| Capability manifest | Per-widget declaration of reach: `data` (read bindings), `actions` (allowlisted verbs), `prompt` (send to session), `net` (allowed origins).                                                                                                                                            |
+| Pin (widget)        | Moving a transcript widget onto the session's board (user affordance or agent tool arg). Unpin removes it from the board.                                                                                                                                                               |
+| Pin (session)       | Root sessions and ordinary Home-linked dashboard sessions can be pinned; spawned, subagent, and nested-child sessions reject pin requests. Subagent runs appear in session transcripts, outside sidebar navigation. Opening a pinned session restores that browser's saved task layout. |
 
 ## UX flows
 
@@ -131,8 +131,9 @@ sandbox proxy described below.
 - **Board widgets** are session state: bytes live in the owning agent's SQLite
   DB (`board_widgets`), served by a core gateway route
   (`/__openclaw__/board/<agentId>/<sessionKey>/<name>/`) that reads the DB.
-  Pinning a transcript widget copies the bytes. Caps: 256 KB per document,
-  8KB per native widget's JSON props, and 48 widgets per board.
+  Pinning a transcript widget copies the bytes. Caps: 10 MiB of UTF-8 HTML per
+  document including the wrapper, 256 KiB per registered widget's source,
+  8 KiB per native widget's JSON props, and 48 widgets per board.
 - **Update in place:** re-emitting a widget with the same `name` and content
   owner replaces its content, bumps `revision`, and broadcasts `board.changed`.
   Live views update that cell. Document widgets reload that iframe only.
@@ -270,8 +271,12 @@ Managed `[embed ref="..."]` previews use that authenticated path whenever their
 effective sandbox policy permits scripts, including the default with no explicit
 sandbox field. Explicit strict previews remain script-free.
 There is no completed-document cache: Canvas permits replacing named document
-IDs, so a remount reads the current source again. Reconnection retires pending
-results from the previous connection.
+IDs, so a remount reads the current source again. A transient disconnect keeps
+an already-mounted inline iframe and its local interaction state, but retires
+pending results and server-action authority from the previous connection.
+Reconnect revalidates the document: unchanged bytes preserve the frame, while
+changed content or identity replaces it. This is in-memory presentation retention,
+not a durable document cache or permission to replay widget actions.
 
 ### Website widgets
 
@@ -377,8 +382,10 @@ It never loads plugins merely to describe their dashboard capabilities.
 
 Core's existing GitHub identity and HTTP owners serve `github.actions.runs`
 through `board.data.read`. The closed parameter contract constructs only the
-repository or workflow run-list operation at `api.github.com`. Authorization
-requires the exact normalized `github.actions.runs:<owner>/<repo>` tool grant.
+repository or workflow run-list operation at `api.github.com`. Both credential
+selection and transport stay bound to `github.com`, even when project discovery
+uses a configured Enterprise host. Enterprise credentials are never used for
+this public-host capability. Authorization requires the exact normalized `github.actions.runs:<owner>/<repo>` tool grant.
 Network-origin grants never supply GitHub identity authority. Approval discloses
 that Actions metadata, including private repository data accessible to the
 agent, is shared with the widget/session audience.

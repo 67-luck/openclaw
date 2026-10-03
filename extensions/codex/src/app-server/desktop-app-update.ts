@@ -1,4 +1,3 @@
-/** Explicit-maintenance acquisition of immutable, official macOS desktop generations. */
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -15,22 +14,23 @@ import {
   directoryIdentityIsStable,
   readRealDirectoryIdentity,
 } from "./computer-use-service-path.js";
+/** Explicit-maintenance acquisition of immutable, official macOS desktop generations. */
+import { findMacOSDesktopCodexExecutable } from "./desktop-app-layout.js";
 import {
-  observeCodexManagedDesktopSelection,
-  publishCodexManagedDesktopSelection,
-  readCodexManagedDesktopSelection,
-  resolveCodexManagedDesktopAppPath,
-  resolveCodexManagedDesktopRoot,
-  type CodexManagedDesktopSelection,
-  type CodexManagedDesktopStateOptions,
-} from "./managed-desktop-installation.js";
+  observeCodexManagedRuntimeSelection,
+  publishCodexManagedRuntimeSelection,
+  readCodexManagedRuntimeSelection,
+  resolveCodexManagedRuntimeAppPath,
+  resolveCodexManagedRuntimeRoot,
+  type CodexManagedRuntimeSelection,
+  type CodexManagedRuntimeStateOptions,
+} from "./managed-runtime-installation.js";
 
 const TEAM_ID = "2DC432GLL2";
 const BUNDLE_ID = "com.openai.codex";
 const INSPECT_TIMEOUT_MS = 30_000;
 const COPY_TIMEOUT_MS = 120_000;
 const DOWNLOAD_TIMEOUT_MS = 600_000;
-const CLI_PATH = path.join("Contents", "Resources", "codex");
 
 type AppIdentity = { build: string; signature: string; filesystem: string };
 type Execute = typeof runExec;
@@ -49,7 +49,7 @@ export type CodexDesktopAppUpdateResult = {
 
 /** The maintenance caller owns selection and compatibility; publication owns its SQLite selection. */
 export async function updateCodexDesktopApp(
-  params: CodexManagedDesktopStateOptions & {
+  params: CodexManagedRuntimeStateOptions & {
     appBundlePath: string;
     signal: AbortSignal;
     assertCurrent: () => void;
@@ -72,8 +72,8 @@ export async function updateCodexDesktopApp(
   if (appName !== "ChatGPT.app" && appName !== "Codex.app") {
     throw new Error("Codex desktop maintenance only updates the selected official app bundle.");
   }
-  const managedRoot = path.resolve(params.deps?.managedRoot ?? resolveCodexManagedDesktopRoot());
-  const observation = await observeCodexManagedDesktopSelection({ ...params, root: managedRoot });
+  const managedRoot = path.resolve(params.deps?.managedRoot ?? resolveCodexManagedRuntimeRoot());
+  const observation = await observeCodexManagedRuntimeSelection({ ...params, root: managedRoot });
   const previous = observation.installation;
   if (previous && previous.appBundlePath !== target) {
     throw new Error("Codex managed desktop selection changed; retry the update.");
@@ -132,7 +132,7 @@ export async function updateCodexDesktopApp(
   const image = path.join(root, "desktop.dmg");
   let mountAttempted = false;
   let generationIdentity: DirectoryIdentity | undefined;
-  let selection: CodexManagedDesktopSelection | undefined;
+  let selection: CodexManagedRuntimeSelection | undefined;
   let candidatePath: string | undefined;
   let candidateBuild: string | undefined;
   let publicationAttempted = false;
@@ -195,7 +195,7 @@ export async function updateCodexDesktopApp(
       assertCurrent();
       await params.validateCandidate(candidatePaths(target));
       await assertAppUnchanged(target, initial, exec);
-      const current = await observeCodexManagedDesktopSelection({ ...params, root: managedRoot });
+      const current = await observeCodexManagedRuntimeSelection({ ...params, root: managedRoot });
       if (current.comparison !== observation.comparison) {
         throw new Error("Codex managed desktop selection changed; retry the update.");
       }
@@ -224,7 +224,7 @@ export async function updateCodexDesktopApp(
       );
       generationIdentity = await readRealDirectoryIdentity(generation, "Codex desktop generation");
       selection = { version: 1, appName: sourceName, generation: path.basename(generation) };
-      candidatePath = resolveCodexManagedDesktopAppPath(selection, managedRoot);
+      candidatePath = resolveCodexManagedRuntimeAppPath(selection, managedRoot);
       candidateBuild = sourceIdentity.build;
       await exec("/usr/bin/ditto", ["--noqtn", source, candidatePath], COPY_TIMEOUT_MS);
       const copied = await inspectApp(candidatePath, exec);
@@ -241,7 +241,7 @@ export async function updateCodexDesktopApp(
       await assertDirectoryIdentityStable(generationIdentity, "Codex desktop generation");
       assertCurrent();
       publicationAttempted = true;
-      await publishCodexManagedDesktopSelection({
+      await publishCodexManagedRuntimeSelection({
         root: managedRoot,
         selection,
         env: params.env,
@@ -267,7 +267,7 @@ export async function updateCodexDesktopApp(
       // Even a superseded selection may already have admitted readers of this path.
       retainGeneration = true;
       try {
-        const current = await readCodexManagedDesktopSelection(managedRoot, params);
+        const current = await readCodexManagedRuntimeSelection(managedRoot, params);
         if (
           current?.selection.generation === selection.generation &&
           current.selection.appName === selection.appName
@@ -450,7 +450,7 @@ async function inspectApp(app: string, exec: InspectExec): Promise<AppIdentity> 
     messagePrefix: "Codex desktop app",
   });
   const before = await filesystemIdentity(app);
-  const cli = path.join(app, CLI_PATH);
+  const cli = candidatePaths(app).appServerCommandPath;
   await fs.access(cli, fsConstants.X_OK);
   const teamRequirement = `anchor apple generic and certificate leaf[subject.OU] = "${TEAM_ID}"`;
   await exec("/usr/bin/codesign", [
@@ -492,7 +492,7 @@ async function inspectApp(app: string, exec: InspectExec): Promise<AppIdentity> 
 
 async function filesystemIdentity(app: string): Promise<string> {
   const entries = await Promise.all(
-    [app, path.join(app, "Contents", "Info.plist"), path.join(app, CLI_PATH)].map(
+    [app, path.join(app, "Contents", "Info.plist"), candidatePaths(app).appServerCommandPath].map(
       async (entry, index) => {
         const stat = await fs.lstat(entry);
         if (stat.isSymbolicLink() || (index === 0 ? !stat.isDirectory() : !stat.isFile())) {
@@ -534,5 +534,12 @@ function compareBuilds(left: string, right: string): number {
 }
 
 function candidatePaths(appBundlePath: string): Candidate {
-  return { appBundlePath, appServerCommandPath: path.join(appBundlePath, CLI_PATH) };
+  const candidate = findMacOSDesktopCodexExecutable(appBundlePath);
+  if (!candidate) {
+    throw new Error("Codex desktop has no supported executable layout.");
+  }
+  return {
+    appBundlePath: candidate.appBundlePath,
+    appServerCommandPath: candidate.appServerCommandPath,
+  };
 }

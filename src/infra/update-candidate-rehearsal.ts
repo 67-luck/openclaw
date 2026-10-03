@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { AgentEntryConfig } from "../config/types.agents.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { resolveUserPath } from "./home-dir.js";
@@ -24,6 +25,7 @@ import {
   POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV,
 } from "./update-post-core-context.js";
 import { buildUpdateRehearsalPathEnv } from "./update-rehearsal-paths.js";
+import type { UpdateRunStep } from "./update-run-record.js";
 import { buildUpdateDoctorEnv } from "./update-runner-doctor.js";
 import type { UpdateSnapshotCapacity } from "./update-snapshot-capacity.js";
 
@@ -34,6 +36,8 @@ export type UpdateCandidateRehearsal = {
   env: NodeJS.ProcessEnv;
   port: number;
   snapshotCapacity: UpdateSnapshotCapacity;
+  snapshotDiagnostics?: string[];
+  snapshotWarnings?: string[];
   cleanupDirectories: string[];
   pluginCodeLinks?: UpdateCandidatePluginCodeLink[];
   cleanup: (assertDirectoryCurrent?: (directory: string) => void) => Promise<void>;
@@ -46,6 +50,7 @@ function isolatedConfig(
   port: number,
   sourceEnv: NodeJS.ProcessEnv,
   pluginPaths: Record<string, string>,
+  migrationPolicy?: "rehearse" | "startup-only",
 ): OpenClawConfig {
   const copied = structuredClone(config);
   const projectPluginPath = (value: string) => {
@@ -69,30 +74,39 @@ function isolatedConfig(
   const workspace = path.join(stateDir, "workspace");
   const entries =
     copied.agents?.entries ??
-    Object.fromEntries((copied.agents?.list ?? []).map(({ id, ...agent }) => [id, agent]));
+    (migrationPolicy === "startup-only"
+      ? undefined
+      : Object.fromEntries((copied.agents?.list ?? []).map(({ id, ...agent }) => [id, agent])));
+  const isolateAgent = (id: string, agent: AgentEntryConfig): AgentEntryConfig => ({
+    ...agent,
+    workspace: path.join(workspace, id),
+    cwd: path.join(workspace, id),
+    agentDir: agent.agentDir
+      ? resolveUpdateCandidateStatePath(
+          sourceRoot,
+          stateDir,
+          resolveUserPath(agent.agentDir, sourceEnv),
+        )
+      : path.join(stateDir, "agents", id, "agent"),
+    heartbeat: { every: "0m" },
+  });
   copied.agents = {
     ...copied.agents,
     defaults: { ...copied.agents?.defaults, workspace, cwd: workspace, heartbeat: { every: "0m" } },
-    entries: Object.fromEntries(
-      Object.entries(entries).map(([id, agent]) => [
-        id,
-        {
-          ...agent,
-          workspace: path.join(workspace, id),
-          cwd: path.join(workspace, id),
-          agentDir: agent.agentDir
-            ? resolveUpdateCandidateStatePath(
-                sourceRoot,
-                stateDir,
-                resolveUserPath(agent.agentDir, sourceEnv),
-              )
-            : path.join(stateDir, "agents", id, "agent"),
-          heartbeat: { every: "0m" },
-        },
-      ]),
-    ),
+    ...(entries
+      ? {
+          entries: Object.fromEntries(
+            Object.entries(entries).map(([id, agent]) => [id, isolateAgent(id, agent)]),
+          ),
+        }
+      : {}),
+    ...(migrationPolicy === "startup-only" && copied.agents?.list
+      ? { list: copied.agents.list.map(({ id, ...agent }) => ({ id, ...isolateAgent(id, agent) })) }
+      : {}),
   };
-  delete copied.agents.list;
+  if (migrationPolicy !== "startup-only") {
+    delete copied.agents.list;
+  }
   // Copy effective config, never its include graph or ambient shell overrides.
   delete copied.env;
   delete copied.diagnostics;
@@ -133,6 +147,9 @@ export async function prepareUpdateCandidateRehearsal(params: {
   nodeRunner?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  assertCurrent?: () => void;
+  onProgress?: (step: UpdateRunStep) => void | Promise<void>;
+  migrationPolicy?: "rehearse" | "startup-only";
 }): Promise<UpdateCandidateRehearsal> {
   const sourceEnv = params.env ?? process.env;
   const workerEnv = (tempDir: string): NodeJS.ProcessEnv => {
@@ -193,6 +210,8 @@ export async function prepareUpdateCandidateRehearsal(params: {
     pluginPaths,
     pluginCodeLinks,
     snapshotCapacity,
+    snapshotDiagnostics,
+    snapshotWarnings,
     cleanupDirectories,
   } = await prepareUpdateCandidateStateSnapshot({
     ...params,
@@ -217,6 +236,7 @@ export async function prepareUpdateCandidateRehearsal(params: {
   };
   try {
     params.signal?.throwIfAborted();
+    params.assertCurrent?.();
     const port = await tryListenOnPort({
       port: 0,
       host: "127.0.0.1",
@@ -230,9 +250,14 @@ export async function prepareUpdateCandidateRehearsal(params: {
         port,
         sourceEnv,
         pluginPaths,
+        params.migrationPolicy,
       ),
     );
+    params.signal?.throwIfAborted();
+    params.assertCurrent?.();
     await fs.writeFile(configPath, serialized, { mode: 0o600 });
+    params.signal?.throwIfAborted();
+    params.assertCurrent?.();
     await fs.mkdir(workspaceDir, { recursive: true, mode: 0o700 });
     return {
       stateDir: tempDir,
@@ -241,6 +266,8 @@ export async function prepareUpdateCandidateRehearsal(params: {
       env,
       port,
       snapshotCapacity,
+      snapshotDiagnostics,
+      snapshotWarnings,
       cleanupDirectories,
       pluginCodeLinks,
       cleanup,

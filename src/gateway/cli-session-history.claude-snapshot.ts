@@ -2,7 +2,6 @@ import fs from "node:fs";
 import readline from "node:readline";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import type { Worker } from "node:worker_threads";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { CliSessionReseedReceipt } from "../config/sessions.js";
 import { normalizeCliSessionReseedReceipt } from "../config/sessions/cli-session-binding.js";
 import { createCpuTrackedWorker } from "../infra/worker-cpu.js";
@@ -69,42 +68,8 @@ type HistoryParams = {
   reseedReceipt?: CliSessionReseedReceipt;
 };
 let snapshotCache: { key: string; pending: Promise<readonly Message[]> } | undefined;
-
-function normalizeOversizedEntry(value: unknown): ClaudeCliProjectEntry | null {
-  if (!isRecord(value) || (value.type !== "user" && value.type !== "assistant")) {
-    return null;
-  }
-  const message = value.message;
-  if (!isRecord(message) || message.role !== value.type) {
-    return null;
-  }
-  const usage = isRecord(message.usage) ? message.usage : undefined;
-  return {
-    type: value.type,
-    ...(typeof value.timestamp === "string" ? { timestamp: value.timestamp } : {}),
-    ...(typeof value.uuid === "string" ? { uuid: value.uuid } : {}),
-    ...(value.isSidechain === true ? { isSidechain: true } : {}),
-    ...(value.isMeta === true ? { isMeta: true } : {}),
-    ...(value.isCompactSummary === true ? { isCompactSummary: true } : {}),
-    ...(value.isVisibleInTranscriptOnly === true ? { isVisibleInTranscriptOnly: true } : {}),
-    message: {
-      role: value.type,
-      content: OVERSIZED_HISTORY_PLACEHOLDER,
-      ...(typeof message.model === "string" ? { model: message.model } : {}),
-      ...(typeof message.stop_reason === "string" ? { stop_reason: message.stop_reason } : {}),
-      ...(usage
-        ? {
-            usage: {
-              input_tokens: usage.input_tokens,
-              output_tokens: usage.output_tokens,
-              cache_read_input_tokens: usage.cache_read_input_tokens,
-              cache_creation_input_tokens: usage.cache_creation_input_tokens,
-            },
-          }
-        : {}),
-    },
-  };
-}
+// Other sessions may replace the completed-cache slot while an import is still running.
+const pendingSnapshots = new Map<string, Promise<readonly Message[]>>();
 
 async function decodeOversizedClaudeEntry(
   worker: Worker,
@@ -112,7 +77,7 @@ async function decodeOversizedClaudeEntry(
 ): Promise<ClaudeCliProjectEntry | null> {
   return await new Promise((resolve) => {
     let settled = false;
-    const finish = (value: unknown) => {
+    const finish = (value: ClaudeCliProjectEntry | null) => {
       if (settled) {
         return;
       }
@@ -120,7 +85,7 @@ async function decodeOversizedClaudeEntry(
       worker.off("message", finish);
       worker.off("error", fail);
       worker.off("exit", fail);
-      resolve(normalizeOversizedEntry(value));
+      resolve(value);
     };
     const fail = () => finish(null);
     worker.once("message", finish);
@@ -240,7 +205,9 @@ export async function readClaudeCliSessionMessagesAsync(params: HistoryParams): 
   }
   const [filePath, cacheKey] = source;
   if (snapshotCache?.key !== cacheKey) {
-    snapshotCache = { key: cacheKey, pending: parseSnapshot(filePath, params) };
+    const pending = pendingSnapshots.get(cacheKey) ?? parseSnapshot(filePath, params);
+    pendingSnapshots.set(cacheKey, pending);
+    snapshotCache = { key: cacheKey, pending };
   }
   const pending = snapshotCache.pending;
   let snapshot: readonly Message[];
@@ -251,6 +218,10 @@ export async function readClaudeCliSessionMessagesAsync(params: HistoryParams): 
       snapshotCache = undefined;
     }
     return [];
+  } finally {
+    if (pendingSnapshots.get(cacheKey) === pending) {
+      pendingSnapshots.delete(cacheKey);
+    }
   }
   const messages: Message[] = [];
   for (const [index, message] of snapshot.entries()) {

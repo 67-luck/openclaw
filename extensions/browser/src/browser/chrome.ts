@@ -1,9 +1,3 @@
-/**
- * OpenClaw-managed Chrome lifecycle and CDP helpers.
- *
- * Builds launch args, starts/stops managed Chrome, probes CDP readiness, and
- * resolves WebSocket endpoints for browser control.
- */
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
@@ -44,6 +38,7 @@ import {
   normalizeCdpHttpBaseForJsonEndpoints,
   scopeCdpPolicyToConfiguredEndpoint,
   withCdpSocket,
+  type CdpEndpointPin,
 } from "./cdp.helpers.js";
 import { normalizeCdpWsUrl } from "./cdp.js";
 import {
@@ -70,7 +65,6 @@ import {
   getManagedBrowserMissingDisplayError,
   resolveManagedBrowserHeadlessMode,
   type ManagedBrowserHeadlessOptions,
-  type ManagedBrowserHeadlessSource,
   type ResolvedBrowserConfig,
   type ResolvedBrowserProfile,
 } from "./config.js";
@@ -81,6 +75,7 @@ import {
 import { BROWSER_ERROR_REASONS, BrowserProfileUnavailableError } from "./errors.js";
 import { ensureOutputDirectory } from "./output-directories.js";
 import { DEFAULT_DOWNLOAD_DIR } from "./paths.js";
+import type { ManagedBrowserHeadlessSource } from "./profile.types.js";
 
 const log = createSubsystemLogger("browser").child("chrome");
 const CHROME_SINGLETON_LOCK_PATHS = [
@@ -352,10 +347,6 @@ function linuxPidOwnsAnySocketInode(pid: number, inodes: Set<string>): boolean {
   return false;
 }
 
-function linuxPidListensOnPort(pid: number, port: number): boolean {
-  return linuxPidOwnsAnySocketInode(pid, readLinuxTcpListenInodesForPort(port));
-}
-
 function lsofShowsPidListeningOnPort(pid: number, port: number): boolean {
   try {
     const output = execFileSync(
@@ -371,7 +362,7 @@ function lsofShowsPidListeningOnPort(pid: number, port: number): boolean {
 
 function pidListensOnPort(pid: number, port: number): boolean {
   if (process.platform === "linux") {
-    return linuxPidListensOnPort(pid, port);
+    return linuxPidOwnsAnySocketInode(pid, readLinuxTcpListenInodesForPort(port));
   }
   if (process.platform === "darwin") {
     return lsofShowsPidListeningOnPort(pid, port);
@@ -449,7 +440,6 @@ function clearChromeSingletonArtifacts(userDataDir: string) {
   }
 }
 
-/** Remove stale Chrome singleton lock files from a user-data-dir. */
 function clearStaleChromeSingletonLocks(userDataDir: string, hostname = os.hostname()): boolean {
   const lock = readSingletonLockTarget(userDataDir);
   if (lock.status !== "owner" || lock.hostname !== hostname || isPidAlive(lock.pid)) {
@@ -518,9 +508,7 @@ async function waitForPidExit(pid: number, timeoutMs: number): Promise<boolean> 
     if (!isPidAlive(pid)) {
       return true;
     }
-    await new Promise((resolve) => {
-      setTimeout(resolve, CHROME_BOOTSTRAP_EXIT_POLL_MS);
-    });
+    await delay(CHROME_BOOTSTRAP_EXIT_POLL_MS);
   }
   return !isPidAlive(pid);
 }
@@ -541,28 +529,24 @@ async function terminateOwnedStaleChromeProcess(
       profile: params.profile,
       userDataDir: params.userDataDir,
     });
-  const beforeSigterm = readCurrentIdentity();
-  if (!beforeSigterm || !sameManagedChromeIdentity(params.identity, beforeSigterm)) {
-    return false;
+  for (const [signal, waitMs] of [
+    ["SIGTERM", timeoutMs],
+    ["SIGKILL", CHROME_BOOTSTRAP_EXIT_TIMEOUT_MS],
+  ] as const) {
+    const current = readCurrentIdentity();
+    if (!current || !sameManagedChromeIdentity(params.identity, current)) {
+      return false;
+    }
+    try {
+      process.kill(params.identity.pid, signal);
+    } catch {
+      return false;
+    }
+    if (await waitForPidExit(params.identity.pid, waitMs)) {
+      return true;
+    }
   }
-  try {
-    process.kill(params.identity.pid, "SIGTERM");
-  } catch {
-    return false;
-  }
-  if (await waitForPidExit(params.identity.pid, timeoutMs)) {
-    return true;
-  }
-  const beforeSigkill = readCurrentIdentity();
-  if (!beforeSigkill || !sameManagedChromeIdentity(params.identity, beforeSigkill)) {
-    return false;
-  }
-  try {
-    process.kill(params.identity.pid, "SIGKILL");
-  } catch {
-    return false;
-  }
-  return await waitForPidExit(params.identity.pid, CHROME_BOOTSTRAP_EXIT_TIMEOUT_MS);
+  return false;
 }
 
 function clearRecoveredChromeSingletonArtifacts(
@@ -711,13 +695,11 @@ function chromeLaunchHints(params: {
   return hints.length > 0 ? `\nHint: ${hints.join("\nHint: ")}` : "";
 }
 
-/** Running managed Chrome process and resolved control metadata. */
 export type RunningChrome = {
   pid: number;
   exe: BrowserExecutable;
   userDataDir: string;
   cdpPort: number;
-  startedAt: number;
   proc: ChildProcess;
   headless?: boolean;
   headlessSource?: ManagedBrowserHeadlessSource;
@@ -748,16 +730,10 @@ function resolveBrowserExecutable(
   );
 }
 
-/** Resolve the user-data-dir path for a managed OpenClaw Chrome profile. */
 export function resolveOpenClawUserDataDir(profileName = DEFAULT_OPENCLAW_BROWSER_PROFILE_NAME) {
   return path.join(CONFIG_DIR, "browser", profileName, "user-data");
 }
 
-function cdpUrlForPort(cdpPort: number) {
-  return `http://127.0.0.1:${cdpPort}`;
-}
-
-/** Build Chrome launch arguments for the managed OpenClaw browser. */
 function buildOpenClawChromeLaunchArgs(params: {
   resolved: ResolvedBrowserConfig;
   profile: ResolvedBrowserProfile;
@@ -810,17 +786,15 @@ function buildOpenClawChromeLaunchArgs(params: {
   return args;
 }
 
-type ChromeCdpEndpointPin = NonNullable<Awaited<ReturnType<typeof assertCdpEndpointAllowed>>>;
-
 export type ChromeWebSocketEndpoint = {
   url: string;
-  lookup?: ChromeCdpEndpointPin["lookup"];
+  lookup?: CdpEndpointPin["lookup"];
 };
 
 async function canOpenWebSocket(
   url: string,
   timeoutMs: number,
-  lookup?: ChromeCdpEndpointPin["lookup"],
+  lookup?: CdpEndpointPin["lookup"],
   signal?: AbortSignal,
 ): Promise<boolean> {
   try {
@@ -836,7 +810,6 @@ async function canOpenWebSocket(
   }
 }
 
-/** Return true when a Chrome CDP endpoint is reachable over HTTP. */
 export async function isChromeReachable(
   cdpUrl: string,
   timeoutMs = CHROME_REACHABILITY_TIMEOUT_MS,
@@ -887,7 +860,6 @@ async function fetchChromeVersion(
   }
 }
 
-/** Resolve a usable Chrome DevTools WebSocket endpoint from a CDP endpoint. */
 export async function getChromeWebSocketEndpoint(
   cdpUrl: string,
   timeoutMs = CHROME_REACHABILITY_TIMEOUT_MS,
@@ -931,7 +903,6 @@ export async function getChromeWebSocketEndpoint(
   return { url: normalizedWsUrl, lookup: discoveredPin?.lookup };
 }
 
-/** Return true when a Chrome CDP endpoint has a healthy WebSocket command path. */
 export async function isChromeCdpReady(
   cdpUrl: string,
   timeoutMs = CHROME_REACHABILITY_TIMEOUT_MS,
@@ -971,7 +942,6 @@ async function waitForManagedLaunchPoll(delayMs: number, signal?: AbortSignal): 
   }
 }
 
-/** Launch or attach to the managed OpenClaw Chrome profile. */
 export async function launchOpenClawChrome(
   resolved: ResolvedBrowserConfig,
   profile: ResolvedBrowserProfile,
@@ -1129,13 +1099,11 @@ export async function launchOpenClawChrome(
     };
   };
 
-  const startedAt = Date.now();
   const runningForProcess = (proc: ChildProcess, pid: number): RunningChrome => ({
     pid,
     exe,
     userDataDir,
     cdpPort: profile.cdpPort,
-    startedAt,
     proc,
     headless: headlessMode.headless,
     headlessSource: headlessMode.source,
@@ -1481,7 +1449,7 @@ async function requestGracefulChromeClose(
   let commandSent = false;
   try {
     const endpoint = await getChromeWebSocketEndpoint(
-      cdpUrlForPort(running.cdpPort),
+      `http://127.0.0.1:${running.cdpPort}`,
       Math.min(commandTimeoutMs, CHROME_STOP_PROBE_TIMEOUT_MS),
       ssrfPolicy,
     );
@@ -1591,7 +1559,6 @@ export async function stopOwnedOpenClawChrome(
   return { status: "stopped" };
 }
 
-/** Stop a managed Chrome process and wait for shutdown. */
 export async function stopOpenClawChrome(
   running: RunningChrome,
   timeoutMs = CHROME_STOP_TIMEOUT_MS,

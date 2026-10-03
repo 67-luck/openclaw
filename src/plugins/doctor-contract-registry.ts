@@ -4,9 +4,11 @@ import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { shouldIncludeChannelSetupFeatureForConfig } from "../channels/plugins/bundled-setup-policy.js";
+import { applyHistoricalWebhookPins } from "../commands/doctor/shared/legacy-webhook-pins.js";
 import { GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA } from "../config/bundled-channel-config-metadata.generated.js";
 import { discoverConfigWidePluginManifestRegistry } from "../config/io.plugin-metadata.js";
 import type { LegacyConfigRule } from "../config/legacy.shared.js";
+import { cloneConfigWithResolutionFacts } from "../config/resolution-facts.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -19,13 +21,12 @@ import { hasPluginConfigMigrationSource } from "./config-contract-matches.js";
 import { normalizePluginsConfig } from "./config-state.js";
 import { findUninspectedPluginDiagnostic } from "./discovery-availability.js";
 import { discoverConfiguredPluginLoadPaths } from "./discovery.js";
-import { applyPluginDoctorCompatibilityMigration } from "./doctor-compatibility-migration.js";
+import { applyPluginDoctorCompatibilitySequence } from "./doctor-compatibility-migration.js";
 import { resolvePluginDoctorContractArtifact } from "./doctor-contract-artifact.js";
 import {
   coercePluginDoctorContractModule,
+  type PluginDoctorCompatibilityNormalizer,
   type PluginDoctorContractModule,
-  type PluginDoctorMigrationBackupResource,
-  type PluginDoctorStateMigration,
   type PluginDoctorStateMigrationEntry,
 } from "./doctor-contract-module.js";
 import { pluginDoctorContractRegistryLoaderState } from "./doctor-contract-registry-loader-state.js";
@@ -78,17 +79,13 @@ export type {
   PluginDoctorStateMigrationDetection,
 } from "./doctor-contract-module.js";
 
-type PluginDoctorContractEntry = {
+type PluginDoctorContractEntry = Omit<
+  ReturnType<typeof coercePluginDoctorContractModule>,
+  "summary"
+> & {
   pluginId: string;
-  rules: LegacyConfigRule[];
-  normalizeCompatibilityConfig?: ReturnType<
-    typeof coercePluginDoctorContractModule
-  >["normalizeCompatibilityConfig"];
-  resolveSessionStoreAgentIds?: ReturnType<
-    typeof coercePluginDoctorContractModule
-  >["resolveSessionStoreAgentIds"];
-  sessionRouteStateOwners: DoctorSessionRouteStateOwner[];
-  stateMigrations: PluginDoctorStateMigration[];
+  origin?: PluginManifestRegistryRecord["origin"];
+  historicalWebhookNormalizer?: PluginDoctorCompatibilityNormalizer;
 };
 
 function isTrustedForDurableStores(record: PluginManifestRegistryRecord): boolean {
@@ -96,6 +93,17 @@ function isTrustedForDurableStores(record: PluginManifestRegistryRecord): boolea
 }
 
 type PluginManifestRegistryRecord = PluginManifestRegistry["plugins"][number];
+
+type PluginDoctorRegistryParams = {
+  config?: OpenClawConfig;
+  workspaceDir?: string;
+  env?: NodeJS.ProcessEnv;
+  pluginIds?: readonly string[];
+  /** Candidate generation prepared by the install owner before publication. */
+  manifestRegistry?: PluginManifestRegistry;
+  historicalWebhookListeners?: boolean;
+  startup?: boolean;
+};
 
 function loadPluginDoctorContractModule(modulePath: string): PluginDoctorContractModule {
   return getCachedPluginModuleLoader({
@@ -169,40 +177,37 @@ function loadPluginDoctorContractEntry(
   if (!contractArtifact) {
     return null;
   }
-  let mod: PluginDoctorContractModule;
   try {
-    mod = loadPluginDoctorContractModule(contractArtifact.modulePath);
+    const mod = loadPluginDoctorContractModule(contractArtifact.modulePath);
+    const { summary, ...contract } = coercePluginDoctorContractModule(mod, record.channels);
+    if (!Object.values(summary).some(Boolean) && surface !== "stateMigrations") {
+      return null;
+    }
+    return { pluginId: record.id, ...contract, origin: record.origin };
   } catch (error) {
     log.warn(
       `failed to load doctor contract for ${record.id} from ${contractArtifact.modulePath}: ${formatErrorMessage(error)}`,
     );
     return null;
   }
-  const { summary, ...contract } = coercePluginDoctorContractModule(mod);
-  if (!Object.values(summary).some(Boolean) && surface !== "stateMigrations") {
-    return null;
-  }
-  return { pluginId: record.id, ...contract };
 }
 
-function resolvePluginDoctorManifestRecords(params: {
-  config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  pluginIds?: readonly string[];
-  artifactPreservingReadOnly?: boolean;
-}): PluginManifestRegistryRecord[] {
+function resolvePluginDoctorManifestRecords(
+  params: PluginDoctorRegistryParams & { artifactPreservingReadOnly?: boolean },
+): PluginManifestRegistryRecord[] {
   if (params?.pluginIds && params.pluginIds.length === 0) {
     return [];
   }
 
-  const manifestRegistry = loadPluginManifestRegistryForPluginRegistry({
-    config: params?.config,
-    workspaceDir: params?.workspaceDir,
-    env: params.env ?? process.env,
-    includeDisabled: true,
-    artifactPreservingReadOnly: params.artifactPreservingReadOnly,
-  });
+  const manifestRegistry =
+    params.manifestRegistry ??
+    loadPluginManifestRegistryForPluginRegistry({
+      config: params?.config,
+      workspaceDir: params?.workspaceDir,
+      env: params.env ?? process.env,
+      includeDisabled: true,
+      artifactPreservingReadOnly: params.artifactPreservingReadOnly,
+    });
 
   return filterPluginDoctorRecordsByScope(manifestRegistry.plugins, params.pluginIds);
 }
@@ -230,13 +235,9 @@ function filterPluginDoctorRecordsByScope(
   );
 }
 
-function resolvePluginDoctorContracts(params: {
-  surface: PluginDoctorContractSurface;
-  config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  pluginIds?: readonly string[];
-}): PluginDoctorContractEntry[] {
+function resolvePluginDoctorContracts(
+  params: PluginDoctorRegistryParams & { surface: PluginDoctorContractSurface },
+): PluginDoctorContractEntry[] {
   const loadPaths = params.config?.plugins?.load?.paths ?? [];
   if (params.surface === "configRepair" && loadPaths.length > 0) {
     const warning = findUninspectedPluginDiagnostic(
@@ -252,23 +253,30 @@ function resolvePluginDoctorContracts(params: {
   if (params.surface !== "configRepair") {
     return entries;
   }
-  const ownedChannels = new Set(records.flatMap((record) => record.channels));
-  const installedPluginIds = new Set(records.map((record) => record.id));
   for (const { channelId, pluginId } of GENERATED_BUNDLED_CHANNEL_CONFIG_METADATA) {
+    const owner = records.find(
+      (record) => record.id === pluginId || record.channels.includes(channelId),
+    );
+    const supplement =
+      params.historicalWebhookListeners &&
+      owner?.id === pluginId &&
+      owner.trustedOfficialInstall === true
+        ? entries.find((entry) => entry.pluginId === pluginId && !entry.historicalWebhookListener)
+        : undefined;
     if (
       deferredPluginMigrations.getStore()?.has(pluginId) ||
-      (!Object.hasOwn(params.config?.channels ?? {}, channelId) &&
+      (!params.historicalWebhookListeners &&
+        !Object.hasOwn(params.config?.channels ?? {}, channelId) &&
         !Object.hasOwn(params.config?.plugins?.entries ?? {}, pluginId)) ||
-      ownedChannels.has(channelId) ||
-      installedPluginIds.has(pluginId) ||
+      (owner && !supplement) ||
       (params.pluginIds &&
         !params.pluginIds.includes(channelId) &&
         !params.pluginIds.includes(pluginId))
     ) {
       continue;
     }
-    // Retain the core-version config migration for absent external plugins. An installed
-    // owner, including one with a broken contract, is never replaced by this upgrade path.
+    // Installed owners retain config repair; host contracts can supply historical listener facts.
+    // Absent external plugins retain the core-version config migration.
     const mod = loadBundledPluginPublicArtifactModuleFromCandidatesSync<PluginDoctorContractModule>(
       {
         dirName: channelId,
@@ -279,8 +287,13 @@ function resolvePluginDoctorContracts(params: {
     if (!mod) {
       continue;
     }
-    const { summary: _summary, ...contract } = coercePluginDoctorContractModule(mod);
-    entries.push({ pluginId, ...contract });
+    const { summary: _summary, ...contract } = coercePluginDoctorContractModule(mod, [channelId]);
+    if (supplement && contract.historicalWebhookListener && contract.normalizeCompatibilityConfig) {
+      supplement.historicalWebhookListener = contract.historicalWebhookListener;
+      supplement.historicalWebhookNormalizer = contract.normalizeCompatibilityConfig;
+    } else if (!owner) {
+      entries.push({ pluginId, ...contract, origin: "bundled" });
+    }
   }
   return entries;
 }
@@ -294,23 +307,21 @@ function loadPluginDoctorContractEntries(params: {
     return entry ? [entry] : [];
   });
 }
-export function listPluginDoctorLegacyConfigRules(params?: {
-  config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  pluginIds?: readonly string[];
-}): LegacyConfigRule[] {
-  return resolvePluginDoctorContracts({ ...params, surface: "configRepair" }).flatMap(
-    (entry) => entry.rules,
-  );
+export function listPluginDoctorLegacyConfigRules(
+  params?: PluginDoctorRegistryParams & { activeOnly?: boolean },
+): LegacyConfigRule[] {
+  const entries = params?.activeOnly
+    ? loadPluginDoctorContractEntries({
+        records: resolvePluginDoctorStateMigrationRecords(params),
+        surface: "configRepair",
+      })
+    : resolvePluginDoctorContracts({ ...params, surface: "configRepair" });
+  return entries.flatMap((entry) => entry.rules);
 }
 
-export function listPluginDoctorSessionRouteStateOwners(params?: {
-  config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  pluginIds?: readonly string[];
-}): DoctorSessionRouteStateOwner[] {
+export function listPluginDoctorSessionRouteStateOwners(
+  params?: PluginDoctorRegistryParams,
+): DoctorSessionRouteStateOwner[] {
   const owners = new Map<string, DoctorSessionRouteStateOwner>();
   const records = resolvePluginDoctorManifestRecords(params ?? {});
   const manifestOwners = records.flatMap((record) => record.sessionRouteStateOwners ?? []);
@@ -327,12 +338,9 @@ export function listPluginDoctorSessionRouteStateOwners(params?: {
 }
 
 /** Resolve plugin-owned agent IDs whose core session stores need migration. */
-export function listPluginDoctorSessionStoreAgentIds(params?: {
-  config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  pluginIds?: readonly string[];
-}): string[] {
+export function listPluginDoctorSessionStoreAgentIds(
+  params?: PluginDoctorRegistryParams,
+): string[] {
   const cfg = params?.config ?? {};
   const agentIds = new Set<string>();
   for (const entry of resolvePluginDoctorContracts({
@@ -397,21 +405,21 @@ function loadLegacyChannelStateMigrationDetector(
 
 export class PluginDoctorStateMigrationDeclarationError extends Error {}
 
-export function listPluginDoctorStateMigrationEntries(params?: {
-  config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  pluginIds?: readonly string[];
-  inventory?: PluginDoctorStateMigrationInventory;
-  validateDeclarations?: boolean;
-  onInspectedPlugin?: (pluginId: string) => void;
-  onInspectedStatelessPlugin?: (pluginId: string) => void;
-}): PluginDoctorStateMigrationEntry[] {
+export function listPluginDoctorStateMigrationEntries(
+  params?: PluginDoctorRegistryParams & {
+    inventory?: PluginDoctorStateMigrationInventory;
+    validateDeclarations?: boolean;
+    onSelectedPlugin?: (pluginId: string) => void;
+    onInspectedPlugin?: (pluginId: string) => void;
+    onInspectedStatelessPlugin?: (pluginId: string) => void;
+  },
+): PluginDoctorStateMigrationEntry[] {
   return loadPluginDoctorStateMigrationEntries(
     params?.inventory?.records ?? resolvePluginDoctorStateMigrationRecords(params ?? {}),
     params?.validateDeclarations,
     params?.onInspectedPlugin,
     params?.onInspectedStatelessPlugin,
+    params?.onSelectedPlugin,
   );
 }
 
@@ -420,9 +428,11 @@ function loadPluginDoctorStateMigrationEntries(
   validateDeclarations = true,
   onInspectedPlugin?: (pluginId: string) => void,
   onInspectedStatelessPlugin?: (pluginId: string) => void,
+  onSelectedPlugin?: (pluginId: string) => void,
 ): PluginDoctorStateMigrationEntry[] {
   const entries: PluginDoctorStateMigrationEntry[] = [];
   for (const record of records) {
+    onSelectedPlugin?.(record.id);
     const modern = loadPluginDoctorContractEntry(record, "stateMigrations");
     const declaration = record.doctorContract?.stateMigrations;
     const migrations = modern?.stateMigrations ?? [];
@@ -494,17 +504,13 @@ function loadPluginDoctorStateMigrationEntries(
   return entries;
 }
 
-function resolvePluginDoctorStateMigrationRecords(params: {
-  config?: OpenClawConfig;
-  workspaceDir?: string;
-  env?: NodeJS.ProcessEnv;
-  pluginIds?: readonly string[];
-  artifactPreservingReadOnly?: boolean;
-}): PluginManifestRegistryRecord[] {
+function resolvePluginDoctorStateMigrationRecords(
+  params: PluginDoctorRegistryParams & { artifactPreservingReadOnly?: boolean },
+): PluginManifestRegistryRecord[] {
   if (params.pluginIds?.length === 0) {
     return [];
   }
-  const registry = discoverConfigWidePluginManifestRegistry(params);
+  const registry = params.manifestRegistry ?? discoverConfigWidePluginManifestRegistry(params);
   return filterPluginDoctorStateMigrationRecords(
     filterPluginDoctorRecordsByScope(registry.plugins, params.pluginIds),
     params.config,
@@ -604,7 +610,7 @@ function listPluginDoctorStateMigrationInventory(params?: {
       );
       continue;
     }
-    if (declaration === true || (record.channels.length > 0 && record.origin !== "bundled")) {
+    if (declaration === true) {
       unresolvedPluginIds.push(record.id);
     }
   }
@@ -725,47 +731,51 @@ export function resolveLivePluginDoctorStateMigrationInventory(params: {
 
 export function applyPluginDoctorCompatibilityMigrations(
   cfg: OpenClawConfig,
-  params?: {
-    config?: OpenClawConfig;
-    workspaceDir?: string;
-    env?: NodeJS.ProcessEnv;
-    pluginIds?: readonly string[];
+  params?: PluginDoctorRegistryParams & {
+    onInspectedPlugin?: (pluginId: string, hasConfigRepair: boolean) => void;
   },
-): {
-  config: OpenClawConfig;
-  changes: string[];
-  warnings?: string[];
-} {
-  let nextCfg = cfg;
-  const changes: string[] = [];
-  const warnings: string[] = [];
-  for (const entry of resolvePluginDoctorContracts({
-    ...params,
-    config: params?.config ?? cfg,
-    surface: "configRepair",
-  })) {
-    if (!entry.normalizeCompatibilityConfig) {
-      continue;
-    }
-    const mutation = applyPluginDoctorCompatibilityMigration({
-      pluginId: entry.pluginId,
-      config: nextCfg,
-      normalize: entry.normalizeCompatibilityConfig,
-    });
-    nextCfg = mutation.config;
-    changes.push(...mutation.changes);
-    warnings.push(...(mutation.warnings ?? []));
-  }
-  return { config: nextCfg, changes, ...(warnings.length ? { warnings } : {}) };
+): ReturnType<typeof applyPluginDoctorCompatibilitySequence> {
+  const initialized = params?.historicalWebhookListeners
+    ? applyHistoricalWebhookPins({ config: cfg, changes: [] }, undefined, params)
+    : { config: cfg, changes: [] };
+  const result = applyPluginDoctorCompatibilitySequence(
+    initialized.config,
+    resolvePluginDoctorContracts({
+      ...params,
+      config: params?.config ?? cfg,
+      surface: "configRepair",
+    }).map((entry) => {
+      params?.onInspectedPlugin?.(
+        entry.pluginId,
+        entry.rules.length > 0 || Boolean(entry.normalizeCompatibilityConfig),
+      );
+      return {
+        pluginId: entry.pluginId,
+        normalizeCompatibilityConfig: entry.normalizeCompatibilityConfig,
+        transform: params?.historicalWebhookListeners
+          ? (mutation: ReturnType<PluginDoctorCompatibilityNormalizer>) => {
+              if (entry.historicalWebhookNormalizer) {
+                mutation.historicalWebhookAccountIds = entry.historicalWebhookNormalizer({
+                  cfg: cloneConfigWithResolutionFacts(mutation.config),
+                }).historicalWebhookAccountIds;
+              }
+              const context = { ...params, pluginId: entry.pluginId, origin: entry.origin };
+              return applyHistoricalWebhookPins(mutation, entry.historicalWebhookListener, context);
+            }
+          : undefined,
+      };
+    }),
+  );
+  return { ...result, changes: [...initialized.changes, ...result.changes] };
 }
 
 /** Inspect plugin-owned migration paths before the updater captures its recovery set. */
-export async function collectPluginDoctorMigrationBackupResources(
+export async function preparePluginDoctorMigrationBackupResources(
   params: PluginDoctorMigrationResourceCollectionParams,
-): Promise<PluginDoctorMigrationBackupResource[]> {
+) {
   const entries = loadPluginDoctorStateMigrationEntries(
     resolvePluginDoctorStateMigrationRecords({ ...params, artifactPreservingReadOnly: true }),
   );
-  const { collectPluginDoctorMigrationResources } = await import("./doctor-migration-resources.js");
-  return await collectPluginDoctorMigrationResources(entries, params);
+  const { preparePluginDoctorMigrationResources } = await import("./doctor-migration-resources.js");
+  return await preparePluginDoctorMigrationResources(entries, params);
 }

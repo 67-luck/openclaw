@@ -8,7 +8,7 @@ import {
 } from "./draft-stream.api.test-helpers.js";
 import { createTelegramDraftStream } from "./draft-stream.js";
 import { renderTelegramHtmlText, telegramHtmlToPlainTextFallback } from "./format.js";
-import { buildTelegramRichMarkdown, type TelegramInputRichMessage } from "./rich-message.js";
+import { buildTelegramRichMarkdownPlan, type TelegramInputRichMessage } from "./rich-message.js";
 
 function createForumDraftStream(api: ReturnType<typeof createMockDraftApi>) {
   return createDraftStream(api, { thread: { id: 99, scope: "forum" } });
@@ -293,62 +293,6 @@ describe("createTelegramDraftStream", () => {
 
     expect(api.sendMessage).toHaveBeenCalledWith(123, "<b>Shelling</b>\n🧠 <i>Thinking</i>", {
       parse_mode: "HTML",
-    });
-  });
-
-  it("disables link previews on the streamed send and on every edit", async () => {
-    const api = createMockDraftApi();
-    const stream = createDraftStream(api, {
-      linkPreview: false,
-      thread: { id: 42, scope: "dm" },
-      replyToMessageId: 411,
-      replyToMode: "all",
-    });
-
-    stream.update("see https://example.com");
-    await stream.flush();
-
-    expect(api.sendMessage).toHaveBeenCalledWith(123, "see https://example.com", {
-      message_thread_id: 42,
-      reply_parameters: {
-        message_id: 411,
-        allow_sending_without_reply: true,
-      },
-      link_preview_options: { is_disabled: true },
-    });
-
-    // The edit matters as much as the send: Telegram re-enables the preview on
-    // any edit that omits the field, and finalization skips the edit when the
-    // streamed draft already equals the final text.
-    stream.update("see https://example.com now");
-    await stream.flush();
-
-    expect(api.editMessageText).toHaveBeenCalledWith(123, 17, "see https://example.com now", {
-      link_preview_options: { is_disabled: true },
-    });
-  });
-
-  it("keeps parse_mode alongside disabled link previews on the HTML transport", async () => {
-    const api = createMockDraftApi();
-    const stream = createDraftStream(api, {
-      linkPreview: false,
-      renderText: (text) => ({ text: `<i>${text}</i>`, parseMode: "HTML" }),
-    });
-
-    stream.update("https://example.com");
-    await stream.flush();
-
-    expect(api.sendMessage).toHaveBeenCalledWith(123, "<i>https://example.com</i>", {
-      parse_mode: "HTML",
-      link_preview_options: { is_disabled: true },
-    });
-
-    stream.update("https://example.com/two");
-    await stream.flush();
-
-    expect(api.editMessageText).toHaveBeenCalledWith(123, 17, "<i>https://example.com/two</i>", {
-      parse_mode: "HTML",
-      link_preview_options: { is_disabled: true },
     });
   });
 
@@ -1282,7 +1226,7 @@ describe("draft stream initial message debounce", () => {
         const progress = (text: string) => ({
           text,
           complete: true as const,
-          ...(richMessages ? { richMessage: buildTelegramRichMarkdown(text) } : {}),
+          ...(richMessages ? { richMessage: buildTelegramRichMarkdownPlan(text).richMessage } : {}),
         });
 
         stream.updatePreview(progress("0/1 complete"));

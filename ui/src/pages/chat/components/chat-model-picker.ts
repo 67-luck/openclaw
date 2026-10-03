@@ -11,14 +11,14 @@ import {
 } from "../../../components/provider-icon.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerModelControlsEnglish } from "../../../i18n/locales/en-model-controls.ts";
-import type { ModelProviderAuthLabel as ChatModelProviderAuth } from "../../../lib/model-provider-auth-label.ts";
+import type { ChatModelCatalogState } from "../../../lib/model-catalog-store.ts";
+import type { ModelProviderAuthLabel } from "../../../lib/model-provider-auth-label.ts";
 import {
   type ChatContextWindowControlParams,
   renderContextWindowControl,
 } from "./chat-context-window-control.ts";
 import type { ChatModelAccountSection } from "./chat-model-account-control.ts";
 import {
-  type ChatModelCatalogState,
   renderChatModelCatalogRefresh,
   renderChatModelCatalogState,
 } from "./chat-model-catalog-state.ts";
@@ -34,8 +34,6 @@ import {
 import {
   handleModelPickerKeydown,
   handleModelSearchKeydown,
-  highlightModelRow,
-  pickerMenu,
   resetModelSearch,
   syncChatModelSearch,
   toggleModelProviderGroup,
@@ -45,12 +43,8 @@ import { handleChatComposerDetailsToggle, syncChatPickerOverlay } from "./chat-p
 
 registerModelControlsEnglish();
 
-export type { ChatModelCatalogState } from "./chat-model-catalog-state.ts";
-
-export type { ModelProviderAuthLabel as ChatModelProviderAuth } from "../../../lib/model-provider-auth-label.ts";
-
 type ChatModelPickerParams = {
-  providerAuth?: ReadonlyMap<string, ChatModelProviderAuth>;
+  providerAuth?: ReadonlyMap<string, ModelProviderAuthLabel>;
   accountSection?: ChatModelAccountSection;
   contextWindow?: ChatContextWindowControlParams;
   disabled: boolean;
@@ -72,6 +66,7 @@ type ChatModelPickerParams = {
   triggerLoading?: boolean;
   triggerStarting?: boolean;
   onModelSetup?: () => void;
+  onProviderSettings?: (provider: string) => void;
   onOpen?: () => unknown;
   onOpenChange?: (open: boolean) => void;
   onModelSelect: (
@@ -83,6 +78,16 @@ type ChatModelPickerParams = {
   onTargetSelect?: (groupId: string, value: string) => unknown;
   onRequestUpdate?: () => void;
 };
+
+function closeModelPickerAfterSelection(event: MouseEvent) {
+  const details = (event.currentTarget as HTMLElement).closest<HTMLDetailsElement>("details");
+  if (details) {
+    details.open = false;
+    if (event.detail === 0) {
+      details.querySelector<HTMLElement>("summary")?.focus({ preventScroll: true });
+    }
+  }
+}
 
 export function renderChatModelPicker(params: ChatModelPickerParams) {
   const defaultModelOption = params.modelOptions.find((option) => option.isDefault);
@@ -164,8 +169,12 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
     params.modelOptions.length + targetOptionCount > 0 ||
     targetGroups.some((group) => group.status !== "ready");
   const hasSelectableModelOptions = params.modelOptions.some((option) => !option.disabled);
-  const commitModel = (entry: ChatModelPickerOption) => {
-    if (params.modelSelectionLocked) {
+  const selectModel = (entry: ChatModelPickerOption, event: MouseEvent) => {
+    event.stopPropagation();
+    // An unavailable Default row still clears a recorded pin: it commits the reset, not the model.
+    const resetsPin = entry.isDefault && params.sessionModelPinned;
+    if (params.disabled || params.modelSelectionLocked || (entry.disabled && !resetsPin)) {
+      event.preventDefault();
       return;
     }
     void params
@@ -177,23 +186,7 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
       )
       .finally(() => params.onRequestUpdate?.());
     params.onRequestUpdate?.();
-  };
-  const selectModel = (entry: ChatModelPickerOption, event: MouseEvent) => {
-    event.stopPropagation();
-    // An unavailable Default row still clears a recorded pin: it commits the reset, not the model.
-    const resetsPin = entry.isDefault && params.sessionModelPinned;
-    if (params.disabled || params.modelSelectionLocked || (entry.disabled && !resetsPin)) {
-      event.preventDefault();
-      return;
-    }
-    commitModel(entry);
-    const details = (event.currentTarget as HTMLElement).closest<HTMLDetailsElement>("details");
-    if (details) {
-      details.open = false;
-      if (event.detail === 0) {
-        details.querySelector<HTMLElement>("summary")?.focus({ preventScroll: true });
-      }
-    }
+    closeModelPickerAfterSelection(event);
   };
   const selectTarget = (groupId: string, value: string, event: MouseEvent) => {
     event.stopPropagation();
@@ -202,19 +195,7 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
       return;
     }
     params.onTargetSelect?.(groupId, value);
-    const details = (event.currentTarget as HTMLElement).closest<HTMLDetailsElement>("details");
-    if (details) {
-      details.open = false;
-      if (event.detail === 0) {
-        details.querySelector<HTMLElement>("summary")?.focus({ preventScroll: true });
-      }
-    }
-  };
-  const highlightOption = (row: HTMLButtonElement) => {
-    const menu = pickerMenu(row);
-    if (menu) {
-      highlightModelRow(menu, row);
-    }
+    closeModelPickerAfterSelection(event);
   };
   return html`
     <details
@@ -235,6 +216,20 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
         }
         void params.onOpen?.();
         syncChatModelSearch(details);
+        const active = details.ownerDocument.activeElement;
+        // wa-popup can hide and reopen its top layer while resolving the anchor.
+        // Focus after that opening work, not on every catalog render.
+        requestAnimationFrame(() => {
+          if (
+            details.isConnected &&
+            details.open &&
+            details.ownerDocument.activeElement === active
+          ) {
+            details
+              .querySelector<HTMLInputElement>("[data-chat-model-search]")
+              ?.focus({ preventScroll: true });
+          }
+        });
       }}
     >
       <summary
@@ -250,7 +245,7 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
         }`}
         aria-busy=${params.triggerLoading || params.triggerStarting ? "true" : "false"}
         aria-disabled=${params.disabled ? "true" : "false"}
-        title=${params.disabledReason?.trim() || params.selectionScopeDescription || triggerTitle}
+        title=${params.disabledReason?.trim() || nothing}
         @click=${(event: MouseEvent) => {
           if (params.disabled) {
             event.preventDefault();
@@ -404,7 +399,7 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
                                         type="button"
                                         data-chat-model-group-toggle
                                         data-chat-model-provider-toggle
-                                        aria-expanded="false"
+                                        aria-expanded=${String(provider === activeModelOption?.provider)}
                                         aria-label=${`${t("chat.modelControls.providerModels", {
                                           provider: providerDisplayLabel(provider),
                                         })} (${options.length})`}
@@ -425,7 +420,7 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
                                       </button>
                                       ${showAuth ? html`<span class="chat-controls__auth-meta" data-auth-kind=${auth.kind}><span aria-hidden="true">${auth.kind === "subscription" ? icons.circleUser : auth.kind === "api" ? icons.key : icons.alertTriangle}</span><span class="chat-controls__auth-meta-label">${authLabel}</span></span>` : nothing}
                                       ${
-                                        params.onModelSetup
+                                        params.onProviderSettings
                                           ? html`<button
                                               class="chat-controls__provider-settings"
                                               data-chat-model-provider-settings
@@ -433,7 +428,7 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
                                               aria-label=${t("chat.modelControls.configureModels")}
                                               @click=${(event: MouseEvent) => {
                                                 event.stopPropagation();
-                                                params.onModelSetup?.();
+                                                params.onProviderSettings?.(provider);
                                               }}
                                             >
                                               ${icons.settings}
@@ -457,7 +452,6 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
                                           selectedModelValue: params.selectedModelValue,
                                           selectedAgentRuntime: params.selectedAgentRuntime,
                                           sessionModelPinned: params.sessionModelPinned,
-                                          onHighlight: highlightOption,
                                           onSelect: selectModel,
                                           onModelSetup: params.onModelSetup,
                                         }),
@@ -518,7 +512,6 @@ export function renderChatModelPicker(params: ChatModelPickerParams) {
                                           groupId: group.id,
                                           groupLabel: group.label,
                                           index: orderedOptions.length + targetIndex,
-                                          onHighlight: highlightOption,
                                           onSelect: selectTarget,
                                         }),
                                     )}

@@ -1,6 +1,5 @@
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { expect, vi } from "vitest";
-import { CODEX_COMPUTER_USE_NODE_REPL_PROBE } from "./computer-use-node-repl.js";
 import type { CodexComputerUseRequest } from "./computer-use-readiness.js";
 import type { CodexComputerUseStatus } from "./computer-use.js";
 
@@ -220,10 +219,7 @@ export function createComputerUseRequest(params: {
         arguments:
           tool === "js"
             ? {
-                code:
-                  mcpServerName === "node_repl"
-                    ? CODEX_COMPUTER_USE_NODE_REPL_PROBE
-                    : "await cua.getState();",
+                code: mcpServerName === "node_repl" ? expect.any(String) : "await cua.listApps();",
               }
             : {},
       });
@@ -252,7 +248,7 @@ export function createComputerUseRequest(params: {
   }) as CodexComputerUseRequest;
 }
 
-export function marketplaceEntry(marketplaceName: string, installed: boolean) {
+function marketplaceEntry(marketplaceName: string, installed: boolean) {
   return {
     name: marketplaceName,
     path: `/marketplaces/${marketplaceName}/.agents/plugins/marketplace.json`,

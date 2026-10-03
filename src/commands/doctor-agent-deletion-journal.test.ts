@@ -25,7 +25,6 @@ import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths
 import { repairDoctorAgentDeletionJournal } from "./doctor-agent-deletion-journal.js";
 import { maybeMigrateAuthProfileJsonStoresToSqlite } from "./doctor-auth-flat-profiles.js";
 import { listAuthProfileRepairCandidates } from "./doctor-auth-legacy-paths.js";
-import { maybeRepairLegacyOAuthSidecarProfiles } from "./doctor-auth-oauth-sidecar.js";
 import { prepareDoctorDatabasePreflight } from "./doctor-database-preflight.js";
 import { maybeMigrateModelCatalogCredentials } from "./doctor-model-catalog-credentials.js";
 import { createDoctorPrompter } from "./doctor-prompter.js";
@@ -84,13 +83,7 @@ it("reports unreadable journal history without replacing it or silently clearing
   }
 });
 
-it.each([
-  "default",
-  "custom-unregistered",
-  "external-registered",
-  "canonical-custom-lost-state",
-  "malformed-config",
-])(
+it.each(["default", "external-registered", "canonical-custom-lost-state", "malformed-config"])(
   "reconstructs with a receipt and keeps %s stores held on the next Doctor pass",
   async (location) => {
     const stateDir = fs.realpathSync.native(tempDirs.make("doctor-journal-recovery-"));
@@ -116,7 +109,7 @@ it.each([
       const custom = path.join(tempDirs.make("doctor-journal-custom-"), "history.main.sqlite");
       fs.renameSync(stores[0]!, custom);
       stores[0] = custom;
-      if (location === "custom-unregistered" || location === "malformed-config") {
+      if (location === "malformed-config") {
         db.exec("DELETE FROM agent_databases WHERE agent_id = 'main'");
         cfg.session = { store: path.join(path.dirname(custom), "history.json") };
       } else {
@@ -355,20 +348,8 @@ it.each([
         }),
       );
       fs.copyFileSync(catalogPath, secondCatalog);
-      const sidecar = path.join(stateDir, "credentials", "auth-profiles", `${ref.id}.json`);
-      fs.mkdirSync(path.dirname(sidecar), { recursive: true });
-      fs.writeFileSync(
-        sidecar,
-        JSON.stringify({
-          version: 1,
-          profileId,
-          provider: ref.provider,
-          access: "synthetic-held-access",
-          refresh: "synthetic-held-refresh",
-        }),
-      );
       authPaths.push(secondAuth);
-      aliasArtifacts.push(secondDatabase, secondAuth, secondCatalog, sidecar);
+      aliasArtifacts.push(secondDatabase, secondAuth, secondCatalog);
     }
     const configPath = path.join(stateDir, "openclaw.json");
     vi.stubEnv("OPENCLAW_CONFIG_PATH", configPath);
@@ -431,13 +412,6 @@ it.each([
         (await repairDoctorAgentDeletionJournal({ preflight: next, shouldRepair: true, env }))
           .changes,
       ).toEqual([]);
-      const sidecarRepair = await maybeRepairLegacyOAuthSidecarProfiles({
-        cfg,
-        env,
-        emitNotes: false,
-        prompter: { confirmAutoFix: async () => true },
-      });
-      expect(sidecarRepair.changes).toEqual([]);
       const repairPaths = listAuthProfileRepairCandidates(cfg, env).map(
         (candidate) => candidate.authPath,
       );

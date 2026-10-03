@@ -3,7 +3,6 @@ import type {
   InternalSessionTranscriptUpdate,
   SessionTranscriptUpdate,
 } from "../../sessions/transcript-events.js";
-import type { OpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import type {
   SessionTranscriptTurnMutation,
@@ -12,6 +11,7 @@ import type {
 import type { SessionLifecycleStoreTarget } from "./session-accessor.lifecycle-types.js";
 import type { SessionEntryCreationOperation } from "./session-accessor.sqlite-entry-cache.types.js";
 import type { SessionOwnerAssignment } from "./session-entry-provenance.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import type {
   SessionLifecycleRevisionExpectation,
   SessionTranscriptTurnExpectedState,
@@ -68,15 +68,6 @@ export type SessionEntryReadScope = SessionAccessScope & {
   projection?: "full" | "list";
 };
 
-/** Address of the physical store admitted by an entry read; never retains its handle. */
-export type SessionEntryReadSource = Readonly<{ agentId: string; path: string }>;
-
-export type CapturedSessionEntryReadSource = SessionEntryReadSource &
-  Readonly<{
-    databaseIdentity: OpenClawAgentDatabaseIdentity;
-    databaseBirthtime?: string;
-  }>;
-
 export type SessionEntryReadOnlyWorkerScope = SessionEntryReadScope & {
   agentId: string;
   databaseAgentId: string;
@@ -87,6 +78,8 @@ export type SessionEntryReadOnlyWorkerScope = SessionEntryReadScope & {
 export type SessionEntryListScope = Partial<Omit<SessionEntryReadScope, "sessionKey">> & {
   /** Select exact persisted keys after validating the complete listing snapshot. */
   sessionKeys?: readonly string[];
+  /** Retain full cron-run entries for deletion guards, and only metadata for ordinary sessions. */
+  cronRetention?: true;
   /** Validate the complete listing, retaining full expired cron rows only for this logical owner. */
   expiredCronRuns?: { agentId: string; updatedBefore: number };
 };
@@ -175,11 +168,8 @@ export type SessionTranscriptAccessScope = Omit<SessionAccessScope, "sessionKey"
   threadId?: string | number;
 };
 
-export type SessionTranscriptRuntimeScope = SessionAccessScope & {
-  /** Deprecated transcript locator from older file-backed call sites. */
-  sessionFile?: string;
-  sessionId: string;
-  threadId?: string | number;
+export type SessionTranscriptRuntimeScope = SessionTranscriptAccessScope & {
+  sessionKey: string;
 };
 
 export type SessionTranscriptReadScope = Omit<SessionTranscriptRuntimeScope, "sessionKey"> & {
@@ -205,6 +195,8 @@ export type SessionTranscriptWriteScope = Omit<SessionTranscriptAccessScope, "se
   expectedWriterRunId?: string;
   /** Optional lifecycle fence paired with sessionId for run-owned writes. */
   expectedLifecycleRevision?: string;
+  /** Exact owner facts, including absent fields, checked inside the write transaction. */
+  expectedOwner?: Pick<SessionEntry, "lifecycleRevision" | "activeWriterRunId">;
 };
 
 export type SessionEntrySummary = {
@@ -222,10 +214,7 @@ export type SessionEntryReadView = {
 };
 
 /** Session entry read by the exact persisted session key, without alias resolution. */
-export type ExactSessionEntry = {
-  sessionKey: string;
-  entry: SessionEntry;
-};
+export type ExactSessionEntry = SessionEntrySummary;
 
 /** Raw transcript record for non-message events; message records use appendTranscriptMessage. */
 export type TranscriptEvent = unknown;
@@ -253,14 +242,13 @@ export type SessionTranscriptRawDeltaLimits = {
   maxEvents?: number;
 };
 
-/** Generation-aware outcome for one bounded raw transcript read. */
-export type SessionTranscriptRawDeltaResult =
+type SessionTranscriptDeltaResult<TEvent, TResetReason extends string> =
   | {
       kind: "page";
       /** Cursor positioned after the last returned event. */
       cursor: string;
-      /** Ordered raw transcript events selected for this page. */
-      events: SessionTranscriptEventRow[];
+      /** Ordered transcript events selected for this page. */
+      events: TEvent[];
       /** True when another event remains after this page. */
       hasMore: boolean;
       /** First unread event size when it cannot fit under maxBytes. */
@@ -273,9 +261,15 @@ export type SessionTranscriptRawDeltaResult =
       /** Fresh bootstrap cursor for the current generation. */
       cursor: string;
       /** Stable discontinuity that invalidated the supplied cursor. */
-      reason: "generation_mismatch" | "invalid_cursor" | "scope_mismatch";
+      reason: TResetReason;
     }
   | { kind: "missing" };
+
+/** Generation-aware outcome for one bounded raw transcript read. */
+export type SessionTranscriptRawDeltaResult = SessionTranscriptDeltaResult<
+  SessionTranscriptEventRow,
+  "generation_mismatch" | "invalid_cursor" | "scope_mismatch"
+>;
 
 /** Count, byte, and continuation bounds for one visible-message page. */
 export type SessionTranscriptVisibleMessageDeltaLimits = {
@@ -296,33 +290,10 @@ export type SessionTranscriptVisibleMessageEventRow = SessionTranscriptEventRow 
 };
 
 /** Generation-aware outcome for one bounded visible-message read. */
-export type SessionTranscriptVisibleMessageDeltaResult =
-  | {
-      kind: "page";
-      /** Cursor positioned after the last returned visible message. */
-      cursor: string;
-      /** Ordered active-path message events selected for this page. */
-      events: SessionTranscriptVisibleMessageEventRow[];
-      /** True when another visible message remains after this page. */
-      hasMore: boolean;
-      /** First unread event size when it cannot fit under maxBytes. */
-      requiredBytes?: number;
-      /** Stored JSONL bytes represented by events. */
-      serializedBytes: number;
-    }
-  | {
-      kind: "reset";
-      /** Fresh bootstrap cursor for the current visible generation. */
-      cursor: string;
-      /** Stable discontinuity that invalidated the supplied cursor. */
-      reason:
-        | "anchor_missing"
-        | "anchor_moved"
-        | "generation_mismatch"
-        | "invalid_cursor"
-        | "scope_mismatch";
-    }
-  | { kind: "missing" };
+export type SessionTranscriptVisibleMessageDeltaResult = SessionTranscriptDeltaResult<
+  SessionTranscriptVisibleMessageEventRow,
+  "anchor_missing" | "anchor_moved" | "generation_mismatch" | "invalid_cursor" | "scope_mismatch"
+>;
 
 export type TranscriptMessageAppendOptions<TMessage> = {
   /** Rebase a stale explicit parent when the current tail still descends from it. */
@@ -398,17 +369,20 @@ export type SessionTranscriptWriteLockAccessorContext = {
   replaceEvents: (events: readonly TranscriptEvent[]) => Promise<void>;
 };
 
-export type SessionTranscriptWriteTransactionContext = {
-  /** Canonical transcript identity owned by the transaction. */
-  agentId: string;
-  sessionId: string;
-  sessionKey: string;
-  storePath: string;
-};
+/** Canonical transcript identity owned by the transaction. */
+export type SessionTranscriptWriteTransactionContext = SessionTranscriptRuntimeTarget;
 
 export type SessionTranscriptTurnUpdateMode = "inline" | "file-only" | "none";
 
 export type SessionTranscriptTurnMessageAppend = TranscriptMessageAppendOptions<unknown> & {
+  /** Audited preparation runs once on the host against worker-read idempotency facts. */
+  workerPreparation?: Pick<
+    TranscriptMessageAppendOptions<unknown>,
+    "prepareMessageAfterIdempotencyCheck" | "beforeFreshMessageCommit"
+  >;
+  predicate?:
+    | { kind: "latest-assistant-differs"; runId: string; text: string }
+    | { kind: "active-entry"; entryId: string; errorMessage: string };
   /**
    * Runs inside the session writer queue before the SQLite transaction begins.
    * The commit phase revalidates session ownership and database idempotency
@@ -416,20 +390,19 @@ export type SessionTranscriptTurnMessageAppend = TranscriptMessageAppendOptions<
    */
   shouldAppend?: (context: SessionTranscriptTurnWriteContext) => Promise<boolean> | boolean;
   /**
-   * Rechecks the newest assistant row after the write transaction begins.
+   * Rechecks authority after the write transaction begins. Read the newest assistant
+   * only when the predicate needs it, synchronously within this callback.
    * Direct synchronous writers bypass the process queue, so prepared facts can be stale.
    */
-  shouldAppendInTransaction?: (latestAssistantMessage: unknown) => boolean;
+  shouldAppendInTransaction?: (readLatestAssistantMessage: () => unknown) => boolean;
 };
 
-export type SessionTranscriptTurnWriteContext = {
-  agentId?: string;
-  sessionId?: string;
-  sessionKey?: string;
-  storePath?: string;
-};
+export type SessionTranscriptTurnWriteContext = Partial<SessionTranscriptRuntimeTarget>;
 
 export type SessionTranscriptTurnPersistOptions = {
+  /** Retained caller authority, with no same-database reads inside worker grants. */
+  assertCurrent?: () => void;
+  acceptedResultGuard?: { expectedWriterRunId: string | null; errorMessage: string };
   /** Runtime config used for lock settings, redaction, and header metadata. */
   config?: OpenClawConfig;
   /** Working directory recorded in a newly created transcript header. */
@@ -457,11 +430,14 @@ export type SessionTranscriptTurnPersistOptions = {
   /** Exact run provenance persisted on output rows and emitted on terminal assistant updates. */
   runId?: string;
   /**
-   * Complete appended or matched messages synchronously after guarded SQLite commit,
-   * before the write yields to cancellation, owner drain, or transcript publication.
+   * Accept appended or matched messages synchronously after guarded SQLite commit.
+   * Explicit completion work is joined before owner drain or transcript publication.
    * The canonical result preserves replay bytes. Throws cannot roll back committed rows.
    */
-  onMessageCommitted?: (result: TranscriptMessageAppendResult<unknown>) => void;
+  onMessageCommitted?: (
+    result: TranscriptMessageAppendResult<unknown>,
+    acceptCompletion: (complete: () => Promise<void>) => void,
+  ) => void;
   /** Publish each appended message inline, one file-only invalidation, or nothing. */
   updateMode?: SessionTranscriptTurnUpdateMode;
   /** Emit file-only updates even when every candidate message was skipped. */
@@ -476,6 +452,7 @@ export type SessionTranscriptTurnPersistOptions = {
 };
 
 export interface SessionTranscriptTurnPersistResult {
+  predicateSkipped?: boolean;
   sessionTurnMutationResult?: SessionTranscriptTurnMutationResult;
   appendedCount: number;
   messages: TranscriptMessageAppendResult<unknown>[];
@@ -551,9 +528,10 @@ export type ReplySessionInitializationSnapshot = {
   revision: string;
 };
 
-export type ReplySessionInitializationCommitContext = {
-  currentEntry?: SessionEntry;
-  readEntry: (sessionKey: string) => SessionEntry | undefined;
+export type ReplySessionInitializationCommitContext = Omit<
+  ReplySessionInitializationSnapshot,
+  "revision"
+> & {
   sessionEntry: SessionEntry;
 };
 
@@ -571,27 +549,19 @@ export type ReplySessionInitializationCommitResult =
       revision: string;
     };
 
-export type SessionEntryPatchOptions = {
+export type SessionEntryPatchOptions = SessionEntryUpdateOptions & {
   /** Synchronous final ownership check executed inside the commit transaction. */
   assertCommitAllowed?: () => void;
   /** Internal review owner authorization; ordinary patches preserve the current pause. */
   providerReviewMutation?: boolean;
-  /** Let this write satisfy a legacy updatedAt=0 pending reset without rotating lifecycle identity. */
-  consumePendingReset?: boolean;
   /** Entry to synthesize when a patch operation is allowed to create. */
   fallbackEntry?: SessionEntry;
   /** Fully resolved maintenance settings when the caller already has config loaded. */
   maintenanceConfig?: ResolvedSessionMaintenanceConfig;
   /** Keep the previous updatedAt value when the patch should not count as activity. */
   preserveActivity?: boolean;
-  /** Throw when best-effort store recovery cannot confirm the requested write. */
-  requireWriteSuccess?: boolean;
   /** Replace the whole entry instead of merging the returned patch. */
   replaceEntry?: boolean;
-  /** Skip prune/cap/rotation maintenance for specialized internal updates. */
-  skipMaintenance?: boolean;
-  /** Let the writer cache retain the updated object without cloning. */
-  takeCacheOwnership?: boolean;
 };
 
 export type SessionEntryPatchContext = {
@@ -816,8 +786,8 @@ export type SessionEntryCreateWithTranscriptContext = {
   existingEntry?: SessionEntry;
   /** Exact normalized target from the same snapshot, distinct from an alias-resolved entry. */
   targetEntry?: SessionEntry;
-  /** Detached sibling-label facts; excludes the exact normalized target only. */
-  isLabelInUse: (label: string) => boolean;
+  /** Requested label's detached occupancy; excludes the exact normalized target only. */
+  labelInUse: boolean;
 };
 
 export type SessionEntryCreateWithTranscriptResult<TError = string> =
@@ -826,7 +796,7 @@ export type SessionEntryCreateWithTranscriptResult<TError = string> =
   | { ok: false; error: string; phase: "transcript" };
 
 export type SessionEntryCreateWithTranscriptPrepareResult<TError = string> =
-  | { ok: true; entry: SessionEntry }
+  | { ok: true; entry: SessionEntry; transcriptEvents?: readonly TranscriptEvent[] }
   | { ok: false; error: TError };
 
 /** Original physical writer custody; captured facts are not a new admission. */
@@ -835,7 +805,18 @@ export type SessionEntryCommitContext = {
   assertCurrent: () => void;
 };
 
+export type SessionEntryCreationPhase =
+  | "snapshot"
+  | "entry"
+  | "transcript"
+  | "writerAdmission"
+  | "commit"
+  | "publication";
+
 export type SessionEntryCreateWithTranscriptOptions = {
+  /** Explicit label claim, checked again inside the final write transaction. */
+  label?: string;
+  onPhase?: (phase: SessionEntryCreationPhase) => void;
   /** Bind retained target facts to this creator's own placeholder publication. */
   bindCreation?: (operation: SessionEntryCreationOperation) => void;
   /** Protect the newly created row from maintenance during its initial write. */

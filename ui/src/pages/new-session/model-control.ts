@@ -18,6 +18,7 @@ import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import { requiresChatModelSetup } from "../chat/chat-model-setup.ts";
 import { renderChatModelAccountControl } from "../chat/components/chat-model-account-control.ts";
 import { renderChatModelControls } from "../chat/components/chat-model-controls.ts";
+import { navigateToModelProvider } from "../model-providers/navigation.ts";
 import { CatalogTargetDiscovery } from "./catalog-target.ts";
 import type { DraftCloudProfile } from "./discovery.ts";
 import {
@@ -111,20 +112,12 @@ export class NewSessionModelControl extends NewSessionModelSelection {
       {
         timeoutMs: DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS,
         onResult: (result) => {
-          if (
-            this.metadataClient &&
-            this.metadataScope &&
-            this.ownsMetadata(this.metadataClient, this.metadataScope)
-          ) {
+          if (this.ownsMetadata()) {
             this.publishMetadataCatalog(result);
           }
         },
         onError: () => {
-          if (
-            this.metadataClient &&
-            this.metadataScope &&
-            this.ownsMetadata(this.metadataClient, this.metadataScope)
-          ) {
+          if (this.ownsMetadata()) {
             this.metadataFailed();
           }
         },
@@ -146,16 +139,18 @@ export class NewSessionModelControl extends NewSessionModelSelection {
     this.metadataGateway = undefined;
   }
 
-  private ownsMetadata(client: NewSessionMetadataClient, scope: ModelCatalogReadScope): boolean {
+  private ownsMetadata(client = this.metadataClient, scope = this.metadataScope): boolean {
     const snapshot = this.pendingContext?.gateway.snapshot;
-    return (
+    return Boolean(
+      client &&
+      scope &&
       this.metadataClient === client &&
       this.metadataGateway === this.pendingContext?.gateway &&
       this.metadataScope === scope &&
       snapshot?.phase === "connected" &&
       snapshot.client === client &&
       snapshot.hello === this.metadataHello &&
-      snapshot.selfUser?.id === this.metadataIdentityId
+      snapshot.selfUser?.id === this.metadataIdentityId,
     );
   }
 
@@ -464,9 +459,7 @@ export class NewSessionModelControl extends NewSessionModelSelection {
     }
     const selection = this.metadataState.accountSelection;
     if (
-      !this.metadataClient ||
-      !this.metadataScope ||
-      !this.ownsMetadata(this.metadataClient, this.metadataScope) ||
+      !this.ownsMetadata() ||
       this.metadataReader.pending ||
       this.metadataState.status !== "ready" ||
       selection?.kind !== "personal" ||
@@ -711,6 +704,8 @@ export class NewSessionModelControl extends NewSessionModelSelection {
         this.notify();
       },
       onModelSetup: () => options.context?.navigate("model-setup"),
+      onProviderSettings: (provider) =>
+        navigateToModelProvider(options.context, options.agentId, provider),
       onModelPickerOpen: () => this.retryPickerCatalogs(),
       onRequestUpdate: this.notify,
     });

@@ -25,6 +25,7 @@ async function mountTab(
   const gateway = createGatewayHarness(createTestGatewayClient(request));
   gateway.publish({
     hello: {
+      auth: { role: "operator", scopes: ["operator.read"] },
       features: { methods: ["sessions.catalog.list"], events },
     } as ApplicationGatewaySnapshot["hello"],
   });
@@ -41,7 +42,10 @@ async function mountTab(
 
 describe("AppSidebar catalog event refresh", () => {
   beforeEach(() => vi.useFakeTimers());
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
 
   it("keeps four stable tabs idle for five minutes and refreshes each once per catalog event", async () => {
     const tabs = [];
@@ -79,28 +83,27 @@ describe("AppSidebar catalog event refresh", () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
-  it.each([{ events: [] }, { events: ["sessions.changed"] }])(
-    "keeps a stable 30-second fallback when catalog changes are not advertised (%j)",
-    async ({ events }) => {
-      const request = createGatewayRequestMock()
-        .mockResolvedValueOnce(catalogPage([]))
-        .mockResolvedValue(catalogPage([{ threadId: "discovered", name: "New catalog row" }]));
-      const { gateway, sidebar } = await mountTab(request, events);
-      gateway.publishEvent("sessions.catalog.changed", { agentId: "main" });
-      gateway.publishEvent("sessions.changed", { agentId: "main", sessionKey: "agent:main:x" });
-      await vi.advanceTimersByTimeAsync(29_999);
-      expect.soft(request).toHaveBeenCalledTimes(1);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(request).toHaveBeenCalledTimes(2);
-      expect(sidebar.textContent).toContain("New catalog row");
-      await vi.advanceTimersByTimeAsync(29_999);
-      expect(request).toHaveBeenCalledTimes(2);
-      await vi.advanceTimersByTimeAsync(1);
-      expect(request).toHaveBeenCalledTimes(3);
-    },
-  );
+  it("keeps a stable 30-second fallback when catalog changes are not advertised", async () => {
+    const events = ["sessions.changed"];
+    const request = createGatewayRequestMock()
+      .mockResolvedValueOnce(catalogPage([]))
+      .mockResolvedValue(catalogPage([{ threadId: "discovered", name: "New catalog row" }]));
+    const { gateway, sidebar } = await mountTab(request, events);
+    gateway.publishEvent("sessions.catalog.changed", { agentId: "main" });
+    gateway.publishEvent("sessions.changed", { agentId: "main", sessionKey: "agent:main:x" });
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect.soft(request).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(sidebar.textContent).toContain("New catalog row");
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(request).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(request).toHaveBeenCalledTimes(3);
+  });
 
   it("paces a trailing event after a slow catalog request without overlapping reads", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0);
     const pending = deferred<ReturnType<typeof catalogPage>>();
     const request = createGatewayRequestMock()
       .mockResolvedValueOnce(catalogPage([]))
@@ -207,6 +210,7 @@ describe("AppSidebar catalog event refresh", () => {
   it.each(["hide", "remove"])(
     "retires a pending catalog retry when the sidebar must %s",
     async (action) => {
+      vi.spyOn(Math, "random").mockReturnValue(0);
       let visibility: DocumentVisibilityState = "visible";
       const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
       const request = createGatewayRequestMock()

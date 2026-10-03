@@ -65,6 +65,8 @@ On Windows, point `worktreeRoot` at a directory on a ReFS volume, such as `D:\wo
 
 OpenClaw maintains one reusable source-only template per repository and destination root. It rebuilds the template when the requested commit or checkout policy changes, and cleanup retires templates unused for seven days. Git continues to own worktree registration, indexes, and branches; the filesystem backend supplies the shared file contents.
 
+New checkouts with no file data, including empty session workspaces, use normal Git checkout without preparing or cloning a template.
+
 If template cleanup cannot acquire its allocation lease or read its cache, OpenClaw logs a warning and continues ordinary worktree and snapshot cleanup. A later cleanup pass retries template retirement.
 
 Templates contain checked-out source only. `.worktreeinclude` provisioning and `.openclaw/worktree-setup.sh` still run separately for each new worktree, under their existing permissions. Dependencies and setup output are not shared through the template. Copy-on-write snapshots share source storage until files change; their actual savings depend on the repository and subsequent writes.
@@ -190,6 +192,27 @@ Setup failures report the exit code or termination signal, or an actual timeout 
 
 ## Session worktrees
 
+Native `sessions_spawn` children can use a managed worktree while remaining hidden:
+
+```json
+{
+  "runtime": "subagent",
+  "visible": false,
+  "context": "isolated",
+  "projectId": "example-project",
+  "worktree": true,
+  "worktreeName": "review-api",
+  "worktreeBaseRef": "origin/main",
+  "completionTarget": "parent",
+  "cleanup": "keep",
+  "task": "Review the API change and report findings to the parent."
+}
+```
+
+Hidden children use the same session worktree preparation and persisted binding as visible sessions. Acceptance does not wait for checkout and setup; the first agent turn waits until the managed workspace is ready. The child stays a native subagent, retaining its completion routing, sandbox policy, run timeout, and cleanup choice. `cleanup: "delete"` uses session deletion to snapshot the checkout before removal; `"keep"` retains it under the normal idle and archive lifecycle. Session lists and the Worktrees page can inspect the recorded worktree without making the child a sidebar session.
+
+For hidden children, `projectId` requires `worktree: true`. Worktree names and base refs also require `worktree: true`. `projectId` and `cwd` are mutually exclusive. `group`, `projectGitUrl`, and cloud placement profiles remain visible-only; ACP does not accept managed-worktree parameters. See [Sub-agent tool parameters](/tools/subagents/tool-reference#tool-parameters).
+
 For a fresh isolated session without a source repository, call `sessions.create` with `worktree: true` and `worktreeSource: "empty"`. This does not copy the agent workspace or any selected folder. It cannot be combined with `cwd`, project or repository selection, an external catalog, `execNode`, or `worktreeBaseRef`. The Control UI uses this mode for **New workspace** on paired devices and cloud destinations.
 
 Each fresh session has its own OpenClaw-owned backing repository under `<openclaw-state-dir>/worktree-sources/empty`, so Git remotes and history remain isolated between sessions. The existing managed-worktree registry owns allocation, snapshots, restore, and cleanup; no database migration is needed. The backing source remains available while a live worktree or retained snapshot references it and is removed after its final expired snapshot is collected. Git is still required internally. Existing installations adopt this mode only for new explicit empty-workspace requests; existing sessions and their snapshots keep their original source.
@@ -202,7 +225,7 @@ Remote sessions started from a Gateway folder retain a durable managed-worktree 
 
 The Control UI offers **Worktree** only after confirming a usable Git checkout with at least one commit, or when a selected remote Git repository is awaiting cloning. Plain folders and newly initialized repositories without commits can run directly on the Gateway. A failed Git check also leaves direct execution available if the folder is accessible; a `.git` entry or saved project alone does not enable isolation. If you already selected **Worktree** and a later check fails, that selection stays visible and starting is blocked. Clear **Worktree** to run directly, or reselect the folder to check it again.
 
-The base-ref field suggests up to 100 local and 100 remote refs, plus the default and current branches. The current branch comes from the selected checkout, including linked worktrees; a detached checkout has no current branch. Branch discovery reads that checkout directly without inventorying sibling worktrees. You can enter any branch or commit even when it is not suggested. If branch suggestions cannot be loaded, the Control UI explains that you can enter a ref manually; a verified Git checkout remains available for worktrees. The selected ref must still resolve to a commit before session creation.
+The base-ref field suggests up to 100 local and 100 remote refs, plus the default and current branches. The current branch comes from the selected checkout, including linked worktrees; a detached checkout has no current branch. Branch discovery reads that checkout directly without inventorying sibling worktrees. Repeated lookups reuse unchanged ref inventories while validating the checkout on every request; loose refs, packed refs, tags, and the selected HEAD invalidate the inventory when they change. You can enter any branch or commit even when it is not suggested. If branch suggestions cannot be loaded, the Control UI explains that you can enter a ref manually; a verified Git checkout remains available for worktrees. The selected ref must still resolve to a commit before session creation.
 
 Group **New session defaults** checks the agent workspace the same way as a custom folder. If verification fails, retry before saving the group defaults. A remembered cloud destination cannot block a new local draft in a plain folder; a transient Git-check failure leaves the saved destination intact for the next visit.
 
@@ -220,7 +243,7 @@ OpenClaw exposes these tools only to operator sessions with an actionable Gatewa
 
 The resulting managed worktree is owned by the session, and every agent run in that session uses its checkout. When the workspace is a repository subdirectory, the worktree is anchored at the repository root and the session runs from the matching subdirectory inside it. Session worktree creation uses the method's `operator.write` scope. Repository checkout/ref hooks and filesystem monitors are always disabled. The `.openclaw/worktree-setup.sh` step runs only for an `operator.admin` caller; retries evaluate the current caller's scope rather than retaining the original caller's permission. `.worktreeinclude` provisioning still applies to every caller. Deleting the session attempts to snapshot and remove its managed worktree, including dirty worktrees and branches with unpushed commits. Hourly cleanup also snapshots session worktrees after 7 idle days, treating recent session activity as worktree activity. Removed worktrees remain restorable from their snapshots as described below.
 
-Archiving a session commits its archive state, then snapshots and removes its managed checkout while preserving the conversation and worktree binding. A failed metadata write leaves the checkout untouched. If cleanup cannot finish safely, the session remains archived, its files stay preserved, and the error explains that cleanup is pending. Repeating archive retries cleanup; startup and hourly garbage collection also retry any checkout that remains. Automatic session archival uses the same metadata-first ordering.
+Archiving a session commits its archive state, then snapshots and removes its managed checkout while preserving the conversation and worktree binding. A failed metadata write leaves the checkout untouched. If cleanup cannot finish safely, the session remains archived, its files stay preserved, and the error explains that cleanup is pending. Repeating archive retries cleanup; hourly garbage collection also retries any checkout that remains. Automatic session archival uses the same metadata-first ordering.
 
 Unarchiving, or an authorized human message that reopens the archived session, restores the original branch HEAD plus saved dirty and untracked files before admitting work. A restore failure leaves the session archived. If the original repository or its snapshot is missing, or the 30-day snapshot retention has expired, recover the original repository/snapshot or start a new task; OpenClaw does not substitute an empty checkout for the saved work.
 
@@ -261,12 +284,14 @@ Nested Git repositories and linked worktrees are separate ownership boundaries. 
 OpenClaw applies these cleanup rules:
 
 - At run end, it removes a worktree without Git force only when `git status --porcelain` is empty and `git log HEAD --not --remotes --oneline` finds no unpushed commits. It also checks the captured contents for edits hidden by index flags. Otherwise it retains the checkout and records why.
-- Startup and hourly cleanup snapshot and remove unlocked Workboard- and session-owned worktrees idle for more than 7 days, even when dirty. Session worktrees whose owner is archived or absent are eligible immediately. Failed owner lookups preserve the checkout.
+- Hourly cleanup snapshots and removes unlocked Workboard- and session-owned worktrees idle for more than 7 days, even when dirty. The first automatic pass runs one hour after Gateway startup, and a slow pass finishes before another starts. Session worktrees whose owner is archived or absent are eligible on the next pass without waiting 7 days. Failed owner lookups preserve the checkout. Run `openclaw worktrees gc` for immediate cleanup.
 - Cleanup also removes the least recently active eligible run-owned worktrees above the default target of 100. Manual worktrees are never automatically removed, and protected worktrees can keep the total above the target until they are released or explicitly cleaned up.
 - Snapshot records remain restorable for 30 days. Cleanup then deletes the snapshot ref and registry row.
 - A live OpenClaw process lock and any foreign or unrecognized git worktree lock protect a worktree from garbage collection.
 
-Each collection shares one preliminary lock inventory per repository across idle and limit checks. Removal rereads the current lock and verifies that the worktree's activity has not changed under its allocation lease before changing the checkout; preliminary inventories never authorize removal or stale-lock recovery. If cleanup cannot acquire the lease, it preserves orphan candidates and expired snapshots for a later pass.
+Each collection checks registry eligibility, remembered dispositions, owner activity, and run leases before requesting Git inventories. It classifies candidates serially and shares one preliminary lock and branch inventory per repository across idle and limit checks. Known provisioning ledgers use filesystem checks without Git setup. Removal rereads the current lock and HEAD and verifies that the worktree's activity has not changed under its allocation lease before changing the checkout; preliminary inventories never authorize removal or stale-lock recovery. If cleanup cannot acquire the lease, it preserves orphan candidates and expired snapshots for a later pass.
+
+Hourly cleanup remembers nested-repository, moved-branch, and unavailable-Git dispositions on the worktree record instead of repeating their Git inventories. It logs the preserved checkout path on the first deferral. Managed activity or a change to the recorded repository, owner, or snapshot invalidates the disposition. After repairing files or Git metadata externally, run `openclaw worktrees gc` to recheck deferred checkouts immediately; explicit removal and recovery also keep their normal checks. Deferred worktrees still count toward cleanup limits. The nullable derived-state column is added on database admission without a schema-version change; older builds ignore these dispositions and resume their previous inspection behavior. No checkout or snapshot retention period changes.
 
 Listing and cleanup mark a missing checkout as removed only if its recorded path, activity, and repository identity still match the earlier check. A restore or repository repair that completes during that check preserves the newer live record.
 
@@ -315,7 +340,7 @@ A branch at a shallow history boundary can still be snapshotted and restored. If
 ## Retire an already removed snapshot early
 
 Use `openclaw worktrees retire-snapshot` only when the removed snapshot is redundant
-with a retained local branch or remote-tracking commit. This local CLI operation
+with a retained local branch or remote-tracking commit. This CLI operation
 requires the exact worktree ID, snapshot ref and commit, recorded `removedAt`
 milliseconds, and retained source ref and commit. Read those identities from the
 removed record and repository before invoking it:
@@ -342,8 +367,8 @@ A successful JSON result is `{ "retired": true, "id": "<id>" }`; the removed
 registry entry is then absent and cannot be restored. A refusal is not cleanup
 success. If an interruption occurs after the ref is retired, inspect the remaining
 record and projection custody before further cleanup; this command does not infer
-safe retirement from a missing ref. This operation is CLI-only, not a Gateway or
-Control UI action.
+safe retirement from a missing ref. The CLI uses `worktrees.retireSnapshot` on a
+live same-root Gateway; the Control UI does not expose this action.
 
 ## Exact-state detached retirement
 
@@ -451,32 +476,94 @@ reset the index, reattach HEAD, or prune the registration.
 
 ## CLI
 
+Worktree CLI mutations use the authenticated Gateway that owns the selected local
+state directory when one is running. This includes creation, ordinary, lossless
+and exact-state removal, restoration, garbage collection, interrupted-removal
+recovery, and snapshot retirement. The route requires `operator.admin`, preserves
+source profiles and repository setup, and never redirects local paths to a
+configured remote Gateway. Creation binds the captured repository directory;
+every mutation binds the request to the current owner's incarnation.
+
+Each operation requires its own supported parameter and result contract. A Gateway
+that supports routed creation can still lack routed removal or recovery. A changed
+owner, missing capability, authentication failure, or uncertain reply never triggers
+local mutation. Upgrade an older Gateway or stop it through its service owner and
+retry offline. After an uncertain reply, inspect `worktrees list --json`, the source
+repository, and any reported recovery paths before retrying. Exact-state JSON files
+are validated by the CLI and sent as request data, not as client-local filenames.
+
+Offline mutation holds exclusive state-directory lifecycle ownership through Git
+work, database settlement, and cleanup, including interruption. A Gateway starting
+during that operation waits or reports ownership contention. SDK workspace and
+worktree capabilities and older CLI versions retain their existing behavior; this does not
+exclude arbitrary direct writers or a different state root sharing external files.
+The updater and Doctor retain their existing owners and do not require this routing
+capability to upgrade an older installation. No schema or configuration migration
+is required.
+
+The [local state owner contract](/gateway/protocol/versioning#local-state-owner-routing)
+lists each required capability, refusal state, and retained writer boundary.
+
 ```bash
 openclaw worktrees list [--json]
 openclaw worktrees create <repo-root> [--name <name>] [--base-ref <ref>] [--source-profile <name>]... [--json]
 openclaw worktrees remove <id> [--force | --if-lossless | --exact-state <file>] [--json]
 openclaw worktrees restore <id> [--recover-exact-state <file>] [--json]
 openclaw worktrees gc [--json]
+openclaw worktrees recover-removal <id> --snapshot <oid> [--json]
+openclaw worktrees retire-snapshot <id> --expected-ref <ref> --expected-oid <oid> --removed-at <milliseconds> --retained-ref <ref> --retained-oid <oid> [--json]
 ```
 
-The Control UI **Worktrees** page under Settings provides the same actions plus creation with a base-branch picker, shows each worktree's owner (manual, Workboard, or the owning session with a link into its chat), and offers a force retry when a removal reports a failed snapshot.
+The Control UI **Worktrees** page under Settings provides creation with a base-branch picker, ordinary removal and restoration, and garbage collection. It shows each worktree's owner (manual, Workboard, or the owning session with a link into its chat), and offers a force retry when a removal reports a failed snapshot.
 
 Leave **Base branch** empty to fetch and use the remote default branch. Branch suggestions do not select a base; choosing or entering a branch or commit uses that exact ref without fetching. Clearing the field restores automatic selection. Fetching updates remote-tracking refs, not the source checkout's local `main`; the local-`HEAD` fallback described above still applies when the remote default is unavailable.
 
-`--if-lossless --json` returns `removed` plus the recorded `cleanup` outcome. A retained checkout returns `removed: false`; it is not a successful deletion. The explicit `--if-lossless` option is CLI-only; Gateway removal retains its archival behavior and result format.
+`--if-lossless --json` returns `removed` plus the recorded `cleanup` outcome. A retained checkout returns `removed: false`; it is not a successful deletion. The qualified Gateway removal contract preserves this outcome. Qualified garbage collection returns its complete summary, including partial results and recovery locations; the CLI prints those details and exits nonzero for partial cleanup. Existing remote clients retain their previous response contracts.
 
 ## Gateway methods
 
-| Method               | Purpose                                                                 |
-| -------------------- | ----------------------------------------------------------------------- |
-| `worktrees.list`     | List active and restorable worktree records.                            |
-| `worktrees.branches` | List local and remote branches of a repository for base-ref pickers.    |
-| `worktrees.create`   | Create or reuse a named managed worktree.                               |
-| `worktrees.remove`   | Snapshot and remove a worktree. Forced removals report `snapshotError`. |
-| `worktrees.restore`  | Restore a removed worktree from its snapshot.                           |
-| `worktrees.gc`       | Run idle, orphan, and retention cleanup now.                            |
+| Method                     | Purpose                                                                 |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `worktrees.list`           | List active and restorable worktree records.                            |
+| `worktrees.branches`       | List local and remote branches of a repository for base-ref pickers.    |
+| `worktrees.create`         | Create or reuse a named managed worktree.                               |
+| `worktrees.remove`         | Snapshot and remove a worktree. Forced removals report `snapshotError`. |
+| `worktrees.restore`        | Restore a removed worktree from its snapshot.                           |
+| `worktrees.gc`             | Run idle, orphan, and retention cleanup now.                            |
+| `worktrees.recoverRemoval` | Complete an interrupted removal from the exact pending snapshot.        |
+| `worktrees.retireSnapshot` | Retire one redundant snapshot with exact retained-source guards.        |
 
 `worktrees.list` requires `operator.read`. `worktrees.create` and `worktrees.branches` require `operator.write` for configured agent workspaces and registered projects; arbitrary host paths still require `operator.admin`. All creation disables repository Git hooks; write-scoped creation also skips `.openclaw/worktree-setup.sh`. Removing, restoring, and garbage-collecting worktrees remain admin-only. Branch listing reads existing refs only and never fetches, and remote-only branches come back remote-qualified (`origin/feature-a`) so every returned name resolves as a base ref. New Session can also request a typed repository status from this method; a plain directory or unavailable checkout returns no branches instead of forcing the UI to infer Git capability from an error string.
+
+Owner-routed requests require `operator.admin` and the corresponding
+[capability](/gateway/protocol/versioning#local-state-owner-routing). Their wire
+fields and results are:
+
+| Method                     | Request beyond `expectedOwnerId`                                                                                          | Result                                                                                                                  |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| `worktrees.create`         | `repoRoot`; optional `name`, `baseRef`, `profiles`, `expectedRepoIdentity`                                                | Full worktree record, including any `gcProtection`. The CLI captures the physical repository identity before dispatch.  |
+| `worktrees.remove`         | `id`; optional, mutually exclusive `force`, `ifLossless`, or `exactState`                                                 | `removed`, optional `snapshotRef`, `snapshotError`, `recoveryPath`, `recoveryRetainedUntil`, and lossless `cleanup`.    |
+| `worktrees.restore`        | `id`; optional `recoverExactState`                                                                                        | Full restored worktree record.                                                                                          |
+| `worktrees.gc`             | No additional fields                                                                                                      | Complete cleanup summary, including `outcome`, issues, protection counts/reasons, retired paths, and `limitsSatisfied`. |
+| `worktrees.recoverRemoval` | `id`, `snapshot` (the expected pending snapshot OID)                                                                      | `removed: true`, optional `snapshotRef`.                                                                                |
+| `worktrees.retireSnapshot` | `id`, `expectedSnapshotRef`, `expectedSnapshotOid`, `expectedRemovedAt`, `retainedSourceRef`, `expectedRetainedSourceOid` | `retired: true`, `id`.                                                                                                  |
+
+`exactState` and `recoverExactState` carry the validated JSON object, not a file
+path: `ownerKind` (`manual`, `session`, or `workboard`), optional `ownerId`,
+`createdAt`, `lastActiveAt`, `head`, `branchHead`, and `indexSha256`. Snapshot and
+head OIDs accept 40 or 64 lowercase hexadecimal characters; `indexSha256` is 64.
+Snapshot retirement also requires an exact removal timestamp and a retained ref
+under `refs/heads/` or `refs/remotes/`.
+
+Old RPC clients that omit `expectedOwnerId` retain the public record without
+`gcProtection`, the original removal fields (`removed`, `snapshotRef`,
+`snapshotError`), and the original completed-GC summary (`removed`,
+`orphansDeleted`, `snapshotsPruned`). For those clients, a snapshot failure returns
+`removed: false` and `snapshotError`; incomplete GC returns a nonretryable error
+with the summary in its details. Owner-routed removal instead reports a snapshot
+failure as an error; owner-routed GC returns its full `completed`, `deferred`, or
+`partial` outcome. The new recovery and retirement methods always require the
+owner field. A partial or lost result is not permission to replay the mutation.
 
 ## Workboard workspaces
 

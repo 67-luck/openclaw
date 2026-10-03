@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { isLockOwnerDefinitelyStale } from "../../infra/stale-lock-file.js";
 import type { DB } from "../../state/openclaw-state-db.generated.js";
@@ -17,22 +17,15 @@ function parseLeaseOwnerPayload(payloadJson: string | null): {
   starttime?: number;
   exclusive?: true;
 } {
-  if (!payloadJson) {
+  const parsed = safeParseJsonRecord(payloadJson ?? "");
+  if (!parsed) {
     return {};
   }
-  try {
-    const parsed: unknown = JSON.parse(payloadJson);
-    if (!isRecord(parsed)) {
-      return {};
-    }
-    return {
-      pid: typeof parsed.pid === "number" ? parsed.pid : undefined,
-      starttime: typeof parsed.starttime === "number" ? parsed.starttime : undefined,
-      ...(parsed.exclusive === true ? { exclusive: true } : {}),
-    };
-  } catch {
-    return {};
-  }
+  return {
+    pid: typeof parsed.pid === "number" ? parsed.pid : undefined,
+    starttime: typeof parsed.starttime === "number" ? parsed.starttime : undefined,
+    ...(parsed.exclusive === true ? { exclusive: true } : {}),
+  };
 }
 
 type ScopeLeaseState = {
@@ -82,19 +75,15 @@ function inspectRunLeases(
       isPidDefinitelyDead: checks.isPidDefinitelyDead,
       getProcessStartTime: checks.getProcessStartTime,
     });
+    if (stale) {
+      staleKeys.push(row.lease_key);
+      continue;
+    }
     if (row.lease_key === WORKTREE_REMOVING_LEASE_KEY) {
       // A removal marker whose remover process died before finalize must self-heal,
       // otherwise a still-live worktree stays permanently unadmittable. A live marker
       // carries the owning claim token so a competing remover is rejected.
-      if (stale) {
-        staleKeys.push(row.lease_key);
-      } else {
-        removingToken = row.owner;
-      }
-      continue;
-    }
-    if (stale) {
-      staleKeys.push(row.lease_key);
+      removingToken = row.owner;
       continue;
     }
     if (payload.pid !== undefined) {

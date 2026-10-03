@@ -7,9 +7,9 @@ import {
 } from "./openclaw-state-db-async-lifecycle.js";
 import type { OpenClawStateAsyncLeaseContext } from "./openclaw-state-lease-context.js";
 import type { LeaseHeartbeatCleanup } from "./openclaw-state-lease-heartbeat.js";
-import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease-store.js";
 import { withOpenClawStateLeaseWorkerAdmission } from "./openclaw-state-lease-worker-owner.js";
 import { withOpenClawStateLeaseAsync } from "./openclaw-state-lease.js";
+import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease.types.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 
 type CreateStorage =
@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./openclaw-state-lease-worker-storage.js", () => ({
   createOpenClawStateLeaseWorkerStorage: mocks.createStorage,
+  acquireLease: mocks.forbidden,
 }));
 vi.mock("./openclaw-state-lease-heartbeat.js", () => ({
   startOpenClawStateLeaseHeartbeat: mocks.startHeartbeat,
@@ -47,19 +48,13 @@ vi.mock("./openclaw-state-lease-storage.js", () => ({
   isOpenClawStateLeaseWriteContention: mocks.isWriteContention,
   releaseOpenClawStateLeaseBestEffort: async (_params: unknown, execute?: () => Promise<void>) =>
     execute?.(),
-  readLeaseDatabase: mocks.forbidden,
   resolveLeaseDatabasePath: mocks.forbidden,
-  acquireLease: mocks.forbidden,
   renewOpenClawStateLease: mocks.forbidden,
-  assertOpenClawStateLeaseOwnedInDatabase: mocks.forbidden,
   verifyOpenClawStateLeaseOwnership: mocks.forbidden,
   releaseOpenClawStateLease: mocks.forbidden,
 }));
 vi.mock("./openclaw-state-db-readonly.js", () => ({
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnly: mocks.forbidden,
-}));
-vi.mock("./openclaw-state-lease-exclusion.js", () => ({
-  createOpenClawStateLeaseExclusion: mocks.forbidden,
 }));
 vi.mock("../infra/sqlite-worker-operation-admission.js", () => ({
   createSqliteWorkerOperationAdmission: mocks.forbidden,
@@ -67,15 +62,6 @@ vi.mock("../infra/sqlite-worker-operation-admission.js", () => ({
 vi.mock("../infra/sqlite-worker-identity.js", () => ({
   inspectDatabasePathIdentitySync: mocks.forbidden,
   readDatabasePathIdentitySync: mocks.forbidden,
-}));
-vi.mock("../infra/state-database-coordinator.js", () => ({
-  StateDatabaseCoordinatorContentionError: class extends Error {
-    readonly family = "state-lifecycle";
-  },
-}));
-vi.mock("../infra/sqlite-coordinator.js", () => ({
-  createSqliteLifecycleAggregateError: (errors: unknown[], message: string, cause: unknown) =>
-    new AggregateError(errors, message, { cause }),
 }));
 
 beforeEach(() => {
@@ -106,7 +92,7 @@ function fixture(
     firstReleaseError?: Error;
   } = {},
 ) {
-  const maintenance = createOpenClawDatabaseMaintenanceScope(mocks.forbidden);
+  const maintenance = createOpenClawDatabaseMaintenanceScope();
   const events: string[] = [];
   const registered = new Set<OpenClawStateDatabaseAsyncResource>();
   const acquiring = createDeferredCore();
@@ -125,9 +111,9 @@ function fixture(
   let cleanupAttempt: Promise<void> | undefined;
   const context: OpenClawStateWorkerContext = {
     environment: { OPENCLAW_STATE_DIR: "/synthetic-state" },
-    coordinatorRuntime: { directory: "/synthetic-coordinator", keepAlive: false },
     maintenanceScope: maintenance,
     admission: {
+      coordinationKey: "file:synthetic-state",
       databasePath: "/synthetic-state/lease.sqlite",
       identity: { key: "file:synthetic-state", canonicalPath: "/synthetic-state/lease.sqlite" },
       assertCurrent() {
@@ -251,6 +237,14 @@ function fixture(
     acquired,
     released,
     closeActor,
+    async dispose(outcome: Promise<unknown>) {
+      allowAcquire.resolve();
+      ready.resolve();
+      allowCleanup.resolve();
+      allowRetry.resolve();
+      await outcome;
+      await maintenance.close();
+    },
     options: {
       scope: "core:mcp-oauth",
       key: "synthetic-maintenance",
@@ -273,7 +267,10 @@ describe("async lease maintenance ownership", () => {
         throw new Error("Lease fixture did not install its owners");
       }
       let expiresAt = 0;
-      const busy = new Error("Synthetic startup write contention");
+      const busy = Object.assign(new Error("Synthetic startup write contention"), {
+        code: "ERR_SQLITE_ERROR",
+        errcode: 5,
+      });
       mocks.isWriteContention.mockImplementation((error) => error === busy);
       mocks.createStorage.mockImplementation((context) => {
         const storage = createStorage(context);
@@ -333,11 +330,7 @@ describe("async lease maintenance ownership", () => {
         expect(callback).toHaveBeenCalledOnce();
         expect(f.released).toEqual(f.acquired);
       } finally {
-        f.ready.resolve();
-        f.allowCleanup.resolve();
-        f.allowRetry.resolve();
-        await observed.outcome;
-        await f.maintenance.close();
+        await f.dispose(observed.outcome);
         vi.useRealTimers();
       }
     },
@@ -345,7 +338,7 @@ describe("async lease maintenance ownership", () => {
 
   it("keeps the complete lease with its original scope when another scope invokes it", async () => {
     const f = fixture();
-    const other = createOpenClawDatabaseMaintenanceScope(mocks.forbidden);
+    const other = createOpenClawDatabaseMaintenanceScope();
     const entered = createDeferredCore();
     const finishCallback = createDeferredCore();
     const callback = vi.fn(async () => {
@@ -385,12 +378,8 @@ describe("async lease maintenance ownership", () => {
       expect(f.released).toEqual(f.acquired);
       expect(f.registered.size).toBe(0);
     } finally {
-      f.ready.resolve();
       finishCallback.resolve();
-      f.allowCleanup.resolve();
-      f.allowRetry.resolve();
-      await observed.outcome;
-      await f.maintenance.close();
+      await f.dispose(observed.outcome);
       await other.close();
     }
   });
@@ -446,11 +435,7 @@ describe("async lease maintenance ownership", () => {
         "actor-close",
       ]);
     } finally {
-      f.ready.resolve();
-      f.allowCleanup.resolve();
-      f.allowRetry.resolve();
-      await observed.outcome;
-      await f.maintenance.close();
+      await f.dispose(observed.outcome);
     }
   });
 
@@ -479,11 +464,7 @@ describe("async lease maintenance ownership", () => {
         "actor-close",
       ]);
     } finally {
-      f.ready.resolve();
-      f.allowCleanup.resolve();
-      f.allowRetry.resolve();
-      await observed.outcome;
-      await f.maintenance.close();
+      await f.dispose(observed.outcome);
     }
   });
 
@@ -532,9 +513,7 @@ describe("async lease maintenance ownership", () => {
         expect(f.released).toEqual([]);
         expect(f.registered.size).toBe(0);
       } finally {
-        f.allowAcquire.resolve();
-        await observed.outcome;
-        await f.maintenance.close();
+        await f.dispose(observed.outcome);
       }
     },
   );

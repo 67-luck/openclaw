@@ -23,6 +23,7 @@ import {
   MAX_WORKSPACE_MANIFEST_BYTES,
 } from "./workspace-inventory-limits.js";
 import { gitFileMode } from "./workspace-manifest.js";
+import { workspacePathAncestors } from "./workspace-path-ancestors.js";
 import { isDerivedWorkspacePath } from "./workspace-path-exclusions.js";
 
 /** Exact rsync exemptions, prepared once without walking input file contents. */
@@ -80,40 +81,6 @@ type WorkerWorkspaceInventoryEntry =
   | { path: string; type: "file"; mode: number; size: number }
   | { path: string; type: "symlink"; target: string };
 
-function assertWorkerWorkspaceInventoryValues(
-  manifestEntries: number,
-  manifestPathBytes: number,
-  transferPathBytes: number,
-  manifestBytes: number,
-  eligibleBytes: number,
-): void {
-  if (manifestEntries > MAX_WORKSPACE_INVENTORY_ENTRIES) {
-    throw workspaceInventoryError(
-      `Cloud workspace inventory exceeds ${MAX_WORKSPACE_INVENTORY_ENTRIES} manifest entries; reduce eligible files or narrow .worktreeinclude`,
-    );
-  }
-  if (manifestPathBytes > MAX_WORKSPACE_INVENTORY_PATH_BYTES) {
-    throw workspaceInventoryError(
-      "Cloud workspace manifest paths exceed the 64 MiB metadata limit; reduce eligible files or shorten their paths",
-    );
-  }
-  if (transferPathBytes > MAX_WORKSPACE_INVENTORY_PATH_BYTES) {
-    throw workspaceInventoryError(
-      "Cloud workspace eligible paths exceed the 64 MiB metadata limit; reduce eligible files or narrow .worktreeinclude",
-    );
-  }
-  if (manifestBytes > MAX_WORKSPACE_MANIFEST_BYTES) {
-    throw workspaceInventoryError(
-      "Cloud workspace manifest exceeds the 64 MiB limit; reduce eligible files or shorten their paths",
-    );
-  }
-  if (eligibleBytes > MAX_WORKSPACE_INVENTORY_TOTAL_BYTES) {
-    throw workspaceInventoryError(
-      "Cloud workspace eligible content exceeds the 4 GiB limit; remove large eligible files or ignore them",
-    );
-  }
-}
-
 function inventoryEntryJson(entry: WorkerWorkspaceInventoryEntry): string {
   if (entry.type === "directory") {
     return JSON.stringify({ path: entry.path, type: entry.type, mode: 0o700 });
@@ -147,13 +114,34 @@ class WorkerWorkspaceInventoryBudget {
 
   #assert(): void {
     const manifestEntries = this.#paths.size;
-    assertWorkerWorkspaceInventoryValues(
-      manifestEntries,
-      this.#manifestPathBytes,
-      this.#transferPathBytes,
-      this.#emptyManifestBytes + this.#manifestEntryBytes + Math.max(0, manifestEntries - 1),
-      this.#eligibleBytes,
-    );
+    if (manifestEntries > MAX_WORKSPACE_INVENTORY_ENTRIES) {
+      throw workspaceInventoryError(
+        `Cloud workspace inventory exceeds ${MAX_WORKSPACE_INVENTORY_ENTRIES} manifest entries; reduce eligible files or narrow .worktreeinclude`,
+      );
+    }
+    if (this.#manifestPathBytes > MAX_WORKSPACE_INVENTORY_PATH_BYTES) {
+      throw workspaceInventoryError(
+        "Cloud workspace manifest paths exceed the 64 MiB metadata limit; reduce eligible files or shorten their paths",
+      );
+    }
+    if (this.#transferPathBytes > MAX_WORKSPACE_INVENTORY_PATH_BYTES) {
+      throw workspaceInventoryError(
+        "Cloud workspace eligible paths exceed the 64 MiB metadata limit; reduce eligible files or narrow .worktreeinclude",
+      );
+    }
+    if (
+      this.#emptyManifestBytes + this.#manifestEntryBytes + Math.max(0, manifestEntries - 1) >
+      MAX_WORKSPACE_MANIFEST_BYTES
+    ) {
+      throw workspaceInventoryError(
+        "Cloud workspace manifest exceeds the 64 MiB limit; reduce eligible files or shorten their paths",
+      );
+    }
+    if (this.#eligibleBytes > MAX_WORKSPACE_INVENTORY_TOTAL_BYTES) {
+      throw workspaceInventoryError(
+        "Cloud workspace eligible content exceeds the 4 GiB limit; remove large eligible files or ignore them",
+      );
+    }
   }
 
   addTransferPath(entryPath: string): void {
@@ -272,13 +260,9 @@ async function selectTransferPaths(params: {
   };
   const append = async (entry: Exclude<WorkerWorkspaceInventoryEntry, { type: "directory" }>) => {
     const file = entry.path;
-    if (transferredPaths.has(file)) {
-      return;
-    }
     transferredPaths.add(file);
-    const segments = file.split("/");
-    for (let index = 1; index < segments.length; index += 1) {
-      budget.addEntry({ path: segments.slice(0, index).join("/"), type: "directory" });
+    for (const ancestor of workspacePathAncestors(file)) {
+      budget.addEntry({ path: ancestor, type: "directory" });
     }
     budget.addEntry(entry);
     budget.addTransferPath(file);

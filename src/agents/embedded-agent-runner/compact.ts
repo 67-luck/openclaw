@@ -1,6 +1,3 @@
-/**
- * Public facade and fallback coordinator for embedded-agent compaction.
- */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { resolveAgentModelFallbackValues } from "../../config/model-input.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
@@ -42,25 +39,17 @@ import {
   resolveAgentRunSessionTarget,
 } from "../run-session-target.js";
 import { resolveSystemPromptRepoRoot } from "../system-prompt-params.js";
+import { resolveRootedRunRuntimeWorkspace } from "../workspace-run.js";
 import type {
   CompactEmbeddedAgentSessionParams,
   CompactEmbeddedAgentSessionRuntimeParams,
 } from "./compact.types.js";
-import { containsRealConversationMessages } from "./compaction-diagnostics.js";
-import {
-  buildBeforeCompactionHookMetrics,
-  estimateTokensAfterCompaction,
-  runAfterCompactionHooks,
-  runBeforeCompactionHooks,
-  runPostCompactionSideEffects,
-} from "./compaction-hooks.js";
 import { resolveEmbeddedCompactionTarget } from "./compaction-runtime-context.js";
 import {
   projectCodexHostTranscriptBytePreflightConfig,
   resolveCompactionRuntimeSelection,
 } from "./compaction-runtime-preparation.js";
 import { resolveCompactionTimeoutMs } from "./compaction-safety-timeout.js";
-import { prepareCompactionSessionAgent } from "./compaction-session-agent.js";
 import type { PreparedCompactEmbeddedAgentSessionParams } from "./direct-compaction-preparation.js";
 import { compactEmbeddedAgentSessionDirectOnce } from "./direct-compaction.js";
 import { readCompactionAccountingRecorder } from "./run/compaction-accounting-bridge.js";
@@ -193,10 +182,6 @@ export async function compactNativeCliSession(params: {
   };
 }
 
-function hasExplicitCompactionModel(params: CompactEmbeddedAgentSessionParams): boolean {
-  return Boolean(params.config?.agents?.defaults?.compaction?.model?.trim());
-}
-
 function resolveCompactionFallbacksOverride(
   params: CompactEmbeddedAgentSessionParams,
 ): string[] | undefined {
@@ -210,12 +195,6 @@ function resolveCompactionFallbacksOverride(
       sessionKey: params.sessionKey,
     })
   );
-}
-
-function hasCompactionModelFallbackCandidates(params: CompactEmbeddedAgentSessionParams): boolean {
-  const fallbacksOverride = resolveCompactionFallbacksOverride(params);
-  const defaultFallbacks = resolveAgentModelFallbackValues(params.config?.agents?.defaults?.model);
-  return (fallbacksOverride ?? defaultFallbacks).length > 0;
 }
 
 function classifyCompactionFallbackResult(
@@ -236,15 +215,6 @@ function classifyCompactionFallbackResult(
   });
   const failoverError = coerceToFailoverError(failureError, { provider, model });
   return failoverError ? { error: failoverError } : null;
-}
-
-function fallbackFailureToCompactionResult(err: unknown): EmbeddedAgentCompactResult {
-  const reason = isFallbackSummaryError(err) ? err.message : formatErrorMessage(err);
-  return {
-    ok: false,
-    compacted: false,
-    reason,
-  };
 }
 
 /**
@@ -336,6 +306,11 @@ export async function compactEmbeddedAgentSessionDirect(
   ) {
     return lockedHarnessCompactionFailure(lockedHarnessRuntime);
   }
+  const rootedRuntimeWorkspace = resolveRootedRunRuntimeWorkspace({
+    ...requestedParams,
+    workspaceDir: requestedWorkspaceDir,
+    agentId: requestedAgentIds.sessionAgentId,
+  });
   const callerResult = createDeferredCore<EmbeddedAgentCompactResult>();
   const trackOwner = captureAsyncWorkTracker();
   const parentSignal = getAsyncWorkSignal();
@@ -355,8 +330,9 @@ export async function compactEmbeddedAgentSessionDirect(
           config: requestedParams.config ?? {},
           agentId: requestedAgentIds.sessionAgentId,
           agentDir: requestedAgentDir,
-          workspaceDir: requestedWorkspaceDir,
-          preserveWorkspaceDirOnRefresh: requestedWorkspaceDir !== canonicalWorkspaceDir,
+          workspaceDir: rootedRuntimeWorkspace?.workspaceDir ?? requestedWorkspaceDir,
+          preserveWorkspaceDirOnRefresh:
+            !rootedRuntimeWorkspace && requestedWorkspaceDir !== canonicalWorkspaceDir,
           ...(requestedParams.allowGatewaySubagentBinding
             ? { allowGatewaySubagentBinding: true }
             : {}),
@@ -423,8 +399,9 @@ export async function compactEmbeddedAgentSessionDirect(
           preparedModelRuntimeOwnerSnapshot.config,
           Boolean(transcriptBytePreflightAuthority),
         ) ?? preparedModelRuntimeOwnerSnapshot.config;
-      const preparedWorkspaceDir =
-        preparedModelRuntimeOwnerSnapshot.workspaceDir ?? requestedWorkspaceDir;
+      const preparedWorkspaceDir = rootedRuntimeWorkspace
+        ? requestedWorkspaceDir
+        : (preparedModelRuntimeOwnerSnapshot.workspaceDir ?? requestedWorkspaceDir);
       const repoRoot =
         resolveSystemPromptRepoRoot({
           config: preparedConfig,
@@ -455,6 +432,12 @@ export async function compactEmbeddedAgentSessionDirect(
         ...(transcriptBytePreflightClaim
           ? {
               transcriptBytePreflightAuthority: true as const,
+              ...(transcriptBytePreflightClaim.withCompactionPersistenceAsync
+                ? {
+                    transcriptByteCompactionPersistenceAsync:
+                      transcriptBytePreflightClaim.withCompactionPersistenceAsync,
+                  }
+                : {}),
               ...(transcriptBytePreflightClaim.withCompactionPersistence
                 ? {
                     transcriptByteCompactionPersistence:
@@ -467,8 +450,11 @@ export async function compactEmbeddedAgentSessionDirect(
       const compactPrepared = async () => {
         if (
           transcriptBytePreflightAuthority ||
-          hasExplicitCompactionModel(params) ||
-          !hasCompactionModelFallbackCandidates(params)
+          params.config?.agents?.defaults?.compaction?.model?.trim() ||
+          (
+            resolveCompactionFallbacksOverride(params) ??
+            resolveAgentModelFallbackValues(params.config?.agents?.defaults?.model)
+          ).length === 0
         ) {
           return await compactEmbeddedAgentSessionDirectOnce(params);
         }
@@ -566,7 +552,11 @@ export async function compactEmbeddedAgentSessionDirect(
         return compactPrepared();
       });
     } catch (err) {
-      return fallbackFailureToCompactionResult(err);
+      return {
+        ok: false,
+        compacted: false,
+        reason: isFallbackSummaryError(err) ? err.message : formatErrorMessage(err),
+      };
     }
   };
   // Logical completion reports promptly; actual attempt work retains this generation.
@@ -597,14 +587,3 @@ export async function compactEmbeddedAgentSessionDirect(
   }).catch(callerResult.reject);
   return await callerResult.promise;
 }
-
-export const testing = {
-  compactNativeCliSession,
-  containsRealConversationMessages,
-  estimateTokensAfterCompaction,
-  buildBeforeCompactionHookMetrics,
-  prepareCompactionSessionAgent,
-  runBeforeCompactionHooks,
-  runAfterCompactionHooks,
-  runPostCompactionSideEffects,
-} as const;

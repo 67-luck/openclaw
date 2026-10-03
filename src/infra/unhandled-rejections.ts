@@ -1,7 +1,8 @@
-// Installs fatal and transient unhandled rejection/exception handlers.
 import process from "node:process";
+import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { restoreRuntimeTerminalState } from "../runtime.js";
+import { registerListener } from "../shared/listeners.js";
 import { isAbortError } from "./abort-signal.js";
 import { collectNestedErrorCandidates, extractErrorCodeOrErrno } from "./error-graph-internal.js";
 import { extractErrorCode, formatUncaughtError, readErrorCause, readErrorName } from "./errors.js";
@@ -27,10 +28,7 @@ function createErrorHandlerRegistry(globalKey: symbol, failureMessage: string) {
   }
   return {
     register(handler: UnhandledRejectionHandler): () => void {
-      handlers.add(handler);
-      return () => {
-        handlers.delete(handler);
-      };
+      return registerListener(handlers, handler);
     },
     isHandled(error: unknown): boolean {
       for (const handler of handlers) {
@@ -112,7 +110,7 @@ const TRANSIENT_SQLITE_MESSAGE_SNIPPETS = [
   "disk i/o error",
 ];
 
-function hasSqliteSignal(err: unknown): boolean {
+function hasSqliteSignal(err: unknown): err is Record<string, unknown> {
   if (!err || typeof err !== "object") {
     return false;
   }
@@ -134,11 +132,7 @@ function hasSqliteSignal(err: unknown): boolean {
     "message" in err && typeof err.message === "string"
       ? normalizeLowercaseStringOrEmpty(err.message)
       : "";
-  if (message.includes("sqlite")) {
-    return true;
-  }
-
-  return false;
+  return message.includes("sqlite");
 }
 
 function isBenignUncaughtNetworkMessage(message: string): boolean {
@@ -151,27 +145,8 @@ function isBenignUncaughtNetworkMessage(message: string): boolean {
   return message === WS_PRE_HANDSHAKE_CLOSE_MESSAGE;
 }
 
-function extractNumericErrorCode(err: unknown, key: "errno" | "errcode"): number | undefined {
-  if (!err || typeof err !== "object") {
-    return undefined;
-  }
-  const value = (err as Record<"errno" | "errcode", unknown>)[key];
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string" && value.trim()) {
-    const parsed = Number(value.trim());
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-  return undefined;
-}
-
 function extractErrorCodeWithCause(err: unknown): string | undefined {
-  const direct = extractErrorCode(err);
-  if (direct) {
-    return direct;
-  }
-  return extractErrorCode(readErrorCause(err));
+  return extractErrorCode(err) || extractErrorCode(readErrorCause(err));
 }
 
 function isFatalError(err: unknown): boolean {
@@ -199,24 +174,17 @@ export function isTransientSqliteError(err: unknown): boolean {
       continue;
     }
 
-    const sqliteErrcode = extractNumericErrorCode(candidate, "errcode");
+    const value = candidate.errcode;
+    const sqliteErrcode = asFiniteNumber(
+      typeof value === "string" && value.trim() ? Number(value) : value,
+    );
     if (sqliteErrcode !== undefined && TRANSIENT_SQLITE_ERRCODES.has(sqliteErrcode)) {
       return true;
     }
 
-    if (!candidate || typeof candidate !== "object") {
-      continue;
-    }
-
-    const messageParts = [
-      (candidate as { message?: unknown }).message,
-      (candidate as { errstr?: unknown }).errstr,
-    ];
+    const messageParts = [candidate.message, candidate.errstr];
     for (const rawMessage of messageParts) {
       const message = normalizeLowercaseStringOrEmpty(rawMessage);
-      if (!message) {
-        continue;
-      }
       if (TRANSIENT_SQLITE_MESSAGE_CODE_RE.test(message)) {
         return true;
       }
@@ -229,17 +197,8 @@ export function isTransientSqliteError(err: unknown): boolean {
   return false;
 }
 
-/**
- * Checks if an error is a transient file watcher error that shouldn't crash the gateway.
- * These are typically resource exhaustion issues (e.g., inotify watches exhausted) that
- * can be recovered from by degrading to manual sync mode.
- *
- * Note: ENOSPC is a general POSIX error code (disk full, write failures, etc.).
- * To avoid misclassifying unrelated storage failures, we require both the ENOSPC code
- * AND a watch/inotify-related message indicator, similar to how hasSqliteSignal gates
- * SQLite errors.
- */
-export function isTransientFileWatchError(err: unknown): boolean {
+/** Requires watcher evidence so ordinary ENOSPC storage failures remain fatal. */
+function isTransientFileWatchError(err: unknown): boolean {
   if (!err) {
     return false;
   }
@@ -247,7 +206,6 @@ export function isTransientFileWatchError(err: unknown): boolean {
   const hasFileWatchSignal = (message: string) =>
     message.includes("inotify") ||
     message.includes("watcher") ||
-    message.includes("file watcher") ||
     message.includes("watch limit") ||
     message.includes("max watches");
   const hasFileWatchExhaustionSignal = (message: string) =>
@@ -258,7 +216,6 @@ export function isTransientFileWatchError(err: unknown): boolean {
     message.includes("max watches");
 
   for (const candidate of collectNestedErrorCandidates(err)) {
-    // Skip non-object candidates early
     if (!candidate || typeof candidate !== "object") {
       continue;
     }
@@ -274,15 +231,11 @@ export function isTransientFileWatchError(err: unknown): boolean {
       if (hasFileWatchSignal(message)) {
         return true;
       }
-      // ENOSPC without watch indicator is not classified here
       continue;
     }
 
     // Without an ENOSPC code, only classify explicit watcher resource exhaustion.
     // Generic "file watcher failed" labels can wrap permission/config/runtime failures.
-    if (!message) {
-      continue;
-    }
     if (
       (message.includes("no space left on device") && hasFileWatchSignal(message)) ||
       hasFileWatchExhaustionSignal(message)
@@ -370,8 +323,7 @@ export function installUnhandledRejectionHandler(): void {
       return;
     }
 
-    // AbortError is typically an intentional cancellation (e.g., during shutdown)
-    // Log it but don't crash - these are expected during graceful shutdown
+    // Cancellation during shutdown is expected.
     if (isAbortError(reason)) {
       console.warn("[openclaw] Suppressed AbortError:", formatUncaughtError(reason));
       return;

@@ -9,17 +9,18 @@ import { closeOpenClawStateDatabaseByPathAsync } from "openclaw/plugin-sdk/sqlit
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { updateCodexDesktopApp } from "./desktop-app-update.js";
-import * as managedDesktop from "./managed-desktop-installation.js";
+import * as managedDesktop from "./managed-runtime-installation.js";
 
 type FixtureIdentity = { build: string; hash: string };
 const OLD = { build: "100", hash: "aabb" };
 const NEW = { build: "101", hash: "ccdd" };
 const OTHER = { build: "102", hash: "eeff" };
 
-describe("official Codex desktop update transaction", () => {
+// These macOS transactions inspect real POSIX executable modes; CLI maintenance has its own suite.
+describe.runIf(process.platform !== "win32")("official Codex desktop update transaction", () => {
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
     afterEach(async () => {
-      // The worker must release SQLite handles before Windows can remove the fixture.
+      // Join the SQLite worker before removing its private fixture.
       for (const root of tempDirs.dirs) {
         await closeOpenClawStateDatabaseByPathAsync(
           path.join(root, "state", "state", "openclaw.sqlite"),
@@ -33,17 +34,22 @@ describe("official Codex desktop update transaction", () => {
     resetPluginStateStoreForTests();
   });
 
-  async function fixture(initialCandidate = NEW, name = "ChatGPT.app", mountedNames = [name]) {
+  async function fixture(
+    initialCandidate = NEW,
+    name = "ChatGPT.app",
+    mountedNames = [name],
+    layout: "direct" | "nested" = "direct",
+  ) {
     let candidate = initialCandidate;
     const root = await fs.realpath(tempDirs.make("openclaw-desktop-update-"));
     const target = path.join(root, name);
     const managedRoot = path.join(root, "managed");
     const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
-    const store = createPluginStateKeyedStoreForTests<managedDesktop.CodexManagedDesktopSelection>(
+    const store = createPluginStateKeyedStoreForTests<managedDesktop.CodexManagedRuntimeSelection>(
       "codex",
-      { namespace: "managed-desktop-selection", retention: "retained", env },
+      { namespace: "managed-runtime-selection", retention: "retained", env },
     );
-    await writeApp(target, OLD);
+    await writeApp(target, OLD, layout);
     const controller = new AbortController();
     const events: string[] = [];
     const execute = vi.fn<typeof runExec>(async (command, args) => {
@@ -57,6 +63,7 @@ describe("official Codex desktop update transaction", () => {
           await writeApp(
             path.join(requiredArgument(args, args.indexOf("-mountpoint") + 1), mountedName),
             candidate,
+            layout,
           );
         }
       } else if (command === "/usr/bin/ditto") {
@@ -68,7 +75,7 @@ describe("official Codex desktop update transaction", () => {
         return { stdout: await fs.readFile(args.at(-1)!, "utf8"), stderr: "" };
       } else if (command === "/usr/bin/codesign") {
         const inspected = args.at(-1)!;
-        const app = inspected.endsWith("/codex") ? path.resolve(inspected, "../../..") : inspected;
+        const app = inspected.slice(0, inspected.indexOf(".app") + 4);
         const hash = await fs.readFile(path.join(app, ".test-signature"), "utf8");
         if (hash === "invalid") {
           throw new Error("invalid signature");
@@ -127,31 +134,39 @@ describe("official Codex desktop update transaction", () => {
     };
   }
 
-  it("validates at the immutable final path and never changes the existing app", async () => {
-    const f = await fixture();
-    const inode = (await fs.lstat(f.target)).ino;
-    const result = await updateCodexDesktopApp(f.params);
-    expect(result).toMatchObject({
-      status: "updated",
-      oldVersion: "100",
-      newVersion: "101",
-      backupPath: f.target,
-    });
-    expect(result.appBundlePath).not.toBe(f.target);
-    expect(result.appBundlePath).toContain(path.join(f.managedRoot, "versions"));
-    expect(f.validateCandidate).toHaveBeenCalledWith({
-      appBundlePath: result.appBundlePath,
-      appServerCommandPath: path.join(result.appBundlePath, "Contents", "Resources", "codex"),
-    });
-    await expect(readIdentity(result.appBundlePath)).resolves.toEqual(NEW);
-    await expect(readIdentity(f.target)).resolves.toEqual(OLD);
-    expect((await fs.lstat(f.target)).ino).toBe(inode);
-    expect(
-      (await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params))
-        ?.appBundlePath,
-    ).toBe(result.appBundlePath);
-    await expect(stagingDebris(f.managedRoot)).resolves.toEqual([]);
-  });
+  it.each(["direct", "nested"] as const)(
+    "validates the %s signed layout at its immutable final path without replacing the existing app",
+    async (layout) => {
+      const f = await fixture(NEW, "ChatGPT.app", ["ChatGPT.app"], layout);
+      const inode = (await fs.lstat(f.target)).ino;
+      const result = await updateCodexDesktopApp(f.params);
+      expect(result).toMatchObject({
+        status: "updated",
+        oldVersion: "100",
+        newVersion: "101",
+        backupPath: f.target,
+      });
+      expect(result.appBundlePath).not.toBe(f.target);
+      expect(result.appBundlePath).toContain(path.join(f.managedRoot, "versions"));
+      expect(f.validateCandidate).toHaveBeenCalledWith({
+        appBundlePath: result.appBundlePath,
+        appServerCommandPath: path.join(
+          result.appBundlePath,
+          "Contents",
+          "Resources",
+          layout === "direct" ? "codex" : "codex-cli/CodexCLI.app/Contents/MacOS/codex",
+        ),
+      });
+      await expect(readIdentity(result.appBundlePath)).resolves.toEqual(NEW);
+      await expect(readIdentity(f.target)).resolves.toEqual(OLD);
+      expect((await fs.lstat(f.target)).ino).toBe(inode);
+      expect(
+        (await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params))
+          ?.appBundlePath,
+      ).toBe(result.appBundlePath);
+      await expect(stagingDebris(f.managedRoot)).resolves.toEqual([]);
+    },
+  );
 
   it("retains previously selected immutable generations for existing readers", async () => {
     const f = await fixture();
@@ -198,7 +213,7 @@ describe("official Codex desktop update transaction", () => {
         ]);
       }
       expect(
-        (await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params))
+        (await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params))
           ?.appBundlePath,
       ).toBe(result.appBundlePath);
       expect(f.execute.mock.calls.find(([command]) => command === "/usr/bin/ditto")?.[1][1]).toBe(
@@ -210,7 +225,7 @@ describe("official Codex desktop update transaction", () => {
   it.each([NEW, OLD])("does not recopy a current managed generation (%j)", async (candidate) => {
     const f = await fixture();
     const first = await updateCodexDesktopApp(f.params);
-    const selection = await managedDesktop.readCodexManagedDesktopSelection(
+    const selection = await managedDesktop.readCodexManagedRuntimeSelection(
       f.managedRoot,
       f.params,
     );
@@ -229,7 +244,7 @@ describe("official Codex desktop update transaction", () => {
       expect.objectContaining({ appBundlePath: first.appBundlePath }),
     );
     expect(f.execute.mock.calls.some(([command]) => command === "/usr/bin/ditto")).toBe(false);
-    expect(await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params)).toEqual(
+    expect(await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params)).toEqual(
       selection,
     );
     await expect(readIdentity(first.appBundlePath)).resolves.toEqual(NEW);
@@ -311,7 +326,7 @@ describe("official Codex desktop update transaction", () => {
     expect(path.basename(result.appBundlePath)).toBe("ChatGPT.app");
     expect(result.backupPath).toBe(f.target);
     expect(
-      (await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params))?.selection
+      (await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params))?.selection
         .appName,
     ).toBe("ChatGPT.app");
     await expect(readIdentity(result.appBundlePath)).resolves.toEqual(NEW);
@@ -327,32 +342,29 @@ describe("official Codex desktop update transaction", () => {
       );
       expect(f.validateCandidate).not.toHaveBeenCalled();
       expect(
-        await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+        await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params),
       ).toBeUndefined();
       await expect(readIdentity(f.target)).resolves.toEqual(OLD);
     },
   );
 
-  it("verifies the renamed source before executing any candidate code", async () => {
-    const f = await fixture({ ...NEW, hash: "invalid" }, "Codex.app", ["ChatGPT.app"]);
-    await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("invalid signature");
-    expect(f.validateCandidate).not.toHaveBeenCalled();
-    expect(f.execute.mock.calls.some(([command]) => command === "/usr/bin/ditto")).toBe(false);
-    expect(
-      await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
-    ).toBeUndefined();
-  });
-
-  it("does not run candidate code or publish an invalidly signed bundle", async () => {
-    const f = await fixture({ ...NEW, hash: "invalid" });
-    await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("invalid signature");
-    expect(f.validateCandidate).not.toHaveBeenCalled();
-    await expect(readIdentity(f.target)).resolves.toEqual(OLD);
-    expect(
-      await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
-    ).toBeUndefined();
-    await expect(stagingDebris(f.managedRoot)).resolves.toEqual([]);
-  });
+  it.each([
+    { name: "ChatGPT.app", mounted: "ChatGPT.app" },
+    { name: "Codex.app", mounted: "ChatGPT.app" },
+  ])(
+    "rejects an invalidly signed $mounted installer for $name before copying or probing",
+    async ({ name, mounted }) => {
+      const f = await fixture({ ...NEW, hash: "invalid" }, name, [mounted]);
+      await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("invalid signature");
+      expect(f.validateCandidate).not.toHaveBeenCalled();
+      expect(f.execute.mock.calls.some(([command]) => command === "/usr/bin/ditto")).toBe(false);
+      await expect(readIdentity(f.target)).resolves.toEqual(OLD);
+      expect(
+        await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params),
+      ).toBeUndefined();
+      await expect(stagingDebris(f.managedRoot)).resolves.toEqual([]);
+    },
+  );
 
   it("removes only the unselected candidate after its capability check fails", async () => {
     const f = await fixture();
@@ -360,7 +372,7 @@ describe("official Codex desktop update transaction", () => {
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("Computer Use is missing");
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
     expect(
-      await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+      await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params),
     ).toBeUndefined();
     await expect(fs.readdir(path.join(f.managedRoot, "versions"))).resolves.toEqual([]);
   });
@@ -384,7 +396,7 @@ describe("official Codex desktop update transaction", () => {
       const candidate = f.candidatePath();
       await expect(readIdentity(candidate)).resolves.toEqual(NEW);
       expect(
-        await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+        await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params),
       ).toBeUndefined();
       expect(await stagingDebris(f.managedRoot)).toHaveLength(1);
       expect(f.events.some((event) => event.startsWith("hdiutil detach"))).toBe(false);
@@ -408,7 +420,7 @@ describe("official Codex desktop update transaction", () => {
       expect(commandProcessCleanup.isUncertain(failure)).toBe(true);
       expect(f.validateCandidate).not.toHaveBeenCalled();
       expect(
-        await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+        await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params),
       ).toBeUndefined();
       expect(await stagingDebris(f.managedRoot)).toHaveLength(1);
       expect(f.events.some((event) => event.startsWith("hdiutil detach"))).toBe(false);
@@ -434,7 +446,7 @@ describe("official Codex desktop update transaction", () => {
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("maintenance authority revoked");
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
     expect(
-      await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+      await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params),
     ).toBeUndefined();
     await expect(fs.readdir(path.join(f.managedRoot, "versions"))).resolves.toEqual([]);
     expect(f.events.some((event) => event.startsWith("hdiutil detach"))).toBe(true);
@@ -481,7 +493,7 @@ describe("official Codex desktop update transaction", () => {
     });
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("invalid signature");
     expect(
-      await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params),
+      await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params),
     ).toBeUndefined();
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
   });
@@ -493,15 +505,15 @@ describe("official Codex desktop update transaction", () => {
       generation: "concurrent",
       appName: "ChatGPT.app" as const,
     };
-    const winnerPath = managedDesktop.resolveCodexManagedDesktopAppPath(winner, f.managedRoot);
+    const winnerPath = managedDesktop.resolveCodexManagedRuntimeAppPath(winner, f.managedRoot);
     f.validateCandidate.mockImplementationOnce(async () => {
       await writeApp(winnerPath, OTHER);
-      await managedDesktop.publishCodexManagedDesktopSelection({
+      await managedDesktop.publishCodexManagedRuntimeSelection({
         root: f.managedRoot,
         selection: winner,
         ...f.params,
         expectedComparison: (
-          await managedDesktop.observeCodexManagedDesktopSelection({
+          await managedDesktop.observeCodexManagedRuntimeSelection({
             ...f.params,
             root: f.managedRoot,
           })
@@ -512,7 +524,7 @@ describe("official Codex desktop update transaction", () => {
     });
     await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("selection changed");
     expect(
-      (await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params))
+      (await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params))
         ?.appBundlePath,
     ).toBe(winnerPath);
     await expect(readIdentity(winnerPath)).resolves.toEqual(OTHER);
@@ -521,8 +533,8 @@ describe("official Codex desktop update transaction", () => {
 
   it("reconciles a selection that committed before publication cleanup failed", async () => {
     const f = await fixture();
-    const publish = managedDesktop.publishCodexManagedDesktopSelection;
-    vi.spyOn(managedDesktop, "publishCodexManagedDesktopSelection").mockImplementation(
+    const publish = managedDesktop.publishCodexManagedRuntimeSelection;
+    vi.spyOn(managedDesktop, "publishCodexManagedRuntimeSelection").mockImplementation(
       async (params) => {
         await publish(params);
         throw new Error("post-commit acknowledgement failed");
@@ -534,7 +546,7 @@ describe("official Codex desktop update transaction", () => {
       expect.stringContaining("selection was activated, but publication cleanup failed"),
     ]);
     expect(
-      (await managedDesktop.readCodexManagedDesktopSelection(f.managedRoot, f.params))
+      (await managedDesktop.readCodexManagedRuntimeSelection(f.managedRoot, f.params))
         ?.appBundlePath,
     ).toBe(result.appBundlePath);
     await expect(readIdentity(result.appBundlePath)).resolves.toEqual(NEW);
@@ -543,8 +555,8 @@ describe("official Codex desktop update transaction", () => {
 
   it("preserves canonical cleanup failure after the row committed", async () => {
     const f = await fixture();
-    const publish = managedDesktop.publishCodexManagedDesktopSelection;
-    vi.spyOn(managedDesktop, "publishCodexManagedDesktopSelection").mockImplementation(
+    const publish = managedDesktop.publishCodexManagedRuntimeSelection;
+    vi.spyOn(managedDesktop, "publishCodexManagedRuntimeSelection").mockImplementation(
       async (params) => {
         await publish(params);
         throw new commandProcessCleanup.Error();
@@ -553,7 +565,7 @@ describe("official Codex desktop update transaction", () => {
     const failure = await updateCodexDesktopApp(f.params).catch((caught: unknown) => caught);
     expect(commandProcessCleanup.isUncertain(failure)).toBe(true);
     expect((failure as Error).message).toContain("Selection was activated; candidate retained at");
-    const selected = (await managedDesktop.readCodexManagedDesktopSelection(
+    const selected = (await managedDesktop.readCodexManagedRuntimeSelection(
       f.managedRoot,
       f.params,
     ))!;
@@ -565,7 +577,7 @@ describe("official Codex desktop update transaction", () => {
 
   it("retains a possibly selected generation when publication state cannot be confirmed", async () => {
     const f = await fixture();
-    vi.spyOn(managedDesktop, "publishCodexManagedDesktopSelection").mockImplementation(async () => {
+    vi.spyOn(managedDesktop, "publishCodexManagedRuntimeSelection").mockImplementation(async () => {
       vi.spyOn(f.params.store, "lookup").mockRejectedValue(new Error("database read failed"));
       throw new Error("selection commit is uncertain");
     });
@@ -624,7 +636,7 @@ describe("official Codex desktop update transaction", () => {
     const failure = await updateCodexDesktopApp(f.params).catch((caught: unknown) => caught);
     expect(commandProcessCleanup.isUncertain(failure)).toBe(true);
     expect((failure as Error).message).toContain("Selection was activated; candidate retained at");
-    const selected = (await managedDesktop.readCodexManagedDesktopSelection(
+    const selected = (await managedDesktop.readCodexManagedRuntimeSelection(
       f.managedRoot,
       f.params,
     ))!;
@@ -632,18 +644,15 @@ describe("official Codex desktop update transaction", () => {
     expect(await stagingDebris(f.managedRoot)).toHaveLength(1);
     await expect(readIdentity(f.target)).resolves.toEqual(OLD);
   });
-  it.runIf(process.platform !== "win32")(
-    "rejects a symlinked app without touching its target",
-    async () => {
-      const f = await fixture();
-      const external = path.join(f.root, "external.app");
-      await fs.rename(f.target, external);
-      await fs.symlink(external, f.target);
-      await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("real directory");
-      expect(f.execute).not.toHaveBeenCalled();
-      await expect(readIdentity(external)).resolves.toEqual(OLD);
-    },
-  );
+  it("rejects a symlinked app without touching its target", async () => {
+    const f = await fixture();
+    const external = path.join(f.root, "external.app");
+    await fs.rename(f.target, external);
+    await fs.symlink(external, f.target);
+    await expect(updateCodexDesktopApp(f.params)).rejects.toThrow("real directory");
+    expect(f.execute).not.toHaveBeenCalled();
+    await expect(readIdentity(external)).resolves.toEqual(OLD);
+  });
 });
 
 function requiredArgument(args: readonly string[], index: number): string {
@@ -654,13 +663,23 @@ function requiredArgument(args: readonly string[], index: number): string {
   return argument;
 }
 
-async function writeApp(app: string, identity: FixtureIdentity): Promise<void> {
+async function writeApp(
+  app: string,
+  identity: FixtureIdentity,
+  layout: "direct" | "nested" = "direct",
+): Promise<void> {
   await fs.mkdir(path.join(app, "Contents", "Resources"), { recursive: true });
   await fs.writeFile(
     path.join(app, "Contents", "Info.plist"),
     JSON.stringify({ CFBundleIdentifier: "com.openai.codex", CFBundleVersion: identity.build }),
   );
-  const cli = path.join(app, "Contents", "Resources", "codex");
+  const cli = path.join(
+    app,
+    "Contents",
+    "Resources",
+    layout === "direct" ? "codex" : "codex-cli/CodexCLI.app/Contents/MacOS/codex",
+  );
+  await fs.mkdir(path.dirname(cli), { recursive: true });
   await fs.writeFile(cli, "test fixture, never execute");
   await fs.chmod(cli, 0o700);
   await fs.writeFile(path.join(app, ".test-signature"), identity.hash);

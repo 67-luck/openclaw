@@ -1,7 +1,3 @@
-/**
- * Startup orchestration for Codex app-server attempts, including shared-client
- * leasing, plugin thread config, sandbox environment, and thread lifecycle binding.
- */
 import {
   AgentHarnessPreflightError,
   embeddedAgentLog,
@@ -52,12 +48,7 @@ import {
   buildCodexPluginThreadConfigInputFingerprint,
   mergeCodexThreadConfigs,
 } from "./plugin-thread-config.js";
-import type {
-  CodexDynamicToolSpec,
-  CodexSandboxPolicy,
-  CodexTurnEnvironmentParams,
-  JsonObject,
-} from "./protocol.js";
+import type { CodexDynamicToolSpec, JsonObject } from "./protocol.js";
 import { isCodexResponsesOAuth } from "./responses-oauth.js";
 import {
   ensureCodexSandboxExecServerEnvironment,
@@ -65,7 +56,7 @@ import {
   type CodexSandboxExecEnvironment,
 } from "./sandbox-exec-server.js";
 import { buildScheduledCodexAppAuthorityInputFingerprint } from "./scheduled-app-authority.js";
-import type { CodexAppServerBindingStore } from "./session-binding.js";
+import type { CodexBindingAuthority, CodexAppServerBindingStore } from "./session-binding.js";
 import {
   clearSharedCodexAppServerClientIfCurrent,
   clearSharedCodexAppServerClientIfCurrentAndUnclaimed,
@@ -77,51 +68,21 @@ import {
   type CodexAppServerClientOptions,
   type CodexAppServerClientFactory,
 } from "./shared-client.js";
-import { CodexThreadClientReplacementError } from "./thread-lifecycle-errors.js";
+import {
+  CODEX_APP_SERVER_CONTEXT_RESTART_SELECTION_CHANGED,
+  CodexThreadClientReplacementError,
+} from "./thread-lifecycle-errors.js";
 import {
   startOrResumeThread,
-  type CodexAppServerThreadLifecycleBinding,
   type CodexContextEngineThreadBootstrapProjection,
 } from "./thread-lifecycle.js";
-import {
-  getCodexAppServerTurnRouter,
-  type CodexAppServerTurnRouter,
-  type CodexThreadRouteReservation,
-} from "./turn-router.js";
+import { isCodexWebSocketOpenFailure } from "./transport-websocket.js";
+import { getCodexAppServerTurnRouter, type CodexThreadRouteReservation } from "./turn-router.js";
 import type { CodexNativeWebSearchSupport } from "./web-search.js";
 
 const CODEX_APP_SERVER_STARTUP_MAX_ATTEMPTS = 3;
-const CODEX_APP_SERVER_CONTEXT_RESTART_SELECTION_CHANGED =
-  "CODEX_APP_SERVER_CONTEXT_RESTART_SELECTION_CHANGED";
-
-/** True when a pre-write context restart must replay on the newly selected owner. */
-export function isCodexContextRestartSelectionChangedError(
-  error: unknown,
-): error is Error & { code: typeof CODEX_APP_SERVER_CONTEXT_RESTART_SELECTION_CHANGED } {
-  return (
-    error instanceof Error &&
-    "code" in error &&
-    error.code === CODEX_APP_SERVER_CONTEXT_RESTART_SELECTION_CHANGED
-  );
-}
 
 type CodexSandboxContext = Awaited<ReturnType<typeof resolveSandboxContext>>;
-
-/** Resources and bindings returned after a Codex attempt thread starts. */
-type StartCodexAttemptThreadResult = {
-  client: CodexAppServerClient;
-  turnRouter: CodexAppServerTurnRouter;
-  turnRoute: CodexThreadRouteReservation;
-  thread: CodexAppServerThreadLifecycleBinding;
-  pluginAppServer: CodexAppServerRuntimeOptions;
-  sandboxEnvironment: CodexSandboxExecEnvironment | undefined;
-  environmentSelection: CodexTurnEnvironmentParams[] | undefined;
-  executionCwd: string;
-  sandboxPolicy: CodexSandboxPolicy | undefined;
-  runtimeArtifact?: AgentHarnessRuntimeArtifactBinding;
-  releaseSharedClientLease: () => void;
-  restartContextEngineCodexThread: () => Promise<CodexAppServerThreadLifecycleBinding>;
-};
 
 /**
  * Starts or resumes the Codex app-server thread and returns the resources the
@@ -129,6 +90,7 @@ type StartCodexAttemptThreadResult = {
  */
 export async function startCodexAttemptThread(params: {
   assertCurrent?: () => void;
+  authority?: CodexBindingAuthority;
   attemptClientFactory: CodexAppServerClientFactory;
   bindingStore: CodexAppServerBindingStore;
   runtime?: PluginRuntime;
@@ -158,7 +120,7 @@ export async function startCodexAttemptThread(params: {
   persistentWebSearchAllowed?: boolean;
   webSearchAllowed: boolean;
   developerInstructions: string | undefined;
-  skillsInstructions?: string;
+  refreshableInstructions?: string;
   agentWorkspaceDeveloperInstructions?: string;
   finalConfigPatch?: Parameters<typeof startOrResumeThread>[0]["finalConfigPatch"];
   buildFinalConfigPatch?: Parameters<typeof startOrResumeThread>[0]["buildFinalConfigPatch"];
@@ -180,7 +142,7 @@ export async function startCodexAttemptThread(params: {
   onStartupTimeout: () => void | Promise<void>;
   onExecutionDisconnect?: (error: Error) => void;
   spawnedBy: EmbeddedRunAttemptParams["spawnedBy"];
-}): Promise<StartCodexAttemptThreadResult> {
+}) {
   let pluginAppServer = params.appServer;
   const startupRuntimeAuthProfileId =
     params.startupPreparedAuth?.kind === "profile"
@@ -255,7 +217,12 @@ export async function startCodexAttemptThread(params: {
               throw new CodexAppServerStartupError("aborted");
             }
             startupClient = await params.attemptClientFactory({
-              assertCurrent: params.assertCurrent,
+              // Process startup retains its synchronous admission contract. Ordinary
+              // native requests use the retained worker authority at wire admission.
+              assertCurrent: () => {
+                params.assertCurrent?.();
+                params.authority?.assertLegacyCurrent();
+              },
               startOptions: params.appServer.start,
               pluginConfig: params.pluginConfig,
               ...(params.startupPreparedAuth
@@ -324,14 +291,24 @@ export async function startCodexAttemptThread(params: {
               config: params.config,
             });
             const turnRouter = getCodexAppServerTurnRouter(activeStartupClient);
-            const { tools, mcpServerName } = await ensureCodexComputerUse({
-              client: activeStartupClient,
-              pluginConfig: params.pluginConfig,
-              config: params.config,
-              agentDir: params.agentDir,
-              timeoutMs: params.appServer.requestTimeoutMs,
-              signal: startupAbandonController.signal,
-            }).catch((error: unknown) => {
+            let computerUseTools: string[] = [];
+            let computerUseConfig = params.computerUseConfig;
+            try {
+              const computerUseStatus = await ensureCodexComputerUse({
+                client: activeStartupClient,
+                pluginConfig: params.pluginConfig,
+                config: params.config,
+                agentDir: params.agentDir,
+                timeoutMs: params.appServer.requestTimeoutMs,
+                signal: startupAbandonController.signal,
+              });
+              computerUseTools = computerUseStatus.tools;
+              computerUseConfig = {
+                ...computerUseConfig,
+                pluginName: computerUseStatus.pluginName,
+                mcpServerName: computerUseStatus.mcpServerName,
+              };
+            } catch (error) {
               if (
                 startupAbandonController.signal.aborted ||
                 isCodexAppServerStartSelectionChangedError(error)
@@ -342,7 +319,7 @@ export async function startCodexAttemptThread(params: {
                 `Codex Computer Use readiness failed: ${formatErrorMessage(error)}`,
                 { cause: error, scope: "harness" },
               );
-            });
+            }
             const startupRuntimeIdentity = activeStartupClient.getRuntimeIdentity();
             const pluginAppCacheKey = buildCodexPluginAppCacheKey({
               appServer: params.appServer,
@@ -480,6 +457,7 @@ export async function startCodexAttemptThread(params: {
                 reserveResumeThread,
                 bindingStore: params.bindingStore,
                 assertCurrent: params.assertCurrent,
+                authority: params.authority,
                 params: params.buildAttemptParams(),
                 runtimeModelId: params.runtimeModelId,
                 agentId: params.sessionAgentId,
@@ -490,7 +468,7 @@ export async function startCodexAttemptThread(params: {
                 webSearchAllowed: params.webSearchAllowed,
                 appServer: pluginAppServer,
                 developerInstructions: params.developerInstructions,
-                skillsInstructions: params.skillsInstructions,
+                refreshableInstructions: params.refreshableInstructions,
                 agentWorkspaceDeveloperInstructions: params.agentWorkspaceDeveloperInstructions,
                 config: threadConfig,
                 shellEnvironment: params.shellEnvironment,
@@ -563,8 +541,8 @@ export async function startCodexAttemptThread(params: {
               startupSandboxEnvironmentAcquired = false;
               startCodexComputerUseHealthMonitor({
                 client: activeStartupClient,
-                config: { ...params.computerUseConfig, mcpServerName },
-                tools,
+                config: computerUseConfig,
+                tools: computerUseTools,
               });
               startupAttemptSucceeded = true;
               return {
@@ -579,7 +557,12 @@ export async function startCodexAttemptThread(params: {
                 ...(runtimeArtifact ? { runtimeArtifact } : {}),
                 restartContextEngineCodexThread: async () => {
                   try {
-                    return await startOrResumeThread(buildThreadLifecycleParams(params.signal));
+                    // Overflow retries reuse the prepared input, so the old thread's
+                    // bootstrap receipt cannot describe the fresh thread.
+                    return await startOrResumeThread({
+                      ...buildThreadLifecycleParams(params.signal),
+                      contextEngineProjection: undefined,
+                    });
                   } catch (error) {
                     if (!isCodexAppServerStartSelectionChangedError(error)) {
                       throw error;
@@ -658,6 +641,8 @@ export async function startCodexAttemptThread(params: {
             const clientRetired = error instanceof CodexThreadClientReplacementError;
             if (
               startupAbandonController.signal.aborted ||
+              // Physical startup already owns the bounded unopened-socket retries.
+              isCodexWebSocketOpenFailure(error) ||
               (clientRetired && replacedSettledFailureClient) ||
               (!clientRetired && !selectionChanged && !isCodexAppServerConnectionClosedError(error))
             ) {

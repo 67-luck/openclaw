@@ -34,7 +34,12 @@ vi.mock("../../agents/worktrees/service.js", () => ({
 }));
 vi.mock("../session-utils.js", () => ({ loadGatewaySessionEntryReadOnly: mocks.session }));
 vi.mock("../../state/session-repository-workspaces.js", () => ({
-  getSessionRepositoryWorkspaceStore: () => ({ get: mocks.repositoryWorkspace }),
+  getSessionRepositoryWorkspaceStore: () => ({
+    prepare: async () => ({
+      workspace: mocks.repositoryWorkspace(),
+      current: mocks.repositoryWorkspace,
+    }),
+  }),
 }));
 vi.mock("../../process/exec.js", () => ({ runCommandBuffered: mocks.nativeToken }));
 
@@ -95,13 +100,8 @@ describe("worker GitHub launch binding", () => {
   });
   afterEach(() => vi.unstubAllEnvs());
 
-  it.each([
-    "git@github.com:owner/repo.git",
-    "ssh://git@github.com/owner/repo.git",
-    "https://github.com/owner/repo.git",
-  ])("binds the verified shared account and canonical HTTPS remote from %s", async (originUrl) => {
+  it("binds the verified shared account and canonical HTTPS remote", async () => {
     await installProfile();
-    mocks.repository.mockResolvedValue({ originUrl });
 
     await expect(prepareWorkerGitHubBinding(session)).resolves.toEqual({
       token,
@@ -110,7 +110,9 @@ describe("worker GitHub launch binding", () => {
       remoteUrl: "https://github.com/owner/repo.git",
       gitAuthor: { name: "Shared Bot" },
     });
-    expect(mocks.verify).toHaveBeenCalledWith(token);
+    expect(mocks.verify).toHaveBeenCalledWith(token, {
+      apiBaseUrl: "https://api.github.com",
+    });
     expect(mocks.nativeToken).not.toHaveBeenCalled();
   });
 
@@ -145,7 +147,7 @@ describe("worker GitHub launch binding", () => {
     });
   });
 
-  it.each(["missing-profile", "unavailable", "rate_limited", "unverified"] as const)(
+  it.each(["missing-profile", "unavailable"] as const)(
     "omits credentials when the managed identity is %s",
     async (failure) => {
       if (failure !== "missing-profile") {

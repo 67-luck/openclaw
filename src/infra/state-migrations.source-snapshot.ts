@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Root } from "@openclaw/fs-safe";
 import { readRegularFileSync } from "@openclaw/fs-safe/advanced";
+import { getFsSafeNativeConfig } from "@openclaw/fs-safe/config";
 import { FsSafeError } from "@openclaw/fs-safe/errors";
 import {
   pinDirectory,
@@ -133,13 +134,17 @@ export class LegacyMigrationSourceClaim<
       if (
         !(error instanceof FsSafeError) ||
         error.code !== "helper-unavailable" ||
+        getFsSafeNativeConfig().mode === "require" ||
         path.dirname(from) !== path.dirname(to) ||
         root.defaults.assertBeforeMutation ||
         root.defaults.denyMutations ||
         root.defaults.mutationSymlinks ||
-        !["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"].some((code) =>
-          hasErrnoCode(error.cause, code),
-        )
+        (error.cause !== undefined &&
+          // fs-safe reports loader failures before native admission or dispatch.
+          error.message !== "native fs-safe helper is unavailable" &&
+          !["EINVAL", "ENOSYS", "ENOTSUP", "EOPNOTSUPP"].some((code) =>
+            hasErrnoCode(error.cause, code),
+          ))
       ) {
         throw error;
       }
@@ -259,6 +264,30 @@ export class LegacyMigrationSourceClaim<
       throw new Error(params.mismatchMessage);
     }
     return claimed;
+  }
+
+  /** Drain both receipt-retired names through the caller's safe reader before removing them. */
+  async removeRetiredSources(params: {
+    readSnapshot?: (sourcePath: string) => Promise<LegacyMigrationSourceIdentity>;
+    removeSource?: (sourcePath: string) => Promise<void> | void;
+  }): Promise<number> {
+    let removed = 0;
+    for (const claimed of [false, true]) {
+      if (!(await this.exists(claimed))) {
+        continue;
+      }
+      const sourcePath = claimed ? this.claimPath : this.sourcePath;
+      await (params.readSnapshot ?? this.params.readSnapshot)(sourcePath);
+      if (params.removeSource) {
+        await params.removeSource(sourcePath);
+      } else {
+        await this.params.stateRoot.remove(
+          claimed ? this.claimRelativePath : this.sourceRelativePath,
+        );
+      }
+      removed += 1;
+    }
+    return removed;
   }
 
   async remove(
@@ -436,6 +465,7 @@ export function claimAndRemoveLegacyMigrationSource(params: {
   followSymlinks?: boolean;
   maxBytes?: number;
   beforeClaim?: () => void;
+  beforeRestore?: () => void;
   removeSource?: (sourcePath: string) => void;
 }): void {
   params.beforeClaim?.();
@@ -449,12 +479,13 @@ export function claimAndRemoveLegacyMigrationSource(params: {
     (params.removeSource ?? fs.unlinkSync)(claimPath);
   } catch (error) {
     let restoreFailure = "";
-    if (fs.existsSync(claimPath) && !fs.existsSync(params.sourcePath)) {
-      try {
+    try {
+      params.beforeRestore?.();
+      if (fs.existsSync(claimPath) && !fs.existsSync(params.sourcePath)) {
         fs.renameSync(claimPath, params.sourcePath);
-      } catch (restoreError) {
-        restoreFailure = `; the claimed source remains at ${claimPath} because restore also failed: ${String(restoreError)}`;
       }
+    } catch (restoreError) {
+      restoreFailure = `; could not restore the claimed source at ${claimPath}: ${String(restoreError)}`;
     }
     throw new Error(`${String(error)}${restoreFailure}`, { cause: error });
   }

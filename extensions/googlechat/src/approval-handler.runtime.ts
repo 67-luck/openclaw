@@ -13,7 +13,6 @@ import {
 } from "openclaw/plugin-sdk/approval-runtime";
 import { createSubsystemLogger } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import { resolveGoogleChatAccount, type ResolvedGoogleChatAccount } from "./accounts.js";
 import { sendGoogleChatMessage, updateGoogleChatMessage } from "./api.js";
 import {
@@ -24,7 +23,10 @@ import {
   registerGoogleChatManualApprovalFollowupSuppression,
   unregisterGoogleChatManualApprovalFollowupSuppression,
 } from "./approval-card-actions.js";
-import { escapeGoogleChatApprovalCardText as escapeGoogleChatText } from "./approval-card-text.js";
+import {
+  buildGoogleChatApprovalTextWidget as buildTextWidget,
+  escapeGoogleChatApprovalCardText as escapeGoogleChatText,
+} from "./approval-card-text.js";
 import {
   isGoogleChatNativeApprovalClientEnabled,
   shouldHandleGoogleChatNativeApprovalRequest,
@@ -34,7 +36,6 @@ import type { GoogleChatCardV2 } from "./types.js";
 
 const log = createSubsystemLogger("googlechat/approvals");
 const GOOGLECHAT_APPROVAL_CARD_ID = "openclaw-approval";
-const MAX_TEXT_PARAGRAPH_CHARS = 1800;
 
 type GoogleChatApprovalHandlerContext = {
   account?: ResolvedGoogleChatAccount;
@@ -91,40 +92,12 @@ function resolveHandlerAccount(
   return account;
 }
 
-function truncateText(text: string, maxChars = MAX_TEXT_PARAGRAPH_CHARS): string {
-  return text.length <= maxChars ? text : `${truncateUtf16Safe(text, maxChars - 3)}...`;
-}
-
-function buildMetadataText(metadata: readonly { label: string; value: string }[]): string {
-  return metadata
-    .map(
-      (item) => `<b>${escapeGoogleChatText(item.label)}:</b> ${escapeGoogleChatText(item.value)}`,
-    )
-    .join("<br>");
-}
-
-function buildMainTextWidget(text: string) {
-  return {
-    textParagraph: {
-      text: escapeGoogleChatText(truncateText(text)),
-    },
-  };
-}
-
-function buildHtmlTextWidget(text: string) {
-  return {
-    textParagraph: {
-      text: truncateText(text),
-    },
-  };
-}
-
 function buildPendingSections(view: PendingApprovalView) {
   if (view.approvalKind === "exec") {
     return [
-      { header: "Command", widgets: [buildMainTextWidget(view.commandText)] },
+      { header: "Command", widgets: [buildTextWidget(view.commandText)] },
       ...(view.commandPreview && view.commandPreview !== view.commandText
-        ? [{ header: "Preview", widgets: [buildMainTextWidget(view.commandPreview)] }]
+        ? [{ header: "Preview", widgets: [buildTextWidget(view.commandPreview)] }]
         : []),
     ];
   }
@@ -133,16 +106,17 @@ function buildPendingSections(view: PendingApprovalView) {
       {
         header: "Request",
         widgets: [
-          buildHtmlTextWidget(
+          buildTextWidget(
             `<b>${escapeGoogleChatText(view.title)}</b>${
               view.description ? `<br>${escapeGoogleChatText(view.description)}` : ""
             }`,
+            "html",
           ),
         ],
       },
     ];
   }
-  return [{ header: "Change", widgets: [buildMainTextWidget(view.operationSummary)] }];
+  return [{ header: "Change", widgets: [buildTextWidget(view.operationSummary)] }];
 }
 
 function buildMetadataSection(
@@ -151,48 +125,16 @@ function buildMetadataSection(
   return {
     header: "Details",
     widgets: [
-      buildHtmlTextWidget(
-        buildMetadataText([{ label: "Approval ID", value: view.approvalId }, ...view.metadata]),
+      buildTextWidget(
+        [{ label: "Approval ID", value: view.approvalId }, ...view.metadata]
+          .map(
+            (item) =>
+              `<b>${escapeGoogleChatText(item.label)}:</b> ${escapeGoogleChatText(item.value)}`,
+          )
+          .join("<br>"),
+        "html",
       ),
     ],
-  };
-}
-
-function buildActionSection(params: { actionFunction: string; view: PendingApprovalView }): {
-  section: NonNullable<GoogleChatCardV2["card"]["sections"]>[number];
-  actionTokens: GoogleChatApprovalActionToken[];
-} {
-  const { actionFunction, view } = params;
-  const actionTokens = view.actions.map((action) => ({
-    token: googleChatApprovalControls.createToken(),
-    decision: action.decision,
-  }));
-  return {
-    actionTokens,
-    section: {
-      widgets: [
-        {
-          buttonList: {
-            buttons: view.actions.map((action, index) => {
-              const actionToken = actionTokens[index];
-              if (!actionToken) {
-                throw new Error("Google Chat approval action token missing.");
-              }
-              return {
-                text: action.label,
-                onClick: {
-                  action: {
-                    function: actionFunction,
-                    parameters: buildGoogleChatApprovalActionParameters(actionToken.token),
-                    loadIndicator: "SPINNER" as const,
-                  },
-                },
-              };
-            }),
-          },
-        },
-      ],
-    },
   };
 }
 
@@ -202,7 +144,21 @@ function buildPendingPayload(params: {
   view: PendingApprovalView;
 }): GoogleChatPendingDelivery {
   const { actionFunction, nowMs, view } = params;
-  const { section: actionSection, actionTokens } = buildActionSection({ actionFunction, view });
+  const actionTokens: GoogleChatApprovalActionToken[] = [];
+  const buttons = view.actions.map((action) => {
+    const token = googleChatApprovalControls.createToken();
+    actionTokens.push({ token, decision: action.decision });
+    return {
+      text: action.label,
+      onClick: {
+        action: {
+          function: actionFunction,
+          parameters: buildGoogleChatApprovalActionParameters(token),
+          loadIndicator: "SPINNER" as const,
+        },
+      },
+    };
+  });
   const title =
     view.approvalKind === "plugin"
       ? "Plugin Approval Required"
@@ -214,7 +170,11 @@ function buildPendingPayload(params: {
     cardId: GOOGLECHAT_APPROVAL_CARD_ID,
     card: {
       header: { title, subtitle },
-      sections: [...buildPendingSections(view), buildMetadataSection(view), actionSection],
+      sections: [
+        ...buildPendingSections(view),
+        buildMetadataSection(view),
+        { widgets: [{ buttonList: { buttons } }] },
+      ],
     },
   };
   return {
@@ -269,10 +229,8 @@ export const googleChatApprovalNativeRuntime = createChannelApprovalNativeRuntim
 >({
   eventKinds: ["exec", "plugin", "system-agent"],
   availability: {
-    isConfigured: ({ cfg, accountId }) =>
-      isGoogleChatNativeApprovalClientEnabled({ cfg, accountId }),
-    shouldHandle: ({ cfg, accountId, approvalKind, request }) =>
-      shouldHandleGoogleChatNativeApprovalRequest({ cfg, accountId, approvalKind, request }),
+    isConfigured: isGoogleChatNativeApprovalClientEnabled,
+    shouldHandle: shouldHandleGoogleChatNativeApprovalRequest,
   },
   presentation: {
     buildPendingPayload: ({ cfg, accountId, context, nowMs, view }) =>

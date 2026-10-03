@@ -400,7 +400,6 @@ describe("gateway concurrency benchmark script", () => {
         const sample = await testing.sampleGateway({
           deadlineAt: performance.now() + 5000,
           runStartedAt: performance.now(),
-          serial: true,
           port: address.port,
           activitySummaryDiagnostics: capture,
           rpc: async <T>(method: string, params: unknown) => {
@@ -409,7 +408,7 @@ describe("gateway concurrency benchmark script", () => {
             return { sessions: [{ key: "fixture-session" }] } as T;
           },
         });
-        expect(order).toEqual(["/readyz", "/", "sessions.list"]);
+        expect(order.toSorted()).toEqual(["/", "/readyz", "sessions.list"]);
         expect(sample.sessionsList.ok).toBe(true);
         expect(capture.finish().records).toEqual(
           expect.arrayContaining([
@@ -1521,30 +1520,27 @@ describe("gateway concurrency benchmark script", () => {
     expect(testing.summarizeRuns([run]).budgetViolations).toEqual([]);
   });
 
-  it.each(["tasks.list", "cron.list", "cron.status"])(
-    "enforces the control budget for %s",
-    (method) => {
-      const run = createBenchmarkRun({
-        controlPlane: [
-          {
-            method,
-            atMs: 0,
-            error: null,
-            latencyMs: 2001,
-            ok: true,
-          },
-        ],
-      });
-      const summary = testing.summarizeRuns([run], { maxControlMs: 2000 });
-      expect(summary.budgetViolations).toEqual([
-        `Gateway ${method} probe exceeded 2000ms: ok=true latencyMs=2001.0 error=none`,
-      ]);
-      expect(summary.controlPlane[method]).toMatchObject({
-        failedSamples: 0,
-        latencyMs: { count: 1, max: 2001 },
-      });
-    },
-  );
+  it.each(["cron.list", "cron.status"])("enforces the control budget for %s", (method) => {
+    const run = createBenchmarkRun({
+      controlPlane: [
+        {
+          method,
+          atMs: 0,
+          error: null,
+          latencyMs: 2001,
+          ok: true,
+        },
+      ],
+    });
+    const summary = testing.summarizeRuns([run], { maxControlMs: 2000 });
+    expect(summary.budgetViolations).toEqual([
+      `Gateway ${method} probe exceeded 2000ms: ok=true latencyMs=2001.0 error=none`,
+    ]);
+    expect(summary.controlPlane[method]).toMatchObject({
+      failedSamples: 0,
+      latencyMs: { count: 1, max: 2001 },
+    });
+  });
 
   it("keeps setup probes outside the control budget and handshakes under their own budget", () => {
     const slowProbe = { atMs: 0, error: null, latencyMs: 5_000, ok: true };
@@ -1982,10 +1978,9 @@ describe("gateway concurrency benchmark script", () => {
           throw new Error("sessions.list failed: unauthorized");
         },
         runStartedAt: performance.now(),
-        serial: true,
       });
 
-      expect(probeOrder).toEqual(["/readyz", "/", "sessions.list"]);
+      expect(probeOrder.toSorted()).toEqual(["/", "/readyz", "sessions.list"]);
       expect(sample.readyz).toMatchObject({ error: null, ok: false, status: 503 });
       expect(sample.controlUi).toMatchObject({
         error: "response body did not contain <html",
@@ -2003,7 +1998,6 @@ describe("gateway concurrency benchmark script", () => {
           throw new Error(`${"x".repeat(499)}😀`);
         },
         runStartedAt: performance.now(),
-        serial: true,
       });
       expect(unicodeSample.sessionsList.error).toBe("x".repeat(499));
       const failure = testing.formatRunFailure(
@@ -2312,7 +2306,7 @@ syncBuiltinESMExports();\n`,
           expect(config.agents.defaults.maxConcurrent).toBe(1);
           expect(config.agents.defaults.heartbeat).toEqual({ every: "0m" });
           if (liveFailure) {
-            expect(config.agents.list.map((agent: { id: string }) => agent.id)).toEqual(["main"]);
+            expect(Object.keys(config.agents.entries)).toEqual(["main"]);
             expect(config.models.providers.openai.apiKey).toEqual({
               source: "env",
               provider: "default",

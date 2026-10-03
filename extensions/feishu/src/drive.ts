@@ -13,6 +13,8 @@ import {
   extractReplyText,
   FeishuReplyCommentError,
   formatFeishuApiError,
+  type FeishuDriveCommentCard,
+  type FeishuDriveCommentReply,
 } from "./comment-shared.js";
 import { parseFeishuCommentTarget, type CommentFileType } from "./comment-target.js";
 import { FeishuDriveSchema, type FeishuDriveParams } from "./drive-schema.js";
@@ -20,8 +22,6 @@ import { withFeishuMessageDispatch } from "./send-context.js";
 import { createFeishuToolClient } from "./tool-account.js";
 import { registerFeishuTool } from "./tool-registration.js";
 import { feishuExternalToolResult as jsonResult, unknownToolActionResult } from "./tool-result.js";
-
-// ============ Actions ============
 
 type FeishuExplorerRootFolderMetaResponse = {
   code: number;
@@ -31,48 +31,11 @@ type FeishuExplorerRootFolderMetaResponse = {
   };
 };
 
-type FeishuDriveInternalClient = Lark.Client & {
-  domain?: string;
-  httpInstance: Pick<Lark.HttpInstance, "get">;
-  request(params: {
-    method: "GET" | "POST";
-    url: string;
-    params?: Record<string, string | undefined>;
-    data: unknown;
-    timeout?: number;
-  }): Promise<unknown>;
-};
-
 type FeishuDriveApiResponse<T> = {
   code: number;
   log_id?: string;
   msg?: string;
   data?: T;
-};
-
-type FeishuDriveCommentReply = {
-  reply_id?: string;
-  user_id?: string;
-  create_time?: number;
-  update_time?: number;
-  content?: {
-    elements?: unknown[];
-  };
-};
-
-type FeishuDriveCommentCard = {
-  comment_id?: string;
-  user_id?: string;
-  create_time?: number;
-  update_time?: number;
-  is_solved?: boolean;
-  is_whole?: boolean;
-  has_more?: boolean;
-  page_token?: string;
-  quote?: string;
-  reply_list?: {
-    replies?: FeishuDriveCommentReply[];
-  };
 };
 
 type FeishuDriveListCommentsResponse = FeishuDriveApiResponse<{
@@ -97,29 +60,20 @@ type FeishuDriveToolContext = {
 
 const FEISHU_DRIVE_REQUEST_TIMEOUT_MS = 30_000;
 
-function getDriveInternalClient(client: Lark.Client): FeishuDriveInternalClient {
-  return client as FeishuDriveInternalClient;
-}
-
-function buildReplyElements(content: string) {
-  return [{ type: "text", text: content }];
-}
-
-async function requestDriveApi<T>(params: {
+function requestDriveApi<T>(params: {
   client: Lark.Client;
   method: "GET" | "POST";
   url: string;
   query?: Record<string, string | undefined>;
   data?: unknown;
 }): Promise<T> {
-  const internalClient = getDriveInternalClient(params.client);
-  return (await internalClient.request({
+  return params.client.request<T>({
     method: params.method,
     url: params.url,
     params: params.query ?? {},
     data: params.data ?? {},
     timeout: FEISHU_DRIVE_REQUEST_TIMEOUT_MS,
-  })) as T;
+  });
 }
 
 function assertDriveApiSuccess<T extends { code: number; msg?: string }>(response: T): T {
@@ -211,10 +165,6 @@ function resolveDriveCommentParams<
   };
 }
 
-function formatDriveApiError(error: unknown): string {
-  return formatFeishuApiError(error, { includeConfigParams: true });
-}
-
 function extractDriveApiErrorMeta(error: unknown): {
   message: string;
   httpStatus?: number;
@@ -228,12 +178,7 @@ function extractDriveApiErrorMeta(error: unknown): {
   const response = isRecord(error.response) ? error.response : undefined;
   const responseData = isRecord(response?.data) ? response?.data : undefined;
   return {
-    message:
-      typeof error.message === "string"
-        ? error.message
-        : typeof error === "string"
-          ? error
-          : JSON.stringify(error),
+    message: typeof error.message === "string" ? error.message : JSON.stringify(error),
     httpStatus: typeof response?.status === "number" ? response.status : undefined,
     feishuCode:
       typeof responseData?.code === "number" ? responseData.code : readString(responseData?.code),
@@ -242,21 +187,13 @@ function extractDriveApiErrorMeta(error: unknown): {
   };
 }
 
-function isReplyNotAllowedError(error: unknown): boolean {
-  if (!(error instanceof FeishuReplyCommentError)) {
-    return false;
-  }
-  return error.feishuCode === 1069302;
-}
-
 async function getRootFolderToken(client: Lark.Client): Promise<string> {
   // Use generic HTTP client to call the root folder meta API
   // as it's not directly exposed in the SDK
-  const internalClient = getDriveInternalClient(client);
-  const domain = internalClient.domain ?? "https://open.feishu.cn";
-  const res = (await internalClient.httpInstance.get(
+  const domain = client.domain ?? "https://open.feishu.cn";
+  const res = await client.httpInstance.get<FeishuExplorerRootFolderMetaResponse>(
     `${domain}/open-apis/drive/explorer/v2/root_folder/meta`,
-  )) as FeishuExplorerRootFolderMetaResponse;
+  );
   if (res.code !== 0) {
     throw new Error(res.msg ?? "Failed to get root folder");
   }
@@ -307,23 +244,13 @@ async function listFolder(client: Lark.Client, params: Record<string, unknown> =
 }
 
 async function getRootFileInfo(client: Lark.Client, fileToken: string) {
-  const res = await client.drive.file.list({ params: {} });
-  assertFeishuApiSuccess(res);
-
-  const file = res.data?.files?.find((candidate) => candidate.token === fileToken);
+  const { files } = await listFolder(client);
+  const file = files.find((candidate) => candidate.token === fileToken);
   if (!file) {
     throw new Error(`File not found: ${fileToken}`);
   }
 
-  return {
-    token: file.token,
-    name: file.name,
-    type: file.type,
-    url: file.url,
-    created_time: file.created_time,
-    modified_time: file.modified_time,
-    owner_id: file.owner_id,
-  };
+  return file;
 }
 
 async function getFileInfo(
@@ -427,20 +354,15 @@ async function moveFile(client: Lark.Client, fileToken: string, type: string, fo
   };
 }
 
-async function deleteFile(client: Lark.Client, fileToken: string, type: string) {
+async function deleteFile(
+  client: Lark.Client,
+  fileToken: string,
+  type: Extract<FeishuDriveParams, { action: "delete" }>["type"],
+) {
   const res = await client.drive.file.delete({
     path: { file_token: fileToken },
     params: {
-      type: type as
-        | "doc"
-        | "docx"
-        | "sheet"
-        | "bitable"
-        | "folder"
-        | "file"
-        | "mindnote"
-        | "slides"
-        | "shortcut",
+      type,
     },
   });
   assertFeishuApiSuccess(res);
@@ -503,7 +425,7 @@ async function addComment(
         url: `/open-apis/drive/v1/files/${encodeURIComponent(params.file_token)}/new_comments`,
         data: {
           file_type: params.file_type,
-          reply_elements: buildReplyElements(params.content),
+          reply_elements: [{ type: "text", text: params.content }],
           ...(params.block_id?.trim() ? { anchor: { block_id: params.block_id.trim() } } : {}),
         },
       }),
@@ -606,15 +528,9 @@ async function replyComment(
     console.warn(
       `[feishu_drive] replyComment threw ` +
         `comment=${params.comment_id} file_type=${params.file_type} ` +
-        `error=${formatDriveApiError(error)}`,
+        `error=${formatFeishuApiError(error, { includeConfigParams: true })}`,
     );
-    throw new FeishuReplyCommentError({
-      message: meta.message,
-      httpStatus: meta.httpStatus,
-      feishuCode: meta.feishuCode,
-      feishuMsg: meta.feishuMsg,
-      feishuLogId: meta.feishuLogId,
-    });
+    throw new FeishuReplyCommentError(meta);
   }
 }
 
@@ -655,50 +571,39 @@ export async function deliverCommentThreadText(
         `Whole-document comment follow-ups are only supported for doc/docx (got ${params.file_type})`,
       );
     }
-    const wholeCommentFileType: "doc" | "docx" = params.file_type;
     console.info(
       `[feishu_drive] whole-comment compatibility path ` +
         `comment=${params.comment_id} file_type=${params.file_type} mode=add_comment`,
     );
-    return {
-      delivery_mode: "add_comment",
-      ...(await addComment(client, {
-        file_token: params.file_token,
-        file_type: wholeCommentFileType,
-        content: params.content,
-      })),
-    };
-  }
-  try {
-    return {
-      delivery_mode: "reply_comment",
-      ...(await replyComment(client, params)),
-    };
-  } catch (error) {
-    if (error instanceof FeishuReplyCommentError && isReplyNotAllowedError(error)) {
+  } else {
+    try {
+      return {
+        delivery_mode: "reply_comment",
+        ...(await replyComment(client, params)),
+      };
+    } catch (error) {
+      if (!(error instanceof FeishuReplyCommentError) || error.feishuCode !== 1069302) {
+        throw error;
+      }
       if (params.file_type !== "doc" && params.file_type !== "docx") {
         throw error;
       }
-      const fallbackFileType: "doc" | "docx" = params.file_type;
       console.info(
         `[feishu_drive] reply-not-allowed compatibility path ` +
           `comment=${params.comment_id} file_type=${params.file_type} mode=add_comment ` +
           `log_id=${error.feishuLogId ?? "unknown"}`,
       );
-      return {
-        delivery_mode: "add_comment",
-        ...(await addComment(client, {
-          file_token: params.file_token,
-          file_type: fallbackFileType,
-          content: params.content,
-        })),
-      };
     }
-    throw error;
   }
+  return {
+    delivery_mode: "add_comment",
+    ...(await addComment(client, {
+      file_token: params.file_token,
+      file_type: params.file_type,
+      content: params.content,
+    })),
+  };
 }
-
-// ============ Tool Registration ============
 
 export function registerFeishuDriveTools(api: OpenClawPluginApi) {
   registerFeishuTool(api, {
@@ -719,13 +624,7 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
         });
         switch (p.action) {
           case "list":
-            return jsonResult(
-              await listFolder(client, {
-                folder_token: p.folder_token,
-                page_size: p.page_size,
-                page_token: p.page_token,
-              }),
-            );
+            return jsonResult(await listFolder(client, p));
           case "info":
             return jsonResult(await getFileInfo(client, p.file_token, p.type));
           case "create_folder":
@@ -751,7 +650,7 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
             } finally {
               // Typing cleanup must not delay the visible write result.
               void cleanupAmbientCommentTypingReaction({
-                client: getDriveInternalClient(client),
+                client,
                 deliveryContext: ctx.deliveryContext,
               });
             }
@@ -763,4 +662,3 @@ export function registerFeishuDriveTools(api: OpenClawPluginApi) {
     },
   });
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

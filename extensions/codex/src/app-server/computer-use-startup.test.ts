@@ -105,7 +105,9 @@ describe.each(["service", "cache"])("createIsolatedCodexAppServerClient %s refre
 
       const selected = { epoch: 1, fingerprint: "desktop-original" };
       let fingerprint = selected.fingerprint;
+      const lifetime = new AbortController();
       const owner = createCodexDesktopGenerationOwner({
+        signal: lifetime.signal,
         initialGeneration: selected,
         readFingerprint: async () => {
           await expect(
@@ -125,7 +127,12 @@ describe.each(["service", "cache"])("createIsolatedCodexAppServerClient %s refre
       const copy = fs.cp.bind(fs);
       vi.spyOn(fs, "cp").mockImplementation(async (...args) => {
         await copy(...args);
-        if (args[0] === (artifact === "service" ? sourceService : pluginRoot)) {
+        // The managed marketplace can alias the desktop plugin through a symlink.
+        const copiedArtifact =
+          artifact === "service"
+            ? args[0] === sourceService
+            : (await fs.realpath(args[0])) === pluginRoot;
+        if (copiedArtifact) {
           if (desktopChanged) {
             fingerprint = "desktop-replaced";
           }
@@ -187,7 +194,8 @@ describe.each(["service", "cache"])("createIsolatedCodexAppServerClient %s refre
         expect(await fs.readdir(path.dirname(targetService))).toEqual(["Codex Computer Use.app"]);
         expect(await fs.readdir(path.dirname(cachePath))).toEqual(["1.0.857"]);
       } finally {
-        owner.stop();
+        lifetime.abort();
+        await owner.waitForIdle();
         await harness.client.closeAndWait();
       }
     },

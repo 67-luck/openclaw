@@ -15,7 +15,7 @@ import {
 } from "../agents/auth-profiles/sqlite.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import {
-  closeOpenClawStateDatabaseForTest,
+  closeOpenClawStateDatabaseAsync,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { runSecretsAudit } from "./audit.js";
@@ -278,7 +278,7 @@ describe("secrets audit", () => {
   afterEach(async () => {
     vi.unstubAllEnvs();
     closeOpenClawAgentDatabasesForTest();
-    closeOpenClawStateDatabaseForTest();
+    await closeOpenClawStateDatabaseAsync();
     await fs.rm(fixture.rootDir, { recursive: true, force: true });
   });
 
@@ -319,7 +319,7 @@ describe("secrets audit", () => {
   });
 
   it("reports plaintext that duplicates the store while resolving store refs", async () => {
-    writeSecretStoreEntry({
+    await writeSecretStoreEntry({
       scope: { kind: "team" },
       name: "STORED_API_KEY",
       value: "shared-store-value",
@@ -372,27 +372,14 @@ describe("secrets audit", () => {
   });
 
   it("does not inspect or mutate legacy auth.json during audit", async () => {
-    await writeJsonFile(fixture.authJsonPath, {
-      openai: {
-        type: "api_key",
-        key: "sk-legacy-auth-json",
-      },
-    });
-
-    const report = await runSecretsAudit({ env: fixture.env });
-    expectFindingCode(report, "LEGACY_RESIDUE");
-    expect(report.filesScanned).not.toContain(fixture.authJsonPath);
-    const authJsonStat = await fs.stat(fixture.authJsonPath);
-    expect(authJsonStat.isFile()).toBe(true);
-    await expectPathMissing(fixture.authStorePath);
-  });
-
-  it("ignores malformed legacy auth JSON instead of reading it", async () => {
     await fs.writeFile(fixture.authJsonPath, "{invalid-json", "utf8");
 
     const report = await runSecretsAudit({ env: fixture.env });
     expectFindingCode(report, "LEGACY_RESIDUE");
     expectFindingFile(report, fixture.authJsonPath);
+    expect(report.filesScanned).not.toContain(fixture.authJsonPath);
+    await expect(fs.readFile(fixture.authJsonPath, "utf8")).resolves.toBe("{invalid-json");
+    await expectPathMissing(fixture.authStorePath);
   });
 
   it("reports Doctor-created auth archives without reading their contents", async () => {
