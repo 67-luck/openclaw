@@ -167,6 +167,7 @@ export async function runCliFallbackCandidate(
           abortSignal: params.runAbortSignal,
           trigger: turn.isHeartbeat ? "heartbeat" : "user",
           inputProvenance: turn.followupRun.run.inputProvenance,
+          replyOperation: turn.replyOperation,
         },
         provider: params.cliExecutionProvider,
         sessionTarget,
