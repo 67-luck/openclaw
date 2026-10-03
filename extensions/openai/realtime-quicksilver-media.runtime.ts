@@ -53,7 +53,6 @@ export type OpenAIQuicksilverAudioPeerContract = {
   applyAnswer(answerSdp: string): Promise<void>;
   adoptPendingAudio(pendingAudio: OpenAIQuicksilverPendingAudio): void;
   sendAudio(audio: Buffer): void;
-  drainOutputAudio(): void | Promise<void>;
   clearOutputAudio?(): void;
   close(): void;
 };
@@ -257,26 +256,6 @@ export class OpenAIQuicksilverAudioPeer implements OpenAIQuicksilverAudioPeerCon
         QUICKSILVER_SAMPLE_RATE,
         RELAY_SAMPLE_RATE,
       );
-    }
-  }
-
-  drainOutputAudio(): void {
-    if (this.closed) {
-      return;
-    }
-    const state = this.inboundRtpState;
-    this.clearInboundFlushTimer(state);
-    while (!this.closed && state.pendingPackets.size > 0) {
-      this.flushInboundReorderWindow(state, true);
-    }
-    this.clearInboundFlushTimer(state);
-    if (this.closed) {
-      return;
-    }
-    const tail = this.inboundResampler.flush();
-    this.inboundResampler = createStreamingPcmResampler(QUICKSILVER_SAMPLE_RATE, RELAY_SAMPLE_RATE);
-    if (tail.length > 0) {
-      this.state.callbacks.onAudio(tail);
     }
   }
 

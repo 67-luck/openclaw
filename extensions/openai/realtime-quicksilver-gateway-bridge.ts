@@ -1,6 +1,5 @@
 // Gateway-owned GPT-Live bridge over released WebRTC and unlisted direct transport.
 import { createDeferred } from "openclaw/plugin-sdk/concurrency-runtime";
-import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import type { PluginLogger } from "openclaw/plugin-sdk/plugin-entry";
 import type {
   RealtimeVoiceAudioOutputPort,
@@ -306,7 +305,7 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
     const peerPromise = createPeer(
       {
         onAudio: (audio) => {
-          if (!this.closed && !this.providerOutputComplete) {
+          if (!this.closed) {
             this.audio.sendOutput(audio);
           }
         },
@@ -491,8 +490,9 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
           params?.onSessionStarted?.();
         },
         onTranscript: (role, text, done) => {
-          // Public transcript finals publish bounded batches, not provider turn boundaries.
-          if (isOpenAIGptLiveApiModel(this.config.model)) {
+          // WebRTC media and sideband transcripts have no shared completion boundary.
+          // Public transcript finals also publish batches rather than reply boundaries.
+          if (this.transport === "webrtc" || isOpenAIGptLiveApiModel(this.config.model)) {
             this.config.onTranscript?.(role, text, done);
             return;
           }
@@ -557,27 +557,9 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
     if (this.closed || this.outputCompletion !== completion) {
       return;
     }
-    const finish = () => {
-      if (this.closed || this.outputCompletion !== completion) {
-        return;
-      }
-      this.audio.finishOutput();
-      if (this.closed || this.outputCompletion !== completion) {
-        return;
-      }
-      this.providerOutputComplete = true;
-      this.config.onResponseDone?.({ status: "completed" });
-    };
-    const drained = this.peer?.drainOutputAudio();
-    if (drained) {
-      void drained.then(finish).catch((error: unknown) => {
-        if (!this.closed) {
-          this.fail(toErrorObject(error, "GPT-Live output drain failed"));
-        }
-      });
-    } else {
-      finish();
-    }
+    // The direct media owner flushes PCM before forwarding this ordered control frame.
+    this.providerOutputComplete = true;
+    this.config.onResponseDone?.({ status: "completed" });
   }
 
   private sendSocketEvent(event: object): void {

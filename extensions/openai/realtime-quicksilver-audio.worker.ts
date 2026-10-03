@@ -29,7 +29,6 @@ let peer: OpenAIQuicksilverAudioPeer | undefined;
 let stopped = false;
 let outputInFlight = false;
 let outputGeneration = 0;
-const outputDrains = new Set<number>();
 let rtpInFlight = false;
 let mediaErrorInFlight = false;
 
@@ -39,22 +38,12 @@ function post(message: QuicksilverAudioWorkerEvent, transfer: ArrayBuffer[] = []
 }
 
 function flushOutput(): void {
-  if (stopped) {
+  if (stopped || outputInFlight || output.length === 0) {
     return;
   }
-  if (!outputInFlight && output.length > 0) {
-    const audio = output.take();
-    outputInFlight = true;
-    post({ type: "audio", audio, generation: outputGeneration }, [audio.buffer]);
-  }
-  if (output.length === 0) {
-    // The same port delivers posted PCM before these receipts. Only buffered
-    // PCM needs another output credit; an in-flight batch already precedes us.
-    for (const id of outputDrains) {
-      post({ type: "result", id, value: "" });
-    }
-    outputDrains.clear();
-  }
+  const audio = output.take();
+  outputInFlight = true;
+  post({ type: "audio", audio, generation: outputGeneration }, [audio.buffer]);
 }
 
 function stop(): void {
@@ -65,7 +54,6 @@ function stop(): void {
   controller.abort();
   peer?.close();
   output.clear();
-  outputDrains.clear();
   directOutput?.close();
   port!.close();
 }
@@ -103,16 +91,6 @@ port.on("message", (message: QuicksilverAudioWorkerCommand) => {
       outputGeneration = message.generation;
       output.clear();
       directOutput?.clear();
-      flushOutput();
-      return;
-    case "drain-output":
-      try {
-        peer.drainOutputAudio();
-        outputDrains.add(message.id);
-        flushOutput();
-      } catch (error) {
-        fail(error);
-      }
       return;
     case "audio-ack":
       outputInFlight = false;

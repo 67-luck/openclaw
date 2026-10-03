@@ -17,10 +17,7 @@ const transport = await vi.hoisted(async () => {
   const events: QuicksilverAudioWorkerEvent[] = [];
   const acknowledgments: QuicksilverAudioWorkerCommand[] = [];
   const receivedRtp = new EventEmitter();
-  let resolveDrain!: () => void;
-  const draining = new Promise<void>((resolve) => {
-    resolveDrain = resolve;
-  });
+  const decoded: Array<number | "plc"> = [];
   const parent = Object.assign(new EventEmitter(), {
     postMessage(event: QuicksilverAudioWorkerEvent) {
       if (event.type === "audio") {
@@ -36,12 +33,7 @@ const transport = await vi.hoisted(async () => {
       if (command.type === "audio-ack") {
         acknowledgments.push(command);
       } else {
-        queueMicrotask(() => {
-          parent.emit("message", command);
-          if (command.type === "drain-output") {
-            resolveDrain();
-          }
-        });
+        queueMicrotask(() => parent.emit("message", command));
       }
     },
     unref() {},
@@ -50,7 +42,7 @@ const transport = await vi.hoisted(async () => {
       return 0;
     },
   });
-  return { parent, worker, receivedRtp, events, acknowledgments, draining };
+  return { parent, worker, receivedRtp, events, acknowledgments, decoded };
 });
 
 vi.mock("node:worker_threads", async (importOriginal) => ({
@@ -67,8 +59,14 @@ vi.mock("libopus-wasm", () => ({
   Application: { Voip: 0 },
   createEncoder: async () => ({ free() {} }),
   createDecoder: async () => ({
-    decode: () => new Int16Array(960 * 2).fill(12_000),
-    decodePacketLoss: () => new Int16Array(960 * 2).fill(12_000),
+    decode: (packet: Uint8Array) => {
+      transport.decoded.push(packet[0]!);
+      return new Int16Array(960 * 2).fill(12_000);
+    },
+    decodePacketLoss: () => {
+      transport.decoded.push("plc");
+      return new Int16Array(960 * 2).fill(12_000);
+    },
     free() {},
   }),
 }));
@@ -104,32 +102,23 @@ vi.mock("werift", () => ({
   },
 }));
 
-describe("GPT-Live callback output completion", () => {
-  it("delivers reordered RTP and backpressured worker PCM before completing the reply", async () => {
+describe("GPT-Live continuous WebRTC output", () => {
+  it("preserves an RTP packet arriving inside the reorder window after turn.done", async () => {
     vi.useFakeTimers();
     let socket!: FakeSocket;
     const audio: Buffer[] = [];
-    const callbacks: string[] = [];
-    let completed!: () => void;
-    const completion = new Promise<void>((resolve) => {
-      completed = resolve;
-    });
-    const onResponseDone = vi.fn(() => {
-      callbacks.push("completed");
-      completed();
-    });
+    const onResponseDone = vi.fn();
+    const onTranscript = vi.fn();
     const onError = vi.fn();
     const bridge = new OpenAIQuicksilverGatewayBridge(
       {
         providerConfig: {},
         model: "gpt-live-test-canary",
         audioFormat: { encoding: "pcm16", sampleRateHz: 24_000, channels: 1 },
-        onAudio: (chunk) => {
-          audio.push(chunk);
-          callbacks.push("audio");
-        },
+        onAudio: (chunk) => audio.push(chunk),
         onClearAudio: vi.fn(),
         onResponseDone,
+        onTranscript,
         onError,
         runAgentConsult: async () => ({ text: "done" }),
         logger: { debug: vi.fn(), warn: vi.fn() },
@@ -153,14 +142,13 @@ describe("GPT-Live callback output completion", () => {
     );
     try {
       await bridge.connect();
-      for (const sequenceNumber of [10, 11, 13, 15]) {
+      for (const sequenceNumber of [10, 12]) {
         transport.receivedRtp.emit("rtp", {
           header: { sequenceNumber, ssrc: 1 },
           payload: Buffer.from([sequenceNumber]),
         });
       }
-      // The first PCM batch is posted but undelivered; the next is held for its
-      // acknowledgment, and two RTP packets still await the 80-ms reorder timer.
+      // Packet 12 waits for packet 11 within the existing 80-ms reorder window.
       expect(transport.events).toHaveLength(1);
       expect(audio).toHaveLength(0);
       const finish = () =>
@@ -170,29 +158,42 @@ describe("GPT-Live callback output completion", () => {
         });
       finish();
       expect(onResponseDone).not.toHaveBeenCalled();
-      await transport.draining;
-      finish();
+      expect(onTranscript).toHaveBeenCalledExactlyOnceWith("assistant", "Finished reply", true);
+      await vi.advanceTimersByTimeAsync(40);
+      transport.receivedRtp.emit("rtp", {
+        header: { sequenceNumber: 11, ssrc: 1 },
+        payload: Buffer.from([11]),
+      });
+      expect(transport.decoded).toEqual([10, 11, 12]);
       expect(onResponseDone).not.toHaveBeenCalled();
 
       transport.worker.emit("message", transport.events.shift());
       expect(transport.acknowledgments).toHaveLength(1);
       expect(onResponseDone).not.toHaveBeenCalled();
       transport.parent.emit("message", transport.acknowledgments.shift());
-      // The worker result follows the final audio event on the same port.
-      // Deliver that batch before allowing its queued result to run.
       expect(transport.events).toHaveLength(1);
       transport.worker.emit("message", transport.events.shift());
-      await completion;
+      transport.parent.emit("message", transport.acknowledgments.shift());
 
-      expect(Buffer.concat(audio)).toHaveLength(6 * 480 * 2);
-      expect(Buffer.concat(audio).readInt16LE(6 * 480 * 2 - 2)).toBe(12_000);
-      expect(callbacks).toEqual(["audio", "audio", "completed"]);
-      expect(onResponseDone).toHaveBeenCalledExactlyOnceWith({ status: "completed" });
+      // A contiguous tail can also arrive after both received queues are empty.
+      transport.receivedRtp.emit("rtp", {
+        header: { sequenceNumber: 13, ssrc: 1 },
+        payload: Buffer.from([13]),
+      });
+      expect(transport.events).toHaveLength(1);
+      transport.worker.emit("message", transport.events.shift());
+
+      // The continuous resampler retains seven samples for its next RTP packet.
+      expect(Buffer.concat(audio)).toHaveLength((4 * 480 - 7) * 2);
+      expect(Buffer.concat(audio).readInt16LE((4 * 480 - 7) * 2 - 2)).toBe(12_000);
+      expect(transport.decoded).toEqual([10, 11, 12, 13]);
+      expect(onResponseDone).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(80);
       expect(transport.events).toHaveLength(0);
       expect(onError).not.toHaveBeenCalled();
     } finally {
       await bridge.close();
+      expect(onTranscript).toHaveBeenCalledExactlyOnceWith("assistant", "Finished reply", true);
       await transport.worker.terminate();
       vi.useRealTimers();
     }

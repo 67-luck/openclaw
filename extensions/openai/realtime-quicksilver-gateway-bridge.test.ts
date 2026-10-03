@@ -66,7 +66,6 @@ describe("GPT-Live gateway relay bridge", () => {
     const peer = {
       createOffer: vi.fn(async () => "v=offer\r\n"),
       applyAnswer: vi.fn(async () => undefined),
-      drainOutputAudio: vi.fn(),
       adoptPendingAudio: vi.fn(),
       sendAudio: vi.fn(),
       close: vi.fn(),
@@ -132,86 +131,34 @@ describe("GPT-Live gateway relay bridge", () => {
   }
 
   it.each(["pcm16", "g711_ulaw"] as const)(
-    "flushes buffered audio before completing subscription replies and gates duplicate finals (%s)",
+    "keeps WebRTC audio flowing across transcript finals (%s)",
     async (encoding) => {
-      const callbacks: string[] = [];
       const deliveredAudio: Buffer[] = [];
-      const onTranscript = vi.fn((role: "user" | "assistant", text: string, done: boolean) => {
-        if (role === "assistant" && done) {
-          callbacks.push(`final:${text}`);
-        } else if (role === "assistant") {
-          callbacks.push(`partial:${text}`);
-        }
-      });
-      const onResponseDone = vi.fn(() => callbacks.push("completed"));
+      const onTranscript = vi.fn();
+      const onResponseDone = vi.fn();
       const harness = createPendingPeerBridge({
         audioFormat:
           encoding === "pcm16"
             ? { encoding, sampleRateHz: 24_000, channels: 1 }
             : { encoding, sampleRateHz: 8_000, channels: 1 },
-        onAudio: (audio) => {
-          deliveredAudio.push(audio);
-          callbacks.push("audio");
-        },
+        onAudio: (audio) => deliveredAudio.push(audio),
         onTranscript,
         onResponseDone,
-        onEvent: (event) => {
-          if (event.type === "response.created") {
-            callbacks.push("response.created");
-          }
-        },
       });
       try {
         await harness.waitForPeerStart();
         harness.resolvePeer();
         await harness.connection;
-        const socket = harness.getSocket();
         const pcm = Buffer.alloc(960, 0x12);
-        const finish = (text: string) =>
-          emitSideband(socket, {
-            type: "turn.done",
-            turn: { role: "assistant", transcript: text },
-          });
-
         harness.triggerPeerAudio(pcm);
-        finish("First reply");
-        expect(onTranscript).toHaveBeenLastCalledWith("assistant", "First reply", true);
-        expect(callbacks.at(-1)).toBe("completed");
-        expect(Buffer.concat(deliveredAudio)).toHaveLength(encoding === "pcm16" ? 960 : 160);
-        expect(onResponseDone).toHaveBeenCalledExactlyOnceWith({ status: "completed" });
-        const callbacksAfterFirst = [...callbacks];
-        finish("First reply");
-        harness.triggerPeerAudio(pcm);
-        expect(callbacks).toEqual(callbacksAfterFirst);
-
-        emitSideband(socket, {
+        emitSideband(harness.getSocket(), {
           type: "turn.done",
-          turn: { role: "user", transcript: "Next question" },
+          turn: { role: "assistant", transcript: "Received reply" },
         });
         harness.triggerPeerAudio(pcm);
-        finish("Second reply");
-        expect(onTranscript).toHaveBeenLastCalledWith("assistant", "Second reply", true);
-        expect(callbacks.at(-1)).toBe("completed");
-        expect(onResponseDone).toHaveBeenCalledTimes(2);
-        expect(callbacks).not.toContain("response.created");
-
-        emitSideband(socket, { type: "output_transcript.added", item: { text: "Continuing" } });
-        expect(callbacks.slice(-2)).toEqual(["response.created", "partial:Continuing"]);
-        harness.triggerPeerAudio(pcm);
-        finish("Third reply");
-        expect(onTranscript).toHaveBeenLastCalledWith("assistant", "Third reply", true);
-        expect(callbacks.at(-1)).toBe("completed");
-
-        harness.bridge.sendUserMessage("One more question");
-        harness.triggerPeerAudio(pcm);
-        finish("Fourth reply");
-        expect(onTranscript).toHaveBeenLastCalledWith("assistant", "Fourth reply", true);
-        expect(callbacks.at(-1)).toBe("completed");
-        expect(onResponseDone).toHaveBeenCalledTimes(4);
-        expect(
-          onTranscript.mock.calls.filter(([role, , done]) => role === "assistant" && done),
-        ).toHaveLength(4);
-        expect(Buffer.concat(deliveredAudio)).toHaveLength(encoding === "pcm16" ? 3_840 : 640);
+        expect(onTranscript).toHaveBeenCalledExactlyOnceWith("assistant", "Received reply", true);
+        expect(onResponseDone).not.toHaveBeenCalled();
+        expect(Buffer.concat(deliveredAudio)).toHaveLength(encoding === "pcm16" ? 1920 : 315);
         expect(harness.bridge.isConnected()).toBe(true);
       } finally {
         await harness.bridge.close();
@@ -248,64 +195,7 @@ describe("GPT-Live gateway relay bridge", () => {
     }
   });
 
-  it.each(["request", "transcript", "clear"] as const)(
-    "keeps resumed output open when a prior media drain finishes (%s)",
-    async (resume) => {
-      let resolveDrain!: () => void;
-      const drain = new Promise<void>((resolve) => {
-        resolveDrain = resolve;
-      });
-      let publishFinal!: () => void;
-      const final = new Promise<void>((resolve) => {
-        publishFinal = resolve;
-      });
-      const onAudio = vi.fn();
-      const onResponseDone = vi.fn();
-      const harness = createPendingPeerBridge({
-        onAudio,
-        onResponseDone,
-        onTranscript: (_role, text, done) => {
-          if (done && text === "Prior reply") {
-            publishFinal();
-          }
-        },
-      });
-      harness.peer.drainOutputAudio.mockImplementationOnce(() => drain);
-      try {
-        await harness.waitForPeerStart();
-        harness.resolvePeer();
-        await harness.connection;
-        const socket = harness.getSocket();
-        emitSideband(socket, {
-          type: "turn.done",
-          turn: { role: "assistant", transcript: "Prior reply" },
-        });
-        expect(onResponseDone).not.toHaveBeenCalled();
-        if (resume === "request") {
-          harness.bridge.sendUserMessage("Next question");
-        } else if (resume === "transcript") {
-          emitSideband(socket, { type: "output_transcript.added", item: { text: "Next reply" } });
-        } else {
-          emitSideband(socket, { type: "output_audio_buffer.cleared" });
-        }
-        resolveDrain();
-        await final;
-        harness.triggerPeerAudio(Buffer.alloc(960));
-        expect(onAudio).toHaveBeenCalledOnce();
-        expect(onResponseDone).not.toHaveBeenCalled();
-        emitSideband(socket, {
-          type: "turn.done",
-          turn: { role: "assistant", transcript: "Next reply" },
-        });
-        expect(onResponseDone).toHaveBeenCalledExactlyOnceWith({ status: "completed" });
-      } finally {
-        resolveDrain();
-        await harness.bridge.close();
-      }
-    },
-  );
-
-  it("admits delegation final audio before its first transcript after a completed spoken receipt", async () => {
+  it("admits delegation final audio before its first transcript after a spoken receipt", async () => {
     let resolveConsult!: (result: { text: string }) => void;
     const consultResult = new Promise<{ text: string }>((resolve) => {
       resolveConsult = resolve;
@@ -360,7 +250,7 @@ describe("GPT-Live gateway relay bridge", () => {
         type: "turn.done",
         turn: { role: "assistant", transcript: "I will check that request." },
       });
-      expect(onResponseDone).toHaveBeenCalledOnce();
+      expect(onResponseDone).not.toHaveBeenCalled();
 
       resolveConsult({ text: "Final ".repeat(100) });
       await finalAppend;
@@ -372,7 +262,7 @@ describe("GPT-Live gateway relay bridge", () => {
         type: "turn.done",
         turn: { role: "assistant", transcript: "The final answer." },
       });
-      expect(onResponseDone).toHaveBeenCalledTimes(2);
+      expect(onResponseDone).not.toHaveBeenCalled();
       expect(harness.bridge.isConnected()).toBe(true);
     } finally {
       resolveConsult({ text: "Finished" });
@@ -402,37 +292,6 @@ describe("GPT-Live gateway relay bridge", () => {
       ).toEqual([{ type: "session.close" }]);
       expect(harness.onClose).toHaveBeenCalledExactlyOnceWith("completed");
       expect(harness.bridge.isConnected()).toBe(false);
-    } finally {
-      await harness.bridge.close();
-    }
-  });
-
-  it("does not report response completion after flushing audio reentrantly closes the bridge", async () => {
-    const onResponseDone = vi.fn();
-    const onAudio = vi.fn(() => {
-      if (onAudio.mock.calls.length === 2) {
-        void harness.bridge.close();
-      }
-    });
-    const harness = createPendingPeerBridge({
-      audioFormat: { encoding: "g711_ulaw", sampleRateHz: 8_000, channels: 1 },
-      onAudio,
-      onResponseDone,
-    });
-    try {
-      await harness.waitForPeerStart();
-      harness.resolvePeer();
-      await harness.connection;
-      harness.triggerPeerAudio(Buffer.alloc(960, 0x12));
-      emitSideband(harness.getSocket(), {
-        type: "turn.done",
-        turn: { role: "assistant", transcript: "Finished" },
-      });
-      expect(onAudio).toHaveBeenCalledTimes(2);
-      expect(onResponseDone).not.toHaveBeenCalled();
-      expect(harness.onClose).toHaveBeenCalledExactlyOnceWith("completed");
-      harness.triggerPeerAudio(Buffer.alloc(960));
-      expect(onAudio).toHaveBeenCalledTimes(2);
     } finally {
       await harness.bridge.close();
     }
@@ -673,7 +532,6 @@ describe("GPT-Live gateway relay bridge", () => {
     resolvePeer?.({
       createOffer: vi.fn(async () => "v=offer\r\n"),
       applyAnswer: vi.fn(async () => undefined),
-      drainOutputAudio: vi.fn(),
       adoptPendingAudio: vi.fn(),
       sendAudio: vi.fn(),
       close: closePeer,
@@ -691,7 +549,6 @@ describe("GPT-Live gateway relay bridge", () => {
       createOffer,
       applyAnswer,
       adoptPendingAudio,
-      drainOutputAudio: vi.fn(),
       sendAudio: vi.fn(),
       close: closePeer,
     };
@@ -847,7 +704,6 @@ describe("GPT-Live gateway relay bridge", () => {
         createPeer: vi.fn(async () => ({
           createOffer: vi.fn(async () => "v=offer\r\n"),
           applyAnswer: vi.fn(async () => undefined),
-          drainOutputAudio: vi.fn(),
           adoptPendingAudio: vi.fn(),
           sendAudio: vi.fn(),
           close: vi.fn(),
