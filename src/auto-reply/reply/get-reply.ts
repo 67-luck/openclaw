@@ -997,6 +997,7 @@ export async function getReplyFromConfig(
       }
       resolveRunModelLevels = await createReplyProbeModelLevelResolver({
         modelState: runModelState,
+        abortSignal: resolvedOpts?.abortSignal,
         previous: resolveModelLevels,
         directives,
         sessionEntry,
