@@ -35,7 +35,7 @@ import {
   type LegacyArchiveTarget,
 } from "./doctor-session-sqlite-types.js";
 
-export function planImportedTranscriptArtifactsToArchive(
+function planImportedTranscriptArtifactsToArchive(
   target: SessionStoreTarget,
   sessionKey: string,
   transcriptPath: string,
