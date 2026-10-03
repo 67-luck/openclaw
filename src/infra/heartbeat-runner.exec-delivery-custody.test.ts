@@ -171,7 +171,7 @@ it.each(["rejected", "ambiguous"] as const)(
   },
 );
 
-it.each(["exec", "notice"] as const)(
+it.each(["exec", "notice", "invalid-exec"] as const)(
   "does not combine an unbound legacy completion with a captured %s route",
   async (kind) => {
     await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
@@ -188,12 +188,12 @@ it.each(["exec", "notice"] as const)(
       });
       enqueueSystemEvent("Exec completed (captured-second, code 0) :: CAPTURED_ONLY", {
         sessionKey,
-        contextKey: kind + ":captured-second",
+        contextKey: (kind === "invalid-exec" ? "exec" : kind) + ":captured-second",
         deliveryContext: {
           channel: "telegram",
           to: "telegram:-1003774691294:topic:47",
           accountId: "work",
-          threadId: 47,
+          threadId: kind === "invalid-exec" ? 99 : 47,
         },
       });
       replySpy.mockImplementation(async (ctx) => ({
@@ -204,7 +204,7 @@ it.each(["exec", "notice"] as const)(
       await runHeartbeatOnce({ cfg, sessionKey, source: "exec-event", reason: "exec-event", deps });
       expect(replySpy.mock.calls[0]?.[0].Body).toContain("LEGACY_ONLY");
       expect(replySpy.mock.calls[0]?.[0].Body).not.toContain("CAPTURED_ONLY");
-      if (kind === "notice") {
+      if (kind !== "exec") {
         expect(telegram.mock.calls[0]?.[0]).toBe("telegram:123456789");
         return;
       }

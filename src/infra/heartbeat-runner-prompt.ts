@@ -139,9 +139,15 @@ export async function resolveHeartbeatPreflight(params: {
         )
       : undefined;
   const isolateExecRoutes = firstExec && pendingEventEntries.some((event) => event.deliveryContext);
+  const firstRouteKey = firstExec ? routeKey(firstExec) : undefined;
   const selectedEventEntries = isolateExecRoutes
     ? pendingEventEntries.filter(
-        (event) => isExecCompletionSystemEvent(event) && routeKey(event) === routeKey(firstExec),
+        (event) =>
+          isExecCompletionSystemEvent(event) &&
+          (!firstExec.deliveryContext
+            ? !event.deliveryContext
+            : event === firstExec ||
+              (firstRouteKey !== undefined && routeKey(event) === firstRouteKey)),
       )
     : pendingEventEntries;
   const deferredEventEntries = isolateExecRoutes
