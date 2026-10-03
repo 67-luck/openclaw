@@ -123,6 +123,13 @@ async function migrateAgentDatabase(params: {
 }) {
   invalidateOpenClawAgentDatabaseIntegrityBeforeMutation(params.pathname);
   const database = openNodeSqliteDatabase(params.pathname);
+  const schemaWarnings: string[] = [];
+  const schemaOptions = {
+    agentId: params.agentId,
+    path: params.pathname,
+    env: params.env,
+    onMigrationWarning: (warning: string) => schemaWarnings.push(warning),
+  };
   const migrateArchives = () =>
     migrateCanonicalTranscriptArchives({
       agentId: params.agentId,
@@ -168,8 +175,7 @@ async function migrateAgentDatabase(params: {
         // The canonical owner admits supported versions and converges additive schema;
         // media must not enumerate later schema revisions independently.
         ensureOpenClawAgentDatabaseSchema(database, {
-          agentId: params.agentId,
-          path: params.pathname,
+          ...schemaOptions,
         });
         userVersion = readSqliteUserVersion(database);
       }
@@ -271,6 +277,7 @@ async function migrateAgentDatabase(params: {
           rewrittenSessions: 0,
           rewrittenTrajectoryRows: 0,
           rewrittenArchives,
+          warnings: schemaWarnings,
           initialVersion,
           finalVersion: userVersion,
         };
@@ -331,7 +338,7 @@ async function migrateAgentDatabase(params: {
         operationLabel: "media-persistence-retirement",
       },
     );
-    ensureOpenClawAgentDatabaseSchema(database, { agentId: params.agentId, path: params.pathname });
+    ensureOpenClawAgentDatabaseSchema(database, schemaOptions);
     if (changedLegacySessions.size > 0) {
       runSqliteImmediateTransactionSync(
         database,
@@ -355,6 +362,7 @@ async function migrateAgentDatabase(params: {
     return {
       ...rewritten,
       rewrittenArchives,
+      warnings: schemaWarnings,
       initialVersion,
       finalVersion: readSqliteUserVersion(database),
     };
@@ -511,6 +519,8 @@ export async function migrateLegacyMediaPersistence(
             pathname,
           });
           maintenance.assertOwned();
+          warnings.push(...result.warnings);
+          recoverableWarningCount += result.warnings.length;
           // A prior attempt may have committed the schema before publishing its registration.
           registerOpenClawAgentDatabase({ agentId: entry.agentId, env, path: pathname });
           const schemaAdvanced = result.finalVersion > result.initialVersion;
