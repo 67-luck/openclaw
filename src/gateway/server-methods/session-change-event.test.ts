@@ -36,9 +36,13 @@ import {
 } from "../session-row-projection.js";
 import { createSessionRowProjectionFixture } from "../session-row-projection.test-support.js";
 import { loadCachedSessionSharingSnapshot } from "../session-sharing-snapshot-cache.js";
+import { claimRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { projectWorkerSessionPlacement } from "../worker-environments/placement-projector.js";
 import type { WorkerSessionPlacementRecord } from "../worker-environments/placement-store.js";
-import { createActiveRpcSourceForTest } from "./rpc-source-fixtures.test-support.js";
+import {
+  createActiveRpcSourceForTest,
+  registerRpcSourceForTest,
+} from "./rpc-source-fixtures.test-support.js";
 import type { GatewayRequestContext } from "./types.js";
 
 const mocks = vi.hoisted(() => ({
@@ -981,20 +985,14 @@ describe("sessions.changed coalescing", () => {
   it("tombstones exact run ids when lifecycle projection takes ownership", async () => {
     const sessionKey = "agent:main:projected";
     const sessionId = `${sessionKey}-id`;
-    rpcSourceTesting.reset([
-      [
-        "direct-run",
-        await createActiveRpcSourceForTest(
-          {},
-          {
-            agentId: "main",
-            sessionId,
-            sessionKey,
-          },
-        ),
-      ],
-    ]);
-    const context = createContext(new Set(["conn-1"]), {}, rpcSourceTesting);
+    const context = createContext();
+    const registration = registerRpcSourceForTest({
+      runId: "direct-run",
+      agentId: "main",
+      sessionId,
+      sessionKey,
+    });
+    const release = await claimRpcSourceForTest(registration.entry);
 
     await emitAndSettleLeading(context, { reason: "update", sessionKey });
     expect(vi.mocked(context.broadcastToConnIds).mock.calls[0]?.[1]).toMatchObject({
@@ -1002,10 +1000,8 @@ describe("sessions.changed coalescing", () => {
       activeRunIds: ["direct-run"],
     });
 
-    for (const source of rpcSourceTesting.values()) {
-      source.input.claim?.operation?.complete();
-    }
-    rpcSourceTesting.clear();
+    release();
+    await registration.entry.input.settlement.promise;
     registerAgentRunContext("hidden-worker-run", {
       isControlUiVisible: false,
       projectSessionActive: true,
