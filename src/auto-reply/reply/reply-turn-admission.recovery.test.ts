@@ -398,9 +398,7 @@ describe("reply turn recovery admission", () => {
       void followupPromise.then(() => {
         followupSettled = true;
       });
-      await new Promise<void>((resolve) => {
-        setImmediate(resolve);
-      });
+      await setImmediate();
       expect(followupSettled).toBe(false);
       await replaceSessionEntry(
         { storePath, sessionKey },
@@ -483,9 +481,7 @@ describe("reply turn recovery admission", () => {
           }),
         ]);
         expect(retry).toHaveBeenCalledOnce();
-        await new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        });
+        await setImmediate();
         expect(loadSessionEntry({ storePath, sessionKey })).toMatchObject(entry);
         expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
         if (failed) {
@@ -557,9 +553,7 @@ describe("reply turn recovery admission", () => {
         },
       );
       try {
-        await new Promise<void>((resolve) => {
-          setImmediate(resolve);
-        });
+        await setImmediate();
         expect(failure).toBeUndefined();
         expect(result).toBeUndefined();
         expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
