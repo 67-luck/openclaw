@@ -15,6 +15,8 @@ import {
 import {
   getRpcSource,
   getRpcSourceIdentity,
+  getReservedRpcSourceInput,
+  getSessionControllerSourceIdentity,
   isRpcSourceQueued,
   isRpcSourceQueuedForSession,
 } from "../../sessions/session-controller.rpc-sources.js";
@@ -268,7 +270,12 @@ export async function handleChatAbortRequestWithLifecycle(
 
   // Capture the exact input once; an await must never select a successor by run ID.
   const active = getRpcSource(runId);
-  const activeIdentity = active && getRpcSourceIdentity(active);
+  const reserved = active ? undefined : getReservedRpcSourceInput(runId);
+  const activeIdentity = active
+    ? getRpcSourceIdentity(active)
+    : reserved
+      ? getSessionControllerSourceIdentity(reserved)
+      : undefined;
   const workerTarget = getWorkerInferenceSessionControl(
     context.workerEnvironmentService,
   )?.resolveSessionTargetForRunId(runId);
@@ -373,6 +380,57 @@ export async function handleChatAbortRequestWithLifecycle(
     });
   };
   if (!active) {
+    if (reserved && activeIdentity) {
+      if (
+        !authorizeRunTarget({
+          ...activeIdentity,
+          requester: reserved.sourceAdapter?.requester,
+        })
+      ) {
+        return;
+      }
+      let aborted = false;
+      let descendants: Awaited<ReturnType<typeof abortControlledSubagents>> | undefined;
+      const stopped = stopSession({
+        source: "client-run",
+        capture: captureSessionControllerStop({ inputs: [reserved] }),
+        assertCurrent,
+        reason: "rpc",
+        hookContext: {
+          ...stopHookContext,
+          sessionKey: activeIdentity.sessionKey,
+          sessionId: activeIdentity.sessionId,
+        },
+        onCancelled: (target) => {
+          if (target === reserved) {
+            aborted = true;
+          }
+        },
+        stopChildren: async (applyParentStop) => {
+          // The settle producer can still own the registry operation needed for
+          // descendant cleanup. Cancel its captured source before entering that owner.
+          await applyParentStop();
+          descendants = await abortControlledSubagents({
+            cfg: abortCfg,
+            sessionKey: activeIdentity.sessionKey,
+            agentId: activeIdentity.agentId,
+            requesterTurnRunId: runId,
+          });
+          return {
+            stopped: descendants?.killed ?? 0,
+            failed: descendants?.status === "error" ? descendants.failed : 0,
+          };
+        },
+      });
+      await stopped.completed;
+      const descendantError = descendantAbortError(descendants, "Parent run");
+      if (descendantError) {
+        respond(false, undefined, descendantError);
+        return;
+      }
+      await respondWithWorkerRuns(aborted ? [runId] : []);
+      return;
+    }
     if (!workerCancellation?.runIds.length) {
       if (!abortSession.ok) {
         throw abortSession.error;

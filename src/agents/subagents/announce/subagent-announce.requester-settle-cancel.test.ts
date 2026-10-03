@@ -4,13 +4,18 @@ import { runSubagentStateWorkerOperation, useSubagentControlFixture } from "../r
 import { afterEach, expect, it, vi } from "vitest";
 import { getRuntimeConfig } from "../../../config/config.js";
 import { patchSessionEntryCore } from "../../../config/sessions/session-accessor.js";
+import { createInternalAgentTurnFacade } from "../../../gateway/agent-turn/internal-facade.js";
 import { abortControlledSubagents } from "../../../gateway/server-methods/chat-abort-runtime.js";
 import {
   createChatAbortContext,
   invokeChatAbortHandler,
 } from "../../../gateway/server-methods/chat.abort.test-helpers.js";
 import { coreGatewayHandlers } from "../../../gateway/server-methods/core-handlers.js";
+import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
 import { resetSystemEventsForTest } from "../../../infra/system-events.js";
+import { getRpcSource } from "../../../sessions/session-controller.rpc-sources.js";
+import { resetSessionControllerStateForTest } from "../../../sessions/session-lifecycle-admission.test-support.js";
+import { trackAsyncWork } from "../../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import {
   prepareSystemAgentRunAdmission,
@@ -67,6 +72,7 @@ function rejectRegistryWrites(reject: (row: SubagentRunRecord) => boolean, messa
 
 afterEach(() => {
   setSubagentAnnounceDeliveryDepsForTest();
+  resetSessionControllerStateForTest();
   resetSystemEventsForTest();
 });
 
@@ -162,9 +168,19 @@ it.each([
   const started: string[] = [];
   const dedupe = new Map<string, { ts: number; ok: boolean; payload: Record<string, unknown> }>();
   const abortContext = createChatAbortContext({ dedupe, getRuntimeConfig });
+  const gatewayContext = Object.assign(abortContext, {
+    trackExecution: trackAsyncWork,
+  }) as unknown as GatewayRequestContext;
+  gatewayContext.createAgentTurnFacade = (principal) =>
+    createInternalAgentTurnFacade({
+      ...principal,
+      getContext: () => gatewayContext,
+    });
   let admission: ReturnType<typeof prepareSystemAgentRunAdmission> | undefined;
   type Dispatch = SubagentAnnounceDeliveryTestDeps["dispatchGatewayMethodInProcess"];
+  const realGatewayDispatch = dispatchGatewayMethodInProcess;
   const completion = { dispatch: dispatchGatewayMethodInProcess };
+  let pendingRpcDispatch: Parameters<Dispatch> | undefined;
   vi.spyOn(completion, "dispatch").mockResolvedValue({
     status: "ok",
     inputProcessingCompleted: true,
@@ -175,18 +191,30 @@ it.each([
     const runId = String(params?.idempotencyKey);
     attempts.push(runId);
     if (phase === "pending RPC") {
-      dedupe.set(`agent:${runId}`, {
-        ts: Date.now(),
-        ok: true,
-        payload: {
-          runId,
-          sessionKey: requesterKey,
-          sessionId: "requester-session",
-          agentId: "main",
-          status: "accepted",
-          controlUiVisible: true,
-        },
+      const controllerInput = options?.controllerInput;
+      expect(controllerInput).toMatchObject({
+        protocolRunId: runId,
+        phase: "preparing",
       });
+      if (!controllerInput) {
+        throw new Error("Expected settle continuation controller source");
+      }
+      expect(controllerInput.custody.rpcAdopted).toBeUndefined();
+      const sourceSignal = controllerInput.abortSignal;
+      pendingRpcDispatch = args;
+      admitted.resolve();
+      if (!sourceSignal.aborted) {
+        await new Promise<void>((resolve) =>
+          sourceSignal.addEventListener("abort", () => resolve(), { once: true }),
+        );
+      }
+      vi.mocked(completion.dispatch).mockResolvedValueOnce({
+        runId,
+        status: "timeout",
+        summary: "aborted",
+        stopReason: "rpc",
+      });
+      return await completion.dispatch<T>(...args);
     }
     const owner = prepareSystemAgentRunAdmission(
       getRuntimeConfig(),
@@ -202,16 +230,6 @@ it.each([
         await execute.promise;
         if (phase === "retry backoff") {
           throw new Error("temporary requester delivery failure");
-        }
-        if (phase === "pending RPC") {
-          const cancelled = dedupe.get(`agent:${runId}`)?.payload;
-          expect(cancelled).toMatchObject({
-            status: "timeout",
-            summary: "aborted",
-            stopReason: "rpc",
-          });
-          vi.mocked(completion.dispatch).mockResolvedValueOnce(cancelled);
-          return await completion.dispatch<T>(...args);
         }
       }
       assertCurrent();
@@ -241,6 +259,7 @@ it.each([
       );
     }
     if (phase === "pending RPC") {
+      expect(getRpcSource(attempts[0]!)).toBeUndefined();
       const respond = await invokeChatAbortHandler({
         handler: coreGatewayHandlers["chat.abort"]!,
         context: abortContext,
@@ -250,6 +269,20 @@ it.each([
         true,
         expect.objectContaining({ aborted: true, runIds: [attempts[0]] }),
       );
+      if (!pendingRpcDispatch) {
+        throw new Error("Expected captured pending RPC dispatch");
+      }
+      const [method, pendingParams, pendingOptions] = pendingRpcDispatch;
+      await expect(
+        realGatewayDispatch(method, pendingParams, {
+          controllerInput: pendingOptions?.controllerInput,
+          expectFinal: true,
+          forceSyntheticClient: true,
+          operatorRoleActor: { kind: "system" },
+          resolveGatewayContext: () => gatewayContext,
+        }),
+      ).rejects.toThrow("Cannot adopt a foreign or claimed session controller source");
+      expect(getRpcSource(attempts[0]!)).toBeUndefined();
     } else {
       const result = await abortControlledSubagents({
         cfg: getRuntimeConfig(),

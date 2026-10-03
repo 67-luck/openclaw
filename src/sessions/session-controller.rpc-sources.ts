@@ -12,6 +12,7 @@ import {
   getSessionControllerEntryForOperation,
   hasReplyOperationExecutionStarted,
   isCurrentSessionControllerOperation,
+  sessionControllers,
 } from "./session-controller.state.js";
 import {
   cancelCapturedSessionControllerSource,
@@ -70,12 +71,18 @@ export type RpcSourceIdentity = Readonly<{
 
 /** Reads logical identity from the exact operation, then its captured source target. */
 export function getRpcSourceIdentity(ref: RpcSourceRef): RpcSourceIdentity {
-  const operation = ref.input.claim?.operation;
+  return getSessionControllerSourceIdentity(ref.input);
+}
+
+/** Reads logical identity from an exact reserved or adopted controller source. */
+export function getSessionControllerSourceIdentity(
+  input: SessionControllerInput,
+): RpcSourceIdentity {
+  const operation = input.claim?.operation;
   return {
-    sessionId:
-      operation?.sessionId ?? ref.input.sourceSessionId ?? ref.input.target?.incarnation ?? "",
-    sessionKey: operation?.key ?? ref.input.target?.sessionKey ?? ref.input.mailbox.key,
-    agentId: operation?.agentId ?? ref.input.target?.agentId,
+    sessionId: operation?.sessionId ?? input.sourceSessionId ?? input.target?.incarnation ?? "",
+    sessionKey: operation?.key ?? input.target?.sessionKey ?? input.mailbox.key,
+    agentId: operation?.agentId ?? input.target?.agentId,
   };
 }
 
@@ -112,6 +119,31 @@ function removeRpcSource(runId: string, ref: RpcSourceRef): boolean {
 /** Resolves the exact controller-owned source registered for a protocol run. */
 export function getRpcSource(runId: string): RpcSourceRef | undefined {
   return rpcSourceByRunId.get(runId);
+}
+
+/** Resolves one exact pre-registration source; ambiguous protocol IDs fail closed. */
+export function getReservedRpcSourceInput(runId: string): SessionControllerInput | undefined {
+  if (hasRpcSource(runId)) {
+    return undefined;
+  }
+  let match: SessionControllerInput | undefined;
+  for (const entry of sessionControllers.values()) {
+    for (const input of entry.mailbox?.entries ?? []) {
+      if (
+        input.protocolRunId !== runId ||
+        input.phase === "consumed" ||
+        input.retirementRequested ||
+        input.custody.cancellationRetired
+      ) {
+        continue;
+      }
+      if (match && match !== input) {
+        return undefined;
+      }
+      match = input;
+    }
+  }
+  return match;
 }
 
 /** Reports whether the controller owns a source for a protocol run. */
