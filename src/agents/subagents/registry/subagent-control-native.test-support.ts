@@ -20,8 +20,9 @@ export function setActiveEmbeddedRun(
   sessionKey: string,
   storePath?: string,
   signal?: AbortSignal,
+  explicitAgentId?: string,
 ) {
-  const agentId = parseAgentSessionKey(sessionKey)?.agentId;
+  const agentId = explicitAgentId ?? parseAgentSessionKey(sessionKey)?.agentId;
   const operation = createReplyOperation({
     sessionKey,
     sessionId,

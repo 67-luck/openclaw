@@ -222,7 +222,9 @@ it.each(
   },
 );
 
-it.each(["chat", "rpc", "chat-rebind"] as const)(
+// src/auto-reply/reply/session.test.ts owns parent identity rebind in
+// "reacquires a changed identity before an explicit reset".
+it.each(["chat", "rpc"] as const)(
   "%s reset drains parent then child admissions before committing the boundary",
   async (boundary) => {
     const storePath = await writeSubagentSessionEntry({
@@ -265,8 +267,6 @@ it.each(["chat", "rpc", "chat-rebind"] as const)(
       onInterrupt: interruptChild,
     });
     const respond = vi.fn();
-    const replacementInterrupted = createDeferredCore();
-    let replacementAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
     const reset =
       boundary !== "rpc"
         ? initSessionState({
@@ -299,28 +299,7 @@ it.each(["chat", "rpc", "chat-rebind"] as const)(
       await parentInterrupted.promise;
       expect(interruptChild).not.toHaveBeenCalled();
       expect(subagentRuns.get("draining")?.killIntent).toBeUndefined();
-      if (boundary === "chat-rebind") {
-        await patchSessionEntryCore({ storePath, sessionKey: parentKey }, (entry) => ({
-          ...entry,
-          sessionId: "replacement-parent",
-        }));
-        replacementAdmission = await beginSessionEffect({
-          scope: storePath,
-          identities: ["replacement-parent"],
-          assertAllowed: () => {},
-          onInterrupt: () => replacementInterrupted.resolve(),
-        });
-      }
       parentAdmission.release();
-      if (replacementAdmission) {
-        expect(
-          await Promise.race([
-            replacementInterrupted.promise.then(() => "parent"),
-            childInterrupted.promise.then(() => "child"),
-          ]),
-        ).toBe("parent");
-        replacementAdmission.release();
-      }
       await childInterrupted.promise;
       expect(loadSessionEntry({ storePath, sessionKey: parentKey })?.lifecycleRevision).toBe(
         "before-reset",
@@ -349,7 +328,6 @@ it.each(["chat", "rpc", "chat-rebind"] as const)(
         displayName: "finalized before reset",
       });
     } finally {
-      replacementAdmission?.release();
       parentAdmission.release();
       childAdmission.release();
       await reset;

@@ -13,6 +13,7 @@ import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import {
   addSubagentRunForTests,
   getSubagentRunByChildSessionKey,
+  getSubagentRunByRunId,
 } from "./subagent-registry.test-helpers.js";
 type ControlRuntime = typeof import("./subagent-control.runtime.js");
 
@@ -31,7 +32,7 @@ export function registerQueueStopControlTests({
     "does not dispatch selected queued work during %s cancellation",
     async (kind) => {
       const controllerSessionKey = "agent:main:main";
-      const running = createSubagentRunRecord({
+      let running = createSubagentRunRecord({
         runId: "running-collector",
         childSessionKey: "agent:main:subagent:running-collector",
         controllerSessionKey,
@@ -41,7 +42,7 @@ export function registerQueueStopControlTests({
         createdAt: 1,
         startedAt: 2,
       });
-      const queued = createSubagentRunRecord({
+      let queued = createSubagentRunRecord({
         ...running,
         runId: "queued-collector",
         childSessionKey: "agent:main:subagent:queued-collector",
@@ -52,8 +53,10 @@ export function registerQueueStopControlTests({
         execution: { status: "queued" },
         swarmLaunchPending: true,
       });
-      addSubagentRunForTests(running);
-      addSubagentRunForTests(queued);
+      await addSubagentRunForTests(running);
+      await addSubagentRunForTests(queued);
+      running = getSubagentRunByRunId(running.runId)!;
+      queued = getSubagentRunByRunId(queued.runId)!;
       const storePath = await writeSessionStoreFixture("abort-dispatch", {
         [running.childSessionKey]: { sessionId: "running-session", updatedAt: 1 },
       });

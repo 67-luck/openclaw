@@ -18,12 +18,15 @@ import {
   captureSessionTarget,
 } from "../../../sessions/session-controller.lifecycle.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
-import { clearActiveEmbeddedRun, setActiveEmbeddedRun } from "../../embedded-agent-runner/runs.js";
 import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";
 import { isSubagentRegistryWriteCommand } from "../../subagent-test-fixtures.test-helpers.js";
 import type { AgentToolGatewayRequestCaller } from "../../tools/in-process-gateway.js";
 import { createSessionsSendTool } from "../../tools/sessions-send-tool.js";
 import { createSubagentsTool } from "../../tools/subagents-tool.js";
+import {
+  clearActiveEmbeddedRun,
+  setActiveEmbeddedRun,
+} from "./subagent-control-native.test-support.js";
 import { killAllControlledSubagentRuns, killSubagentRunAdmin } from "./subagent-control.js";
 import { registerSubagentRun } from "./subagent-registry.js";
 import { writeSubagentSessionEntry } from "./subagent-registry.persistence.test-support.js";
@@ -113,7 +116,7 @@ it.each(["main", "research"] as const)(
 
     const foreignAbort = vi.fn();
     const foreignHandle = createEmbeddedRunHandle({ runId: "foreign-run", abort: foreignAbort });
-    setActiveEmbeddedRun(foreignId, foreignHandle, "global", undefined, foreignAgent);
+    setActiveEmbeddedRun(foreignId, foreignHandle, "global", undefined, undefined, foreignAgent);
     const followup = createQueueTestRun({ prompt: "Other agent's queued followup" });
     Object.assign(followup.run, {
       agentId: foreignAgent,
@@ -162,7 +165,7 @@ it.each(["main", "research"] as const)(
     } finally {
       childAdmission.release();
       clearSessionQueues(["global"], foreignTarget);
-      clearActiveEmbeddedRun(foreignId, foreignHandle, "global");
+      await clearActiveEmbeddedRun(foreignId, foreignHandle, "global");
     }
   },
 );
@@ -253,7 +256,7 @@ it("steers its watched raw child while another agent has a newer row", async () 
   const { send } = await prepareWatchedRawChildren();
   const queueMessage = vi.fn(async () => {});
   const handle = createEmbeddedRunHandle({ runId: "main-1", queueMessage });
-  setActiveEmbeddedRun("main-global", handle, "global", undefined, "main");
+  setActiveEmbeddedRun("main-global", handle, "global", undefined, undefined, "main");
   try {
     expect((await send("main", "main-turn", "steer")).details).toMatchObject({
       status: "accepted",
@@ -262,7 +265,7 @@ it("steers its watched raw child while another agent has a newer row", async () 
     expect(getSubagentRunByRunId("main-1")?.requesterTurnRunId).toBe("main-turn");
     expect(getSubagentRunByRunId("research-2")?.requesterTurnRunId).toBe("research-turn");
   } finally {
-    clearActiveEmbeddedRun("main-global", handle, "global");
+    await clearActiveEmbeddedRun("main-global", handle, "global");
   }
 });
 

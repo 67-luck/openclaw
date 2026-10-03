@@ -1593,7 +1593,7 @@ describe("controlled subagent cancellation races", () => {
       const controllerSessionKey = "agent:main:main";
       const childSessionKey = "agent:main:subagent:kill-admission-timeout";
       const sessionId = "sess-kill-admission-timeout";
-      const entry = createSubagentRunRecord({
+      let entry = createSubagentRunRecord({
         runId: "run-kill-admission-timeout",
         childSessionKey,
         controllerSessionKey,
@@ -1605,14 +1605,17 @@ describe("controlled subagent cancellation races", () => {
           ? { status: "queued" }
           : { status: "running", startedAt: Date.now() - 1_000 },
       });
-      addSubagentRunForTests(entry);
+      await addSubagentRunForTests(entry);
+      entry = subagentRuns.get(entry.runId)!;
       const storePath = await writeSessionStoreFixture("kill-admission-timeout", {
         [childSessionKey]: { sessionId, updatedAt: Date.now() },
       });
+      const interrupted = createDeferred();
       const admission = await beginSessionEffect({
         scope: storePath,
         identities: [childSessionKey, sessionId],
         assertAllowed: () => {},
+        onInterrupt: () => interrupted.resolve(),
       });
       setSubagentControlDepsForTest({
         isTargetSessionRunActive: () => false,
@@ -1632,13 +1635,29 @@ describe("controlled subagent cancellation races", () => {
         });
       }
       vi.useFakeTimers();
+      const pendingKill = killAllControlledSubagentRuns({
+        cfg: cfgWithSessionStore(storePath),
+        controller: controllerFor(controllerSessionKey),
+        runs: [entry],
+      });
+      let killSettled = false;
+      void pendingKill.then(
+        () => {
+          killSettled = true;
+        },
+        () => {
+          killSettled = true;
+        },
+      );
       try {
-        const pendingKill = killAllControlledSubagentRuns({
-          cfg: cfgWithSessionStore(storePath),
-          controller: controllerFor(controllerSessionKey),
-          runs: [entry],
-        });
-        await vi.waitFor(() => expect(getSessionMutationCount()).toBeGreaterThan(0));
+        await Promise.race([
+          interrupted.promise,
+          pendingKill.then(() => {
+            throw new Error("Cancellation settled before interrupting the held admission");
+          }),
+        ]);
+        await Promise.resolve();
+        expect(killSettled).toBe(false);
         if (queued) {
           releaseSwarmRun("holder");
         }
@@ -1660,6 +1679,7 @@ describe("controlled subagent cancellation races", () => {
         admission.release();
         swarmSchedulerTesting.reset();
         vi.useRealTimers();
+        await pendingKill;
       }
     },
   );
@@ -1668,7 +1688,7 @@ describe("controlled subagent cancellation races", () => {
     const controllerSessionKey = "agent:main:main";
     const childSessionKey = "agent:main:subagent:kill-unsettled-producer";
     const sessionId = "sess-kill-unsettled-producer";
-    const entry = createSubagentRunRecord({
+    let entry = createSubagentRunRecord({
       runId: "run-kill-unsettled-producer",
       childSessionKey,
       controllerSessionKey,
@@ -1677,7 +1697,8 @@ describe("controlled subagent cancellation races", () => {
       createdAt: Date.now() - 2_000,
       execution: { status: "running", startedAt: Date.now() - 1_000 },
     });
-    addSubagentRunForTests(entry);
+    await addSubagentRunForTests(entry);
+    entry = subagentRuns.get(entry.runId)!;
     const storePath = await writeSessionStoreFixture("kill-unsettled-producer", {
       [childSessionKey]: { sessionId, updatedAt: Date.now() },
     });
@@ -1698,12 +1719,12 @@ describe("controlled subagent cancellation races", () => {
     });
     operation.attachBackend({ kind: "embedded", isStreaming: () => true, cancel: () => {} });
     vi.useFakeTimers();
+    const pendingKill = killAllControlledSubagentRuns({
+      cfg: cfgWithSessionStore(storePath),
+      controller: controllerFor(controllerSessionKey),
+      runs: [entry],
+    });
     try {
-      const pendingKill = killAllControlledSubagentRuns({
-        cfg: cfgWithSessionStore(storePath),
-        controller: controllerFor(controllerSessionKey),
-        runs: [entry],
-      });
       await vi.waitFor(() => expect(operation.abortSignal.aborted).toBe(true));
       await vi.advanceTimersByTimeAsync(SESSION_CONTROLLER_DRAIN_TIMEOUT_MS);
 
@@ -1714,6 +1735,7 @@ describe("controlled subagent cancellation races", () => {
     } finally {
       operation.complete();
       vi.useRealTimers();
+      await pendingKill;
     }
   });
 
@@ -1823,7 +1845,7 @@ describe("killAllControlledSubagentRuns", () => {
     "parent persistence",
   ])("releases or withdraws the exact queued reservation after %s failure", async (failure) => {
     const controllerSessionKey = "agent:main:main";
-    const entry = createSubagentRunRecord({
+    let entry = createSubagentRunRecord({
       runId: "failure-queued",
       childSessionKey: "agent:main:subagent:failure-queued",
       controllerSessionKey,
@@ -1835,7 +1857,8 @@ describe("killAllControlledSubagentRuns", () => {
       swarmLaunchPending: true,
       execution: { status: "queued" },
     });
-    addSubagentRunForTests(entry);
+    await addSubagentRunForTests(entry);
+    entry = subagentRuns.get(entry.runId)!;
     const storePath = await writeSessionStoreFixture("queue-failure", {
       [entry.childSessionKey]: { sessionId: "queued-session", updatedAt: 1 },
     });
@@ -1851,6 +1874,7 @@ describe("killAllControlledSubagentRuns", () => {
       });
     reserve();
     let writes = 0;
+    let rejectedWrite: number | undefined;
     resetRegistryLeafMocks();
     fixture.worker.mockImplementation((context, operation, options) =>
       runSubagentStateWorkerOperation(
@@ -1859,30 +1883,34 @@ describe("killAllControlledSubagentRuns", () => {
           operation({
             ...scope,
             execute: async (command, commandOptions) => {
-              if (command.type === "subagents.persistChanges") {
-                writes += 1;
-                if (
-                  ["session replacement at intent", "session replacement release"].includes(
-                    failure,
-                  ) &&
-                  writes === 1
-                ) {
+              const writeNumber =
+                command.type === "subagents.persistChanges" ? ++writes : undefined;
+              if (writeNumber !== undefined) {
+                if (failure === "session replacement at intent" && writeNumber === 1) {
                   replaceSessionEntrySync(
                     { storePath, sessionKey: entry.childSessionKey },
                     { sessionId: "new-session", updatedAt: 2 },
                   );
                 }
                 if (
-                  (failure === "intent write" && writes === 1) ||
+                  (failure === "intent write" && writeNumber === 1) ||
                   (["tombstone write", "claim release", "session replacement release"].includes(
                     failure,
                   ) &&
-                    writes === 2)
+                    writeNumber === 2)
                 ) {
+                  rejectedWrite = writeNumber;
                   throw new Error("sqlite busy");
                 }
               }
-              return scope.execute(command, commandOptions);
+              const receipt = await scope.execute(command, commandOptions);
+              if (failure === "session replacement release" && writeNumber === 1) {
+                replaceSessionEntrySync(
+                  { storePath, sessionKey: entry.childSessionKey },
+                  { sessionId: "new-session", updatedAt: 2 },
+                );
+              }
+              return receipt;
             },
           }),
         options,
@@ -1901,6 +1929,7 @@ describe("killAllControlledSubagentRuns", () => {
       abortEmbeddedAgentRun: () => !["abort refusal", "claim release"].includes(failure),
       clearSessionQueues: () => ({ followupCleared: 0, keys: [] }),
     });
+    const reservationReleases: Promise<void>[] = [];
     try {
       const pending = killAllControlledSubagentRuns({
         cfg: cfgWithSessionStore(storePath),
@@ -1920,9 +1949,12 @@ describe("killAllControlledSubagentRuns", () => {
           ).not.toHaveBeenCalled();
           if (failure === "row replacement") {
             const reservation = holdQueuedSwarmRun(entry.runId);
-            expect(reservation?.withdraw()).toBe(true);
-            await reservation?.release();
-            addSubagentRunForTests({ ...entry, generation: 2, createdAt: 2 });
+            const withdrawn = reservation?.withdraw();
+            if (reservation) {
+              reservationReleases.push(reservation.release());
+            }
+            expect(withdrawn).toBe(true);
+            await addSubagentRunForTests({ ...entry, generation: 2, createdAt: 2 });
             reserve();
           }
           if (failure === "lifecycle rotation") {
@@ -1942,9 +1974,15 @@ describe("killAllControlledSubagentRuns", () => {
         expect(result.status).toBe(
           ["row replacement", "lifecycle rotation"].includes(failure) ? "ok" : "error",
         );
+        if (failure === "session replacement release") {
+          expect(rejectedWrite).toBe(2);
+          expect(result).toMatchObject({
+            error: expect.stringContaining("kill intent could not be released"),
+          });
+        }
       }
       if (["tombstone write", "claim release", "session replacement release"].includes(failure)) {
-        expect(entry.killIntent).toMatchObject({ reason: "killed" });
+        expect(subagentRuns.get(entry.runId)?.killIntent).toMatchObject({ reason: "killed" });
         const survivor = vi.fn(async () => {});
         enqueueSwarmRun({
           groupId: "failure-lane",
@@ -1956,17 +1994,20 @@ describe("killAllControlledSubagentRuns", () => {
         });
         await vi.waitFor(() => expect(survivor).toHaveBeenCalledOnce());
         expect(dispatch).not.toHaveBeenCalled();
-        expect(markSubagentRunTerminated({ runId: entry.runId })).toBe(1);
-        expect(entry.collectorCompletion).toMatchObject({ status: "killed" });
+        expect(await markSubagentRunTerminated({ runId: entry.runId })).toBe(1);
+        expect(subagentRuns.get(entry.runId)?.collectorCompletion).toMatchObject({
+          status: "killed",
+        });
         expect(dispatch).not.toHaveBeenCalled();
       } else {
-        expect(entry.killIntent).toBeUndefined();
+        expect(subagentRuns.get(entry.runId)?.killIntent).toBeUndefined();
         await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
         expect(
           getSubagentRunByChildSessionKey(entry.childSessionKey)?.execution.endedAt,
         ).toBeUndefined();
       }
     } finally {
+      await Promise.all(reservationReleases);
       swarmSchedulerTesting.reset();
     }
   });
