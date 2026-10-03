@@ -520,11 +520,11 @@ export async function prepareAgentRunDispatch(
     }
     assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
     const entry = getRpcSource(params.runId);
+    const capturedEntry = activeRunAbort.entry;
     if (
-      entry !== activeRunAbort.entry ||
-      (entry &&
-        (entry.adapter.operationalRunInstance !== operationalRunInstance ||
-          (!terminal && entry.input.retirementRequested)))
+      (entry !== capturedEntry && (!terminal || entry !== undefined)) ||
+      capturedEntry?.adapter.operationalRunInstance !== operationalRunInstance ||
+      (!terminal && capturedEntry?.input.retirementRequested)
     ) {
       throw new Error("agent input admission no longer owns this run");
     }

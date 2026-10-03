@@ -331,39 +331,8 @@ it.each(["agent", "chat"] as const)(
         run.cleanup();
       }
     });
-    start();
-    const revision = readGatewayAccessRevision();
-    try {
-      const input = {
-        currentTarget: { ...scope, sessionId: entry.sessionId },
-        expectedEntry: entry,
-        assertActive: () => run.entry.controller.signal.throwIfAborted(),
-        config: {},
-      };
-      await acceptCompactionSuccessor({ ...input, result: { ok: true, compacted: true } });
-      expect(readGatewayAccessRevision()).toBe(revision);
-      const committed = await acceptCompactionSuccessor({
-        ...input,
-        result: {
-          ok: true,
-          compacted: true,
-          result: { tokensBefore: 4_096, sessionId: "successor" },
-        },
-      });
-      expect(committed.entry.sessionId).toBe("successor");
-      expect(run.entry.controller.signal.aborted).toBe(true);
-      expect(params.chatAbortControllers.has(runId)).toBe(false);
-      expect(readGatewayAccessRevision()).toBeGreaterThan(revision);
-      expect(loadSessionEntry(scope)?.visibility).toBeUndefined();
-      expect(listSessionMembers(scope)).toEqual([]);
-    } finally {
-      abort();
-      run.cleanup();
-      forgetActiveSessionForShutdown(entry.sessionId);
-      forgetActiveSessionForShutdown("successor");
-    }
-  });
-});
+  },
+);
 
 it("retires the identity listener with the Gateway lifecycle and installs one on restart", async () => {
   await withAccessFixture(async ({ scope, start }) => {

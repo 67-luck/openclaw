@@ -5,6 +5,12 @@ import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { onAgentEvent } from "../infra/agent-events.js";
 import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
+import {
+  claimSessionControllerTask,
+  releaseSessionControllerClaim,
+} from "../sessions/session-controller.mailbox.js";
+import { createReplyOperation } from "../sessions/session-controller.operation.js";
+import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -19,7 +25,7 @@ import {
 } from "./test/server-sessions.test-helpers.js";
 import type { WorkerSessionPlacementRecord } from "./worker-environments/placement-record.js";
 
-export function activeRunContext(params: {
+export async function activeRunContext(params: {
   runId: string;
   sessionId: string;
   sessionKey: string;
@@ -45,6 +51,21 @@ export function activeRunContext(params: {
   }
   onTestFinished(registration.cleanup);
   const entry = registration.entry;
+  let operation: ReturnType<typeof createReplyOperation> | undefined;
+  const claim = await claimSessionControllerTask(entry.input, (mailboxClaim) => {
+    operation = createReplyOperation({
+      sessionKey: params.sessionKey,
+      sessionId: params.sessionId,
+      resetTriggered: false,
+      target: entry.input.target,
+      mailboxClaim,
+    });
+    markReplyOperationExecutionStarted(operation);
+    operation.setPhase("running");
+  });
+  if (!operation) {
+    throw new Error("expected active run operation");
+  }
   const aborted = createDeferredCore();
   const onAbort = () => aborted.resolve();
   entry.input.abortSignal.addEventListener("abort", onAbort, { once: true });
@@ -63,11 +84,13 @@ export function activeRunContext(params: {
       () => {
         entry.adapter.projectSessionTerminalPersistence = undefined;
         entry.adapter.projectSessionTerminalPersisted = true;
-        rpcSourceTesting.deleteExpected(params.runId, entry);
+        operation.complete();
+        releaseSessionControllerClaim(claim);
       },
       (error: unknown) => {
         markChatAbortTerminalPersistenceError(entry, error);
-        rpcSourceTesting.deleteExpected(params.runId, entry);
+        operation.complete();
+        releaseSessionControllerClaim(claim);
       },
     );
     terminalStarted.resolve();
@@ -96,6 +119,9 @@ export function activeRunContext(params: {
     unsubscribe(this: void) {
       entry.input.abortSignal.removeEventListener("abort", onAbort);
       unsubscribe();
+      operation.complete();
+      releaseSessionControllerClaim(claim);
+      registration.cleanup();
     },
   };
 }

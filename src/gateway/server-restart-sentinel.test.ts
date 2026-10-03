@@ -1078,8 +1078,8 @@ describe("scheduleRestartSentinelWake", () => {
         expect(publicationErrors).toEqual([]);
         const finishedRun = updateRun ? getUpdateRun(updateRun.runId) : undefined;
         const report = finishedRun
-          ? renderUpdateRunReport(finishedRun).markdown
-          : "✅ OpenClaw updated.";
+          ? renderUpdateRunSummary(finishedRun)
+          : renderUpdateRunSummary({ status: "succeeded", reason: null });
         if (updateRun) {
           expect.soft(finishedRun?.verification.noticeDelivered).toBe(true);
           expect.soft(mocks.enqueueSessionDelivery).not.toHaveBeenCalled();
@@ -1108,17 +1108,11 @@ describe("scheduleRestartSentinelWake", () => {
           updateRun ? 2 : 1,
         );
         expect(broadcastToConnIds).toHaveBeenCalledTimes(updateRun ? 2 : 1);
-        expect(broadcastToConnIds).toHaveBeenCalledWith(
-          "session.message",
-          expect.objectContaining({
-            sessionKey,
-            message: expect.objectContaining({
-              role: "assistant",
-              content: [{ type: "text", text: report }],
-            }),
-          }),
+        expectRestartSentinelTranscriptBroadcast(broadcastToConnIds, {
+          sessionKey,
+          report,
           subscribers,
-        );
+        });
         expect(mocks.enqueueDeliveryOnce).not.toHaveBeenCalled();
         if (withContinuation) {
           expect(mocks.requestHeartbeat).toHaveBeenCalledTimes(2);
@@ -1176,17 +1170,20 @@ describe("scheduleRestartSentinelWake", () => {
   );
 
   it.each([
-    { kind: "update", status: "ok", notice: "✅ OpenClaw updated." },
+    {
+      kind: "update",
+      status: "ok",
+      notice: renderUpdateRunSummary({ status: "succeeded", reason: null }),
+    },
     {
       kind: "update",
       status: "skipped",
-      notice: "ℹ️ OpenClaw update skipped: already-current.",
+      notice: renderUpdateRunSummary({ status: "skipped", reason: "already-current" }),
     },
     {
       kind: "update",
       status: "error",
-      notice:
-        "⚠️ OpenClaw update failed: verification failed.\nRun openclaw triage to diagnose and repair the failed update.",
+      notice: renderUpdateRunSummary({ status: "failed", reason: "verification failed" }),
     },
     {
       kind: "restart",
@@ -1199,134 +1196,46 @@ describe("scheduleRestartSentinelWake", () => {
       const payload: RestartSentinelPayload = {
         kind,
         status,
-
         ts: 123,
-        sessionKey,
-        stats: { mode: "npm", runId: updateRun.runId },
-      }),
-    );
-    const transcript = await vi.importActual<typeof import("../config/sessions/transcript.js")>(
-      "../config/sessions/transcript.js",
-    );
-    mocks.appendAssistantMessageToSessionTranscript.mockImplementation(
-      transcript.appendAssistantMessageToSessionTranscript,
-    );
-    const broadcastToConnIds = vi.fn();
-    const subscribers = new Set(["control-ui-connection"]);
-    const rowProjection = await createSessionRowProjection({
-      cfg: { agents: { entries: { main: {} } }, session: { store: storePath } },
-    });
-    expect(rowProjection.capture({ agentId: "main", key: sessionKey })?.entry).toMatchObject({
-      sessionId,
-      lifecycleRevision: entry.lifecycleRevision,
-    });
-    const publish = createTranscriptUpdateBroadcastHandler({
-      getSessionRowProjection: () => rowProjection,
-      broadcastToConnIds,
-      sessionEventSubscribers: { getAll: () => subscribers },
-      sessionMessageSubscribers: { get: () => subscribers },
-      chatAbortControllers: new Map(),
-    });
-    const publications: Promise<void>[] = [];
-    const publicationErrors: unknown[] = [];
-    const unsubscribe = onInternalSessionTranscriptUpdate((update) => {
-      if (update.target?.sessionId === sessionId) {
-        publications.push(
-          publish(update).catch((error: unknown) => {
-            publicationErrors.push(error);
-          }),
-        );
-      }
-    });
-    try {
-      const { createUpdateRunNotifier } = await import("./update-run-notice.runtime.js");
-      const notify = await createUpdateRunNotifier(updateRun, () => ({}), {});
-      expect.soft(await notify(updateRun, "ack")).toEqual({ delivered: true, owned: true });
-      expect
-        .soft(getUpdateRun(updateRun.runId)?.steps)
-        .toContainEqual(expect.objectContaining({ step: "notice:ack", status: "completed" }));
-      const ackEvents = await loadTranscriptEvents({
-        agentId: "main",
-        sessionId,
-        sessionKey,
-        storePath,
-      });
-      expect.soft(ackEvents).toContainEqual(
-        expect.objectContaining({
-          type: "message",
-          message: expect.objectContaining({
-            role: "assistant",
-            idempotencyKey: `update-run-ack:${updateRun.runId}`,
-            content: [{ type: "text", text: renderUpdateRunNotice(updateRun, "ack") }],
-          }),
-        }),
-      );
-      finishUpdateRun(updateRun.runId, { status: "succeeded" });
+        sessionKey: "agent:main:main",
+        message: kind === "restart" ? "/restart" : "/update",
+        stats: {
+          mode: "npm",
+          reason: status === "skipped" ? "already-current" : "verification failed",
+        },
+      };
+      const { formatRestartSentinelMessage } = await vi.importActual<
+        typeof import("../infra/restart-sentinel.js")
+      >("../infra/restart-sentinel.js");
+      const wake = formatRestartSentinelMessage(payload);
+      mocks.formatRestartSentinelMessage.mockReturnValueOnce(wake);
+      mocks.deliveryContextFromSession.mockReturnValue({ channel: "telegram", to: "chat-123" });
+      mocks.readRestartSentinel.mockResolvedValue({ version: 1, revision: 123, payload });
+      mocks.resolveOutboundTarget.mockReturnValue({ ok: true, to: "chat-123" });
+      setNoticeOwner("telegram:chat-123");
+
       await wakeRestartSentinel();
-      await wakeRestartSentinel();
-      await Promise.all(publications);
-      expect(publicationErrors).toEqual([]);
-      const finishedRun = getUpdateRun(updateRun.runId)!;
-      const report = renderUpdateRunSummary(finishedRun);
-      expect.soft(finishedRun?.verification.noticeDelivered).toBe(true);
-      expect.soft(mocks.enqueueSessionDelivery).not.toHaveBeenCalled();
-      expect.soft(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
-      expect(mocks.appendAssistantMessageToSessionTranscript).toHaveBeenCalledWith(
+
+      expect(mocks.appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
+      expect(mocks.enqueueDeliveryOnce).toHaveBeenCalledWith(
         expect.objectContaining({
-          agentId: "main",
-          sessionKey,
-          expectedSessionId: sessionId,
-          expectedLifecycleRevision: entry.lifecycleRevision,
-          storePath,
-          text: report,
-          idempotencyKey: `update-run-finished:${updateRun.runId}`,
+          channel: "telegram",
+          to: "chat-123",
+          payloads: [{ text: notice }],
         }),
+        "restart-sentinel-notice:agent:main:main:123",
       );
-      const events = await loadTranscriptEvents({
-        agentId: "main",
-        sessionId,
-        sessionKey,
-        storePath,
-      });
-      expect(events.filter((event) => asOptionalRecord(event)?.type === "message")).toHaveLength(2);
-      expect(broadcastToConnIds).toHaveBeenCalledTimes(2);
-      expectRestartSentinelTranscriptBroadcast(broadcastToConnIds, {
-        sessionKey,
-        report,
-        subscribers,
-      });
-      expect(mocks.enqueueDeliveryOnce).not.toHaveBeenCalled();
-      expect(mocks.enqueueSessionDelivery).not.toHaveBeenCalled();
-      expect(mocks.requestHeartbeat).not.toHaveBeenCalled();
-      expect(mocks.logWarn).not.toHaveBeenCalled();
-    } finally {
-      mocks.mergeDeliveryContext.mockImplementation(originalMerge);
-      unsubscribe();
-      await Promise.allSettled(publications);
-      rowProjection.dispose();
-    }
-  });
-
-  it("wakes the internal session when the update notice append throws", async () => {
-    mocks.deliveryContextFromSession.mockReturnValue({ channel: "webchat" });
-    mocks.readRestartSentinel.mockResolvedValue(
-      sentinelFixture({ kind: "update", status: "error", ts: 123, sessionKey: "agent:main:main" }),
-    );
-    mocks.appendAssistantMessageToSessionTranscript.mockRejectedValue(new Error("append failed"));
-
-    await wakeRestartSentinel();
-
-    expect(mocks.logWarn).toHaveBeenCalledWith(
-      "restart summary: internal restart notice append failed; falling back to wake: append failed",
-      { sessionKey: "agent:main:main" },
-    );
-    expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
-      "restart message",
-      expect.objectContaining({ sessionKey: "agent:main:main" }),
-    );
-    expect(mocks.requestHeartbeat).toHaveBeenCalledOnce();
-    expect(mocks.enqueueDeliveryOnce).not.toHaveBeenCalled();
-  });
+      expect(mocks.deliverOutboundPayloads).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ payloads: [{ text: notice }] }),
+      );
+      expect(mocks.formatRestartSentinelMessage).toHaveBeenCalledWith(payload);
+      expect(mocks.enqueueSystemEvent).toHaveBeenCalledWith(
+        wake,
+        expect.objectContaining({ sessionKey: "agent:main:main" }),
+      );
+      expect(mocks.requestHeartbeat).toHaveBeenCalledOnce();
+    },
+  );
 
   it("persists every downstream intent before consuming the loaded revision", async () => {
     await wakeRestartSentinel();

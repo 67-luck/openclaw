@@ -10,6 +10,7 @@ import { createAgentRunDirectAbortError } from "../../agents/run-termination.js"
 import { formatErrorMessage } from "../../infra/errors.js";
 import { withTimeout } from "../../infra/fs-safe.js";
 import {
+  captureSessionControllerSettlement,
   closeSessionControllerAdmission,
   captureSessionTarget,
   isCompetingSessionControllerWorkActive,
@@ -114,6 +115,7 @@ export async function prepareSessionLifecycleDrain(
   let workerDrained: Promise<void> | undefined;
   let terminalDrain: AgentTerminalSessionDrain | undefined;
   let reclaimed: Promise<void> | undefined;
+  let capturedControllerWork: Promise<void> | undefined;
   let releaseAdmissions = () => {};
   let released = false;
   const release = () => {
@@ -145,6 +147,8 @@ export async function prepareSessionLifecycleDrain(
           target,
           reason: createAgentRunDirectAbortError(),
         });
+        capturedControllerWork = captureSessionControllerSettlement({ target });
+        void capturedControllerWork?.catch(() => {});
         if (params.sessionId) {
           const reservation = getWorkerInferenceSessionControl(workerService)?.reserveSessionDrain(
             params.sessionId,
@@ -246,6 +250,8 @@ export async function prepareSessionLifecycleDrain(
       }
     }
 
+    // This is the exact pre-cancellation owner receipt, not a post-abort registry read.
+    const admittedWork = capturedControllerWork ?? Promise.resolve();
     const placementService: LifecyclePlacementService | undefined =
       params.context.workerSessionPlacementService;
     const placement = params.sessionId
@@ -278,6 +284,9 @@ export async function prepareSessionLifecycleDrain(
     // Failed placements keep cleanup custody without delaying archive visibility.
     // Other placements and destructive deletion still require safe reclaim.
     await (reclaimed ?? prepared.workerStop.stop());
+    // Provider settlement keeps its placement custody and deadline. Only after reclaim
+    // finishes does the ordinary admission bound apply, including for local sessions.
+    await withTimeout(admittedWork, timeoutMs, "session controller lifecycle drain");
     const placementTarget = { context: params.context, sessionId: params.sessionId };
     const assertPlacementCurrent =
       params.action === "archive"
@@ -297,7 +306,7 @@ export async function prepareSessionLifecycleDrain(
       },
     };
   } catch (error) {
-    if (reclaimed || workerDrained || terminalDrain) {
+    if (reclaimed || workerDrained || capturedControllerWork || terminalDrain) {
       // Bound the failed caller's response without releasing accepted work.
       // Runtime custody retains the admission closures through real cleanup.
       void params.context
@@ -306,6 +315,7 @@ export async function prepareSessionLifecycleDrain(
           const settlements = await Promise.allSettled([
             reclaimed,
             workerDrained,
+            capturedControllerWork,
             terminalDrain?.drained,
           ]);
           for (const settled of settlements) {

@@ -107,20 +107,11 @@ test("sessions.patch cancels active work and commits only after admission and te
     await writeSessionStore({
       entries: { [sessionKey]: sessionStoreEntry(sessionId) },
     });
-    const interrupted = createDeferredCore();
-    const admission = await beginSessionEffect({
-      signal,
-      scope: storePath,
-      identities: [sessionKey, sessionId],
-      assertAllowed: () => {},
-      onInterrupt: () => interrupted.resolve(),
-    });
     const persistence = createDeferredCore();
     releaseOnAbort(() => {
-      admission.release();
       persistence.resolve();
     });
-    const active = activeRunContext({
+    const active = await activeRunContext({
       runId,
       sessionId,
       sessionKey,
@@ -138,13 +129,13 @@ test("sessions.patch cancels active work and commits only after admission and te
         },
       ),
     );
-    await racePromiseWithAbortSignal(interrupted.promise, signal);
+    await waitForArchivePhase(active.aborted, archive, signal);
     expect(active.controller.signal.aborted).toBe(true);
     expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
 
-      let replacementAdmitted = false;
-      replacement = beginSessionEffect({
-
+    let replacementAdmitted = false;
+    const replacement = track(
+      beginSessionEffect({
         signal,
         scope: storePath,
         identities: [sessionKey, sessionId],
@@ -166,7 +157,6 @@ test("sessions.patch cancels active work and commits only after admission and te
     await Promise.resolve();
     expect(replacementAdmitted).toBe(false);
 
-    admission.release();
     await Promise.resolve();
     expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
     persistence.resolve();
@@ -214,7 +204,7 @@ test("identity changes fence archive before cancellation and force fresh authori
       admission.release();
       persistence.resolve();
     });
-    const active = activeRunContext({ runId, sessionId, sessionKey, persistence });
+    const active = await activeRunContext({ runId, sessionId, sessionKey, persistence });
     dispose(active.unsubscribe);
     const requestContext = await archiveLifecycleRequestContext(active.context);
     const placement = workerPlacement({ sessionId, sessionKey, state: "active" });
@@ -240,9 +230,9 @@ test("identity changes fence archive before cancellation and force fresh authori
       throw new Error("expected resolved sharing target");
     }
 
-      let sharingSettled = false;
-      sharing = runSessionMutation({
-
+    let sharingSettled = false;
+    const sharing = track(
+      runSessionMutation({
         scope: sharingTarget.storePath,
         identities: [
           sharingTarget.canonicalKey,
@@ -263,12 +253,13 @@ test("identity changes fence archive before cancellation and force fresh authori
         },
       }).finally(() => {
         sharingSettled = true;
-      });
-      await racePromiseWithAbortSignal(sharingCommitted.promise, signal);
-      expect(isSessionMutationActive(sharingTarget.storePath, [sessionKey, sessionId])).toBe(true);
-      expect(sharingSettled).toBe(false);
-      expect(loadSessionEntry({ storePath, sessionKey })?.visibility).toBe("draft");
-
+      }),
+    );
+    await waitForArchivePhase(sharingCommitted.promise, sharing, signal);
+    expect(isSessionMutationActive(sharingTarget.storePath, [sessionKey, sessionId])).toBe(true);
+    expect(sharingSettled).toBe(false);
+    expect(loadSessionEntry({ storePath, sessionKey })?.visibility).toBe("draft");
+    archiver.authenticatedUserProfile!.profileId = "archive-viewer";
 
     let archiveSettled = false;
     const archive = track(
@@ -324,21 +315,14 @@ test.for(["creator", "changed identity"] as const)(
           }),
         },
       });
-      const admission = await beginSessionEffect({
-        signal,
-        scope: storePath,
-        identities: [sessionKey, sessionId],
-        assertAllowed: () => {},
-      });
       const persistence = createDeferredCore();
       const reclaimGate = createDeferredCore();
       const reclaimEntered = createDeferredCore();
       releaseOnAbort(() => {
-        admission.release();
         persistence.resolve();
         reclaimGate.resolve();
       });
-      const active = activeRunContext({ runId, sessionId, sessionKey, persistence });
+      const active = await activeRunContext({ runId, sessionId, sessionKey, persistence });
       dispose(active.unsubscribe);
       const requestContext = await archiveLifecycleRequestContext(active.context);
       let placement = workerPlacement({ sessionId, sessionKey, state: "active" });
@@ -389,7 +373,6 @@ test.for(["creator", "changed identity"] as const)(
         archiver.authenticatedUserProfile!.profileId = "archive-viewer";
       }
 
-      admission.release();
       persistence.resolve();
       if (archiveRole === "changed identity") {
         expect(await archive).toMatchObject({
@@ -430,7 +413,6 @@ test("alias archive lets an earlier alias mutation finish before canonical recla
       reclaimEntered.resolve();
       await allowNestedReclaim.promise;
       await runSessionMutation({
-
         scope: storePath,
         identities: [aliasKey, sessionKey, sessionId],
         run: async () => {},
@@ -452,10 +434,11 @@ test("alias archive lets an earlier alias mutation finish before canonical recla
             workerPlacementDispatchService: { dispatch: vi.fn(), reclaim },
           },
         },
-      );
-      await racePromiseWithAbortSignal(reclaimEntered.promise, signal);
-      contender = runSessionMutation({
-
+      ),
+    );
+    await racePromiseWithAbortSignal(reclaimEntered.promise, signal);
+    const contender = track(
+      runSessionMutation({
         scope: storePath,
         identities: [aliasKey],
         run: async () => {
@@ -480,26 +463,29 @@ test("sessions.patch returns its drain timeout while cleanup still fences admiss
   const { storePath } = await createSessionStoreDir();
   const sessionKey = "agent:main:archive-owned-timeout";
   const sessionId = "archive-owned-timeout-id";
+  const runId = "run-archive-owned-timeout";
   await writeSessionStore({ entries: { [sessionKey]: sessionStoreEntry(sessionId) } });
-  const interrupted = createDeferredCore();
-  const admission = await beginSessionEffect({
-    scope: storePath,
-    identities: [sessionKey, sessionId],
-    assertAllowed: () => {},
-    onInterrupt: () => interrupted.resolve(),
-  });
+  const persistence = createDeferredCore();
+  const active = await activeRunContext({ runId, sessionId, sessionKey, persistence });
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   let responded = false;
   let successorEntered = false;
   const cleanup = new AsyncWorkScope();
-  const archive = directSessionReq("sessions.patch", archivePatch(sessionKey, sessionId), {
-    context: { trackExecution: <T>(run: () => T | Promise<T>) => cleanup.track(run) },
-  }).then((result) => {
+  const archive = directSessionReq(
+    "sessions.patch",
+    { key: sessionKey, archived: true, expectedSessionId: sessionId },
+    {
+      context: {
+        ...active.context,
+        trackExecution: <T>(run: () => T | Promise<T>) => cleanup.track(run),
+      },
+    },
+  ).then((result) => {
     responded = true;
     return result;
   });
   try {
-    await interrupted.promise;
+    await active.aborted;
     await vi.advanceTimersByTimeAsync(SESSION_CONTROLLER_DRAIN_TIMEOUT_MS + 1);
     expect(responded).toBe(true);
     const result = await archive;
@@ -518,9 +504,10 @@ test("sessions.patch returns its drain timeout while cleanup still fences admiss
     expect(successorEntered).toBe(false);
     expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
   } finally {
-    admission.release();
+    persistence.resolve();
     await archive;
     await cleanup.drain();
+    active.unsubscribe();
     vi.useRealTimers();
   }
   const next = await beginSessionEffect({
@@ -542,15 +529,16 @@ test("sessions.patch returns retryable UNAVAILABLE when the runtime rejects its 
   const workerEnvironmentService = createWorkerInferenceDrainService(() => {
     throw new Error("runtime drain refused");
   });
-  const archived = await directSessionReq("sessions.patch", archivePatch(sessionKey, sessionId), {
-    context: { workerEnvironmentService },
-  });
+  const archived = await directSessionReq(
+    "sessions.patch",
+    { key: sessionKey, archived: true, expectedSessionId: sessionId },
+    { context: { workerEnvironmentService } },
+  );
 
   expect(archived.ok).toBe(false);
   expect(archived.error).toMatchObject({ code: "UNAVAILABLE", retryable: true });
   expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
 });
-
 
 test("sessions.patch rechecks authoritative worker work before projection and releases the drain", async () => {
   const { storePath } = await createSessionStoreDir();
@@ -620,7 +608,7 @@ test("sessions.patch returns UNAVAILABLE when terminal persistence fails", ({ si
     await writeSessionStore({ entries: { [sessionKey]: sessionStoreEntry(sessionId) } });
     const persistence = createDeferredCore();
     releaseOnAbort(() => persistence.resolve());
-    const active = activeRunContext({
+    const active = await activeRunContext({
       runId,
       sessionId,
       sessionKey,
@@ -860,7 +848,7 @@ test("sessions.patch rejects a generation replaced after the exact preparation r
     const runId = "run-archive-generation-race";
     await writeSessionStore({ entries: { [sessionKey]: sessionStoreEntry(sessionId) } });
     const persistence = createDeferredCore();
-    const active = activeRunContext({ runId, sessionId, sessionKey, persistence });
+    const active = await activeRunContext({ runId, sessionId, sessionKey, persistence });
     dispose(active.unsubscribe);
     let placement = workerPlacement({ sessionId, sessionKey, state: "active" });
     const dispatch = vi.fn();
