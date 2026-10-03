@@ -40,12 +40,12 @@ export function controlUiBuildDiffersFrom(identity: {
   if (identity.controlUiBuildSource === "configured") {
     return false;
   }
-  const controlUiBuildId = CONTROL_UI_BUILD_INFO.buildId?.trim();
+  const controlUiBuildId = CONTROL_UI_BUILD_INFO.buildId;
   const gatewayBuildId = identity.buildId?.trim();
   if (controlUiBuildId && controlUiBuildId !== "dev" && gatewayBuildId) {
     return controlUiBuildId !== gatewayBuildId;
   }
-  const controlUiVersion = CONTROL_UI_BUILD_INFO.version?.trim();
+  const controlUiVersion = CONTROL_UI_BUILD_INFO.version;
   const gatewayVersion = identity.version?.trim();
   return Boolean(controlUiVersion && gatewayVersion && controlUiVersion !== gatewayVersion);
 }
