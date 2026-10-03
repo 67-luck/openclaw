@@ -162,22 +162,29 @@ describe("selected Codex runtime maintenance", () => {
     }
   });
 
-  it.each(["OPENCLAW_NO_AUTO_UPDATE", "OPENCLAW_NIX_MODE"])(
-    "does not acquire a runtime in %s environments",
-    async (key) => {
-      const f = automaticFixture();
-      vi.stubEnv(key, "1");
-      const update = vi.spyOn(cliUpdates, "updateCodexManagedCli");
-      try {
-        await f.service.start(f.ctx);
-        await vi.advanceTimersByTimeAsync(48 * 60 * 60_000);
-        expect(update).not.toHaveBeenCalled();
-        expect(binaries.resolveManagedCodexAppServerStartOptions).not.toHaveBeenCalled();
-      } finally {
-        await f.service.stop?.(f.ctx);
-      }
-    },
-  );
+  it.each([
+    ["OPENCLAW_NO_AUTO_UPDATE", "1"],
+    ["OPENCLAW_NO_AUTO_UPDATE", "true"],
+    ["OPENCLAW_NO_AUTO_UPDATE", "yes"],
+    ["OPENCLAW_NO_AUTO_UPDATE", "on"],
+    ["OPENCLAW_NO_AUTO_UPDATE", " TRUE "],
+    ["OPENCLAW_NIX_MODE", "1"],
+  ])("does not acquire a runtime when %s=%s", async (key, value) => {
+    const f = automaticFixture();
+    vi.stubEnv(key, value);
+    const update = vi.spyOn(cliUpdates, "updateCodexManagedCli").mockResolvedValue({
+      status: "current",
+      version: "99.1.0",
+    });
+    try {
+      await f.service.start(f.ctx);
+      await vi.advanceTimersByTimeAsync(48 * 60 * 60_000);
+      expect(update).not.toHaveBeenCalled();
+      expect(binaries.resolveManagedCodexAppServerStartOptions).not.toHaveBeenCalled();
+    } finally {
+      await f.service.stop?.(f.ctx);
+    }
+  });
 
   it("joins an in-flight automatic update on shutdown and revokes publication", async () => {
     const f = automaticFixture();

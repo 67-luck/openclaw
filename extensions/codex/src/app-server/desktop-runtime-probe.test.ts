@@ -247,7 +247,9 @@ describe("disposable selected-runtime validation", () => {
     },
   );
 
-  it.each(["codex", "codex-cli/CodexCLI.app/Contents/MacOS/codex"])(
+  it
+    .runIf(process.platform !== "win32")
+    .each(["codex", "codex-cli/CodexCLI.app/Contents/MacOS/codex"])(
     "qualifies the native unified plugin in %s without a process MCP override",
     async (commandRelative) => {
       const f = await fixture(true, commandRelative);
@@ -281,7 +283,7 @@ describe("disposable selected-runtime validation", () => {
     },
   );
 
-  it.each([
+  it.runIf(process.platform !== "win32").each([
     ["replacement disablement", '[plugins."unified-computer-use@openai-bundled"]\nenabled = false'],
     [
       "legacy plugin MCP policy",
