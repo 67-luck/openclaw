@@ -175,7 +175,8 @@ describe("GPT-Live gateway relay bridge", () => {
 
         harness.triggerPeerAudio(pcm);
         finish("First reply");
-        expect(callbacks.slice(-2)).toEqual(["final:First reply", "completed"]);
+        expect(onTranscript).toHaveBeenLastCalledWith("assistant", "First reply", true);
+        expect(callbacks.at(-1)).toBe("completed");
         expect(Buffer.concat(deliveredAudio)).toHaveLength(encoding === "pcm16" ? 960 : 160);
         expect(onResponseDone).toHaveBeenCalledExactlyOnceWith({ status: "completed" });
         const callbacksAfterFirst = [...callbacks];
@@ -189,7 +190,8 @@ describe("GPT-Live gateway relay bridge", () => {
         });
         harness.triggerPeerAudio(pcm);
         finish("Second reply");
-        expect(callbacks.slice(-2)).toEqual(["final:Second reply", "completed"]);
+        expect(onTranscript).toHaveBeenLastCalledWith("assistant", "Second reply", true);
+        expect(callbacks.at(-1)).toBe("completed");
         expect(onResponseDone).toHaveBeenCalledTimes(2);
         expect(callbacks).not.toContain("response.created");
 
@@ -197,12 +199,14 @@ describe("GPT-Live gateway relay bridge", () => {
         expect(callbacks.slice(-2)).toEqual(["response.created", "partial:Continuing"]);
         harness.triggerPeerAudio(pcm);
         finish("Third reply");
-        expect(callbacks.slice(-2)).toEqual(["final:Third reply", "completed"]);
+        expect(onTranscript).toHaveBeenLastCalledWith("assistant", "Third reply", true);
+        expect(callbacks.at(-1)).toBe("completed");
 
         harness.bridge.sendUserMessage("One more question");
         harness.triggerPeerAudio(pcm);
         finish("Fourth reply");
-        expect(callbacks.slice(-2)).toEqual(["final:Fourth reply", "completed"]);
+        expect(onTranscript).toHaveBeenLastCalledWith("assistant", "Fourth reply", true);
+        expect(callbacks.at(-1)).toBe("completed");
         expect(onResponseDone).toHaveBeenCalledTimes(4);
         expect(
           onTranscript.mock.calls.filter(([role, , done]) => role === "assistant" && done),

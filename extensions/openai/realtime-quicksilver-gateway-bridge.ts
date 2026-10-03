@@ -553,23 +553,20 @@ export class OpenAIQuicksilverGatewayBridge implements RealtimeVoiceBridge {
   private completeOutput(text: string): void {
     const completion = {};
     this.outputCompletion = completion;
+    this.config.onTranscript?.("assistant", text, true);
+    if (this.closed || this.outputCompletion !== completion) {
+      return;
+    }
     const finish = () => {
-      if (this.closed) {
+      if (this.closed || this.outputCompletion !== completion) {
         return;
       }
-      if (this.outputCompletion === completion) {
-        this.audio.finishOutput();
-        if (this.closed) {
-          return;
-        }
-        if (this.outputCompletion === completion) {
-          this.providerOutputComplete = true;
-        }
+      this.audio.finishOutput();
+      if (this.closed || this.outputCompletion !== completion) {
+        return;
       }
-      this.config.onTranscript?.("assistant", text, true);
-      if (!this.closed && this.outputCompletion === completion && this.providerOutputComplete) {
-        this.config.onResponseDone?.({ status: "completed" });
-      }
+      this.providerOutputComplete = true;
+      this.config.onResponseDone?.({ status: "completed" });
     };
     const drained = this.peer?.drainOutputAudio();
     if (drained) {
