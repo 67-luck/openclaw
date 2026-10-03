@@ -6,7 +6,11 @@ import {
   hasNativeUpdateBridge,
   NATIVE_UPDATE_AVAILABILITY_CHANGED_EVENT,
 } from "../app/native-link-routing.ts";
-import { confirmAndStartUpdate, type UpdateProgress } from "../app/update-confirmation.ts";
+import {
+  confirmAndStartUpdate,
+  type ConfirmAndStartUpdateParams,
+  type UpdateProgress,
+} from "../app/update-confirmation.ts";
 import type { ApplicationStatusBanner } from "../app/update-overlay-helpers.ts";
 import { projectUpdateRun } from "../app/update-run-projection.ts";
 import {
@@ -37,12 +41,15 @@ class SidebarUpdateCard extends OpenClawLightDomContentsElement {
   @property({ attribute: false }) updateRunAcknowledged = false;
   @property({ attribute: false }) connected = true;
   @property({ attribute: false }) onCheckStatus: (() => Promise<boolean>) | undefined = undefined;
+  @property({ attribute: false }) prepareRetry: ConfirmAndStartUpdateParams["prepareRetry"] =
+    undefined;
   @property({ attribute: false }) onAcknowledge: (() => void) | undefined = undefined;
   @property({ attribute: false }) statusBanner: ApplicationStatusBanner | null = null;
   @property({ attribute: false }) watchUpdateProgress:
     | ((listener: (progress: UpdateProgress) => void) => () => void)
     | undefined = undefined;
   @property({ attribute: false }) canUpdate = false;
+  @property({ attribute: false }) canNativeUpdate = false;
   @property({ attribute: false }) canHoldUpdate = false;
   @property({ attribute: false }) onUpdate: () => void = () => undefined;
   @property({ attribute: false }) refreshRequired = false;
@@ -108,7 +115,8 @@ class SidebarUpdateCard extends OpenClawLightDomContentsElement {
 
   private renderStatus() {
     const statusBanner =
-      this.statusBanner?.source === "read" || !this.updateRun ? this.statusBanner : null;
+      (this.statusBanner?.source === "read" || !this.updateRun ? this.statusBanner : null) ??
+      (this.targetCheckFailed ? { tone: "warn", text: t("updates.sidebar.checkFailed") } : null);
     // The Gateway recorded this outcome; unlike the client's own update
     // metadata it stays true even when this client is stale.
     return statusBanner
@@ -151,29 +159,42 @@ class SidebarUpdateCard extends OpenClawLightDomContentsElement {
     }
   };
 
-  private readonly startUpdate = async () => {
+  private readonly prepareUpdate = async () => {
     const campaign = this.updateSchedule?.campaign;
     const busy = this.updateBusy || campaign?.state === "applying";
-    if (busy || !this.canUpdate || !(await this.checkTarget())) {
-      return;
+    const viaNativeApp = hasNativeUpdateBridge();
+    const canStart = () => (viaNativeApp ? this.canNativeUpdate : this.canUpdate);
+    // Native-app updates own their discovery; Gateway freshness cannot gate them.
+    if (busy || !canStart() || (!viaNativeApp && !(await this.checkTarget()))) {
+      return false;
     }
     if (
       !this.isConnected ||
       !this.connected ||
-      !this.canUpdate ||
+      hasNativeUpdateBridge() !== viaNativeApp ||
+      !canStart() ||
       this.refreshRequired ||
       this.updateBusy ||
       this.updateSchedule?.campaign?.state === "applying" ||
       !isUpdateActionable(this.updateAvailable, this.updateSchedule, false)
     ) {
-      return;
+      return false;
     }
-    this.confirmUpdate();
+    return true;
+  };
+
+  private readonly startUpdate = async () => {
+    if (await this.prepareUpdate()) {
+      this.confirmUpdate();
+    }
   };
 
   private confirmUpdate(existingRun?: UpdateRunRecord) {
+    const viaNativeApp = hasNativeUpdateBridge();
     void confirmAndStartUpdate({
       existingRun,
+      prepareRetry: viaNativeApp ? undefined : this.prepareRetry,
+      prepareGatewayFallback: this.prepareRetry,
       startGatewayUpdate: () => this.onUpdate(),
       onCheckStatus: this.onCheckStatus,
       onReviewUpdate: this.onReviewUpdate,
@@ -183,7 +204,7 @@ class SidebarUpdateCard extends OpenClawLightDomContentsElement {
       updateSchedule: this.updateSchedule,
       // Read the bridge at click time: a Mac app that installed it
       // after the last availability event still owns this update.
-      viaNativeApp: hasNativeUpdateBridge(),
+      viaNativeApp,
     });
   }
 
@@ -228,7 +249,12 @@ class SidebarUpdateCard extends OpenClawLightDomContentsElement {
       const view = projectUpdateRun(this.updateRun, this.connected);
       return {
         title: view.headline,
-        detail: view.compactLabel,
+        detail:
+          this.statusBanner?.source === "read"
+            ? this.statusBanner.text
+            : this.targetCheckFailed
+              ? t("updates.sidebar.checkFailed")
+              : view.compactLabel,
         timestampMs:
           this.updateRun.status === "running"
             ? this.updateRun.createdAtMs
@@ -288,7 +314,11 @@ class SidebarUpdateCard extends OpenClawLightDomContentsElement {
       ...summary,
       detail: this.checkingTarget ? t("updates.sidebar.checking") : summary.detail,
       onToggle: (open) => {
-        if (open && !isUpdateRunAttentionVisible(this.updateRun, this.updateRunAcknowledged)) {
+        if (
+          open &&
+          !hasNativeUpdateBridge() &&
+          !isUpdateRunAttentionVisible(this.updateRun, this.updateRunAcknowledged)
+        ) {
           void this.checkTarget();
         }
       },
@@ -392,6 +422,7 @@ class SidebarUpdateCard extends OpenClawLightDomContentsElement {
     if (isUpdateRunAttentionVisible(this.updateRun, this.updateRunAcknowledged) && this.updateRun) {
       const view = projectUpdateRun(this.updateRun, this.connected);
       return html`<div class="sidebar-update-card" role="status" aria-live="polite">
+        ${this.renderStatus()}
         <button class="sidebar-update-card__action" type="button" @click=${this.openRun}>
           <span class="sidebar-update-card__icon" aria-hidden="true"
             >${this.updateRun.status === "running" ? icons.refresh : this.updateRun.status === "succeeded" ? icons.check : icons.alertTriangle}</span
@@ -414,6 +445,7 @@ class SidebarUpdateCard extends OpenClawLightDomContentsElement {
     if (!statusBanner && !actionable) {
       return nothing;
     }
+    const canUpdate = this.nativeUpdateAvailable ? this.canNativeUpdate : this.canUpdate;
     const title = this.nativeUpdateAvailable
       ? t("chat.sidebar.updateMacAndGateway")
       : t("chat.sidebar.updateGateway");
@@ -436,7 +468,7 @@ class SidebarUpdateCard extends OpenClawLightDomContentsElement {
     const updateAction = html`<button
       class="sidebar-update-card__action ${busy || this.checkingTarget ? "sidebar-update-card__action--busy" : ""}"
       type="button"
-      aria-disabled=${this.canUpdate ? nothing : "true"}
+      aria-disabled=${canUpdate ? nothing : "true"}
       ?disabled=${busy || this.checkingTarget}
       aria-busy=${this.checkingTarget ? "true" : "false"}
       @click=${this.startUpdate}
@@ -458,13 +490,12 @@ class SidebarUpdateCard extends OpenClawLightDomContentsElement {
         aria-live=${campaign ? nothing : "polite"}
       >
         ${this.renderStatus()}
-        ${this.targetCheckFailed && statusBanner?.source !== "read" ? html`<div class="sidebar-update-card__status sidebar-update-card__status--warn" role="alert">${t("updates.sidebar.checkFailed")}</div>` : nothing}
         ${!actionable && statusBanner?.source === "read" ? html`<button type="button" class="sidebar-update-card__review" ?disabled=${this.checkingTarget || !this.connected} @click=${this.checkTarget}>${this.checkingTarget ? t("updates.sidebar.checking") : t("connection.retryNow")}</button>` : nothing}
         ${
           actionable
             ? html`<div class="sidebar-update-card__actions">
                 ${
-                  this.canUpdate
+                  canUpdate
                     ? updateAction
                     : html`<openclaw-tooltip open-on-click .content=${t("updates.adminRequired")}>
                         ${updateAction}

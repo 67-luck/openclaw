@@ -257,10 +257,18 @@ it.each([false, true])(
       installReceipt: null,
       status: { root: null, installKind: "package", packageManager: "npm" },
     });
-    const result = await status(
-      { update: { channel: "dev", auto: { enabled: false } } },
-      { refreshCheckout: true },
-    );
+    const config = { update: { channel: "dev" as const, auto: { enabled: false } } };
+    const respond = vi.fn();
+    await updateStatusHandlers["update.status"]!({
+      params: { refreshCheckout: true },
+      respond,
+      context: { getRuntimeConfig: () => config },
+    } as never);
+    expect(respond).toHaveBeenCalledExactlyOnceWith(false, undefined, {
+      code: "UNAVAILABLE",
+      message: "Could not check the latest update. Try again.",
+    });
+    const result = await status(config);
     expect(result.schedule).toMatchObject({
       channel: "stable",
       target,
@@ -322,9 +330,14 @@ it("omits app-owned install and stale package targets from the protocol schedule
   expect(result.updateAvailable).toBeNull();
 });
 
-it.each(["stable", "beta"] as const)(
-  "reports a refreshed immutable preparation without enabling activation or retaining package targets (%s)",
-  async (channel) => {
+it.each([
+  { channel: "stable", initialized: true },
+  { channel: "beta", initialized: true },
+  { channel: "stable", initialized: false },
+  { channel: "beta", initialized: false },
+] as const)(
+  "reports a refreshed immutable preparation without activation on $channel with initialized=$initialized",
+  async ({ channel, initialized }) => {
     const immutable = {
       root: "/opt/openclaw",
       currentSha: "a".repeat(40),
@@ -341,7 +354,9 @@ it.each(["stable", "beta"] as const)(
       },
     };
     install.mockResolvedValue(discovered);
-    await lifecycle.initialize();
+    if (initialized) {
+      await lifecycle.initialize();
+    }
     setUpdateScheduleCache({
       next: {
         channel,
@@ -372,6 +387,7 @@ it.each(["stable", "beta"] as const)(
       install: { kind: "immutable", immutable: { ...immutable, prepared } },
     });
     expect(result.updateAvailable).toBeNull();
+    expect(install).toHaveBeenCalledWith(true, expect.any(AbortSignal));
     expect((await lifecycle.initialize()).status.immutable?.prepared).toEqual(prepared);
 
     install.mockResolvedValue({

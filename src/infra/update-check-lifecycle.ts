@@ -18,9 +18,14 @@ export type UpdateCheckLifecycle = UpdateCheckNotifications & {
   signal: AbortSignal;
   campaign?: UpdateCampaignController;
   installStatus?: StartupInstallStatus;
+  /** Background owner policy admits the first campaign from an interactive result. */
+  announceDevGitUpdate?: (
+    target: Extract<NonNullable<UpdateScheduleState["target"]>, { kind: "git" }>,
+    installStatus: StartupInstallStatus,
+  ) => void;
   isCurrent: () => boolean;
-  /** Shared publication order for background and interactive Dev discovery. */
-  devGitCheckGeneration: number;
+  /** Shared publication order for background and interactive update discovery. */
+  publicationGeneration: number;
   refreshes: WeakMap<OpenClawConfig, Promise<void>>;
   run: <T>(work: (signal: AbortSignal) => Promise<T>) => Promise<T>;
   initialize: () => Promise<StartupInstallStatus>;
@@ -57,8 +62,8 @@ export function createGatewayUpdateLifecycle(
         signal.throwIfAborted();
         const result = await resolveStartupInstallStatus(false, signal);
         signal.throwIfAborted();
-        lifecycle.installStatus = result;
-        return result;
+        // A fresh interactive probe may have already adopted the installation.
+        return (lifecycle.installStatus ??= result);
       });
       initialization = task;
       void task.catch(() => {
@@ -90,7 +95,7 @@ export function createGatewayUpdateLifecycle(
     ...notifications,
     signal,
     isCurrent: () => updateCheckLifecycle === lifecycle,
-    devGitCheckGeneration: 0,
+    publicationGeneration: 0,
     refreshes: new WeakMap(),
     run,
     initialize,

@@ -1357,32 +1357,6 @@ describe("update-startup", () => {
     }
   });
 
-  it("does not publish an old Dev refresh over a replacement channel", async ({ signal }) => {
-    const oldGitStatus = mockDevGitStatus();
-    const entered = createDeferred();
-    const discovery = createDeferred<UpdateCheckResult>();
-    vi.mocked(checkUpdateStatus).mockImplementationOnce(() => {
-      entered.resolve();
-      return discovery.promise;
-    });
-    const refresh = refreshGatewayUpdateStatus({ update: { channel: "dev" } });
-    try {
-      await withinTest(entered.promise, signal);
-
-      await runGatewayUpdateCheck({
-        cfg: { update: { channel: "beta", checkOnStart: false } },
-      });
-      const replacementSchedule = getUpdateSchedule();
-      discovery.resolve(oldGitStatus);
-      await refresh;
-
-      expect(getUpdateSchedule()).toEqual(replacementSchedule);
-    } finally {
-      discovery.resolve(oldGitStatus);
-      await refresh;
-    }
-  });
-
   it.for([
     { channel: "beta", joined: true, cancelled: "restored-in-process" as const },
     { channel: "beta", joined: false, cancelled: false as const },

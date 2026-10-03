@@ -3,7 +3,9 @@
 import { render } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MentionInboxItem } from "../../../packages/gateway-protocol/src/index.js";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { createApplicationOverlays } from "../app/overlays.ts";
+import type { ConfirmAndStartUpdateParams } from "../app/update-confirmation.ts";
 import { updateRunHarness } from "../app/update-run.test-support.ts";
 import { SESSION_NAVIGATION_KEY_PARAM } from "../lib/sessions/route-navigation.ts";
 import { createStorageMock } from "../test-helpers/storage.ts";
@@ -211,19 +213,113 @@ describe("renderSidebarUpdateSurface", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
+  it.each([false, true])(
+    "prepares retry from live application state after the card unmounts with access revoked=%s",
+    async (revokeAccess) => {
+      const entered = createDeferred();
+      const response = createDeferred<unknown>();
+      const request = vi.fn(async () => {
+        entered.resolve();
+        return response.promise;
+      });
+      const harness = updateRunHarness(request);
+      harness.update({
+        hello: {
+          ...harness.gateway.snapshot.hello!,
+          features: { methods: ["update.run", "update.status"] },
+        },
+      });
+      const overlays = createApplicationOverlays(harness.gateway);
+      const fresh = {
+        channel: "dev",
+        currentVersion: "1.0.0",
+        latestVersion: "1.0.0",
+        currentSha: "a".repeat(40),
+        upstreamSha: "c".repeat(40),
+        upstreamRef: "origin/main",
+        commitsBehind: 9,
+      };
+      let preparing: Promise<unknown> | undefined;
+      try {
+        render(
+          renderSidebarUpdateSurface({
+            context: { gateway: harness.gateway, overlays },
+            onNavigate: vi.fn(),
+            watchUpdateProgress: undefined,
+          }),
+          container,
+        );
+        const card = container.querySelector<
+          HTMLElement & {
+            updateComplete: Promise<boolean>;
+            prepareRetry: NonNullable<ConfirmAndStartUpdateParams["prepareRetry"]>;
+          }
+        >("openclaw-sidebar-update-card")!;
+        await card.updateComplete;
+        render(null, container);
+        expect(card.isConnected).toBe(false);
+        preparing = card.prepareRetry();
+        await entered.promise;
+        if (revokeAccess) {
+          harness.update({
+            hello: {
+              ...harness.gateway.snapshot.hello!,
+              auth: { role: "operator", scopes: ["operator.read"] },
+            },
+          });
+        }
+        response.resolve({ updateAvailable: fresh });
+        const target = await preparing;
+        if (revokeAccess) {
+          expect(target).toBeNull();
+        } else {
+          expect(target).toMatchObject({ updateAvailable: fresh });
+        }
+        expect(request).toHaveBeenCalledWith(
+          "update.status",
+          { refreshCheckout: true },
+          { timeoutMs: null },
+        );
+      } finally {
+        response.resolve({ updateAvailable: fresh });
+        await preparing;
+        overlays.dispose();
+      }
+    },
+  );
+
   it.each([
-    { scope: "operator.read", methods: ["update.status"], canCheck: false, canUpdate: false },
-    { scope: "operator.admin", methods: ["update.status"], canCheck: true, canUpdate: false },
-    { scope: "operator.admin", methods: ["update.run"], canCheck: false, canUpdate: false },
+    {
+      scope: "operator.read",
+      methods: ["update.status"],
+      canCheck: false,
+      canUpdate: false,
+      canNativeUpdate: false,
+    },
+    {
+      scope: "operator.admin",
+      methods: ["update.status"],
+      canCheck: true,
+      canUpdate: false,
+      canNativeUpdate: false,
+    },
+    {
+      scope: "operator.admin",
+      methods: ["update.run"],
+      canCheck: false,
+      canUpdate: false,
+      canNativeUpdate: true,
+    },
     {
       scope: "operator.admin",
       methods: ["update.run", "update.status"],
       canCheck: true,
       canUpdate: true,
+      canNativeUpdate: true,
     },
   ])(
     "gates discovery and fresh confirmation for $scope with $methods",
-    async ({ scope, methods, canCheck, canUpdate }) => {
+    async ({ scope, methods, canCheck, canUpdate, canNativeUpdate }) => {
       const request = vi.fn(async () => ({}));
       const harness = updateRunHarness(request);
       harness.update({
@@ -248,11 +344,13 @@ describe("renderSidebarUpdateSurface", () => {
           HTMLElement & {
             updateComplete: Promise<boolean>;
             canUpdate: boolean;
+            canNativeUpdate: boolean;
             onCheckStatus?: () => Promise<boolean>;
           }
         >("openclaw-sidebar-update-card")!;
         await card.updateComplete;
         expect(card.canUpdate).toBe(canUpdate);
+        expect(card.canNativeUpdate).toBe(canNativeUpdate);
         expect(Boolean(card.onCheckStatus)).toBe(canCheck);
         const details = card.querySelector("details")!;
         const expanded = new Promise<void>((resolve) => {

@@ -65,7 +65,6 @@ export function refreshGatewayUpdateStatus(cfg: OpenClawConfig): Promise<void> {
   const refresh = lifecycle
     .run(async (signal) => {
       const scheduleAtStart = getUpdateSchedule();
-      const generation = ++lifecycle.devGitCheckGeneration;
       const configured = normalizeUpdateChannel(cfg.update?.channel);
       const channel =
         configured ??
@@ -73,30 +72,27 @@ export function refreshGatewayUpdateStatus(cfg: OpenClawConfig): Promise<void> {
           currentVersion: VERSION,
           ...(await lifecycle.initialize()).status,
         }).channel;
-      const isCurrent = () => {
+      if (channel !== "dev" && (await lifecycle.initialize()).status.installKind !== "immutable") {
+        return;
+      }
+      const generation = lifecycle.publicationGeneration;
+      const assertCurrent = () => {
         const schedule = getUpdateSchedule();
         const campaign = lifecycle.campaign?.getState();
-        if (generation !== lifecycle.devGitCheckGeneration) {
-          throw new Error("Update check was superseded by a newer check. Try again.");
+        if (
+          generation !== lifecycle.publicationGeneration ||
+          campaign?.state === "applying" ||
+          !lifecycle.isCurrent() ||
+          signal.aborted ||
+          (campaign && (schedule?.channel !== channel || schedule.campaign?.id !== campaign.id)) ||
+          (schedule !== scheduleAtStart && schedule?.channel !== channel)
+        ) {
+          throw new Error("Update check was superseded by another update operation. Try again.");
         }
-        return (
-          campaign?.state !== "applying" &&
-          lifecycle.isCurrent() &&
-          !signal.aborted &&
-          (!campaign || (schedule?.channel === channel && schedule.campaign?.id === campaign.id)) &&
-          (schedule === scheduleAtStart || schedule?.channel === channel)
-        );
       };
-      if (
-        (channel !== "dev" && lifecycle.installStatus?.status.installKind !== "immutable") ||
-        !isCurrent()
-      ) {
-        return;
-      }
+      assertCurrent();
       const { root, status, installReceipt } = await resolveStartupInstallStatus(true, signal);
-      if (!isCurrent()) {
-        return;
-      }
+      assertCurrent();
       // Repair failed discovery and invalidate generation facts when the adopted
       // installation or prepared receipt changes, including loss of ownership.
       if (
@@ -133,9 +129,17 @@ export function refreshGatewayUpdateStatus(cfg: OpenClawConfig): Promise<void> {
         // A package check preserves supported package availability, never a
         // target or campaign owned by a Git checkout that no longer exists.
         if (status.installKind === "package" && current.target?.kind !== "git") {
+          if (schedule && schedule.channel !== channel) {
+            lifecycle.publicationGeneration += 1;
+            setUpdateAvailableCache({
+              next: null,
+              onUpdateAvailableChange: lifecycle.onUpdateAvailableChange,
+            });
+          }
           publishSchedule(next);
           return;
         }
+        lifecycle.publicationGeneration += 1;
         lifecycle.campaign?.clear();
         setUpdateAvailableCache({
           next: null,
@@ -145,9 +149,8 @@ export function refreshGatewayUpdateStatus(cfg: OpenClawConfig): Promise<void> {
         return;
       }
       const update = await resolveDevGitUpdate(status, signal);
-      if (!isCurrent()) {
-        return;
-      }
+      assertCurrent();
+      lifecycle.publicationGeneration += 1;
       const campaign = lifecycle.campaign;
       if (!update) {
         campaign?.clear();
@@ -169,6 +172,9 @@ export function refreshGatewayUpdateStatus(cfg: OpenClawConfig): Promise<void> {
         canRunDevGitCampaign(update.git)
       ) {
         campaign?.refreshGitTarget(update.target);
+        if (!campaign?.getState()) {
+          lifecycle.announceDevGitUpdate?.(update.target, { root, status, installReceipt });
+        }
       } else {
         campaign?.clear();
       }

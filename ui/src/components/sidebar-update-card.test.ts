@@ -4,8 +4,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UpdateRunRecord } from "../../../src/infra/update-run-record.ts";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { UpdateAvailable, UpdateScheduleState } from "../api/types.ts";
+import { NATIVE_UPDATE_AVAILABILITY_CHANGED_EVENT } from "../app/native-link-routing.ts";
+import type { ConfirmAndStartUpdateParams } from "../app/update-confirmation.ts";
 import type { ApplicationStatusBanner } from "../app/update-overlay-helpers.ts";
 import { formatDateTimeMs } from "../lib/format.ts";
+import { getRenderedModalDialog, installDialogPolyfill } from "../test-helpers/modal-dialog.ts";
 import { createUpdateRunFixture } from "../test-helpers/update-run.ts";
 import "./sidebar-update-card.ts";
 
@@ -18,9 +21,11 @@ type SidebarUpdateCardElement = HTMLElement & {
   updateRun: UpdateRunRecord | null;
   updateRunAcknowledged: boolean;
   canUpdate: boolean;
+  canNativeUpdate: boolean;
   canHoldUpdate: boolean;
   onUpdate: () => void;
   onCheckStatus?: () => Promise<boolean>;
+  prepareRetry?: ConfirmAndStartUpdateParams["prepareRetry"];
   onDismiss?: () => void;
   refreshRequired: boolean;
   onRefresh: () => Promise<boolean>;
@@ -66,6 +71,126 @@ afterEach(() => {
 });
 
 describe("SidebarUpdateCard", () => {
+  it.each([false, true])(
+    "rechecks the target before retrying a failed run with successful discovery=%s",
+    async (successful) => {
+      const restoreDialog = installDialogPolyfill();
+      const check = createDeferred<boolean>();
+      const update: UpdateAvailable = {
+        channel: "dev",
+        currentVersion: "1.0.0",
+        latestVersion: "1.0.0",
+        currentSha: "a".repeat(40),
+        upstreamSha: "b".repeat(40),
+        upstreamRef: "origin/main",
+        commitsBehind: 7,
+      };
+      const element = await mount(update);
+      element.updateRun = createUpdateRunFixture({
+        status: "failed",
+        phase: "finished",
+        reason: "build-failed",
+        updatedAtMs: Date.now(),
+        finishedAtMs: Date.now(),
+      });
+      element.compact = true;
+      element.onUpdate = vi.fn();
+      element.prepareRetry = vi.fn(async () =>
+        (await check.promise)
+          ? { updateAvailable: element.updateAvailable, updateSchedule: element.updateSchedule }
+          : null,
+      );
+      await element.updateComplete;
+      try {
+        element.querySelector<HTMLButtonElement>(".sidebar-update-card__action")!.click();
+        await vi.dynamicImportSettled();
+        const { modal } = await getRenderedModalDialog(document.body);
+        const retry = [...modal.querySelectorAll("button")].find(
+          (button) => button.textContent?.trim() === "Retry update",
+        );
+        expect(retry).toBeDefined();
+        retry!.click();
+        await vi.waitFor(() => expect(element.prepareRetry).toHaveBeenCalledOnce());
+        expect(document.querySelector("openclaw-modal-dialog")).not.toBeNull();
+        expect(element.onUpdate).not.toHaveBeenCalled();
+
+        element.updateAvailable = { ...update, upstreamSha: "c".repeat(40), commitsBehind: 9 };
+        check.resolve(successful);
+        await vi.dynamicImportSettled();
+        await element.updateComplete;
+        if (successful) {
+          const fresh = await getRenderedModalDialog(document.body);
+          expect(fresh.modal.textContent).toContain("9 commits behind");
+          expect(fresh.modal.textContent).toContain("cccccccc");
+          expect(fresh.modal.textContent).not.toContain("bbbbbbbb");
+        } else {
+          expect(document.querySelector("openclaw-modal-dialog")).not.toBeNull();
+          expect(document.querySelector("openclaw-modal-dialog")?.textContent).toContain(
+            "Status could not be refreshed. Check your connection and try again.",
+          );
+          element.statusBanner = {
+            tone: "warn",
+            source: "read",
+            text: "Latest target unavailable.",
+          };
+          await element.updateComplete;
+          expect(element.querySelector('[role="alert"]')?.textContent).toContain(
+            "Latest target unavailable.",
+          );
+          expect(element.querySelector("summary")?.textContent).toContain(
+            "Latest target unavailable.",
+          );
+        }
+        expect(element.onUpdate).not.toHaveBeenCalled();
+      } finally {
+        check.resolve(false);
+        await vi.dynamicImportSettled();
+        document.querySelector("openclaw-modal-dialog")?.dispatchEvent(new Event("modal-cancel"));
+        restoreDialog();
+      }
+    },
+  );
+
+  it("keeps native ownership separate from Gateway freshness and follows bridge availability", async () => {
+    const element = await mount(
+      { currentVersion: "1.0.0", latestVersion: "2.0.0", channel: "stable" },
+      null,
+      false,
+    );
+    element.canNativeUpdate = true;
+    element.compact = true;
+    element.onCheckStatus = vi.fn(async () => false);
+    await element.updateComplete;
+    const action = () => element.querySelector<HTMLButtonElement>(".sidebar-update-card__action")!;
+    expect(action().getAttribute("aria-disabled")).toBe("true");
+
+    Object.defineProperty(window, "webkit", {
+      configurable: true,
+      value: { messageHandlers: { openclawUpdate: { postMessage: vi.fn() } } },
+    });
+    window.dispatchEvent(new Event(NATIVE_UPDATE_AVAILABILITY_CHANGED_EVENT));
+    await element.updateComplete;
+    expect(action().hasAttribute("aria-disabled")).toBe(false);
+    expect(action().textContent).toContain("Update Mac app");
+    const details = element.querySelector("details")!;
+    const expanded = new Promise<void>((resolve) => {
+      details.addEventListener("toggle", () => resolve(), { once: true });
+    });
+    details.open = true;
+    await expanded;
+    await element.updateComplete;
+    expect(element.onCheckStatus).not.toHaveBeenCalled();
+
+    element.canNativeUpdate = false;
+    await element.updateComplete;
+    expect(action().getAttribute("aria-disabled")).toBe("true");
+    element.canNativeUpdate = true;
+    Reflect.deleteProperty(window, "webkit");
+    window.dispatchEvent(new Event(NATIVE_UPDATE_AVAILABILITY_CHANGED_EVENT));
+    await element.updateComplete;
+    expect(action().getAttribute("aria-disabled")).toBe("true");
+  });
+
   it.each([false, true])(
     "checks and replaces the target on every expansion with acknowledged history=%s",
     async (withHistory) => {
