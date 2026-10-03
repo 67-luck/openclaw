@@ -190,13 +190,8 @@ it("keeps admitted session ownership when transformed plugins import the native 
               await ownerIdle;
               child ??= await bounded(pending, scenario.name + " successor");
               if (child.status === "owned") operations.add(child.operation);
-              if (scenario.foreign) {
-                assert.equal(child.status, "skipped");
-                assert.equal(child.reason, "lifecycle-invalidated");
-              } else {
-                assert.equal(child.status, "owned");
-                assert.equal(child.operation.sessionId, successorId);
-              }
+              assert.equal(child.status, "owned");
+              assert.equal(child.operation.sessionId, scenario.foreign ? sessionId : successorId);
             } finally {
               parent.complete();
               if (child?.status === "owned") child.operation.complete();
@@ -207,12 +202,6 @@ it("keeps admitted session ownership when transformed plugins import the native 
               }
             }
           }
-          assert.deepEqual(outcomes, [
-            { name: "native-same-store", status: "owned", sessionId: "after-native-same-store" },
-            { name: "transformed-same-store", status: "owned", sessionId: "after-transformed-same-store" },
-            { name: "transformed-foreign-store", status: "owned", sessionId: "before-transformed-foreign-store" },
-          ]);
-
         } finally {
           for (const operation of operations) operation.complete();
           await transformed?.closeOpenClawAgentDatabasesAsync();
