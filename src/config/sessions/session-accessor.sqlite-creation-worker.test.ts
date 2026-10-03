@@ -49,9 +49,13 @@ import { replaceTranscriptEventsSync } from "./session-accessor.sqlite-transcrip
 import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js";
 import { addSessionMember } from "./session-sharing-store.native.js";
 
-it("creates with prepared label facts, header and atomic owner without host data SQL, then registers under the captured environment", async () => {
+it("creates through an admitted store alias with prepared facts and atomic ownership", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const database = openOpenClawAgentDatabase({ agentId: "main" });
+    const databaseIdentity = readOpenClawAgentDatabaseIdentity(database).identity;
+    if (typeof databaseIdentity !== "string") {
+      throw new Error("Expected a durable session database identity");
+    }
     const key = "agent:main:creation-worker";
     using post = vi.spyOn(Worker.prototype, "postMessage");
     const alias = state.path("agent-alias");
@@ -117,12 +121,21 @@ it("creates with prepared label facts, header and atomic owner without host data
         {
           label: "available",
           bindCreation: (operation) => {
+            expect(() =>
+              assertSessionEntryCreationPublication(operation, {
+                agentId: "main",
+                sessionKey: key,
+                paths: new Set([storePath]),
+                databaseIdentity: "file:0:0",
+              }),
+            ).toThrow("Session creation publication owner is no longer current");
             prepared.bindCreation(operation);
             assertCreation = () =>
               assertSessionEntryCreationPublication(operation, {
                 agentId: "main",
                 sessionKey: key,
                 paths: new Set([database.path]),
+                databaseIdentity: `file:${databaseIdentity}`,
               });
             assertCreation();
           },

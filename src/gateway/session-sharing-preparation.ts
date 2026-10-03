@@ -117,6 +117,7 @@ export async function prepareSessionMutationFacts(
   let expectedPlaceholder: SessionEntryPlaceholder | undefined;
   let assertSource: () => void;
   const selectedPaths = new Set<string>();
+  let selectedDatabaseIdentity: string | undefined;
   const acquiringPaths = new Set<string>();
   const acquiringReads = new Map<string, ReturnType<typeof retainPreparedSessionSharingFacts>>();
   const initializedReads = new Set<string>();
@@ -497,6 +498,21 @@ export async function prepareSessionMutationFacts(
       selectedPaths.add(path.resolve(selected.storePath));
       if (sharing) {
         selectedPaths.add(path.resolve(sharing.source.path));
+        // New and existing rows retain the captured aliases of the same physical store.
+        // Creation writers publish through the logical alias used during preparation.
+        const sourceCandidates = discoveryCandidates.filter((candidate) =>
+          matchesAgentDatabaseReadCandidatePath(
+            { ...candidate, path: candidate.physicalPath },
+            sharing.source.path,
+          ),
+        );
+        if (sourceCandidates.length === 0) {
+          throw new SessionMutationFactsUnavailableError();
+        }
+        for (const candidate of sourceCandidates) {
+          selectedPaths.add(path.resolve(candidate.path));
+        }
+        selectedDatabaseIdentity = sharing.databaseIdentity;
       }
       if (!match) {
         if (!params.allowMissing) {
@@ -539,18 +555,6 @@ export async function prepareSessionMutationFacts(
         };
         selectedPaths.add(path.resolve(selected.storePath));
         selectedPaths.add(path.resolve(sharing.source.path));
-        const sourceCandidates = discoveryCandidates.filter((candidate) =>
-          matchesAgentDatabaseReadCandidatePath(
-            { ...candidate, path: candidate.physicalPath },
-            sharing.source.path,
-          ),
-        );
-        if (sourceCandidates.length === 0) {
-          throw new SessionMutationFactsUnavailableError();
-        }
-        for (const candidate of sourceCandidates) {
-          selectedPaths.add(path.resolve(candidate.path));
-        }
         const retained = retainedReads.get(`${sharing.databaseIdentity}\0${target.storeKey}`);
         if (!retained) {
           throw new SessionMutationFactsUnavailableError();
@@ -605,6 +609,7 @@ export async function prepareSessionMutationFacts(
             agentId,
             sessionKey: canonicalKey,
             paths: selectedPaths,
+            databaseIdentity: selectedDatabaseIdentity,
           });
         }
         return readFacts();
@@ -624,6 +629,7 @@ export async function prepareSessionMutationFacts(
         agentId,
         sessionKey: canonicalKey,
         paths: selectedPaths,
+        databaseIdentity: selectedDatabaseIdentity,
       });
       creation = operation;
     };
