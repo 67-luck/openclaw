@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
-import { resolveHeartbeatDeliveryTargetWithSessionRoute } from "./targets.js";
+import {
+  resolveHeartbeatDeliveryTarget,
+  resolveHeartbeatDeliveryTargetWithSessionRoute,
+} from "./targets.js";
 import { createTestChannelPlugin, createTargetsTestRegistry } from "./targets.test-helpers.js";
 
 const mocks = vi.hoisted(() => ({
@@ -54,6 +57,44 @@ describe("heartbeat target policy", () => {
       heartbeat: {
         target: "external-channel",
         to: "approved-target",
+      },
+    });
+
+    expect(resolved).toMatchObject({ channel: "none", reason: "no-target" });
+  });
+
+  it("rejects a namespace denied by outbound policy in the direct delivery probe", async () => {
+    const plugin: ChannelPlugin = createTestChannelPlugin({
+      id: "external-channel",
+      label: "External",
+      outbound: {
+        deliveryMode: "direct",
+        resolveTarget: ({ to }) =>
+          to === "unapproved-target"
+            ? { ok: false, error: new Error("recipient not allowed") }
+            : { ok: true, to: to ?? "" },
+      },
+      messaging: {
+        normalizeTarget: (raw) => raw.trim(),
+        targetResolver: {
+          looksLikeId: () => true,
+          resolveTarget: async () => ({
+            to: "unapproved-target",
+            kind: "group",
+            source: "directory",
+          }),
+        },
+      },
+    });
+    setActivePluginRegistry(createTargetsTestRegistry([plugin]));
+    mocks.resolveOutboundChannelPlugin.mockReturnValue(plugin);
+
+    const resolved = await resolveHeartbeatDeliveryTarget({
+      cfg: {},
+      agentId: "main",
+      heartbeat: {
+        target: "external-channel",
+        to: "external-channel",
       },
     });
 

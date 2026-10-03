@@ -357,8 +357,8 @@ export async function executeGatewayAction(
         agentId: ctx.agentId,
         ...(conversationReadOrigin === "direct-operator" ? { conversationReadOrigin } : {}),
         ...(ctx.input.messageActionAuthorization?.scheduled &&
-        ctx.input.allowNativeChannelNamespace !== undefined
-          ? { allowNativeChannelNamespace: ctx.input.allowNativeChannelNamespace }
+        ctx.input.allowNativeChannelNamespace === false
+          ? { allowNativeChannelNamespace: false }
           : {}),
         idempotencyKey,
       },

@@ -460,6 +460,19 @@ it("retains scheduled invocation config through bound Gateway dispatch after pre
       ok: true,
       messageActionAuthorization: { allowNativeChannelNamespace: false },
     });
+    const assertedNative = withMessageActionInvocationConfig(
+      "unrelated-host-token",
+      () => configA,
+      () =>
+        resolveTrustedMessageActionToolContext({
+          client,
+          request: { sessionKey, sessionId, allowNativeChannelNamespace: true },
+        }),
+    );
+    expect(assertedNative).toMatchObject({
+      ok: true,
+      messageActionAuthorization: { allowNativeChannelNamespace: undefined },
+    });
     await expect(execute("after-publication")).rejects.toThrow(
       /not allowed by the current tool policy/,
     );

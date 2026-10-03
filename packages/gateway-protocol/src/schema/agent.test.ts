@@ -179,13 +179,19 @@ describe("MessageActionParamsSchema", () => {
     ).toBe(false);
   });
 
-  it("accepts only boolean channel namespace provenance", () => {
+  it("accepts only a restrictive channel namespace provenance", () => {
     expect(
       Value.Check(MessageActionParamsSchema, {
         ...baseParams,
         allowNativeChannelNamespace: false,
       }),
     ).toBe(true);
+    expect(
+      Value.Check(MessageActionParamsSchema, {
+        ...baseParams,
+        allowNativeChannelNamespace: true,
+      }),
+    ).toBe(false);
     expect(
       Value.Check(MessageActionParamsSchema, {
         ...baseParams,

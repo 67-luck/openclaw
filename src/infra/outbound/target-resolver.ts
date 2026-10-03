@@ -378,6 +378,7 @@ export async function resolveChannelTarget(params: {
     plugin?.messaging?.normalizeTarget &&
     targetLooksLikeId,
   );
+  let nativeNamespaceResolverMissed = false;
   if (
     normalizedInput &&
     !reservedLiteral &&
@@ -406,31 +407,24 @@ export async function resolveChannelTarget(params: {
       });
     }
     if (channelNamespace && plugin?.messaging?.targetResolver?.resolveTarget) {
-      return {
-        ok: false,
-        error: missingChannelDestinationError(
-          providerLabel,
-          channelNamespace.namespace,
-          channelNamespace.destinationPrefix,
-          hint,
-        ),
-      };
-    }
-    return applyOutboundTargetPolicy({
-      cfg: params.cfg,
-      channel: params.channel,
-      target: buildRewrittenNormalizedTarget({
+      nativeNamespaceResolverMissed = true;
+    } else {
+      return applyOutboundTargetPolicy({
+        cfg: params.cfg,
         channel: params.channel,
-        raw,
-        normalized,
-        kind,
+        target: buildRewrittenNormalizedTarget({
+          channel: params.channel,
+          raw,
+          normalized,
+          kind,
+          plugin,
+        }),
+        mode: params.nativeTargetMode,
+        allowFrom: params.allowFrom,
+        accountId: params.accountId,
         plugin,
-      }),
-      mode: params.nativeTargetMode,
-      allowFrom: params.allowFrom,
-      accountId: params.accountId,
-      plugin,
-    });
+      });
+    }
   }
   const query = stripTargetPrefixes(raw, params.channel, plugin);
   const primaryDirectoryKind: ChannelDirectoryEntryKind = kind === "user" ? "user" : "group";
@@ -493,7 +487,7 @@ export async function resolveChannelTarget(params: {
     };
   }
   if (channelNamespace) {
-    if (pluginAcceptsNamespaceAsNativeTarget && normalizedInput) {
+    if (pluginAcceptsNamespaceAsNativeTarget && normalizedInput && !nativeNamespaceResolverMissed) {
       const resolvedNativeTarget = await maybeResolvePluginMessagingTarget({
         cfg: params.cfg,
         channel: params.channel,

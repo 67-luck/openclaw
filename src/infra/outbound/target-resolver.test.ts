@@ -301,6 +301,45 @@ describe("resolveMessagingTarget (directory fallback)", () => {
     );
   });
 
+  it("searches an exact directory destination after a native namespace miss", async () => {
+    const plugin = {
+      ...createChannelTestPluginBase({ id: "richchat", label: "Rich Chat" }),
+      directory: { listGroups: mocks.listGroups },
+      messaging: {
+        normalizeTarget: (raw: string) => raw.trim(),
+        targetResolver: {
+          looksLikeId: () => true,
+          resolveTarget: mocks.resolveTarget,
+          hint: "<conversation>",
+        },
+      },
+    } satisfies ChannelPlugin;
+    mocks.resolveTarget.mockResolvedValue(undefined);
+    mocks.listGroups.mockResolvedValue([
+      { kind: "group", id: "room-1", name: "richchat" } satisfies ChannelDirectoryEntry,
+    ]);
+
+    const result = await resolveMessagingTarget({
+      cfg,
+      channel: "richchat",
+      input: "richchat",
+      preferredKind: "group",
+      plugin,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      target: {
+        to: "room-1",
+        kind: "group",
+        source: "directory",
+        resolutionSource: "directory",
+      },
+    });
+    expect(mocks.resolveTarget).toHaveBeenCalledOnce();
+    expect(mocks.listGroups).toHaveBeenCalledWith(expect.objectContaining({ query: "richchat" }));
+  });
+
   it("rejects a plugin-native channel namespace when its resolver misses", async () => {
     const plugin = {
       ...createChannelTestPluginBase({ id: "richchat", label: "Rich Chat" }),

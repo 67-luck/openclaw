@@ -198,9 +198,10 @@ export function resolveTrustedMessageActionToolContext(params: {
   const messageActionAuthorization = redeemedAuthorization
     ? {
         ...redeemedAuthorization,
-        allowNativeChannelNamespace: redeemedAuthorization.scheduled
-          ? params.request.allowNativeChannelNamespace
-          : undefined,
+        allowNativeChannelNamespace:
+          redeemedAuthorization.scheduled && params.request.allowNativeChannelNamespace === false
+            ? false
+            : undefined,
       }
     : undefined;
   return {

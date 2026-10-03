@@ -55,6 +55,12 @@ type HeartbeatTargetResolution = OutboundTarget & {
   targetPlugin?: ChannelPlugin;
 };
 
+type PreparedHeartbeatDeliveryTarget = [
+  delivery: OutboundTarget,
+  plugin: ChannelPlugin | undefined,
+  resolvedTarget: ResolvedMessagingTarget | undefined,
+];
+
 type ResolveHeartbeatDeliveryTargetParams = {
   cfg: OpenClawConfig;
   agentId?: string;
@@ -483,26 +489,9 @@ function buildNoHeartbeatDeliveryTarget(params: {
   };
 }
 
-export async function resolveHeartbeatDeliveryTarget(
+async function prepareHeartbeatDeliveryTarget(
   params: ResolveHeartbeatDeliveryTargetParams,
-): Promise<OutboundTarget> {
-  const {
-    targetAllowFrom: _targetAllowFrom,
-    targetPlugin: _targetPlugin,
-    ...delivery
-  } = await resolveHeartbeatDeliveryTargetWithPolicy(params);
-  return delivery;
-}
-
-/** Resolves heartbeat delivery and lets plugins refine the outbound session route. */
-export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
-  cfg: OpenClawConfig;
-  agentId?: string;
-  entry?: SessionEntry;
-  heartbeat?: AgentDefaultsConfig["heartbeat"];
-  turnSource?: DeliveryContext;
-  currentSessionKey?: string;
-}): Promise<OutboundTarget> {
+): Promise<PreparedHeartbeatDeliveryTarget> {
   const { targetAllowFrom, targetPlugin, ...delivery } =
     await resolveHeartbeatDeliveryTargetWithPolicy(params);
   const heartbeat = params.heartbeat ?? params.cfg.agents?.defaults?.heartbeat;
@@ -510,7 +499,7 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     (heartbeat?.target === undefined || heartbeat.target === "owner") &&
     !hasDeliverableHeartbeatTurnSource(params.turnSource);
   if (delivery.channel === "none" || !delivery.to) {
-    return delivery;
+    return [delivery, undefined, undefined];
   }
   const rejectDelivery = (reason: string) =>
     buildNoHeartbeatDeliveryTarget({
@@ -528,7 +517,6 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
       agentId: params.agentId,
       allowBootstrap: true,
     });
-  const resolveSessionRoute = plugin?.messaging?.resolveOutboundSessionRoute;
   const channelNamespace = resolveBareTargetChannelNamespace({ raw: deliveryTo, plugin });
   if (
     ownerRouteMustBeDirect &&
@@ -538,12 +526,15 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
       chatType: delivery.chatType,
     })
   ) {
-    return rejectDelivery("no-route");
+    return [rejectDelivery("no-route"), plugin, undefined];
   }
-  if (!resolveSessionRoute && !plugin?.messaging?.targetResolver && !channelNamespace) {
-    return delivery;
+  if (
+    !plugin?.messaging?.resolveOutboundSessionRoute &&
+    !plugin?.messaging?.targetResolver &&
+    !channelNamespace
+  ) {
+    return [delivery, plugin, undefined];
   }
-  let routeResolvedTarget: ResolvedMessagingTarget | undefined;
   // Ordinary target normalization failures should not suppress an otherwise deliverable heartbeat.
   const targetResolution = await resolveChannelTarget({
     cfg: params.cfg,
@@ -556,37 +547,70 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     allowFrom: targetAllowFrom,
     plugin,
   }).catch(() => null);
-  if (!targetResolution && channelNamespace) {
-    return rejectDelivery(ownerRouteMustBeDirect ? "no-route" : "no-target");
+  const resolvedTarget = targetResolution?.ok ? targetResolution.target : undefined;
+  const targetRejected =
+    (!targetResolution && channelNamespace) ||
+    (targetResolution &&
+      !targetResolution.ok &&
+      (targetResolution.policyRejected ||
+        channelNamespace ||
+        isReservedTargetLiteralError(targetResolution.error)));
+  if (targetRejected) {
+    return [rejectDelivery(ownerRouteMustBeDirect ? "no-route" : "no-target"), plugin, undefined];
   }
-  if (targetResolution?.ok) {
-    routeResolvedTarget = targetResolution.target;
-  } else if (
-    targetResolution &&
-    (targetResolution.policyRejected ||
-      channelNamespace ||
-      isReservedTargetLiteralError(targetResolution.error))
-  ) {
-    return rejectDelivery(ownerRouteMustBeDirect ? "no-route" : "no-target");
-  }
-  if (routeResolvedTarget?.kind === "user" && heartbeat?.directPolicy === "block") {
-    return rejectDelivery("dm-blocked");
+  if (resolvedTarget?.kind === "user" && heartbeat?.directPolicy === "block") {
+    return [rejectDelivery("dm-blocked"), plugin, resolvedTarget];
   }
   if (
     ownerRouteMustBeDirect &&
     !isPositivelyDirectHeartbeatOwnerTarget({
       plugin,
-      to: routeResolvedTarget?.to ?? deliveryTo,
+      to: resolvedTarget?.to ?? deliveryTo,
     })
   ) {
-    return rejectDelivery("no-route");
+    return [rejectDelivery("no-route"), plugin, resolvedTarget];
   }
-  const resolvedDelivery =
-    channelNamespace && routeResolvedTarget
-      ? { ...delivery, to: routeResolvedTarget.to }
-      : delivery;
+  return [
+    channelNamespace && resolvedTarget ? { ...delivery, to: resolvedTarget.to } : delivery,
+    plugin,
+    resolvedTarget,
+  ];
+}
+
+export async function resolveHeartbeatDeliveryTarget(
+  params: ResolveHeartbeatDeliveryTargetParams,
+): Promise<OutboundTarget> {
+  return (await prepareHeartbeatDeliveryTarget(params))[0];
+}
+
+/** Resolves heartbeat delivery and lets plugins refine the outbound session route. */
+export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
+  cfg: OpenClawConfig;
+  agentId?: string;
+  entry?: SessionEntry;
+  heartbeat?: AgentDefaultsConfig["heartbeat"];
+  turnSource?: DeliveryContext;
+  currentSessionKey?: string;
+}): Promise<OutboundTarget> {
+  const [delivery, plugin, routeResolvedTarget] = await prepareHeartbeatDeliveryTarget(params);
+  const heartbeat = params.heartbeat ?? params.cfg.agents?.defaults?.heartbeat;
+  const ownerRouteMustBeDirect =
+    (heartbeat?.target === undefined || heartbeat.target === "owner") &&
+    !hasDeliverableHeartbeatTurnSource(params.turnSource);
+  if (delivery.channel === "none" || !delivery.to) {
+    return delivery;
+  }
+  const rejectDelivery = (reason: string) =>
+    buildNoHeartbeatDeliveryTarget({
+      reason,
+      accountId: delivery.accountId,
+      lastChannel: delivery.lastChannel,
+      lastAccountId: delivery.lastAccountId,
+    });
+  const deliveryTo = delivery.to;
+  const resolveSessionRoute = plugin?.messaging?.resolveOutboundSessionRoute;
   if (!resolveSessionRoute) {
-    return resolvedDelivery;
+    return delivery;
   }
   const route = await resolveOutboundSessionRoute({
     cfg: params.cfg,
@@ -601,7 +625,7 @@ export async function resolveHeartbeatDeliveryTargetWithSessionRoute(params: {
     threadId: delivery.threadId,
   }).catch(() => null);
   if (!route) {
-    return resolvedDelivery;
+    return delivery;
   }
   if (route.chatType === "direct" && heartbeat?.directPolicy === "block") {
     return rejectDelivery("dm-blocked");
