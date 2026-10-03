@@ -5,8 +5,7 @@ import {
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
-import { withTestDir } from "../../test-helpers/temp-dir.js";
-
+import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import type { AgentToolGatewayRequestCaller } from "./in-process-gateway.js";
 import { createSessionsTool } from "./sessions-tool.js";
 
@@ -180,17 +179,16 @@ describe("sessions tool self-archive", () => {
   });
 
   it("does not apply a deferred archive to a replacement session", async () => {
-    await withTestDir({ prefix: "openclaw-sessions-tool-archive-replacement-" }, async (dir) => {
-      const { storePath, sessionKey, createTool, beginAdmission } = await createArchiveSession(
-        dir,
-        "archive-replacement",
-        "session-before-reset",
-      );
-      const callGateway = vi.fn(async () => ({ ok: true }));
-      const tool = createTool(callGateway as never);
-      const admission = await beginAdmission();
-      let replacementAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
-
+    const dir = sessionDirs.make();
+    const { storePath, sessionKey, createTool, beginAdmission } = await createArchiveSession(
+      dir,
+      "archive-replacement",
+      "session-before-reset",
+    );
+    const callGateway = vi.fn(async () => ({ ok: true }));
+    const tool = createTool(callGateway as never);
+    const admission = await beginAdmission();
+    let replacementAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
 
     try {
       await admission.run(async () => {
@@ -257,40 +255,16 @@ describe("sessions tool self-archive", () => {
   });
 
   it("retries a scheduled archive when a turn races the gateway mutation", async () => {
-    await withTestDir({ prefix: "openclaw-sessions-tool-archive-retry-" }, async (dir) => {
-      const { sessionKey, createTool, beginAdmission, archiveRequest } = await createArchiveSession(
-        dir,
-        "archive-retry",
-      );
-      let competingAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
-      const callGateway = vi.fn(async () => {
-        if (!competingAdmission) {
-          competingAdmission = await beginAdmission();
-          throw Object.assign(new Error("Session did not finish stopping."), { retryable: true });
-        }
-        return { ok: true };
-      });
-      const tool = createTool(callGateway as never);
-      const currentAdmission = await beginAdmission();
-
-      try {
-        await currentAdmission.run(async () => {
-          const result = await tool.execute("archive-after-race", {
-            action: "patch",
-            archived: true,
-          });
-          expect(result.details).toMatchObject({ status: "scheduled", sessionKey });
-        });
-        currentAdmission.release();
-
-        await vi.waitFor(() => {
-          expect(callGateway).toHaveBeenCalledTimes(1);
-          expect(competingAdmission).toBeDefined();
-        });
-      } finally {
-        currentAdmission.release();
-        competingAdmission?.release();
-
+    const dir = sessionDirs.make();
+    const { sessionKey, createTool, beginAdmission, archiveRequest } = await createArchiveSession(
+      dir,
+      "archive-retry",
+    );
+    let competingAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
+    const callGateway = vi.fn(async () => {
+      if (!competingAdmission) {
+        competingAdmission = await beginAdmission();
+        throw Object.assign(new Error("Session did not finish stopping."), { retryable: true });
       }
       return { ok: true };
     });
