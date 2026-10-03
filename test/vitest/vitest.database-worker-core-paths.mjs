@@ -161,6 +161,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/agent-create.integration.test.ts",
   "src/agents/agent-create.workspace-worker.test.ts",
   "src/agents/sandbox.resolveSandboxContext.test.ts",
+  "src/auto-reply/reply/stage-remote-inbound-media.owner.test.ts",
+  "src/auto-reply/reply/stage-sandbox-media.scp.test.ts",
   "src/agents/workspace-alias-rebind.test.ts",
   "src/agents/bootstrap-files.test.ts",
   "src/agents/workspace-attestation.worker.test.ts",
