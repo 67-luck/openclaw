@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { commandProcessCleanup } from "openclaw/plugin-sdk/process-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveCodexComputerUseConfig } from "./config.js";
@@ -12,12 +13,17 @@ const fake = vi.hoisted(() => ({
   close: vi.fn(),
   closeAndWait: vi.fn(),
   service: vi.fn(),
+  startNativeService: vi.fn(),
+  closeNativeService: vi.fn(),
   readiness: vi.fn(),
   tempRoot: vi.fn(),
   getServerVersion: vi.fn(),
 }));
 vi.mock("openclaw/plugin-sdk/temp-path", () => ({ resolvePreferredOpenClawTmpDir: fake.tempRoot }));
 vi.mock("./client.js", () => ({ CodexAppServerClient: { start: fake.start } }));
+vi.mock("./computer-use-probe-service.js", () => ({
+  startCodexComputerUseProbeService: fake.startNativeService,
+}));
 vi.mock("./computer-use-service.js", () => ({ ensureCodexComputerUseServiceApp: fake.service }));
 vi.mock("./computer-use.js", () => ({ readCodexComputerUseStatus: fake.readiness }));
 
@@ -60,6 +66,13 @@ describe("disposable selected-runtime validation", () => {
       status: "installed",
       targetPath: path.join(codexHome, "computer-use", "Codex Computer Use.app"),
     }));
+    fake.startNativeService.mockImplementation(async ({ home }) => ({
+      env: {
+        SKY_CUA_SERVICE_NATIVE_PIPE_PATH: path.join(home, "native.sock"),
+        NODE_REPL_HOST_SERVICES_PIPE_PATH: path.join(home, "no-autostart.sock"),
+      },
+      close: fake.closeNativeService,
+    }));
     fake.readiness.mockResolvedValue({ ready: true, liveTest: { ok: true } });
   });
 
@@ -92,6 +105,9 @@ describe("disposable selected-runtime validation", () => {
           ],
         }),
       );
+    }
+    if (requiresComputerUse) {
+      await writeUnifiedRuntimeFixture(path.join(appBundlePath, "Contents/Resources"));
     }
     const codexHome = path.join(root, "real-home");
     await fs.mkdir(codexHome);
@@ -254,7 +270,6 @@ describe("disposable selected-runtime validation", () => {
     async (commandRelative) => {
       const f = await fixture(true, commandRelative);
       const resources = path.join(f.appBundlePath!, "Contents/Resources");
-      await writeUnifiedRuntimeFixture(resources);
       fake.readiness.mockImplementation(async ({ overrides }) => {
         expect(overrides).toMatchObject({
           pluginName: "unified-computer-use",
@@ -264,9 +279,16 @@ describe("disposable selected-runtime validation", () => {
           probeHome(),
           "plugins/cache/openai-bundled/unified-computer-use/2.0.0/.mcp.json",
         );
-        expect(JSON.parse(await fs.readFile(cached, "utf8"))).toMatchObject({
-          mcpServers: { cua_repl: { enabled: true } },
-        });
+        const mcp = JSON.parse(await fs.readFile(cached, "utf8"));
+        expect(mcp).toMatchObject({ mcpServers: { cua_repl: { enabled: true } } });
+        // The native SDK must use this probe's IPC owner, never LaunchServices
+        // or the logged-in user's shared service.
+        expect(mcp.mcpServers.cua_repl.env.SKY_CUA_SERVICE_NATIVE_PIPE_PATH).toBe(
+          path.join(probeHome(), "native.sock"),
+        );
+        expect(mcp.mcpServers.cua_repl.env.NODE_REPL_HOST_SERVICES_PIPE_PATH).toBe(
+          path.join(probeHome(), "no-autostart.sock"),
+        );
         return { ready: true, liveTest: { ok: true } };
       });
       await probeCodexDesktopRuntime(f);
@@ -280,6 +302,7 @@ describe("disposable selected-runtime validation", () => {
       );
       expect(fake.readiness).toHaveBeenCalledOnce();
       expect(fake.closeAndWait).toHaveBeenCalledOnce();
+      expect(fake.closeNativeService).toHaveBeenCalledOnce();
     },
   );
 
@@ -297,7 +320,6 @@ describe("disposable selected-runtime validation", () => {
     "preserves %s instead of certifying an unrestricted replacement",
     async (_name, nativePolicy) => {
       const f = await fixture(true);
-      await writeUnifiedRuntimeFixture(path.join(f.appBundlePath!, "Contents/Resources"));
       const configPath = path.join(f.agents[0].codexHome, "config.toml");
       const config = `[plugins."computer-use@openai-bundled"]\nenabled = true\n${nativePolicy}\n`;
       await fs.writeFile(configPath, config);
@@ -306,6 +328,57 @@ describe("disposable selected-runtime validation", () => {
       expect(fake.service).not.toHaveBeenCalled();
       expect(await fs.readFile(configPath, "utf8")).toBe(config);
       expect(await fs.readdir(fake.tempRoot())).toEqual([]);
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "rejects legacy services that cannot be privately qualified",
+    async () => {
+      const f = await fixture(true);
+      await fs.rm(
+        path.join(
+          f.appBundlePath!,
+          "Contents/Resources/plugins/openai-bundled/plugins/unified-computer-use",
+        ),
+        { recursive: true },
+      );
+      await expect(probeCodexDesktopRuntime(f)).rejects.toThrow("privately owned native IPC");
+      expect(fake.start).not.toHaveBeenCalled();
+      expect(fake.service).not.toHaveBeenCalled();
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "joins the native service even when app-server startup fails",
+    async () => {
+      const f = await fixture(true);
+      fake.start.mockRejectedValue(new Error("protocol startup failed"));
+      fake.closeNativeService.mockImplementation(async () => {
+        const home = probeHome();
+        await expect(fs.stat(home)).resolves.toBeDefined();
+      });
+      await expect(probeCodexDesktopRuntime(f)).rejects.toThrow("protocol startup failed");
+      expect(fake.closeNativeService).toHaveBeenCalledOnce();
+      await expect(fs.stat(probeHome())).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "retains the probe home when native service shutdown is uncertain",
+    async () => {
+      const f = await fixture(true);
+      fake.closeNativeService.mockRejectedValue(
+        new commandProcessCleanup.Error({ cause: new Error("native service still alive") }),
+      );
+      await expect(probeCodexDesktopRuntime(f)).rejects.toMatchObject({
+        code: "ERR_COMMAND_PROCESS_CLEANUP_UNCERTAIN",
+      });
+      expect(fake.closeAndWait).toHaveBeenCalledOnce();
+      expect(fake.closeNativeService).toHaveBeenCalledOnce();
+      await expect(fs.stat(probeHome())).resolves.toBeDefined();
+      // The fake has no child; the directory tracker settles its retained fixture.
     },
   );
 

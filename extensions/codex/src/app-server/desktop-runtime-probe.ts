@@ -10,8 +10,12 @@ import { resolvePreferredOpenClawTmpDir } from "openclaw/plugin-sdk/temp-path";
 import { parse as parseToml } from "smol-toml";
 import { CodexAppServerClient } from "./client.js";
 import { ensureCodexManagedBundledMarketplace } from "./computer-use-marketplace.js";
+import { startCodexComputerUseProbeService } from "./computer-use-probe-service.js";
 import { ensureCodexComputerUseServiceApp } from "./computer-use-service.js";
-import { resolveManagedCodexComputerUseConfig } from "./computer-use-unified.js";
+import {
+  publishCodexUnifiedComputerUsePlugin,
+  resolveManagedCodexComputerUseConfig,
+} from "./computer-use-unified.js";
 import { readCodexComputerUseStatus } from "./computer-use.js";
 import type { ResolvedCodexComputerUseConfig } from "./config.js";
 import { findMacOSDesktopCodexExecutable } from "./desktop-app-layout.js";
@@ -69,6 +73,8 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
       );
       const env = { CODEX_HOME: home, HOME: home, USERPROFILE: home };
       let marketplace: string | undefined;
+      let serviceAppPath: string | undefined;
+      let probePlugin: { source: string; target: string } | undefined;
       const args = ["app-server", "--listen", "stdio://"];
       let computerUse = agent.computerUse;
       if (agent.requiresComputerUse) {
@@ -111,6 +117,14 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
           candidatePluginName: computerUse.pluginName,
           appServerCommand: agent.selectedAppServerCommand ?? desktop.appServerCommandPath,
         });
+        if (
+          computerUse.pluginName !== "unified-computer-use" ||
+          computerUse.mcpServerName !== "cua_repl"
+        ) {
+          throw new Error(
+            "Candidate Computer Use cannot be qualified through privately owned native IPC; retained the selected runtime.",
+          );
+        }
         const retainedPluginSource = path.join(
           desktop.bundledMarketplacePath,
           "plugins",
@@ -136,6 +150,7 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
             "No compatible signed Computer Use service is available for the selected policy.",
           );
         }
+        serviceAppPath = service.targetPath;
         const pluginSource = path.join(marketplace, "plugins", computerUse.pluginName);
         const manifest: unknown = JSON.parse(
           await fs.readFile(path.join(pluginSource, ".codex-plugin", "plugin.json"), "utf8"),
@@ -150,9 +165,9 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
           throw new Error("Candidate Computer Use plugin has an invalid version.");
         }
         assertCurrent();
-        await fs.cp(
-          pluginSource,
-          path.join(
+        probePlugin = {
+          source: pluginSource,
+          target: path.join(
             home,
             "plugins",
             "cache",
@@ -160,15 +175,41 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
             computerUse.pluginName,
             manifest.version,
           ),
-          { recursive: true },
-        );
+        };
         const config = `[plugins."${computerUse.pluginName}@openai-bundled"]\nenabled = true\n[marketplaces.openai-bundled]\nsource_type = "local"\nsource = ${JSON.stringify(marketplace)}\n`;
         await fs.writeFile(path.join(home, "config.toml"), config, { mode: 0o600 });
       }
       let client: CodexAppServerClient | undefined;
+      let nativeService: Awaited<ReturnType<typeof startCodexComputerUseProbeService>> | undefined;
       const abort = () => client?.close();
       params.signal.addEventListener("abort", abort, { once: true });
       try {
+        if (serviceAppPath && probePlugin) {
+          nativeService = await startCodexComputerUseProbeService({
+            appPath: serviceAppPath,
+            home,
+            signal: params.signal,
+            assertCurrent,
+          });
+          const mcp: unknown = JSON.parse(
+            await fs.readFile(path.join(probePlugin.source, ".mcp.json"), "utf8"),
+          );
+          if (!isRecord(mcp) || !isRecord(mcp.mcpServers)) {
+            throw new Error("Candidate native plugin has an invalid MCP configuration.");
+          }
+          const server = mcp.mcpServers[computerUse.mcpServerName];
+          if (!isRecord(server) || !isRecord(server.env)) {
+            throw new Error(
+              "Candidate native plugin does not expose its managed service environment.",
+            );
+          }
+          Object.assign(server.env, nativeService.env);
+          assertCurrent();
+          await publishCodexUnifiedComputerUsePlugin(probePlugin.target, {
+            pluginRoot: probePlugin.source,
+            mcp,
+          });
+        }
         client = await CodexAppServerClient.start(
           {
             transport: "stdio",
@@ -248,10 +289,14 @@ async function probeCandidate(params: ProbeParams): Promise<void> {
         params.signal.removeEventListener("abort", abort);
         // Join the retained process-tree owner before deleting its private home or
         // allowing artifact publication; root exit alone is not settlement.
-        if (client) {
-          await closeProbeClient(client, root, () => {
-            cleanupConfirmed = false;
-          });
+        try {
+          if (client) {
+            await closeProbeClient(client, root, () => {
+              cleanupConfirmed = false;
+            });
+          }
+        } finally {
+          await nativeService?.close();
         }
       }
     }
