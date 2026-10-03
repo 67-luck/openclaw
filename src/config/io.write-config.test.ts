@@ -568,7 +568,7 @@ describe("config io write", () => {
       };
 
       await io.writeConfigFile(staleConfig);
-      await io.writeConfigFile(staleConfig);
+      await io.writeConfigFile(staleConfig, { allowConfigSizeDrop: true });
       io.loadConfig();
       expect(warn).toHaveBeenCalledTimes(1);
 
@@ -576,6 +576,7 @@ describe("config io write", () => {
         io.writeConfigFile(
           {},
           {
+            allowConfigSizeDrop: true,
             preCommitRuntimePreflight: async () => {
               throw new Error("blocked");
             },
