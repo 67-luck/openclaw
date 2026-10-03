@@ -210,7 +210,7 @@ describe("interactive Dev update discovery", () => {
     );
   });
 
-  it.each(["Git fetch", "installation identity"])(
+  it.each(["Git fetch", "installation identity", "unidentified installation"])(
     "preserves an announced campaign when %s cannot establish a target",
     async (failure) => {
       const cfg = { update: { channel: "dev" as const, auto: { enabled: true } } };
@@ -230,7 +230,9 @@ describe("interactive Dev update discovery", () => {
           root: null,
           installKind: "unknown",
           packageManager: "unknown",
-          error: { status: "failed", message: "Installation probe failed" },
+          ...(failure === "installation identity"
+            ? { error: { status: "failed" as const, message: "Installation probe failed" } }
+            : {}),
         });
       }
       await expect(refreshGatewayUpdateStatus(cfg)).rejects.toThrow("could not be checked");

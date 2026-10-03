@@ -122,7 +122,7 @@ export function refreshGatewayUpdateStatus(cfg: OpenClawConfig): Promise<void> {
         });
       if (
         status.error ||
-        status.installKind === "unknown" ||
+        (channel === "dev" && status.installKind === "unknown") ||
         resolveGitScheduleStatus(status, installReceipt, root)?.status === "unavailable"
       ) {
         // A failed observation cannot revoke the last announced campaign.
