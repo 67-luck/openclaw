@@ -34,8 +34,8 @@ import { runOpenClawAgentWriteAdmission } from "../state/openclaw-agent-write-ad
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import { resetAdjustedParamsByToolCallIdForTests } from "./agent-tools.before-tool-call.state.js";
+import * as embeddedRuns from "./embedded-agent-runner/runs.js";
 import type { EmbeddedAgentQueueMessageOptions } from "./embedded-agent-runner/runs.js";
-
 import {
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   testing as embeddedRunsTesting,

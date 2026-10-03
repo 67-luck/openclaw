@@ -9,7 +9,7 @@ import {
   rotateAgentEventLifecycleGeneration,
 } from "../infra/agent-events.js";
 import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
-
+import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import { runWithAgentCommandRecoveryOwner } from "./agent-command-recovery-owner.js";
 import type { AgentCommandOpts } from "./command/types.js";
 import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "./main-session-recovery/main-session-recovery-admission.js";
