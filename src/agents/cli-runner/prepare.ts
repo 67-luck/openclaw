@@ -146,10 +146,6 @@ import { prepareCliHistoryBoundary } from "./history-boundary.js";
 import { cliBackendLog } from "./log.js";
 import { buildCliMcpGrantContext } from "./mcp-grant-context.js";
 import { resolveCliCatalogCapabilities } from "./model-capabilities.js";
-import {
-  shouldSkipLocalCliCredentialEpoch,
-  shouldResolveAuthProfileForExecution,
-} from "./prepare-auth-policy.js";
 import { CLAUDE_CLI_CONTEXT_MODEL_ALIASES, detectNodeClaudePlacement } from "./prepare-claude.js";
 import * as mcp from "./prepare-mcp.js";
 import { resolveCliRuntimeToolPolicy } from "./prepare-tool-policy.js";
@@ -404,8 +400,6 @@ async function prepareCliRunContextWithinReadFence(
     params.replyOperation.bindToolAuthoritySnapshot(questionSnapshot);
     questionOperation = params.replyOperation;
   }
-  let runtimeToolsAllowPolicy: string[] | undefined;
-
   const rootedToolsAllow = params.rootedExecution
     ? params.cliToolAvailability?.openClaw
     : undefined;

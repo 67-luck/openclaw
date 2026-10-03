@@ -7,9 +7,16 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
 import { enqueueSystemEventEntry } from "../../infra/system-events.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
-import type { InputProvenance } from "../../sessions/input-provenance.js";
+import {
+  buildAgentMainSessionKey,
+  isUnscopedSessionKeySentinel,
+  normalizeAgentId,
+} from "../../routing/session-key.js";
+import {
+  annotateInterSessionPromptText,
+  type InputProvenance,
+} from "../../sessions/input-provenance.js";
 import { resolveActiveSessionRunId } from "../../sessions/session-controller.queries.js";
-
 import { isCronRunSessionKey, parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import {
   buildRunUserTurnIdempotencyKey,
@@ -17,8 +24,7 @@ import {
 } from "../../sessions/user-turn-transcript.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
-import { resolveSessionAgentId } from "../agent-scope.js";
-
+import { listAgentIds } from "../agent-scope.js";
 import {
   type EmbeddedAgentQueueMessageOptions,
   formatEmbeddedAgentQueueFailureSummary,
@@ -148,7 +154,6 @@ export async function trySessionsSendActiveRunDelivery(
         params.allowActiveRunQueueDelivery &&
         isRunScopedAgentSessionKey(params.sessionKey))
         ? resolveActiveSessionRunId(params.sessionKey)
-
         : undefined;
     if (params.mode === "steer" && !activeRunSessionId) {
       throw new Error(

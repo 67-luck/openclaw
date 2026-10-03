@@ -16,6 +16,7 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { delegateCompactionToRuntime } from "../../context-engine/delegate.js";
 import type { ContextEngine } from "../../context-engine/types.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { getModelProviderRuntimePluginHandle } from "../../plugins/provider-hook-runtime.js";
 import {
@@ -28,11 +29,6 @@ import type { ReplyOperation } from "../../sessions/session-controller.contracts
 import { getSessionControllerOperation } from "../../sessions/session-controller.js";
 import { waitForSessionRunEnd } from "../../sessions/session-controller.native-runtime.js";
 import { isSessionRunActive } from "../../sessions/session-controller.queries.js";
-import {
-  createApiKeyCredential,
-  createAuthProfileStoreFixture,
-} from "../auth-profiles/credential-fixtures.test-support.js";
-
 import { createProcessSessionFixture } from "../bash-process-registry.test-helpers.js";
 import { getRegisteredAgentHarness, registerAgentHarness } from "../harness/registry.js";
 import type { AgentHarness } from "../harness/types.js";
@@ -58,6 +54,7 @@ import {
   mockCallArg,
 } from "./compact.hooks.assertions.test-support.js";
 import {
+  acquiredPreparedModelRuntime,
   expectedNativeCompactionOptions,
   useCompactHooksSessionFixture,
 } from "./compact.hooks.fixture.test-support.js";
@@ -87,13 +84,14 @@ import {
   resolveContextWindowInfoMock,
   resolveCliBackendConfigMock,
   resolveContextEngineMock,
+  resolveDefaultAgentDirMock,
   resolveEffectiveCompactionModeMock,
   resolveEmbeddedAgentStreamMock,
   resolveModelAsyncMock,
   resolveModelMock,
   resolveSandboxContextMock,
   resolveSkillsPromptMock,
-  resolveSessionAgentIdMock,
+  resolveSessionAgentIdsMock,
   runCliAgentMock,
   selectAgentHarnessForPreparedModelProvidersMock,
   selectAgentHarnessMock,
@@ -104,15 +102,12 @@ import {
   sessionManualCompactionMock,
   triggerInternalHookMock,
 } from "./compact.hooks.harness.js";
-import { registerCompactionMemorySyncCases } from "./compact.hooks.memory-sync.cases.js";
 import {
   registerDirectProviderRefreshTests,
   registerQueuedProviderRefreshTest,
 } from "./compact.hooks.memory-refresh.test-support.js";
-import {
-  getMemorySearchManagerMock,
-  resolveMemorySearchConfigMock,
-} from "./compact.hooks.memory.test-support.js";
+import { registerCompactionMemorySyncCases } from "./compact.hooks.memory-sync.cases.js";
+import { getMemorySearchManagerMock } from "./compact.hooks.memory.test-support.js";
 import {
   createCompactHooksAuthStorage,
   createCompactHooksPreparedModelRuntime,
@@ -575,7 +570,6 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     expect(result).toMatchObject({ ok: true, compacted: true });
     expect(hookRunner.runAfterCompaction).toHaveBeenCalledOnce();
   });
-
 
   it("refreshes the delegated watchdog before delayed fallback setup", async () => {
     const compactionTimeoutReset = vi.fn();
@@ -1651,6 +1645,12 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     TEST_SESSION_FILE,
   }));
 
+  registerDirectProviderRefreshTests({
+    compactTesting: () => compactTesting,
+    compactionConfig,
+    sessionKey: TEST_SESSION_KEY,
+    sessionFile: () => TEST_SESSION_FILE,
+  });
 
   it.each(["budget"] as const)(
     "carries the pending request into safeguard %s recovery after endpoint fallback",
@@ -2405,7 +2405,6 @@ describe("compactEmbeddedAgentSession hooks (ownsCompaction engine)", () => {
     expect(dispose).toHaveBeenCalledTimes(1);
     expect(enqueueCommandInLaneMock).not.toHaveBeenCalled();
   });
-
 
   it("stops preparation when host authority expires during model resolution before route rematerialization", async () => {
     const modelResolutionStarted = createDeferred();

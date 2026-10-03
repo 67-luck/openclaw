@@ -18,6 +18,10 @@ import {
   getMemoryProviderRuntimeMock,
   resolveMemorySearchConfigMock,
 } from "./compact.hooks.memory.test-support.js";
+export {
+  getMemorySearchManagerMock,
+  resolveMemorySearchConfigMock,
+} from "./compact.hooks.memory.test-support.js";
 import {
   acquireCompactHooksPreparedModelRuntime,
   createCompactHooksResolvedModel,
@@ -104,15 +108,15 @@ const validateReplayTurnsMock = vi.fn(async ({ messages }: { messages: unknown[]
 export const resolveSessionAgentIdMock = vi.fn<
   typeof import("../agent-scope.js").resolveSessionAgentId
 >(() => "main");
-const resolveSessionAgentIdsMock = vi.fn<typeof import("../agent-scope.js").resolveSessionAgentIds>(
-  () => ({
-    defaultAgentId: "main",
-    sessionAgentId: "main",
-  }),
-);
+export const resolveSessionAgentIdsMock = vi.fn<
+  typeof import("../agent-scope.js").resolveSessionAgentIds
+>(() => ({
+  defaultAgentId: "main",
+  sessionAgentId: "main",
+}));
 const resolveAgentConfigMock = vi.fn((_config?: unknown, _agentId?: string): unknown => undefined);
 let fixture: { workspaceDir: string; sessionId: string };
-const resolveDefaultAgentDirMock = vi.fn<() => string>();
+export const resolveDefaultAgentDirMock = vi.fn<() => string>();
 export const estimateTokensMock = vi.fn((_message?: unknown) => 10);
 export const resolveAgentHarnessPolicyMock = vi.fn(() => ({ runtime: "openclaw" }));
 function createSelectedAgentHarnessMock(params: {

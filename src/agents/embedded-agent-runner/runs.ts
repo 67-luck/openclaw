@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { createMessageInjectionAuthority } from "../../auto-reply/reply/message-injection-authority.js";
-
 import {
   getAgentEventLifecycleGeneration,
   isAgentEventLifecycleGenerationCurrent,
@@ -470,10 +469,6 @@ export function supersedeEmbeddedAgentRunByRunId(runId: string, beforeCancel: ()
     } else {
       handle.abort();
     }
-    const registration = ACTIVE_EMBEDDED_RUN_REGISTRATIONS.get(handle);
-    if (registration) {
-      notifyEmbeddedRunEnded(registration.sessionId, handle, true);
-    }
     return true;
   }
   return supersedeReplyRunByRunId(normalizedRunId, beforeCancel);
@@ -538,56 +533,7 @@ export async function queueGuardedEmbeddedAgentMessageWithOutcomeAsync(
   options: ReplyMessageInjectionOptions | undefined,
   canInject: () => boolean,
 ): Promise<EmbeddedAgentQueueMessageOutcome> {
-  const handle = ACTIVE_EMBEDDED_RUNS.get(sessionId);
-  const onQueueSettled = options?.onQueueSettled;
-  if (!handle || !onQueueSettled) {
-    return queueEmbeddedAgentMessageAsync(sessionId, text, options, canInject);
-  }
-  // Bind custody before dispatch: a backend can accept synchronously, then end
-  // without reporting per-input settlement. Never follow a same-session successor.
-  const waiters = EMBEDDED_RUN_WAITERS.get(sessionId) ?? new Set<EmbeddedRunWaiter>();
-  const operation = resolveActiveReplyOperationForSessionId(sessionId);
-  const abortSignal =
-    operation && getAttachedBackend(operation) === handle ? operation.abortSignal : undefined;
-  let settled = false;
-  const close = (notify: boolean) => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    waiters.delete(waiter);
-    if (waiters.size === 0 && EMBEDDED_RUN_WAITERS.get(sessionId) === waiters) {
-      EMBEDDED_RUN_WAITERS.delete(sessionId);
-    }
-    abortSignal?.removeEventListener("abort", settle);
-    if (notify) {
-      onQueueSettled();
-    }
-  };
-  const settle = () => close(true);
-  const waiter: EmbeddedRunWaiter = { handle, resolve: settle, settleOnAbort: true };
-  waiters.add(waiter);
-  EMBEDDED_RUN_WAITERS.set(sessionId, waiters);
-  abortSignal?.addEventListener("abort", settle, { once: true });
-  if (abortSignal?.aborted || handle.isAborted?.()) {
-    settle();
-  }
-  try {
-    const outcome = await queueEmbeddedAgentMessageAsync(
-      sessionId,
-      text,
-      { ...options, onQueueSettled: settle },
-      canInject,
-    );
-    if (!outcome.queued) {
-      // Admission can retry without transcript waiting; rejection never owns custody.
-      close(false);
-    }
-    return outcome;
-  } catch (error) {
-    close(false);
-    throw error;
-  }
+  return queueEmbeddedAgentMessageAsync(sessionId, text, options, canInject);
 }
 
 async function queueEmbeddedAgentMessageAsync(
@@ -834,7 +780,6 @@ export function abortEmbeddedAgentRun(
     // handle still owns cancellation and must not be replaced by an ID lookup.
     handle.abort();
     revokeCompletionClaim(sessionId, handle.runId);
-    notifyEmbeddedRunEnded(sessionId, handle, true);
     return true;
   }
 
@@ -859,7 +804,6 @@ export function abortEmbeddedAgentRun(
     try {
       handle.abort(opts?.reason);
       revokeCompletionClaim(id, handle.runId);
-      notifyEmbeddedRunEnded(id, handle, true);
       aborted = true;
     } catch (err) {
       diag.warn(`abort failed: sessionId=${id} err=${String(err)}`);
@@ -978,7 +922,6 @@ export function prepareEmbeddedAgentRunCompletionClaim(
   };
 }
 
-
 export function isEmbeddedAgentRunHandleActive(sessionId: string): boolean {
   const active = Boolean(getActiveNativeAttempt(sessionId));
   if (active) {
@@ -1076,7 +1019,6 @@ function projectActiveEmbeddedRunOwner(
     // Stop so a stale UI action cannot abort replacement work in the session.
     stop,
     abort: () => stop() === "aborted",
-
   };
 }
 
@@ -1193,7 +1135,6 @@ function hasNativeBackendControl(
   handle: EmbeddedAgentQueueHandle,
 ): handle is EmbeddedAgentQueueHandle & ReplyBackendHandle {
   return handle.kind === "embedded" && typeof handle.cancel === "function";
-
 }
 
 export function setActiveEmbeddedRun(
@@ -1430,20 +1371,6 @@ export function updateActiveEmbeddedRunSnapshot(
     return;
   }
   ACTIVE_EMBEDDED_RUN_SNAPSHOTS.set(sessionId, snapshot);
-}
-
-function removeActiveEmbeddedRun(
-  sessionId: string,
-  handle: EmbeddedAgentQueueHandle,
-  sessionKey?: string,
-  opts?: { retainFinalizing?: boolean },
-) {
-  handle.closeDiagnostics?.();
-  ACTIVE_EMBEDDED_RUNS.delete(sessionId);
-  clearEmbeddedRunAbortability(handle, opts);
-  ACTIVE_EMBEDDED_RUN_SNAPSHOTS.delete(sessionId);
-  clearActiveRunSessionIndex(ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_KEY, sessionId, sessionKey?.trim());
-  clearActiveRunSessionIndex(ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE, sessionId);
 }
 
 export function clearActiveEmbeddedRun(

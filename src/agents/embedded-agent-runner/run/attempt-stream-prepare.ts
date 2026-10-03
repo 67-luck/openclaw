@@ -562,7 +562,7 @@ function prepareStream(
             return (
               admission.accepting &&
               !input.runAbortController.signal.aborted &&
-              ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(attempt.runId) === queueHandle
+              ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(attempt.runId)?.handle === queueHandle
             );
           } catch (error) {
             // A partially rebuilt surface must never resume its revoked tools.

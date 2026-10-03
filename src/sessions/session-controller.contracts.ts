@@ -30,10 +30,6 @@ import type { UserTurnTranscriptRecorder } from "./user-turn-transcript.types.js
 
 export type { ReplyOperationPhase } from "./reply-operation-state.js";
 
-type ReplyRunKey = string;
-
-type ReplyBackendKind = "embedded" | "cli";
-
 export type ReplyBackendCancelReason = "user_abort" | "restart" | "superseded";
 
 export type ReplyTurnKind = "visible" | "heartbeat" | "queued_followup" | "direct";
@@ -350,6 +346,8 @@ export type ReplyOperation = {
   readonly staleExpiryReason?: ReplyOperationStaleReason;
   readonly startedAtMs: number;
   readonly lastActivityAtMs: number;
+  /** True when this operation has owned the supplied session ID. */
+  hasOwnedSessionId(sessionId: string): boolean;
   /** Capture lineage before a pending barrier outlives this operation's lane. */
   captureOwnedSessionIds(): Set<string>;
   recordActivity(): void;

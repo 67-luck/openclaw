@@ -6,7 +6,6 @@ import {
   resetDiagnosticEventsForTest,
   type DiagnosticEventPayload,
 } from "../infra/diagnostic-events.js";
-
 import {
   getDiagnosticSessionActivitySnapshot,
   markDiagnosticEmbeddedRunEnded,
@@ -57,6 +56,16 @@ function flushDiagnosticEvents() {
   });
 }
 
+function countMatching<T>(items: readonly T[], predicate: (item: T) => boolean) {
+  let count = 0;
+  for (const item of items) {
+    if (predicate(item)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 /** Drives a lane that keeps receiving inbound, the traffic that refreshes lastActivity. */
 function advanceLaneWithInbound(params: {
   sessionId: string;
@@ -85,33 +94,62 @@ function expectRecordFields(record: Record<string, unknown>, fields: Record<stri
   }
 }
 
+function expectNumberField(record: Record<string, unknown>, key: string) {
+  expect(typeof record[key]).toBe("number");
+}
+
 function requireMatchingRecord(
   items: readonly unknown[],
   fields: Record<string, unknown>,
   label: string,
 ) {
-  expect(items, label).toContainEqual(expect.objectContaining(fields));
+  const found = items.find((item) => {
+    if (typeof item !== "object" || item === null) {
+      return false;
+    }
+    const record = item as Record<string, unknown>;
+    return Object.entries(fields).every(([key, value]) => Object.is(record[key], value));
+  });
+  if (!found) {
+    throw new Error(`missing ${label}`);
+  }
+  return requireRecord(found, label);
 }
 
-type DiagnosticMock = { mock: { calls: unknown[][] } };
+function requireFirstMockCallArg(mock: unknown, label: string) {
+  const calls = (mock as { mock?: { calls?: unknown[][] } }).mock?.calls;
+  const call = calls?.[0];
+  if (!call) {
+    throw new Error(`missing ${label} call`);
+  }
+  return requireRecord(call[0], `${label} argument`);
+}
 
-function requireFirstMockCallArg(mock: DiagnosticMock, label: string) {
-  return requireRecord(mock.mock.calls[0]?.[0], `${label} argument`);
+function loggerMessages(spy: unknown): string[] {
+  const calls = (spy as { mock?: { calls?: unknown[][] } }).mock?.calls ?? [];
+  return calls
+    .map((call) => call[0])
+    .filter((message): message is string => typeof message === "string");
 }
 
 function expectLoggerMessageContaining(spy: unknown, text: string): void {
-  expect(spy).toHaveBeenCalledWith(expect.stringContaining(text));
+  expect(loggerMessages(spy).join("\n")).toContain(text);
 }
 
 function expectNoLoggerMessageContaining(spy: unknown, text: string): void {
-  expect(spy).not.toHaveBeenCalledWith(expect.stringContaining(text));
+  expect(loggerMessages(spy).join("\n")).not.toContain(text);
 }
 
-function expectRecoveryCall(recoverStuckSession: DiagnosticMock, fields: Record<string, unknown>) {
+function expectRecoveryCall(
+  recoverStuckSession: unknown,
+  fields: Record<string, unknown>,
+  numberFields: readonly string[] = ["ageMs", "stateGeneration"],
+) {
   const params = requireFirstMockCallArg(recoverStuckSession, "recoverStuckSession");
   expectRecordFields(params, fields);
-  expect(typeof params.ageMs).toBe("number");
-  expect(typeof params.stateGeneration).toBe("number");
+  for (const field of numberFields) {
+    expectNumberField(params, field);
+  }
 }
 
 export type DiagnosticCaseFixture = {
@@ -470,7 +508,6 @@ describe("stuck session diagnostics threshold", () => {
     expectLoggerMessageContaining,
     expectNoLoggerMessageContaining,
     expectRecoveryCall,
-
   });
 
   it("does not start the heartbeat when diagnostics are disabled by config", () => {

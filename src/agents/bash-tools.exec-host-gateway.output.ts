@@ -1,8 +1,7 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { tail } from "./bash-process-registry.js";
 import { formatExecApprovalContinuationSourceOutput } from "./bash-tools.exec-approval-output.js";
-import { appendExecTimeoutRetryGuidance } from "./bash-tools.exec-output.js";
-import { normalizeNotifyOutput } from "./bash-tools.exec-runtime.js";
+import { appendExecTimeoutRetryGuidance, normalizeNotifyOutput } from "./bash-tools.exec-output.js";
 import type {
   ExecApprovalFollowupFactory,
   ExecApprovalFollowupOutcome,

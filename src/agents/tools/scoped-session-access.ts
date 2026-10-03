@@ -52,13 +52,21 @@ export async function runWithScopedSessionAccess<T>(params: {
     sessionKey: params.targetSessionKey,
     agentId: params.agentId,
   });
-  const storePath = resolveSessionStorePathCore(params.cfg.session?.store, { agentId });
-  const assertExpectedIncarnation = () => {
-    const current = getSessionEntry({ agentId, storePath, sessionKey: params.targetSessionKey });
-    if (current?.sessionId !== expectedSessionId || current.archivedAt !== undefined) {
-      throw new Error(`Session "${params.targetSessionKey}" changed after access was granted.`);
-    }
-  };
+  const storePath =
+    params.storePath ?? resolveSessionStorePathCore(params.cfg.session?.store, { agentId });
+  const assertExpectedIncarnation = async (signal = params.signal) =>
+    await withSessionEntryReadOnlyInWorker(
+      { agentId, storePath, sessionKey: params.targetSessionKey },
+      () => signal?.throwIfAborted(),
+      async (read) => {
+        if (!read.ok) {
+          throw read.error;
+        }
+        if (read.value?.sessionId !== expectedSessionId || read.value.archivedAt !== undefined) {
+          throw new Error(`Session "${params.targetSessionKey}" changed after access was granted.`);
+        }
+      },
+    );
   const admission = await beginSessionEffect({
     target: captureSessionTarget({
       storeScope: storePath,
@@ -67,7 +75,7 @@ export async function runWithScopedSessionAccess<T>(params: {
       agentId,
     }),
 
-    assertAllowed: assertExpectedIncarnation,
+    assertAllowed: (signal) => assertExpectedIncarnation(signal),
     revalidateAllowed: assertExpectedIncarnation,
     ...(params.signal ? { signal: params.signal } : {}),
   });

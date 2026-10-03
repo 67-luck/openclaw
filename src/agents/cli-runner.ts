@@ -51,9 +51,8 @@ import {
   getCliMessagingDeliveryEvidence,
 } from "./cli-runner/delivery-evidence.js";
 import { createCliFailoverError } from "./cli-runner/exit-error.js";
-import { cliBackendLog, formatCliBackendOutputDigest } from "./cli-runner/log.js";
+import { cliBackendLog } from "./cli-runner/log.js";
 import type { ClaudeCliRunDiagnosticLifecycle } from "./cli-runner/run-diagnostics.js";
-
 import {
   loadCliSessionContextEngineMessages,
   loadCliSessionHistoryMessages,
