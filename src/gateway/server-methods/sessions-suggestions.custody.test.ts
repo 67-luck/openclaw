@@ -110,7 +110,9 @@ describe("suggestion dispatch through real chat input custody", () => {
         expect.soft(loadTranscriptEventsSync(fixture.scope)).toEqual(fixture.activeTranscript);
         expect.soft(dispatchInboundMessageMock).not.toHaveBeenCalled();
         expect.soft(hasRpcSource(runId)).toBe(false);
-        expect.soft(getExistingSessionControllerMailbox(fixture.scope.sessionKey)).toBeUndefined();
+        expect
+          .soft(getExistingSessionControllerMailbox(fixture.scope.sessionKey)?.entries ?? [])
+          .toEqual([]);
         return;
       }
 

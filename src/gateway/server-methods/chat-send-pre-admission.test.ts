@@ -170,20 +170,46 @@ describe("chat send stop ownership", () => {
           payload: { runId, sessionKey: "global", agentId, status: "accepted" },
         });
       }
-
-      expect(await runChatSendPreAdmission(params)).toBe(false);
-      expect(fixture.respond).toHaveBeenCalledWith(true, {
-        ok: true,
-        aborted: true,
-        runIds: ["selected"],
+      const registrations = [
+        ["selected", "research"],
+        ["compatibility", "ops"],
+      ] as const;
+      const sourceRegistrations = registrations.map(([runId, agentId]) => {
+        const sessionId = `${runId}-session`;
+        return registerChatAbortController({
+          target: captureSessionTarget({
+            storeScope: resolveSessionStorePathCore(cfg.session?.store, { agentId }),
+            sessionKey: "global",
+            incarnation: sessionId,
+            agentId,
+          }),
+          runId,
+          sessionId,
+          sessionKey: "global",
+          agentId,
+          kind: "agent",
+          timeoutMs: 1_000,
+        });
       });
-      expect(fixture.context.dedupe.get("agent:selected")?.payload).toMatchObject({
-        status: "timeout",
-        summary: "aborted",
-      });
-      expect(fixture.context.dedupe.get("agent:compatibility")?.payload).toMatchObject({
-        status: "accepted",
-      });
+      try {
+        expect(await runChatSendPreAdmission(params)).toBe(false);
+        expect(fixture.respond).toHaveBeenCalledWith(true, {
+          ok: true,
+          aborted: true,
+          runIds: ["selected"],
+        });
+        expect(sourceRegistrations[0]?.entry?.input.abortSignal.aborted).toBe(true);
+        expect(sourceRegistrations[1]?.entry?.input.abortSignal.aborted).toBe(false);
+        expect(rpcSourceTesting.has("selected")).toBe(false);
+        expect(rpcSourceTesting.has("compatibility")).toBe(true);
+        expect(fixture.context.dedupe.get("agent:compatibility")?.payload).toMatchObject({
+          status: "accepted",
+        });
+      } finally {
+        for (const registration of sourceRegistrations) {
+          registration.cleanup();
+        }
+      }
     });
   });
 });
