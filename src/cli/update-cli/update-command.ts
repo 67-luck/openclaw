@@ -521,144 +521,147 @@ async function runResolvedUpdate(
   };
 
   let releaseLocalTuiGate: (() => Promise<void>) | undefined;
-  return await withUpdateInitializationCleanup(async () => {
-  const execution = await executeMutableUpdate({
-    ...target,
-    callerLegacyConfigPlan: initialization?.callerLegacyConfigPlan,
-    installKind,
-    timeoutMs,
-    updateStepTimeoutMs,
-    startedAt,
-    progress,
-    executionGuards,
-    stop: presentation.stop,
-    opts,
-    shouldRestart,
-    stagedPackage,
-    packageTargetVersion: targetVersion ?? undefined,
-    packageUpdateNodeRunner,
-    packageActivationRuntime,
-    managedServiceNodeRunner,
-    managedServiceRootRedirect,
-    managedServiceRoot,
-    invocationCwd,
-    recoveryState,
-    prepareMutableUpdate,
-    onActivation: () => {
-      presentation.suspend();
-      progress.deferLedgerWrites();
-    },
-    onLocalTuiGateAcquired: (release) => {
-      releaseLocalTuiGate = release;
-    },
-  });
-  run.executorFence?.assertCurrent();
-  if (!execution) {
-    return;
-  }
-  const { ownedManagedUpdateContext, recoveryEnv, ...executionState } = execution;
-  const { result } = executionState;
-  result.runId = run.runId;
-  if (result.status === "skipped" && result.reason === "already-current") {
-    await activateCurrentCore();
-    presentation.stop();
-    return await finishAlreadyCurrentUpdate({
-      ...currentCoreFinalization,
-      root: result.root ?? root,
-      result,
-      ownedManagedUpdateEnv: ownedManagedUpdateContext?.env,
-      packageUpdateNodeRunner: packageUpdateNodeRunner ?? managedServiceNodeRunner,
-    });
-  }
-  recoveryState.triageTarget.root = result.root ?? root;
-  recoveryState.triageTarget.failureResult = result;
-  recoveryState.triageTarget.env =
-    recoveryEnv ?? ownedManagedUpdateContext?.env ?? recoveryState.triageTarget.env;
-  presentation.stop();
-  const finalization = {
-    ...executionState,
-    expectedVersion: targetVersion ?? undefined,
-    root,
-    previousInstallRoot: discoveredRoot,
-    installKindChanged: switchToGit || switchToPackage,
-    configSnapshot: ownedManagedUpdateContext?.configSnapshot ?? configSnapshot,
-    requestedChannel,
-    storedChannel,
-    channel,
-    downgradeRisk,
-    shouldRestart,
-    opts,
-    ownedManagedUpdateEnv: ownedManagedUpdateContext?.env,
-    controlPlaneUpdateSentinelMeta,
-    preUpdatePluginInstallRecords:
-      ownedManagedUpdateContext?.pluginInstallRecords ?? preUpdatePluginInstallRecords,
-    startedAt,
-    packageUpdateNodeRunner,
-    updateStepTimeoutMs,
-    invocationCwd,
-  };
-  const rollbackBlockedReason = opts.recovery
-    ? undefined
-    : await inspectActivatedUpdateState({
-        result,
-        root,
-        packageUpdateNodeRunner,
-        schemaVersions: execution.schemaVersions,
-        candidateSchemaVersions: execution.candidateSchemaVersions,
-        config: finalization.configSnapshot.config,
-        env: ownedManagedUpdateContext?.env ?? run.env,
-        timeoutMs: updateStepTimeoutMs,
-      });
-  run.executorFence?.assertCurrent();
-  if (opts.recovery || rollbackBlockedReason) {
-    // Only candidate code may reopen migrated state, including during reporting and cleanup.
-    recoveryState.ledgerHandoffOwned = true;
-    const assertRollbackCurrent = createUpdateCommandFinalizationFence(finalization);
-    const continued = await continueMigratedUpdateInFreshProcess(
-      { ...finalization, rollbackBlockedReason },
-      progress.pendingSteps,
-    );
-    if (continued.databaseRollbackAvailable && finalization.databaseBackup) {
-      const restored = await restoreFailedUpdateDatabases({
-        backup: finalization.databaseBackup,
-        result: continued.result,
-        runId: run.runId,
-        env: ownedManagedUpdateContext?.env ?? run.env,
-        assertCurrent: assertRollbackCurrent,
+  return await withUpdateInitializationCleanup(
+    async () => {
+      const execution = await executeMutableUpdate({
+        ...target,
+        callerLegacyConfigPlan: initialization?.callerLegacyConfigPlan,
+        installKind,
+        timeoutMs,
+        updateStepTimeoutMs,
+        startedAt,
         progress,
-      });
-      if (!restored) {
-        throw new UpdateCommandPendingRecoveryFailure(
-          continued.result,
-          continued.result.steps.at(-1)?.stderrTail ?? undefined,
-        );
-      }
-      await finishUpdate(
-        { ...finalization, result: continued.result },
-        {
-          beforeFinalization: async () => {
-            await progress.flushLedgerWrites();
-            recoveryState.ledgerHandoffOwned = false;
-            presentation.resume();
-          },
+        executionGuards,
+        stop: presentation.stop,
+        opts,
+        shouldRestart,
+        stagedPackage,
+        packageTargetVersion: targetVersion ?? undefined,
+        packageUpdateNodeRunner,
+        packageActivationRuntime,
+        managedServiceNodeRunner,
+        managedServiceRootRedirect,
+        managedServiceRoot,
+        invocationCwd,
+        recoveryState,
+        prepareMutableUpdate,
+        onActivation: () => {
+          presentation.suspend();
+          progress.deferLedgerWrites();
         },
-      );
-      return;
-    }
-    recoveryState.ledgerHandoffCompleted = true;
-    opts.onResult?.(continued.result);
-    if (continued.exitCode !== 0) {
-      throw new UpdateCommandFailure(continued.result, continued.exitCode, undefined, {
-        automaticTriage: continued.automaticTriage,
+        onLocalTuiGateAcquired: (release) => {
+          releaseLocalTuiGate = release;
+        },
       });
-    }
-    return;
-  }
-  await finishUpdate(finalization, {
-    beforeFinalization: async () => {
-      await progress.flushLedgerWrites();
-      presentation.resume();
+      run.executorFence?.assertCurrent();
+      if (!execution) {
+        return;
+      }
+      const { ownedManagedUpdateContext, recoveryEnv, ...executionState } = execution;
+      const { result } = executionState;
+      result.runId = run.runId;
+      if (result.status === "skipped" && result.reason === "already-current") {
+        await activateCurrentCore();
+        presentation.stop();
+        return await finishAlreadyCurrentUpdate({
+          ...currentCoreFinalization,
+          root: result.root ?? root,
+          result,
+          ownedManagedUpdateEnv: ownedManagedUpdateContext?.env,
+          packageUpdateNodeRunner: packageUpdateNodeRunner ?? managedServiceNodeRunner,
+        });
+      }
+      recoveryState.triageTarget.root = result.root ?? root;
+      recoveryState.triageTarget.failureResult = result;
+      recoveryState.triageTarget.env =
+        recoveryEnv ?? ownedManagedUpdateContext?.env ?? recoveryState.triageTarget.env;
+      presentation.stop();
+      const finalization = {
+        ...executionState,
+        expectedVersion: targetVersion ?? undefined,
+        root,
+        previousInstallRoot: discoveredRoot,
+        installKindChanged: switchToGit || switchToPackage,
+        configSnapshot: ownedManagedUpdateContext?.configSnapshot ?? configSnapshot,
+        requestedChannel,
+        storedChannel,
+        channel,
+        downgradeRisk,
+        shouldRestart,
+        opts,
+        ownedManagedUpdateEnv: ownedManagedUpdateContext?.env,
+        controlPlaneUpdateSentinelMeta,
+        preUpdatePluginInstallRecords:
+          ownedManagedUpdateContext?.pluginInstallRecords ?? preUpdatePluginInstallRecords,
+        startedAt,
+        packageUpdateNodeRunner,
+        updateStepTimeoutMs,
+        invocationCwd,
+      };
+      const rollbackBlockedReason = opts.recovery
+        ? undefined
+        : await inspectActivatedUpdateState({
+            result,
+            root,
+            packageUpdateNodeRunner,
+            schemaVersions: execution.schemaVersions,
+            candidateSchemaVersions: execution.candidateSchemaVersions,
+            config: finalization.configSnapshot.config,
+            env: ownedManagedUpdateContext?.env ?? run.env,
+            timeoutMs: updateStepTimeoutMs,
+          });
+      run.executorFence?.assertCurrent();
+      if (opts.recovery || rollbackBlockedReason) {
+        // Only candidate code may reopen migrated state, including during reporting and cleanup.
+        recoveryState.ledgerHandoffOwned = true;
+        const assertRollbackCurrent = createUpdateCommandFinalizationFence(finalization);
+        const continued = await continueMigratedUpdateInFreshProcess(
+          { ...finalization, rollbackBlockedReason },
+          progress.pendingSteps,
+        );
+        if (continued.databaseRollbackAvailable && finalization.databaseBackup) {
+          const restored = await restoreFailedUpdateDatabases({
+            backup: finalization.databaseBackup,
+            result: continued.result,
+            runId: run.runId,
+            env: ownedManagedUpdateContext?.env ?? run.env,
+            assertCurrent: assertRollbackCurrent,
+            progress,
+          });
+          if (!restored) {
+            throw new UpdateCommandPendingRecoveryFailure(
+              continued.result,
+              continued.result.steps.at(-1)?.stderrTail ?? undefined,
+            );
+          }
+          await finishUpdate(
+            { ...finalization, result: continued.result },
+            {
+              beforeFinalization: async () => {
+                await progress.flushLedgerWrites();
+                recoveryState.ledgerHandoffOwned = false;
+                presentation.resume();
+              },
+            },
+          );
+          return;
+        }
+        recoveryState.ledgerHandoffCompleted = true;
+        opts.onResult?.(continued.result);
+        if (continued.exitCode !== 0) {
+          throw new UpdateCommandFailure(continued.result, continued.exitCode, undefined, {
+            automaticTriage: continued.automaticTriage,
+          });
+        }
+        return;
+      }
+      await finishUpdate(finalization, {
+        beforeFinalization: async () => {
+          await progress.flushLedgerWrites();
+          presentation.resume();
+        },
+      });
     },
-  });
-  }, async () => await releaseLocalTuiGate?.());
+    async () => await releaseLocalTuiGate?.(),
+  );
 }

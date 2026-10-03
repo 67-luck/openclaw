@@ -297,7 +297,7 @@ describe("mutable update execution", () => {
     params.onLocalTuiGateAcquired = (releaseGate) => {
       releaseAfterFinalization = releaseGate;
     };
-    const execution = await executeMutableUpdate(params);
+    const execution = await executeMutableUpdate(await bindExecutionGuards(params));
 
     expect(execution?.result.status).toBe("ok");
     expect(release).not.toHaveBeenCalled();
@@ -310,7 +310,9 @@ describe("mutable update execution", () => {
       throw new Error("close Windows TUI first");
     });
 
-    const execution = await executeMutableUpdate(executionParams("package"));
+    const execution = await executeMutableUpdate(
+      await bindExecutionGuards(executionParams("package")),
+    );
 
     expect(execution).toMatchObject({
       mutationStarted: false,
