@@ -128,7 +128,6 @@ const sessionCleanupMocks = vi.hoisted(() => ({
       return { stopped: 0, failed: 0 };
     },
   ),
-
 }));
 
 const bootstrapCacheMocks = vi.hoisted(() => ({
@@ -207,8 +206,8 @@ vi.mock("../../auto-reply/reply/queue/cleanup.js", async () => {
   );
   return {
     ...actual,
-    clearSessionLifecycleQueues: sessionCleanupMocks.clearSessionLifecycleQueues.mockImplementation(
-      actual.clearSessionLifecycleQueues,
+    clearSessionQueues: sessionCleanupMocks.clearSessionQueues.mockImplementation(
+      actual.clearSessionQueues,
     ),
   };
 });
@@ -337,7 +336,7 @@ function createGatewaySessionsTestHarness(startServer: boolean, setup?: GatewayS
     const { clearConfigCache, clearRuntimeConfigSnapshot } = await getGatewayConfigModule();
     clearRuntimeConfigSnapshot();
     clearConfigCache();
-    sessionCleanupMocks.clearSessionLifecycleQueues.mockClear();
+    sessionCleanupMocks.clearSessionQueues.mockClear();
     sessionCleanupMocks.stopSessionResetSubagents.mockClear();
     bootstrapCacheMocks.clearBootstrapSnapshot.mockReset();
     sessionHookMocks.hasInternalHookListeners.mockReset();
@@ -559,11 +558,17 @@ export function expectActiveRunCleanup(
   expectSessionQueueCleanup(expectedQueueKeys);
   expect(embeddedRunMock.abortCalls).toEqual([]);
   expect(embeddedRunMock.waitCalls).toEqual([]);
+}
 
+function expectSessionQueueCleanup(expectedQueueKeys: string[]) {
+  expect(sessionCleanupMocks.clearSessionQueues).toHaveBeenCalledTimes(1);
+  expect(sessionCleanupMocks.clearSessionQueues).toHaveBeenCalledWith(
+    expect.arrayContaining(expectedQueueKeys),
+  );
 }
 
 export function expectNoSessionQueueCleanup() {
-  expect(sessionCleanupMocks.clearSessionLifecycleQueues).not.toHaveBeenCalled();
+  expect(sessionCleanupMocks.clearSessionQueues).not.toHaveBeenCalled();
 }
 
 type SessionsHandlers = Awaited<ReturnType<typeof getSessionsHandlers>>;

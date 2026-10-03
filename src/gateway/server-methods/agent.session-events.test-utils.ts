@@ -1,5 +1,9 @@
 // Registered at their original suite positions to retain hook and shared-state ordering.
 import { expect, it, vi } from "vitest";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+} from "../../sessions/session-controller.rpc-sources.js";
 import type { GatewaySessionRow } from "../session-utils.types.js";
 import {
   buildExistingMainStoreEntry,
@@ -254,7 +258,8 @@ export function registerAgentGlobalGoalEventTest(): void {
         runId,
         expect.objectContaining({ sessionKey: "global", agentId: "work" }),
       );
-      expect(context.chatAbortControllers.get(runId)?.agentId).toBe("work");
+      const source = getRpcSource(runId);
+      expect(source && getRpcSourceIdentity(source).agentId).toBe("work");
       expect(context.broadcastToConnIds).toHaveBeenCalledWith(
         "sessions.changed",
         expect.objectContaining({

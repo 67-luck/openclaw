@@ -3,8 +3,9 @@ import os from "node:os";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { CURRENT_SESSION_VERSION } from "openclaw/plugin-sdk/agent-sessions";
-import { expect } from "vitest";
-
+import { expect, vi } from "vitest";
+import { createFixtureLifetime } from "../../../test/helpers/fixture-lifetime.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import {
   loadExactSessionEntryCandidates,
   replaceSessionEntry,

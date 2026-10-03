@@ -10,10 +10,8 @@ import * as agentHandlerHelpers from "../agent-turn/agent-handler-helpers.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import type { GatewaySessionRow } from "../session-utils.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
-
 import { registerAgentAbortSubagentTests } from "./agent.abort-subagents.test-utils.js";
 import { registerAgentPreDispatchFailureTests } from "./agent.pre-dispatch-failure.test-utils.js";
-import { registerAgentGlobalGoalEventTest } from "./agent.session-events.test-utils.js";
 import {
   getAgentTestMocks,
   operatorWriteCliClient,
@@ -137,7 +135,6 @@ describe("gateway agent handler chat.abort integration", () => {
     });
   });
 
-
   it("yields after the accepted ack before dispatching heavy agent work", async () => {
     prime();
     mocks.agentCommand.mockResolvedValueOnce({
@@ -215,7 +212,6 @@ describe("gateway agent handler chat.abort integration", () => {
     });
     expect(rpcSourceTesting.has(runId)).toBe(true);
 
-
     const abortRespond = vi.fn();
     await handleChatAbortRequest({
       params: { sessionKey: "agent:main:main", runId },
@@ -234,7 +230,6 @@ describe("gateway agent handler chat.abort integration", () => {
     await pending;
 
     await flushScheduledDispatchStep();
-
 
     expect(mocks.agentCommand).not.toHaveBeenCalled();
     expectRecordFields(context.dedupe.get(`agent:${runId}`)?.payload, {
@@ -284,7 +279,6 @@ describe("gateway agent handler chat.abort integration", () => {
     });
     expect(rpcSourceTesting.has(runId)).toBe(true);
 
-
     const stopRespond = vi.fn();
     await handleDirectExternalChatSend({
       params: {
@@ -304,7 +298,6 @@ describe("gateway agent handler chat.abort integration", () => {
       runIds: [runId],
     });
     expect(rpcSourceTesting.has(runId)).toBe(false);
-
 
     expect(mocks.agentCommand).not.toHaveBeenCalled();
     expectRecordFields(context.dedupe.get(`agent:${runId}`)?.payload, {
@@ -889,7 +882,6 @@ describe("gateway agent handler chat.abort integration", () => {
     pending.resolve({ payloads: [{ text: "late completion" }], meta: { durationMs: 1 } });
     await waitForAssertion(() => expect(rpcSourceTesting.has(runId)).toBe(false));
   });
-
 
   it("keeps the sessions.abort wait snapshot after late agent completion", async () => {
     prime();

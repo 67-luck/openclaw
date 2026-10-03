@@ -1,6 +1,10 @@
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import type { ChatAbortControllerEntry } from "../chat-abort.types.js";
+import {
+  getRpcSource,
+  getRpcSourceProjectSessionActive,
+  type RpcSourceRef,
+} from "../../sessions/session-controller.rpc-sources.js";
 import {
   getAgentTestMocks,
   operatorWriteCliClient,
@@ -21,12 +25,12 @@ export function registerAgentAbortRunExecutionTest() {
     const finishRun = createDeferred();
     const context = makeContext();
     const runId = "idem-abort-run";
-    let acceptedEntry: ChatAbortControllerEntry | undefined;
+    let acceptedEntry: RpcSourceRef | undefined;
     let capturedSignal: AbortSignal | undefined;
     mocks.agentCommand.mockImplementationOnce(async (opts: { abortSignal?: AbortSignal }) => {
       capturedSignal = opts.abortSignal;
-      const entry = context.chatAbortControllers.get(runId);
-      if (entry?.controller.signal === opts.abortSignal) {
+      const entry = getRpcSource(runId);
+      if (entry?.input.abortSignal === opts.abortSignal) {
         acceptedEntry = entry;
       }
       await finishRun.promise;
@@ -45,8 +49,7 @@ export function registerAgentAbortRunExecutionTest() {
       );
 
       const active = requireValue(acceptedEntry, "active run missing");
-      const execution = requireValue(active.executionSettlement, "execution settlement missing");
-      expect(context.chatAbortControllers.get(runId)).toBe(active);
+      expect(getRpcSource(runId)).toBe(active);
       expect(capturedSignal?.aborted).toBe(false);
 
       const abortRespond = vi.fn();
@@ -65,14 +68,13 @@ export function registerAgentAbortRunExecutionTest() {
         runIds: [runId],
       });
       expect(capturedSignal?.aborted).toBe(true);
-      expect(active.projectSessionActive).toBe(false);
-      expect(context.chatAbortControllers.get(runId)).toBe(active);
-      expect(execution.status).toBe("pending");
+      expect(getRpcSourceProjectSessionActive(active)).toBe(false);
+      expect(getRpcSource(runId)).toBe(active);
     } finally {
       finishRun.resolve();
-      await acceptedEntry?.executionSettlement?.completion;
+      await acceptedEntry?.input.settlement.promise;
     }
-    expect(context.chatAbortControllers.has(runId)).toBe(false);
+    expect(getRpcSource(runId)).toBeUndefined();
   });
 }
 
@@ -82,12 +84,12 @@ export function registerAgentAbortStaleKeyExecutionTest() {
     const finishRun = createDeferred();
     const context = makeContext();
     const runId = "idem-abort-stale-session-key";
-    let acceptedEntry: ChatAbortControllerEntry | undefined;
+    let acceptedEntry: RpcSourceRef | undefined;
     let capturedSignal: AbortSignal | undefined;
     mocks.agentCommand.mockImplementationOnce(async (opts: { abortSignal?: AbortSignal }) => {
       capturedSignal = opts.abortSignal;
-      const entry = context.chatAbortControllers.get(runId);
-      if (entry?.controller.signal === opts.abortSignal) {
+      const entry = getRpcSource(runId);
+      if (entry?.input.abortSignal === opts.abortSignal) {
         acceptedEntry = entry;
       }
       await finishRun.promise;
@@ -110,9 +112,8 @@ export function registerAgentAbortStaleKeyExecutionTest() {
       );
 
       const active = requireValue(acceptedEntry, "active run missing");
-      const execution = requireValue(active.executionSettlement, "execution settlement missing");
-      expect(context.chatAbortControllers.get(runId)).toBe(active);
-      expect(active.sessionKey).toBe("agent:main:main");
+      expect(getRpcSource(runId)).toBe(active);
+      expect(active.input.target?.sessionKey).toBe("agent:main:main");
       const abortRespond = vi.fn();
       await handleChatAbortRequest({
         params: { sessionKey: "agent:main:stale-key", runId },
@@ -129,13 +130,12 @@ export function registerAgentAbortStaleKeyExecutionTest() {
         runIds: [runId],
       });
       expect(capturedSignal?.aborted).toBe(true);
-      expect(active.projectSessionActive).toBe(false);
-      expect(context.chatAbortControllers.get(runId)).toBe(active);
-      expect(execution.status).toBe("pending");
+      expect(getRpcSourceProjectSessionActive(active)).toBe(false);
+      expect(getRpcSource(runId)).toBe(active);
     } finally {
       finishRun.resolve();
-      await acceptedEntry?.executionSettlement?.completion;
+      await acceptedEntry?.input.settlement.promise;
     }
-    expect(context.chatAbortControllers.has(runId)).toBe(false);
+    expect(getRpcSource(runId)).toBeUndefined();
   });
 }

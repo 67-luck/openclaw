@@ -10,6 +10,7 @@ import { SessionFollowupCompletion } from "../agents/subagents/completion/sessio
 import type { FollowupRequest } from "../agents/subagents/completion/session-followup-completion.types.js";
 import { startSessionsSendReplyFlow } from "../agents/tools/sessions-send-reply-flow.js";
 import { withPluginRuntimeGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
+import { getRpcSource } from "../sessions/session-controller.rpc-sources.js";
 import type { UserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.types.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import type { agentCommandMock as gatewayAgentCommandMock } from "./test-helpers.js";
@@ -137,7 +138,7 @@ export function registerSessionsSendPrivateCompletionTests(
               ],
         );
         expect(agentCommandMock).toHaveBeenCalledOnce();
-        expect(context.chatAbortControllers.has(runId)).toBe(false);
+        expect(getRpcSource(runId)).toBeUndefined();
         expect(settled.completions).toMatchObject([
           { run_id: runId, succeeded: outcome === "processed" ? 1 : 0 },
         ]);

@@ -7,6 +7,7 @@ import { registerExecApprovalFollowupRuntimeHandoff } from "../../agents/bash-to
 import { FailoverError } from "../../agents/failover-error.js";
 import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
 import type { AgentWaitResult } from "../../agents/run-wait.types.js";
+import * as subagentRegistryStore from "../../agents/subagents/registry/subagent-registry.store.kernel.js";
 import { loadSubagentRegistryFromSqlite } from "../../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import {
   addSubagentRunForTests,
@@ -27,7 +28,6 @@ import { bindInProcessSubagentResume } from "../in-process-subagent-resume.js";
 import { bindParentSubagentResume } from "../session-subagent-resume.js";
 import { registerPluginSubagentRunFromGateway } from "./agent-subagent-registration.js";
 import { registerAgentRestartRecoveryRejectionCases } from "./agent.restart-recovery.test-cases.js";
-
 import {
   registerCompactionSessionSettlementCase,
   registerSuccessfulAgentSettlementCase,
@@ -576,17 +576,10 @@ describe("gateway agent handler", () => {
       "openclaw-gateway-plugin-subagent-registry-fail-",
       async () => {
         resetSubagentRegistryForTests({ persist: false });
-        const persistence = await vi.importActual<
-          typeof import("../../agents/subagents/registry/subagent-registry-state.js")
-        >("../../agents/subagents/registry/subagent-registry-state.js");
-        const persistSubagentRunsToDiskOrThrow = vi.fn(
-          persistence.persistSubagentRunsToDiskOrThrow,
-        );
         const persistenceError = Object.assign(new Error("disk full"), { code: "SQLITE_FULL" });
-        persistSubagentRunsToDiskOrThrow.mockImplementationOnce(() => {
+        mocks.registryWrite.mockImplementationOnce(() => {
           throw persistenceError;
         });
-        mocks.registryPersistOrThrow.mockImplementation(persistSubagentRunsToDiskOrThrow);
         const runId = "plugin-subagent-registry-fail";
         const childSessionKey = "agent:main:subagent:registry-fail";
         const cfg = {
@@ -641,7 +634,7 @@ describe("gateway agent handler", () => {
           },
         );
 
-        expect(persistSubagentRunsToDiskOrThrow).toHaveBeenCalledTimes(1);
+        expect(mocks.registryWrite).toHaveBeenCalledTimes(1);
         expect(mocks.agentCommand).toHaveBeenCalledTimes(commandCallCount);
         expect(loadSubagentRegistryFromSqlite().has(runId)).toBe(false);
         expectRespondError(respond, {
@@ -734,7 +727,7 @@ describe("gateway agent handler", () => {
           },
         );
 
-        expect(persistSubagentRunsToDiskOrThrow.mock.calls.length).toBeGreaterThan(1);
+        expect(mocks.registryWrite.mock.calls.length).toBeGreaterThan(1);
         await waitForAssertion(() => {
           expect(mocks.agentCommand).toHaveBeenCalledTimes(commandCallCount + 1);
           const retryRun = requireValue(
@@ -746,7 +739,6 @@ describe("gateway agent handler", () => {
       },
     );
   });
-
 
   it("preserves aborted async gateway agent runs as cancelled", async () => {
     await withTestDir({ prefix: "openclaw-gateway-agent-task-aborted-" }, async (root) => {

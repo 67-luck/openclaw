@@ -1,6 +1,5 @@
 // Registered agent RPC proof for parent-visible session follow-up activity.
 import path from "node:path";
-import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import * as announceDelivery from "../../agents/subagents/announce/subagent-announce-delivery.js";
@@ -23,9 +22,11 @@ import {
   resetSubagentRegistryForTests,
   testing as registryTesting,
 } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
+import * as sessionAccessor from "../../config/sessions/session-accessor.js";
 import { getRpcSourceIdentity } from "../../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
-
+import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
+import * as admissionController from "../agent-turn/agent-admission-controller.js";
 import { withPluginSubagentTestState } from "./agent.spawned-child.test-support.js";
 import {
   backendGatewayClient,
@@ -336,10 +337,43 @@ describe("gateway agent follow-up activity", () => {
           }
         });
         try {
-          await invokeAgent(request, { context, reqId: runId, client: backendGatewayClient() });
+          const pending = invokeAgent(request, {
+            context,
+            respond,
+            reqId: runId,
+            client: backendGatewayClient(),
+          });
+          if (rotation) {
+            await admissionStarted.promise;
+            currentEntry = {
+              ...currentEntry,
+              sessionId: rotation === "sessionId" ? "replacement-session" : currentEntry.sessionId,
+              lifecycleRevision: "replacement-revision",
+            };
+            releaseAdmission.resolve();
+          }
+          await pending;
+          const expectedSeconds =
+            timeout ??
+            (unregistered ||
+            retired ||
+            priorSessionId ||
+            priorRevision ||
+            rotation ||
+            missingIdentity ||
+            persisted ||
+            recreate ||
+            revise
+              ? undefined
+              : (budget ?? 0));
+          expect(mocks.agentCommand.mock.calls.at(-1)?.[0].timeout).toBe(
+            expectedSeconds?.toString(),
+          );
           const source = rpcSourceTesting.get(runId);
-          expect(source && getRpcSourceIdentity(source).sessionKey).toBe(childSessionKey);
-
+          const identity = source && getRpcSourceIdentity(source);
+          expect(identity?.sessionKey).toBe(childSessionKey);
+          expect(identity?.sessionId).toBe(currentEntry.sessionId);
+          expect(mocks.agentCommand.mock.calls.at(-1)?.[0].sessionId).toBe(currentEntry.sessionId);
           const callCount = mocks.agentCommand.mock.calls.length;
           await invokeAgent(request, { context, reqId: "replay", client: backendGatewayClient() });
           expect(mocks.agentCommand).toHaveBeenCalledTimes(callCount);

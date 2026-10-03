@@ -27,7 +27,6 @@ import { disposeSessionReadContexts } from "../session-read-contexts.test-suppor
 import { dispatchInboundMessageMock, testState, writeSessionStore } from "../test-helpers.js";
 import { getTestPluginRegistry } from "../test-helpers.plugin-registry.js";
 import { releaseGatewaySessionStoreFixture } from "../test/server-sessions-resources.test-helpers.js";
-import { createWorkerSessionPlacementStore } from "../worker-environments/placement-store.js";
 import { handleChatSend } from "./chat-send-handler.js";
 import type { GatewayClient, RespondFn } from "./types.js";
 

@@ -165,8 +165,7 @@ export function createChatAbortContext(
     nodeSendToSession: vi.fn(),
     logGateway: { warn: vi.fn() },
     ...contextOverrides,
-
-  } as ChatAbortTestContext;
+  } as unknown as ChatAbortTestContext;
   // Synthetic registrations retire through the real index owner only after the
   // producer's exact source receipt, preserving replacements and foreign runs.
   for (const [runId, ref] of rpcSourceTesting) {

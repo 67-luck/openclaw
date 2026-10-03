@@ -11,6 +11,10 @@ import {
 } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.types.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import {
+  getRpcSource,
+  requestRpcSourceCancellation,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { bindInProcessSubagentResume } from "../in-process-subagent-resume.js";
 import { bindParentSubagentResume } from "../session-subagent-resume.js";
 import {
@@ -76,7 +80,10 @@ describe("gateway agent handler yielded orchestrator follow-ups", () => {
           }
           // Publication follows the native ACK; abort before the admission frame resumes.
           adopted = loadSubagentRegistryFromSqlite().get(runId);
-          context.chatAbortControllers.get(runId)?.controller.abort(failure);
+          const source = getRpcSource(runId);
+          if (source) {
+            requestRpcSourceCancellation(source, failure);
+          }
         });
         const respond = vi.fn();
         try {
@@ -104,7 +111,7 @@ describe("gateway agent handler yielded orchestrator follow-ups", () => {
         expectRespondError(respond, { message: expect.stringContaining(failure.message) });
         expect(respond.mock.calls.some(([accepted]) => accepted === true)).toBe(false);
         expect(mocks.agentCommand).not.toHaveBeenCalled();
-        expect(context.chatAbortControllers.has(runId)).toBe(false);
+        expect(getRpcSource(runId)).toBeUndefined();
         const terminal = {
           runId,
           taskRunId: previousRunId,
