@@ -152,6 +152,7 @@ export function workerPlacement(params: {
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
     agentId: params.agentId ?? "main",
+    executionMode: "worker-turn",
     state: params.state,
     generation: 2,
     turnClaim: null,
@@ -224,13 +225,13 @@ export async function archiveLifecycleRequestContext(
   } as unknown as GatewayRequestContext;
 }
 
-export type LifecycleHandlerResponse = {
+type LifecycleHandlerResponse = {
   ok: boolean;
   payload?: unknown;
   error?: Parameters<RespondFn>[2];
 };
 
-export function archivePatch(key: string, expectedSessionId: string) {
+function archivePatch(key: string, expectedSessionId: string) {
   return { key, archived: true, expectedSessionId };
 }
 

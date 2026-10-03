@@ -11,6 +11,7 @@ import { registerReplyOperationSuccessorBarrier } from "../sessions/session-cont
 import { assertSessionControllerOperation } from "../sessions/session-controller.state.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { resolveAdmittedRunActiveAssertion } from "./admitted-run-context.js";
+
 import { resolveEmbeddedRunSessionLanePolicy } from "./embedded-agent-runner/run/lane-runtime.js";
 import type { RunEmbeddedAgentParams } from "./embedded-agent-runner/run/params.js";
 import type { EmbeddedAgentRunResult } from "./embedded-agent-runner/types.js";
@@ -35,7 +36,7 @@ export type LocalTurnPlacementClaim = {
   runId: string;
 };
 
-export type SessionPlacementTurnParams = RunEmbeddedAgentParams & { sessionFile: string };
+export type SessionPlacementTurnParams = RunEmbeddedAgentInternalParams & { sessionFile: string };
 
 type SessionPlacementSandboxParams = {
   agentId: string;
@@ -51,7 +52,10 @@ export type SessionPlacementAdmissionProvider = {
     currentTarget: SessionTranscriptRuntimeTarget;
     successorSessionId: string;
   }) => void;
-  recoverTerminalTurn?: (session: { sessionId: string; sessionKey?: string }) => string | undefined;
+  recoverTerminalTurn?: (
+    session: { sessionId: string; sessionKey?: string },
+    assertCurrent?: () => void,
+  ) => Promise<string | undefined>;
   executeLocalTurn: <T>(
     claim: LocalTurnPlacementClaim,
     runLocal: () => Promise<T>,
@@ -90,7 +94,6 @@ export function installSessionPlacementAdmissionProvider(
     }
   };
 }
-
 /** Carries placement-owned runtime selection into candidate preparation and execution. */
 export function resolveSessionPlacementRuntimeOverride(
   identity: Omit<LocalTurnPlacementClaim, "runId">,
@@ -194,7 +197,7 @@ export async function withSessionPlacementTurnAdmission(
   if (result.meta.executionTrace?.runner === "cli" && params.isFinalFallbackAttempt === undefined) {
     // Standalone CLI completion releases placement before admitting a successor;
     // fallback candidates leave the handoff to their logical run entry.
-    settleRequesterRun({ ...params, ...claim }, result, assertCurrent);
+    await settleRequesterRun({ ...params, ...claim }, result, assertCurrent);
   }
   return result;
 }
@@ -288,7 +291,7 @@ export async function withLocalSessionPlacementTurnSettlement(
         );
         if (options.isFinalFallbackAttempt === undefined) {
           // Candidate classification is provisional until the outer entry accepts it.
-          settleRequesterRun({ ...options, ...claim }, result, () => {
+          await settleRequesterRun({ ...options, ...claim }, result, () => {
             assertCurrent();
             options.preparedRunAdmission?.assertSourceCurrent();
             if (options.admittedRunContext && !assertAdmittedRunCurrent) {
@@ -302,6 +305,7 @@ export async function withLocalSessionPlacementTurnSettlement(
         }
         return result;
       },
+
     );
   } finally {
     releaseForeground?.();

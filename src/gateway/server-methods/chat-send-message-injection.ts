@@ -58,7 +58,7 @@ export function createChatSendMessageInjectionStarter(params: {
   >;
   admittedSessionSettings?: Readonly<Pick<SessionEntry, "permissionMode" | "toolOverrides">>;
   turn: Pick<
-    ReturnType<typeof prepareChatSendUserTurn>,
+    Awaited<ReturnType<typeof prepareChatSendUserTurn>>,
     "ctx" | "isInternalTextSlashCommandTurn" | "replyOptionImages" | "replyOptionMedia"
   >;
   imageOrder: ReplyBackendQueueMessageOptions["imageOrder"];
@@ -212,6 +212,7 @@ export function createChatSendMessageInjectionStarter(params: {
               spawnedBy: entry?.spawnedBy,
               permissionMode: params.admittedSessionSettings?.permissionMode,
               toolOverrides: params.admittedSessionSettings?.toolOverrides,
+
             },
             senderIsOwner: authorization.senderIsOwner,
             operatorAuthority: params.operatorAuthority,
@@ -270,6 +271,7 @@ export function createChatSendMessageInjectionStarter(params: {
     );
     void outcome.catch(() => {});
     return { ...attempt, acceptance, outcome };
+
   };
 }
 

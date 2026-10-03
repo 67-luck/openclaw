@@ -1,4 +1,3 @@
-// Session metadata mutations, plugin state, and reset routing.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   ErrorCodes,
@@ -14,10 +13,8 @@ import {
   validateSessionsPluginPatchParams,
   validateSessionsResetParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import {
-  assignSessionOwner,
-  updateSessionProfileInvolvement,
-} from "../../config/sessions/session-accessor.js";
+import { updateSessionProfileInvolvement } from "../../config/sessions/session-accessor.js";
+import { assignSessionOwnerInWorker } from "../../config/sessions/session-metadata-write.async.js";
 import { patchPluginSessionExtension } from "../../plugins/host-hook-state.js";
 import { isPluginJsonValue } from "../../plugins/host-hooks.js";
 import {
@@ -27,11 +24,14 @@ import {
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
+import { resolveOperatorSessionCreation } from "../session-creation-provenance.js";
+import { prepareSessionFastModePresentation } from "../session-fast-mode-presentation.js";
 import {
   projectAssignableSessionOwner,
   projectSessionActor,
 } from "../session-identity-projection.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
+import { prepareSessionMutationFacts } from "../session-sharing-preparation.js";
 import {
   authorizeIncognitoSessionTarget,
   createSessionListEntryFilter,
@@ -44,7 +44,6 @@ import { projectSessionPatchResult } from "../session-utils-model.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
 import { isSyntheticGatewayCaller } from "./gateway-personal-caller.js";
 import { emitSessionsChanged } from "./session-change-event.js";
-import { resolveOperatorSessionCreation } from "./session-creation-provenance.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
 import type { SessionPatchTargetIdentity } from "./session-unread-ack.js";
 import { startSessionPatchDiagnostics } from "./sessions-patch-diagnostics.js";
@@ -52,6 +51,7 @@ import { executeSessionPatchMutations } from "./sessions-patch-engine.js";
 import { createCommitGuard } from "./sessions-patch-errors.js";
 import { sessionPatchTargetIdentity } from "./sessions-patch-expectations.js";
 import { loadSessionsRuntimeModule, requireSessionKey } from "./sessions-shared.js";
+import { sharingExpectedEntry } from "./sessions-sharing-authority.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -155,20 +155,19 @@ function createSessionPatchHandler(
         return;
       }
       if (request.many) {
-        const outcomes: SessionsPatchManyResult["outcomes"] = [];
         diagnostics?.scope("response");
-        for (const [index, outcome] of executed.outcomes.entries()) {
-          const target = targets[index]!;
-          const identity = {
-            key: target.key,
-            ...(target.agentId ? { agentId: target.agentId } : {}),
-          };
-          outcomes.push(
-            outcome.ok
+        const outcomes: SessionsPatchManyResult["outcomes"] = executed.outcomes.map(
+          (outcome, index) => {
+            const target = targets[index]!;
+            const identity = {
+              key: target.key,
+              ...(target.agentId ? { agentId: target.agentId } : {}),
+            };
+            return outcome.ok
               ? { ok: true, ...identity }
-              : { ok: false, ...identity, error: outcome.error },
-          );
-        }
+              : { ok: false, ...identity, error: outcome.error };
+          },
+        );
         respond(true, { outcomes }, undefined);
         return;
       }
@@ -185,7 +184,10 @@ function createSessionPatchHandler(
         projectSessionPatchResult({
           ...prepared,
           cfg: executed.cfg,
-          entry: outcome.entry,
+          entry: {
+            ...outcome.entry,
+            fastMode: prepareSessionFastModePresentation(client)(outcome.entry.fastMode),
+          },
           modelCatalog: catalog?.entries,
           modelCatalogRouteVariants: catalog?.routeVariants,
         }),
@@ -315,6 +317,7 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
     respond,
     context,
     client,
+    signal,
     sessionMutationAuthorization,
   }) => {
     if (
@@ -352,10 +355,11 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
       respond(false, undefined, requestedAgent.error);
       return;
     }
-    const target = resolveSessionSharingTarget({
+    const facts = await prepareSessionMutationFacts({
       cfg,
       sessionKey: key,
       agentId: requestedAgent.agentId,
+      allowMissing: true,
     });
     if (!target) {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, `unknown session: ${key}`));
@@ -424,34 +428,42 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
                     ),
                 );
               }
+
             },
-          },
-        ),
-    });
-    const projectedActor = assignment
-      ? projectAssignableSessionOwner(assignment.actor, ownerIdentityById, cfg)
-      : null;
-    const projectedAssignedBy = assignment?.assignedBy
-      ? projectSessionActor(assignment.assignedBy, new Map(), cfg)
-      : undefined;
-    const projected =
-      assignment && projectedActor
-        ? {
-            actor: projectedActor,
-            ...(projectedAssignedBy ? { assignedBy: projectedAssignedBy } : {}),
-            ...(assignment.assignedAt !== undefined ? { assignedAt: assignment.assignedAt } : {}),
-          }
+            assertCurrent,
+          ),
+      });
+      const projectedActor = assignment
+        ? projectAssignableSessionOwner(assignment.actor, ownerIdentityById, cfg)
+        : null;
+      const projectedAssignedBy = assignment?.assignedBy
+        ? projectSessionActor(assignment.assignedBy, new Map(), cfg)
         : undefined;
-    if (!projected) {
-      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, `unknown session: ${key}`));
-      return;
+      const projected =
+        assignment && projectedActor
+          ? {
+              actor: projectedActor,
+              ...(projectedAssignedBy ? { assignedBy: projectedAssignedBy } : {}),
+              ...(assignment.assignedAt !== undefined ? { assignedAt: assignment.assignedAt } : {}),
+            }
+          : undefined;
+      if (!projected) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, `unknown session: ${key}`),
+        );
+        return;
+      }
+      respond(true, { ok: true, key: target.canonicalKey, owner: projected }, undefined);
+      emitSessionsChanged(context, {
+        sessionKey: target.canonicalKey,
+        agentId: target.agentId,
+        reason: "owner",
+      });
+    } finally {
+      facts.release();
     }
-    respond(true, { ok: true, key: target.canonicalKey, owner: projected }, undefined);
-    emitSessionsChanged(context, {
-      sessionKey: target.canonicalKey,
-      agentId: target.agentId,
-      reason: "owner",
-    });
   },
   "sessions.pluginPatch": async ({
     params,
@@ -594,7 +606,15 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
     }
     respond(
       true,
-      { ok: true, key: result.key, entry: result.entry, resolved: result.resolved },
+      {
+        ok: true,
+        key: result.key,
+        entry: {
+          ...result.entry,
+          fastMode: prepareSessionFastModePresentation(client)(result.entry.fastMode),
+        },
+        resolved: result.resolved,
+      },
       undefined,
     );
     emitSessionsChanged(context, {

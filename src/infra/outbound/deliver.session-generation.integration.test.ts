@@ -126,6 +126,7 @@ describe("generation-bound result delivery", () => {
       const entered = createDeferred();
       const released = createDeferred();
       const mutation = runSessionMutation({
+
         scope: generation.storePath,
         identities: [generation.sessionKey, generation.sessionId],
         prepare: async () => {

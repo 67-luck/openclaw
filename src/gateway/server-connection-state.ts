@@ -1,6 +1,6 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
+
 // Gateway connection and run registries.
 // This state is transport-fed but can be constructed without HTTP or WebSocket servers.
 import {
@@ -22,16 +22,12 @@ import {
 } from "./server-chat-state.js";
 import { GatewayConnectionWork } from "./server-connection-work.js";
 import { WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
+import type { GatewayClient } from "./server-methods/client-types.js";
 import { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
 import { GatewayClientRegistry } from "./server/client-registry.js";
-import type { GatewayWsClient } from "./server/ws-types.js";
-import {
-  prepareSessionAncestor,
-  SessionAncestorReferences,
-} from "./session-ancestor-references.js";
-import { buildGatewaySessionSnapshot } from "./session-event-payload.js";
+import { SessionAncestorReferences } from "./session-ancestor-references.js";
+import { prepareSessionEventProjection } from "./session-event-projection.js";
 import { resolveSessionEventAgentScope } from "./session-request-agent.js";
-import { prepareSessionRowPublication } from "./session-row-presentation.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import { canReceiveSessionEvent, prepareProjectedSessionSharing } from "./session-sharing.js";
 
@@ -44,7 +40,7 @@ export function createGatewayConnectionState(params: {
 }) {
   const loadRuntimeConfig = params.getRuntimeConfig ?? (() => params.cfg);
   let sessionRowProjection: SessionRowProjection | undefined;
-  let ancestorReferences = new WeakMap<GatewayWsClient, SessionAncestorReferences>();
+  let ancestorReferences = new WeakMap<GatewayClient, SessionAncestorReferences>();
   const clients = new GatewayClientRegistry(undefined, (client) => {
     ancestorReferences.delete(client);
   });
@@ -118,11 +114,7 @@ export function createGatewayConnectionState(params: {
     },
     prepareSessionEventProjection(event, payload, eventScope) {
       const projection = sessionRowProjection;
-      if (
-        !projection ||
-        (event !== "sessions.changed" && event !== "session.message") ||
-        !isRecord(payload)
-      ) {
+      if (!projection) {
         return undefined;
       }
       const source = payload;
@@ -291,14 +283,59 @@ export function createGatewayConnectionState(params: {
               for (const ancestor of ancestorDelivery?.ancestorSessions ?? []) {
                 references.forget(ancestor.key);
               }
+
             } else {
-              ancestorDelivery?.delivered();
+              ancestorReferences = new WeakMap();
             }
           },
-        };
-      };
+          references: (client) => {
+            let references = ancestorReferences.get(client);
+            if (!references) {
+              references = new SessionAncestorReferences();
+              ancestorReferences.set(client, references);
+            }
+            return references;
+          },
+          forgetConnectionAncestors: (client) => ancestorReferences.delete(client),
+          getRunProjector: () => {
+            if (
+              !projectRun ||
+              registrations.length !== chatAbortControllers.size ||
+              // Compare copied fields: registrations can mutate in place between recipients.
+              registrations.some(([runId, previous]) => {
+                const current = chatAbortControllers.get(runId);
+                return (
+                  !current ||
+                  current.sessionKey !== previous.sessionKey ||
+                  current.sessionId !== previous.sessionId ||
+                  current.agentId !== previous.agentId ||
+                  current.projectSessionActive !== previous.projectSessionActive ||
+                  current.controlUiVisible !== previous.controlUiVisible
+                );
+              }) ||
+              projectedAgentRuns !== projection.state.rowContext.projectedAgentRuns
+            ) {
+              registrations = Array.from(chatAbortControllers, ([runId, entry]) => [
+                runId,
+                { ...entry },
+              ]);
+              projectedAgentRuns = projection.state.rowContext.projectedAgentRuns;
+              projectRun = createVisibleActiveSessionRunProjector(
+                { chatAbortControllers: new Map(registrations) },
+                projectedAgentRuns,
+              );
+            }
+            return projectRun;
+          },
+        },
+      );
     },
-    onBroadcast: (event, payload, opts) => eventWebPush.handleEvent(event, payload, opts),
+    onBroadcast: (event, payload, opts) =>
+      eventWebPush.handleEvent(
+        event,
+        payload,
+        opts ? { agentId: opts.agentId, sessionKeys: opts.sessionKeys } : undefined,
+      ),
   });
   const mentionInbox = createMentionInbox({
     scheduler: params.scheduler,

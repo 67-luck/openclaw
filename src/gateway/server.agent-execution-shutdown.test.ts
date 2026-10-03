@@ -101,8 +101,8 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
               order.push("finalizer settled");
               return result ?? true;
             },
-            cleanupAbortController: () => {
-              params.cleanupAbortController();
+            cleanupAbortController: async () => {
+              await params.cleanupAbortController();
               order.push("run owner released");
             },
             io: {

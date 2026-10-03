@@ -1091,6 +1091,7 @@ describe("dispatchReplyFromConfig", () => {
         abort.abort(cancellation);
         mutation = externalLifecycleRequest.runInAsyncScope(async () =>
           runSessionMutation({
+
             scope: "/tmp/mock-sessions.json",
             identities: [sessionKey, sessionId],
             kind: "reset",
@@ -1193,6 +1194,7 @@ describe("dispatchReplyFromConfig", () => {
     const mutation = externalLifecycleRequest.runInAsyncScope(
       async () =>
         await runSessionMutation({
+
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
           prepare: async () => {
@@ -1229,6 +1231,7 @@ describe("dispatchReplyFromConfig", () => {
   });
 
   it("holds source custody for plugin claims behind an active reply operation", async () => {
+
     const resolveClaim = mockPendingPluginClaim({
       bindingId: "binding-active-lifecycle-race",
       targetSessionKey: "plugin-binding:test:active-race",
@@ -1250,6 +1253,7 @@ describe("dispatchReplyFromConfig", () => {
     }
     const existingOperation = existingAdmission.operation;
     const dispatcher = createDispatcher();
+    const abort = new AbortController();
     const externalLifecycleRequest = new AsyncResource("external-active-lifecycle-request");
     const ctx = buildTestCtx({
       Provider: "discord",
@@ -1260,7 +1264,13 @@ describe("dispatchReplyFromConfig", () => {
       Body: "hold this overlapping claim",
     });
     const replyResolver = vi.fn(async () => ({ text: "must not run" }) satisfies ReplyPayload);
-    const dispatch = dispatchReplyFromConfig({ ctx, cfg: emptyConfig, dispatcher, replyResolver });
+    const dispatch = dispatchReplyFromConfig({
+      ctx,
+      cfg: emptyConfig,
+      dispatcher,
+      replyResolver,
+      replyOptions: { abortSignal: abort.signal },
+    });
     await vi.waitFor(() => {
       expect(hookMocks.runner.runInboundClaimForPluginOutcome).toHaveBeenCalledOnce();
     });
@@ -1271,11 +1281,13 @@ describe("dispatchReplyFromConfig", () => {
     existingOperation.complete();
     expect(dispatchHarness.getSessionControllerOperation(sessionKey)).toBeUndefined();
 
+
     let mutationPrepared = false;
     let mutationRan = false;
     const mutation = externalLifecycleRequest.runInAsyncScope(
       async () =>
         await runSessionMutation({
+
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
           kind: "reset",
@@ -1291,6 +1303,9 @@ describe("dispatchReplyFromConfig", () => {
     );
     await vi.waitFor(() => {
       expect(mutationPrepared).toBe(true);
+    });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
     });
     expect(mutationRan).toBe(false);
 
@@ -1353,6 +1368,7 @@ describe("dispatchReplyFromConfig", () => {
     let mutationRan = false;
     const mutation = runWithReplyOperationLifecycleAdmission(ownerOperation, async () =>
       runSessionMutation({
+
         scope: "/tmp/mock-sessions.json",
         identities: [sessionKey, sessionId],
         prepare: async () => {
@@ -1444,6 +1460,7 @@ describe("dispatchReplyFromConfig", () => {
     const mutation = externalLifecycleRequest.runInAsyncScope(
       async () =>
         await runSessionMutation({
+
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
           prepare: async () => {

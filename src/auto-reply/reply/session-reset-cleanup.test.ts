@@ -32,7 +32,12 @@ describe("clearSessionResetRuntimeState", () => {
     const state = getEmbeddedSessionPromptState("old-session");
     state.sentUserTurnIds.add("sent-user-turn");
 
-    clearSessionResetRuntimeState(["old-session"], { agentId: "main" });
+    clearSessionResetRuntimeState(["old-session"], {
+      agentId: "main",
+      sessionKey: "agent:main:slack:room:1",
+      activeReplySessionId: "old-session",
+      assertCurrent: () => {},
+    });
 
     expect(getEmbeddedSessionPromptState("old-session")).not.toBe(state);
   });
@@ -44,6 +49,8 @@ describe("clearSessionResetRuntimeState", () => {
 
     const result = clearSessionResetRuntimeState([" alpha ", undefined, " ", "alpha", "beta"], {
       agentId: "main",
+      sessionKey: "alpha",
+      assertCurrent: () => {},
     });
 
     expect(result.keys).toEqual(["alpha", "beta"]);
@@ -60,6 +67,8 @@ describe("clearSessionResetRuntimeState", () => {
 
     const result = clearSessionResetRuntimeState(["global", "agent:beta:global"], {
       agentId: " Alpha ",
+      sessionKey: "global",
+      assertCurrent: () => {},
     });
 
     expect(result.systemEventsCleared).toBe(1);
@@ -107,6 +116,7 @@ describe("clearSessionResetRuntimeState", () => {
       raw.resolve();
       await producer;
     }
+
   });
 
   it("does not clear a fresh active reply under the same key when only the archived id is reset", () => {
@@ -120,6 +130,8 @@ describe("clearSessionResetRuntimeState", () => {
     clearSessionResetRuntimeState(["agent:main:slack:room:1", "old-session"], {
       agentId: "main",
       activeReplySessionId: "old-session",
+      sessionKey: "agent:main:slack:room:1",
+      assertCurrent: () => {},
     });
 
     expect(getSessionControllerOperation("agent:main:slack:room:1")).toBe(operation);
@@ -150,6 +162,8 @@ describe("clearSessionResetRuntimeState", () => {
     clearSessionResetRuntimeState(["agent:main:slack:room:1", "old-session"], {
       agentId: "main",
       activeReplySessionId: "old-session",
+      sessionKey: "agent:main:slack:room:1",
+      assertCurrent: () => {},
     });
 
     expect(replacement).toBeDefined();
@@ -166,6 +180,8 @@ describe("clearSessionResetRuntimeState", () => {
     clearSessionResetRuntimeState(["agent:main:slack:room:1", "old-session"], {
       agentId: "main",
       activeReplySessionId: "old-session",
+      sessionKey: "agent:main:slack:room:1",
+      assertCurrent: () => {},
     });
 
     expect(operation.phase).toBe("queued");

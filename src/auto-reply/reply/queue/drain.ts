@@ -3,6 +3,7 @@ import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../../../ag
 import {
   getGatewayRestartDrainSignal,
   isGatewayRestartDrainError,
+
   waitForGatewayRestartFenceSettlement,
   runWithGatewayIndependentRootWorkContinuation,
 } from "../../../process/gateway-work-admission.js";
@@ -39,6 +40,7 @@ import {
 import { clearFollowupQueue, followupQueueSources } from "./state.js";
 import { consumeQueueSummaryDelivery } from "./summary-consumption.js";
 import { isFollowupRunAborted, type FollowupRun } from "./types.js";
+
 let followedRestartDrainSignal: AbortSignal | undefined;
 function bindRestart(): void {
   const signal = getGatewayRestartDrainSignal();
@@ -287,6 +289,7 @@ export function rememberFollowupDrainCallback(
             { sources: claim.sources, droppedCount: claim.sources.length },
             false,
           );
+
         }
         releaseSessionControllerClaim(claim);
         return;
@@ -294,6 +297,7 @@ export function rememberFollowupDrainCallback(
     }
   };
 }
+
 export function scheduleFollowupDrain(
   key: string,
   runFollowup: (run: FollowupRun) => Promise<void>,
@@ -335,4 +339,5 @@ export async function dropAbortedFollowups(
   }
   queue.wake();
   return sources.length;
+
 }

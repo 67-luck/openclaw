@@ -11,6 +11,7 @@ import {
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
 import { isAbortRequestText } from "../auto-reply/reply/abort-primitives.js";
 import type { QueueSettings } from "../auto-reply/reply/queue/types.js";
+
 import { tryResolveLegacyCompatibilityAgentId } from "../config/legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitAgentEvent, getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
@@ -46,6 +47,7 @@ import {
   type ChatAbortDiagnosticReason,
 } from "./chat-abort-diagnostics.js";
 import { notifyChatAbortControllerRemoved } from "./chat-abort-lifecycle-internal.js";
+
 import { appendChatCanvasBlocksToMessage } from "./chat-display-projection.canvas.js";
 import { resolveChatRunOwnerAgentId } from "./chat-run-owner.js";
 import type { GatewayBroadcastFn } from "./server-broadcast-types.js";
@@ -61,6 +63,7 @@ export {
   resolveInFlightRunSnapshot,
   type InFlightRunSnapshot,
 } from "./chat-in-flight-snapshot.js";
+
 
 const DEFAULT_CHAT_RUN_ABORT_GRACE_MS = 60_000;
 
@@ -78,10 +81,6 @@ type RegisteredChatAbortController = {
   bindAgentRunDelegatedAuthority: (authority: AgentRunDelegatedAuthority) => void;
   cleanup: () => void;
 } & ({ registered: true; entry: RpcSourceRef } | { registered: false; entry?: undefined });
-
-export function isChatStopCommandText(text: string): boolean {
-  return isAbortRequestText(text);
-}
 
 function createChatAbortSignalReason(stopReason: string | undefined): Error | undefined {
   if (stopReason === "restart") {
@@ -170,6 +169,7 @@ export function registerChatAbortController(params: {
   // Sessionless RPCs retain prepared authority without a fabricated session owner.
   if (!params.sessionKey || hasRpcSource(params.runId)) {
     const controller = new AbortController();
+
     return {
       controller,
       registered: false,
@@ -274,6 +274,7 @@ export function registerChatAbortController(params: {
         (adapter.agentRunDelegatedAuthority && adapter.agentRunDelegatedAuthority !== authority)
       ) {
         throw new Error("Agent authority does not belong to this exact RPC source");
+
       }
       adapter.agentRunDelegatedAuthority = authority;
     },
@@ -366,6 +367,7 @@ function resolveDefaultGlobalAgentId(ops: ChatAbortOps): string | undefined {
 }
 
 export function captureChatRunAbortPresentation(ops: ChatAbortOps, runId: string) {
+
   const bufferedText = ops.chatRunState.resolveBuffer(runId, { final: true }).text;
   const run = ops.chatRunState.runs.get(runId);
   const liveTextGroup = run?.liveTextGroup?.signal;

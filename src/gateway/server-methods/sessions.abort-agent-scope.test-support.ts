@@ -54,6 +54,7 @@ export function createContext(
     dedupe: new Map(),
     getSessionEventSubscriberConnIds: () => new Set(),
     getRuntimeConfig: () => cfg,
+    logGateway: { info: () => {}, warn: () => {} },
     ...options.extra,
   } as unknown as GatewayRequestContext;
 }

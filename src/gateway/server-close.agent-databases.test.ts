@@ -1,25 +1,41 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { expect, it, vi } from "vitest";
+import { withinTest } from "../../test/helpers/promise.js";
 import { isAgentRunRestartAbortReason } from "../agents/run-termination.js";
 import { runGatewayLoop } from "../cli/gateway-cli/run-loop.js";
+import { loadSessionEntry, replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import { runSqliteSessionReclamation } from "../config/sessions/session-accessor.sqlite-reclamation-run.js";
+import { createSessionMaintenanceStatisticsOperation } from "../config/sessions/session-accessor.sqlite-reclamation.js";
 import { writeGatewayRestartIntentSync } from "../infra/restart-intent.js";
 import type { SqliteIntegrityDiagnostics } from "../infra/sqlite-integrity.js";
+import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import { SUPERVISOR_HINT_ENV_VARS } from "../infra/supervisor-markers.js";
 import * as systemdTimeout from "../infra/systemd-stop-timeout.js";
+import { PluginInstance } from "../plugins/plugin-instance.js";
+import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { bindGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
+import { startPluginServices } from "../plugins/services.js";
+import { createPluginRecord } from "../plugins/status.test-helpers.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import { getActiveSecretsRuntimeSnapshotState } from "../secrets/runtime-state.js";
 import { createReplyOperation, type ReplyOperation } from "../sessions/session-controller.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { isPidAlive } from "../shared/pid-alive.js";
 import {
+  beginAgentDeletionJournal,
+  completeAgentDeletionJournalInDatabase,
+} from "../state/agent-deletion-journal.js";
+import {
   assertNoOpenClawAgentDatabaseLeasesReadOnly,
   OpenClawAgentDatabaseLeaseActiveError,
 } from "../state/openclaw-agent-db-lease.js";
-import { registerOpenClawAgentDatabaseAsyncResource } from "../state/openclaw-agent-db-resources.js";
 import * as schema from "../state/openclaw-agent-db-schema.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -27,59 +43,191 @@ import {
   openOpenClawAgentDatabase,
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
+import { captureOpenClawAgentDatabaseExecution } from "../state/openclaw-agent-execution.js";
 import { readOpenClawAgentIntegrityVerification } from "../state/openclaw-quarantine-store.js";
-import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import {
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+} from "../state/openclaw-state-db.js";
 import { createGatewayMetadataCloseFixture } from "./server-close.metadata.test-support.js";
 import type { GatewayServer } from "./server-public.js";
 
-it.each(["stop", "restart"] as const)(
-  "releases agent leases for Doctor after the final Gateway %s while its process stays alive",
-  async (mode) => {
-    const fixture = await createGatewayMetadataCloseFixture(`gateway-agent-leases-${mode}`);
-    const ownerPid = process.pid;
-    try {
-      const first = await fixture.start(await fixture.reservePort());
-      const siblingPort = await fixture.reservePort();
-      const sibling = await fixture.start(siblingPort);
-      const options = { agentId: "main", env: fixture.state.env };
-      const agent = openOpenClawAgentDatabase(options);
-      const incognito = openOpenClawAgentDatabase({
-        ...options,
-        path: resolveIncognitoOpenClawAgentSqlitePath(options),
-      });
-      const shared = openOpenClawStateDatabase({ env: fixture.state.env }).db;
-      const inspectForDoctor = () =>
-        assertNoOpenClawAgentDatabaseLeasesReadOnly({ env: fixture.state.env });
-      expect(inspectForDoctor).toThrow(OpenClawAgentDatabaseLeaseActiveError);
-      const closeOptions = {
-        reason: mode === "restart" ? "gateway restarting" : "gateway stopping",
-        restartExpectedMs: mode === "restart" ? 1_500 : null,
-      };
-
-      await first.close(closeOptions);
-      expect(agent.db.isOpen).toBe(true);
-      expect(incognito.db.isOpen).toBe(true);
-      expect(inspectForDoctor).toThrow(OpenClawAgentDatabaseLeaseActiveError);
-      const response = await fetch(`http://127.0.0.1:${siblingPort}/healthz`);
-      await response.body?.cancel();
-      expect(response.ok).toBe(true);
-
-      await sibling.close(closeOptions);
-      expect(process.pid).toBe(ownerPid);
-      expect(isPidAlive(ownerPid)).toBe(true);
-      expect(inspectForDoctor).not.toThrow();
-      expect(agent.db.isOpen).toBe(false);
-      expect(shared.isOpen).toBe(false);
-      expect(incognito.db.isOpen).toBe(false);
-      expect(listOpenIncognitoAgentDatabases()).not.toContainEqual({
-        agentId: "main",
-        storePath: incognito.path,
-      });
-    } finally {
-      await fixture.cleanup();
+it("joins scheduled plugin work before closing stores while retaining a deleted agent store", async ({
+  signal,
+}) => {
+  const fixture = await createGatewayMetadataCloseFixture("gateway-retained-deleted-agent-close");
+  const stopEntered = createDeferredCore();
+  const rootJoinEntered = createDeferredCore();
+  const releaseRootWork = createDeferredCore();
+  let closing: Promise<void> | undefined;
+  try {
+    const pluginId = fixture.pluginId;
+    const registry = createEmptyPluginRegistry();
+    const record = createPluginRecord({ id: pluginId });
+    const registered = new PluginInstance(record.id, { record, registry });
+    let disposed = false;
+    registered.lifecycle.onDispose(() => {
+      disposed = true;
+    });
+    registry.plugins.push(record);
+    setActivePluginRegistry(registry);
+    const port = await fixture.reservePort();
+    const server = await fixture.start(port);
+    const kernel = fixture.kernels.get(port);
+    assert(kernel);
+    expect(fixture.kernels.get(port)?.pluginRuntime.registry.plugins).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: pluginId })]),
+    );
+    const activeStore = path.join(fixture.state.sessionsDir("main"), "sessions.json");
+    const retainedStore = path.join(fixture.state.sessionsDir("retired"), "sessions.json");
+    for (const [agentId, storePath] of [
+      ["main", activeStore],
+      ["retired", retainedStore],
+    ] as const) {
+      await replaceSessionEntry(
+        { agentId, storePath, sessionKey: `agent:${agentId}:main` },
+        {
+          sessionId: `${agentId}-session`,
+          updatedAt: 1,
+          pluginExtensions: { [pluginId]: { active: true } },
+        },
+      );
     }
-  },
-);
+    const retainedDatabase = path.join(fixture.state.agentDir("retired"), "openclaw-agent.sqlite");
+    const operationId = randomUUID();
+    beginAgentDeletionJournal(
+      {
+        agentId: "retired",
+        operationId,
+        agentDir: fixture.state.agentDir("retired"),
+        sessionsDir: fixture.state.sessionsDir("retired"),
+        workspaceDir: path.join(fixture.state.root, "workspace-retired"),
+        databasePaths: [retainedDatabase],
+        deleteFiles: false,
+      },
+      { env: fixture.state.env },
+    );
+    runOpenClawStateWriteTransaction(
+      (database) => completeAgentDeletionJournalInDatabase(database, "retired", operationId),
+      { env: fixture.state.env },
+    );
+    const shared = openOpenClawStateDatabase({ env: fixture.state.env }).db;
+    const pluginWorkEntered = createDeferredCore();
+    const rootWorkEntered = createDeferredCore();
+    const stopService = vi.fn(() => stopEntered.resolve());
+    const services = createEmptyPluginRegistry();
+    services.services.push({
+      pluginId,
+      id: "scheduled-close",
+      source: "synthetic",
+      origin: "workspace",
+      service: {
+        id: "scheduled-close",
+        apiVersion: 2,
+        start(context) {
+          context.scheduler.schedule({
+            id: "held",
+            delayMs: 0,
+            everyMs: 1,
+            async run() {
+              pluginWorkEntered.resolve();
+              await stopEntered.promise;
+            },
+          });
+        },
+        stop: stopService,
+      },
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    kernel.runtimeState.pluginServices = await startPluginServices({
+      registry: services,
+      config: fixture.config,
+      scheduler: kernel.scheduler,
+    });
+    kernel.scheduler.schedule({
+      id: "kernel-held-work",
+      delayMs: 0,
+      async run() {
+        rootWorkEntered.resolve();
+        await releaseRootWork.promise;
+      },
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    await withinTest(Promise.all([pluginWorkEntered.promise, rootWorkEntered.promise]), signal);
+    vi.useRealTimers();
+    const stopScheduler = kernel.scheduler.stop.bind(kernel.scheduler);
+    vi.spyOn(kernel.scheduler, "stop").mockImplementation(() => {
+      rootJoinEntered.resolve();
+      return stopScheduler();
+    });
+    closing = server.close({ reason: "gateway stopping" });
+    await withinTest(Promise.race([stopEntered.promise, rootJoinEntered.promise, closing]), signal);
+    expect(stopService).toHaveBeenCalledOnce();
+    await withinTest(rootJoinEntered.promise, signal);
+    expect(kernel.scheduler.signal.aborted).toBe(true);
+    expect(disposed).toBe(false);
+    expect(shared.isOpen).toBe(true);
+    releaseRootWork.resolve();
+    await expect(closing).resolves.toBeUndefined();
+    expect(disposed).toBe(true);
+    expect(shared.isOpen).toBe(false);
+    expect((await fs.stat(retainedDatabase)).isFile()).toBe(true);
+    expect(
+      loadSessionEntry({ agentId: "main", storePath: activeStore, sessionKey: "agent:main:main" })
+        ?.pluginExtensions,
+    ).toBeUndefined();
+  } finally {
+    stopEntered.resolve();
+    releaseRootWork.resolve();
+    await Promise.allSettled([closing]);
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    await fixture.cleanup();
+  }
+}, 300_000);
+
+it("releases agent leases for Doctor after the final Gateway stops while its process stays alive", async () => {
+  const fixture = await createGatewayMetadataCloseFixture("gateway-agent-leases-stop");
+  const ownerPid = process.pid;
+  try {
+    const first = await fixture.start(await fixture.reservePort());
+    const siblingPort = await fixture.reservePort();
+    const sibling = await fixture.start(siblingPort);
+    const options = { agentId: "main", env: fixture.state.env };
+    const agent = openOpenClawAgentDatabase(options);
+    const incognito = openOpenClawAgentDatabase({
+      ...options,
+      path: resolveIncognitoOpenClawAgentSqlitePath(options),
+    });
+    const shared = openOpenClawStateDatabase({ env: fixture.state.env }).db;
+    const inspectForDoctor = () =>
+      assertNoOpenClawAgentDatabaseLeasesReadOnly({ env: fixture.state.env });
+    expect(inspectForDoctor).toThrow(OpenClawAgentDatabaseLeaseActiveError);
+    const closeOptions = { reason: "gateway stopping" };
+
+    await first.close(closeOptions);
+    expect(agent.db.isOpen).toBe(true);
+    expect(incognito.db.isOpen).toBe(true);
+    expect(inspectForDoctor).toThrow(OpenClawAgentDatabaseLeaseActiveError);
+    const response = await fetch(`http://127.0.0.1:${siblingPort}/healthz`);
+    await response.body?.cancel();
+    expect(response.ok).toBe(true);
+
+    await sibling.close(closeOptions);
+    expect(process.pid).toBe(ownerPid);
+    expect(isPidAlive(ownerPid)).toBe(true);
+    expect(inspectForDoctor).not.toThrow();
+    expect(agent.db.isOpen).toBe(false);
+    expect(shared.isOpen).toBe(false);
+    expect(incognito.db.isOpen).toBe(false);
+    expect(listOpenIncognitoAgentDatabases()).not.toContainEqual({
+      agentId: "main",
+      storePath: incognito.path,
+    });
+  } finally {
+    await fixture.cleanup();
+  }
+});
 
 it.skipIf(process.platform !== "linux")(
   "joins agent resources and records a clean witness after a managed SIGTERM drain",
@@ -96,6 +244,8 @@ it.skipIf(process.platform !== "linux")(
     let unregister: (() => void) | undefined;
     let stop: ((signal: "SIGTERM") => void) | undefined;
     let operation: ReplyOperation | undefined;
+    let execution: ReturnType<typeof captureOpenClawAgentDatabaseExecution> | undefined;
+    const writerReleased = createDeferredCore();
     try {
       for (const name of SUPERVISOR_HINT_ENV_VARS) {
         vi.stubEnv(name, undefined);
@@ -132,20 +282,70 @@ it.skipIf(process.platform !== "linux")(
       });
       operation.setPhase("running");
       bindGatewayContextResolver(operation, kernel.resolvePluginGatewayContext);
-      operation.abortSignal.addEventListener("abort", () => operation?.complete(), { once: true });
+      operation.abortSignal.addEventListener(
+        "abort",
+        () => {
+          void execution?.release().then(() => {
+            operation?.complete();
+            writerReleased.resolve();
+          }, writerReleased.reject);
+        },
+        { once: true },
+      );
       const options = { agentId: "main", env: fixture.state.env };
       const agent = openOpenClawAgentDatabase(options);
       agent.db.exec("INSERT INTO auth_profile_state VALUES ('restart-proof', '{}', 1)");
       const shared = openOpenClawStateDatabase({ env: fixture.state.env }).db;
-      unregister = registerOpenClawAgentDatabaseAsyncResource({
-        agentId: "main",
-        path: agent.path,
-        revoke() {},
-        async close() {
+      execution = captureOpenClawAgentDatabaseExecution(options);
+      const writer = execution;
+      await writer.runExisting(
+        {
+          assertCurrent: () => writer.assertCurrent(),
+          createAdmission: (binding) => () => ({
+            nativeLocations: binding.nativeLocations,
+            admission: createSqliteWorkerOperationAdmission((request, grant) => {
+              binding.authorize(request);
+              writer.assertCurrent();
+              assert(grant());
+            }, binding.attachment),
+          }),
+        },
+        (scope) =>
+          scope.execute({
+            type: "session.entries.replace",
+            input: {
+              expectedRows: new Map(),
+              validationKeys: ["agent:main:managed-restart"],
+              labelOwnerKeys: [],
+              replacements: [
+                {
+                  sessionKey: "agent:main:managed-restart",
+                  entry: { sessionId: "managed-restart", updatedAt: 1 },
+                },
+              ],
+            },
+          }),
+      );
+      const agentLeases = shared.prepare(
+        "SELECT lease_id FROM agent_database_leases WHERE path = ? ORDER BY lease_id",
+      );
+      const writerLeases = agentLeases.all(agent.path);
+      expect(writerLeases).toHaveLength(2);
+      await runSqliteSessionReclamation({
+        forceInProcess: false,
+        plan: createSessionMaintenanceStatisticsOperation({ ...options, path: agent.path }),
+      });
+      expect(agentLeases.all(agent.path)).toEqual(writerLeases);
+      // External cleanup can outlive the stop budget; idle writers must not wait for it.
+      const removeSidecar = kernel.registerConnectionDependentSidecars({
+        async stop() {
           entered.resolve();
           await release.promise;
         },
       });
+      unregister = () => {
+        removeSidecar();
+      };
       expect(
         writeGatewayRestartIntentSync({
           env: fixture.state.env,
@@ -175,6 +375,8 @@ it.skipIf(process.platform !== "linux")(
         }),
       ]);
       expect(isAgentRunRestartAbortReason(operation.abortSignal.reason)).toBe(true);
+      await writerReleased.promise;
+      expect(agentLeases.all(agent.path)).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(10_001);
       expect(exit).not.toHaveBeenCalled();
       expect(agent.db.isOpen).toBe(true);
@@ -219,6 +421,7 @@ it.skipIf(process.platform !== "linux")(
     } finally {
       release.resolve();
       operation?.complete();
+      await execution?.release();
       await Promise.allSettled([closing]);
       vi.useRealTimers();
       if (!exit.mock.calls.length && stop) {

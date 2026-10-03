@@ -1,10 +1,11 @@
 // Queue helper tests cover queue ordering and dedupe utility behavior.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   applyQueueDropPolicy,
   applyQueueRuntimeSettings,
   countPendingQueueItems,
   previewQueueSummaryPrompt,
+  waitForQueueDebounce,
 } from "./queue-helpers.js";
 
 function createQueue<T>(items: T[], cap: number, dropPolicy: "old" | "summarize" = "old") {
@@ -134,6 +135,7 @@ describe("queue summary helpers", () => {
 });
 
 describe("queue overflow protection", () => {
+
   it("counts only in-flight identities that still intersect the queue", () => {
     const active = { id: "active" };
     const pending = { id: "pending" };

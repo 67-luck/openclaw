@@ -2,8 +2,13 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, onTestFailed, vi } from "vitest";
 import type { WorkerLiveEventParams } from "../../packages/gateway-protocol/src/schema/worker-admission.js";
 import type { WorkerInferenceTerminalOutcome } from "../../packages/gateway-protocol/src/schema/worker-inference.js";
-import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withTestTimeout,
+} from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { resolveActiveEmbeddedRunOwner } from "../agents/embedded-agent-runner/runs.js";
 import {
   clearRuntimeConfigSnapshot,
   getRuntimeConfigSnapshot,
@@ -62,6 +67,8 @@ describe("worker chat.abort settlement", () => {
     { queuedPreview: true, fence: "credential" },
     { queuedPreview: true, fence: "run owner" },
     { queuedPreview: true, fence: "lifecycle" },
+    { queuedPreview: true, fence: "before durable ACK" },
+    { queuedPreview: true, fence: "after durable ACK" },
   ] as const)(
     "settles managed chat.abort with queued preview $queuedPreview and $fence fence",
     async ({ queuedPreview, fence }) => {
@@ -124,6 +131,7 @@ describe("worker chat.abort settlement", () => {
       }
       expect(registration.markExecutionStarted()).toBe(true);
       const owner = createWorkerTurnRunOwner({
+
         placements: harness.placementStore,
         claim: claim!,
         sessionKey: SESSION_KEY,
@@ -142,7 +150,11 @@ describe("worker chat.abort settlement", () => {
           abortSignal: registration.controller.signal,
           replyOperation: operation,
         },
-      });
+      };
+      const owner = await createWorkerTurnRunOwner(ownerInput);
+      let replacement: Awaited<ReturnType<typeof createWorkerTurnRunOwner>> | undefined;
+      const ackEntered = createDeferred();
+      const ackRelease = createDeferred();
       const providerRelease = createDeferred<WorkerInferenceTerminalOutcome>();
       const providerStarted = createDeferred();
       const previewRelease = createDeferred();
@@ -296,7 +308,41 @@ describe("worker chat.abort settlement", () => {
         } else if (fence === "lifecycle") {
           rotateAgentEventLifecycleGeneration();
         }
+        const replaceDuringAck = fence === "before durable ACK" || fence === "after durable ACK";
+        if (replaceDuringAck) {
+          const updateAckCursors = harness.placementStore.updateAckCursors.bind(
+            harness.placementStore,
+          );
+          vi.spyOn(harness.placementStore, "updateAckCursors").mockImplementationOnce(
+            async (ackInput, assertCurrent) => {
+              if (fence === "before durable ACK") {
+                ackEntered.resolve();
+                await ackRelease.promise;
+                return updateAckCursors(ackInput, assertCurrent);
+              }
+              const record = await updateAckCursors(ackInput, assertCurrent);
+              ackEntered.resolve();
+              await ackRelease.promise;
+              return record;
+            },
+          );
+        }
         finishingGate.release.resolve();
+        if (replaceDuringAck) {
+          await awaitGateBeforeSettlement(
+            ackEntered.promise,
+            command,
+            "worker command settled before durable ACK boundary",
+          );
+          replacement = await createWorkerTurnRunOwner({
+            ...ownerInput,
+            turn: { ...ownerInput.turn, abortSignal: undefined },
+          });
+          // Reusing and cancelling the same claim cannot lend the first request
+          // a new owner's authority after its ACK await.
+          expect(resolveActiveEmbeddedRunOwner(SESSION_ID)?.abort()).toBe(true);
+          ackRelease.resolve();
+        }
         phase = "waiting-command-settlement";
         const failure = await command.then(
           () => undefined,
@@ -309,10 +355,21 @@ describe("worker chat.abort settlement", () => {
         expect(getAgentRunContext(RUN_ID)).toBeUndefined();
         expect(harness.providerCalls).toBe(1);
         if (fence !== "none") {
-          expect(harness.placementStore.get(SESSION_ID)?.lastLiveEventAckCursor).toBe(
-            cursorAtAbort,
-          );
-          expect(harness.placementStore.listPendingWorkspaceResults()).toEqual([]);
+          if (fence === "after durable ACK") {
+            const finishing = liveRequests.findLast(
+              ({ event }) => event.kind === "lifecycle" && event.payload.phase === "finishing",
+            );
+            expect(finishing).toBeDefined();
+            expect(harness.placementStore.get(SESSION_ID)?.lastLiveEventAckCursor).toBe(
+              finishing?.seq,
+            );
+            expect(await harness.placementStore.listPendingWorkspaceResultsAsync()).toHaveLength(1);
+          } else {
+            expect(harness.placementStore.get(SESSION_ID)?.lastLiveEventAckCursor).toBe(
+              cursorAtAbort,
+            );
+            expect(await harness.placementStore.listPendingWorkspaceResultsAsync()).toEqual([]);
+          }
           if (fence === "credential") {
             expect(failure).toBeUndefined();
             expect(JSON.parse(stdout)).toMatchObject({
@@ -357,6 +414,7 @@ describe("worker chat.abort settlement", () => {
       } finally {
         previewGate?.release.resolve();
         finishingGate.release.resolve();
+        ackRelease.resolve();
         previewRelease.resolve();
         providerRelease.resolve(doneOutcome("fixture teardown"));
         lifetimeController.abort(new Error("fixture teardown"));
@@ -364,6 +422,7 @@ describe("worker chat.abort settlement", () => {
         await Promise.allSettled([command]);
         owner.signal.removeEventListener("abort", cancelWorker);
         owner.dispose();
+        replacement?.dispose();
         registration.cleanup();
         releaseSource();
         await registration.entry.input.settlement.promise;

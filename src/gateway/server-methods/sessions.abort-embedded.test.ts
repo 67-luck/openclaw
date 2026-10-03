@@ -21,6 +21,7 @@ import {
 } from "../../agents/subagents/swarm/swarm-scheduler.js";
 import { getRuntimeConfig, setRuntimeConfigSnapshot } from "../../config/config.js";
 import * as sessions from "../../config/sessions/session-accessor.js";
+import * as sessionEntryRead from "../../config/sessions/session-entry-read-runtime.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
@@ -32,7 +33,6 @@ import { registerChatAbortController } from "../chat-abort.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import { roleClient, rolePolicyConfig } from "../session-sharing.test-utils.js";
-import { handleChatAbortRequest } from "./chat-abort-handler.js";
 import { createActiveRun, createChatAbortContext } from "./chat.abort.test-helpers.js";
 import { sessionAbortHandlers } from "./sessions-abort.js";
 
@@ -315,6 +315,7 @@ it("exact embedded Stop cancels running and queued collectors without dispatchin
 
 it.each(["missing", "replaced", "finalizing", "throwing", "unreadable child"])(
   "%s embedded Stop applies parent acceptance to descendants",
+
   async (state) => {
     await writeSubagentSessionEntry({
       stateDir: fixture.stateDir,
@@ -341,26 +342,24 @@ it.each(["missing", "replaced", "finalizing", "throwing", "unreadable child"])(
     const parent = createEmbeddedRunHandle({
       runId: "parent",
       abort,
-      isAbortable: state !== "finalizing" && state !== "unreadable child",
+      isAbortable: state !== "unreadable child",
     });
     const replacementAbort = vi.fn();
     const replacement = createEmbeddedRunHandle({ runId: "replacement", abort: replacementAbort });
-    if (state !== "missing") {
-      setActiveEmbeddedRun(parentId, parent, parentKey);
-    }
+    setActiveEmbeddedRun(parentId, parent, parentKey);
     if (state === "replaced") {
       setActiveEmbeddedRun(parentId, replacement, parentKey);
     }
-    const exactRead = sessions.loadExactSessionEntryReadOnly;
+    const exactRead = sessionEntryRead.withSessionEntryReadOnlyInWorker;
     const failedRead = vi.fn();
     const reader = vi
-      .spyOn(sessions, "loadExactSessionEntryReadOnly")
-      .mockImplementation((scope) => {
+      .spyOn(sessionEntryRead, "withSessionEntryReadOnlyInWorker")
+      .mockImplementation((scope, assertCurrent, consume) => {
         if (state === "unreadable child" && scope.sessionKey === childKey("queued")) {
           failedRead();
-          throw new Error("preparatory child read failed");
+          return Promise.reject(new Error("preparatory child read failed"));
         }
-        return exactRead(scope);
+        return exactRead(scope, assertCurrent, consume);
       });
     try {
       const respond = await stopParent();
@@ -418,6 +417,7 @@ it.each([
   "$method controller-backed Stop respects parent acceptance (finalizing=$finalizing)",
   async ({ method, finalizing }) => {
     const parentStorePath = await writeSubagentSessionEntry({
+
       stateDir: fixture.stateDir,
       agentId: "main",
       sessionKey: parentKey,
@@ -495,14 +495,9 @@ it.each([
       expect(resolveActiveEmbeddedRunOwnerByRunId("parent")).toBeDefined();
       expect(rpcSourceTesting.get("parent")).toBe(registration.entry);
       const respond = vi.fn();
-      const handler =
-        method === "chat.abort" ? handleChatAbortRequest : sessionAbortHandlers[method]!;
-      await handler({
-        req: { type: "req", id: "stop", method },
-        params: {
-          ...(method === "chat.abort" ? { sessionKey: parentKey } : { key: parentKey }),
-          runId: "parent",
-        },
+      await sessionAbortHandlers["sessions.abort"]!({
+        req: { type: "req", id: "stop", method: "sessions.abort" },
+        params: { key: parentKey, runId: "parent" },
         respond,
         context: context as never,
         client: {
@@ -513,13 +508,11 @@ it.each([
       });
       expect(respond.mock.calls[0]?.slice(0, 2)).toEqual([
         true,
-        method === "chat.abort"
-          ? { ok: true, aborted: !finalizing, runIds: finalizing ? [] : ["parent"] }
-          : {
-              ok: true,
-              abortedRunId: finalizing ? null : "parent",
-              status: finalizing ? "no-active-run" : "aborted",
-            },
+        {
+          ok: true,
+          abortedRunId: finalizing ? null : "parent",
+          status: finalizing ? "no-active-run" : "aborted",
+        },
       ]);
       expect(registration.controller.signal.aborted).toBe(!finalizing);
       expect(parentAbort).toHaveBeenCalledTimes(finalizing ? 0 : 1);

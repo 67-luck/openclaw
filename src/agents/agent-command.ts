@@ -442,8 +442,7 @@ async function agentCommandInternalOwned(
             sessionAgentId,
             lifecycleGeneration,
             runId,
-            executionWorkspaceDir:
-              sessionEntry?.worktree?.canonicalWorkspaceDir ?? cwd ?? workspaceDir,
+            executionWorkspaceDir: cwd ?? workspaceDir,
             watchSkills,
             isNewSession,
             isSubagentLaneTurn,

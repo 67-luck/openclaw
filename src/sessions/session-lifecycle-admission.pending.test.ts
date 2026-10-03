@@ -243,6 +243,7 @@ it("an initial validator finishing after pending cancellation cannot enter the w
     release.resolve();
     expect(await pending).toBe(reason);
     await interruption.released;
+    // A later mutation must wait for the validator's controller-owned work to finish.
     await runSessionMutation({ scope, identities, run: async () => {} });
     expect(writer).not.toHaveBeenCalled();
   } finally {

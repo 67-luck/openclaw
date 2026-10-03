@@ -62,6 +62,7 @@ export function clearTestEmbeddedRun(...args: Parameters<typeof clearActiveEmbed
 }
 import type { EmbeddedAgentQueueHandle } from "./run-state.js";
 
+
 type RunHandle = EmbeddedAgentQueueHandle;
 
 export function createEmbeddedRunHandle(
@@ -102,7 +103,6 @@ export function createEmbeddedRunHandle(
 type EmbeddedRunsTestApi = {
   resetActiveEmbeddedRuns(): void;
 };
-
 function getTestApi(): EmbeddedRunsTestApi {
   const api = (globalThis as Record<PropertyKey, unknown>)[
     Symbol.for("openclaw.embeddedRunsTestApi")

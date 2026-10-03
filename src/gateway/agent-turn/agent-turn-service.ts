@@ -10,6 +10,7 @@ import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { discardPreparedInboundMedia, type OffloadedRef } from "../chat-attachments.js";
@@ -18,8 +19,8 @@ import { createCronContinuationController } from "../server-methods/agent-cron-c
 import { runAgentResetPhase } from "../server-methods/agent-reset-phase.js";
 import { buildAgentSessionPatch } from "../server-methods/agent-session-patch.js";
 import { prepareAgentSession } from "../server-methods/agent-session-prepare.js";
-import { resolveAgentRunSessionCreation } from "../server-methods/session-creation-provenance.js";
 import type { GatewayRequestHandlerOptions, RespondFn } from "../server-methods/shared-types.js";
+
 import { prepareSkillLibrarySessionCreation } from "../skill-library-session.js";
 import { createAgentAdmissionController } from "./agent-admission-controller.js";
 import { prepareAgentContentPhase } from "./agent-content-phase.js";
@@ -38,6 +39,7 @@ import {
   registerAgentTurnSourceAdmission,
 } from "./agent-turn-source-admission.js";
 import { prepareAgentTurnWait } from "./agent-turn-wait.js";
+
 import type { RequesterSettleWakeReplay } from "./internal-facade.types.js";
 import type { AgentTurnIo, AgentTurnPrincipal } from "./types.js";
 
@@ -474,7 +476,7 @@ export function createAgentTurnService(
           canonicalSessionKey,
           sessionAgentId,
           mainSessionKey,
-          creation: prepareSkillLibrarySessionCreation(
+          creation: await prepareSkillLibrarySessionCreation(
             principal,
             () => context.getRuntimeConfig(),
             resolveAgentRunSessionCreation(principal),
@@ -713,6 +715,7 @@ export function createAgentTurnService(
   };
 
   const prepareWaitForTurn = (params: AgentWaitParams) => prepareAgentTurnWait(context, params);
+
   const waitForTurn = async (params: AgentWaitParams) => await prepareWaitForTurn(params).wait();
 
   return { startTurn, prepareWaitForTurn, waitForTurn };

@@ -2,17 +2,27 @@
 // Defines the narrowed context and event envelope for node-originated handlers.
 import type { DesktopAvailability } from "../../packages/gateway-protocol/src/schema/environments.js";
 import type { NodeHostStatsPayload } from "../../packages/gateway-protocol/src/schema/nodes.js";
-import type { ModelCatalogEntry } from "../agents/model-catalog.js";
-import type { CliDeps } from "../cli/deps.types.js";
 import type { NodeHostStats } from "../shared/node-host-stats.js";
 import type { HealthSummary } from "./health/types.js";
 import type { ChatRunEntry, ChatRunRegistration } from "./server-chat.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
 import type { DedupeEntry } from "./server-shared.js";
 
+
 /** Runtime context available to node event handlers. */
-export type NodeEventContext = {
-  deps: CliDeps;
+export type NodeEventContext = Pick<
+  GatewayRequestContext,
+  | "deps"
+  | "broadcastVoiceWakeChanged"
+  | "addChatRun"
+  | "removeChatRun"
+  | "chatAbortControllers"
+  | "dedupe"
+  | "agentRunSeq"
+  | "getHealthCache"
+  | "refreshHealthSnapshot"
+  | "loadGatewayModelCatalog"
+> & {
   broadcast: (event: string, payload: unknown, opts?: { dropIfSlow?: boolean }) => void;
   nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void;
   nodeSubscribe: (nodeId: string, sessionKey: string, connId?: string) => void | Promise<void>;
@@ -39,6 +49,7 @@ export type NodeEventContext = {
     agentId?: string;
     readOnly?: boolean;
   }) => Promise<GatewayModelCatalogSnapshot>;
+
   authorizeNodeSystemRunEvent: (params: {
     nodeId: string;
     connId?: string;

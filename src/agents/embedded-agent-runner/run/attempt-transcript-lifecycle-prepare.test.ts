@@ -206,6 +206,7 @@ describe("admitted lazy session writer", () => {
   it("keeps its uncommitted creator visible inside a same-key lifecycle mutation", async () => {
     await withInitialWriter(async ({ target }) => {
       await runSessionMutation({
+
         scope: target.storePath,
         identities: [target.sessionKey],
         prepare: async () => {
@@ -222,6 +223,7 @@ describe("admitted lazy session writer", () => {
     await withInitialWriter(async ({ manager, runParams, target }) => {
       manager.appendMessage(userMessage);
       await runSessionMutation({
+
         scope: target.storePath,
         identities: [target.sessionKey],
         run: async () => {

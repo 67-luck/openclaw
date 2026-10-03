@@ -1,7 +1,6 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { getActiveNativeAttempt } from "../../agents/embedded-agent-runner/run-state.js";
 import {
@@ -18,6 +17,7 @@ import {
   runSessionMutation,
 } from "../../sessions/session-controller.lifecycle.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import { createRuntimeAgent } from "./runtime-agent.js";
 
 describe("plugin runtime session creation", () => {
@@ -911,23 +911,19 @@ describe("plugin runtime session creation", () => {
 });
 
 describe("plugin runtime session work admission", () => {
-  let tempDir: string;
+  const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-plugin-session-admission-");
   let storePath: string;
   const sessionKey = "agent:main:voice:caller";
   const sessionId = "voice-session-id";
 
   beforeEach(async () => {
-    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-plugin-session-admission-"));
+    const tempDir = sessionDirs.make();
     storePath = path.join(tempDir, "sessions.json");
     await createRuntimeAgent().session.upsertSessionEntry({
       storePath,
       sessionKey,
       entry: { sessionId, updatedAt: Date.now() },
     });
-  });
-
-  afterEach(() => {
-    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it("rejects an archived session before running admitted work", async () => {
@@ -952,6 +948,7 @@ describe("plugin runtime session work admission", () => {
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
     const mutation = runSessionMutation({
+
       scope: storePath,
       identities: [sessionKey, sessionId],
       prepare: async () => {
@@ -980,6 +977,7 @@ describe("plugin runtime session work admission", () => {
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
     const mutation = runSessionMutation({
+
       scope: storePath,
       identities: [sessionKey, sessionId],
       prepare: async () => {

@@ -16,16 +16,10 @@ import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db
 import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { resolveStateDir } from "../state-dir.js";
-import { loadSessionEntryReadOnlyInScope } from "./session-accessor.sqlite-entry.js";
-import {
-  resolveSqliteReadScope,
-  resolveSqliteScope,
-  toDatabaseOptions,
-} from "./session-accessor.sqlite-scope.js";
-import type {
-  CapturedSessionEntryReadSource,
-  SessionAccessScope,
-} from "./session-accessor.types.js";
+import { loadSessionEntryReadOnlyInScope } from "./session-accessor.sqlite-exact-read.js";
+import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
+import type { SessionAccessScope } from "./session-accessor.types.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import {
   sessionHistoryCleanupError,
   unwrapSessionTranscriptWorkerReply,
@@ -50,13 +44,13 @@ import {
   type HistoryDatabaseResource,
   type SessionCostWorkerLane,
   type SessionDatabaseCleanup,
+  type SessionHistoryDatabaseTarget,
   type SessionHistoryWorkerLane,
 } from "./session-transcript-worker-resources.js";
 import type {
   SessionHistoryWorkerDatabase,
   SessionHistoryWorkerInput,
   SessionRowPresenceWorkerInput,
-  SessionTranscriptAccountingRead,
 } from "./session-transcript-worker.types.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
@@ -166,7 +160,7 @@ export function prepareSessionEntryPresenceRead(input: SessionAccessScope): Read
 
 /** Single and batch reads synchronously retain the same lane-aware database owner. */
 export function retainSessionHistoryWorkerDatabase(
-  options: OpenClawAgentDatabaseOptions,
+  options: SessionHistoryDatabaseTarget,
   lane: SessionHistoryWorkerLane = historyLane,
 ) {
   const owned = acquireHistoryDatabaseResource(options);
@@ -265,7 +259,10 @@ export function retainSessionHistoryWorkerDatabase(
         if (
           typeof received !== "boolean" &&
           !Array.isArray(received) &&
-          (received.kind === "session-entry-read" || received.kind === "session-diagnostic-text") &&
+          (received.kind === "session-entry-read" ||
+            received.kind === "session-entry-current" ||
+            received.kind === "session-runtime-target" ||
+            received.kind === "session-diagnostic-text") &&
           received.source
         ) {
           const source = received.source;
@@ -321,7 +318,7 @@ export function retainSessionHistoryWorkerDatabase(
 
 /** Capture every selected store before yielding; a closed target cannot join a later generation. */
 export async function withSessionHistoryWorkerDatabases<T>(
-  options: readonly OpenClawAgentDatabaseOptions[],
+  options: readonly SessionHistoryDatabaseTarget[],
   operation: (owners: readonly SessionHistoryWorkerDatabase[]) => Promise<T>,
   lane: SessionHistoryWorkerLane = historyLane,
 ): Promise<T> {
@@ -362,7 +359,7 @@ export async function withSessionHistoryWorkerDatabases<T>(
 
 /** Single-target callers retain the same batch admission and revocation boundary. */
 export function withSessionHistoryWorkerDatabase<T>(
-  options: OpenClawAgentDatabaseOptions,
+  options: SessionHistoryDatabaseTarget,
   operation: (owner: SessionHistoryWorkerDatabase) => Promise<T>,
   lane: SessionHistoryWorkerLane = historyLane,
 ): Promise<T> {
@@ -370,30 +367,6 @@ export function withSessionHistoryWorkerDatabase<T>(
     [options],
     (owners) => operation(expectDefined(owners[0], "retained session history reader")),
     lane,
-  );
-}
-
-/** Read transcript accounting through the retained read-only database owner. */
-export async function readSessionTranscriptAccountingInWorker(
-  scope: import("./session-accessor.sqlite-contract.js").SessionTranscriptReadScope,
-  options: { includeStats: boolean; maxEvents?: number },
-): Promise<SessionTranscriptAccountingRead> {
-  const resolved = resolveSqliteReadScope(scope);
-  const databaseOptions = toDatabaseOptions(resolved);
-  const databasePath = resolveOpenClawAgentSqlitePath(databaseOptions);
-  return await withSessionHistoryWorkerDatabase(
-    { ...databaseOptions, path: databasePath },
-    (owner) =>
-      owner.readTranscriptAccounting({
-        scope: {
-          agentId: resolved.agentId,
-          sessionId: scope.sessionId,
-          sessionKey: resolved.sessionKey,
-          env: captureSessionTranscriptStorageEnvironment(scope.env ?? process.env),
-        },
-        includeStats: options.includeStats,
-        maxEvents: options.maxEvents,
-      }),
   );
 }
 

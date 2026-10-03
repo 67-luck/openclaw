@@ -1,3 +1,11 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  createGatewaySchedulerClock,
+  createTestGatewayScheduler,
+} from "../test-utils/gateway-scheduler-clock.js";
+import { createArtifactDownload } from "./artifact-download-grants.js";
+import type { ChatAbortControllerEntry } from "./chat-abort.js";
+import { DEDUPE_MAX, DEDUPE_TTL_MS } from "./server-constants.js";
 // Dedupe-record maintenance: TTL retention for active runs/queued sends and
 // overflow eviction ordering. Split from server-maintenance.test.ts, which
 // sits at the max-lines cap; mocks are hoisted per file, so the module-mock
@@ -7,6 +15,7 @@ import { retireSessionControllerInput } from "../sessions/session-controller.mai
 import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "./server-constants.js";
+
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
 import { createRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
@@ -15,7 +24,7 @@ const cleanupManagedOutgoingMediaRecordsMock = vi.fn(async () => ({
   deletedFileCount: 0,
   retainedCount: 0,
 }));
-const pruneExpiredDevicePairSetupCompletionsMock = vi.fn(async () => 0);
+const pruneExpiredDevicePairSetupCompletionsMock = vi.hoisted(() => vi.fn(async () => 0));
 
 vi.mock("../infra/device-bootstrap.js", () => ({
   pruneExpiredDevicePairSetupCompletions: pruneExpiredDevicePairSetupCompletionsMock,
@@ -73,9 +82,8 @@ function seedStableDedupeEntries(deps: MaintenanceTimerDeps, now: number): void 
 async function createTimedMaintenanceScenario() {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-03-22T00:00:00Z"));
-  const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
   const deps = createMaintenanceTimerDeps();
-  return { startGatewayMaintenanceTimers, deps, now: Date.now() };
+  return { deps, now: Date.now() };
 }
 
 async function stopMaintenanceTimers(
@@ -97,8 +105,60 @@ describe("gateway dedupe maintenance", () => {
     pruneExpiredDevicePairSetupCompletionsMock.mockReset().mockResolvedValue(0);
   });
 
+  it("releases an unused expired artifact grant while its connection stays open", async () => {
+    const clock = createGatewaySchedulerClock(1_000);
+    using now = vi.spyOn(Date, "now");
+    now.mockImplementation(() => clock.clock.now());
+    const scheduler = createTestGatewayScheduler(clock.clock);
+    const deps = { ...createMaintenanceTimerDeps(), scheduler, isNixMode: true };
+    const controller = new AbortController();
+    const client: GatewayClient = {
+      connId: "unused-artifact",
+      connectionSignal: controller.signal,
+      connect: {
+        minProtocol: 1,
+        maxProtocol: 1,
+        client: { id: "test", version: "test", platform: "test", mode: "test" },
+      },
+    };
+    deps.clients.add(client);
+    const release = vi.fn();
+    const read = vi.fn(async () => undefined);
+    const grant = createArtifactDownload({
+      client,
+      prepared: {
+        artifact: {
+          id: "unused-artifact",
+          type: "file",
+          title: "unused.txt",
+          download: { mode: "bytes" },
+        },
+        digest: "unused-artifact-digest",
+      },
+      assertCurrent: () => {},
+      read,
+      release,
+    });
+    const timers = startGatewayMaintenanceTimers(deps);
+    try {
+      await clock.advanceBy(0);
+      await clock.advanceTo(Date.parse(grant.expiresAt) - 1);
+      expect(release).not.toHaveBeenCalled();
+      await clock.advanceBy(60_000);
+      expect(controller.signal.aborted).toBe(false);
+      expect(release).toHaveBeenCalledOnce();
+      await clock.advanceBy(60_000);
+      expect(release).toHaveBeenCalledOnce();
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      controller.abort();
+      await stopMaintenanceTimers(timers);
+      await scheduler.stop();
+    }
+  });
+
   it("keeps active exec approval dedupe aliases past the normal ttl", async () => {
-    const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
+    const { deps, now } = await createTimedMaintenanceScenario();
     const runId = "exec-approval-followup:req-active:nonce:retry-1";
     rpcSourceTesting.set(runId, createActiveRun("agent:main:main", "agent"));
     deps.dedupe.set("agent:exec-approval-followup:req-active", {
@@ -123,7 +183,7 @@ describe("gateway dedupe maintenance", () => {
   });
 
   it("keeps queued chat dedupe entries past the normal ttl", async () => {
-    const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
+    const { deps, now } = await createTimedMaintenanceScenario();
     const runId = "queued-chat";
     rpcSourceTesting.set(runId, createActiveRun("agent:main:main"));
     deps.dedupe.set(`chat:${runId}`, {
@@ -140,7 +200,7 @@ describe("gateway dedupe maintenance", () => {
   });
 
   it("keeps queued chat dedupe entries while trimming overflow", async () => {
-    const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
+    const { deps, now } = await createTimedMaintenanceScenario();
     const runId = "queued-oldest";
     seedStableDedupeEntries(deps, now);
     rpcSourceTesting.set(runId, createActiveRun("agent:main:main"));
@@ -161,7 +221,7 @@ describe("gateway dedupe maintenance", () => {
   });
 
   it("evicts multiple dedupe overflows by oldest timestamp with interleaved reinsertions", async () => {
-    const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
+    const { deps, now } = await createTimedMaintenanceScenario();
 
     for (let index = 0; index < DEDUPE_MAX; index += 1) {
       deps.dedupe.set(`item-${index}`, { ts: now - 10_000 + index, ok: true });
@@ -196,7 +256,7 @@ describe("gateway dedupe maintenance", () => {
   });
 
   it("does not evict active agent dedupe entries while trimming overflow", async () => {
-    const { startGatewayMaintenanceTimers, deps, now } = await createTimedMaintenanceScenario();
+    const { deps, now } = await createTimedMaintenanceScenario();
 
     seedStableDedupeEntries(deps, now);
     rpcSourceTesting.set("active-oldest", createActiveRun("agent:main:main", "agent"));

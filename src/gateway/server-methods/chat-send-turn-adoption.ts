@@ -37,6 +37,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
   >;
   hasCronCreatorAuthority: boolean;
   suppressReplies?: boolean;
+  releaseSourceWorkAdmission: () => void;
   retainWorkAdmission: () => () => void;
   armOperatorRunCancellation?: () => void;
   retireOperatorRunCancellation?: () => void;
@@ -124,6 +125,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
       const input = params.sourceRef.input;
       if (input.abortSignal.aborted || input.phase === "consumed") {
         return false;
+
       }
       // Only physical source-publication custody survives ACK; selection lives on input.
       releaseWorkAdmission ??= params.retainWorkAdmission();

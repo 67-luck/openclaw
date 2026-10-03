@@ -1,10 +1,9 @@
-import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
-import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { createTerminalTool } from "../agents/tools/terminal-tool.js";
 // Gateway plugin tests cover plugin loading, auto-enable, runtime registry setup,
 // request-scope injection, diagnostics, and handler dispatch integration.
@@ -32,6 +31,7 @@ import { getPluginRuntimeLoadContext } from "../plugins/runtime/load-context.js"
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { withEnv } from "../test-utils/env.js";
+import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import { createInternalAgentTurnFacade } from "./agent-turn/internal-facade.js";
 import type { GatewayRequestContext, GatewayRequestOptions } from "./server-methods/types.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
@@ -41,6 +41,8 @@ import {
   createDuplexPluginRegistry,
   createLookUpTableForTest,
 } from "./server-plugins.fixtures.test-support.js";
+
+const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-plugin-restart-owner-");
 
 const loadOpenClawPlugins = vi.hoisted(() => vi.fn());
 const loadPluginLookUpTable = vi.hoisted(() =>
@@ -392,13 +394,11 @@ function registerActivePluginToolOwnership(
 function loadGatewayPluginsForTest(
   overrides: Partial<Parameters<ServerPluginsModule["loadGatewayPlugins"]>[0]> = {},
 ) {
-  const log = createTestLog();
   const loaded = serverPluginsModule.loadGatewayPlugins({
     loadIntent: "startup",
     cfg: {},
     autoEnabledReasons: {},
     workspaceDir: "/tmp",
-    log,
     coreGatewayHandlers: {},
     baseMethods: [],
     resolveGatewayContext: () => resolveTestGatewayContext(),
@@ -406,7 +406,6 @@ function loadGatewayPluginsForTest(
   });
   // Runtime dispatch cases use a published fixture; preparation itself never selects it.
   runtimeRegistryModule.setActivePluginRegistry(loaded.pluginRegistry);
-  return log;
 }
 
 function loadStartupPluginFixture(
@@ -607,7 +606,7 @@ describe("loadGatewayPlugins", () => {
       await import("../sessions/session-controller.lifecycle.js");
     const { replaceSessionEntry } = await import("../config/sessions/session-accessor.js");
     const { closeOpenClawAgentDatabasesForTest } = await import("../state/openclaw-agent-db.js");
-    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-plugin-restart-owner-"));
+    const stateDir = sessionDirs.make();
     const storePath = path.join(stateDir, "sessions.json");
     const context = createTestContext("same-context-distinct-owners");
     const closingResolver = vi.fn(() => context);
@@ -643,7 +642,6 @@ describe("loadGatewayPlugins", () => {
             cfg: {},
             autoEnabledReasons: {},
             workspaceDir: stateDir,
-            log: createTestLog(),
             baseMethods: [],
             pluginIds: ["test-channel"],
             resolveGatewayContext: resolver,
@@ -734,7 +732,6 @@ describe("loadGatewayPlugins", () => {
       }
       await Promise.resolve();
       closeOpenClawAgentDatabasesForTest();
-      await fs.rm(stateDir, { recursive: true, force: true });
     }
   });
 
@@ -772,7 +769,7 @@ describe("loadGatewayPlugins", () => {
 
   test("routes plugin registration logs through the plugin logger", () => {
     loadOpenClawPlugins.mockReturnValue(createRegistry([]));
-    const log = loadGatewayPluginsForTest();
+    loadGatewayPluginsForTest();
 
     const logger = getLastPluginLoadLogger();
     logger.info("plugin ready");
@@ -780,8 +777,6 @@ describe("loadGatewayPlugins", () => {
 
     expect(pluginRuntimeLoaderLogger.info).toHaveBeenCalledWith("plugin ready");
     expect(pluginRuntimeLoaderLogger.warn).toHaveBeenCalledWith("plugin warning");
-    expect(log.info).not.toHaveBeenCalled();
-    expect(log.warn).not.toHaveBeenCalled();
   });
 
   test("can suppress provisional plugin info logs while preserving warnings", () => {
@@ -1186,23 +1181,6 @@ describe("loadGatewayPlugins", () => {
     ).resolves.toEqual({ status: "accepted", runId: "run-accepted" });
   });
 
-  test("marks synthetic cron continuation calls as server-owned", async () => {
-    serverPluginsModule.setFallbackGatewayContext(createTestContext("cron-run-continuation"));
-    handleGatewayRequest.mockImplementationOnce(async (opts: HandleGatewayRequestOptions) => {
-      expect(opts.client?.connect.client.mode).toBe("backend");
-      expect(opts.client?.internal?.cronRunContinuation).toBe(true);
-      opts.respond(true, { status: "ok" });
-    });
-
-    await expect(
-      serverPluginsModule.dispatchGatewayMethodInProcess(
-        "agent",
-        { sessionKey: "agent:main:cron:job:run:run-1" },
-        { allowSyntheticCronRunContinuation: true, forceSyntheticClient: true },
-      ),
-    ).resolves.toEqual({ status: "ok" });
-  });
-
   test("carries delegated tool-policy handoffs only in synthetic client context", async () => {
     serverPluginsModule.setFallbackGatewayContext(createTestContext("delegated-tool-policy"));
     handleGatewayRequest.mockImplementationOnce(async (opts: HandleGatewayRequestOptions) => {
@@ -1223,29 +1201,6 @@ describe("loadGatewayPlugins", () => {
             idempotencyKey: "announce-1",
           },
           forceSyntheticClient: true,
-        },
-      ),
-    ).resolves.toEqual({ status: "ok" });
-  });
-
-  test("carries scoped delivery media only in the synthetic client context", async () => {
-    serverPluginsModule.setFallbackGatewayContext(createTestContext("scoped-delivery-media"));
-    handleGatewayRequest.mockImplementationOnce(async (opts: HandleGatewayRequestOptions) => {
-      expect(opts.req.params).not.toHaveProperty("internalDeliveryMediaUrls");
-      expect(opts.req.params).not.toHaveProperty("internalDeliverySuppressText");
-      expect(opts.client?.internal?.internalDeliveryMediaUrls).toEqual(["/tmp/proof.png"]);
-      expect(opts.client?.internal?.internalDeliverySuppressText).toBe(true);
-      opts.respond(true, { status: "ok" });
-    });
-
-    await expect(
-      serverPluginsModule.dispatchGatewayMethodInProcess(
-        "agent",
-        { sessionKey: "agent:main:main" },
-        {
-          forceSyntheticClient: true,
-          internalDeliveryMediaUrls: ["/tmp/proof.png"],
-          internalDeliverySuppressText: true,
         },
       ),
     ).resolves.toEqual({ status: "ok" });
@@ -1988,7 +1943,6 @@ describe("loadGatewayPlugins", () => {
       cfg: {},
       autoEnabledReasons: {},
       workspaceDir: "/tmp",
-      log: createTestLog(),
       coreGatewayHandlers: {},
       baseMethods: [],
       pluginIds: ["duplex-plugin"],

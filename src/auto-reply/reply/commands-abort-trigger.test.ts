@@ -2,7 +2,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import { handleAbortTrigger } from "./commands-session-abort.js";
-import "./commands-session-abort.test-support.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
 const persistAbortTargetEntryMock = vi.hoisted(() => vi.fn());
@@ -49,6 +48,7 @@ vi.mock("./commands-session-store.js", () => ({
   persistAbortTargetEntry: persistAbortTargetEntryMock,
   resolveCommandSessionEntryForKey: resolveCommandSessionEntryForKeyMock,
 }));
+
 
 function buildAbortParams(): HandleCommandsParams {
   return {

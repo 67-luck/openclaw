@@ -16,24 +16,28 @@ import type { SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { deleteMediaBuffer } from "../../media/store.js";
 import {
+  annotateInterSessionPromptText,
   isCompletionReportInputProvenance,
   isSubagentCoordinationInputProvenance,
   normalizeInputProvenance,
   type InputProvenance,
 } from "../../sessions/input-provenance.js";
 import { recordSessionParticipantBestEffort } from "../../sessions/session-participant-recording.js";
+import { completeUserTurnProcessing } from "../../sessions/user-turn-transcript-processing.js";
 import {
   buildRunUserTurnIdempotencyKey,
   createUserTurnTranscriptRecorder,
   type UserTurnInput,
   type UserTurnTranscriptRecorder,
 } from "../../sessions/user-turn-transcript.js";
+import type { registerChatAbortController } from "../chat-abort.js";
 import {
   INLINE_IMAGE_DURABLE_OMISSION_MARKER,
   persistInboundImagesForTranscript,
   type ChatImageContent,
   type OffloadedRef,
 } from "../chat-attachments.js";
+import { hasGatewayAdminScope } from "../operator-scopes.js";
 import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
 import { resolveSessionRuntimeCwd } from "../server-methods/agent-session-reset.js";
 import { gatewayClientSenderFields } from "../server-methods/gateway-client-identity.js";
@@ -41,7 +45,6 @@ import { resolveGatewayInputParticipant } from "../session-input-participant.js"
 import { loadSessionEntry } from "../session-utils.js";
 import { formatForLog } from "../ws-log.js";
 import {
-  clientHasAdminScope,
   shouldSuppressAgentPromptPersistence,
   type RestoredCronContinuation,
 } from "./agent-handler-helpers.js";
@@ -54,7 +57,6 @@ export type PreparedAgentRunUserTurn = {
   claimedExecApprovalFollowupHandoffId?: string;
   execApprovalFollowupHandoffClaimId: string;
   execApprovalContinuationPromptRange?: ExecApprovalContinuationPromptRange;
-  execApprovalContinuationTranscriptPromptRange?: ExecApprovalContinuationPromptRange;
   message: string;
   inputProvenance?: InputProvenance;
   recorder?: UserTurnTranscriptRecorder;
@@ -195,9 +197,6 @@ export async function prepareAgentRunUserTurn(params: {
     let message = params.message;
     let effectiveTranscriptInputText = params.effectiveTranscriptInputText;
     let execApprovalContinuationPromptRange: ExecApprovalContinuationPromptRange | undefined;
-    let execApprovalContinuationTranscriptPromptRange:
-      | ExecApprovalContinuationPromptRange
-      | undefined;
     if (execApprovalFollowupRuntimeHandoff?.resultText !== undefined) {
       const continuation = buildExecApprovalContinuationPrompt(
         execApprovalFollowupRuntimeHandoff.resultText,
@@ -205,14 +204,13 @@ export async function prepareAgentRunUserTurn(params: {
       message = continuation.message;
       effectiveTranscriptInputText = continuation.message;
       execApprovalContinuationPromptRange = continuation.resultRange;
-      execApprovalContinuationTranscriptPromptRange = continuation.resultRange;
     } else if (message === EXEC_APPROVAL_FOLLOWUP_HANDOFF_MESSAGE) {
       throw new Error("exec approval followup runtime handoff is unavailable");
     }
 
     const senderIsOwner = params.restoredCronContinuation
       ? true
-      : clientHasAdminScope(params.client);
+      : hasGatewayAdminScope(params.client);
     const settleWakeReplay = params.settleWakeReplay;
     if (
       settleWakeReplay &&
@@ -353,6 +351,7 @@ export async function prepareAgentRunUserTurn(params: {
         // Intentional Stop seals non-retry custody immediately. A timeout
         // retains its source until the producer publishes its actual terminal facts.
         if (stopReason === "timeout") {
+
           return;
         }
         try {
@@ -383,9 +382,6 @@ export async function prepareAgentRunUserTurn(params: {
       ...(claimedExecApprovalFollowupHandoffId ? { claimedExecApprovalFollowupHandoffId } : {}),
       execApprovalFollowupHandoffClaimId,
       ...(execApprovalContinuationPromptRange ? { execApprovalContinuationPromptRange } : {}),
-      ...(execApprovalContinuationTranscriptPromptRange
-        ? { execApprovalContinuationTranscriptPromptRange }
-        : {}),
       message,
       inputProvenance,
       ...(recorder ? { recorder } : {}),
@@ -400,6 +396,26 @@ export async function prepareAgentRunUserTurn(params: {
     await Promise.allSettled(durableMediaIds.map((id) => deleteMediaBuffer(id, "inbound")));
     throw error;
   }
+}
+
+export function annotateAgentRunUserTurnPrompt(params: {
+  message: string;
+  inputProvenance?: InputProvenance;
+  execApprovalContinuationPromptRange?: ExecApprovalContinuationPromptRange;
+}) {
+  const message = annotateInterSessionPromptText(params.message, params.inputProvenance);
+  let execApprovalContinuationPromptRange = params.execApprovalContinuationPromptRange;
+  if (execApprovalContinuationPromptRange) {
+    if (!message.endsWith(params.message)) {
+      throw new Error("exec approval continuation prompt range could not be annotated");
+    }
+    const offset = message.length - params.message.length;
+    execApprovalContinuationPromptRange = {
+      start: offset + execApprovalContinuationPromptRange.start,
+      end: offset + execApprovalContinuationPromptRange.end,
+    };
+  }
+  return { message, execApprovalContinuationPromptRange };
 }
 
 export function finalizePreparedAgentRunUserTurn(prepared: PreparedAgentRunUserTurn): void {
@@ -417,29 +433,46 @@ export function finalizePreparedAgentRunUserTurn(prepared: PreparedAgentRunUserT
   }
 }
 
-export function releasePreparedAgentRunUserTurn(
+export async function releaseStoppedAgentRunUserTurn(
+  prepared: PreparedAgentRunUserTurn,
+  abort: Pick<ReturnType<typeof registerChatAbortController>, "controller" | "entry">,
+): Promise<void> {
+  const stopReason = abort.entry?.abortStopReason;
+  const outcome = buildAgentRunTerminalOutcome({ status: "error", stopReason });
+  const cancelled =
+    abort.controller.signal.aborted &&
+    stopReason !== "restart" &&
+    (!prepared.privateCompletion || outcome.reason === "cancelled");
+  await releasePreparedAgentRunUserTurn(prepared, cancelled ? "cancelled" : "interrupted");
+}
+
+export async function releasePreparedAgentRunUserTurn(
   prepared: PreparedAgentRunUserTurn,
   disposition: "cancelled" | "interrupted" = "interrupted",
-): void {
+): Promise<void> {
   try {
     prepared.releaseProcessingAbortObserver?.();
     prepared.recorder?.finishPendingInput?.(disposition);
   } finally {
-    releaseExecApprovalFollowupRuntimeHandoff({
-      handoffId: prepared.claimedExecApprovalFollowupHandoffId,
-      claimId: prepared.execApprovalFollowupHandoffClaimId,
-    });
+    try {
+      await prepared.recorder?.waitForPendingInputSettlement?.();
+    } finally {
+      releaseExecApprovalFollowupRuntimeHandoff({
+        handoffId: prepared.claimedExecApprovalFollowupHandoffId,
+        claimId: prepared.execApprovalFollowupHandoffClaimId,
+      });
+    }
   }
 }
 
 /** Settles failed input while preserving both admission and settlement failures. */
-export function releasePreparedAgentRunUserTurnAfterFailure(
+export async function releasePreparedAgentRunUserTurnAfterFailure(
   prepared: PreparedAgentRunUserTurn,
   error: unknown,
   disposition: "cancelled" | "interrupted" = "cancelled",
-): unknown {
+): Promise<unknown> {
   try {
-    releasePreparedAgentRunUserTurn(prepared, disposition);
+    await releasePreparedAgentRunUserTurn(prepared, disposition);
     return error;
   } catch (cleanupError) {
     return new AggregateError(

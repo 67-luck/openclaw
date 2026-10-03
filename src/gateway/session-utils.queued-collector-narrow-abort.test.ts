@@ -11,6 +11,7 @@ import {
   clearActiveEmbeddedRun,
 } from "../agents/embedded-agent-runner/runs.js";
 import { createEmbeddedRunHandle } from "../agents/embedded-agent-runner/runs.test-support.js";
+
 import { isSubagentRunQueued } from "../agents/subagents/registry/subagent-registry-read.js";
 import { getRuntimeConfig, setRuntimeConfigSnapshot } from "../config/config.js";
 import {
@@ -156,6 +157,7 @@ it.each(["active", "queued", "pending-chat", "agent"] as const)(
       expect(descendantOwnedSource?.input.abortSignal.aborted).toBe(true);
       await descendantOwnedSource?.input.settlement.promise;
     }
+
     if (kind === "active") {
       expect(rpcSourceTesting.get(oldRunId)).toBe(old);
       expect(context.chatRunState.resolveBuffer(oldRunId, { final: true }).text).toBe(

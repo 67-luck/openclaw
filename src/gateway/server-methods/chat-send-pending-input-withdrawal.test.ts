@@ -164,7 +164,7 @@ describe("queued chat input withdrawal", () => {
               ]
             : [],
         );
-        expect(listSessionPendingInputs(fixture.scope)).toMatchObject(
+        expect(await listSessionPendingInputs(fixture.scope)).toMatchObject(
           reason ? { items: [{ state: disposition }], total: 1 } : { items: [], total: 0 },
         );
         if (reason) {
@@ -238,6 +238,7 @@ describe("queued chat input withdrawal", () => {
         }
         const queuedBefore = isRpcSourceQueued(active);
         const pending = listSessionPendingInputs(fixture.scope);
+
         const transcript = loadTranscriptEventsSync(fixture.scope);
         const params = { sessionKey: fixture.scope.sessionKey, runId, discardPendingInput: true };
         const respond = vi.fn<RespondFn>();
@@ -256,6 +257,7 @@ describe("queued chat input withdrawal", () => {
         expect(rpcSourceTesting.get(runId)).toBe(active);
         expect(isRpcSourceQueued(active)).toBe(queuedBefore);
         expect(listSessionPendingInputs(fixture.scope)).toEqual(pending);
+
         expect(loadTranscriptEventsSync(fixture.scope)).toEqual(transcript);
       } finally {
         if (claimed) {
@@ -278,6 +280,7 @@ describe("queued chat input withdrawal", () => {
       let replacement: RpcSourceRef | undefined;
       let cleanupReplacement: (() => void) | undefined;
       let retiredAfterCommit = false;
+      const published: Promise<PromiseSettledResult<boolean>>[] = [];
       try {
         await fixture.send();
         await fixture.dispatchedRecorder;
@@ -321,7 +324,6 @@ describe("queued chat input withdrawal", () => {
             );
           fixture.activeRun?.complete();
         };
-        const published: boolean[] = [];
         let requestCurrent = true;
         unsubscribe = sessionChanges.subscribe((change) => {
           if ("sessionKey" in change && change.sessionKey === fixture.scope.sessionKey) {
@@ -333,6 +335,7 @@ describe("queued chat input withdrawal", () => {
               // through its real physical owner. The hold still belongs to old input.
               rpcSourceTesting.delete(runId);
               const registration = registerChatAbortController({
+
                 runId,
                 ...fixture.scope,
                 target: captureSessionTarget({
@@ -347,7 +350,7 @@ describe("queued chat input withdrawal", () => {
               cleanupReplacement = registration.cleanup;
               retiredAfterCommit = rpcSourceTesting.get(runId) !== active;
             }
-            if (withdrawn && afterRefusal === "revoked") {
+            if (afterRefusal === "revoked") {
               requestCurrent = false;
             }
           }
@@ -383,6 +386,7 @@ describe("queued chat input withdrawal", () => {
         }
         expect(active.input.abortSignal.aborted).toBe(false);
         expect(listSessionPendingInputs(fixture.scope).items[0]?.state).toBe("queued");
+
         expect(published).toEqual([]);
 
         if (afterRefusal === "resume") {
@@ -410,7 +414,9 @@ describe("queued chat input withdrawal", () => {
           expect(rpcSourceTesting.get(runId)).toBe(replacement);
         }
         expect(published.length).toBeGreaterThan(0);
-        expect(published.every(Boolean)).toBe(true);
+        for (const result of await Promise.all(published)) {
+          expect(result).toEqual({ status: "fulfilled", value: true });
+        }
         expect(publishChange).toHaveBeenCalledWith(
           fixture.context,
           {
@@ -427,6 +433,7 @@ describe("queued chat input withdrawal", () => {
         publishChange.mockRestore();
         unsubscribe?.();
         cleanupReplacement?.();
+
         clearFollowupQueue(fixture.scope.sessionKey);
         await fixture.cleanup();
       }

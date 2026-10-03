@@ -166,6 +166,7 @@ test("sessions.patch rechecks plugin ownership after waiting for lifecycle admis
   let releaseMutation = () => {};
   const { promise: mutationStarted, resolve: markMutationStarted } = createDeferred();
   const mutation = runSessionMutation({
+
     scope: storePath,
     identities: [sessionKey, sessionId],
     run: async () => {

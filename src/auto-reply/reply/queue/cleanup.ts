@@ -8,6 +8,7 @@ import {
 import { completeFollowupRunLifecycle } from "./lifecycle.js";
 import { clearFollowupQueue, getExistingFollowupQueue } from "./state.js";
 
+
 export type ClearSessionQueueResult = {
   followupCleared: number;
   keys: string[];
@@ -40,4 +41,5 @@ export function clearSessionQueues(
   }
 
   return { followupCleared, keys: clearedKeys };
+
 }

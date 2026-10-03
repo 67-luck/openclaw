@@ -22,6 +22,7 @@ import {
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   createEmbeddedRunHandle,
 } from "../../agents/embedded-agent-runner/runs.test-support.js";
+
 import { registerSubagentRun } from "../../agents/subagents/registry/subagent-registry.js";
 import { writeSubagentSessionEntry } from "../../agents/subagents/registry/subagent-registry.persistence.test-support.js";
 import { getSubagentRunByChildSessionKey } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
@@ -182,6 +183,22 @@ it.each(
     let turn: Promise<void> | undefined;
     let acpSignal: AbortSignal | undefined;
     let stopSettled = false;
+    const nativeTerminal = createDeferred();
+    const stopObservingNative = subscribeSubagentRunChanges("persistence", () => {
+      if (
+        (
+          [
+            ["running", runningKey],
+            ["queued", queuedKey],
+          ] as const
+        ).every(([runId, key]) => {
+          const entry = getSubagentRunByChildSessionKey(key);
+          return entry?.runId === runId && entry.endedReason === "subagent-killed";
+        })
+      ) {
+        nativeTerminal.resolve();
+      }
+    });
     try {
       await manager.initializeSession({
         cfg,
@@ -316,10 +333,11 @@ it.each(
         }),
       ]);
       expect(native.abortSignal.aborted).toBe(true);
-      // Synchronize on native terminal state, never on the still-held ACP completion.
+      // Native terminal publication is independent of the still-held ACP completion.
       await vi.waitFor(() => expect(runningAbort).toHaveBeenCalledOnce());
       await vi.waitFor(() => expect(survivorDispatch).toHaveBeenCalledOnce());
       expect(selectedDispatch).not.toHaveBeenCalled();
+
       await vi.waitFor(() =>
         expect(loadExactSessionEntryReadOnly({ sessionKey: sourceKey })?.entry).toMatchObject({
           abortedLastRun: true,
@@ -354,6 +372,7 @@ it.each(
         !active && completion === "reject" ? "error" : "idle",
       );
     } finally {
+      stopObservingNative();
       childAdmission?.release();
       proceed.resolve();
       finishTurn.resolve();

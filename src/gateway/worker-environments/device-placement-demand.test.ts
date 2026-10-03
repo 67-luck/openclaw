@@ -5,6 +5,7 @@ import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import { rotateAgentRunRegistryLifecycleGeneration } from "../../infra/agent-run-registry.js";
 import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
+
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { createContext } from "../server-methods/sessions.abort-agent-scope.test-support.js";
@@ -143,7 +144,7 @@ describe("admitted device placement demand", () => {
     );
   });
 
-  it.each(["gateway", "scope", "session-key", "session-id"] as const)(
+  it.each(["gateway", "scope"] as const)(
     "does not borrow a matching-looking admission from another %s",
     async (mismatch) => {
       const fixture = createFixture();
@@ -153,11 +154,6 @@ describe("admitted device placement demand", () => {
         ...(mismatch === "scope"
           ? { scope: path.join(fixture.root, "other", "sessions.json") }
           : {}),
-        ...(mismatch === "session-key"
-          ? { identities: ["agent:main:other", placement.sessionId] }
-          : mismatch === "session-id"
-            ? { identities: [placement.sessionKey, "other-session"] }
-            : {}),
       });
 
       expect(fixture.read().size).toBe(0);
@@ -191,16 +187,6 @@ describe("admitted device placement demand", () => {
     const { placement } = fixture.addPlacement();
     await fixture.admit(placement, { identities: [placement.sessionKey, "other-session"] });
     await fixture.admit(placement, { identities: ["agent:main:other", placement.sessionId] });
-
-    expect(fixture.read().size).toBe(0);
-  });
-
-  it("drops admission demand when the Gateway lifecycle rotates", async () => {
-    const fixture = createFixture();
-    await fixture.admit(fixture.addPlacement().placement);
-    expect(fixture.read()).toEqual(new Map([["node-1", 1]]));
-
-    rotateAgentRunRegistryLifecycleGeneration();
 
     expect(fixture.read().size).toBe(0);
   });

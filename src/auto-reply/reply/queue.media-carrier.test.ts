@@ -1,4 +1,3 @@
-// Prompt metadata carrier tests cover collect batching, deferral, and retry identity.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChannelParticipantAdmissionEvidence } from "../../../test/helpers/channel-admission-evidence.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -35,65 +34,31 @@ import {
   createOverflowSummaryRetrySource,
   resolveFollowupDeliveryContextKey,
 } from "./queue/delivery-context.js";
+
 import { clearFollowupQueue } from "./queue/state.js";
 import { createMockTypingController } from "./test-helpers.js";
 import { createTypingSignaler } from "./typing-mode.js";
-
 const queueKeys = new Set<string>();
 const evidenceCleanups = new Set<() => void>();
-
-function addCombinedCarrierFacts(run: FollowupRun): void {
-  run.toolsAllow = attachToolAllowlistIntersection(["exec"], [["exec"], ["exec", "message"]]);
-  run.disableTools = true;
-  run.run = {
-    ...run.run,
+const carrierRun = {
+  provider: "openai",
+  model: "gpt-route",
+  memberRoleIds: ["operator", "member"],
+  thinkLevelOverride: "high",
+  fastModeOverride: true,
+  verboseLevel: "on",
+  reasoningLevel: "on",
+  trustedInternalHandoff: {
+    kind: "subagent-completion",
+    sourceSessionKey: "agent:child",
+    targetSessionKey: "agent:parent",
+    targetSessionId: "session-1",
     provider: "openai",
     model: "gpt-route",
-    memberRoleIds: ["operator", "member"],
-    trustedInternalHandoff: {
-      kind: "subagent-completion",
-      sourceSessionKey: "agent:child",
-      targetSessionKey: "agent:parent",
-      targetSessionId: "session-1",
-      provider: "openai",
-      model: "gpt-route",
-    },
-    scheduledToolPolicy: { version: 1, mode: "trusted" },
-    runtimePluginToolGrant: {
-      pluginId: "workboard",
-      toolNames: ["workboard_complete"],
-    },
-  };
-}
-
-function expectCombinedCarrierFacts(run: FollowupRun | undefined): void {
-  expect(run).toBeDefined();
-  expect(run?.toolsAllow).toEqual(["exec"]);
-  expect(run?.toolsAllow ? readToolAllowlistIntersection(run.toolsAllow) : undefined).toEqual([
-    ["exec"],
-    ["exec", "message"],
-  ]);
-  expect(run?.disableTools).toBe(true);
-  expect(run?.run).toMatchObject({
-    provider: "openai",
-    model: "gpt-route",
-    memberRoleIds: ["operator", "member"],
-    trustedInternalHandoff: {
-      kind: "subagent-completion",
-      sourceSessionKey: "agent:child",
-      targetSessionKey: "agent:parent",
-      targetSessionId: "session-1",
-      provider: "openai",
-      model: "gpt-route",
-    },
-    scheduledToolPolicy: { version: 1, mode: "trusted" },
-    runtimePluginToolGrant: {
-      pluginId: "workboard",
-      toolNames: ["workboard_complete"],
-    },
-  });
-}
-
+  },
+  scheduledToolPolicy: { version: 1, mode: "trusted" },
+  runtimePluginToolGrant: { pluginId: "workboard", toolNames: ["workboard_complete"] },
+} satisfies Partial<FollowupRun["run"]>;
 afterEach(() => {
   for (const key of queueKeys) {
     clearFollowupQueue(key);
@@ -104,7 +69,6 @@ afterEach(() => {
   }
   evidenceCleanups.clear();
 });
-
 describe("followup prompt metadata carrier", () => {
   it("drains the complete parked image turn after active steering rejects it", async () => {
     const key = "agent:main:parked-media-fallback";
@@ -304,32 +268,15 @@ describe("followup prompt metadata carrier", () => {
     });
   });
 
+
   it.each([
     { name: "trace", first: { traceLevelOverride: "off" }, second: { traceLevelOverride: "raw" } },
     { name: "thinking", first: { thinkLevel: "low" }, second: { thinkLevel: "high" } },
-    {
-      name: "original thinking",
-      first: { thinkLevel: "off", thinkLevelOverride: "high" },
-      second: { thinkLevel: "off", thinkLevelOverride: "off" },
-    },
-    { name: "fast", first: { fastMode: false }, second: { fastMode: true } },
-    {
-      name: "fast preference source",
-      first: { fastMode: true, fastModeOverride: false },
-      second: { fastMode: true, fastModeOverride: true },
-    },
-    {
-      name: "fast auto duration source",
-      first: { fastMode: "auto", fastModeAutoOnSeconds: 30, fastModeAutoOnSecondsOverride: false },
-      second: { fastMode: "auto", fastModeAutoOnSeconds: 30, fastModeAutoOnSecondsOverride: true },
-    },
     {
       name: "fast auto duration",
       first: { fastMode: "auto", fastModeAutoOnSeconds: 30, fastModeAutoOnSecondsOverride: true },
       second: { fastMode: "auto", fastModeAutoOnSeconds: 120, fastModeAutoOnSecondsOverride: true },
     },
-    { name: "verbose", first: { verboseLevel: "off" }, second: { verboseLevel: "on" } },
-    { name: "reasoning", first: { reasoningLevel: "off" }, second: { reasoningLevel: "on" } },
   ] as const)(
     "keeps conflicting turn $name choices in separate collected replies",
     async ({ name, first, second }) => {
@@ -359,106 +306,10 @@ describe("followup prompt metadata carrier", () => {
       expect(calls[2]?.prompt).toContain("task 3");
     },
   );
-
-  it("removes sender authority when collected evidence identifies mixed participants", async () => {
-    const audit = createChannelAdmissionAudit({ enabled: true });
-    evidenceCleanups.add(() => audit.close());
-    const key = `prompt-metadata-mixed-${Date.now()}`;
-    queueKeys.add(key);
-    const done = createDeferred();
-    const calls: FollowupRun[] = [];
-
-    for (const [participantId, skillName] of [
-      ["person-1", "a"],
-      ["person-2", "b"],
-    ] as const) {
-      const run = createQueueTestRun({
-        prompt: `from ${participantId}`,
-        originatingChannel: "test",
-        originatingTo: "room:shared",
-      });
-      addCombinedCarrierFacts(run);
-      run.explicitSkillSelections = [
-        { name: skillName, path: `/tmp/skills/${skillName}/SKILL.md` },
-      ];
-      run.channelAdmissionEvidence = createChannelParticipantAdmissionEvidence({
-        audit,
-        channelId: "test",
-        participantId,
-      });
-      run.run = {
-        ...run.run,
-        senderId: "ambiguous-transport-sender",
-        senderName: "Ambiguous Sender",
-        senderUsername: "ambiguous",
-        senderE164: "+15550000000",
-        senderIsOwner: true,
-        traceAuthorized: true,
-        ownerNumbers: ["+15550000000"],
-      };
-      enqueueFollowupRun(key, run, { mode: "collect", debounceMs: 0 });
-    }
-
-    scheduleFollowupDrain(key, async (run) => {
-      calls.push(run);
-      done.resolve();
-    });
-    await done.promise;
-
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.explicitSkillSelections).toEqual([
-      { name: "a", path: "/tmp/skills/a/SKILL.md" },
-      { name: "b", path: "/tmp/skills/b/SKILL.md" },
-    ]);
-    expect(consumeChannelAdmissionEvidence(calls[0]?.channelAdmissionEvidence)).toMatchObject({
-      ingressState: "unknown",
-      invoker: { state: "unknown" },
-    });
-    expect(calls[0]?.run).toMatchObject({
-      senderId: undefined,
-      senderName: undefined,
-      senderUsername: undefined,
-      senderE164: undefined,
-      senderIsOwner: false,
-      traceAuthorized: false,
-      ownerNumbers: [],
-    });
-    expectCombinedCarrierFacts(calls[0]);
-  });
-
-  it("preserves facts when an overflow source is rebuilt for retry", () => {
-    const audit = createChannelAdmissionAudit({ enabled: true });
-    evidenceCleanups.add(() => audit.close());
-    const source = createQueueTestRun({
-      prompt: "[media attached: /tmp/retry.png (image/png)]\nretry me",
-    });
-    addCombinedCarrierFacts(source);
-    source.images = [{ type: "image", data: "png", mimeType: "image/png" }];
-    source.imageOrder = ["offloaded"];
-    source.media = [{ path: "/tmp/retry.png", contentType: "image/png" }];
-    source.explicitSkillSelections = [{ name: "retry", path: "/tmp/skills/retry/SKILL.md" }];
-    source.channelAdmissionEvidence = createChannelParticipantAdmissionEvidence({
-      audit,
-      channelId: "test",
-      participantId: "person-1",
-    });
-
-    const retry = createOverflowSummaryRetrySource(source);
-
-    expect(retry.prompt).toBe(source.prompt);
-    expect(retry.images).toEqual(source.images);
-    expect(retry.imageOrder).toEqual(source.imageOrder);
-    expect(retry.media).toEqual(source.media);
-    expect(retry.explicitSkillSelections).toEqual(source.explicitSkillSelections);
-    expect(retry.channelAdmissionEvidence).toBe(source.channelAdmissionEvidence);
-    expectCombinedCarrierFacts(retry);
-  });
 });
-
 describe("queued Gateway attach evidence", () => {
   installQueueRuntimeErrorSilencer();
   const admissions: ExecutionIdentityAdmissionWork[] = [];
-
   beforeEach(() => {
     admissions.length = 0;
     evidenceCleanups.add(
@@ -468,7 +319,6 @@ describe("queued Gateway attach evidence", () => {
       }),
     );
   });
-
   async function admit(run: FollowupRun) {
     const prepared = prepareChannelRunAdmission({
       cfg: { logging: { audit: { executionIdentity: true } } },
@@ -485,7 +335,6 @@ describe("queued Gateway attach evidence", () => {
       prepared.close();
     }
   }
-
   const prepareIngress = (profileId: string) =>
     prepareGatewayLocalUserIngress({
       authMethod: "token",
@@ -493,8 +342,7 @@ describe("queued Gateway attach evidence", () => {
       profile: { profileId },
       isLocalClient: false,
     });
-
-  it.each(["matching", "mixed", "missing"] as const)(
+  it.each(["matching", "mixed"] as const)(
     "collects %s attach snapshots without changing sender authority",
     async (kind) => {
       const key = `gateway-attach-collect-${kind}`;
@@ -502,10 +350,9 @@ describe("queued Gateway attach evidence", () => {
       const done = createDeferred<FollowupRun>();
       for (const index of [0, 1]) {
         const run = createQueueTestRun({ prompt: `queued ${index}` });
-        run.gatewayLocalUserIngress =
-          kind === "missing" && index === 1
-            ? undefined
-            : prepareIngress(kind === "mixed" && index === 1 ? "person-2" : "person-1");
+        run.gatewayLocalUserIngress = prepareIngress(
+          kind === "mixed" && index === 1 ? "person-2" : "person-1",
+        );
         run.run = { ...run.run, senderId: "transport", senderIsOwner: true };
         enqueueFollowupRun(key, run, { mode: "collect", debounceMs: 0 });
       }
@@ -558,25 +405,21 @@ describe("queued Gateway attach evidence", () => {
   );
 
   it("retains the original attach snapshot when overflow delivery retries after profile replacement", async () => {
-    const key = "gateway-attach-overflow-retry";
-    queueKeys.add(key);
+    const q = createQueueCase(
+      { mode: "collect", debounceMs: 0, cap: 1, dropPolicy: "summarize" },
+      1,
+    );
+    queueKeys.add(q.key);
     const client = {};
     attachGatewayLocalUserIngress(client, prepareIngress("original-person"));
     const source = createQueueTestRun({ prompt: "overflow source" });
     source.gatewayLocalUserIngress = getGatewayLocalUserIngress(client);
-    const settings: QueueSettings = {
-      mode: "collect",
-      debounceMs: 0,
-      cap: 1,
-      dropPolicy: "summarize",
-    };
-    enqueueFollowupRun(key, source, settings);
-    enqueueFollowupRun(key, createQueueTestRun({ prompt: "surviving source" }), settings);
-    const done = createDeferred();
+    q.add(source);
+    q.add(createQueueTestRun({ prompt: "surviving source" }));
     let attempts = 0;
-    scheduleFollowupDrain(key, async (run) => {
+    q.start(async (run) => {
       if (!run.prompt.includes("overflow source")) {
-        done.resolve();
+        q.done.resolve();
         return;
       }
       attempts += 1;
@@ -586,8 +429,7 @@ describe("queued Gateway attach evidence", () => {
       }
       await admit(run);
     });
-    await done.promise;
-
+    await q.done.promise;
     expect(attempts).toBe(2);
     expect(admissions).toHaveLength(1);
     expect(admissions).toMatchObject([

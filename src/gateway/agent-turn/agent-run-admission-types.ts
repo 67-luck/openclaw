@@ -10,6 +10,7 @@ import type {
 import type { TrustedSubagentCompletionHandoff } from "../../agents/subagents/announce/subagent-announce-handoff.js";
 import type { FollowupCompletionOwner } from "../../agents/subagents/completion/session-followup-completion.types.js";
 import type { SessionEffectRef } from "../../sessions/session-controller.lifecycle.js";
+
 import type { registerChatAbortController } from "../chat-abort.js";
 import type { OffloadedRef } from "../chat-attachments.js";
 import type { GatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
@@ -20,11 +21,13 @@ import type { AgentTurnIo } from "./types.js";
 
 export type PreparedAgentRunDispatch = {
   activeGatewayWorkAdmission: SessionEffectRef | undefined;
+
   activeRunAbort: ReturnType<typeof registerChatAbortController>;
   cronCreatorAuthority?: GatewayCronCreatorAuthorityAdmission;
   releaseCallerAuthority?: () => void;
   operatorAuthority?: AdmittedRunOperatorAuthority;
   operationalRunInstance: OperationalRunInstanceRef;
+  timeoutSeconds?: number;
   effectiveProviderOverride?: string;
   effectiveModelOverride?: string;
   effectiveThinking?: string;
@@ -35,7 +38,6 @@ export type PreparedAgentRunDispatch = {
   resolvedThreadId?: string | number;
   reactivateSubagent: boolean;
   followupCompletion?: FollowupCompletionOwner;
-  preparedModelRuntimeLease: PreparedModelRuntimeLease;
   replyDispatchRuntime: PreparedReplyDispatchRuntime;
   unpersistedOffloadedRefs: OffloadedRef[];
   userTurn: PreparedAgentRunUserTurn;
@@ -81,7 +83,7 @@ export type PrepareAgentRunDispatchParams = Omit<
   io: AgentTurnIo;
   abortForLifecycleRotation: (target?: { sessionKey?: string; agentId?: string }) => boolean;
   acquireGatewayWorkAdmission: (scope: string) => Promise<void>;
-  assertGatewayWorkAdmissionAllowed: () => void;
+  assertGatewayWorkAdmissionAllowed: () => SessionEntry | undefined;
   hasGatewayAdmissionOutcome: () => boolean;
   respondToGatewayAdmissionOutcome: () => boolean;
   admissionAgentId: () => string | undefined;

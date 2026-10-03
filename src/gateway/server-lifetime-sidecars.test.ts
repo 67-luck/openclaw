@@ -62,8 +62,8 @@ function countStoredRows(name: string): number {
   return row.count;
 }
 
-function writeStoredSecret(name: string, value: string): void {
-  writeSecretStoreEntry({
+async function writeStoredSecret(name: string, value: string): Promise<void> {
+  await writeSecretStoreEntry({
     scope: { kind: "team" },
     name,
     value,
@@ -128,7 +128,7 @@ describe("gateway lifetime sidecars", () => {
       const worker = openingMessages.mock.contexts[openIndex];
       openingMessages.mockRestore();
       const handoff = "github-setup-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-      writeStoredSecret(handoff, "synthetic-expired-handoff");
+      await writeStoredSecret(handoff, "synthetic-expired-handoff");
       openOpenClawStateDatabase()
         .db.prepare("UPDATE secret_store_entries SET created_at_ms = ? WHERE name = ?")
         .run(Date.now() - 11 * 60_000, handoff);
@@ -404,8 +404,8 @@ describe("gateway lifetime sidecars", () => {
         const scheduler = createTestGatewayScheduler(clock.clock);
         vi.spyOn(Date, "now").mockImplementation(clock.clock.now);
         const startupHandoff = "github-setup-55555555555555555555555555555555";
-        writeStoredSecret(startupHandoff, "temporary-value");
-        writeStoredSecret("RETAINED_SECRET", "retained-value");
+        await writeStoredSecret(startupHandoff, "temporary-value");
+        await writeStoredSecret("RETAINED_SECRET", "retained-value");
         clock.setTime(Date.parse("2026-01-01T00:11:00.000Z"));
         const owner = createGatewaySidecarStopOwner();
         const purge = secretStore.purgeExpiredSecretStoreEntries;
@@ -430,7 +430,7 @@ describe("gateway lifetime sidecars", () => {
         expect(countStoredRows(startupHandoff)).toBe(expectedHandoffRows);
 
         const scheduledHandoff = "github-setup-77777777777777777777777777777777";
-        writeStoredSecret(scheduledHandoff, "scheduled-value");
+        await writeStoredSecret(scheduledHandoff, "scheduled-value");
         clock.setTime(Date.parse("2026-01-01T00:22:00.000Z"));
         await clock.advanceBy(60_000);
         await Promise.all(sweeps);
@@ -440,7 +440,7 @@ describe("gateway lifetime sidecars", () => {
         await owner.stop();
 
         const stoppedHandoff = "github-setup-66666666666666666666666666666666";
-        writeStoredSecret(stoppedHandoff, "post-stop-value");
+        await writeStoredSecret(stoppedHandoff, "post-stop-value");
         await clock.advanceBy(11 * 60_000);
         expect(countStoredRows(stoppedHandoff)).toBe(1);
       });

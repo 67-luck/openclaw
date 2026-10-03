@@ -12,9 +12,9 @@ import {
   vi,
   type MockInstance,
 } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolveAgentDir } from "../agents/agent-scope.js";
 import { upsertAuthProfile } from "../agents/auth-profiles.js";
+import { GENERIC_EXTERNAL_RUN_FAILURE_TEXT } from "../agents/failover/user-copy.js";
 import { withFullRuntimeReplyConfig } from "../auto-reply/reply/get-reply-fast-path.js";
 import * as replyRun from "../auto-reply/reply/get-reply-run.js";
 import { getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
@@ -22,6 +22,7 @@ import { clearConfigCache, getRuntimeConfig, readConfigFileSnapshot } from "../c
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { captureSessionControllerSettlement } from "../sessions/session-controller.lifecycle.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
+
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./server-methods/types.js";
@@ -40,7 +41,7 @@ import {
 } from "./test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
-const temporaryDirectories = useAutoCleanupTempDirTracker(afterEach);
+const temporaryDirectories = useSessionStoreTempDirs(afterAll, "openclaw-adopted-failure-");
 let gateway: Awaited<ReturnType<typeof createGatewaySuiteHarness>>;
 
 beforeAll(async () => {
@@ -56,10 +57,7 @@ afterEach(() => {
 });
 
 it("reports an adopted pre-model failure as one visible failure over the Gateway WebSocket", async () => {
-  testState.sessionStorePath = path.join(
-    temporaryDirectories.make("openclaw-adopted-failure-"),
-    "sessions.json",
-  );
+  testState.sessionStorePath = path.join(temporaryDirectories.make(), "sessions.json");
   await writeSessionStore({
     entries: { main: { sessionId: "adopted-failure-session", updatedAt: Date.now() } },
   });
@@ -107,7 +105,7 @@ it("reports an adopted pre-model failure as one visible failure over the Gateway
     expect(accepted.ok).toBe(true);
     expect(accepted.payload).toMatchObject({ runId, status: "started" });
     const failed = await terminal;
-    expect(JSON.stringify(failed)).toContain("Something went wrong");
+    expect(JSON.stringify(failed)).toContain(GENERIC_EXTERNAL_RUN_FAILURE_TEXT);
     expect(JSON.stringify(failed)).not.toContain(originalError.message);
     const replay = await rpcReq(socket, "chat.send", request);
     expect(replay.ok).toBe(false);
@@ -147,7 +145,7 @@ describe("chat.send quoted model profiles", () => {
 
   beforeEach(async () => {
     runPreparedReply = vi.spyOn(replyRun, "runPreparedReply");
-    const directory = temporaryDirectories.make("openclaw-chat-model-profile-");
+    const directory = temporaryDirectories.make();
     storePath = path.join(directory, "sessions.json");
     testState.sessionStorePath = storePath;
     testState.agentConfig = {

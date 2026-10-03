@@ -56,15 +56,12 @@ import {
   setupAgentRunnerTestHooks,
   tempDirs,
 } from "./agent-runner.misc.runreplyagent.test-support.js";
-import {
-  createTestQueueSettings,
-  createTestQueuedFollowupRun,
-  createTestTemplateContext,
-} from "./agent-runner.test-fixtures.js";
+import { type BaseRunOptions, createBaseRun } from "./agent-runner.runreplyagent.test-support.js";
 import { clearPendingFinalDeliveryAfterSuccess } from "./dispatch-from-config.pending-final.js";
 import { scheduleFollowupDrain } from "./queue.js";
 import { REPLY_OPERATION_RUN_STATE } from "./reply-operation-run-state.js";
 import { createMockTypingController } from "./test-helpers.js";
+
 
 function createCliBackendTestConfig() {
   return {};
@@ -176,6 +173,7 @@ function createBaseRun(options: BaseRunOptions = {}) {
     run: () => runReplyAgent(replyParams),
   };
 }
+
 
 const requireRecord = createRequireRecord("record", "expected-label-object");
 
@@ -2579,7 +2577,7 @@ describe("runReplyAgent transient HTTP failures", () => {
     expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
 
     const payload = Array.isArray(result) ? result[0] : result;
-    expect(payload?.text).toContain("provider internal error");
+    expect(payload?.text).toContain("The AI service is having trouble");
   });
 });
 
@@ -2604,7 +2602,7 @@ describe("runReplyAgent billing error classification", () => {
     }).run();
 
     const payload = Array.isArray(result) ? result[0] : result;
-    expect(payload?.text).toContain("billing error");
+    expect(payload?.text).toContain("billing problem");
     expect(payload?.text).not.toContain("Context overflow");
   });
 });
@@ -2636,7 +2634,7 @@ describe("runReplyAgent mid-turn rate-limit fallback", () => {
     const result = await createRun();
     const payload = Array.isArray(result) ? result[0] : result;
 
-    expect(payload?.text).toContain("API rate limit reached");
+    expect(payload?.text).toContain("The AI service needs a short break");
   });
 
   it("preserves successful media-only replies that use legacy mediaUrl", async () => {

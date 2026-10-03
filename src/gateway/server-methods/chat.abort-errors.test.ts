@@ -9,17 +9,20 @@ import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   createEmbeddedRunHandle,
 } from "../../agents/embedded-agent-runner/runs.test-support.js";
+
 import { killSubagentRunAdmin } from "../../agents/subagents/registry/subagent-control.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "../../agents/subagents/registry/subagent-control.types.js";
+import { subscribeSubagentRunChanges } from "../../agents/subagents/registry/subagent-registry-publication.js";
 import { registerSubagentRun } from "../../agents/subagents/registry/subagent-registry.js";
 import { writeSubagentSessionEntry } from "../../agents/subagents/registry/subagent-registry.persistence.test-support.js";
 import { getSubagentRunByChildSessionKey } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
+import { isSameSubagentRunOwner } from "../../agents/subagents/registry/subagent-run-generation.js";
 import { enqueueSwarmRun, releaseSwarmRun } from "../../agents/subagents/swarm/swarm-scheduler.js";
 import { formatAbortReplyText, tryFastAbortFromMessage } from "../../auto-reply/reply/abort.js";
 import { initSessionState } from "../../auto-reply/reply/session.js";
@@ -29,8 +32,8 @@ import {
   appendTranscriptMessageSync,
   loadExactSessionEntryReadOnly,
   loadTranscriptEvents,
-  patchSessionEntryCore,
   readSessionTranscriptWatermark,
+  replaceSessionEntrySync,
 } from "../../config/sessions/session-accessor.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
@@ -43,7 +46,7 @@ import {
   requestRpcSourceCancellation,
 } from "../../sessions/session-controller.rpc-sources.js";
 import {
-  closeOpenClawAgentDatabaseByPath,
+  closeOpenClawAgentDatabaseByPathAsync,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import { listOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.test-support.js";
@@ -67,7 +70,7 @@ async function corruptChildDatabase(storePath: string, sessionKey: string) {
     (item) => item.agentId === "broken" && isPathInside(fixture.stateDir, item.path),
   );
   expect(database).toBeDefined();
-  expect(closeOpenClawAgentDatabaseByPath(database!.path)).toBe(true);
+  expect(await closeOpenClawAgentDatabaseByPathAsync(database!.path, "broken")).toBe(true);
   await writeFile(database!.path, "not a SQLite database");
   expect(() => loadExactSessionEntryReadOnly({ storePath, sessionKey })).toThrow();
 }
@@ -407,25 +410,30 @@ it.each([
   },
 );
 
-it.each(["cascade native new", "RPC reset", "RPC delete"])(
+it.for(["cascade native new", "RPC reset", "RPC delete"])(
   "%s does not append delayed aborted text into a new session incarnation",
-  async (boundary) => {
+  async (boundary, { signal }) => {
     const sessionKey = "agent:main:direct:incarnation";
     const sessionId = "incarnation-parent";
     const childKey = "agent:child:subagent:incarnation";
-    const storePath = await writeSubagentSessionEntry({
-      stateDir: fixture.stateDir,
-      agentId: "main",
-      sessionKey,
-      defaultSessionId: sessionId,
-      lifecycleRevision: "before-reset",
-    });
-    const childStore = await writeSubagentSessionEntry({
-      stateDir: fixture.stateDir,
-      agentId: "child",
-      sessionKey: childKey,
-      defaultSessionId: "incarnation-child",
-    });
+    const storePath = path.join(fixture.stateDir, "agents/main/sessions/sessions.json");
+    const childStore = path.join(fixture.stateDir, "agents/child/sessions/sessions.json");
+    // Seed directly; this fixture controls the cancellation/reset interleaving.
+    replaceSessionEntrySync(
+      { storePath, sessionKey },
+      {
+        sessionId,
+        updatedAt: Date.now(),
+        lifecycleRevision: "before-reset",
+      },
+    );
+    replaceSessionEntrySync(
+      { storePath: childStore, sessionKey: childKey },
+      {
+        sessionId: "incarnation-child",
+        updatedAt: Date.now(),
+      },
+    );
     const scope = { storePath, sessionKey, sessionId, agentId: "main" };
     const parentDatabase = openOpenClawAgentDatabase({ agentId: "main" });
     const transcriptRows = () =>
@@ -452,19 +460,13 @@ it.each(["cascade native new", "RPC reset", "RPC delete"])(
     });
     const entered = createDeferred();
     const release = createDeferred();
-    const native = boundary.endsWith("native new");
-    let writer: Promise<unknown> | undefined;
-    const childHandle = createEmbeddedRunHandle({
-      abort: () => {
-        writer = patchSessionEntryCore(
-          { storePath: childStore, sessionKey: childKey },
-          async () => {
-            entered.resolve();
-            await release.promise;
-            return null;
-          },
-        );
-      },
+    const child = getSubagentRunByChildSessionKey(childKey)!;
+    const childTerminated = createDeferred();
+    const stopObservingChild = subscribeSubagentRunChanges("persistence", () => {
+      const current = getSubagentRunByChildSessionKey(childKey);
+      if (isSameSubagentRunOwner(current, child) && current?.endedReason === "subagent-killed") {
+        childTerminated.resolve();
+      }
     });
     const childOperation = createReplyOperation({
       sessionKey: childKey,
@@ -487,6 +489,7 @@ it.each(["cascade native new", "RPC reset", "RPC delete"])(
       childOperation,
     );
     const parentAdmission = await beginSessionEffect({
+
       scope: storePath,
       identities: [sessionKey, sessionId],
       assertAllowed: () => {},
@@ -508,6 +511,19 @@ it.each(["cascade native new", "RPC reset", "RPC delete"])(
     });
     registerRpcSource("parent", parent);
     context.chatRunState.getOrCreate("parent").buffer = "old delayed partial";
+    // Hold only the original marker after termination, without occupying the child writer FIFO.
+    const persistMarker = subagentControlSession.persistSubagentAbortedLastRun;
+    let markerHeld = false;
+    const markerWriter = vi
+      .spyOn(subagentControlSession, "persistSubagentAbortedLastRun")
+      .mockImplementation(async (params) => {
+        if (!markerHeld && params.childSessionKey === childKey && params.abortedLastRun) {
+          markerHeld = true;
+          entered.resolve();
+          await release.promise;
+        }
+        return await persistMarker(params);
+      });
     let completed = false;
     const abort = invokeChatAbortHandler({
       handler: (options) =>
@@ -530,8 +546,9 @@ it.each(["cascade native new", "RPC reset", "RPC delete"])(
       ]);
       expect(parent.input.abortSignal.aborted).toBe(true);
       expect(rpcSourceTesting.has("parent")).toBe(false);
+
       // Explicit reset drains children, including native /new. Keep the original
-      // abort pending on its marker writer, not on work the reset must stop.
+      // abort pending on its marker publication, not on work the reset must stop.
       clearActiveEmbeddedRun("incarnation-child", childHandle, childKey);
       childOperation.complete();
       if (native) {
@@ -589,7 +606,6 @@ it.each(["cascade native new", "RPC reset", "RPC delete"])(
         ).not.toHaveProperty("firstKeptEntryId");
       }
       release.resolve();
-      await writer;
       const response = await abort;
       expect(response).toHaveBeenCalledWith(true, expect.objectContaining({ aborted: true }));
       expect(getSubagentRunByChildSessionKey(childKey)?.endedReason).toBe("subagent-killed");
@@ -602,6 +618,7 @@ it.each(["cascade native new", "RPC reset", "RPC delete"])(
         expect(transcriptRows()).toEqual({ nodes: 0, windows: 0 });
       }
     } finally {
+      stopObservingChild();
       parentAdmission.release();
       operation.complete();
       release.resolve();
@@ -609,6 +626,7 @@ it.each(["cascade native new", "RPC reset", "RPC delete"])(
       clearActiveEmbeddedRun("incarnation-child", childHandle, childKey);
       childOperation.complete();
       await abort;
+
     }
   },
 );

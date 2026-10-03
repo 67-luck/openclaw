@@ -218,6 +218,7 @@ describe("native attempt queued automation admission", () => {
                               runMode: "force",
                             }),
                           ).rejects.toThrow("Aborted");
+
                         }
                         if (outcome === "abort before completion") {
                           controller.abort(new Error("user cancelled before the final reply"));

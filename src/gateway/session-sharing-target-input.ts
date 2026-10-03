@@ -6,7 +6,7 @@ import { getRpcSource, getRpcSourceIdentity } from "../sessions/session-controll
 import { isIncognitoSessionKey } from "../shared/incognito-session-key.js";
 import { resolveAuthorizedBoardViewTicketClaims } from "./board-view-ticket.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
-import { listSessionGroups } from "./session-groups.js";
+import { readSessionGroupCatalog } from "./session-group-catalog.js";
 import {
   isApprovalSessionTargetMethod,
   sessionMutationTargetFields,
@@ -79,8 +79,8 @@ function resolveSessionGroupsPutMutationTargets(
     return undefined;
   }
   const requested = new Set(normalizeUniqueTrimmedStringList(names));
-  const dropped = listSessionGroups()
-    .map((group) => group.name)
+  const dropped = readSessionGroupCatalog()
+    .groups.map((group) => group.name)
     .filter((name) => !requested.has(name));
   if (dropped.length === 0) {
     return [];

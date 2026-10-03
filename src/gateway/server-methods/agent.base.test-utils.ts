@@ -869,6 +869,7 @@ describe("gateway agent handler", () => {
     let releaseMutation = () => {};
     const { promise: mutationStarted, resolve: markMutationStarted } = createDeferredCore();
     const mutation = runSessionMutation({
+
       scope: "/tmp/sessions.json",
       identities: [sessionKey, "existing-session-id"],
       run: async () => {
@@ -926,6 +927,7 @@ describe("gateway agent handler", () => {
     let releaseMutation = () => {};
     const { promise: mutationStarted, resolve: markMutationStarted } = createDeferredCore();
     const mutation = runSessionMutation({
+
       scope: "/tmp/sessions.json",
       identities: [sessionKey, "existing-session-id"],
       run: async () => {
@@ -985,6 +987,7 @@ describe("gateway agent handler", () => {
     let releaseMutation = () => {};
     const { promise: mutationStarted, resolve: markMutationStarted } = createDeferredCore();
     const mutation = runSessionMutation({
+
       scope: "/tmp/sessions.json",
       identities: [sessionKey, "existing-session-id"],
       run: async () => {
@@ -1078,6 +1081,7 @@ describe("gateway agent handler", () => {
       const { promise: mutationStarted, resolve: markMutationStarted } = createDeferredCore();
       let mutationRan = false;
       const mutation = runSessionMutation({
+
         scope,
         identities: [sessionKey, sessionId],
         prepare: async () => {

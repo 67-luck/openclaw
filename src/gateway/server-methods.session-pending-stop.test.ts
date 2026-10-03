@@ -143,6 +143,7 @@ describe("pending Stop producer binding", () => {
       const entered = createDeferredCore();
       const release = createDeferredCore();
       const hold = runSessionMutation({
+
         scope: session.value.storePath,
         identities: [key, "original"],
         run: async () => {

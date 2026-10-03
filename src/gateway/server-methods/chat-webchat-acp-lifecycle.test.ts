@@ -10,6 +10,7 @@ import {
 } from "../server-chat-state.js";
 import { registerRpcSourceForTest } from "./rpc-source-fixtures.test-support.js";
 
+
 const agentEventHandlerMocks = vi.hoisted(() => ({
   create: vi.fn(),
   persistLifecycle: vi.fn(async () => {}),
@@ -66,6 +67,7 @@ function createParams(): SubscriptionParams {
     refreshConnectedUserProfiles: vi.fn(),
   };
 }
+
 describe("bound ACP terminal lifecycle", () => {
   let unsubs: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
   beforeEach(() => {

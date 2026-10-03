@@ -38,23 +38,14 @@ import type {
 import { setSessionRuntimeModel } from "./run.runtime.js";
 import { loadCronSessionEntryLatest, type resolveCronSession } from "./session.js";
 
-type MutableSessionStore = Record<string, SessionEntry>;
-
 function clearCronContextOwnerState(entry: SessionEntry) {
   delete entry.contextTokens;
   delete entry.contextTokensSource;
   delete entry.contextBudgetStatus;
 }
 
-/** Mutable cron session entry updated by an isolated run before persistence. */
-type MutableCronSessionEntry = SessionEntry;
 /** Resolved cron session plus its mutable backing store and active entry. */
-export type MutableCronSession = ReturnType<typeof resolveCronSession> & {
-  store: MutableSessionStore;
-  sessionEntry: MutableCronSessionEntry;
-};
-/** Live provider/model/auth-profile selection reported by the running session. */
-export type CronLiveSelection = LiveSessionModelSelection;
+export type MutableCronSession = ReturnType<typeof resolveCronSession>;
 
 /**
  * Accessor-backed guarded write: `update` receives the freshest persisted row
@@ -74,7 +65,7 @@ export type CronSessionRowWriter = (params: {
 /** Persists the currently selected mutable cron session entry to the session store. */
 export type PersistCronSessionEntry = (
   assertCommitAllowed?: () => void,
-  entry?: MutableCronSessionEntry,
+  entry?: SessionEntry,
 ) => Promise<void>;
 
 /** Hidden exact-run row retained while detached cron work can still resume. */
@@ -165,11 +156,6 @@ function cronTranscriptExists(params: {
   }
 }
 
-function normalizeSessionField(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
 function projectCronOwnershipFields(entry: SessionEntry): Partial<SessionEntry> {
   const projected: Partial<SessionEntry> = { ...entry };
   delete projected.label;
@@ -179,7 +165,7 @@ function projectCronOwnershipFields(entry: SessionEntry): Partial<SessionEntry> 
 }
 
 function toNonResumableCronSessionEntry(entry: SessionEntry): SessionEntry {
-  const next = { ...entry } as Partial<SessionEntry>;
+  const next = { ...entry };
   // If the transcript never materialized, do not persist stale resume handles
   // that would make the next cron run believe a resumable CLI session exists.
   delete next.sessionStartedAt;
@@ -187,7 +173,7 @@ function toNonResumableCronSessionEntry(entry: SessionEntry): SessionEntry {
   delete next.cliSessionIds;
   delete next.cliSessionBindings;
   delete next.claudeCliSessionId;
-  return next as SessionEntry;
+  return next;
 }
 
 /** Creates the persistence callback that stores cron session metadata after a run. */
@@ -217,7 +203,7 @@ export function createPersistCronSessionEntry(params: {
         : liveEntry;
     let committedEntry = persistedEntry;
     let mergedLiveEntry = liveEntry;
-    const persistPromise = params.persistSessionEntry({
+    await params.persistSessionEntry({
       storePath: params.cronSession.storePath,
       sessionKey: params.agentSessionKey,
       fallbackEntry: persistedEntry,
@@ -279,11 +265,7 @@ export function createPersistCronSessionEntry(params: {
         if (!ownsCurrentRevision && !canClaimInitialRevision) {
           throw new CronSessionLifecycleClaimError(params.agentSessionKey);
         }
-        if (
-          (ownsCurrentRevision || canClaimInitialRevision) &&
-          currentEntry &&
-          params.cronSession.initialSessionEntry
-        ) {
+        if (currentEntry && params.cronSession.initialSessionEntry) {
           committedEntry = mergeSessionSnapshotChanges({
             initial: params.cronSession.initialSessionEntry,
             next: persistedEntry,
@@ -298,7 +280,6 @@ export function createPersistCronSessionEntry(params: {
         return committedEntry;
       },
     });
-    await persistPromise;
     clearBootstrapSnapshotOnSessionBoundary({
       boundaryAppended: resetBoundaryPending,
       sessionKey: params.agentSessionKey,
@@ -451,34 +432,28 @@ export function createCronRunContinuationSession(params: {
 
 /** Adopts the session id produced by a run and preserves usage-family lineage. */
 export function adoptCronRunSessionMetadata(params: {
-  entry: MutableCronSessionEntry;
+  entry: SessionEntry;
   sessionKey: string;
   runMeta?: {
     sessionId?: string;
     sessionFile?: string;
   };
 }): boolean {
-  const nextSessionId = normalizeSessionField(params.runMeta?.sessionId);
-  if (!nextSessionId) {
+  const nextSessionId = params.runMeta?.sessionId?.trim();
+  const previousSessionId = params.entry.sessionId;
+  if (!nextSessionId || nextSessionId === previousSessionId) {
     return false;
   }
-
-  let changed = false;
-  const previousSessionId = params.entry.sessionId;
-  if (nextSessionId && nextSessionId !== previousSessionId) {
-    params.entry.sessionId = nextSessionId;
-    params.entry.usageFamilyKey = params.entry.usageFamilyKey ?? params.sessionKey;
-    params.entry.usageFamilySessionIds = Array.from(
-      new Set([
-        ...(params.entry.usageFamilySessionIds ?? []),
-        ...(previousSessionId ? [previousSessionId] : []),
-        nextSessionId,
-      ]),
-    );
-    changed = true;
-  }
-
-  return changed;
+  params.entry.sessionId = nextSessionId;
+  params.entry.usageFamilyKey = params.entry.usageFamilyKey ?? params.sessionKey;
+  params.entry.usageFamilySessionIds = Array.from(
+    new Set([
+      ...(params.entry.usageFamilySessionIds ?? []),
+      ...(previousSessionId ? [previousSessionId] : []),
+      nextSessionId,
+    ]),
+  );
+  return true;
 }
 
 /** Persists a changed skills snapshot onto the cron session entry outside fast tests. */
@@ -508,7 +483,7 @@ export async function persistCronSkillsSnapshotIfChanged(params: {
  * Keeping those facts after the owner tuple changes lets a later run relabel stale telemetry.
  */
 export function setCronSessionRuntimeModel(params: {
-  entry: MutableCronSessionEntry;
+  entry: SessionEntry;
   provider: string;
   model: string;
 }) {
@@ -528,7 +503,7 @@ export function setCronSessionRuntimeModel(params: {
 
 /** Updates the producing harness and drops context facts owned by the previous runtime. */
 export function setCronSessionAgentHarnessId(params: {
-  entry: MutableCronSessionEntry;
+  entry: SessionEntry;
   agentHarnessId: string | undefined;
 }) {
   const previousRuntime = normalizeOptionalAgentRuntimeId(params.entry.agentHarnessId);
@@ -540,20 +515,10 @@ export function setCronSessionAgentHarnessId(params: {
   return previousRuntime !== nextRuntime;
 }
 
-/** Records the selected provider/model before a cron run starts. */
-export function markCronSessionPreRun(params: {
-  entry: MutableCronSessionEntry;
-  provider: string;
-  model: string;
-}) {
-  setCronSessionRuntimeModel(params);
-  params.entry.systemSent = true;
-}
-
 /** Syncs live model/auth-profile changes from a running cron session back to storage. */
 export function syncCronSessionLiveSelection(params: {
-  entry: MutableCronSessionEntry;
-  liveSelection: CronLiveSelection;
+  entry: SessionEntry;
+  liveSelection: LiveSessionModelSelection;
 }) {
   const previousRuntime = normalizeOptionalAgentRuntimeId(params.entry.agentRuntimeOverride);
   const nextRuntime = normalizeOptionalAgentRuntimeId(params.liveSelection.agentRuntimeOverride);

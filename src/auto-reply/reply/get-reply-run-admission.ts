@@ -52,7 +52,7 @@ import {
 } from "./get-reply-run-helpers.js";
 import {
   REPLY_RUN_STILL_SHUTTING_DOWN_TEXT,
-  resolvePreparedReplyQueueState,
+  waitForPreparedReplyQueue,
 } from "./get-reply-run-queue.js";
 import { buildReplyPromptEnvelope } from "./prompt-prelude.js";
 import { resolveActiveRunQueueAction } from "./queue-policy.js";
@@ -200,6 +200,9 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         ? [routeSystemEventSessionKey, sessionKey]
         : [sessionKey];
     for (const systemEventSessionKey of systemEventSessionKeys) {
+      if (systemEventSessionKey === undefined) {
+        continue;
+      }
       const isCurrentSession = systemEventSessionKey === sessionKey;
       const eventsBlock = await drainFormattedSystemEvents({
         cfg,
@@ -210,6 +213,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         // A heartbeat may consume only its prepared generic selection, never
         // dedicated reminders or arrivals that were not part of this turn.
         events: context.isHeartbeat ? (eventContext?.events ?? []) : undefined,
+        deferredEventIds: context.isHeartbeat ? eventContext?.deferredEventIds : undefined,
       });
       if (eventsBlock) {
         drainedSystemEventBlocks.push(eventsBlock);
@@ -256,8 +260,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
           sessionId,
           isFirstTurnInSession,
           workspaceDir: context.skillsWorkspaceDir,
-          executionWorkspaceDir:
-            sessionEntry?.worktree?.canonicalWorkspaceDir ?? context.workspaceDir,
+          executionWorkspaceDir: context.workspaceDir,
           cfg,
           execOverrides: params.execOverrides,
           skillFilter: opts?.skillFilter,
@@ -317,12 +320,9 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         },
       } as const;
     }
-    const fallbackThinkLevel = thinkingSelection.level;
-    if (fallbackThinkLevel !== resolvedThinkLevel) {
-      // Execution fallbacks are turn-local; directive/model persistence owns
-      // durable thinking remaps so explicit session overrides survive replies.
-      resolvedThinkLevel = fallbackThinkLevel;
-    }
+    // Execution fallbacks are turn-local; directive/model persistence owns
+    // durable thinking remaps so explicit session overrides survive replies.
+    resolvedThinkLevel = thinkingSelection.level;
   }
 
   const providedReplyOperation = opts?.replyOperation;
@@ -389,6 +389,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       embeddedAgentRuntime?.resolveActiveEmbeddedRunSessionIdBySessionFile?.(sessionFile)
     );
   };
+
   const rawActiveSessionIdForInterrupt = resolveActiveEmbeddedSessionId();
   const shouldPreemptHeartbeat =
     !isRoomEvent && !context.isHeartbeat && rawActiveSessionIdForInterrupt !== undefined;
@@ -427,6 +428,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     } as const;
   }
   const visibleTurnPreemptsHeartbeat = heartbeatPreemption === "drained";
+
   const agentHarnessPolicy = useFastReplyRuntime
     ? undefined
     : resolveAgentHarnessPolicy({
@@ -458,7 +460,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       clearAutoFallbackPrimaryProbeSelection(authSessionEntry);
     }
     const authSessionStore =
-      shouldUseEphemeralSession && authSessionEntry
+      shouldUseEphemeralSession && authSessionEntry && authSessionKey !== undefined
         ? { [authSessionKey]: authSessionEntry }
         : sessionStore;
     const selection = await resolveSessionAuthSelection({
@@ -505,6 +507,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       currentRouteThreadId,
     );
   };
+
   const resolveActiveReplyOperationSessionId = () =>
     sourceInput
       ? sourceInput.mailbox.owner.active?.sessionId
@@ -551,6 +554,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
           ) || sourceInput.mailbox.droppedCount > 0
         : hasPendingFollowupQueueWork([queueKey]);
   const activeRunAcceptsCurrentThread = resolveActiveRunAcceptsCurrentThread({ isActive });
+
   const shouldSteer =
     !isRoomEvent &&
     activeRunAcceptsCurrentThread &&
@@ -576,8 +580,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     resetTriggered: effectiveResetTriggered,
   });
   if (isActive && activeRunQueueAction === "run-now") {
-    const queueState = await resolvePreparedReplyQueueState({
-      activeRunQueueAction,
+    const queueReply = await waitForPreparedReplyQueue({
       activeSessionId: activeSessionId ?? resolveActiveQueueSessionId(),
       queueMode: activeRunQueueMode,
       interruptActiveRun: async () => {
@@ -618,7 +621,6 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         preparedSessionState = resolvePreparedSessionState();
         // The interrupted run may have changed goal or suggestion state while admission waited.
         await refreshInboundContextAfterAdmissionWait();
-        sessionEntry = context.getSessionEntry();
         promptBodies = await traceRunPhase("reply.build_prompt_bodies", () =>
           rebuildPromptBodies(),
         );
@@ -629,8 +631,9 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       if (prioritySource) {
         retireSessionControllerInput(prioritySource);
       }
+
       typing.cleanup();
-      return { kind: "reply", reply: queueState.reply } as const;
+      return { kind: "reply", reply: queueReply } as const;
     }
   }
   if (activeRunQueueAction !== "drop") {
@@ -653,7 +656,6 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     resolvedThinkLevel,
     thinkLevelOverride,
     thinkingCatalog,
-    sessionEntry,
     skillsSnapshot,
     prefixedCommandBody,
     queuedBody,
@@ -664,7 +666,6 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     currentInboundContext,
     isRoomEvent,
     providedReplyOperation,
-    sessionIdFinal,
     preparedSessionState,
     resolvedQueue,
     embeddedAgentRuntime,

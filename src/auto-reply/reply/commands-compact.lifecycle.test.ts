@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
+
 import {
   buildCompactParams,
   compactEmbeddedAgentSession,
@@ -14,6 +15,17 @@ import {
   SessionMutationPreemptTimeoutError,
 } from "./commands-compact.test-support.js";
 import type { HandleCommandsParams } from "./commands-types.js";
+
+function buildLifecycleParams(overrides: Partial<HandleCommandsParams> = {}): HandleCommandsParams {
+  return {
+    ...buildCompactParams("/compact", {
+      commands: { text: true },
+      channels: { whatsapp: { allowFrom: ["*"] } },
+    }),
+    sessionEntry: { sessionId: "session-1", updatedAt: Date.now() },
+    ...overrides,
+  };
+}
 
 describe("handleCompactCommand lifecycle authority", () => {
   beforeEach(resetCompactCommandMocks);
@@ -46,19 +58,7 @@ describe("handleCompactCommand lifecycle authority", () => {
   it("does not abort a run after the bound session changes", async () => {
     vi.mocked(resolveCurrentSessionEntry).mockReturnValueOnce(undefined);
 
-    const result = await handleCompactCommand(
-      {
-        ...buildCompactParams("/compact", {
-          commands: { text: true },
-          channels: { whatsapp: { allowFrom: ["*"] } },
-        } as OpenClawConfig),
-        sessionEntry: {
-          sessionId: "session-1",
-          updatedAt: Date.now(),
-        },
-      } as HandleCommandsParams,
-      true,
-    );
+    const result = await handleCompactCommand(buildLifecycleParams(), true);
 
     expect(result?.sessionCompaction).toEqual({
       compacted: false,
@@ -74,19 +74,7 @@ describe("handleCompactCommand lifecycle authority", () => {
       compacted: false,
     });
 
-    await handleCompactCommand(
-      {
-        ...buildCompactParams("/compact", {
-          commands: { text: true },
-          channels: { whatsapp: { allowFrom: ["*"] } },
-        } as OpenClawConfig),
-        sessionEntry: {
-          sessionId: "session-1",
-          updatedAt: Date.now(),
-        },
-      } as HandleCommandsParams,
-      true,
-    );
+    await handleCompactCommand(buildLifecycleParams(), true);
 
     expect(runSessionMutation).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -114,20 +102,7 @@ describe("handleCompactCommand lifecycle authority", () => {
     });
 
     try {
-      await handleCompactCommand(
-        {
-          ...buildCompactParams("/compact", {
-            commands: { text: true },
-            channels: { whatsapp: { allowFrom: ["*"] } },
-          } as OpenClawConfig),
-          opts: { replyOperation },
-          sessionEntry: {
-            sessionId: "session-1",
-            updatedAt: Date.now(),
-          },
-        } as HandleCommandsParams,
-        true,
-      );
+      await handleCompactCommand(buildLifecycleParams({ opts: { replyOperation } }), true);
 
       expect(replyOperation.phase).toBe("running");
     } finally {
@@ -140,19 +115,7 @@ describe("handleCompactCommand lifecycle authority", () => {
       new SessionMutationPreemptTimeoutError("agent:main:main", "compaction"),
     );
 
-    const result = await handleCompactCommand(
-      {
-        ...buildCompactParams("/compact", {
-          commands: { text: true },
-          channels: { whatsapp: { allowFrom: ["*"] } },
-        } as OpenClawConfig),
-        sessionEntry: {
-          sessionId: "session-1",
-          updatedAt: Date.now(),
-        },
-      } as HandleCommandsParams,
-      true,
-    );
+    const result = await handleCompactCommand(buildLifecycleParams(), true);
 
     expect(result).toEqual({
       shouldContinue: false,
@@ -272,13 +235,7 @@ describe("handleCompactCommand lifecycle authority", () => {
       });
 
       const result = await handleCompactCommand(
-        {
-          ...buildCompactParams("/compact", {
-            commands: { text: true },
-            channels: { whatsapp: { allowFrom: ["*"] } },
-          } as OpenClawConfig),
-          sessionEntry: initial,
-        } as HandleCommandsParams,
+        buildLifecycleParams({ sessionEntry: initial }),
         true,
         () => {
           if (!ownerCurrent) {

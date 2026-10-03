@@ -33,7 +33,6 @@ function buildParams(commandBody: string) {
 function beginActiveOperation(
   sessionKey: string,
   sessionId = "session-active",
-  taskSuggestionDeliveryMode?: "gateway",
   authorityRun = createMockFollowupRun({ run: { sessionId, sessionKey } }),
 ) {
   const operation = createReplyOperation({ sessionKey, sessionId, resetTriggered: false });
@@ -47,7 +46,6 @@ function beginActiveOperation(
   operation.attachBackend({
     kind: "embedded",
     cancel: vi.fn(),
-    taskSuggestionDeliveryMode,
     messageInjection: { isAvailable: () => true, queueMessage },
   });
   operations.push(operation);
@@ -109,7 +107,6 @@ describe("handleSteerCommand", () => {
     const { toolAuthorityFingerprint } = beginActiveOperation(
       "agent:main:main",
       "session-active",
-      undefined,
       createCommandAuthorityRun(params),
     );
 
@@ -130,7 +127,6 @@ describe("handleSteerCommand", () => {
     beginActiveOperation(
       "agent:main:main",
       "session-active",
-      undefined,
       createCommandAuthorityRun(activeParams),
     );
     const params = buildParams("/steer keep going");
@@ -141,18 +137,6 @@ describe("handleSteerCommand", () => {
     expect(result).toEqual({ shouldContinue: true, queueModeOverride: "steer" });
     expect(params.ctx.BodyForAgent).toBe("keep going");
     expect(params.command.commandBodyNormalized).toBe("keep going");
-    expect(queueMessage).not.toHaveBeenCalled();
-  });
-
-  it("keeps initiating surface options for prepared steering", async () => {
-    beginActiveOperation("agent:main:main", "session-active", "gateway");
-    const params = buildParams("/steer keep going");
-    params.opts = { taskSuggestionDeliveryMode: "gateway" };
-
-    const result = await handleSteerCommand(params, true);
-
-    expect(result).toEqual({ shouldContinue: true, queueModeOverride: "steer" });
-    expect(params.opts.taskSuggestionDeliveryMode).toBe("gateway");
     expect(queueMessage).not.toHaveBeenCalled();
   });
 
@@ -239,18 +223,6 @@ describe("handleSteerCommand", () => {
 
     expect(result).toEqual({ shouldContinue: true });
     expect(params.ctx.Body).toBe("keep going");
-    expect(params.ctx.BodyForAgent).toBe("keep going");
-    expect(params.command.commandBodyNormalized).toBe("keep going");
-    expect(queueMessage).not.toHaveBeenCalled();
-  });
-
-  it("does not contact the backend before prepared admission", async () => {
-    beginActiveOperation("agent:main:main");
-    const params = buildParams("/steer keep going");
-
-    const result = await handleSteerCommand(params, true);
-
-    expect(result).toEqual({ shouldContinue: true, queueModeOverride: "steer" });
     expect(params.ctx.BodyForAgent).toBe("keep going");
     expect(params.command.commandBodyNormalized).toBe("keep going");
     expect(queueMessage).not.toHaveBeenCalled();

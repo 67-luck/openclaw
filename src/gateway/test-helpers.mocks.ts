@@ -322,7 +322,7 @@ vi.mock("../cli/deps.js", async () => {
     ...actual,
     createDefaultDeps: () => ({
       ...base,
-      sendMessageWhatsApp: (...args: unknown[]) =>
+      whatsapp: (...args: unknown[]) =>
         (gatewayTestHoisted.sendWhatsAppMock as (...args: unknown[]) => unknown)(...args),
     }),
   };

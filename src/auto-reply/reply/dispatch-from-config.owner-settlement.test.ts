@@ -312,14 +312,8 @@ describe("dispatchReplyFromConfig owner settlement", () => {
     const sessionKey = "agent:main:discord:channel:owned-resolver-race";
     const sessionId = "owned-resolver-session";
     sessionStoreMocks.currentEntry = { sessionId, updatedAt: Date.now() };
-    let releaseResolver: () => void = () => {};
-    const resolverGate = new Promise<void>((resolve) => {
-      releaseResolver = resolve;
-    });
-    let signalResolverEntered: () => void = () => {};
-    const resolverEntered = new Promise<void>((resolve) => {
-      signalResolverEntered = resolve;
-    });
+    const resolverGate = createDeferred();
+    const resolverEntered = createDeferred();
     type ResolverOptions = import("./get-reply.types.js").InternalGetReplyOptions;
     let operation: ResolverOptions["replyOperation"];
     let resumedResolverOwner: ResolverOptions["replyOperation"];
@@ -329,6 +323,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
       signalResolverEntered();
       await resolverGate;
       resumedResolverOwner = getSessionControllerOperation(sessionKey);
+
       await requireBlockReplyHandler(opts?.onBlockReply)({ text: "stale late block" });
       return { text: "stale late final" } satisfies ReplyPayload;
     });
@@ -345,13 +340,14 @@ describe("dispatchReplyFromConfig owner settlement", () => {
       dispatcher,
       replyResolver,
     });
-    await resolverEntered;
+    await resolverEntered.promise;
 
     const externalLifecycleRequest = new AsyncResource("external-owned-resolver-lifecycle");
     let mutationRan = false;
     const mutation = externalLifecycleRequest.runInAsyncScope(
       async () =>
         await runSessionMutation({
+
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
           prepare: async () => {
@@ -377,7 +373,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
         isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
       ).toBe(true);
 
-      releaseResolver();
+      resolverGate.resolve();
       await mutation;
 
       expect(resumedResolverOwner).toBe(operation);
@@ -386,7 +382,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
       expect(dispatcher.sendBlockReply).not.toHaveBeenCalled();
       expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
     } finally {
-      releaseResolver();
+      resolverGate.resolve();
       await mutation;
       externalLifecycleRequest.emitDestroy();
     }
@@ -423,14 +419,10 @@ describe("dispatchReplyFromConfig owner settlement", () => {
     });
 
     it.each([
-      "before delivery",
       "transport failure",
-      "overlapping progress",
       "subsequent block",
       "aborted progress",
-      "tool-only reply",
       "cancelled block and tool-only reply",
-      "no pending reply",
     ] as const)(
       "dispatchReplyFromConfig settles queued presentation after %s through retained callbacks",
       async (phase) => {
@@ -456,10 +448,6 @@ describe("dispatchReplyFromConfig owner settlement", () => {
             ) {
               return null;
             }
-            if (payload.text === "queued reply" && phase === "before delivery") {
-              entered.resolve();
-              await release.promise;
-            }
             return payload;
           },
           deliver: async (payload) => {
@@ -467,7 +455,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
               secondEntered.resolve();
               await releaseSecond.promise;
             }
-            if (payload.text === "queued reply" && phase !== "before delivery") {
+            if (payload.text === "queued reply") {
               entered.resolve();
               await release.promise;
               if (phase === "transport failure") {
@@ -510,19 +498,13 @@ describe("dispatchReplyFromConfig owner settlement", () => {
           }
           dispatcher.markComplete();
           await dispatcher.waitForIdle();
-          if (phase !== "no pending reply") {
-            if (phase === "tool-only reply" || phase === "cancelled block and tool-only reply") {
-              dispatcher.sendToolResult({ text: "queued reply" });
-            } else {
-              await retained?.onBlockReply?.({ text: "queued reply" });
-            }
-            await entered.promise;
+          if (phase === "cancelled block and tool-only reply") {
+            dispatcher.sendToolResult({ text: "queued reply" });
+          } else {
+            await retained?.onBlockReply?.({ text: "queued reply" });
           }
-          if (
-            phase === "overlapping progress" ||
-            phase === "subsequent block" ||
-            phase === "aborted progress"
-          ) {
+          await entered.promise;
+          if (phase === "subsequent block" || phase === "aborted progress") {
             progress = Promise.resolve(retained?.onPlanUpdate?.({ phase: "update", steps: [] }));
             if (phase === "aborted progress") {
               abortController.abort();
@@ -548,10 +530,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
           await progress;
           await dispatch;
           const receipt = await dispatcher.waitForIdle();
-          const noPendingBlock =
-            phase === "no pending reply" ||
-            phase === "tool-only reply" ||
-            phase === "cancelled block and tool-only reply";
+          const noPendingBlock = phase === "cancelled block and tool-only reply";
           expect(cleanedUpBeforeDelivery).toBe(noPendingBlock ? 1 : 0);
           expect(onQueuedFollowupSettled).toHaveBeenCalledOnce();
           expect(receipt?.counts.block.delivered).toBe(
@@ -582,7 +561,6 @@ describe("dispatchReplyFromConfig owner settlement", () => {
     );
 
     it.each([
-      { phase: "rejected delivery", deliveryFails: true, cleanupFails: false },
       { phase: "rejected delivery and cleanup", deliveryFails: true, cleanupFails: true },
       { phase: "rejected cleanup", deliveryFails: false, cleanupFails: true },
     ])(

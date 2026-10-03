@@ -52,6 +52,7 @@ export function createMockReplyOperation(
     resetTriggered: false,
     terminalRecovery: false,
     acceptedSteeredInboundAudio: false,
+    sourceReplyDelivered: false,
     get toolAuthorityFingerprint() {
       return toolAuthorityFingerprint;
     },
@@ -64,7 +65,6 @@ export function createMockReplyOperation(
     staleExpiryReason: undefined,
     startedAtMs: Date.now(),
     lastActivityAtMs: Date.now(),
-    hasOwnedSessionId: vi.fn((candidate: string) => candidate === sessionId),
     captureOwnedSessionIds: vi.fn(() => new Set([sessionId])),
     recordActivity: vi.fn(),
     setPhase: vi.fn(),
@@ -73,7 +73,8 @@ export function createMockReplyOperation(
     markWaitingForGlobalLane: vi.fn(),
     markGlobalLaneWaitEnded: vi.fn(),
     markTerminalRecovery: vi.fn(),
-    markAcceptedSteeredInboundAudio: vi.fn(),
+    markSteeredInputAccepted: vi.fn(),
+    markSourceReplyDelivered: vi.fn(),
     bindToolAuthoritySnapshot: vi.fn((snapshot) => {
       if (replyOperation.result || (toolAuthoritySnapshot && toolAuthoritySnapshot !== snapshot)) {
         throw new Error("Reply operation cannot change tool authority after admission");
@@ -121,6 +122,7 @@ export function createMockReplyOperation(
     completeWithAfterClearBarrier: vi.fn((barrier) => {
       void Promise.resolve(barrier).then(complete, complete);
     }),
+
     fail: failMock,
     abort: vi.fn(() => true),
     abortForStall: vi.fn(() => true),

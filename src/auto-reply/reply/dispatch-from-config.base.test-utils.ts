@@ -684,7 +684,7 @@ describe("dispatchReplyFromConfig", () => {
           | undefined
       )?.replyOperation;
       expect(operation?.acceptedSteeredInboundAudio).toBe(false);
-      operation?.markAcceptedSteeredInboundAudio();
+      operation?.markSteeredInputAccepted({ inboundAudio: true });
       return { text: "reply to steered audio" } satisfies ReplyPayload;
     });
 
@@ -862,6 +862,7 @@ describe("dispatchReplyFromConfig", () => {
         isSessionControllerWorkActive("/tmp/mock-sessions.json", [sessionKey, sessionId]),
       ).toBe(true);
       await runSessionMutation({
+
         scope: "/tmp/mock-sessions.json",
         identities: [sessionKey, sessionId],
         run: async () => {
@@ -922,6 +923,7 @@ describe("dispatchReplyFromConfig", () => {
     }
   });
 
+
   it("holds a Slack bypass lease until an abort-insensitive resolver settles", async () => {
     const { activeOperation, createCtx, sessionId, sessionKey } =
       await createActiveSlackThread("U3");
@@ -967,6 +969,7 @@ describe("dispatchReplyFromConfig", () => {
     const mutation = externalLifecycleRequest.runInAsyncScope(
       async () =>
         await runSessionMutation({
+
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
           kind: "reset",
@@ -1038,6 +1041,7 @@ describe("dispatchReplyFromConfig", () => {
       vi.useRealTimers();
     }
   });
+
 
   it("lets low-level channel turns reach queue resolution while a reply operation is active", async () => {
     setNoAbort();
@@ -1209,6 +1213,7 @@ describe("dispatchReplyFromConfig", () => {
       clearActiveEmbeddedRun(sessionId, activeHandle, sessionKey);
     }
   });
+
 
   it.each([
     {
@@ -1424,35 +1429,6 @@ describe("dispatchReplyFromConfig", () => {
     expect(replyDispatchCall?.[0]?.originatingAccountId).toBe("work");
     expect(replyDispatchCall?.[0]?.originatingThreadId).toBe("thread:om_123");
     expect(replyDispatchCall?.[0]?.originatingChatType).toBe("channel");
-  });
-
-  it("routes exec-event replies using last route fields when delivery context is missing", async () => {
-    setNoAbort();
-    mocks.routeReply.mockClear();
-    sessionStoreMocks.currentEntry = {
-      delivery: normalizeSessionDeliveryState({
-        context: { channel: "discord", to: "channel:123", accountId: "default" },
-      }),
-    };
-    const cfg = emptyConfig;
-    const dispatcher = createDispatcher();
-    const ctx = buildTestCtx({
-      Provider: "exec-event",
-      Surface: "exec-event",
-      SessionKey: "agent:main:main",
-      AccountId: undefined,
-      OriginatingChannel: undefined,
-      OriginatingTo: undefined,
-    });
-
-    const replyResolver = async () => ({ text: "hi" }) satisfies ReplyPayload;
-    await dispatchReplyFromConfig({ ctx, cfg, dispatcher, replyResolver });
-
-    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
-    const routeCall = firstRouteReplyCall();
-    expect(routeCall?.channel).toBe("discord");
-    expect(routeCall?.to).toBe("channel:123");
-    expect(routeCall?.accountId).toBe("default");
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

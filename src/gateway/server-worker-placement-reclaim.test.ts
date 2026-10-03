@@ -180,8 +180,8 @@ async function scenario(
             baseManifestRaw: raw,
             currentManifestRaw: raw,
           });
-          stagedResult.record(stagedResult.ref);
-          journal.commit(ref);
+          await stagedResult.record(stagedResult.ref);
+          await journal.commit(ref);
 
           return { ...result, manifestRef: ref, changed: false };
         });
@@ -387,6 +387,7 @@ async function scenario(
     // A preceding lifecycle owner holds ingress pending while Stop joins that
     // same owner. This fixes ordering without timer delays or editing ingress.
     await runSessionMutation({
+
       scope: storePath,
       identities: [REQUEST.sessionKey, REQUEST.sessionId],
       run: async () => {
@@ -402,7 +403,7 @@ async function scenario(
     expect(oldResult.ok).toBe(false);
     expect(harness.environments.get(active.environmentId!)?.state).toBe("destroying");
     expect(harness.environments.destroy).toHaveBeenCalledOnce();
-    expect(placements.listPendingWorkspaceResults()).toEqual([
+    expect(await placements.listPendingWorkspaceResultsAsync()).toEqual([
       expect.objectContaining({ workspaceAcceptedAtMs: expect.any(Number) }),
     ]);
     await coordinated.reconcileActive();
@@ -445,7 +446,7 @@ async function scenario(
     finalPlacementState: finalPlacement?.state,
     environmentState: environment?.state,
     providerDestroyAttempts: vi.mocked(harness.environments.destroy).mock.calls.length,
-    pendingWorkspaceResults: placements.listPendingWorkspaceResults().length,
+    pendingWorkspaceResults: (await placements.listPendingWorkspaceResultsAsync()).length,
     preexistingAdmissionAccepted: oldResult.ok,
     preexistingResponses: old.respond.mock.calls,
     explicitNewAdmissionAccepted: freshResult.ok,

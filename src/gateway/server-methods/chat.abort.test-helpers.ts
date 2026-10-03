@@ -137,7 +137,7 @@ type ChatAbortTestContext = Record<string, unknown> & {
   agentRunSeq: Map<string, number>;
   broadcast: (...args: unknown[]) => void;
   nodeSendToSession: (...args: unknown[]) => void;
-  logGateway: { warn: (...args: unknown[]) => void };
+  logGateway: { info: (...args: unknown[]) => void; warn: (...args: unknown[]) => void };
 };
 
 type ChatAbortRespondMock = Mock<RespondFn>;
@@ -165,6 +165,7 @@ export function createChatAbortContext(
     nodeSendToSession: vi.fn(),
     logGateway: { warn: vi.fn() },
     ...contextOverrides,
+
   } as ChatAbortTestContext;
   // Synthetic registrations retire through the real index owner only after the
   // producer's exact source receipt, preserving replacements and foreign runs.

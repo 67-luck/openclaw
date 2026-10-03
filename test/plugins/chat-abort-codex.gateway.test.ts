@@ -108,6 +108,7 @@ describe("chat.abort native transcript settlement", () => {
         nativeFirst: false,
         superseded: true,
         warningDeliveryFails,
+
       })),
     ].flatMap((test) =>
       (["run", "session"] as const).map((stopScope) => Object.assign({ stopScope }, test)),
@@ -115,6 +116,7 @@ describe("chat.abort native transcript settlement", () => {
   )(
     "settles Stop history ($owner, scope=$stopScope, native text=$hasNativeText, native first=$nativeFirst, superseded=$superseded, warning delivery fails=$warningDeliveryFails)",
     async ({ owner, stopScope, hasNativeText, nativeFirst, superseded, warningDeliveryFails }) => {
+
       await withOpenClawTestState({ label: "chat-abort-codex" }, async () => {
         const target = await fixture.createTarget();
         session.target = target;
@@ -135,7 +137,8 @@ describe("chat.abort native transcript settlement", () => {
           trackExecution: <T>(run: () => T | Promise<T>) => execution.track(run),
         };
         const context = createChatAbortContext(dispatchContext);
-        if (warningDeliveryFails) {
+        // Failed warning delivery must release the superseded producer too.
+        if (superseded) {
           vi.mocked(context.broadcast).mockImplementation((event, payload) => {
             if (event === "chat" && isRecord(payload) && payload.state === "error") {
               throw new Error("Synthetic warning transport failure");
@@ -298,11 +301,9 @@ describe("chat.abort native transcript settlement", () => {
               expect.anything(),
             );
             expect(loadSessionEntry(target)?.activeWriterRunId).toBe("run-successor");
-            if (warningDeliveryFails) {
-              expect(context.logGateway.warn).toHaveBeenCalledWith(
-                expect.stringContaining("persistence warning delivery failed"),
-              );
-            }
+            expect(context.logGateway.warn).toHaveBeenCalledWith(
+              expect.stringContaining("persistence warning delivery failed"),
+            );
             return;
           }
           expect(messages).toHaveLength(1);

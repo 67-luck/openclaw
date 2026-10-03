@@ -36,6 +36,7 @@ import {
   scheduleFollowupDrainAfterReplyOperationClear,
 } from "./agent-runner-core.js";
 import {
+  continueStalledReplyTurn,
   createReplyAgentRestartRecoveryController,
   executePreparedReplyAgentRun,
 } from "./agent-runner-execute.js";
@@ -44,6 +45,7 @@ import { createShouldEmitToolOutput, createShouldEmitToolResult } from "./agent-
 import { runReplyQuestionInput } from "./agent-runner-question-input.js";
 import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
 import { prepareReplyStreamingDelivery } from "./agent-runner-streaming-delivery.js";
+
 import { createFollowupRunner } from "./followup-runner.js";
 import { REPLY_RUN_STILL_SHUTTING_DOWN_TEXT } from "./get-reply-run-queue.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
@@ -418,6 +420,7 @@ export async function runReplyAgent(
         "message-id",
         queuedRunFollowupTurn,
         false,
+
       );
       if (!enqueued) {
         releaseAdmissionTicket();
@@ -576,6 +579,7 @@ export async function runReplyAgent(
     activeSessionStore = turn.sessionStore;
     const replyOperation = turn.operation;
     const {
+
       applyReplyToMode,
       blockReplyPipeline,
       cfg,

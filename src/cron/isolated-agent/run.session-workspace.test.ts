@@ -250,6 +250,7 @@ describe("session-bound cron workspace", () => {
     };
     let bindingRemoved = false;
     const mutation = runSessionMutation({
+
       ...target,
       prepare: async () => {
         const drained = interruptSessionControllerEffects(target);

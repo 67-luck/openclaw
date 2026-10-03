@@ -1,11 +1,17 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { waitForFixtureFile } from "../../../test/helpers/process-wait.js";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  fixtureReceiptClientSource,
+  openFixtureReceiptChannel,
+  type FixtureReceiptChannel,
+} from "../../../test/helpers/fixture-receipts.js";
+import { withinTest } from "../../../test/helpers/promise.js";
 import { withTimeout } from "../../infra/fs-safe.js";
 import * as commandRunner from "../../process/exec.js";
 import type { SpawnResult } from "../../process/exec.js";
@@ -15,6 +21,7 @@ import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../../state/openclaw-state-db.js";
+import { killPidIfAlive } from "../../test-utils/process-tree.js";
 import { updateRegistryWorktree } from "./registry.js";
 import { ManagedWorktreeService } from "./service.js";
 import { useManagedWorktreeTestRepository } from "./service.test-support.js";
@@ -28,6 +35,15 @@ describe("ManagedWorktreeService repository code isolation", () => {
   let repo: string;
   let sentinel: string;
   let service: ManagedWorktreeService;
+  let receipts: FixtureReceiptChannel;
+
+  beforeAll(async () => {
+    receipts = await openFixtureReceiptChannel();
+  });
+
+  afterAll(async () => {
+    await receipts.close();
+  });
 
   beforeEach(async () => {
     root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-worktree-hooks-")));
@@ -108,15 +124,25 @@ describe("ManagedWorktreeService repository code isolation", () => {
     },
   );
 
-  it("stops setup and removes the unbound worktree when creation is aborted", async () => {
+  it("stops setup and removes the unbound worktree when creation is aborted", async ({
+    signal,
+  }) => {
     const setup = path.join(repo, ".openclaw");
     const pidFile = path.join(setup, "setup-pid");
-    const release = path.join(setup, "release");
     await fs.mkdir(setup);
     await fs.writeFile(
       path.join(setup, "worktree-setup.sh"),
-      '#!/bin/sh\nprintf "%s" "$$" > "$OPENCLAW_SOURCE_TREE_PATH/.openclaw/setup-pid"\nwhile [ ! -f "$OPENCLAW_SOURCE_TREE_PATH/.openclaw/release" ]; do sleep 0.05; done\n',
+      `#!/bin/sh\nexec '${process.execPath.replaceAll("'", "'\\''")}' "$OPENCLAW_SOURCE_TREE_PATH/.openclaw/setup.mjs"\n`,
       { mode: 0o755 },
+    );
+    await fs.writeFile(
+      path.join(setup, "setup.mjs"),
+      `import { writeFileSync } from 'node:fs';
+      ${fixtureReceiptClientSource(receipts.endpoint)}
+      writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+      sendReceipt(${JSON.stringify(pidFile)}, 'ready');
+      setInterval(() => {}, 1000);
+      `,
     );
     const controller = new AbortController();
     const creation = service.create({
@@ -134,6 +160,7 @@ describe("ManagedWorktreeService repository code isolation", () => {
         waitForFixtureFile(pidFile, creation),
         SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
         "setup process readiness",
+
       );
       const pid = Number.parseInt(await fs.readFile(pidFile, "utf8"), 10);
       expect(Number.isInteger(pid) && pid > 0).toBe(true);
@@ -141,6 +168,7 @@ describe("ManagedWorktreeService repository code isolation", () => {
       expect(
         await withTimeout(outcome, SESSION_CONTROLLER_DRAIN_TIMEOUT_MS, "worktree cancellation"),
       ).toBeInstanceOf(Error);
+
       expect(() => process.kill(pid, 0)).toThrow();
       expect(await service.list()).toEqual([]);
       const worktrees = await execFileAsync("git", ["-C", repo, "worktree", "list", "--porcelain"]);
@@ -154,7 +182,10 @@ describe("ManagedWorktreeService repository code isolation", () => {
       ]);
       expect(branches.stdout.trim()).toBe("");
     } finally {
-      await fs.writeFile(release, "release setup if the regression failed\n");
+      controller.abort(new Error("release setup if the regression failed"));
+      if (existsSync(pidFile)) {
+        killPidIfAlive(Number.parseInt(readFileSync(pidFile, "utf8"), 10));
+      }
       await outcome;
     }
   });

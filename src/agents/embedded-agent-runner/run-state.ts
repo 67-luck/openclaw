@@ -87,12 +87,36 @@ export type EmbeddedAgentQueueHandle = {
   supportsTranscriptCommitWait?: boolean;
   /** True only when queueMessage preserves images supplied in its options. */
   supportsQueueMessageImages?: boolean;
+  /** False keeps inbound steering with the turn owner's profile; omission permits other profiles. */
+  readonly supportsCrossProfileSteering?: boolean;
   cancel?: (reason?: "user_abort" | "restart" | "superseded") => void;
   abort: (reason?: "restart") => void;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   terminalReplyExpectation?: ReplyExpectation;
   taskSuggestionDeliveryMode?: TaskSuggestionDeliveryMode;
 };
+
+export type EmbeddedAgentQueueMessageOutcome =
+  | {
+      queued: true;
+      sessionId: string;
+      /** Physical execution selected by queue admission, retained across the awaited receipt. */
+      runId?: string;
+      target: "embedded_run" | "reply_run";
+      gatewayHealth: "live";
+      /** Input is non-replayable, but its delivery or commitment could not be confirmed. */
+      transcriptCommit?: "unconfirmed";
+      errorMessage?: string;
+      deliveredAtMs?: number;
+      enqueuedAtMs?: number;
+    }
+  | {
+      queued: false;
+      sessionId: string;
+      reason: EmbeddedAgentQueueFailureReason;
+      gatewayHealth: "live";
+      errorMessage?: string;
+    };
 
 export type EmbeddedAgentQueueFailureReason =
   | "input_visibility_mismatch"
@@ -183,6 +207,7 @@ export type EmbeddedRunCompletionClaim = {
   promoted: boolean;
   settleRegistration: (registration: EmbeddedRunCompletionRegistration | undefined) => void;
 };
+
 
 export type AbandonedEmbeddedRun = {
   sessionId: string;
@@ -295,8 +320,12 @@ export const EMBEDDED_RUN_COMPLETION_CLAIMS =
   embeddedRunState.completionClaims ??
   (embeddedRunState.completionClaims = new Map<string, EmbeddedRunCompletionClaim>());
 
+
 /** Identity-only dispatch must resolve the same participant owner as in-process tools. */
-export function captureActiveEmbeddedRunPersonalToolParticipants(identity: AgentRuntimeIdentity) {
+export function captureActiveEmbeddedRunPersonalToolParticipants(
+  identity: AgentRuntimeIdentity,
+  options?: { allowMissingRegistry?: boolean },
+) {
   const instance = identity.operationalRunInstance;
   const attachment = ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(instance.runId);
   if (!attachment) {
@@ -305,6 +334,10 @@ export function captureActiveEmbeddedRunPersonalToolParticipants(identity: Agent
   const handle = attachment.handle;
   const registration = attachment;
   const toolAuthority = registration?.toolAuthority;
+  // Session fencing only applies to runs that admitted personal-tool participants.
+  if (options?.allowMissingRegistry && !toolAuthority?.personalToolParticipants) {
+    return undefined;
+  }
   const delegatedAuthority = registration?.delegatedAuthority;
   const ownsRegistration = () =>
     registration !== undefined &&
@@ -440,9 +473,9 @@ export const ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE =
 export const ABANDONED_EMBEDDED_RUNS_BY_SESSION_ID =
   embeddedRunState.abandonedRunsBySessionId ??
   (embeddedRunState.abandonedRunsBySessionId = new Map<string, AbandonedEmbeddedRun>());
+
 export const ABANDONED_EMBEDDED_RUN_SESSION_IDS_BY_KEY =
-  embeddedRunState.abandonedRunSessionIdsByKey ??
-  (embeddedRunState.abandonedRunSessionIdsByKey = new Map<string, string>());
+  embeddedRunState.abandonedRunSessionIdsByKey;
 export const ABANDONED_EMBEDDED_RUN_SESSION_IDS_BY_FILE =
   embeddedRunState.abandonedRunSessionIdsByFile ??
   (embeddedRunState.abandonedRunSessionIdsByFile = new Map<string, string>());
@@ -452,6 +485,7 @@ export const EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS =
     EmbeddedAgentQueueHandle,
     () => Promise<void>
   >());
+
 
 function evictPriorLifecycleEmbeddedRuns(): void {
   const staleHandles = new Set<EmbeddedAgentQueueHandle>();

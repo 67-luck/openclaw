@@ -32,6 +32,31 @@ vi.mock("../chat-attachments.js", async () => {
   };
 });
 
+async function invoke(
+  id: string,
+  params: Record<string, unknown>,
+  client: Parameters<NonNullable<typeof agentHandlers.agent>>[0]["client"] = null,
+) {
+  const respond = vi.fn<RespondFn>();
+  const dedupe = new Map();
+  await expectDefined(agentHandlers.agent, "agentHandlers.agent test invariant").call(
+    agentHandlers,
+    {
+      req: { id } as never,
+      params: { sessionKey: mockDeletedAgentSession(), ...params },
+      respond,
+      context: {
+        dedupe,
+        chatAbortControllers: new Map(),
+        getRuntimeConfig: () => ({}),
+      } as never,
+      client,
+      isWebchatConnect: () => false,
+    },
+  );
+  return { respond, dedupe };
+}
+
 describe("agent RPC deleted-agent guard", () => {
   beforeEach(() => {
     resetDeletedAgentSessionMocks();
@@ -99,6 +124,7 @@ describe("agent RPC deleted-agent guard", () => {
       },
     );
 
+
     expect(respond).toHaveBeenCalledWith(false, undefined, {
       code: ErrorCodes.INVALID_REQUEST,
       message: 'Agent "deleted-agent" no longer exists in configuration',
@@ -132,6 +158,7 @@ describe("agent RPC deleted-agent guard", () => {
           client: { connect: { scopes: ["operator.admin"] } } as never,
           isWebchatConnect: () => false,
         },
+
       );
 
       expect(respond).toHaveBeenCalledWith(false, undefined, {
@@ -144,13 +171,8 @@ describe("agent RPC deleted-agent guard", () => {
   );
 
   it("rejects deleted-agent sessions before stale exec followup dedupe", async () => {
-    const orphanKey = mockDeletedAgentSession();
-
-    const respond = vi.fn() as unknown as RespondFn;
-    const dedupe = new Map();
-
-    await expectDefined(agentHandlers.agent, "agentHandlers.agent test invariant").call(
-      agentHandlers,
+    const { respond, dedupe } = await invoke(
+      "req-followup",
       {
         req: { id: "req-followup" } as never,
         params: {
@@ -166,7 +188,9 @@ describe("agent RPC deleted-agent guard", () => {
         } as never,
         client: { connect: { client: { mode: "backend" } } } as never,
         isWebchatConnect: () => false,
+
       },
+      { connect: { client: { mode: "backend" } } } as never,
     );
 
     expect(respond).toHaveBeenCalledWith(false, undefined, {

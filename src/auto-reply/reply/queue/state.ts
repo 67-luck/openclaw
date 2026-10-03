@@ -1,4 +1,3 @@
-// Tracks queue state for active, pending, and recently deduped reply runs.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ModelCatalogEntry } from "../../../agents/model-catalog.types.js";
 import type { ModelFallbackRouteResolution } from "../../../agents/model-fallback.types.js";
@@ -20,6 +19,7 @@ import { completeFollowupRunLifecycle } from "./lifecycle.js";
 import type { FollowupRun, QueueDropPolicy, QueueSettings } from "./types.js";
 
 type FollowupQueueState = SessionControllerMailbox;
+
 
 export const DEFAULT_QUEUE_DEBOUNCE_MS = 500;
 export const DEFAULT_QUEUE_CAP = 20;
@@ -50,14 +50,12 @@ export function getExistingFollowupQueue(
 }
 
 export function hasPendingFollowupQueueWork(keys: Iterable<string | undefined>): boolean {
-  const seen = new Set<string>();
   for (const key of keys) {
     const cleaned = normalizeOptionalString(key);
-    if (!cleaned || seen.has(cleaned)) {
+    if (!cleaned) {
       continue;
     }
-    seen.add(cleaned);
-    const queue = getExistingFollowupQueue(cleaned);
+    const queue = FOLLOWUP_QUEUES.get(cleaned);
     if (queue && (queue.items.length > 0 || queue.inFlight.size > 0 || queue.droppedCount > 0)) {
       return true;
     }
@@ -87,7 +85,6 @@ export function trimSummaryElisionsToCap(queue: SummaryElisionCapState): void {
       }
       const [source] = entry.sources.splice(sourceIndex, 1);
       entry.summaryLines.splice(sourceIndex, 1);
-      entry.count = entry.sources.length;
       queue.evictedSummaryCount += 1;
       queue.droppedCount = Math.max(0, queue.droppedCount - 1);
       for (const [original, compact] of entry.sourceRefs) {

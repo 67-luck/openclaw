@@ -19,13 +19,8 @@ export type DiagnosticArgumentChurnActivity = {
 // same-millisecond ties between progress, churn observations, and merged refs.
 let diagnosticActivitySequence = 0;
 
-function nextDiagnosticActivitySequence(): number {
-  diagnosticActivitySequence += 1;
-  return diagnosticActivitySequence;
-}
-
 export function recordDiagnosticActivityProgress(activity: DiagnosticArgumentChurnActivity): void {
-  activity.lastProgressSequence = nextDiagnosticActivitySequence();
+  activity.lastProgressSequence = ++diagnosticActivitySequence;
 }
 
 export type DiagnosticArgumentChurnObservationParams = {
@@ -122,7 +117,7 @@ function recordArgumentChurnActivityObservation(
     activity.argumentChurnRunId = params.runId;
   }
   activity.argumentChurnObservationAt = params.now;
-  activity.argumentChurnObservationSequence = nextDiagnosticActivitySequence();
+  activity.argumentChurnObservationSequence = ++diagnosticActivitySequence;
 }
 
 function updateArgumentChurnPolicyWait(
@@ -264,7 +259,7 @@ export function clearArgumentChurnActivity(
   const cleared = activity.argumentChurnStartedAt !== undefined;
   activity.argumentChurnStartedAt = undefined;
   activity.argumentChurnObservationAt = params.now ?? Date.now();
-  activity.argumentChurnObservationSequence = nextDiagnosticActivitySequence();
+  activity.argumentChurnObservationSequence = ++diagnosticActivitySequence;
   activity.argumentChurnRunId = params.runId;
   return cleared;
 }

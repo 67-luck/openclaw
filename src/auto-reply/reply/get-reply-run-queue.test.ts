@@ -10,29 +10,29 @@ import {
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolvePreparedReplyQueueState } from "./get-reply-run-queue.js";
 
-describe("resolvePreparedReplyQueueState", () => {
-  it("continues immediately when queue policy does not require waiting", async () => {
-    const resolveBusyState = vi.fn(() => ({
-      activeSessionId: undefined,
-      isActive: false,
-      isStreaming: false,
-    }));
 
-    const result = await resolvePreparedReplyQueueState({
-      activeRunQueueAction: "enqueue-followup",
-      activeSessionId: undefined,
+describe("waitForPreparedReplyQueue", () => {
+  it("waits for the active session before refreshing and rechecking admission", async () => {
+    const order: string[] = [];
+    const interruptActiveRun = vi.fn();
+    const result = await waitForPreparedReplyQueue({
+      activeSessionId: "session-active",
       queueMode: "followup",
-      interruptActiveRun: vi.fn(),
-      waitForActiveRunEnd: vi.fn(),
-      refreshPreparedState: vi.fn(),
-      resolveBusyState,
+      interruptActiveRun,
+      waitForActiveRunEnd: async (sessionId) => {
+        order.push(`wait:${sessionId}`);
+      },
+      refreshPreparedState: async () => {
+        order.push("refresh");
+      },
+      resolveBusyState: () => {
+        order.push("recheck");
+        return { isActive: false };
+      },
     });
-
-    expect(result).toEqual({
-      kind: "continue",
-      busyState: { activeSessionId: undefined, isActive: false, isStreaming: false },
-    });
-    expect(resolveBusyState).toHaveBeenCalledOnce();
+    expect(result).toBeUndefined();
+    expect(order).toEqual(["wait:session-active", "refresh", "recheck"]);
+    expect(interruptActiveRun).not.toHaveBeenCalled();
   });
 
   it("aborts and waits for interrupt mode before continuing", async () => {
@@ -47,8 +47,7 @@ describe("resolvePreparedReplyQueueState", () => {
       isStreaming: false,
     }));
 
-    const result = await resolvePreparedReplyQueueState({
-      activeRunQueueAction: "run-now",
+    const result = await waitForPreparedReplyQueue({
       activeSessionId: "session-active",
       queueMode: "interrupt",
       interruptActiveRun,
@@ -60,15 +59,11 @@ describe("resolvePreparedReplyQueueState", () => {
     expect(interruptActiveRun).toHaveBeenCalledOnce();
     expect(waitForActiveRunEnd).not.toHaveBeenCalled();
     expect(refreshPreparedState).toHaveBeenCalledOnce();
-    expect(result).toEqual({
-      kind: "continue",
-      busyState: { activeSessionId: undefined, isActive: false, isStreaming: false },
-    });
+    expect(result).toBeUndefined();
   });
 
   it("rechecks after wait and returns shutdown reply when still busy", async () => {
-    const result = await resolvePreparedReplyQueueState({
-      activeRunQueueAction: "run-now",
+    const result = await waitForPreparedReplyQueue({
       activeSessionId: "session-active",
       queueMode: "interrupt",
       interruptActiveRun: vi.fn(async () => true),
@@ -82,10 +77,7 @@ describe("resolvePreparedReplyQueueState", () => {
     });
 
     expect(result).toEqual({
-      kind: "reply",
-      reply: {
-        text: "⚠️ Previous run is still shutting down. Please try again in a moment.",
-      },
+      text: "⚠️ Previous run is still shutting down. Please try again in a moment.",
     });
   });
   it("does not admit after interrupt timeout merely because the old slot cleared", async () => {

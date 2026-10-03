@@ -7,8 +7,11 @@ import {
 import {
   createAgentRunRestartAbortError,
   createAgentRunSupersededAbortError,
+  createSessionPlacementSettlementClosedAbortError,
 } from "../../agents/run-termination.js";
 import type { SessionPlacementTurnParams } from "../../agents/session-placement-admission.js";
+import { withSessionPlacementForcedTerminalSettlement } from "../../agents/session-placement-forced-terminal-settlement.js";
+import { registerReplyOperationSuccessorBarrier } from "../../auto-reply/reply/reply-run-registry.js";
 import {
   getAgentEventLifecycleGeneration,
   isAgentEventLifecycleGenerationCurrent,
@@ -22,6 +25,7 @@ import {
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
 import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
 import type { SessionWatchdogWait } from "../../sessions/session-controller.watchdog.js";
+
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
 import { sameWorkerSessionTurnClaim } from "./placement-record.js";
 import type { WorkerSessionPlacementStore, WorkerSessionTurnClaim } from "./placement-store.js";
@@ -30,7 +34,7 @@ export type ActiveWorkerTurn = {
   claim: WorkerSessionTurnClaim;
   sessionKey: string;
   signal: AbortSignal;
-  recoverTerminal?: () => string | undefined;
+  recoverTerminal?: (assertCurrent?: () => void) => Promise<string | undefined>;
   dispose: () => void;
 };
 
@@ -42,6 +46,7 @@ export type WorkerTurnLiveEventOwner = {
   ) => SessionWatchdogWait | undefined;
   record: (event: WorkerLiveEventParams["event"]) => void;
   isCancelled: () => boolean;
+  isCancelledFinishing: (request: WorkerLiveEventParams) => boolean;
 };
 
 type WorkerRunOwner = WorkerTurnLiveEventOwner & {
@@ -50,18 +55,14 @@ type WorkerRunOwner = WorkerTurnLiveEventOwner & {
 
 const activeOwners = new Map<string, WorkerRunOwner>();
 
-export function createWorkerTurnRunOwner(params: {
+export async function createWorkerTurnRunOwner(params: {
   placements: WorkerSessionPlacementStore;
   claim: WorkerSessionTurnClaim;
   turn: SessionPlacementTurnParams;
   sessionKey: string;
-}): ActiveWorkerTurn {
-  const { claim, turn, sessionKey } = params;
-  const controller = new AbortController();
-  const signal = turn.abortSignal
-    ? AbortSignal.any([turn.abortSignal, controller.signal])
-    : controller.signal;
-  let closed = false;
+  assertCurrent?: () => void;
+}): Promise<ActiveWorkerTurn> {
+  const { claim: requestedClaim, turn, sessionKey } = params;
   const lifecycleGeneration = turn.lifecycleGeneration ?? getAgentEventLifecycleGeneration();
   const startedAtMs = Date.now();
   const executionDeadlineAtMs = startedAtMs + turn.timeoutMs;
@@ -192,6 +193,7 @@ export function createWorkerTurnRunOwner(params: {
       );
     },
   };
+
 }
 
 // Capture before buffering or notifying listeners: neither a reused run ID nor

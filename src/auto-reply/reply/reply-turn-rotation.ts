@@ -23,7 +23,6 @@ export function createReplyTurnRotationEvidence(params: {
 }) {
   const controller = params.controller ?? getSessionControllerEntry(params.sessionKey);
   const waitedRotations = new Map<ReplyRotationSource["databaseIdentity"], ReplyRotationSource>();
-  const observedOperations = new Map<ReplyOperation, OpenClawAgentDatabaseIdentity | undefined>();
   // Barrier snapshots retain their source lane after rekeying; active owners do not.
   const isCurrent = (source: ReplyRotationSource) =>
     !isReplyOperationAbortedForRestart(source.operation) &&
@@ -97,6 +96,7 @@ export function createReplyTurnRotationEvidence(params: {
             lifecycleAdmissionByOperation.get(operation)?.databaseIdentity === databaseIdentity,
         );
     },
+
     recordBarrierSources(sources: ReplyRunAdmissionSource[] = []) {
       recordSources(sources, true);
     },
@@ -149,23 +149,14 @@ export function createReplyTurnRotationEvidence(params: {
       for (const candidate of new Set([
         ...(params.expectedActiveOperations ?? []),
         params.activeAtAdmission,
-        ...observedOperations.keys(),
         registeredOperation,
       ])) {
         if (candidate) {
-          const currentDatabaseIdentity =
-            lifecycleAdmissionByOperation.get(candidate)?.databaseIdentity;
-          const databaseIdentity = observedOperations.has(candidate)
-            ? observedOperations.get(candidate)
-            : currentDatabaseIdentity;
-          if (databaseIdentity !== currentDatabaseIdentity) {
-            continue;
-          }
           let source = mergeWaitedRotation({
             operation: candidate,
             sessionId: candidate.sessionId,
             sessionIds: candidate.captureOwnedSessionIds(),
-            databaseIdentity,
+            databaseIdentity: lifecycleAdmissionByOperation.get(candidate)?.databaseIdentity,
             fromBarrier: false,
           });
           if (!isCurrent(source)) {

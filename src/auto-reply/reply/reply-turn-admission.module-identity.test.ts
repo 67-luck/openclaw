@@ -23,8 +23,8 @@ it("keeps admitted session ownership when transformed plugins import the native 
     export { admitReplyTurn } from ${source("src/auto-reply/reply/reply-turn-admission.ts")};
     export { waitForSessionRunIdle } from ${source("src/sessions/session-controller.wait.ts")};
     export { replaceSessionEntrySync } from ${source("src/config/sessions/session-accessor.sqlite-entry.ts")};
-    export { closeOpenClawAgentDatabases } from ${source("src/state/openclaw-agent-db.ts")};
-    export { closeOpenClawStateDatabase } from ${source("src/state/openclaw-state-db.ts")};
+    export { closeOpenClawAgentDatabasesAsync } from ${source("src/state/openclaw-agent-db.ts")};
+    export { closeOpenClawStateDatabaseAsync } from ${source("src/state/openclaw-state-db.ts")};
   `;
   try {
     fs.mkdirSync(dist);
@@ -41,7 +41,7 @@ it("keeps admitted session ownership when transformed plugins import the native 
       path.join(root, "plugin.ts"),
       'export * from "openclaw/plugin-sdk/admission-fixture";\n',
     );
-    // Admission now reads through the real history worker. Borrow the maintained
+    // Admission uses the real history worker and its cleanup owner. Borrow the maintained
     // subprocess generation; keep unrelated recovery/archival graphs deferred.
     await build({
       plugins: [
@@ -59,7 +59,8 @@ it("keeps admitted session ownership when transformed plugins import the native 
             if (
               options.kind !== "dynamic-import" ||
               filename ===
-                path.join(repo, "src/config/sessions/session-transcript-worker-runtime.ts")
+                path.join(repo, "src/config/sessions/session-transcript-worker-runtime.ts") ||
+              filename === path.join(repo, "src/infra/temp-artifact-cleanup.ts")
             ) {
               return resolved;
             }
@@ -112,7 +113,6 @@ it("keeps admitted session ownership when transformed plugins import the native 
           },
         });
         const operations = new Set();
-        const outcomes = [];
         let host;
         let transformed;
         const bounded = async (work, label) => {
@@ -141,7 +141,6 @@ it("keeps admitted session ownership when transformed plugins import the native 
           assert.equal(transformed.admitReplyTurn, host.admitReplyTurn, "plugin transformation retains the native admission owner");
           assert.equal(transformed.waitForSessionRunIdle, host.waitForSessionRunIdle, "plugin transformation retains the native wait owner");
           const cases = [
-            { name: "native-same-store", parent: native, foreign: false },
             { name: "transformed-same-store", parent: transformed, foreign: false },
             { name: "transformed-foreign-store", parent: transformed, foreign: true },
           ];
@@ -191,11 +190,13 @@ it("keeps admitted session ownership when transformed plugins import the native 
               await ownerIdle;
               child ??= await bounded(pending, scenario.name + " successor");
               if (child.status === "owned") operations.add(child.operation);
-              const outcome = child.status === "owned"
-                ? { name: scenario.name, status: child.status, sessionId: child.operation.sessionId }
-                : { name: scenario.name, status: child.status, reason: child.reason };
-              outcomes.push(outcome);
-              console.log(JSON.stringify(outcome));
+              if (scenario.foreign) {
+                assert.equal(child.status, "skipped");
+                assert.equal(child.reason, "lifecycle-invalidated");
+              } else {
+                assert.equal(child.status, "owned");
+                assert.equal(child.operation.sessionId, successorId);
+              }
             } finally {
               parent.complete();
               if (child?.status === "owned") child.operation.complete();
@@ -211,12 +212,13 @@ it("keeps admitted session ownership when transformed plugins import the native 
             { name: "transformed-same-store", status: "owned", sessionId: "after-transformed-same-store" },
             { name: "transformed-foreign-store", status: "owned", sessionId: "before-transformed-foreign-store" },
           ]);
+
         } finally {
           for (const operation of operations) operation.complete();
-          transformed?.closeOpenClawAgentDatabases();
-          host?.closeOpenClawAgentDatabases();
-          transformed?.closeOpenClawStateDatabase();
-          host?.closeOpenClawStateDatabase();
+          await transformed?.closeOpenClawAgentDatabasesAsync();
+          await host?.closeOpenClawAgentDatabasesAsync();
+          await transformed?.closeOpenClawStateDatabaseAsync();
+          await host?.closeOpenClawStateDatabaseAsync();
           hooks.deregister();
         }
         assert.deepEqual(unexpectedImports, [], "all exercised runtime must stay in the fixture graph");

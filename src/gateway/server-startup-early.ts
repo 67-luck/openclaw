@@ -49,6 +49,7 @@ export async function startGatewayEarlyRuntime(params: {
   refreshPresence: GatewayMaintenanceParams["refreshPresence"];
   resetEventLoopHealth: GatewayMaintenanceParams["resetEventLoopHealth"];
   logHealth: GatewayMaintenanceParams["logHealth"];
+  clients: GatewayMaintenanceParams["clients"];
   dedupe: GatewayMaintenanceParams["dedupe"];
   restartRecoveryCandidates: GatewayMaintenanceParams["restartRecoveryCandidates"];
   chatRunState: GatewayMaintenanceParams["chatRunState"];
@@ -175,6 +176,7 @@ export async function startGatewayEarlyRuntime(params: {
         refreshPresence: params.refreshPresence,
         resetEventLoopHealth: params.resetEventLoopHealth,
         logHealth: params.logHealth,
+        clients: params.clients,
         dedupe: params.dedupe,
         restartRecoveryCandidates: params.restartRecoveryCandidates,
         chatRunState: params.chatRunState,

@@ -1,10 +1,9 @@
 import type { FastMode } from "@openclaw/normalization-core/string-coerce";
-// Shared queue type contracts for admission, drain, and fallback handling.
 import type { QueueMode } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import type { AdmittedRunOperatorAuthority } from "../../../agents/admitted-run-context.js";
 import type { AutoFallbackPrimaryProbe } from "../../../agents/agent-scope.js";
 import type { ExecToolDefaults } from "../../../agents/bash-tools.js";
-import type { CliSessionBindingFacts } from "../../../agents/cli-runner/types.js";
+import type { CliSessionBindingFacts } from "../../../agents/cli-runner/session-binding.types.js";
 import type {
   CurrentInboundPromptContext,
   RunEmbeddedAgentParams,
@@ -104,6 +103,7 @@ type QueuedFollowupReplyDisposition =
   | { kind: "deliver"; deliver: QueuedFollowupReplyDelivery }
   | { kind: "drop"; reason: "source-unavailable" };
 
+
 export type FollowupRun = {
   /** Controller-owned immutable input identity and mutable source custody. */
   controllerInput?: SessionControllerInput;
@@ -154,8 +154,11 @@ export type FollowupRun = {
   disableTools?: boolean;
   /** Force individual drain; never merge this run into a collect batch. */
   disableCollectBatching?: boolean;
+
   /** Internal marker for the one-shot stranded final recovery retry. */
   strandedReplyRetry?: boolean;
+  /** This continuation owes last-resort feedback if it also stalls, including claimed input. */
+  stalledTurnRecovery?: boolean;
   /** Preserve priority runs when old-item queue overflow eviction runs before drain. */
   protectFromQueueOverflow?: boolean;
   enqueuedAt: number;

@@ -1,4 +1,3 @@
-// Main auto-reply pipeline: prepares context, runs commands, and dispatches agents.
 import fs from "node:fs/promises";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { isImplicitAcpWorkspaceCandidate } from "../../agents/agent-scope-config.js";
@@ -14,6 +13,7 @@ import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
 import { resolveModelRefFromString } from "../../agents/model-selection.js";
 import { publishedModelCatalogOwnerMatchesAgent } from "../../agents/prepared-model-catalog-owner.js";
+
 import { resolveIngressWorkspaceOverrideForSessionRun } from "../../agents/spawned-context.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import {
@@ -25,6 +25,7 @@ import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import { type OpenClawConfig, getRuntimeConfig } from "../../config/config.js";
 import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import { logVerbose } from "../../globals.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isFastTestRuntimeEnv } from "../../infra/env.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -44,6 +45,7 @@ import {
   sessionDeliveryChannel,
   sessionDeliveryOrigin,
 } from "../../utils/delivery-context.read.js";
+import { resolveCommandAuthorization } from "../command-auth.js";
 import type { GetReplyOptions } from "../get-reply-options.types.js";
 import { DEFAULT_HEARTBEAT_ACK_MAX_CHARS } from "../heartbeat.js";
 import {
@@ -59,7 +61,7 @@ import { resolveReplyDirectives } from "./get-reply-directives.js";
 import {
   initFastReplySessionState,
   resolveGetReplyConfig,
-  shouldUseReplyFastTestBootstrap,
+  shouldUseReplyFastTestRuntime,
 } from "./get-reply-fast-path.js";
 import { handleInlineActions } from "./get-reply-inline-actions.js";
 import {
@@ -70,7 +72,6 @@ import { maybeResolveNativeSlashCommandFastReply } from "./get-reply-native-slas
 import {
   applyLinkUnderstandingIfNeeded,
   applyMediaUnderstandingIfNeeded,
-  assertReplyPreprocessingActive,
   hasExplicitAudioUnderstandingConfig,
   hasLinkCandidate,
   resolveReplyAgentScope,
@@ -99,6 +100,7 @@ import {
   resolveReplyOperationRunState,
 } from "./reply-operation-run-state.js";
 import { prepareReplySourceInput, retireUnadoptedReplySource } from "./reply-source-binding.js";
+
 import { createReplyTimingTracker, isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 import { prepareReplySessionDiffBaseline } from "./session-diff-baseline.js";
 import { SessionResetCleanupError } from "./session-reset-cleanup.js";
@@ -120,6 +122,7 @@ const replyResolverTimingLog = createSubsystemLogger("auto-reply/reply-resolver-
 const commandsCoreRuntimeLoader = createLazyImportLoader(
   () => import("./commands-core.runtime.js"),
 );
+
 
 export async function getReplyFromConfig(
   ctx: MsgContext,
@@ -241,6 +244,7 @@ export async function getReplyFromConfig(
       "reply.resolve_default_model",
       () =>
         resolveDefaultModel({
+
           cfg,
           agentId,
         }),
@@ -311,6 +315,7 @@ export async function getReplyFromConfig(
       "reply.native_slash_command_fast_path",
       () =>
         maybeResolveNativeSlashCommandFastReply({
+
           ctx: finalized,
           cfg,
           agentId,
@@ -606,6 +611,7 @@ export async function getReplyFromConfig(
             );
           }
         }
+
       }
     }
 
@@ -791,9 +797,11 @@ export async function getReplyFromConfig(
     if (directiveResult.kind === "reply") {
       logResolverTiming("completed", "directive_reply");
       return directiveResult.reply;
+
     }
     const {
       command,
+
       allowTextCommands,
       skillCommands,
       elevatedEnabled,
@@ -856,6 +864,7 @@ export async function getReplyFromConfig(
 
     const inlineActionResult = await traceGetReplyPhase("reply.handle_inline_actions", () =>
       handleInlineActions({
+
         ctx,
         sessionCtx,
         cfg,
@@ -899,6 +908,7 @@ export async function getReplyFromConfig(
         directiveAck,
         abortedLastRun,
         skillFilter: mergedSkillFilter,
+
       }),
     );
     await maybeEmitMissingResetHooks();
@@ -1079,6 +1089,7 @@ export async function getReplyFromConfig(
         explicitSkillSelections,
         autoFallbackPrimaryProbe: runAutoFallbackPrimaryProbe,
       }),
+
     );
     if (profilerEnabled) {
       logResolverTiming("completed", "prepared_reply");

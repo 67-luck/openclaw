@@ -52,7 +52,6 @@ import type {
   TalkAgentConsultRequest,
   TalkAgentConsultSource,
   TalkRequesterFinalBinding,
-  TalkRequesterFinalRegistration,
 } from "./client-agent-consult.types.js";
 import {
   resolveTalkAgentConsultAuthority,
@@ -71,6 +70,8 @@ const loadTalkAgentExecution = createLazyRuntimeModule(async () => {
     prepareAgentRunAdmission: admission.prepareAgentRunAdmission,
   };
 });
+
+type TalkRequesterFinalRegistration = ReturnType<typeof registerRequesterFinalAttachment>;
 
 function createTalkClientAgentRuntime(params: {
   config: OpenClawConfig;

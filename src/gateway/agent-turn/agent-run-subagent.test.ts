@@ -13,6 +13,7 @@ import type { AgentTurnPrincipal } from "./types.js";
 const mocks = vi.hoisted(() => ({
   registerSubagentRun: vi.fn(),
   adoptPausedSubagentRunForFollowUp: vi.fn(),
+  adoptPausedSubagentRunIntoSuccessor: vi.fn(),
   getLatestLiveSubagentRunByChildSessionKey: vi.fn(),
   prepareParentSubagentResume: vi.fn(),
 }));
@@ -22,6 +23,7 @@ vi.mock("../../agents/subagents/registry/subagent-registry-read.js", () => ({
 vi.mock("../../agents/subagents/registry/subagent-registry.js", () => ({
   registerSubagentRun: mocks.registerSubagentRun,
   adoptPausedSubagentRunForFollowUp: mocks.adoptPausedSubagentRunForFollowUp,
+  adoptPausedSubagentRunIntoSuccessor: mocks.adoptPausedSubagentRunIntoSuccessor,
 }));
 vi.mock("../../config/sessions.js", () => ({
   resolveAgentIdFromSessionKey: () => "main",
@@ -80,11 +82,20 @@ function followupRequest(): FollowupRequest {
 describe("Gateway native subagent admission", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    mocks.adoptPausedSubagentRunForFollowUp.mockReturnValue(false);
+    mocks.adoptPausedSubagentRunForFollowUp.mockResolvedValue(false);
+    mocks.adoptPausedSubagentRunIntoSuccessor.mockResolvedValue(false);
   });
 
   it("registers plugin work with its execution owner before accepting it", async () => {
-    const params = parameters({ client: pluginClient() });
+    const sessionEntry = {
+      sessionId: "admitted-child",
+      lifecycleRevision: "admitted",
+      updatedAt: 1,
+    };
+    const params = parameters({
+      client: pluginClient(),
+      assertResumeAdmissionCurrent: () => sessionEntry,
+    });
     await expect(prepareGatewaySubagentRun(params)).resolves.toEqual({
       pluginSubagent: true,
       reactivateSubagent: false,
@@ -93,6 +104,7 @@ describe("Gateway native subagent admission", () => {
       expect.objectContaining({
         runId,
         childSessionKey,
+        sessionEntry,
         task: "Continue the child",
         requesterSessionKey: "agent:main:main",
       }),
@@ -109,6 +121,7 @@ describe("Gateway native subagent admission", () => {
           if (!admitted) {
             throw new Error("admission retired");
           }
+          return undefined;
         },
       }),
     );
@@ -130,7 +143,7 @@ describe("Gateway native subagent admission", () => {
       createdAt: 1,
     };
     client.internal = bindInProcessSubagentResume({}, resume);
-    const adoptParentResume = vi.fn(() => "previous-run");
+    const adoptParentResume = vi.fn(async () => "previous-run");
     mocks.prepareParentSubagentResume.mockResolvedValue(adoptParentResume);
     await expect(prepareGatewaySubagentRun(parameters({ client }))).resolves.toEqual({
       pluginSubagent: false,

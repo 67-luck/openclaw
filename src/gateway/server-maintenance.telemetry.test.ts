@@ -215,7 +215,7 @@ describe("gateway telemetry maintenance", () => {
     }
   });
 
-  it.each(["restart", "local"] as const)(
+  it.each(["restart", "local", "scheduler"] as const)(
     "retires periodic producers at %s drain before their owners close",
     async (drain) => {
       vi.useFakeTimers();
@@ -251,6 +251,9 @@ describe("gateway telemetry maintenance", () => {
         expect(restartRunningChannels).toHaveBeenCalledOnce();
         if (drain === "restart") {
           markGatewayRestartDraining();
+        } else if (drain === "scheduler") {
+          state.scheduler.beginClose();
+          expect(restartRunningChannels.mock.calls[0]?.[1]?.()).toBe(false);
         }
         let stopped = false;
         const stopping = timers.stopPeriodicTasks().then(() => {

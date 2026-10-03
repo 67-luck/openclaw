@@ -96,6 +96,7 @@ it.each([
       const prepared = createDeferred<DispatchOptions>();
       const releasePreparation = createDeferred();
       const sharedDispatchSettled = createDeferred();
+
       const originalDispatch = dispatch.dispatchInboundMessageWithProjectedDispatcher;
       const observeChatDispatch = vi.spyOn(chatDispatch, "startChatDispatch");
       let owned: ChatDispatchParams | undefined;
@@ -131,11 +132,7 @@ it.each([
         .mockImplementation(async (options) => {
           prepared.resolve(options);
           await releasePreparation.promise;
-          try {
-            return await originalDispatch({ ...options, replyResolver: resolver });
-          } finally {
-            sharedDispatchSettled.resolve();
-          }
+          return await originalDispatch({ ...options, replyResolver: resolver });
         });
       try {
         const params = { sessionKey, sessionId: initialSessionId, message, idempotencyKey: runId };
@@ -205,6 +202,7 @@ it.each([
         }
         await vi.waitFor(() => expect(rpcSourceTesting.has(runId)).toBe(false));
 
+
         if (scenario === "compaction" || scenario === "active-compaction") {
           expect(context.broadcast).not.toHaveBeenCalledWith(
             "chat",
@@ -234,6 +232,7 @@ it.each([
           await sharedDispatchSettled.promise;
           await vi.waitFor(() => expect(rpcSourceTesting.has(runId)).toBe(false));
           owned.admission.cleanupAdmittedRun();
+
         }
         holdPreparation.mockRestore();
         observeChatDispatch.mockRestore();

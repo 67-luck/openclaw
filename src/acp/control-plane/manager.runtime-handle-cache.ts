@@ -140,7 +140,6 @@ export class ManagerRuntimeHandleCache {
     sessionKey: string;
     runtime: AcpRuntime;
     handle: AcpRuntimeHandle;
-    isCurrentActor?: () => boolean;
   }): Promise<boolean> {
     if (!params.runtime.getStatus) {
       return true;
@@ -178,8 +177,7 @@ export class ManagerRuntimeHandleCache {
     }
 
     const expectedAcpxRecordId = identity?.acpxRecordId ?? "";
-    const actualAcpxRecordId =
-      normalizeText((params.handle as { acpxRecordId?: unknown }).acpxRecordId) ?? "";
+    const actualAcpxRecordId = normalizeText(params.handle.acpxRecordId) ?? "";
     return actualAcpxRecordId === expectedAcpxRecordId;
   }
 

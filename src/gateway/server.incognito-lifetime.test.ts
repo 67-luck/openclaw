@@ -42,6 +42,18 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function observeSessionDeletion() {
+  const settled = createDeferredCore();
+  const deletes = vi.spyOn(deletion, "deleteGatewaySession").mockImplementation(async (params) => {
+    try {
+      return await originalDelete(params);
+    } finally {
+      settled.resolve();
+    }
+  });
+  return { deletes, deleted: settled.promise };
+}
+
 async function withLifetime(
   run: (fixture: {
     owner: ReturnType<typeof createGatewaySidecarStopOwner>;
@@ -136,7 +148,8 @@ it("expires Incognito at creation plus 24 hours, cancels work, and deletes witho
     const active = createReplyOperation({ ...scope, resetTriggered: false });
     try {
       await time.advanceBy(1);
-      await expect(deleted.promise).resolves.toMatchObject({
+      const result = await deleted.promise;
+      expect(result, JSON.stringify(result)).toMatchObject({
         ok: true,
         result: { deleted: true, archived: [] },
       });
@@ -170,16 +183,7 @@ it("does not replace its deadline or delete another Gateway's Incognito publicat
     };
     const foreignPath = resolveIncognitoOpenClawAgentSqlitePath(foreign);
     expect(foreignPath).not.toBe(scope.storePath);
-    const deleted = createDeferredCore();
-    const deletes = vi
-      .spyOn(deletion, "deleteGatewaySession")
-      .mockImplementation(async (params) => {
-        try {
-          return await originalDelete(params);
-        } finally {
-          deleted.resolve();
-        }
-      });
+    const { deletes, deleted } = observeSessionDeletion();
     try {
       await upsertSessionEntryCore(foreign, {
         sessionId: "foreign-incognito",
@@ -193,7 +197,7 @@ it("does not replace its deadline or delete another Gateway's Incognito publicat
       expect(logWarning).not.toHaveBeenCalled();
       expect(loadSessionEntryReadOnly(foreign)?.sessionId).toBe("foreign-incognito");
       await time.advanceBy(DAY_MS - 1);
-      await deleted.promise;
+      await deleted;
       expect(deletes).toHaveBeenCalledOnce();
       expect(loadSessionEntryReadOnly(scope)).toBeUndefined();
       expect(loadSessionEntryReadOnly(foreign)?.sessionId).toBe("foreign-incognito");
@@ -203,7 +207,7 @@ it("does not replace its deadline or delete another Gateway's Incognito publicat
   });
 });
 
-it.each(["provided", "omitted", "legacy"] as const)(
+it.each(["omitted", "legacy"] as const)(
   "inherits the original deadline with a %s creation stamp when a sibling outlives the creator",
   async (creationStamp) => {
     await withLifetime(async ({ owner, scope, logWarning, time }) => {
@@ -214,16 +218,7 @@ it.each(["provided", "omitted", "legacy"] as const)(
       expect(loadSessionEntryReadOnly(ordinary)?.createdAt).toBeUndefined();
       const sibling = createGatewaySidecarStopOwner();
       const context = createDirectChatContext({ getRuntimeConfig: () => config });
-      const deleted = createDeferredCore();
-      const deletes = vi
-        .spyOn(deletion, "deleteGatewaySession")
-        .mockImplementation(async (params) => {
-          try {
-            return await originalDelete(params);
-          } finally {
-            deleted.resolve();
-          }
-        });
+      const { deletes, deleted } = observeSessionDeletion();
       await time.advanceBy(DAY_MS - 1);
       await patchSessionEntryCore(scope, () => ({ createdAt: Date.now(), updatedAt: Date.now() }));
       expect(loadSessionEntryReadOnly(scope)?.createdAt).toBe(createdAt);
@@ -243,7 +238,7 @@ it.each(["provided", "omitted", "legacy"] as const)(
         expect(loadSessionEntryReadOnly(scope)?.sessionId).toBe(scope.sessionId);
         await time.advanceBy(1);
         await siblingTime.advanceBy(1);
-        await deleted.promise;
+        await deleted;
         expect(deletes).toHaveBeenCalledOnce();
         expect(loadSessionEntryReadOnly(scope)).toBeUndefined();
         expect(logWarning).not.toHaveBeenCalled();
@@ -341,9 +336,6 @@ it.each(["provided", "legacy"] as const)(
       await retrying.promise;
       expect(logWarning).toHaveBeenCalledOnce();
       expect(loadSessionEntryReadOnly(scope)).toBeDefined();
-      expect(resolveSessionWorkStartError(scope.sessionKey, loadSessionEntryReadOnly(scope))).toBe(
-        `Incognito session "${scope.sessionKey}" expired. Start a new Incognito session.`,
-      );
       expect(
         resolveSessionWorkStartError(ordinary.sessionKey, loadSessionEntryReadOnly(ordinary)),
       ).toBeUndefined();

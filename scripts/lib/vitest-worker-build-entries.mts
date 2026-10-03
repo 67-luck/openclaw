@@ -2,6 +2,8 @@ import { quickJsWorkerTestEntrypoint } from "../../extensions/code-mode-quickjs/
 import { codexCatalogPageWorkerEntrypoint } from "../../extensions/codex/catalog-page-worker-entrypoint.ts";
 import { discordAudioTestEntrypoints } from "../../extensions/discord/src/voice/audio-worker-entrypoints.test-support.ts";
 import { logbookSqliteBackendEntrypoint } from "../../extensions/logbook/src/sqlite-backend-entrypoint.test-support.ts";
+import { memoryForgetFaultEntrypoint } from "../../extensions/memory-core/src/memory-forget-fault-entrypoint.test-support.ts";
+import { memoryForgetPlanningObserverEntrypoint } from "../../extensions/memory-core/src/memory-forget-planning-observer-entrypoint.test-support.ts";
 import { memoryPublicationFaultEntrypoint } from "../../extensions/memory-core/src/memory/manager-publication-fault-entrypoint.test-support.ts";
 import { vectorKnnParentEntrypoint } from "../../extensions/memory-core/src/memory/manager-search-knn-runtime.test-support.ts";
 import { realtimeAudioTestEntrypoints } from "../../extensions/openai/realtime-audio-worker-entrypoints.test-support.ts";
@@ -27,9 +29,11 @@ import { bashOutputSpillEntrypoints } from "../../src/agents/sessions/bash-outpu
 import { managedWorktreeGcEntrypoint } from "../../src/agents/worktrees/service-gc-runtime.test-support.ts";
 import { clawProjectBuildEntrypoint } from "../../src/claws/project-runtime.test-support.ts";
 import {
+  adminStateOwnerFixtureEntrypoint,
   cliMessageExitEntrypoints,
   cliRecoveryEntrypoints,
   gatewayDirectStopEntrypoints,
+  localStateOwnerFixtureEntrypoint,
   updateExecutorEntrypoints,
   stateDirGatewayFixtureEntrypoint,
   updateCandidateExitEntrypoints,
@@ -55,6 +59,10 @@ import {
   triageTestRuntimeEntrypoints,
   triageMaintenanceRuntimeEntrypoints,
 } from "../../src/infra/triage-runtime.test-support.ts";
+import {
+  nativeWorkerLifecycleEntrypoint,
+  nativeWorkerResourceEntrypoint,
+} from "../../src/infra/worker-native-lifecycle.runtime.test-support.ts";
 import { workerTaskPoolEntrypoints } from "../../src/infra/worker-task-pool-runtime.test-support.ts";
 import { diagnosticProfileEntrypoints } from "../../src/logging/diagnostic-profile-runtime.test-support.ts";
 import { mediaNativeProcessEntrypoints } from "../../src/media/native-process-runtime.test-support.ts";
@@ -192,6 +200,7 @@ export const preservedModuleBuildSources = [
   "src/worker/embedded-agent.runtime.ts",
   "src/worker/inference-stream.runtime.ts",
   "src/cli/mcp-cli.ts",
+  "src/cli/exec-approvals-local.ts",
   "src/agents/agent-bundle-mcp-materialize.ts",
   "src/plugins/tool-metadata.ts",
   "src/plugins/tools.ts",
@@ -290,12 +299,16 @@ export const vitestWorkerBuildEntries = {
     codexCatalogPageWorkerEntrypoint,
     agentWorkerStoreFixtureEntrypoint,
     memoryPublicationFaultEntrypoint,
+    memoryForgetFaultEntrypoint,
+    memoryForgetPlanningObserverEntrypoint,
     sqliteReadOnlyCompileCacheParentEntrypoint,
     ...Object.values(sqliteSnapshotStagingEntrypoints),
     sqliteWorkerStoreCompileCacheParentEntrypoint,
     ...Object.values(nativeProcessTestEntrypoints),
     ...Object.values(storageProcessTestEntrypoints),
     ...Object.values(workerTaskPoolEntrypoints),
+    nativeWorkerLifecycleEntrypoint,
+    nativeWorkerResourceEntrypoint,
     ...Object.values(stateNativeProcessEntrypoints),
     ...Object.values(agentProcessTestEntrypoints),
     ...Object.values(pluginProcessRuntimeEntrypoints),
@@ -327,6 +340,8 @@ export const vitestWorkerBuildEntries = {
     ...Object.values(updateExecutorEntrypoints),
     ...Object.values(gatewayDirectStopEntrypoints),
     stateDirGatewayFixtureEntrypoint,
+    localStateOwnerFixtureEntrypoint,
+    adminStateOwnerFixtureEntrypoint,
     ...Object.values(doctorConfigRuntimeEntrypoints),
     ...Object.values(cronOwnerHardeningEntrypoints),
     ...(nativeSchtasksIntegrationEnabled

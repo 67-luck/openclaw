@@ -8,6 +8,7 @@ import {
 // Session-owned cancellation and authoritative lifecycle drains.
 import { createAgentRunDirectAbortError } from "../../agents/run-termination.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+
 import { withTimeout } from "../../infra/fs-safe.js";
 import {
   closeSessionControllerAdmission,
@@ -21,11 +22,10 @@ import { waitForChatAbortControllerRemoval } from "../chat-abort-lifecycle-inter
 import { createChatAbortOps } from "../chat-abort-ops.js";
 import type { AgentTerminalSessionDrain } from "../terminal/session-manager.types.js";
 import {
-  reserveWorkerInferenceSessionDrain,
+  getWorkerInferenceSessionControl,
   type AcceptedWorkerInferenceSessionDrain,
   type WorkerInferenceSessionDrain,
 } from "../worker-environments/inference-control-internal.js";
-import { asWorkerInferenceControl } from "../worker-environments/inference-control.js";
 import type { WorkerSessionPlacementStore } from "../worker-environments/placement-store.js";
 import { isCurrentWorkerWorkspacePendingResultOwner } from "../worker-environments/placement-workspace-result.js";
 import {
@@ -72,12 +72,13 @@ function hasAuthoritativeSessionWork(
   params: SessionLifecycleParams,
   workerDrain: WorkerInferenceSessionDrain | undefined,
   terminalDrain: AgentTerminalSessionDrain | undefined,
-  workIdentities: string[],
+  queueTarget: SessionLifecycleQueueTarget,
 ): boolean {
   const sessionId = params.sessionId;
   return (
     isCompetingSessionControllerWorkActive(params.storePath, params.lifecycleIdentities) ||
     hasSessionControllerQueuedWork(params.storePath, workIdentities) ||
+
     hasGatewaySessionAbortOwner({
       context: params.context,
       sessionKeys: params.sessionKeys,
@@ -109,8 +110,8 @@ export async function prepareSessionLifecycleDrain(
     agentId: params.agentId,
     incarnation: params.sessionId,
   });
+
   const workerService = params.context.workerEnvironmentService;
-  const workerControl = asWorkerInferenceControl(workerService);
   let workerDrain: AcceptedWorkerInferenceSessionDrain | undefined;
   let workerDrained: Promise<void> | undefined;
   let terminalDrain: AgentTerminalSessionDrain | undefined;
@@ -135,6 +136,7 @@ export async function prepareSessionLifecycleDrain(
   try {
     const prepared = await runSessionMutation({
       target,
+
       run: async () => {
         // Settle preceding mutations before selecting owners, but never await their
         // cancellation completion here: it may need placement and lifecycle recovery.
@@ -146,7 +148,9 @@ export async function prepareSessionLifecycleDrain(
           reason: createAgentRunDirectAbortError(),
         });
         if (params.sessionId) {
-          const reservation = reserveWorkerInferenceSessionDrain(workerService, params.sessionId);
+          const reservation = getWorkerInferenceSessionControl(workerService)?.reserveSessionDrain(
+            params.sessionId,
+          );
           try {
             workerDrain = reservation?.accept();
           } catch (error) {
@@ -160,9 +164,6 @@ export async function prepareSessionLifecycleDrain(
               }
             }
             throw error;
-          }
-          if (!workerDrain && workerControl?.hasInferenceForSession(params.sessionId) === true) {
-            throw new Error("Worker inference drain is unavailable");
           }
           if (workerDrain) {
             workerDrained = workerDrain.drained;
@@ -183,6 +184,7 @@ export async function prepareSessionLifecycleDrain(
           void reclaimed.catch(() => {});
         }
         let controllerDrain = Promise.resolve(true);
+        const replyRuns = resolveReplyOperationsForSession(params);
         const cancellation = abortChatRunsForSessionKeyWithPartials({
           context: params.context,
           ops: createChatAbortOps(params.context),
@@ -202,10 +204,11 @@ export async function prepareSessionLifecycleDrain(
               timeoutMs,
             });
           },
+
         });
         // Observe failures immediately while the short mutation releases its queues.
         void cancellation.catch(() => {});
-        return { workerStop, cancellation, controllerDrain };
+        return { workerStop, cancellation, controllerDrain, replyRuns };
       },
     });
     const abortResult = await prepared.cancellation;
@@ -216,8 +219,9 @@ export async function prepareSessionLifecycleDrain(
     params.authorize?.();
     if (params.sessionId) {
       const placements = params.context.workerSessionPlacementService;
+      const pending = (await placements?.listPendingWorkspaceResultsAsync?.(params.sessionId))?.[0];
+      params.authorize?.();
       const placement = placements?.getMany([params.sessionId]).get(params.sessionId);
-      const pending = placements?.listPendingWorkspaceResults?.(params.sessionId)[0];
       if (
         pending &&
         pending.workspaceAcceptedAtMs === null &&
@@ -245,6 +249,7 @@ export async function prepareSessionLifecycleDrain(
         );
       }
     }
+
     const placementService: LifecyclePlacementService | undefined =
       params.context.workerSessionPlacementService;
     const placement = params.sessionId
@@ -292,7 +297,7 @@ export async function prepareSessionLifecycleDrain(
         } catch {
           return true;
         }
-        return hasAuthoritativeSessionWork(params, workerDrain, terminalDrain, workIdentities);
+        return hasAuthoritativeSessionWork(params, workerDrain, terminalDrain, queueTarget);
       },
     };
   } catch (error) {

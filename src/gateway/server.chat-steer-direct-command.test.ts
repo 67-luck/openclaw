@@ -1,7 +1,10 @@
 import path from "node:path";
+import { isGatewayResponseFrame } from "@openclaw/gateway-protocol/frame-guards";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createAssistantMessageEventStream, type Model } from "openclaw/plugin-sdk/llm";
 import { expect, it, onTestFinished, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
+import type { RawData } from "ws";
+import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import { readAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import { getEmbeddedRunAttachment } from "../agents/embedded-agent-runner/run-state.js";
 import { prepareEmbeddedAttemptStream } from "../agents/embedded-agent-runner/run/attempt-stream-prepare.js";
@@ -21,10 +24,12 @@ import { makeEmbeddedRunnerAttempt } from "../agents/test-helpers/embedded-agent
 import { getRuntimeConfig, writeConfigFile } from "../config/config.js";
 import { getAgentRunContext } from "../infra/agent-run-registry.js";
 import { createDiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
+import { rawDataToString } from "../infra/ws.js";
 import { createDiagnosticEmbeddedRunOwner } from "../logging/diagnostic-run-activity.js";
 import { diagnosticLogger } from "../logging/diagnostic-runtime.js";
 import { getSessionControllerOperation } from "../sessions/session-controller.js";
 import * as messageInjection from "../sessions/session-controller.message-injection.js";
+
 import {
   agentCommandMock,
   connectOk,
@@ -91,16 +96,17 @@ installGatewayTestHooks({
   cleanup: async () => {
     harness?.ws.close();
     await harness?.server.close();
+    await closeSkillsWatchers(true);
     harness?.envSnapshot.restore();
   },
 });
 
-it.each([
-  { source: "browser", disposition: "steered", expectation: "required" },
-  { source: "system", disposition: "followup", expectation: "optional" },
+it.for([
+  { source: "browser", disposition: "steered" },
+  { source: "system", disposition: "followup" },
 ] as const)(
   "routes browser corrections to a $source direct command as $disposition",
-  async ({ source, disposition: expectedDisposition, expectation }) => {
+  async ({ source, disposition: expectedDisposition }, { signal }) => {
     const sessionKey = `agent:main:direct-steering-${source}`;
     const sessionId = `direct-steering-session-${source}`;
     const runId = `announce:direct-steering-${source}`;
@@ -269,6 +275,31 @@ it.each([
       }
     });
     const requestId = `original-${source}`;
+    const browserTerminal = createDeferred<unknown>();
+    let browserTerminalObserved = false;
+    const isOriginalTerminal = (frame: unknown) =>
+      isGatewayResponseFrame(frame) &&
+      frame.id === requestId &&
+      (!isRecord(frame.payload) || frame.payload.status !== "accepted");
+    if (source === "browser") {
+      const observeTerminal = (data: RawData) => {
+        const frame: unknown = JSON.parse(rawDataToString(data));
+        if (isOriginalTerminal(frame)) {
+          browserTerminalObserved = true;
+          browserTerminal.resolve(frame);
+        }
+      };
+      const closed = () => {
+        browserTerminalObserved = true;
+        browserTerminal.reject(new Error("Original agent socket closed"));
+      };
+      harness.ws.on("message", observeTerminal);
+      harness.ws.once("close", closed);
+      onTestFinished(() => {
+        harness.ws.off("message", observeTerminal);
+        harness.ws.off("close", closed);
+      });
+    }
     const accepted =
       source === "browser"
         ? onceMessage<AgentResponse>(
@@ -278,13 +309,7 @@ it.each([
         : undefined;
     const original =
       source === "browser"
-        ? onceMessage<AgentResponse>(
-            harness.ws,
-            (frame) =>
-              frame.type === "res" &&
-              frame.id === requestId &&
-              frame.payload?.status !== "accepted",
-          )
+        ? browserTerminal.promise
         : runAnnounceAgentCall({
             agentParams: {
               sessionKey,
@@ -319,6 +344,7 @@ it.each([
       );
     }
     const capture = vi.spyOn(messageInjection, "captureCurrentReplyMessageInjectionTarget");
+
     const diagnostics = vi.spyOn(diagnosticLogger, "info");
     onTestFinished(() => diagnostics.mockRestore());
     try {
@@ -334,6 +360,7 @@ it.each([
         }),
       ]);
       const registration = getEmbeddedRunAttachment(handle);
+
       const facts = {
         hasReplyOperation: getSessionControllerOperation(sessionKey) !== undefined,
         authoritySource: registration?.toolAuthority?.source,
@@ -355,7 +382,7 @@ it.each([
         ownsAdmittedInstance: true,
         hasDelegatedAuthority: true,
         isControlUiVisible: true,
-        terminalReplyExpectation: expectation,
+        terminalReplyExpectation: "required",
         injectionVersion: 2,
         supportsTranscriptCommitWait: true,
       });
@@ -375,7 +402,7 @@ it.each([
         sourceTurnId: runId,
       });
       expect(
-        await disposition.promise,
+        await withinTest(disposition.promise, signal),
         JSON.stringify(
           diagnostics.mock.calls.filter(([message]) => message.startsWith("direct steering")),
         ),
@@ -384,8 +411,13 @@ it.each([
         expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
       }
     } finally {
+      // The fixture prevents completion until release; only then does its response budget begin.
+      const settled =
+        source === "browser" && !browserTerminalObserved
+          ? Promise.allSettled([onceMessage(harness.ws, isOriginalTerminal)])
+          : originalSettled;
       releaseModel.resolve();
-      const outcomes = await originalSettled;
+      const outcomes = await settled;
       expect
         .soft(
           outcomes.flatMap((outcome) =>
@@ -393,7 +425,6 @@ it.each([
           ),
         )
         .toEqual([]);
-      capture.mockRestore();
     }
   },
 );

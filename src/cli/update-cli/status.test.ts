@@ -30,6 +30,7 @@ import {
 } from "../../infra/update-run-ledger.js";
 import { ABANDONED_UPDATE_RUN_MS } from "../../infra/update-run-timeouts.js";
 import {
+  closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
@@ -208,6 +209,46 @@ describe("update status service definition facts", () => {
   );
 });
 
+it.each([true, false])(
+  "reports current and prepared immutable generations without offering package updates (JSON: %s)",
+  async (json) => {
+    const immutable = {
+      root: "/opt/openclaw",
+      currentSha: "a".repeat(40),
+      currentPath: `/opt/openclaw/releases/${"a".repeat(40)}`,
+      prepared: {
+        sha: "b".repeat(40),
+        path: `/opt/openclaw/releases/${"b".repeat(40)}`,
+        buildDigest: "c".repeat(64),
+        preparedAtMs: 123,
+      },
+    };
+    vi.spyOn(updateCheck, "checkUpdateStatus").mockResolvedValue({
+      root: immutable.currentPath,
+      installKind: "immutable",
+      packageManager: "unknown",
+      immutable,
+      registry: { latestVersion: "99.0.0" },
+    });
+
+    await updateStatusCommand({ json });
+
+    if (json) {
+      expect(runtime.writeJson.mock.lastCall?.[0]).toMatchObject({
+        update: { installKind: "immutable", immutable },
+        availability: { available: false, hasRegistryUpdate: false },
+      });
+    } else {
+      const output = runtime.log.mock.calls.flat().join("\n");
+      expect(output).toContain("immutable (/opt/openclaw)");
+      expect(output).toContain("aaaaaaaaaaaa");
+      expect(output).toContain("prepared bbbbbbbbbbbb");
+      expect(output).toContain("activation unavailable");
+      expect(output).not.toContain("npm update");
+    }
+  },
+);
+
 describe("update status channel failures", () => {
   it.each([true, false])("shows the Gateway's recorded trust refusal (JSON: %s)", async (json) => {
     const issue = {
@@ -253,6 +294,7 @@ describe("update status Node runtime findings", () => {
     "preserves diagnostics with stored=$stored SQLite $sqliteVersion (JSON: $json)",
     async ({ json, stored, sqliteVersion, unavailable }) => {
       const recorded = stored ? createUpdateRun({ trigger: "cli" }) : undefined;
+      await closeOpenClawStateDatabaseAsync();
       closeOpenClawStateDatabaseForTest();
       vi.resetModules();
       const sqlitePrototype: {
@@ -288,10 +330,21 @@ describe("update status Node runtime findings", () => {
       });
       const command = await import("./status.js");
       const ledger = await import("../../infra/update-run-ledger.js");
+      const readOwner = await import("../../state/openclaw-state-db-readonly.js");
+      const workerRead = vi.spyOn(readOwner, "executeExistingOpenClawStateRead");
       if (unavailable) {
-        expect(() => ledger.findActiveUpdateRun()).toThrow(
-          "SQLite support is unavailable or unsafe",
-        );
+        let nativeFailure: unknown;
+        expect(() => {
+          try {
+            ledger.findActiveUpdateRun();
+          } catch (error) {
+            nativeFailure = error;
+            throw error;
+          }
+        }).toThrow("SQLite support is unavailable or unsafe");
+        // The host SQLite spy cannot cross threads; deliver the same runtime refusal
+        // through the async read owner without replacing status or diagnostic logic.
+        workerRead.mockRejectedValue(nativeFailure);
       }
       await expect(command.updateStatusCommand({ json })).resolves.toBeUndefined();
       if (json) {
@@ -322,6 +375,7 @@ describe("update status Node runtime findings", () => {
       if (!stored) {
         expect(prepare).not.toHaveBeenCalled();
       }
+      workerRead.mockRestore();
       prepare.mockRestore();
       expect(recorded && ledger.getUpdateRun(recorded.runId)).toEqual(recorded);
     },
@@ -427,7 +481,8 @@ describe("update status Node runtime findings", () => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -536,13 +591,22 @@ describe("update status abandoned-run reporting", () => {
       const created = createUpdateRun({ trigger: "cli", origin: { nextAction: advice } });
       recordUpdateRunVerification(created.runId, {
         port: 19123,
-        serviceRunning: false,
-        versionMatch: false,
+        serviceRunning: true,
+        runningVersion: "2026.9.1",
+        versionMatch: true,
+        channelsReady: false,
+        readyz: true,
+        recovery: { serviceRestartSafe: true, service: "healthy", version: "2026.9.1" },
+      });
+      recordUpdateRunStep(created.runId, {
+        step: "gateway recovery verification",
+        status: "completed",
+        exitCode: 0,
       });
       const finished = finishUpdateRun(created.runId, {
         status: "failed",
-        reason: "restart-unhealthy",
-        after: { version: "2026.9.4" },
+        reason: "node-runtime-preflight",
+        after: { version: "2026.9.1" },
       });
       confirmGatewayReachable.mockResolvedValue({
         reachable: responding,
@@ -550,14 +614,24 @@ describe("update status abandoned-run reporting", () => {
         gatewayBuildId: undefined,
         activatedPluginErrors: [],
         unavailablePlugins: [],
-        channelProbeErrors: [],
+        channelProbeErrors: [{ id: "test-channel", error: "Channel probe failed" }],
       });
 
       await updateStatusCommand({});
 
       const output = runtime.log.mock.calls.flat().join("\n");
-      expect(output).toContain("service identity unavailable");
+      expect(output).toContain("Recorded recovery: verified serving 2026.9.1.");
+      expect(output).toContain(
+        "Recorded verification: service running (2026.9.1); version verified; channels not ready; HTTP ready.",
+      );
       expect(output).not.toContain("version mismatch");
+      expect(output).not.toContain("The gateway is running");
+      expect(output).not.toContain("chat available");
+      if (responding) {
+        expect(output).toContain(
+          "Current health: Gateway answered on the recorded port (2026.9.4).",
+        );
+      }
       expect(runtime.log).not.toHaveBeenCalledWith(advice);
       expect(output).toContain("Historical recovery advice:");
       expect(output).toContain(
@@ -748,7 +822,7 @@ describe("update status abandoned-run reporting", () => {
       });
       vi.stubEnv("OPENCLAW_SUPERVISOR_MODE", "");
       if (surface === "status") {
-        const rows = buildStatusUpdateRows(null);
+        const rows = await buildStatusUpdateRows(null);
         expect(rows).toContainEqual(
           expect.objectContaining({
             Item: "Update run",
@@ -829,7 +903,7 @@ describe("update status abandoned-run reporting", () => {
       }
       let output: string;
       if (surface === "status") {
-        output = JSON.stringify(buildStatusUpdateRows(null));
+        output = JSON.stringify(await buildStatusUpdateRows(null));
       } else {
         await updateStatusCommand({ json: surface === "json" });
         output =

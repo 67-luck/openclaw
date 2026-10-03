@@ -1,6 +1,121 @@
 import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../sessions/session-controller.lifecycle.js";
 import { getRpcSource, type RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+
 import { settlesWithin } from "../shared/settle-within.js";
+import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
+
+const executionContext = resolveGlobalSingleton(
+  Symbol.for("openclaw.chatAbortExecutionContext"),
+  () => new AsyncLocalStorage<ChatAbortControllerEntry>(),
+);
+
+export function isCurrentChatAbortExecution(entry: object): boolean {
+  const current = executionContext.getStore();
+  return current === entry && current.executionSettlement?.status === "pending";
+}
+
+/** Capture one exact registration; a same-key successor is never its completion owner. */
+export function captureChatAbortExecution(params: {
+  entries: ReadonlyMap<string, ChatAbortControllerEntry>;
+  runId: string;
+  sessionKey: string;
+  sessionId: string | undefined;
+  lifecycleGeneration?: string;
+}): ChatAbortControllerEntry | undefined {
+  const entry = params.entries.get(params.runId);
+  return entry &&
+    entry.kind === "agent" &&
+    entry.sessionKey === params.sessionKey &&
+    entry.sessionId === params.sessionId &&
+    (params.lifecycleGeneration === undefined ||
+      entry.lifecycleGeneration === params.lifecycleGeneration)
+    ? entry
+    : undefined;
+}
+
+/** Bind the raw execution tail before its logical registration can retire. */
+export function runWithChatAbortExecution(
+  entry: ChatAbortControllerEntry | undefined,
+  run: () => Promise<void>,
+  cleanup: () => void,
+): Promise<void> {
+  if (!entry) {
+    return run();
+  }
+  if (entry.executionSettlement) {
+    throw new Error("Chat execution already has a settlement owner");
+  }
+  const { promise: completion, resolve, reject } = createDeferredCore();
+  const settlement: NonNullable<ChatAbortControllerEntry["executionSettlement"]> = {
+    completion,
+    status: "pending",
+    cleanupSettled: false,
+  };
+  entry.executionSettlement = settlement;
+  void completion.then(
+    () => {
+      settlement.status = "fulfilled";
+      settlement.cleanupSettled = true;
+      if (entry.executionSettlement === settlement && entry.registrationCleanupRequested) {
+        cleanup();
+      }
+    },
+    (error: unknown) => {
+      // Preserve the rejection; only the resource owner's completed fault can retire custody.
+      settlement.status = "rejected";
+      settlement.cleanupSettled = error instanceof PluginRuntimeCloseCompletedError;
+      if (
+        settlement.cleanupSettled &&
+        entry.executionSettlement === settlement &&
+        entry.registrationCleanupRequested
+      ) {
+        cleanup();
+      }
+    },
+  );
+  try {
+    // Invocation stays immediate, with custody installed before synchronous cleanup.
+    void executionContext.run(entry, run).then(resolve, reject);
+  } catch (error) {
+    reject(error);
+  }
+  return completion;
+}
+
+export function removeChatAbortControllerEntry(
+  entries: Map<string, ChatAbortControllerEntry>,
+  runId: string,
+  expectedEntry?: ChatAbortControllerEntry,
+): boolean {
+  const entry = entries.get(runId);
+  if (!entry || (expectedEntry && entry !== expectedEntry)) {
+    return false;
+  }
+  const pending = entry.pendingTimeoutCompletion;
+  if (pending) {
+    if (isFutureDateTimestampMs(pending.expiresAtMs, { nowMs: Date.now() })) {
+      return false;
+    }
+    // Orphan cleanup must record the known timeout before revoking this exact receipt owner.
+    entry.pendingTimeoutCompletion = undefined;
+    pending.settle();
+    if (entries.get(runId) !== entry) {
+      return false;
+    }
+  }
+  if (entry.executionSettlement && !entry.executionSettlement.cleanupSettled) {
+    return false;
+  }
+  entries.delete(runId);
+  try {
+    entry.onRemoved?.();
+  } catch {
+    // Removal owns state cleanup even if a caller-provided release hook fails.
+  } finally {
+    notifyChatAbortControllerRemoved(entry);
+  }
+  return true;
+}
 
 const terminalPersistenceErrorByEntry = new WeakMap<object, unknown>();
 export type ChatAbortTerminalDispatch = {
@@ -33,7 +148,7 @@ export function markChatAbortTerminalPersistenceError(entry: object, error: unkn
   terminalPersistenceErrorByEntry.set(entry, error);
 }
 
-export function notifyChatAbortControllerRemoved(entry: object): void {
+function notifyChatAbortControllerRemoved(entry: object): void {
   const waiters = removalWaitersByEntry.get(entry);
   removalWaitersByEntry.delete(entry);
   for (const resolve of waiters ?? []) {
@@ -77,6 +192,17 @@ export async function waitForChatAbortTerminalPersistence(entry: RpcSourceRef): 
   }
 }
 
+export function isChatAbortTerminalPersistenceSettled(entry: {
+  projectSessionTerminalPending?: boolean;
+  projectSessionTerminalPersistence?: Promise<void>;
+}): boolean {
+  return (
+    entry.projectSessionTerminalPending !== true &&
+    entry.projectSessionTerminalPersistence === undefined &&
+    !terminalPersistenceErrorByEntry.has(entry)
+  );
+}
+
 /** Waits for captured run registrations and their terminal persistence owner to leave. */
 export async function waitForChatAbortControllerRemoval<TEntry extends RpcSourceRef>(params: {
   targets: ReadonlyArray<{ runId: string; entry: TEntry }>;
@@ -92,25 +218,31 @@ export async function waitForChatAbortControllerRemoval<TEntry extends RpcSource
   const registeredWaiters: Array<{ entry: TEntry; resolve: () => void }> = [];
   const removals = params.targets.flatMap(({ runId, entry }) => {
     if (getRpcSource(runId) !== entry) {
+
       return [];
     }
     return [
-      new Promise<void>((resolve) => {
+      new Promise<boolean>((resolve) => {
+        const removed = () => resolve(true);
         const waiters = removalWaitersByEntry.get(entry) ?? new Set<() => void>();
-        waiters.add(resolve);
+        waiters.add(removed);
         removalWaitersByEntry.set(entry, waiters);
-        registeredWaiters.push({ entry, resolve });
+        registeredWaiters.push({ entry, resolve: removed });
       }),
     ];
   });
-  if (removals.length === 0) {
+  if (settlements.length === 0) {
     return terminalOwnersSettled();
   }
   try {
-    const removed = await settlesWithin(Promise.all(removals), Math.max(0, params.timeoutMs));
+    const settled = Promise.all(settlements);
+    const removed =
+      params.timeoutMs === null
+        ? await racePromiseWithAbortSignal(settled, params.signal).then(() => true)
+        : await settlesWithin(settled, Math.max(0, params.timeoutMs));
     // Maintenance may retire a registration before its write settles. Registry
     // removal alone must not let a lifecycle mutation bypass that terminal owner.
-    return removed && terminalOwnersSettled();
+    return removed && (await settled).every(Boolean) && terminalOwnersSettled();
   } finally {
     for (const { entry, resolve } of registeredWaiters) {
       const waiters = removalWaitersByEntry.get(entry);

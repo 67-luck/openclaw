@@ -1,5 +1,5 @@
 import { resolveSessionStorePathCore } from "../../config/sessions.js";
-import { loadSessionEntry as getSessionEntry } from "../../config/sessions/session-accessor.js";
+import { withSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { isPerAgentSessionStoreConfig } from "../../config/sessions/session-store-config.js";
 import { resolvePersistedSessionStoreOwnerForKey } from "../../config/sessions/session-store-owner.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -37,6 +37,7 @@ export function resolveSessionToolTargetAgentId(params: {
 export async function runWithScopedSessionAccess<T>(params: {
   cfg: OpenClawConfig;
   agentId?: string;
+  storePath?: string;
   expectedSessionId?: string;
   signal?: AbortSignal;
   targetSessionKey: string;
@@ -65,6 +66,7 @@ export async function runWithScopedSessionAccess<T>(params: {
       incarnation: expectedSessionId,
       agentId,
     }),
+
     assertAllowed: assertExpectedIncarnation,
     revalidateAllowed: assertExpectedIncarnation,
     ...(params.signal ? { signal: params.signal } : {}),

@@ -3,7 +3,6 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createSessionMaintenanceOwner } from "../../agents/session-maintenance/coordinator.js";
-import { SessionWorkStartChangedError } from "../../config/sessions/lifecycle.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import * as registry from "../../sessions/session-controller.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
@@ -19,6 +18,12 @@ import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.
 import { testing } from "./reply-run-registry.test-support.js";
 import { admitReplyTurn } from "./reply-turn-admission.js";
 
+type Admission = Awaited<ReturnType<typeof admitReplyTurn>>;
+const operations = new Set<registry.ReplyOperation>();
+const releases: (() => void)[] = [];
+const admissions: Promise<Admission>[] = [];
+const work: Promise<unknown>[] = [];
+let controller = new AbortController();
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
     testing.resetReplyRunRegistry();
@@ -229,13 +234,25 @@ it.each([true, false])(
       releaseMaintenance.resolve();
       controller.abort();
       await work;
+
       const result = await pending.catch(() => undefined);
       if (result?.status === "owned") {
         result.operation.complete();
       }
     }
-  },
+    testing.resetReplyRunRegistry();
+    await closeOpenClawAgentDatabasesAsync();
+    vi.restoreAllMocks();
+    cleanup();
+    operations.clear();
+    releases.length = admissions.length = work.length = 0;
+    controller = new AbortController();
+  }),
 );
+const sessionKey = "global";
+const sessionId = "copied-session-id";
+const successorId = "compacted-session-id";
+const invalidated = { status: "skipped", reason: "lifecycle-invalidated" };
 
 it("rejects rotation recorded after the waited owner moves to another physical store", async () => {
   const ownerStore = path.join(tempDirs.make("reply-wait-owner-"), "sessions.json");
@@ -244,43 +261,90 @@ it("rejects rotation recorded after the waited owner moves to another physical s
   seed(adoptedStore);
   const owner = await admitOwner(ownerStore);
   const waited = vi.spyOn(controllerWait, "waitForSessionRunIdle");
+
   const pending = admitReplyTurn({
     sessionKey,
     sessionId,
-    expectedSessionId: sessionId,
-    storePath: ownerStore,
-    kind: "queued_followup",
+    storePath,
+    kind: "visible",
     resetTriggered: false,
+    ...overrides,
   });
-  try {
-    await vi.waitFor(() => expect(waited).toHaveBeenCalled());
-    const adopted = await admitReplyTurn({
-      sessionKey,
-      sessionId,
-      expectedSessionId: sessionId,
-      storePath: adoptedStore,
-      kind: "visible",
-      resetTriggered: false,
-      adoptOperation: owner,
-    });
-    if (adopted.status !== "owned") {
-      throw new Error("fixture requires physical-store adoption");
-    }
-    seed(ownerStore, successorId);
-    seed(adoptedStore, successorId);
-    owner.updateSessionId(successorId);
-    owner.complete();
-    await expect(pending).resolves.toMatchObject({
-      status: "skipped",
-      reason: "lifecycle-invalidated",
-    });
-  } finally {
-    owner.complete();
-    const result = await pending;
-    if (result.status === "owned") {
-      result.operation.complete();
-    }
+  admissions.push(pending);
+  void pending.catch(() => {});
+  return pending;
+}
+function owned(result: Admission) {
+  expect(result.status).toBe("owned");
+  if (result.status !== "owned") {
+    throw new Error("fixture requires an admitted owner");
   }
+  operations.add(result.operation);
+  return result;
+}
+async function owner(storePath?: string, id = sessionId) {
+  return owned(await admit(storePath, { sessionId: id })).operation;
+}
+function queue(storePath?: string, id = sessionId) {
+  return admit(storePath, {
+    sessionId: id,
+    expectedSessionId: id,
+    kind: "queued_followup",
+    upstreamAbortSignal: controller.signal,
+  });
+}
+function rotate(operation: registry.ReplyOperation, storePath: string, id = successorId) {
+  operation.updateSessionId(id);
+  seed(storePath, id);
+}
+function expectRotated(result: Admission, id = successorId) {
+  const { operation } = owned(result);
+  expect(operation.sessionId).toBe(id);
+  operation.complete();
+}
+
+it("preserves same-store rotation across foreground maintenance", async () => {
+  const ownerStore = store();
+  const admitted = owned(await admit(ownerStore, { agentId: "main" }));
+  const active = admitted.operation;
+  if (!admitted.databaseClaim) {
+    throw new Error("fixture requires a physical database claim");
+  }
+  const maintenanceStarted = deferred();
+  const releaseMaintenance = deferred();
+  const maintenance = createSessionMaintenanceOwner({ sessionKey });
+  const running = maintenance.track(
+    maintenance.run(async () => {
+      maintenanceStarted.resolve();
+      await releaseMaintenance.promise;
+    }),
+  );
+  work.push(running);
+  await maintenanceStarted.promise;
+  let settled = false;
+  const pending = admit(ownerStore, {
+    agentId: "main",
+    expectedSessionId: sessionId,
+    upstreamAbortSignal: controller.signal,
+  });
+  void pending
+    .finally(() => {
+      settled = true;
+    })
+    .catch(() => {});
+  rotate(active, ownerStore);
+  active.complete();
+  await Promise.resolve();
+  expect(registry.replyRunRegistry.get(sessionKey)).toBeUndefined();
+  expect(settled).toBe(false);
+  releaseMaintenance.resolve();
+  await running;
+  const result = owned(await pending);
+  const next = result.operation;
+  expect(next.sessionId).toBe(successorId);
+  expect(next.agentId).toBe("main");
+  expect(result.databaseClaim?.incarnation).toBe(admitted.databaseClaim.incarnation);
+  next.complete();
 });
 
 it.each(["before", "after"] as const)(
@@ -445,72 +509,50 @@ it("rejects a replacement committed while the predecessor delivery retains custo
     reason: "lifecycle-invalidated",
   });
   await owner.ownerSettlement;
+
 });
 
 it("keeps rekeyed source lineage separate from the adopted target", async () => {
-  const storePath = path.join(tempDirs.make("reply-rekeyed-lineage-"), "sessions.json");
-  seed(storePath);
-  const owner = await admitOwner(storePath);
-  const release = createDeferred();
+  const storePath = store();
+  const first = await owner(storePath);
+  const release = deferred();
   registry.registerReplyOperationSuccessorBarrier({
-    operation: owner,
+    operation: first,
     sessionId,
     sessionKeys: [sessionKey],
     start: () => release.promise,
   });
-  seed(storePath, successorId);
-  owner.updateSessionId(successorId);
+  rotate(first, storePath);
   const targetKey = "agent:main:adopted-target";
   const targetId = "adopted-session";
-  replaceSessionEntrySync(
-    { storePath, sessionKey: targetKey },
-    { sessionId: targetId, updatedAt: 1 },
+  seed(storePath, targetId, targetKey);
+  owned(
+    await admit(storePath, {
+      sessionKey: targetKey,
+      sessionId: successorId,
+      expectedSessionId: targetId,
+      adoptOperation: first,
+    }),
   );
-  const adopted = await admitReplyTurn({
-    sessionKey: targetKey,
-    sessionId: successorId,
-    expectedSessionId: targetId,
-    storePath,
-    kind: "visible",
-    resetTriggered: false,
-    adoptOperation: owner,
-  });
-  expect(adopted.status).toBe("owned");
-  owner.updateSessionId(targetId);
-  expect(owner.hasOwnedSessionId(targetId)).toBe(true);
+  first.updateSessionId(targetId);
+  expect(first.captureOwnedSessionIds().has(targetId)).toBe(true);
   const waited = vi.spyOn(registry, "waitForReplyRunSuccessorAdmission");
-  const controller = new AbortController();
-  const pending = [sessionId, targetId].map(async (expectedSessionId) => {
-    const result = await admitReplyTurn({
-      sessionKey,
-      sessionId: expectedSessionId,
-      expectedSessionId,
-      storePath,
-      kind: "queued_followup",
-      resetTriggered: false,
-      upstreamAbortSignal: controller.signal,
-    });
+  const pending = [sessionId, targetId].map(async (id) => {
+    const result = await queue(storePath, id);
     if (result.status !== "owned") {
       return { status: result.status, reason: result.reason };
     }
-    const admittedId = result.operation.sessionId;
     result.operation.complete();
-    return { status: result.status, sessionId: admittedId };
+    return { status: result.status, sessionId: result.operation.sessionId };
   });
-  try {
-    await vi.waitFor(() => expect(waited).toHaveBeenCalledTimes(2));
-    owner.complete();
-    release.resolve();
-    await expect(Promise.all(pending)).resolves.toEqual([
-      { status: "owned", sessionId: successorId },
-      { status: "skipped", reason: "lifecycle-invalidated" },
-    ]);
-  } finally {
-    owner.complete();
-    release.resolve();
-    controller.abort();
-    await Promise.allSettled(pending);
-  }
+  work.push(...pending);
+  await vi.waitFor(() => expect(waited).toHaveBeenCalledTimes(2));
+  first.complete();
+  release.resolve();
+  await expect(Promise.all(pending)).resolves.toEqual([
+    { status: "owned", sessionId: successorId },
+    invalidated,
+  ]);
 });
 it("admits selected mailbox claims independently for identical keys in two stores", async () => {
   const firstStore = path.join(tempDirs.make("reply-physical-first-"), "sessions.json");
@@ -547,6 +589,7 @@ it("admits selected mailbox claims independently for identical keys in two store
   expect(second.status).toBe("owned");
   if (first.status !== "owned" || second.status !== "owned") {
     throw new Error("both physical claims must own a turn");
+
   }
   expect(firstSource.mailbox.owner.active).toBe(first.operation);
   expect(secondSource.mailbox.owner.active).toBe(second.operation);

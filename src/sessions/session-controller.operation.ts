@@ -78,6 +78,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
   let staleExpiryReason: replyRunSettle.ReplyOperationStaleReason | undefined;
   let terminalRecovery = false;
   let acceptedSteeredInboundAudio = false;
+  let sourceReplyDelivered = false;
   const toolAuthority = createReplyOperationToolAuthority({
     isOpen: () => state.result === null,
     ownsRunSlot: () => owner.active === operation,
@@ -342,6 +343,9 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     get acceptedSteeredInboundAudio() {
       return acceptedSteeredInboundAudio;
     },
+    get sourceReplyDelivered() {
+      return sourceReplyDelivered;
+    },
     get toolAuthorityFingerprint() {
       return toolAuthority.toolAuthorityFingerprint;
     },
@@ -413,8 +417,12 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     markTerminalRecovery() {
       terminalRecovery = true;
     },
-    markAcceptedSteeredInboundAudio() {
-      acceptedSteeredInboundAudio = true;
+    markSteeredInputAccepted({ inboundAudio }) {
+      acceptedSteeredInboundAudio ||= inboundAudio;
+      sourceReplyDelivered = false;
+    },
+    markSourceReplyDelivered() {
+      sourceReplyDelivered = true;
     },
     bindToolAuthoritySnapshot: toolAuthority.bindToolAuthoritySnapshot,
     projectToolAuthorityFingerprint: toolAuthority.projectToolAuthorityFingerprint,

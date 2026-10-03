@@ -9,6 +9,7 @@ import { getSessionControllerOperation } from "../../sessions/session-controller
 import { getActiveNativeAttempt } from "./run-state.js";
 import {
   abortAndDrainEmbeddedAgentRun,
+
   setActiveEmbeddedRun,
   clearActiveEmbeddedRun,
 } from "./runs.js";
@@ -29,6 +30,7 @@ function recover() {
     sessionId,
     sessionKey: key,
     settleMs: 10,
+
     forceClear: true,
     reason: "stuck_recovery",
   });
@@ -144,4 +146,5 @@ describe("native watchdog cleanup retains actual writer custody", () => {
     clearActiveEmbeddedRun(sessionId, successor!.handle, key);
     successor!.operation.complete();
   });
+
 });

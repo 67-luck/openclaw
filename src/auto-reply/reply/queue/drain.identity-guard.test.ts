@@ -3,11 +3,13 @@ import { expect, it } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { captureSessionControllerSourceSettlement } from "../../../sessions/session-controller.mailbox.js";
 import { clearSessionQueues, enqueueFollowupRun } from "../queue.js";
+
 import {
   createQueueTestRun as createRun,
   installQueueRuntimeErrorSilencer,
 } from "../queue.test-helpers.js";
 import { getExistingFollowupQueue } from "./state.js";
+
 import type { FollowupRun, QueueSettings } from "./types.js";
 
 installQueueRuntimeErrorSilencer();
@@ -41,6 +43,7 @@ it("retains a stopped drain until its raw return and then executes the surviving
     expect(second.controllerInput!.mailbox).toBe(mailbox);
     expect(second.controllerInput!.abortSignal.aborted).toBe(false);
     expect(calls).toEqual(["msg1"]);
+
     gate.resolve();
     await oldClaim.settlement.promise;
     await secondEntered.promise;

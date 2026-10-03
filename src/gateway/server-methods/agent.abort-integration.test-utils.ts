@@ -10,8 +10,10 @@ import * as agentHandlerHelpers from "../agent-turn/agent-handler-helpers.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import type { GatewaySessionRow } from "../session-utils.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
+
 import { registerAgentAbortSubagentTests } from "./agent.abort-subagents.test-utils.js";
 import { registerAgentPreDispatchFailureTests } from "./agent.pre-dispatch-failure.test-utils.js";
+import { registerAgentGlobalGoalEventTest } from "./agent.session-events.test-utils.js";
 import {
   getAgentTestMocks,
   operatorWriteCliClient,
@@ -135,6 +137,7 @@ describe("gateway agent handler chat.abort integration", () => {
     });
   });
 
+
   it("yields after the accepted ack before dispatching heavy agent work", async () => {
     prime();
     mocks.agentCommand.mockResolvedValueOnce({
@@ -201,10 +204,9 @@ describe("gateway agent handler chat.abort integration", () => {
       },
       { context, respond, reqId: runId, flushDispatch: false },
     );
-    await waitForAssertion(() => {
-      expect(respond).toHaveBeenCalled();
-      expect(mocks.agentCommand).not.toHaveBeenCalled();
-    });
+    await pending;
+    expect(respond).toHaveBeenCalled();
+    expect(mocks.agentCommand).not.toHaveBeenCalled();
 
     expectRecordFields(mockCallArg(respond, 0, 1), {
       runId,
@@ -212,6 +214,7 @@ describe("gateway agent handler chat.abort integration", () => {
       status: "accepted",
     });
     expect(rpcSourceTesting.has(runId)).toBe(true);
+
 
     const abortRespond = vi.fn();
     await handleChatAbortRequest({
@@ -231,6 +234,7 @@ describe("gateway agent handler chat.abort integration", () => {
     await pending;
 
     await flushScheduledDispatchStep();
+
 
     expect(mocks.agentCommand).not.toHaveBeenCalled();
     expectRecordFields(context.dedupe.get(`agent:${runId}`)?.payload, {
@@ -255,7 +259,10 @@ describe("gateway agent handler chat.abort integration", () => {
 
   it("preserves stop-command reason when /stop lands during the accepted ack yield", async () => {
     prime();
-    mocks.agentCommand.mockReturnValueOnce(new Promise(() => {}));
+    mocks.agentCommand.mockResolvedValueOnce({
+      payloads: [{ text: "unexpected dispatch" }],
+      meta: { durationMs: 1 },
+    });
 
     const context = makeContext();
     const respond = vi.fn();
@@ -277,6 +284,7 @@ describe("gateway agent handler chat.abort integration", () => {
     });
     expect(rpcSourceTesting.has(runId)).toBe(true);
 
+
     const stopRespond = vi.fn();
     await handleDirectExternalChatSend({
       params: {
@@ -297,7 +305,6 @@ describe("gateway agent handler chat.abort integration", () => {
     });
     expect(rpcSourceTesting.has(runId)).toBe(false);
 
-    await flushScheduledDispatchStep();
 
     expect(mocks.agentCommand).not.toHaveBeenCalled();
     expectRecordFields(context.dedupe.get(`agent:${runId}`)?.payload, {
@@ -792,6 +799,7 @@ describe("gateway agent handler chat.abort integration", () => {
 
     const context = makeContext();
     const runId = "idem-abort-run";
+
     await invokeAgent(
       {
         message: "hi",
@@ -881,6 +889,7 @@ describe("gateway agent handler chat.abort integration", () => {
     pending.resolve({ payloads: [{ text: "late completion" }], meta: { durationMs: 1 } });
     await waitForAssertion(() => expect(rpcSourceTesting.has(runId)).toBe(false));
   });
+
 
   it("keeps the sessions.abort wait snapshot after late agent completion", async () => {
     prime();

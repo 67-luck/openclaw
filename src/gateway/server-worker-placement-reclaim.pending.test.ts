@@ -61,6 +61,7 @@ it.each(["active", "failed"] as const)(
     let pending!: Promise<{ admitted: boolean; error?: unknown }>;
     try {
       await runSessionMutation({
+
         scope,
         identities: [sessionKey, sessionId],
         run: async () => {

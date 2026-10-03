@@ -14,6 +14,7 @@ import { chatRunBelongsToAgent, resolveChatRunOwnerAgentId } from "../chat-run-o
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import { createChatAbortMarker } from "../server-chat-state.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
+
 import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
@@ -169,12 +170,11 @@ export function resolveChatAbortTargetRejection(params: {
 }
 
 export function readPreRegisteredAgentDedupePayloadForSession(params: {
-  entry: GatewayRequestContext["dedupe"] extends Map<string, infer T> ? T | undefined : never;
+  entry: DedupeEntry | undefined;
   runId: string;
   sessionKey: string;
   agentId?: string;
   defaultAgentId?: string;
-  includeHidden?: boolean;
   requiredSessionId?: string;
 }): PreRegisteredAgentDedupePayload | undefined {
   if (!params.entry?.ok) {
@@ -188,6 +188,7 @@ export function readPreRegisteredAgentDedupePayloadForSession(params: {
     return undefined;
   }
   const payloadRunId = typeof payload.runId === "string" ? payload.runId : undefined;
+
   if (payloadRunId && payloadRunId !== params.runId) {
     return undefined;
   }
@@ -227,7 +228,7 @@ export function readPreRegisteredAgentDedupePayloadForSession(params: {
 
 export function readPreRegisteredRun(params: {
   key: string;
-  entry: GatewayRequestContext["dedupe"] extends Map<string, infer T> ? T | undefined : never;
+  entry: DedupeEntry | undefined;
   keyPrefix: string;
   includeHidden?: boolean;
 }): PreRegisteredAgentRun | undefined {
@@ -273,21 +274,15 @@ export function writePreRegisteredAgentAbort(params: {
   payload: PreRegisteredAgentDedupePayload;
   stopReason: string;
   endedAt?: number;
-  expectedPayload?: PreRegisteredAgentDedupePayload;
+  expectedPayload: PreRegisteredAgentDedupePayload;
 }) {
-  if (
-    params.expectedPayload &&
-    params.context.dedupe.get(`agent:${params.runId}`)?.payload !== params.expectedPayload
-  ) {
+  if (params.context.dedupe.get(`agent:${params.runId}`)?.payload !== params.expectedPayload) {
     return false;
   }
   const endedAt = params.endedAt ?? Date.now();
   const payloadAgentId = normalizeOptionalString(params.payload.agentId);
   for (const key of resolvePreRegisteredAgentDedupeKeys(params.payload, params.runId)) {
-    if (
-      params.expectedPayload &&
-      params.context.dedupe.get(key)?.payload !== params.expectedPayload
-    ) {
+    if (params.context.dedupe.get(key)?.payload !== params.expectedPayload) {
       continue;
     }
     setGatewayDedupeEntry({
@@ -388,6 +383,7 @@ function createChatAbortRunSelection<T extends { runId: string }>() {
   };
 }
 
+
 export function resolveAuthorizedRunsForSessionKeys(params: {
   sessionKeys: Iterable<string>;
   sessionIds?: Iterable<string | undefined>;
@@ -398,6 +394,7 @@ export function resolveAuthorizedRunsForSessionKeys(params: {
   preserveSideRuns?: boolean;
   includeProtectedRuns?: boolean;
 }) {
+
   const selection = createChatAbortRunSelection<{
     runId: string;
     sessionKey: string;
@@ -499,7 +496,10 @@ export function hasGatewaySessionAbortOwner(params: SessionAbortOwnerParams): bo
       sessionIds: [params.sessionId],
       ...ownerScope,
       includeProtectedRuns: true,
-    }).authorizedRuns.length > 0 ||
+    }).authorizedRuns.some(
+      ({ entry }) =>
+        !isCurrentChatAbortExecution(entry) || !isChatAbortTerminalPersistenceSettled(entry),
+    ) ||
     resolveAuthorizedQueuedTurnsForSession({
       context: params.context,
       sessionId: params.sessionId,

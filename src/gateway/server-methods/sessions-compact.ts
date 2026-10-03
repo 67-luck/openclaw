@@ -1,4 +1,3 @@
-// Manual transcript trimming and model-backed session compaction.
 import { randomUUID } from "node:crypto";
 import {
   ErrorCodes,
@@ -34,7 +33,7 @@ import {
   resolveCanonicalGatewaySessionStoreKey,
   resolveGatewaySessionStoreTargetWithStore,
 } from "../session-utils.js";
-import { asWorkerInferenceControl } from "../worker-environments/inference-control.js";
+import { getWorkerInferenceSessionControl } from "../worker-environments/inference-control-internal.js";
 import { resolveVisibleActiveSessionRunState } from "./session-active-runs.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
@@ -120,11 +119,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
         project: ({ existingEntry }) =>
           existingEntry ? { ok: true, entry: existingEntry } : { ok: false },
       });
-      const compactTarget = {
-        entry: compactRead.ok ? compactRead.entry : undefined,
-        primaryKey: compactPrimaryKey,
-      };
-      const entry = compactTarget.entry;
+      const entry = compactRead.ok ? compactRead.entry : undefined;
       const sessionId = entry?.sessionId;
       const respondNotCompacted = (details: { ok?: boolean; kept?: number; reason?: string }) => {
         respond(
@@ -134,20 +129,27 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
         );
       };
       if (!sessionId) {
-        respondNotCompacted({ reason: "no sessionId" });
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            `Session ${key} not found. Run openclaw sessions list --json to choose a valid key.`,
+          ),
+        );
         return;
       }
+      const transcriptScope = {
+        agentId: target.agentId,
+        sessionId,
+        sessionKey: compactPrimaryKey,
+        storePath,
+      };
 
       if (maxLines !== undefined) {
-        const trimPreflight = await preflightSessionTranscriptForManualCompact(
-          {
-            sessionId,
-            storePath,
-            sessionKey: compactTarget.primaryKey,
-            agentId: target.agentId,
-          },
-          { maxLines },
-        );
+        const trimPreflight = await preflightSessionTranscriptForManualCompact(transcriptScope, {
+          maxLines,
+        });
         if (!trimPreflight.compacted) {
           respondNotCompacted(
             "kept" in trimPreflight ? { kept: trimPreflight.kept } : { reason: "no transcript" },
@@ -155,12 +157,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
           return;
         }
       } else {
-        const transcriptStats = readTranscriptStatsSync({
-          agentId: target.agentId,
-          sessionId,
-          sessionKey: compactTarget.primaryKey,
-          storePath,
-        });
+        const transcriptStats = readTranscriptStatsSync(transcriptScope);
         if (transcriptStats.eventCount === 0) {
           respondNotCompacted({ reason: "no transcript" });
           return;
@@ -181,7 +178,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
           ? latest
           : undefined;
       };
-      const queueIdentities = [key, target.canonicalKey, compactTarget.primaryKey, sessionId];
+      const queueIdentities = [key, target.canonicalKey, compactPrimaryKey, sessionId];
       const lifecycleIdentities = [...queueIdentities, lifecycleRevision];
       let sessionStillCurrent = true;
       let compactionNoopReason: string | undefined;
@@ -194,6 +191,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
           incarnation: sessionId,
           agentId: target.agentId,
         }),
+
         kind: "compaction",
         policy: "preempt",
         preempt: {
@@ -217,7 +215,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
                 agentId: target.agentId,
                 sessionId,
                 sessionKey: target.canonicalKey,
-                sessionStoreKey: compactTarget.primaryKey,
+                sessionStoreKey: compactPrimaryKey,
                 storePath,
               })
             )?.reason;
@@ -227,6 +225,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
           }
           blockedByActiveRun =
             (asWorkerInferenceControl(context.workerEnvironmentService)?.hasInferenceForSession(
+
               sessionId,
             ) ??
               false) ||
@@ -284,26 +283,16 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
 
           const operationId = randomUUID();
           if (maxLines !== undefined) {
-            const trimResult = await trimSessionTranscriptForManualCompact(
-              {
-                sessionId,
-                storePath,
-                sessionKey: compactTarget.primaryKey,
-                agentId: target.agentId,
-              },
-              { maxLines },
-            );
+            const trimResult = await trimSessionTranscriptForManualCompact(transcriptScope, {
+              maxLines,
+            });
             respond(
               true,
               {
                 ok: true,
                 key: target.canonicalKey,
                 compacted: trimResult.compacted,
-                ...(trimResult.compacted
-                  ? { kept: trimResult.kept }
-                  : "kept" in trimResult
-                    ? { kept: trimResult.kept }
-                    : { reason: "no transcript" }),
+                ...("kept" in trimResult ? { kept: trimResult.kept } : { reason: "no transcript" }),
               },
               undefined,
             );
@@ -324,12 +313,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
             return;
           }
 
-          const transcriptStats = readTranscriptStatsSync({
-            agentId: target.agentId,
-            sessionId,
-            sessionKey: compactTarget.primaryKey,
-            storePath,
-          });
+          const transcriptStats = readTranscriptStatsSync(transcriptScope);
           if (transcriptStats.eventCount === 0) {
             respondNotCompacted({ reason: "no transcript" });
             return;
@@ -367,7 +351,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
                 agentId: target.agentId,
                 sessionId,
                 sessionKey: target.canonicalKey,
-                sessionStoreKey: compactTarget.primaryKey,
+                sessionStoreKey: compactPrimaryKey,
                 storePath,
               },
               {
@@ -389,9 +373,9 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
               const persistProjection = await applySessionPatchProjection({
                 agentId: target.agentId,
                 assertCurrent: assertActive,
-                sessionKeys: [compactTarget.primaryKey],
+                sessionKeys: [compactPrimaryKey],
                 storePath,
-                resolveTarget: () => ({ primaryKey: compactTarget.primaryKey }),
+                resolveTarget: () => ({ primaryKey: compactPrimaryKey }),
                 project: ({ existingEntry }) => {
                   if (
                     !existingEntry ||

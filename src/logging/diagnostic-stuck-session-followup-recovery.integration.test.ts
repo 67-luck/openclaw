@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  clearSessionQueues,
   enqueueFollowupRun,
   type FollowupRun,
   type QueueSettings,
@@ -10,6 +9,7 @@ import { testing } from "../auto-reply/reply/reply-run-registry.test-support.js"
 import { createReplyOperation } from "../sessions/session-controller.operation.js";
 import { getSessionControllerOperation } from "../sessions/session-controller.state.js";
 import { createDeferredCore } from "../shared/deferred.js";
+
 import { recoverStuckDiagnosticSession } from "./diagnostic-stuck-session-recovery.runtime.js";
 
 const key = "agent:main:watchdog-followup";
@@ -33,6 +33,7 @@ afterEach(() => {
   clearSessionQueues([key]);
   vi.useRealTimers();
 });
+
 
 describe("controller watchdog and actual followup delivery custody", () => {
   it.each(["followup", "collect"] as const)(

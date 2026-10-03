@@ -31,19 +31,19 @@ import {
 } from "../chat-abort-lifecycle-internal.js";
 import { createChatAbortOps } from "../chat-abort-ops.js";
 import { abortChatRunById, captureChatRunAbortPresentation } from "../chat-abort.js";
+
 import {
   resolveRequestedSessionAgentId,
   tryResolveSessionCompatibilityOwnerAgentId,
 } from "../session-request-agent.js";
 import { loadSessionEntry, resolveSessionStoreKey } from "../session-utils.js";
-import { resolveWorkerInferenceTarget } from "../worker-environments/inference-control-internal.js";
+import { getWorkerInferenceSessionControl } from "../worker-environments/inference-control-internal.js";
 import {
   resolveChatAbortTargetRejection,
   resolveChatAbortRequester,
 } from "./chat-abort-authorization.js";
 import {
   abortChatRunsForSessionKeyWithPartials,
-  captureWorkerInferenceForSession,
   abortControlledSubagents,
   descendantAbortError,
 } from "./chat-abort-runtime.js";
@@ -270,6 +270,7 @@ export async function handleChatAbortRequestWithLifecycle(
   const active = getRpcSource(runId);
   const activeIdentity = active && getRpcSourceIdentity(active);
   const workerTarget = resolveWorkerInferenceTarget(context.workerEnvironmentService, runId);
+
   const workerCancellation = captureWorkerInferenceForSession({
     context,
     sessionId: activeIdentity?.sessionId ?? workerTarget?.sessionId ?? abortSessionEntry?.sessionId,
@@ -369,6 +370,7 @@ export async function handleChatAbortRequestWithLifecycle(
     });
   };
   if (!active) {
+
     if (!workerCancellation?.runIds.length) {
       if (!abortSession.ok) {
         throw abortSession.error;
@@ -520,6 +522,11 @@ export async function handleChatAbortRequestWithLifecycle(
 }
 
 export async function handleChatAbortRequest(options: GatewayRequestHandlerOptions): Promise<void> {
+  if (validateChatAbortParams(options.params)) {
+    options.context.logGateway.info(
+      formatStopRequest("chat.abort", options.client, options.params),
+    );
+  }
   try {
     await handleChatAbortRequestWithLifecycle(options);
   } catch (error) {

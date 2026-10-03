@@ -12,6 +12,7 @@ import {
 import { diagnosticLogger } from "../../logging/diagnostic-runtime.js";
 import { enqueueCommandInLane, setCommandLaneConcurrency } from "../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
+
 import {
   beginReplyMessageInjectionTarget,
   finalizeReplyMessageInjectionAttempt,
@@ -281,6 +282,7 @@ describe("reply run registry", () => {
     releaseCompletion();
     await expect(settlement).resolves.toBe(true);
   });
+
 
   it.each(["finalization", "terminal"] as const)(
     "keeps late delivery custody after %s cleanup expires",

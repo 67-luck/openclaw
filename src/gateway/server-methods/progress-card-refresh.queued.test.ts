@@ -31,6 +31,7 @@ import { registerChatAbortController } from "../chat-abort.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import type { handleTrustedInternalChatSend } from "./chat-send-handler.js";
 import { createChatSendTurnAdoptionLifecycle } from "./chat-send-turn-adoption.js";
+import { createChatSendWorkAdmission } from "./chat-send-work-admission.js";
 import { requestProgressCardRefresh } from "./progress-card-refresh.js";
 import type { GatewayRequestContext, GatewayRequestHandlerOptions, RespondFn } from "./types.js";
 
@@ -141,6 +142,7 @@ function fixture(options: { parkSteer?: boolean } = {}) {
       controller: AbortController;
       sourceRef: RpcSourceRef;
       parked?: ReturnType<typeof reserveSteerCandidate>;
+
     }
   >();
   const runFollowup = createFollowupRunner({
@@ -191,6 +193,7 @@ function fixture(options: { parkSteer?: boolean } = {}) {
     const controller = registration.controller;
     const release = vi.fn();
     releases.set(runId, release);
+
     const adoption = createChatSendTurnAdoptionLifecycle({
       accountId: undefined,
       sourceRef,
@@ -210,7 +213,12 @@ function fixture(options: { parkSteer?: boolean } = {}) {
       },
       hasCronCreatorAuthority: false,
       suppressReplies: true,
-      retainWorkAdmission: () => release,
+      releaseSourceWorkAdmission: work.release,
+      retainWorkAdmission: () => {
+        const release = vi.fn(work.retain());
+        releases.set(runId, release);
+        return release;
+      },
     });
     const queued: FollowupRun = {
       prompt: String(request.params.message),
@@ -251,6 +259,7 @@ function fixture(options: { parkSteer?: boolean } = {}) {
     }
     registration.cleanup();
     sources.set(runId, { queued, adoption, controller, sourceRef, parked });
+
     setGatewayDedupeEntry({
       dedupe: context.dedupe,
       key: `chat:` + runId,
@@ -473,6 +482,7 @@ describe("queued progress refresh settlement", () => {
       }
       await source.sourceRef.input.settlement.promise;
       expect(rpcSourceTesting.has(source.runId)).toBe(false);
+
       expectTerminal(await f.refresh());
       expect(f.context.dedupe.get(`chat:${source.runId}`)?.payload).toMatchObject({
         status: "timeout",

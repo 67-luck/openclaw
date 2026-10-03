@@ -63,7 +63,7 @@ export async function readChatPendingInputs(
     cronStorePath?: string;
   },
 ): Promise<ChatPendingInputsPage> {
-  const page = listSessionPendingInputs(scope, {
+  const page = await listSessionPendingInputs(scope, {
     before: options.before,
     limit: Math.min(options.limit, 20),
   });

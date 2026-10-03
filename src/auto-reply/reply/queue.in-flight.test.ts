@@ -1,6 +1,6 @@
-// Proves queue caps and depth describe pending work while active identities remain in shared state.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { createQueueCase } from "./queue.case.test-support.js";
 import {
   abortSessionControllerInput,
   captureSessionControllerSourceSettlement,
@@ -8,12 +8,25 @@ import {
 import {
   completeFollowupRunLifecycle,
   enqueueFollowupRun,
+
   getFollowupQueueDepth,
-  scheduleFollowupDrain,
 } from "./queue.js";
 import { createQueueTestRun as createRun } from "./queue.test-helpers.js";
 import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
-import type { FollowupRun, QueueDropPolicy, QueueSettings } from "./queue/types.js";
+import type { FollowupRun, QueueSettings } from "./queue/types.js";
+
+const queues = new Set<string>();
+function queueCase(settings: Partial<QueueSettings> = {}) {
+  const q = createQueueCase({ mode: "followup", cap: 1, ...settings });
+  queues.add(q.key);
+  return q;
+}
+afterEach(() => {
+  for (const key of queues) {
+    clearFollowupQueue(key);
+  }
+  queues.clear();
+});
 
 async function settleSources(...runs: FollowupRun[]) {
   await Promise.all(
@@ -71,6 +84,7 @@ describe("followup queue in-flight ownership", () => {
       const survivor = createRun({ prompt: "survivor" });
       const runFollowup = async (run: FollowupRun) => {
         calls.push(run);
+
         await run.turnAdoptionLifecycle?.onAdopted?.();
         if (run === active) {
           entered.resolve();
@@ -162,10 +176,11 @@ describe("followup queue in-flight ownership", () => {
 
     await settleSources(active, pending, rejected);
     expect(getExistingFollowupQueue(key)).toBeUndefined();
+
   });
 
   it("protects a collect group and counts only active identities still present", async () => {
-    const key = createKey("collect");
+    const q = queueCase({ mode: "collect", cap: 50 });
     const entered = createDeferred();
     const release = createDeferred();
     const groupCompletions = [vi.fn(), vi.fn()];
@@ -197,22 +212,17 @@ describe("followup queue in-flight ownership", () => {
       turnAdoptionLifecycle: { onAdopted: async () => {}, onSettled: rejectedComplete },
     };
     const runFollowup = async (run: FollowupRun) => {
+
       if (!aggregate) {
         aggregate = run;
         entered.resolve();
         await release.promise;
       }
       completeFollowupRunLifecycle(run);
-    };
-
-    for (const run of group) {
-      expect(enqueueFollowupRun(key, run, initialSettings, "none", undefined, false)).toBe(true);
-    }
-    scheduleFollowupDrain(key, runFollowup);
-
+    });
     try {
       await entered.promise;
-      const queue = getExistingFollowupQueue(key);
+      const queue = getExistingFollowupQueue(q.key);
       expect(queue?.inFlight.size).toBe(2);
       expect(getFollowupQueueDepth(key)).toBe(0);
 
@@ -220,27 +230,27 @@ describe("followup queue in-flight ownership", () => {
       expect(enqueueFollowupRun(key, pending, oldSettings, "none")).toBe(true);
       expect(enqueueFollowupRun(key, survivor, oldSettings, "none")).toBe(true);
 
+
       expect(queue?.items.map((item) => item.prompt)).toEqual(["group-1", "group-2", "survivor"]);
       await settleSources(pending);
       expect(pendingComplete).toHaveBeenCalledOnce();
       expect(groupCompletions.map((complete) => complete.mock.calls.length)).toEqual([0, 0]);
-
       await aggregate?.turnAdoptionLifecycle?.onAdopted?.();
       expect(queue?.items.map((item) => item.prompt)).toEqual(["survivor"]);
       expect(queue?.inFlight.size).toBe(2);
-      expect(getFollowupQueueDepth(key)).toBe(1);
-
+      expect(getFollowupQueueDepth(q.key)).toBe(1);
       expect(
         enqueueFollowupRun(
           key,
           rejected,
           { ...initialSettings, cap: 1, dropPolicy: "new" },
           "none",
+
         ),
       ).toBe(false);
       await settleSources(rejected);
       expect(rejectedComplete).toHaveBeenCalledOnce();
-      expect(getFollowupQueueDepth(key)).toBe(1);
+      expect(getFollowupQueueDepth(q.key)).toBe(1);
     } finally {
       release.resolve();
     }
@@ -304,10 +314,12 @@ describe("followup queue in-flight ownership", () => {
       expect(calls[2]).toBe("item-pending");
       expect(getExistingFollowupQueue(key)).toBeUndefined();
       expect(calls).toHaveLength(3);
+
     } finally {
       releaseActive.resolve();
       clearFollowupQueue(key);
       await settleSources(active, pending, tail);
     }
   });
+
 });

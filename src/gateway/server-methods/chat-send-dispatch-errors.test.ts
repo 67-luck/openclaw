@@ -17,6 +17,10 @@ import { SessionTranscriptProjectionUnavailableError } from "../../config/sessio
 import { onAgentRuntimeEvent } from "../../infra/agent-events.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import * as sessionRunError from "../../sessions/session-run-error.js";
+import {
+  AgentDatabaseAdmissionError,
+  createAgentDatabaseInspectionRefusal,
+} from "../../state/agent-database-admission.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { abortChatRunById } from "../chat-abort.js";
 import { projectChatDisplayMessages } from "../chat-display-projection.js";
@@ -54,6 +58,7 @@ describe("handleChatSendSetupError", () => {
       await handleChatSendSetupError({
         admission: {
           activeRunAbort,
+
           cleanupAdmittedRun,
           lifecycleGeneration: "test-generation",
           restartSafeAdmission: undefined,
@@ -62,12 +67,14 @@ describe("handleChatSendSetupError", () => {
           agentRunSeq: new Map(),
           broadcast,
           chatRunState: { clearRun },
+
           dedupe,
           logGateway: { warn: vi.fn() },
           nodeSendToSession: vi.fn(),
           removeChatRun: vi.fn(),
         } as never,
         error: new SessionTranscriptProjectionUnavailableError("sess-main"),
+
         respond,
         session: {
           agentId: "main",
@@ -90,6 +97,7 @@ describe("handleChatSendSetupError", () => {
       activeRunAbort.cleanup();
     }
   });
+
 });
 
 describe("createChatSendDispatchErrorLifecycle", () => {
@@ -268,7 +276,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         ]);
         if (stateContention) {
           const summary =
-            "The turn was interrupted while the server was busy. Check its status before trying again.";
+            "Your request was interrupted while the server was busy. Check its status before trying again.";
           const terminal = broadcast.mock.calls.at(-1)?.[1];
           expect(terminal).toMatchObject({ errorKind: "state_contention" });
           expect(terminal.errorMessage).toMatch(new RegExp(`^${summary.replaceAll(".", "\\.")}`));
@@ -295,8 +303,8 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         if (missingProfile) {
           const recovery = renderFailoverCodeUserCopy("selected_auth_profile_unavailable")!;
           const storedError = loadSessionEntry(target)?.lastRunError;
-          expect(storedError).toMatch(/^The selected auth profile is unavailable/u);
-          expect(storedError).toContain("`openclaw configure`, then retry.");
+          expect(storedError).toMatch(/^This saved login isn't available\./u);
+          expect(storedError).toContain("run `openclaw configure`.");
           expect(storedError?.length).toBeLessThanOrEqual(160);
           expect(JSON.stringify(messages)).toContain(recovery);
           expect(JSON.stringify(messages)).not.toContain("openai:removed");

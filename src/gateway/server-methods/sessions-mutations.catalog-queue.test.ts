@@ -583,6 +583,7 @@ test("patch timing covers preparation and lifecycle finalization before cleanup"
       .spyOn(sessionLifecycle, "runSessionMutation")
       .mockImplementation((params) =>
         runMutation({
+
           ...params,
           prepare: async (owner) => {
             await params.prepare?.(owner);

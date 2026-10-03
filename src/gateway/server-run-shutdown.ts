@@ -1,4 +1,5 @@
 import { isAgentEventLifecycleGenerationCurrent } from "../infra/agent-events.js";
+
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { hasGatewayContextOwner } from "../plugins/runtime/gateway-request-scope.js";
 import { sessionControllerMailboxes } from "../sessions/session-controller.mailbox.js";
@@ -87,13 +88,6 @@ function formatRestartReplyDrainDetails(counts: {
   return details.length > 0 ? details.join(", ") : "no pending reply work";
 }
 
-async function sleepForRestartReplyDrain(delayMs: number): Promise<void> {
-  await new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, delayMs);
-    timer.unref?.();
-  });
-}
-
 export type GatewayRunShutdownParams = {
   resolveGatewayContext: GatewayContextResolver;
   restartRecoveryCandidates?: Map<string, RestartRecoveryCandidate>;
@@ -138,7 +132,9 @@ async function waitForRestartReplyDrain(params: {
     if (elapsedMs >= timeoutMs) {
       return { drained: false, elapsedMs, counts };
     }
-    await sleepForRestartReplyDrain(Math.min(RESTART_REPLY_DRAIN_POLL_MS, timeoutMs - elapsedMs));
+    await sleep(Math.min(RESTART_REPLY_DRAIN_POLL_MS, timeoutMs - elapsedMs), undefined, {
+      ref: false,
+    });
     counts = getRestartReplyDrainCounts(params);
     if (counts.pendingReplies <= 0 && counts.activeRuns <= 0 && counts.queuedTurns <= 0) {
       return { drained: true, elapsedMs: Date.now() - startedAt, counts };

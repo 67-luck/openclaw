@@ -11,7 +11,10 @@ import * as workspace from "../../../agents/workspace.js";
 import { readSessionTranscriptMessageEvents } from "../../../config/sessions/session-accessor.js";
 import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
-import { flushClientVoiceSessionWrites } from "../../../talk/client-voice-session.js";
+import {
+  flushClientVoiceSessionWrites,
+  isClientVoiceSessionConfirmable,
+} from "../../../talk/client-voice-session.js";
 import {
   AGENT_ID,
   CONNECTION_ID,
@@ -90,6 +93,13 @@ describe("native Talk through the public OpenAI plugin registration", () => {
     await withNativePlugin(async ({ create, offer, invoke, broadcast }) => {
       const { result, socket } = await connectNativeSession({ create, offer });
       expect(talkEventTypes(broadcast).filter((type) => type === "session.ready")).toHaveLength(1);
+      expect(
+        isClientVoiceSessionConfirmable({
+          agentId: AGENT_ID,
+          sessionKey: SESSION_KEY,
+          voiceSessionId: requireString(result, "voiceSessionId"),
+        }),
+      ).toBe(true);
       socket.serverEvent({ type: "turn.done", turn: { role: "user", transcript: "Hello voice" } });
       socket.serverEvent({
         type: "turn.done",

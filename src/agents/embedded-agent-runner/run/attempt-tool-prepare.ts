@@ -74,6 +74,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   skillReadResources?: Parameters<typeof createOpenClawCodingToolsInternal>[1];
   skillsSnapshot: EmbeddedRunAttemptParams["skillsSnapshot"];
   codeModeSkills: readonly CodeModeSkill[];
+  installedSkills?: OpenClawCodingToolsOptions["installedSkills"];
   reviewTranscript?: NonNullable<OpenClawCodingToolsOptions["exec"]>["reviewTranscript"];
   toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor;
 }) {
@@ -161,7 +162,6 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   const cronCreatorToolAllowlist: CronCreatorToolAllowlistEntry[] = [];
   const cronCreatorToolAllowlistCaptureRef: CronToolsAllowCaptureRef = {};
   const inheritedToolAllowlist: string[] = [];
-  const runCleanups: Array<(reason: string) => Promise<void>> = [];
   const generationCleanups: Array<(reason: string) => Promise<void>> = [];
   const retiringGenerations = new Set<Promise<void>>();
   let retiredCleanupFailed = false;
@@ -212,8 +212,6 @@ export async function prepareEmbeddedAttemptToolBase(params: {
     ...buildConversationContext(),
     agentId: attempt.sandboxAgentId ?? params.setup.sessionAgentId,
     conversationToolPolicy: attempt.conversationToolPolicy,
-    isCanonicalWorkspace: attempt.isCanonicalWorkspace,
-    promptMode: attempt.promptMode,
     sandboxToolPolicy: params.setup.sandbox?.tools,
     inheritRuntimeToolAllowlist: true,
     runtimePluginToolGrant: attempt.runtimePluginToolGrant,
@@ -296,9 +294,11 @@ export async function prepareEmbeddedAttemptToolBase(params: {
             computerTransport,
             pairedNodeComputerUse,
             conversationRecall: attempt.conversationRecall,
+            memoryAudience: attempt.memoryAudience,
             oneShotCliRun: attempt.oneShotCliRun,
             toolSearchCatalogRef,
             codeModeSkills,
+            installedSkills: params.installedSkills,
             preparedModelRuntime: attempt.preparedModelRuntime,
             requireWorkspaceOnly: attempt.requireWorkspaceOnly,
             sessionReadScopeKey: attempt.sessionReadScopeKey,
@@ -392,7 +392,6 @@ export async function prepareEmbeddedAttemptToolBase(params: {
       recordAgentCleanupFailure();
     }
   };
-  runCleanups.push(releaseTools);
 
   // Until preparation returns, the attempt cannot own these registered resources.
   try {
@@ -451,7 +450,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
       localModelLeanPreserveToolNames,
       replaySafetyOptions,
       runtimeCapabilityProfile,
-      runCleanups,
+      releaseTools,
       toolSearchCatalogRef,
       toolSurfaceRuntime,
       toolSearchConfig,

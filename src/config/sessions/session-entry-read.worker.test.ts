@@ -11,6 +11,7 @@ import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db
 import {
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
+  runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
@@ -21,7 +22,6 @@ import {
 } from "./session-accessor.sqlite-entry-store.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
-import { readSessionBackingFacts } from "./session-backing-facts.js";
 import { captureCanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import { prepareSessionDeliveryGeneration } from "./session-delivery-generation.js";
 import {
@@ -150,6 +150,11 @@ it("reads row metadata, board presence, and cold summary position from one snaps
     const sessionKey = "agent:main:cron:row-facts";
     const sessionId = "row-facts-session";
     const siblingKey = "agent:main:cron:without-summary";
+    const sessionKeys = [
+      sessionKey,
+      siblingKey,
+      ...Array.from({ length: 62 }, (_, index) => `agent:main:cron:cohort-${index}`),
+    ];
     writeSessionEntry(database, sessionKey, {
       sessionId,
       updatedAt: 1,
@@ -167,12 +172,18 @@ it("reads row metadata, board presence, and cold summary position from one snaps
         omittedContent: false,
       },
     });
-    writeSessionEntry(database, siblingKey, { sessionId: "without-summary", updatedAt: 1 });
-    database.db
-      .prepare(
-        "INSERT INTO board_tabs (session_key, tab_id, title, position, created_by, revision) VALUES (?, 'tab', 'Board', 0, 'user', 0)",
-      )
-      .run(sessionKey);
+    for (const key of sessionKeys.slice(1)) {
+      writeSessionEntry(database, key, { sessionId: key, updatedAt: 1 });
+    }
+    const boardKeys = sessionKeys.filter((_, index) => index % 2 === 0);
+    const insertTab = database.db.prepare(
+      "INSERT INTO board_tabs (session_key, tab_id, title, position, created_by, revision) VALUES (?, ?, 'Board', 0, 'user', 0)",
+    );
+    for (const key of boardKeys) {
+      for (let tab = 0; tab < 4; tab++) {
+        insertTab.run(key, `tab-${tab}`);
+      }
+    }
     database.db
       .prepare(
         "INSERT INTO transcript_rewrite_watermarks (session_id, generation, updated_at) VALUES (?, 'hot-generation', 1)",
@@ -219,31 +230,47 @@ it("reads row metadata, board presence, and cold summary position from one snaps
       });
     try {
       retained.run(target, () => {
-        const read = () =>
-          readSessionRowDatabaseFacts({
-            kind: "session-row-facts",
-            database: target,
-            env,
-            sessionKeys: [sessionKey, siblingKey, "agent:main:cron:absent"],
+        const opened = withOpenClawAgentDatabaseReadOnly((reader) => reader, { ...target, env });
+        if (!opened.found) {
+          throw new Error("Expected the seeded read-only database");
+        }
+        const queries = trackSqliteStatementExecutions(opened.value.db, ["boards"], (sql) =>
+          /\bfrom "board_tabs"/iu.test(sql) ? "boards" : null,
+        );
+        try {
+          const read = () =>
+            readSessionRowDatabaseFacts({
+              kind: "session-row-facts",
+              database: target,
+              env,
+              sessionKeys,
+            });
+          const first = read();
+          expect(first.rows).toHaveLength(64);
+          expect(queries.counts.boards).toBe(1);
+          expect(first.rows.filter((row) => row.hasBoard).map((row) => row.sessionKey)).toEqual(
+            boardKeys,
+          );
+          expect(first.rows[0]).toMatchObject({
+            sessionKey,
+            entry: { label: "before" },
+            hasBoard: true,
+            activitySummaryWatermark: { generation: "hot-generation", maxSeq: 41 },
           });
-        const first = read();
-        expect(first.rows).toHaveLength(2);
-        expect(first.rows[0]).toMatchObject({
-          sessionKey,
-          entry: { label: "before" },
-          hasBoard: true,
-          activitySummaryWatermark: { generation: "hot-generation", maxSeq: 41 },
-        });
-        expect(first.rows[1]).toMatchObject({
-          sessionKey: siblingKey,
-          hasBoard: false,
-        });
-        expect(first.rows[1]).not.toHaveProperty("activitySummaryWatermark");
-        expect(read().rows[0]).toMatchObject({
-          entry: { label: "after" },
-          hasBoard: false,
-          activitySummaryWatermark: { generation: "next-generation", maxSeq: 42 },
-        });
+          expect(first.rows[1]).toMatchObject({
+            sessionKey: siblingKey,
+            hasBoard: false,
+          });
+          expect(first.rows[1]).not.toHaveProperty("activitySummaryWatermark");
+          expect(read().rows[0]).toMatchObject({
+            entry: { label: "after" },
+            hasBoard: false,
+            activitySummaryWatermark: { generation: "next-generation", maxSeq: 42 },
+          });
+          expect(queries.counts.boards).toBe(2);
+        } finally {
+          queries.restore();
+        }
       });
     } finally {
       concurrentCommit.mockRestore();
@@ -253,8 +280,83 @@ it("reads row metadata, board presence, and cold summary position from one snaps
   });
 });
 
-it.each(["worker", "synchronous", "row-facts"] as const)(
-  "refuses unavailable backing metadata in the %s reader instead of reporting missing sessions",
+it("consumes admitted board absence for a cohort and observes first use and foreign DDL", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const database = openOpenClawAgentDatabase({ agentId: "main", env });
+    const sessionKeys = Array.from(
+      { length: 64 },
+      (_, index) => `agent:main:cron:absent-boards-${index}`,
+    );
+    for (const sessionKey of sessionKeys) {
+      writeSessionEntry(database, sessionKey, { sessionId: sessionKey, updatedAt: 1 });
+    }
+    database.db.exec("DROP TABLE board_widgets; DROP TABLE board_tabs");
+    const target = { agentId: database.agentId, path: database.path };
+    await closeOpenClawAgentDatabaseByPathAsync(database.path, database.agentId);
+    const peer = new (requireNodeSqlite().DatabaseSync)(target.path);
+    const retained = new OpenClawAgentDatabaseReadOnlyScope();
+    try {
+      retained.run(target, () => {
+        const opened = withOpenClawAgentDatabaseReadOnly((reader) => reader, { ...target, env });
+        if (!opened.found) {
+          throw new Error("Expected the seeded read-only database");
+        }
+        const read = () =>
+          readSessionRowDatabaseFacts({
+            kind: "session-row-facts",
+            database: target,
+            env,
+            sessionKeys,
+          });
+        const queries = trackSqliteStatementExecutions(
+          opened.value.db,
+          ["boards", "catalog"],
+          (sql) =>
+            /sqlite_master/iu.test(sql)
+              ? "catalog"
+              : /\bfrom "board_tabs"/iu.test(sql)
+                ? "boards"
+                : null,
+        );
+        try {
+          for (let refresh = 0; refresh < 2; refresh++) {
+            const result = read();
+            expect(result.rows).toHaveLength(64);
+            expect(result.rows.every((row) => !row.hasBoard)).toBe(true);
+          }
+          expect(queries.counts).toEqual({ boards: 0, catalog: 0 });
+        } finally {
+          queries.restore();
+        }
+        boardStore.ensureBoardSchema({ db: peer, path: target.path });
+        peer
+          .prepare(
+            "INSERT INTO board_tabs (session_key, tab_id, title, position, created_by, revision) VALUES (?, 'tab', 'Board', 0, 'user', 0)",
+          )
+          .run(sessionKeys[0]!);
+        expect(
+          read()
+            .rows.filter((row) => row.hasBoard)
+            .map((row) => row.sessionKey),
+        ).toEqual([sessionKeys[0]]);
+        peer.exec("BEGIN IMMEDIATE; DROP TABLE board_widgets; DROP TABLE board_tabs");
+        expect(
+          boardStore.readBoardSessionKeys({ db: peer, path: target.path }, sessionKeys),
+        ).toEqual(new Set());
+        peer.exec("ROLLBACK");
+        expect(read().rows[0]?.hasBoard).toBe(true);
+        peer.exec("DROP TABLE board_widgets; DROP TABLE board_tabs");
+        expect(read().rows.every((row) => !row.hasBoard)).toBe(true);
+      });
+    } finally {
+      retained.close();
+      peer.close();
+    }
+  });
+});
+
+it.each(["worker", "row-facts"] as const)(
+  "refuses unavailable session metadata in the %s reader instead of reporting missing sessions",
   async (reader) => {
     await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
       const storePath = resolveOpenClawAgentSqlitePath({ agentId: "main", env });
@@ -267,15 +369,13 @@ it.each(["worker", "synchronous", "row-facts"] as const)(
               env,
               sessionKeys,
             }).rows
-          : reader === "worker"
-            ? readExactSessionEntriesWithLifecycle({
-                kind: "session-exact-entries",
-                database: { agentId: "main", path: storePath },
-                env,
-                sessionKeys,
-                projection: "backing",
-              }).entries
-            : readSessionBackingFacts({ storePath, sessionKeys, env });
+          : readExactSessionEntriesWithLifecycle({
+              kind: "session-exact-entries",
+              database: { agentId: "main", path: storePath },
+              env,
+              sessionKeys,
+              projection: "list",
+            }).entries;
       expect(read()).toEqual([]);
       fs.mkdirSync(path.dirname(storePath), { recursive: true });
       fs.writeFileSync(storePath, "");
@@ -328,11 +428,14 @@ it.each(["sharing", "list"] as const)(
       const database = openOpenClawAgentDatabase({ agentId: "main", env });
       const sessionKey = "agent:main:retained-header";
       seedRetainedSessionHeader(database, sessionKey, "retained-session");
-      writeSessionEntry(database, "agent:main:ordinary", {
-        sessionId: "ordinary-session",
-        updatedAt: 1,
-        skillsSnapshot: { prompt: "saved prompt stays in storage", skills: [] },
-      });
+      replaceSessionEntrySync(
+        { agentId: "main", env, sessionKey: "agent:main:ordinary" },
+        {
+          sessionId: "ordinary-session",
+          updatedAt: 1,
+          skillsSnapshot: { prompt: "saved prompt stays in storage", skills: [] },
+        },
+      );
       const result = await readSessionEntriesFromStoreInWorker({
         agentId: "main",
         storePath: database.path,
@@ -364,17 +467,15 @@ it("preserves listing validation of dirty siblings in selected worker reads", as
     for (const key of [sessionKey, sibling]) {
       writeSessionEntry(database, key, { sessionId: key, updatedAt: 1 });
     }
-    const read = (projection: "list" | "backing") =>
+    const read = () =>
       readSessionEntriesFromStoreInWorker({
         agentId: "main",
         storePath: database.path,
         env,
         sessionKeys: [sessionKey],
-        projection,
+        projection: "list",
       });
-    for (const projection of ["list", "backing"] as const) {
-      expect((await read(projection)).entries).toHaveLength(1);
-    }
+    expect((await read()).entries).toHaveLength(1);
     database.db.prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?").run(
       JSON.stringify({
         sessionId: sibling,
@@ -388,9 +489,7 @@ it("preserves listing validation of dirty siblings in selected worker reads", as
     database.db
       .prepare("UPDATE session_nodes SET entry_valid = 1 WHERE session_key = ?")
       .run(sibling);
-    for (const projection of ["list", "backing"] as const) {
-      await expect(read(projection)).rejects.toThrow("non-canonical persisted row");
-    }
+    await expect(read()).rejects.toThrow("non-canonical persisted row");
   });
 });
 
@@ -569,8 +668,13 @@ it.each(["durable", "incognito"] as const)(
         });
         try {
           replay.assertCurrent();
-          deleteSessionEntryRows(database, sessionKey);
-          writeSessionEntry(database, sessionKey, { sessionId: "replacement", updatedAt: 3 });
+          runOpenClawAgentWriteTransaction(
+            (writer) => {
+              deleteSessionEntryRows(writer, sessionKey);
+              writeSessionEntry(writer, sessionKey, { sessionId: "replacement", updatedAt: 3 });
+            },
+            toDatabaseOptions(resolveSqliteScope(scope)),
+          );
           expect(replay.assertCurrent).toThrow(
             expect.objectContaining({ code: "SESSION_DELIVERY_GENERATION_REVOKED" }),
           );

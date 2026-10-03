@@ -25,15 +25,19 @@ const authorize = vi.hoisted(() => vi.fn(async () => ({ error: null })));
 const envelope = vi.hoisted(() => vi.fn(async (run: () => Promise<unknown>) => await run()));
 
 vi.mock("../server-methods.js", () => ({
-  authorizeGatewayRequestPreDispatch: authorize,
   createRequestGatewayMethodRegistry: () => ({
     isControlPlaneWrite: () => false,
+    isObservation: (method: string) => method === "agent.wait",
   }),
   runWithGatewayRequestEnvelope: async (
     _method: string,
     _client: unknown,
     run: () => Promise<unknown>,
   ) => await envelope(run),
+}));
+
+vi.mock("../server-methods/request-authorization.js", () => ({
+  authorizeGatewayRequestPreDispatch: authorize,
 }));
 
 vi.mock("./agent-request-preflight.js", () => ({
@@ -168,7 +172,10 @@ describe("createInternalAgentTurnFacade", () => {
           joinedEntries = entries.waitForPendingEntries().then(() => {
             entriesSettled = true;
           });
-          joinedScope = scope.drain().then(() => {
+          joinedScope = AsyncWorkScope.runWhenAllIdle(
+            () => [scope],
+            () => scope.drain(),
+          ).then(() => {
             scopeSettled = true;
           });
           await nextTurn();
@@ -188,13 +195,20 @@ describe("createInternalAgentTurnFacade", () => {
           expect(outcome, `${method}/${boundary} caller`).toEqual({
             error: expect.objectContaining({ message }),
           });
+          const executionMessage =
+            method === "wait" && boundary === "abort"
+              ? "agent.wait observation cancelled"
+              : message;
           expect(await Promise.allSettled(executions), `${method}/${boundary} execution`).toEqual([
             boundary === "deadline"
               ? {
                   status: "fulfilled",
                   value: method === "dispatch" ? undefined : { status: "timeout" },
                 }
-              : { status: "rejected", reason: expect.objectContaining({ message }) },
+              : {
+                  status: "rejected",
+                  reason: expect.objectContaining({ message: executionMessage }),
+                },
           ]);
           expect(startTurn).toHaveBeenCalledTimes(
             boundary === "deadline" && method === "dispatch" ? 1 : 0,
@@ -219,7 +233,7 @@ describe("createInternalAgentTurnFacade", () => {
   });
 
   it.each(["dispatch", "wait"] as const)(
-    "does not start %s execution when the caller aborts during authorization",
+    "does not enter the %s handler when the caller aborts during authorization",
     async (method) => {
       const reached = createDeferred();
       const release = createDeferred();
@@ -229,7 +243,6 @@ describe("createInternalAgentTurnFacade", () => {
         return { error: null };
       });
       const context = createContext();
-      const trackExecution = vi.spyOn(context, "trackExecution");
       const entries = new GatewayRequestEntryLifetime();
       const facade = createFacade({ ...context, requestEntryLifetime: entries });
       const controller = new AbortController();
@@ -254,7 +267,6 @@ describe("createInternalAgentTurnFacade", () => {
       }
       await rejected;
       await entries.waitForPendingEntries();
-      expect(trackExecution).not.toHaveBeenCalled();
       expect(envelope).not.toHaveBeenCalled();
       expect(startTurn).not.toHaveBeenCalled();
       expect(waitForTurn).not.toHaveBeenCalled();
@@ -294,6 +306,66 @@ describe("createInternalAgentTurnFacade", () => {
         ),
       ).rejects.toThrow("source closed");
       expect(startTurn).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["aborted", "closed", "revoked", "rejected"])(
+    "settles source preparation without starting an %s turn",
+    async (outcome) => {
+      const entered = createDeferred();
+      const prepared = createDeferred();
+      const executions = new AsyncWorkScope();
+      const entries = new GatewayRequestEntryLifetime();
+      const context = Object.assign(createContext(), {
+        trackExecution: <T>(run: () => Promise<T>) => executions.track(run),
+        requestEntryLifetime: entries,
+      });
+      const controller = new AbortController();
+      let current = true;
+      const request = createFacade(context).dispatchRaw(
+        { message: "prepared source", idempotencyKey: "prepared-source" },
+        {
+          signal: controller.signal,
+          prepareDispatchCurrent: () => {
+            entered.resolve();
+            return prepared.promise;
+          },
+          assertAdmissionCurrent: () => {
+            if (!current) {
+              throw new Error("source revoked");
+            }
+          },
+        },
+      );
+      const rejected = expect(request).rejects.toThrow(
+        outcome === "closed"
+          ? "Gateway request entry is closed"
+          : outcome === "aborted"
+            ? "source aborted"
+            : outcome === "revoked"
+              ? "source revoked"
+              : "source preparation failed",
+      );
+      await entered.promise;
+      expect(startTurn).not.toHaveBeenCalled();
+      if (outcome === "aborted") {
+        controller.abort(new Error("source aborted"));
+        await rejected;
+      } else if (outcome === "closed") {
+        entries.beginClose();
+      } else if (outcome === "revoked") {
+        current = false;
+      }
+      if (outcome === "rejected") {
+        prepared.reject(new Error("source preparation failed"));
+      } else {
+        prepared.resolve();
+      }
+      await rejected;
+      await executions.drain();
+      await entries.waitForPendingEntries();
+      expect(startTurn).not.toHaveBeenCalled();
+      expect(executions.hasPendingWork).toBe(false);
     },
   );
 

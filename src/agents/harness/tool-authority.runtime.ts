@@ -179,6 +179,7 @@ async function withPreparedEmbeddedRunToolAuthorityOwned<T, Attempt extends Tool
   }
   const assertQuestionActive = () => {
     assertActive();
+    input.operatorAuthority?.assertCurrent();
     if (
       operation &&
       (resolveActiveReplyOperationForSessionId(sessionId) !== operation ||
@@ -212,6 +213,7 @@ async function withPreparedEmbeddedRunToolAuthorityOwned<T, Attempt extends Tool
         const questionAuthority = sessionKey
           ? createAgentQuestionAnswerAuthority({
               sessionKey,
+              requesterProfileId: input.operatorAuthority?.profileId,
               fingerprint,
               project: (caller) =>
                 operation

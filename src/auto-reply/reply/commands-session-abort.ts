@@ -12,6 +12,7 @@ import {
   captureChannelSessionStop,
   stopSubagentsForRequester,
 } from "./abort-operation.js";
+
 import { setAbortMemory } from "./abort-primitives.js";
 import { isAbortTrigger } from "./abort-trigger-text.js";
 import { formatAbortReplyText } from "./abort.js";
@@ -22,18 +23,15 @@ import {
 } from "./commands-session-store.js";
 import type { CommandHandler } from "./commands-types.js";
 
+
 type AbortTarget = {
+  agentId: string;
   entry?: SessionEntry;
   key?: string;
   sessionId?: string;
 };
 
-function resolveAbortTarget(params: {
-  ctx: { CommandTargetSessionKey?: string | null };
-  sessionKey?: string;
-  sessionEntry?: SessionEntry;
-  sessionStore?: Record<string, SessionEntry>;
-}): AbortTarget {
+function resolveAbortTarget(params: Parameters<CommandHandler>[0]): AbortTarget {
   const targetSessionKey =
     normalizeOptionalString(params.ctx.CommandTargetSessionKey) || params.sessionKey;
   const resolved = resolveCommandSessionEntryForKey(params.sessionStore, targetSessionKey);
@@ -41,7 +39,13 @@ function resolveAbortTarget(params: {
     resolved.entry ??
     (targetSessionKey && targetSessionKey === params.sessionKey ? params.sessionEntry : undefined);
   const key = resolved.key ?? targetSessionKey;
+  const agentId = resolveSessionAgentId({
+    config: params.cfg,
+    sessionKey: key,
+    fallbackAgentId: params.agentId,
+  });
   return {
+    agentId,
     entry,
     key,
     sessionId: entry?.sessionId,
@@ -76,16 +80,17 @@ async function recordAbortTarget(params: {
   if (params.isCurrent?.() === false) {
     throw new Error("The selected session changed before it could be stopped.");
   }
+
   const persisted = await persistAbortTargetEntry({
-    isCurrent: params.isCurrent,
+    isCurrent,
     entry: abortTarget.entry,
     key: abortTarget.key,
-    sessionStore: params.sessionStore,
-    storePath: params.storePath,
-    abortCutoff: params.abortCutoff,
+    sessionStore,
+    storePath,
+    abortCutoff,
   });
-  if (!persisted && params.abortKey && params.isCurrent?.() !== false) {
-    setAbortMemory(params.abortKey, true);
+  if (!persisted && abortKey && isCurrent?.() !== false) {
+    setAbortMemory(abortKey, true);
   }
 }
 
@@ -191,6 +196,7 @@ async function executeChannelUserStop(params: Parameters<CommandHandler>[0]) {
 export const handleStopCommand: CommandHandler = defineAuthorizedTextCommand(
   { label: "/stop", match: (body) => (body === "/stop" ? true : null) },
   executeChannelUserStop,
+
 );
 
 export const handleAbortTrigger: CommandHandler = defineAuthorizedTextCommand(
@@ -199,4 +205,5 @@ export const handleAbortTrigger: CommandHandler = defineAuthorizedTextCommand(
     match: (_body, params) => (isAbortTrigger(params.command.rawBodyNormalized) ? true : null),
   },
   executeChannelUserStop,
+
 );

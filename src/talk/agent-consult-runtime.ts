@@ -1,4 +1,3 @@
-// Agent consult runtime starts agent consultation flows from talk sessions.
 import { randomUUID } from "node:crypto";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
@@ -9,11 +8,11 @@ import { resolveSessionAgentId } from "../agents/agent-scope.js";
 import type { RunEmbeddedAgentParams } from "../agents/embedded-agent-runner/run/params.js";
 import type { EmbeddedAgentRunMeta } from "../agents/embedded-agent-runner/types.js";
 import { getReplyPayloadMetadata } from "../auto-reply/reply-payload.js";
+
 import {
   buildSessionCreationStamp,
   inheritSessionCreationPolicy,
 } from "../config/sessions/session-entry-provenance.js";
-import { parseSessionThreadInfoFast } from "../config/sessions/thread-info.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { RuntimeLogger, PluginRuntimeCore } from "../plugins/runtime/types-core.js";
@@ -98,7 +97,7 @@ export function assertRealtimeVoiceAgentConsultModelSelectionUnlocked(params: {
   if (requesterSessionKey && (!requesterAgentId || requesterAgentId === targetAgentId)) {
     const requesterAgent = requesterAgentId ?? params.agentId;
     remember(requesterSessionKey, requesterAgent);
-    const { baseSessionKey } = parseSessionThreadInfoFast(requesterSessionKey);
+    const { baseSessionKey } = resolveLoadedSessionThreadInfo(requesterSessionKey);
     if (baseSessionKey && baseSessionKey !== requesterSessionKey) {
       remember(baseSessionKey, requesterAgent);
     }
@@ -153,7 +152,7 @@ function resolveRealtimeVoiceAgentDeliveryContext(params: {
     // This preserves channel/account/thread routing when a voice bridge delegates back to agent.
     const candidates: Array<{ sessionKey: string; storePath?: string }> = [];
     if (requesterSessionKey) {
-      const { baseSessionKey } = parseSessionThreadInfoFast(requesterSessionKey);
+      const { baseSessionKey } = resolveLoadedSessionThreadInfo(requesterSessionKey);
       for (const key of [requesterSessionKey, baseSessionKey]) {
         if (key) {
           candidates.push({ sessionKey: key });
@@ -240,6 +239,7 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
   cfg: OpenClawConfig;
   sessionKey: string;
   spawnedBy?: string | null;
+  senderIsOwner?: boolean;
   contextMode?: RealtimeVoiceAgentConsultContextMode;
   deliveryContext?: DeliveryContext;
   storePath: string;
@@ -267,6 +267,14 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
       requesterSessionKey ? { type: "agent", id: requesterSessionKey } : undefined,
     ),
   });
+  // A consult child records the same lineage receipt as a native spawn: the requester's
+  // exact incarnation and the caller's ingress-authenticated owner bit.
+  const spawnLineage = requesterSessionKey
+    ? {
+        spawnedBy: requesterSessionKey,
+        ...buildSpawnAuthorityReceipt(requesterEntry, params.senderIsOwner),
+      }
+    : {};
   const shouldFork =
     params.contextMode === "fork" &&
     requesterSessionKey &&
@@ -291,7 +299,7 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
       skipPatch: () => ({ ...deliveryFields, updatedAt: now }),
       patch: () => ({
         ...deliveryFields,
-        spawnedBy: requesterSessionKey,
+        ...spawnLineage,
         updatedAt: now,
       }),
     });
@@ -321,7 +329,7 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
       return {
         ...deliveryFields,
         sessionId: randomUUID(),
-        ...(requesterSessionKey ? { spawnedBy: requesterSessionKey } : {}),
+        ...spawnLineage,
         updatedAt: now,
       };
     },
@@ -472,6 +480,7 @@ export async function consultRealtimeVoiceAgent(params: {
         cfg: params.cfg,
         sessionKey: params.sessionKey,
         spawnedBy: params.spawnedBy,
+        senderIsOwner: params.senderIsOwner,
         contextMode: params.contextMode,
         deliveryContext: resolvedDeliveryContext,
         storePath,
