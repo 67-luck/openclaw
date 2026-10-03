@@ -342,11 +342,13 @@ it.each(["missing", "replaced", "finalizing", "throwing", "unreadable child"])(
     const parent = createEmbeddedRunHandle({
       runId: "parent",
       abort,
-      isAbortable: state !== "unreadable child",
+      isAbortable: state !== "finalizing" && state !== "unreadable child",
     });
     const replacementAbort = vi.fn();
     const replacement = createEmbeddedRunHandle({ runId: "replacement", abort: replacementAbort });
-    setActiveEmbeddedRun(parentId, parent, parentKey);
+    if (state !== "missing") {
+      setActiveEmbeddedRun(parentId, parent, parentKey);
+    }
     if (state === "replaced") {
       setActiveEmbeddedRun(parentId, replacement, parentKey);
     }
@@ -417,7 +419,6 @@ it.each([
   "$method controller-backed Stop respects parent acceptance (finalizing=$finalizing)",
   async ({ method, finalizing }) => {
     const parentStorePath = await writeSubagentSessionEntry({
-
       stateDir: fixture.stateDir,
       agentId: "main",
       sessionKey: parentKey,
