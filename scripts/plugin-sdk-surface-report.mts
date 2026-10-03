@@ -189,7 +189,7 @@ export function readPluginSdkSurfaceBudgets(env: NodeJS.ProcessEnv = process.env
       // +11: ten service-lifetime type exports and the owner-bound scheduler resolver.
       // +1: owner-approved async watched-session preparation with retained sync compatibility.
       // +1: explicit runtime-maintenance context for plugin-owned health checks.
-      3644,
+      3645,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
