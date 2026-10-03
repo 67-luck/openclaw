@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterAll, afterEach, beforeEach, expect, vi } from "vitest";
+import { isolateNativeServiceInventory } from "../../test/helpers/native-service-inventory.js";
 import type { ConfigFileSnapshot } from "../config/types.openclaw.js";
 import {
   GATEWAY_SERVICE_RUNTIME_PID_ENV,
@@ -175,6 +176,7 @@ export function registerUpdateCliLifecycle(fixture: UpdateCliLifecycleFixture): 
     }
     restartHealthTestControl.snapshot = undefined;
     vi.resetAllMocks();
+    isolateNativeServiceInventory(tempHome.home);
     retainUpdateRuntime.mockImplementation(async ({ assertCurrent }) => assertCurrent());
     systemdPolicy.mockResolvedValue(false);
     mockUpdateStateSnapshotWorker(fixtureStateDatabases);

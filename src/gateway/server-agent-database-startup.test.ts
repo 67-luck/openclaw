@@ -29,6 +29,7 @@ import { withAgentDatabaseStartupAdmission } from "../state/agent-database-start
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { unregisterOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
@@ -179,7 +180,8 @@ it.each([
     }
     database.db.prepare("UPDATE session_transcript_index_state SET needs_rebuild = 1").run();
     const agentPath = database.path;
-    closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawAgentDatabasesAsync(root);
+    closeOpenClawAgentDatabasesForTest(root);
     closeOpenClawStateDatabaseForTest();
     // These fixtures exercise full startup inspection after unclean external mutation.
     clearOpenClawAgentIntegrityVerification(agentPath, env);
@@ -254,9 +256,11 @@ it.each([
         await migrate(params);
         if (params.agentIds?.has(agentId)) {
           if (outcome === "recover") {
-            const result = await runExec(process.execPath, ["-e", "console.log(process.ppid)"], {
-              logOutput: false,
-            });
+            const result = await runExec(
+              process.execPath,
+              ["-e", "process.stdout.write(String(process.ppid))"],
+              { logOutput: false },
+            );
             preparationParent = Number(result.stdout);
           }
           sessionPrepared = true;

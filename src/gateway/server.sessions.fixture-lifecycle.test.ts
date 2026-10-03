@@ -417,10 +417,16 @@ vi.mock("vitest", async (importOriginal) => ({
 }));
 const { test } = await vi.importActual("vitest");
 fs.writeFileSync(${JSON.stringify(path.join(root, "worker.pid"))}, String(process.pid));
+const startedAt = Date.now();
+const reportPhase = name => process.stderr.write(
+  "retained Gateway fixture: " + name + " after " + (Date.now() - startedAt) + "ms\\n",
+);
+reportPhase("worker started");
 const sessions = await import(${source("src/gateway/test/server-sessions.test-helpers.ts")});
 const gatewayHelpers = await import(${source("src/gateway/test-helpers.server.ts")});
 const kernelModule = await import(${source("src/gateway/server-kernel.ts")});
 const { createDeferredCore } = await import(${source("src/shared/deferred.ts")});
+reportPhase("imports ready");
 const takeHooks = () => Object.fromEntries(
   Object.entries(hooks).map(([name, callbacks]) => [name, callbacks.splice(0)]),
 );
@@ -452,10 +458,12 @@ test("observes retained Gateway owners through fixture teardown", async () => {
   });
   const fixtureApi = sessions.setupGatewaySessionsTestHarness();
   const fixture = takeHooks();
+  reportPhase("setup started");
   await runHooks(fixture.setup);
   await runHooks(fixture.reset);
   const harness = fixtureApi.getHarness();
   await harness.server.startupSettled;
+  reportPhase("Gateway ready");
   if (!kernel) throw new Error("expected the real Gateway kernel");
   const { dir } = await fixtureApi.createSessionStoreDir();
   const { ws } = await harness.openClient();
@@ -505,7 +513,9 @@ test("observes retained Gateway owners through fixture teardown", async () => {
     }),
   );
   try {
+    reportPhase("close started");
     const close = await observeFailure(() => harness.close());
+    reportPhase("close settled");
     const afterClose = readState();
     const afterEach = await observeFailure(() => runHooks(fixture.afterEach));
     let successorCaseStarted = false;
@@ -523,6 +533,7 @@ test("observes retained Gateway owners through fixture teardown", async () => {
     releaseProducer.resolve();
     const producerObservation = await producer;
     // Retained ownership must outlive the module that originally acquired the Gateway.
+    reportPhase("module reset started");
     vi.resetModules();
     const freshHelpers = await import(${source("src/gateway/test-helpers.server.ts")});
     freshHelpers.installGatewayTestHooks({ scope: "suite" });
@@ -538,6 +549,7 @@ test("observes retained Gateway owners through fixture teardown", async () => {
       producer: producerObservation, connectionCleanupFinished, stopCalls,
       harnessRetained, successorCaseStarted, successorSuiteStarted,
     }));
+    reportPhase("journal written");
   } finally {
     releaseProducer.resolve();
     await producer;

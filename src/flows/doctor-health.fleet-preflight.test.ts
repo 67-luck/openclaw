@@ -15,6 +15,7 @@ import { resolveConfiguredAgentDatabaseTargets } from "../config/sessions/target
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { SQLITE_READONLY_CHILD_ARG } from "../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeProcessEntrypointUrl } from "../infra/runtime-process-url.js";
+import { createPrivateSqliteDirectory } from "../infra/sqlite-private-directory.js";
 import { migrateLegacyMediaPersistence } from "../infra/state-migrations.media-persistence.js";
 import { createLegacyStateMigrationStepReceipt } from "../infra/state-migrations.messages.js";
 import { resetAutoMigrateLegacyStateDirForTest } from "../infra/state-migrations.state-dir.js";
@@ -85,8 +86,10 @@ it("preserves original config bytes before Doctor relocates and repairs legacy s
     fs.writeFileSync(state.configPath, original);
     fs.renameSync(state.stateDir, legacyRoot);
     const expiredRunId = `doctor-${randomUUID()}`;
-    const expiredCapture = path.join(resolveUpdateCaptureRoot(legacyRoot), expiredRunId);
-    fs.mkdirSync(expiredCapture, { recursive: true });
+    const captureRoot = resolveUpdateCaptureRoot(legacyRoot);
+    const expiredCapture = path.join(captureRoot, expiredRunId);
+    await createPrivateSqliteDirectory(captureRoot);
+    await createPrivateSqliteDirectory(expiredCapture);
     fs.writeFileSync(
       path.join(expiredCapture, "manifest.json"),
       JSON.stringify({
@@ -136,6 +139,7 @@ it("preserves original config bytes before Doctor relocates and repairs legacy s
         expect(fs.existsSync(store), runtime.log.mock.calls.flat().join("\n")).toBe(true);
         const captures = fs.readdirSync(store).filter((name) => name.startsWith("doctor-"));
         expect(captures, runtime.log.mock.calls.flat().join("\n")).toHaveLength(1);
+        expect(captures[0], runtime.log.mock.calls.flat().join("\n")).not.toBe(expiredRunId);
         expect(
           fs.existsSync(path.join(store, captures[0]!, "manifest.json")),
           runtime.log.mock.calls.flat().join("\n"),

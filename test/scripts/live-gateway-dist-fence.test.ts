@@ -10,11 +10,11 @@ import * as schtasksProbe from "../../src/daemon/schtasks-state-probe.js";
 import * as serviceLayout from "../../src/daemon/service-layout.js";
 import type { GatewayServiceState } from "../../src/daemon/service-types.ts";
 import * as gatewayService from "../../src/daemon/service.js";
-import * as loadedUnits from "../../src/daemon/systemd-loaded-unit-inventory.js";
 import * as systemdFiles from "../../src/daemon/systemd-service-files.js";
 import { CommandProcessCleanupError } from "../../src/process/exec-result.js";
 import { withTestDir } from "../../src/test-helpers/temp-dir.js";
 import { withMockedPlatform } from "../../src/test-utils/vitest-spies.js";
+import { isolateNativeServiceInventory } from "../helpers/native-service-inventory.js";
 import { createDeferred } from "../helpers/promise.js";
 
 function baseState(overrides: Partial<GatewayServiceState> = {}): GatewayServiceState {
@@ -288,41 +288,6 @@ async function writeOpenClawPackage(packageRoot: string) {
   await fs.mkdir(path.join(packageRoot, "dist"), { recursive: true });
   await fs.writeFile(path.join(packageRoot, "package.json"), '{"name":"openclaw"}\n');
   await fs.writeFile(path.join(packageRoot, "dist", "index.js"), "gateway\n");
-}
-
-function isolateSystemdInventory(home: string) {
-  const loaded = vi.spyOn(loadedUnits, "listLoadedSystemdUnits").mockResolvedValue([]);
-  const systemRoots = ["/etc/systemd/system", "/usr/lib/systemd/system", "/lib/systemd/system"];
-  const fixturePath = (value: string) => {
-    const normalized = path.normalize(value);
-    return systemRoots.some((root) => normalized === root || normalized.startsWith(`${root}/`))
-      ? path.join(home, "native", normalized.slice(1))
-      : value;
-  };
-  const readdir = fs.readdir;
-  const readFile = fs.readFile;
-  const directories = vi
-    .spyOn(fs, "readdir")
-    .mockImplementation((...args: Parameters<typeof fs.readdir>) => {
-      if (typeof args[0] === "string") {
-        args[0] = fixturePath(args[0]);
-      }
-      return readdir(...args);
-    });
-  const files = vi
-    .spyOn(fs, "readFile")
-    .mockImplementation((...args: Parameters<typeof fs.readFile>) => {
-      if (typeof args[0] === "string") {
-        args[0] = fixturePath(args[0]);
-      }
-      return readFile(...args);
-    });
-  onTestFinished(() => {
-    loaded.mockRestore();
-    files.mockRestore();
-    directories.mockRestore();
-  });
-  return fixturePath;
 }
 
 describe("live-gateway-dist-fence physical overlap", () => {
@@ -624,7 +589,7 @@ describe("live-gateway-dist-fence cross-profile overlap", () => {
           const checkout = path.join(tmp, "checkout");
           const other = path.join(tmp, "other");
           const systemdDir = path.join(home, ".config", "systemd", "user");
-          isolateSystemdInventory(home);
+          isolateNativeServiceInventory(home);
           await writeOpenClawPackage(checkout);
           await writeOpenClawPackage(other);
           await fs.mkdir(systemdDir, { recursive: true });
@@ -900,7 +865,7 @@ describe("live-gateway-dist-fence cross-profile overlap", () => {
         const other = path.join(tmp, "other");
         const userDir = path.join(home, ".config", "systemd", "user");
         const systemDir = "/etc/systemd/system";
-        const fixturePath = isolateSystemdInventory(home);
+        const fixturePath = isolateNativeServiceInventory(home);
         await writeOpenClawPackage(checkout);
         await writeOpenClawPackage(other);
         await fs.mkdir(userDir, { recursive: true });
