@@ -1,6 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
-import { createReplyTurnParticipants } from "../../auto-reply/reply/reply-run-registry.tool-authority.js";
 import { setRuntimeConfigSnapshot } from "../../config/config.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -24,6 +23,7 @@ import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
 } from "../../process/gateway-work-admission.js";
+import { createReplyTurnParticipants } from "../../sessions/session-controller.tool-authority.js";
 import * as sessionStateEvents from "../../sessions/session-state-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import {

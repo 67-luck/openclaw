@@ -156,19 +156,30 @@ describe("ManagedWorktreeService repository code isolation", () => {
       (error: unknown) => error,
     );
     try {
-      await withTimeout(
-        waitForFixtureFile(pidFile, creation),
-        SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
-        "setup process readiness",
-
+      const hasPid = () => existsSync(pidFile) && readFileSync(pidFile, "utf8").length > 0;
+      await withinTest(
+        Promise.race([
+          receipts.waitFor(pidFile, "ready"),
+          // A child can exit before its side-channel receipt reaches the test.
+          creation.then(
+            () => {
+              if (!hasPid()) {
+                throw new Error(`Child exited before writing ${pidFile}`);
+              }
+            },
+            (error: unknown) => {
+              if (!hasPid()) {
+                throw new Error(`Child failed before writing ${pidFile}`, { cause: error });
+              }
+            },
+          ),
+        ]),
+        signal,
       );
       const pid = Number.parseInt(await fs.readFile(pidFile, "utf8"), 10);
       expect(Number.isInteger(pid) && pid > 0).toBe(true);
       controller.abort(new Error("setup cancelled"));
-      expect(
-        await withTimeout(outcome, SESSION_CONTROLLER_DRAIN_TIMEOUT_MS, "worktree cancellation"),
-      ).toBeInstanceOf(Error);
-
+      expect(await withinTest(outcome, signal)).toBeInstanceOf(Error);
       expect(() => process.kill(pid, 0)).toThrow();
       expect(await service.list()).toEqual([]);
       const worktrees = await execFileAsync("git", ["-C", repo, "worktree", "list", "--porcelain"]);

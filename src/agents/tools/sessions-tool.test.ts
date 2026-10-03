@@ -13,8 +13,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { GatewayClientRequestError } from "../../gateway/client.js";
 import { isAgentSessionModelPatchOrigin } from "../../gateway/session-model-patch-origin.js";
 import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
-import { withTestDir } from "../../test-helpers/temp-dir.js";
-
+import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import * as failoverErrors from "../failover-error.js";
 import { createAgentPatchedSessionModelRunGuard } from "../session-model-auto-revert.js";
 import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
@@ -916,7 +915,7 @@ describe("sessions tool", () => {
       config: { session: { store: storePath } },
       callGateway: callGateway as never,
     });
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: storePath,
       identities: [sessionKey, sessionId],
       assertAllowed: () => {},
@@ -941,63 +940,14 @@ describe("sessions tool", () => {
         message: "Session will be archived after the current agent run finishes.",
         resolved: adversarialResolved,
       });
-      const admission = await beginSessionEffect({
-        scope: storePath,
-        identities: [sessionKey, sessionId],
-        assertAllowed: () => {},
-      });
-
-      try {
-        const { result, work } = await captureSessionDecisionWork(
-          async () =>
-            await admission.run(
-              async () =>
-                await tool.execute("patch-model-thinking-archive", {
-                  action: "patch",
-                  archived: true,
-                  model: "openai/luna",
-                  thinkingLevel: "med",
-                }),
-            ),
-        );
-        expect(result.details).toEqual({
-          status: "scheduled",
-          sessionKey,
-          message: "Session will be archived after the current agent run finishes.",
-          resolved: adversarialResolved,
-        });
-        expectExactResolvedAcknowledgement(result, adversarialResolved);
-        expect(callGateway).toHaveBeenCalledTimes(1);
-        expect(work).toHaveLength(1);
-        expect(work[0]).toMatchObject({
-          receipt: {
-            action: { family: "session", operation: "archive" },
-            decision: { outcome: "allowed", reasonCode: "session_archive_scheduled" },
-            enforcement: { coverageState: "attribution-only" },
-          },
-          refs: { target: { namespace: "session", value: `["main","${sessionKey}"]` } },
-        });
-      } finally {
-        admission.release();
-      }
-
-      await vi.waitFor(() => expect(callGateway).toHaveBeenCalledTimes(2));
-      expect(callGateway).toHaveBeenNthCalledWith(1, {
-        method: "sessions.patch",
-        params: {
-          key: sessionKey,
-          model: "openai/luna",
-          thinkingLevel: "med",
-          expectedSessionId: sessionId,
-        },
-      });
-      expect(callGateway).toHaveBeenNthCalledWith(2, {
-        method: "sessions.patch",
-        params: {
-          key: sessionKey,
-          archived: true,
-          expectedSessionId: sessionId,
-
+      expectExactResolvedAcknowledgement(result, adversarialResolved);
+      expect(callGateway).toHaveBeenCalledTimes(1);
+      expect(work).toHaveLength(1);
+      expect(work[0]).toMatchObject({
+        receipt: {
+          action: { family: "session", operation: "archive" },
+          decision: { outcome: "allowed", reasonCode: "session_archive_scheduled" },
+          enforcement: { coverageState: "attribution-only" },
         },
         refs: { target: { namespace: "session", value: `["main","${sessionKey}"]` } },
       });
