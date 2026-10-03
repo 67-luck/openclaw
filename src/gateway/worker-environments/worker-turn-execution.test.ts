@@ -75,7 +75,7 @@ describe("worker turn execution", () => {
         })
       : undefined;
     const handler = vi.fn(async () => {
-      expect((await openSessionManager()).getEntries()).toEqual([]);
+      expect(openSessionManager().getEntries()).toEqual([]);
       if (throws) {
         throw new Error("synthetic policy failure");
       }
@@ -118,7 +118,7 @@ describe("worker turn execution", () => {
       expect(environments.acquireTurnCredential).not.toHaveBeenCalled();
       expect(environments.startTunnel).not.toHaveBeenCalled();
       expect(runLocal).not.toHaveBeenCalled();
-      const messages = (await openSessionManager()).buildSessionContext().messages;
+      const messages = openSessionManager().buildSessionContext().messages;
       expect(messages).toEqual([
         expect.objectContaining({
           role: "user",
@@ -186,7 +186,7 @@ describe("worker turn execution", () => {
       current = false;
       release.resolve();
       expect(await outcome).toMatchObject({ message: "synthetic authority closed" });
-      expect((await openSessionManager()).getEntries()).toEqual([]);
+      expect(openSessionManager().getEntries()).toEqual([]);
       expect(environments.acquireTurnCredential).not.toHaveBeenCalled();
     } finally {
       release.resolve();

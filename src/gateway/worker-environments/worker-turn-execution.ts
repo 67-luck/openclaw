@@ -306,7 +306,7 @@ export async function executeWorkerTurn(
         createLibrarySkillWorkshopTool({
           ...capability,
           defaultTarget: "personal",
-          invoke: (input) =>
+          invoke: (invocation) =>
             withGatewayToolCallerIdentity(
               {
                 agentId: placement.agentId,
@@ -319,7 +319,7 @@ export async function executeWorkerTurn(
                 },
                 workerTurnClaim: params.turnClaim,
               },
-              () => capability.invoke(input),
+              () => capability.invoke(invocation),
             ),
         }),
         assertSkillAuthority,
