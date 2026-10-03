@@ -17,7 +17,11 @@ import {
   sessionControllers,
   type SessionControllerEntry,
 } from "./session-controller.state.js";
-import { targetFrom, type SessionTarget } from "./session-controller.target.js";
+import {
+  sessionTargetOwnersMatch,
+  targetFrom,
+  type SessionTarget,
+} from "./session-controller.target.js";
 
 /** Resolve effect admission, including source preparation behind a settling predecessor. */
 export function resolveSessionEffectAdmission(
@@ -81,7 +85,7 @@ export function claimMatchesSessionId(
 }
 
 function matches(a: SessionTarget, b: SessionTarget): boolean {
-  return a.storeScope === b.storeScope && a.aliases.some((id) => b.aliases.includes(id));
+  return sessionTargetOwnersMatch(a, b) && a.aliases.some((id) => b.aliases.includes(id));
 }
 export function matchingEntries(target: SessionTarget): SessionControllerEntry[] {
   return findSessionControllerEntries(target.sessionKey, target);

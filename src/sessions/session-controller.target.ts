@@ -1,4 +1,4 @@
-import { parseAgentSessionKey } from "../routing/session-key.js";
+import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 
 /** Captured logical/store identity. Incarnation is evidence, never live authorization. */
 export type SessionTarget = Readonly<{
@@ -8,6 +8,14 @@ export type SessionTarget = Readonly<{
   agentId: string | undefined;
   incarnation: string | undefined;
 }>;
+
+/** Matches the physical and agent owner dimensions of two captured targets. */
+export function sessionTargetOwnersMatch(a: SessionTarget, b: SessionTarget): boolean {
+  return (
+    a.storeScope === b.storeScope &&
+    (!a.agentId || !b.agentId || normalizeAgentId(a.agentId) === normalizeAgentId(b.agentId))
+  );
+}
 
 export function captureSessionTarget(params: {
   storeScope: string;

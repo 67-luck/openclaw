@@ -644,6 +644,7 @@ function resolveSourceTarget(key: string, source: FollowupRun): SessionTarget {
       agentId: source.run.agentId,
     }),
     sessionKey: key,
+    agentId: source.run.agentId,
     incarnation: source.run.sessionId,
   });
 }

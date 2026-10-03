@@ -17,6 +17,7 @@ import {
   clearReplyRunForResetBySessionId,
   resolveActiveReplyOperationForSessionId,
 } from "../../sessions/session-controller.js";
+import type { SessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { clearSessionQueues, type ClearSessionQueueResult } from "./queue/cleanup.js";
 
 export class SessionResetCleanupError extends Error {}
@@ -104,6 +105,7 @@ export function clearSessionResetRuntimeState(
   keys: Array<string | undefined>,
   opts: {
     agentId: string;
+    controllerTarget?: SessionTarget;
     sessionKey: string;
     activeReplySessionId?: string;
     assertCurrent: () => void;
@@ -111,7 +113,7 @@ export function clearSessionResetRuntimeState(
 ): ClearSessionResetRuntimeStateResult {
   opts.assertCurrent();
   clearEmbeddedSessionPromptStates([opts.activeReplySessionId]);
-  const cleared = clearSessionQueues(keys);
+  const cleared = clearSessionQueues(keys, opts.controllerTarget);
   let systemEventsCleared = 0;
 
   for (const key of cleared.keys) {

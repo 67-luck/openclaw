@@ -192,9 +192,17 @@ async function ensureSessionRuntimeCleanup(params: {
   // Clear only completed records so reset/delete cannot erase another scope's
   // output or hide a background process whose owner has not confirmed exit.
   clearFinishedSessionsForScopes([...queueKeys, params.key]);
+  const lifecycleAgentId = resolveLifecycleAgentId(params.cfg, params.target.agentId);
   clearSessionResetRuntimeState(queueKeys, {
     activeReplySessionId: params.sessionId,
-    agentId: resolveLifecycleAgentId(params.cfg, params.target.agentId),
+    agentId: lifecycleAgentId,
+    controllerTarget: captureSessionTarget({
+      storeScope: params.target.storePath,
+      sessionKey: params.target.canonicalKey,
+      aliases: queueKeys,
+      agentId: lifecycleAgentId,
+      incarnation: params.sessionId,
+    }),
     sessionKey: params.target.canonicalKey,
     assertCurrent,
   });

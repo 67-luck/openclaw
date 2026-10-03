@@ -30,7 +30,7 @@ import type {
   ReplyOperationSuccessorBarrierGroup,
 } from "./session-controller.state.types.js";
 import * as controllerStorage from "./session-controller.storage.js";
-import type { SessionTarget } from "./session-controller.target.js";
+import { sessionTargetOwnersMatch, type SessionTarget } from "./session-controller.target.js";
 
 export {
   sessionControllers,
@@ -61,7 +61,7 @@ export function findSessionControllerEntries(
   const aliases = target?.aliases ?? [normalizedKey];
   const matches = [...controllerStorage.sessionControllers.values()].filter(
     (entry) =>
-      (!target || !entry.target || entry.target.storeScope === target.storeScope) &&
+      (!target || !entry.target || sessionTargetOwnersMatch(entry.target, target)) &&
       aliases.some((alias) => entry.aliases.has(alias)),
   );
   if (matches.length > 1) {
