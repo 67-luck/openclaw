@@ -8,7 +8,7 @@ import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-cloc
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
 import { createActiveRpcSourceForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
-
+import { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
 import {
   initializeSessionReadContext,
   listSessions,
@@ -301,7 +301,6 @@ it("delivers nested event rows identical to the full list for each viewer and cl
         );
       const publication = prepareSessionRowPublication(projection, now);
       const projectRun = createVisibleActiveSessionRunProjector(
-        connection,
         projection.state.rowContext.projectedAgentRuns,
       );
       const present = (index: number) =>

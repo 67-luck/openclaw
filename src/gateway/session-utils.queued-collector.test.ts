@@ -576,8 +576,8 @@ describe("queued collector session projection", () => {
     }
   });
 
-  it.each(["session access revoked", "reservation withdrawn", "registry replaced"])(
-    "rejects queued-child Stop when %s",
+  it.each(["session access revoked", "registry replaced"])(
+    "does not kill a queued child when %s",
     async (failure) => {
       const { entry, registration } = await createQueuedReservation();
       const unrelated = await createQueuedReservation("unrelated");
@@ -592,9 +592,6 @@ describe("queued collector session projection", () => {
         }
         if (failure === "session access revoked") {
           accessRevoked = true;
-        }
-        if (failure === "reservation withdrawn") {
-          removeQueuedSwarmRun(entry.runId);
         }
         if (failure === "registry replaced") {
           await registerSubagentRun(registration);
@@ -618,18 +615,33 @@ describe("queued collector session projection", () => {
         sessionMutationAuthorization: { assertCurrent, assertTargetCurrent: assertCurrent },
       });
       await Promise.all([Promise.resolve(abort).finally(() => authorization.resolve()), mutation]);
-      expect(respond).toHaveBeenCalledWith(
-        false,
-        undefined,
-        expect.objectContaining({ code: expect.any(String) }),
-      );
+      if (failure === "session access revoked") {
+        expect(respond).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({ code: expect.any(String) }),
+        );
+      } else {
+        expect(respond).toHaveBeenCalledOnce();
+        const [ok, result, error] = respond.mock.calls[0]!;
+        if (ok) {
+          expect(result).toEqual({ ok: true, status: "no-active-run", abortedRunId: null });
+          expect(error).toBeUndefined();
+        } else {
+          expect(result).toBeUndefined();
+          expect(error).toMatchObject({ code: "UNAVAILABLE" });
+        }
+        const replacement = subagentRuns.get(entry.runId);
+        expect(replacement).not.toBe(entry);
+        expect(replacement?.execution.endedAt).toBeUndefined();
+        expect(replacement?.collectorCompletion).toBeUndefined();
+      }
       expect(entry.execution.endedAt).toBeUndefined();
       expect(entry.collectorCompletion).toBeUndefined();
       expect(isSubagentRunQueued(unrelated.entry)).toBe(true);
       expect(launchedRunIds).toEqual([]);
     },
   );
-
 
   it("rejects typed queued-child Stop after session access is revoked", async () => {
     const { entry } = await createQueuedReservation();

@@ -32,7 +32,7 @@ import {
   drainAgentRunTerminalWrites,
 } from "../infra/agent-run-terminal-writes.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
-
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { abortChatRunById, registerChatAbortController, type ChatAbortOps } from "./chat-abort.js";
