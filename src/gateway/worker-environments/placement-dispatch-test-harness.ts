@@ -68,7 +68,7 @@ export function createHarness(
     reconcileCommitsManifest?: boolean;
     reconcileCommitsManifestOnApply?: boolean;
     verifyFails?: boolean;
-    verifyFailureCall?: number;
+    verifyFailureOnce?: "remote" | "local" | "remote-after-apply";
     leaseFails?: boolean;
     leaseFailureCount?: number;
     leaseFailureCall?: number;
@@ -106,7 +106,7 @@ export function createHarness(
   let remainingReconcileFailures = options.reconcileFailureCount ?? 0;
   let remainingLeaseFailures = options.leaseFailureCount ?? 0;
   let leaseCalls = 0;
-  let verifyCalls = 0;
+  let pendingVerifyFailure = options.verifyFailureOnce;
   const log: string[] = [];
   const reportWorkspaceResultConflict = vi.fn(async () => {});
   const reportWorkspaceResultRecoveryFailure = vi.fn(
@@ -283,9 +283,11 @@ export function createHarness(
         await stagedResult.record(stagedResult.ref);
       }
       await options.afterReconcile?.();
+      let applied = false;
       const verifyLocalStable = async () => {
         log.push("workspace:verify-local");
-        if (options.localVerifyFails) {
+        if (options.localVerifyFails || pendingVerifyFailure === "local") {
+          pendingVerifyFailure = undefined;
           throw new Error("local workspace changed after reconciliation");
         }
       };
@@ -296,8 +298,12 @@ export function createHarness(
         discardPreparedStagedResult: async () => {},
         verifyStable: async () => {
           log.push("workspace:verify");
-          verifyCalls += 1;
-          if (options.verifyFails || verifyCalls === options.verifyFailureCall) {
+          if (
+            options.verifyFails ||
+            pendingVerifyFailure === "remote" ||
+            (applied && pendingVerifyFailure === "remote-after-apply")
+          ) {
+            pendingVerifyFailure = undefined;
             throw new Error("workspace changed after reconciliation");
           }
         },
@@ -319,6 +325,7 @@ export function createHarness(
               applyPreparedStagedResult: async () => {
                 log.push("workspace:apply-prepared");
                 await journal.commit(reconciledManifestRef);
+                applied = true;
               },
             }
           : {}),

@@ -195,6 +195,7 @@ describe("worker placement dispatch reclaim", () => {
       turnClaim: null,
       workspaceBaseManifestRef: MANIFEST_REF,
     });
+    const reclaimStart = harness.log.length;
 
     await expect(
       harness.service.reclaim({
@@ -209,14 +210,12 @@ describe("worker placement dispatch reclaim", () => {
     });
 
     expect(await placementStore.listPendingWorkspaceResultsAsync()).toEqual([]);
-    expect(harness.log.slice(-14)).toEqual([
+    expect(harness.log.slice(reclaimStart)).toEqual([
       "placement:draining",
       "workspace",
       "tunnel:attached",
       "workspace:quiesce",
       "workspace:reconcile",
-      "workspace:verify",
-      "workspace:verify-local",
       "workspace:lease",
       "workspace:verify",
       "workspace:verify-local",
@@ -946,9 +945,9 @@ describe("worker placement dispatch reclaim", () => {
     ]);
   });
 
-  it.each([1, 2])(
-    "retries an unchanged result when final fence step %i observes a write",
-    async (verifyFailureCall) => {
+  it.each(["remote", "local"] as const)(
+    "retries an unchanged result when the %s fence observes a write",
+    async (verifyFailureOnce) => {
       const priorConflict = {
         paths: ["data.txt"],
         stagedResultRef: "refs/openclaw/worker-results/prior-conflict",
@@ -956,7 +955,7 @@ describe("worker placement dispatch reclaim", () => {
       const harness = createHarness(database, placementStore, {
         priorWorkspaceResultConflict: priorConflict,
         reconcileChanged: false,
-        verifyFailureCall,
+        verifyFailureOnce,
       });
       await harness.service.dispatch(REQUEST);
       const request = {
@@ -966,7 +965,9 @@ describe("worker placement dispatch reclaim", () => {
       };
 
       await expect(harness.service.reclaim(request)).rejects.toThrow(
-        "workspace changed after reconciliation",
+        verifyFailureOnce === "local"
+          ? "local workspace changed after reconciliation"
+          : "workspace changed after reconciliation",
       );
       expect(harness.placements.current()).toMatchObject({ state: "draining", turnClaim: null });
       expect(await placementStore.listPendingWorkspaceResultsAsync()).toEqual([]);
@@ -988,7 +989,7 @@ describe("worker placement dispatch reclaim", () => {
       priorWorkspaceResultConflict: priorConflict,
       reconcileCommitsManifest: false,
       reconcileCommitsManifestOnApply: true,
-      verifyFailureCall: 3,
+      verifyFailureOnce: "remote-after-apply",
     });
     await harness.service.dispatch(REQUEST);
 
