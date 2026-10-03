@@ -108,7 +108,8 @@ describe("clearRemovedQueuedAuthProfiles", () => {
       fallbackAuthProfileId: "profile-b",
     };
     queue.lastRun = lastRun;
-    addSources(queue, source(queued), source(newer), source(otherAgent));
+    const otherAgentSource = source(otherAgent);
+    addSources(queue, source(queued), source(newer), otherAgentSource);
     queue.summarySources.push(source(summarized));
     queue.summaryElisions.push({
       contextKey: "context",
@@ -142,7 +143,9 @@ describe("clearRemovedQueuedAuthProfiles", () => {
     expect(newer.config).toBe(rewrittenConfig);
     expect(otherAgent.authProfileId).toBe("profile-a");
     expect(otherAgent.config).toBe(retainedConfig);
-    expect(queue.items).toHaveLength(3);
+    expect(queue.items).toHaveLength(2);
+    expect(otherAgentSource.controllerInput?.mailbox).not.toBe(queue);
+    expect(otherAgentSource.controllerInput?.mailbox.items).toEqual([otherAgentSource]);
   });
 });
 
