@@ -3,14 +3,14 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { SKILL_RESOURCE_PROTOCOL_FEATURE } from "../../../packages/gateway-protocol/src/schema/skill-resources.js";
 import { WORKER_SKILL_WORKSHOP_FEATURE } from "../../../packages/gateway-protocol/src/schema/worker-skill-workshop.js";
 import { readRunOperatorAuthority } from "../../agents/admitted-run-context.js";
+import { resolveAgentDir } from "../../agents/agent-scope.js";
 import { collectTextContentBlocks } from "../../agents/content-blocks.js";
 import { recordModelFallbackStop } from "../../agents/failover-error.js";
 import {
   loadManifestModelCatalog,
   overlayConfiguredModelCatalog,
 } from "../../agents/model-catalog.js";
-import { convertToLlm } from "../../agents/sessions/messages.js";
-import { withSessionManagerWrite } from "../../agents/sessions/session-manager-write-admission.js";
+import { acquireAgentRunPreparedModelRuntime } from "../../agents/prepared-model-runtime.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import { createLibrarySkillWorkshopTool } from "../../agents/tools/skill-workshop-tool-library.js";
@@ -22,7 +22,7 @@ import {
 } from "../../infra/active-node-context.js";
 import { registerAgentRunDelegatedAuthorityClosedHandler } from "../../infra/agent-run-registry.js";
 import { redactSensitiveText } from "../../logging/redact.js";
-import { buildPersistedUserTurnMessage } from "../../sessions/user-turn-transcript.js";
+import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
 import { prepareSkillResourceDelivery } from "../../skills/runtime/resources.js";
 import { parseWorkerLaunchPlan } from "../../worker/launch-descriptor.js";
 import { WORKER_PROVIDER_REPLAY_LOCAL_RETRY_MESSAGE } from "../../worker/transcript-message.js";
@@ -35,7 +35,7 @@ import { sameWorkerSessionTurnClaim } from "./placement-record.js";
 import { prepareWorkerDesktopLaunchPlan } from "./worker-desktop-launch-plan.js";
 import { prepareWorkerGitHubBinding } from "./worker-github-binding.js";
 import { registerWorkerSkillAuthoring } from "./worker-skill-authoring.js";
-import { waitForTurnOperation } from "./worker-turn-admission.js";
+import { releaseClaimIfOwned, waitForTurnOperation } from "./worker-turn-admission.js";
 import {
   WorkerTurnExecutionError,
   type WorkerTurnEnvironmentService,
@@ -52,6 +52,11 @@ import {
 } from "./worker-turn-payload.js";
 import { resolveWorkerTurnTranscriptTarget } from "./worker-turn-transcript-target.js";
 import {
+  gateWorkerTurnInput,
+  persistWorkerTurnUserMessage,
+  readWorkerTurnInputContext,
+} from "./worker-turn-user-message.js";
+import {
   type executeRemoteExecTurn,
   reconcileWorkspaceAfterTurn,
   recoverWorkspaceBeforeTurn,
@@ -64,7 +69,19 @@ export async function executeWorkerTurn(
     onTerminal: () => void;
   },
 ) {
-  const { placement, turn } = params;
+  const { placement, turn: input } = params;
+  await using preparedRuntime = await acquireAgentRunPreparedModelRuntime(
+    {
+      config: input.config ?? {},
+      agentId: placement.agentId,
+      agentDir: input.agentDir ?? resolveAgentDir(input.config ?? {}, placement.agentId),
+      workspaceDir: input.workspaceDir,
+    },
+    { pluginGeneration: input.pluginGeneration, abortSignal: input.abortSignal },
+  );
+  params.assertRunCurrent?.();
+  input.abortSignal?.throwIfAborted();
+  const turn = { ...input, config: preparedRuntime.snapshot.config };
   const modelRef = assertSupportedTurn(turn);
   const environment = params.environments.get(placement.environmentId);
   const bootstrapReceipt = environment?.bootstrapReceipt;
@@ -107,32 +124,49 @@ export async function executeWorkerTurn(
   turn.onExecutionPhase?.({ phase: "runner_entered", backend: "cloud-worker" });
   const transcriptTarget = resolveWorkerTurnTranscriptTarget(turn);
   const recorder = turn.userTurnTranscriptRecorder;
+  let blocked = false;
   const assertTurnInputCurrent = () => {
     params.assertRunCurrent?.();
     turn.abortSignal?.throwIfAborted();
-    if (recorder?.isBlocked()) {
+    if (recorder?.isBlocked() && !blocked) {
       throw new Error("Cloud worker turn input is blocked");
     }
   };
-  const assertTranscriptCurrent = () => {
-    resolveWorkerTurnTranscriptTarget({ ...transcriptTarget, sessionTarget: transcriptTarget });
-  };
   const assertSourceCurrent = () => {
     assertTurnInputCurrent();
-    assertTranscriptCurrent();
+    resolveWorkerTurnTranscriptTarget({ ...transcriptTarget, sessionTarget: transcriptTarget });
   };
   const assertContextCurrent = () => {
     assertTurnInputCurrent();
     if (!params.placements.validateTurnClaim(params.turnClaim)) {
       throw new Error("Worker turn claim changed during context preparation");
     }
-    assertTranscriptCurrent();
+    resolveWorkerTurnTranscriptTarget({ ...transcriptTarget, sessionTarget: transcriptTarget });
   };
   assertContextCurrent();
   if (recorder?.hasRuntimePersistencePending()) {
     await recorder.waitForRuntimePersistence();
     assertContextCurrent();
   }
+  const inputContext = {
+    turn,
+    transcriptTarget,
+    identity: placement,
+    modelRef,
+    startedAt,
+    assertCurrent: assertContextCurrent,
+    onBlocked: () => {
+      blocked = true;
+    },
+  };
+  const blockedResult = await withPluginRuntimeGenerationScope(preparedRuntime.snapshot, () =>
+    gateWorkerTurnInput(inputContext),
+  );
+  if (blockedResult) {
+    await releaseClaimIfOwned(params.placements, params.turnClaim);
+    return blockedResult;
+  }
+  assertContextCurrent();
   if (recorder && turn.suppressNextUserMessagePersistence !== true && !recorder.hasPersisted()) {
     const persisted = await recorder.persistApproved({
       cwd: params.workspace.kind === "local" ? params.workspace.path : placement.remoteWorkspaceDir,
@@ -142,37 +176,9 @@ export async function executeWorkerTurn(
     }
     assertContextCurrent();
   }
-  const receipt = recorder?.getAdmissionReceipt();
-  const admission = receipt ? { ...receipt } : undefined;
-  if (recorder && !admission) {
-    throw new Error("Cloud worker turn has no readable canonical user admission");
-  }
-  const userMessageAlreadyPersisted =
-    admission !== undefined || turn.suppressNextUserMessagePersistence === true;
-  // Validate context after reentrant phase callbacks have finished.
-  turn.onExecutionPhase?.({
-    phase: "model_resolution",
-    backend: "cloud-worker",
-    provider: modelRef.provider,
-    model: modelRef.model,
-  });
-  const manager = userMessageAlreadyPersisted
-    ? await SessionManager.openModelContextAsync(transcriptTarget, {
-        admission,
-        signal: turn.abortSignal,
-      })
-    : await SessionManager.openAsync(transcriptTarget, undefined, undefined, turn.abortSignal);
-  assertContextCurrent();
-  const contextMessages = convertToLlm(manager.buildSessionContext().messages);
-  const leaf = manager.getLeafEntry();
-  const history =
-    !admission &&
-    userMessageAlreadyPersisted &&
-    leaf?.type === "message" &&
-    leaf.message.role === "user"
-      ? contextMessages.slice(0, -1)
-      : contextMessages;
-  let baseLeafId = admission?.entryId ?? manager.getLeafId();
+  const context = await readWorkerTurnInputContext(inputContext);
+  const { manager, history, userMessageAlreadyPersisted } = context;
+  let baseLeafId = context.baseLeafId;
 
   assertContextCurrent();
   const credential = await waitForTurnOperation({
@@ -345,39 +351,14 @@ export async function executeWorkerTurn(
       throw new StaleWorkerBuildError();
     }
     if (!userMessageAlreadyPersisted && !recorder) {
-      const canonical = buildPersistedUserTurnMessage({
-        text: turn.transcriptPrompt ?? turn.prompt,
-        media: turn.media,
-        mediaImageLayout: {
-          slots: media.imageFactIndexes.map((factIndex) => ({
-            kind: "inline" as const,
-            ...(factIndex === null ? {} : { factIndex }),
-          })),
-        },
+      baseLeafId = await persistWorkerTurnUserMessage({
+        turn,
+        manager,
+        transcriptTarget,
+        media,
+        assertRunCurrent: params.assertRunCurrent,
+        isAuthorized,
       });
-      const message = {
-        ...canonical,
-        content: [
-          { type: "text" as const, text: turn.transcriptPrompt ?? turn.prompt },
-          ...media.images,
-        ],
-        __openclaw: {
-          ...canonical["__openclaw"],
-          mediaImageBlockFactIndexes: media.imageFactIndexes,
-        },
-      };
-      baseLeafId = await withSessionManagerWrite(manager, () => {
-        params.assertRunCurrent?.();
-        if (!isAuthorized()) {
-          throw new Error("Worker turn authority changed before transcript write");
-        }
-        resolveWorkerTurnTranscriptTarget({
-          ...transcriptTarget,
-          sessionTarget: transcriptTarget,
-        });
-        return manager.appendMessage(message);
-      });
-      turn.onUserMessagePersisted?.(message);
     }
     const initialMessagePlan = windowInitialMessages(media.history);
     if (initialMessagePlan.kind === "provider-replay-unavailable") {
