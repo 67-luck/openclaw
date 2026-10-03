@@ -12,6 +12,7 @@ import {
   overlayConfiguredModelCatalog,
 } from "../../agents/model-catalog.js";
 import { acquireAgentRunPreparedModelRuntime } from "../../agents/prepared-model-runtime.js";
+import type { PreparedModelRuntimePluginGeneration } from "../../agents/prepared-model-runtime.types.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import type { AnyAgentTool } from "../../agents/tools/common.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
@@ -71,9 +72,15 @@ import {
 } from "./workspace-result-finalize.js";
 
 export async function executeWorkerTurn(
-  params: Omit<Parameters<typeof executeRemoteExecTurn>[0], "environments" | "runLocal"> & {
+  params: Omit<
+    Parameters<typeof executeRemoteExecTurn>[0],
+    "environments" | "runLocal" | "turn"
+  > & {
     environments: WorkerTurnEnvironmentService;
     onTerminal: () => void;
+    turn: Parameters<typeof executeRemoteExecTurn>[0]["turn"] & {
+      pluginGeneration?: PreparedModelRuntimePluginGeneration;
+    };
   },
 ) {
   const { placement, turn: input } = params;

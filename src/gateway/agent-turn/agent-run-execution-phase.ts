@@ -31,7 +31,6 @@ import { isAbortError } from "../../infra/abort-signal.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import { retainGatewayRootWorkAdmissionContinuation } from "../../process/gateway-work-admission.js";
-import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import {
   getRpcSource,
@@ -39,9 +38,8 @@ import {
   getRpcSourceLifecycleGeneration,
   updateRpcSourceSessionId,
 } from "../../sessions/session-controller.rpc-sources.js";
-
+import { completeUserTurnProcessing } from "../../sessions/user-turn-transcript-processing.js";
 import { isOperatorUiClient } from "../../utils/message-channel.js";
-import { runWithChatAbortExecution } from "../chat-abort-lifecycle-internal.js";
 import { discardPreparedInboundMedia } from "../chat-attachments.js";
 import { errorShapeFromError } from "../error-shape.js";
 import { getGatewayLocalUserIngress } from "../local-user-ingress.js";
@@ -78,11 +76,7 @@ import {
 } from "./agent-run-user-turn.js";
 
 export async function startAgentRunExecution(params: StartAgentRunExecutionParams): Promise<void> {
-  return await runWithChatAbortExecution(
-    params.prepared.activeRunAbort.entry,
-    () => executeAgentRun(params),
-    params.prepared.activeRunAbort.cleanup,
-  );
+  return await executeAgentRun(params);
 }
 
 async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<void> {
@@ -170,14 +164,7 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
       const refsToDiscard = unpersistedOffloadedRefs;
       unpersistedOffloadedRefs = [];
       try {
-        const stopReason = prepared.activeRunAbort.entry?.adapter.abortStopReason;
-        const outcome = buildAgentRunTerminalOutcome({ status: "error", stopReason });
-        const cancelled =
-          prepared.activeRunAbort.controller.signal.aborted &&
-          stopReason !== "restart" &&
-          (!prepared.userTurn.privateCompletion || outcome.reason === "cancelled");
-        releasePreparedAgentRunUserTurn(prepared.userTurn, cancelled ? "cancelled" : "interrupted");
-
+        await releaseStoppedAgentRunUserTurn(prepared.userTurn, prepared.activeRunAbort);
       } catch (error) {
         diagnostics.warning("failed to settle pending agent input")(error);
       }
@@ -213,14 +200,13 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
           },
           async () =>
             withPreparedModelRuntimePluginGenerationScope(
-              prepared.replyDispatchRuntime.pluginGeneration,
+              replyDispatchRuntime.pluginGeneration,
               () => {
                 dispatched = true;
                 return dispatchAgentRunFromGateway(dispatch);
               },
-              () => (leaseActive ? preparedModelRuntimeLease.snapshot : undefined),
+              () => (leaseActive ? preparedModelRuntimeLease?.snapshot : undefined),
             ),
-
         );
       const recorder = prepared.userTurn.recorder;
       return recorder?.withPendingInput ? recorder.withPendingInput(run) : run();
@@ -264,10 +250,9 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
           runId: params.runId,
           ...diagnostics.errorMeta(renderedErr),
         });
-
       };
       const finishUndispatchedAbort = async () => {
-        const stopReason = prepared.activeRunAbort.entry?.abortStopReason?.trim() || "rpc";
+        const stopReason = prepared.activeRunAbort.entry?.adapter.abortStopReason?.trim() || "rpc";
         const outcome = buildAgentRunTerminalOutcome({
           status: "timeout",
           stopReason,
@@ -295,7 +280,6 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
         deferFinal([true, buildAbortedAgentPayload(params.runId, stopReason), undefined], {
           runId: params.runId,
         });
-
       };
       try {
         if (prepared.activeRunAbort.controller.signal.aborted) {
@@ -305,7 +289,14 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
 
         if (prepared.acquireWorkspaceModelRuntime) {
           const entry = params.sessionEntry;
-          if (!entry || !params.resolvedSessionKey || entry.sessionId !== abortEntry?.sessionId) {
+          const lifecycleStorePath = prepared.lifecycleStorePath;
+          if (
+            !entry ||
+            !params.resolvedSessionKey ||
+            !lifecycleStorePath ||
+            entry.sessionId !==
+              (abortEntry ? getRpcSourceIdentity(abortEntry).sessionId : undefined)
+          ) {
             throw new Error("Session changed before preparing its worktree.");
           }
           await prepareSessionWorkspaceForRun({
@@ -314,7 +305,7 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
             agentId: params.activeSessionAgentId,
             runId: params.runId,
             sessionKey: params.resolvedSessionKey,
-            storePath: prepared.lifecycleStorePath,
+            storePath: lifecycleStorePath,
             context: params.context,
             signal: abortController.signal,
             assertCurrent: assertDispatchCurrent,
@@ -737,7 +728,6 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
             await mediaCleanup;
           } finally {
             finishUndispatchedFollowup = !dispatched;
-            publishFinalAfterCleanup?.();
           }
         }
       }

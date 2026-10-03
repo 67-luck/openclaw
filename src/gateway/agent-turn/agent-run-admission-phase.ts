@@ -128,13 +128,14 @@ export async function prepareAgentRunDispatch(
     resolvedRuntime,
     lifecycleStorePath,
   } = resolveAgentRunAdmissionModel(params);
+  let timeoutSeconds: number | undefined;
   let preparing = true;
   let operationalRunInstance: OperationalRunInstanceRef | undefined;
   try {
     if (lifecycleStorePath) {
       await params.acquireGatewayWorkAdmission(lifecycleStorePath);
     }
-    params.assertGatewayWorkAdmissionAllowed();
+    const admittedSessionEntry = params.assertGatewayWorkAdmissionAllowed();
 
     if (!params.hasGatewayAdmissionOutcome()) {
       // Close may finish its cancellation sweep while session acquisition waits.
@@ -144,13 +145,24 @@ export async function prepareAgentRunDispatch(
       operationalRunInstance =
         existing?.entry?.adapter.operationalRunInstance ??
         createOperationalRunInstanceRef(params.runId);
+      timeoutSeconds =
+        params.request.timeout ??
+        resolveRegisteredSubagentTimeoutSeconds({
+          sessionKey: params.isOneShotModelRun ? undefined : params.resolvedSessionKey,
+          agentId: params.activeSessionAgentId,
+          admittedSessionId: params.getAdmittedSessionId(),
+          admittedSessionEntry,
+        });
+      const timeoutMs = resolveAgentTimeoutMs({
+        cfg: params.cfgForAgent ?? params.cfg,
+        overrideSeconds: timeoutSeconds,
+      });
       if (existing?.entry) {
         // Retain the exact preparing input; admission adds presentation facts only.
         updateRpcSourceSessionId(existing.entry, params.getAdmittedSessionId());
         Object.assign(existing.entry.adapter, {
-          providerId: activeModelProvider,
-          authProviderId: resolveProviderIdForAuth(activeModelProvider, {
-
+          providerId: resolvedRuntime.provider,
+          authProviderId: resolveProviderIdForAuth(resolvedRuntime.provider, {
             config: params.cfgForAgent ?? params.cfg,
           }),
         });
@@ -183,8 +195,8 @@ export async function prepareAgentRunDispatch(
             timeoutMs,
             ownerConnId: params.ownerConnId,
             ownerDeviceId: params.ownerDeviceId,
-            providerId: activeModelProvider,
-            authProviderId: resolveProviderIdForAuth(activeModelProvider, {
+            providerId: resolvedRuntime.provider,
+            authProviderId: resolveProviderIdForAuth(resolvedRuntime.provider, {
               config: params.cfgForAgent ?? params.cfg,
             }),
             controlUiVisible,
@@ -217,7 +229,6 @@ export async function prepareAgentRunDispatch(
   }
   const activeRunAbort = params.getAdmittedRunAbort();
   if (!activeRunAbort || !operationalRunInstance) {
-
     activeRunAbort?.cleanup();
     activeGatewayWorkAdmission?.release();
     params.io.emitAcceptance([
@@ -260,7 +271,7 @@ export async function prepareAgentRunDispatch(
     if (params.resolvedSessionKey) {
       claimAgentRunContext(params.runId, {
         ...(params.suppressVisibleSessionEffects ? {} : { sessionKey: params.resolvedSessionKey }),
-        agentId: activeRunAbort.entry.agentId,
+        agentId: getRpcSourceIdentity(activeRunAbort.entry).agentId,
         isControlUiVisible: controlUiVisible,
         ...(coordination ? { projectSessionMessages: false, projectSessionActive: false } : {}),
         lifecycleGeneration: params.lifecycleGeneration,

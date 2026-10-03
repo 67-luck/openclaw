@@ -9,9 +9,9 @@ import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import { createAbortError } from "../../infra/abort-signal.js";
+import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
 import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../../sessions/session-controller.lifecycle.js";
-import { matchesWorkerPlacementTarget } from "./placement-reclaim-contract.js";
-
+import { parseCronRunScopeSuffix } from "../../sessions/session-key-utils.js";
 import { projectWorkerSessionTurnClaim } from "./placement-record.js";
 import type {
   WorkerSessionPlacementRecord,

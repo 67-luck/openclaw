@@ -34,7 +34,7 @@ import {
   getRpcSourceLifecycleGeneration,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
-
+import { completeUserTurnProcessing } from "../../sessions/user-turn-transcript-processing.js";
 import { errorShapeFromError } from "../error-shape.js";
 import type { GatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
 import type { DedupeEntry } from "../server-shared.js";
@@ -56,7 +56,6 @@ export function resolveAbortedAgentStopReason(entry?: RpcSourceRef): string {
   return entry?.adapter.abortStopReason?.trim() || "rpc";
 }
 
-
 export function dispatchAgentRunFromGateway(params: {
   assertCurrent?: () => void;
   assertSettlementCurrent?: () => void;
@@ -72,7 +71,7 @@ export function dispatchAgentRunFromGateway(params: {
    * touching a same-runId entry owned by a concurrent chat.send.
    */
   abortController: Pick<AbortController, "signal" | "abort">;
-  cleanupAbortController: () => void;
+  cleanupAbortController: () => void | Promise<void>;
 
   io: AgentTurnIo;
   context: AgentTurnContext;
@@ -102,6 +101,20 @@ export function dispatchAgentRunFromGateway(params: {
           }
         : params.ingressOpts,
     );
+  let runOwnerSettled = false;
+  let pendingReplay: DedupeEntry | undefined;
+  const publishReplay = (entry: DedupeEntry) => {
+    if (!runOwnerSettled) {
+      pendingReplay = entry;
+      return;
+    }
+    setGatewayDedupeEntries({
+      dedupe: params.context.dedupe,
+      keys: params.dedupeKeys,
+      session: captureJobSession(),
+      entry: diagnostics.forReplay(entry),
+    });
+  };
   const registeredRunInstance = registeredRunEntry?.adapter.operationalRunInstance;
   const registeredLifecycleGeneration =
     registeredRunEntry && getRpcSourceLifecycleGeneration(registeredRunEntry);
@@ -335,19 +348,10 @@ export function dispatchAgentRunFromGateway(params: {
         ...(inputProcessingCompleted ? { inputProcessingCompleted: true } : {}),
       };
       const persistTerminalDedupe = () => {
-        setGatewayDedupeEntries({
-          dedupe: params.context.dedupe,
-          keys: params.dedupeKeys,
-          session: captureJobSession(),
-          entry: diagnostics.forReplay({
-            ts: Date.now(),
-            ok: true,
-            payload: {
-              ...payload,
-              ...(inputProcessingCompleted ? { inputProcessingCompleted: true } : {}),
-            },
-          }),
-
+        publishReplay({
+          ts: Date.now(),
+          ok: true,
+          payload,
         });
       };
       const settled = await settle({ terminalOutcome, onRecovered: persistTerminalDedupe });
@@ -355,17 +359,11 @@ export function dispatchAgentRunFromGateway(params: {
         const summary = "failed to persist cron continuation settlement";
         const error = errorShape(ErrorCodes.UNAVAILABLE, summary);
         const failedPayload = { runId: params.runId, status: "error" as const, summary };
-        setGatewayDedupeEntries({
-          dedupe: params.context.dedupe,
-          keys: params.dedupeKeys,
-          session: captureJobSession(),
-          entry: diagnostics.forReplay({
-            ts: Date.now(),
-            ok: false,
-            payload: failedPayload,
-            error,
-          }),
-
+        publishReplay({
+          ts: Date.now(),
+          ok: false,
+          payload: failedPayload,
+          error,
         });
         await cleanupRunOwner();
         params.io.emitFinal([false, failedPayload, error], {
@@ -432,17 +430,11 @@ export function dispatchAgentRunFromGateway(params: {
           : {}),
       };
       const persistTerminalDedupe = (settlementPersisted: boolean) => {
-        setGatewayDedupeEntries({
-          dedupe: params.context.dedupe,
-          keys: params.dedupeKeys,
-          session: captureJobSession(),
-          entry: diagnostics.forReplay({
-            ts: Date.now(),
-            ok: aborted && settlementPersisted,
-            payload,
-            ...(aborted ? {} : { error }),
-          }),
-
+        publishReplay({
+          ts: Date.now(),
+          ok: aborted && settlementPersisted,
+          payload,
+          ...(aborted ? {} : { error }),
         });
       };
       const settled = await settle({

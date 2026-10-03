@@ -15,8 +15,9 @@ type DevicePlacementDemandSources = {
 /** Projects admitted session work without turning idle placements into slot reservations. */
 export function createDevicePlacementDemandReader(sources: DevicePlacementDemandSources) {
   return (excludeSessionId?: string): ReadonlyMap<string, number> => {
+    const params = { ...sources, excludeSessionId };
     const demand = new Map<string, number>();
-    if (!sources.resolveGatewayContext()) {
+    if (!params.resolveGatewayContext()) {
       return demand;
     }
     const admissions = captureGatewaySessionControllerWork(params.resolveGatewayContext);
@@ -30,14 +31,14 @@ export function createDevicePlacementDemandReader(sources: DevicePlacementDemand
     if (targets.size === 0) {
       return demand;
     }
-    const placements = sources.placements.getMany([...targets]);
+    const placements = params.placements.getMany([...targets]);
     const countedEnvironments = new Set<string>();
     for (const [scope, identities] of admissions.targets) {
       for (const identity of identities) {
         const placement = placements.get(identity);
         if (
           !placement ||
-          placement.sessionId === excludeSessionId ||
+          placement.sessionId === params.excludeSessionId ||
           placement.state !== "active" ||
           placement.executionMode !== "worker-turn" ||
           countedEnvironments.has(placement.environmentId) ||
@@ -58,7 +59,7 @@ export function createDevicePlacementDemandReader(sources: DevicePlacementDemand
         if (session?.entry.sessionId !== placement.sessionId) {
           continue;
         }
-        const environment = sources.environments.get(placement.environmentId);
+        const environment = params.environments.get(placement.environmentId);
         if (
           environment?.providerId !== DEVICE_WORKER_PROVIDER_ID ||
           !environment.nodeDeviceId ||

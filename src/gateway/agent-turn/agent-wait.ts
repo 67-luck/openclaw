@@ -2,6 +2,11 @@ import { resolveNonNegativeIntegerOption } from "@openclaw/normalization-core/nu
 import type { AgentWaitParams } from "../../../packages/gateway-protocol/src/index.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  isRpcSourceQueued,
+} from "../../sessions/session-controller.rpc-sources.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { resolveAgentWaitSource } from "./agent-dedupe.js";
 import {
@@ -12,7 +17,7 @@ import {
 } from "./agent-job.js";
 
 export function prepareAgentWaitForTurn(
-  context: Pick<GatewayRequestContext, "chatAbortControllers" | "chatQueuedTurns" | "dedupe">,
+  context: Pick<GatewayRequestContext, "dedupe">,
   params: AgentWaitParams,
 ) {
   const runId = (params.runId ?? "").trim();
@@ -20,10 +25,13 @@ export function prepareAgentWaitForTurn(
   const source = resolveAgentWaitSource(context, runId);
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
   const queuedResult = () => {
-    const queued = context.chatQueuedTurns.get(runId);
-    return queued
+    const queued = getRpcSource(runId);
+    return queued && isRpcSourceQueued(queued)
       ? {
-          session: captureAgentJobSession({ ...queued, lifecycleGeneration }),
+          session: captureAgentJobSession({
+            ...getRpcSourceIdentity(queued),
+            lifecycleGeneration,
+          }),
           result: {
             runId,
             status: "pending" as const,

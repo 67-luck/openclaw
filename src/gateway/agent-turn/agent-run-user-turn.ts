@@ -351,18 +351,16 @@ export async function prepareAgentRunUserTurn(params: {
         // Intentional Stop seals non-retry custody immediately. A timeout
         // retains its source until the producer publishes its actual terminal facts.
         if (stopReason === "timeout") {
-
           return;
         }
-        try {
-          recorder.completeProcessing?.(
-            buildAgentRunTerminalOutcome({ status: "error", stopReason }),
-          );
-        } catch (error) {
+        void completeUserTurnProcessing(
+          recorder,
+          buildAgentRunTerminalOutcome({ status: "error", stopReason }),
+        ).catch((error: unknown) => {
           params.context.logGateway.warn(
             `private input cancellation persistence failed: ${formatForLog(error)}`,
           );
-        }
+        });
       };
       // Abort reserves terminal ownership before notifying listeners. Record
       // the stop while that exact controller still exists, even after input consumption.
@@ -437,7 +435,7 @@ export async function releaseStoppedAgentRunUserTurn(
   prepared: PreparedAgentRunUserTurn,
   abort: Pick<ReturnType<typeof registerChatAbortController>, "controller" | "entry">,
 ): Promise<void> {
-  const stopReason = abort.entry?.abortStopReason;
+  const stopReason = abort.entry?.adapter.abortStopReason;
   const outcome = buildAgentRunTerminalOutcome({ status: "error", stopReason });
   const cancelled =
     abort.controller.signal.aborted &&

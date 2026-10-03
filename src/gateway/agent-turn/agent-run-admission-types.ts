@@ -9,8 +9,8 @@ import type {
 } from "../../agents/prepared-model-runtime.js";
 import type { TrustedSubagentCompletionHandoff } from "../../agents/subagents/announce/subagent-announce-handoff.js";
 import type { FollowupCompletionOwner } from "../../agents/subagents/completion/session-followup-completion.types.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
 import type { SessionEffectRef } from "../../sessions/session-controller.lifecycle.js";
-
 import type { registerChatAbortController } from "../chat-abort.js";
 import type { OffloadedRef } from "../chat-attachments.js";
 import type { GatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
@@ -19,7 +19,19 @@ import type { RestoredCronContinuation } from "./agent-handler-helpers.js";
 import type { PreparedAgentRunUserTurn, prepareAgentRunUserTurn } from "./agent-run-user-turn.js";
 import type { AgentTurnIo } from "./types.js";
 
-export type PreparedAgentRunDispatch = {
+export type PreparedAgentRunModelRuntime =
+  | {
+      preparedModelRuntimeLease: PreparedModelRuntimeLease;
+      acquireWorkspaceModelRuntime?: never;
+    }
+  | {
+      preparedModelRuntimeLease?: never;
+      acquireWorkspaceModelRuntime: (
+        workspaceDir: string | undefined,
+      ) => Promise<PreparedModelRuntimeLease>;
+    };
+
+export type PreparedAgentRunDispatch = PreparedAgentRunModelRuntime & {
   activeGatewayWorkAdmission: SessionEffectRef | undefined;
 
   activeRunAbort: ReturnType<typeof registerChatAbortController>;

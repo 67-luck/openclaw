@@ -11,7 +11,6 @@ import {
 } from "../../agents/run-termination.js";
 import type { SessionPlacementTurnParams } from "../../agents/session-placement-admission.js";
 import { withSessionPlacementForcedTerminalSettlement } from "../../agents/session-placement-forced-terminal-settlement.js";
-import { registerReplyOperationSuccessorBarrier } from "../../auto-reply/reply/reply-run-registry.js";
 import {
   getAgentEventLifecycleGeneration,
   isAgentEventLifecycleGenerationCurrent,
@@ -23,9 +22,10 @@ import {
   markDiagnosticRunProgress,
 } from "../../logging/diagnostic-run-activity.js";
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
+import { registerReplyOperationSuccessorBarrier } from "../../sessions/session-controller.js";
 import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
 import type { SessionWatchdogWait } from "../../sessions/session-controller.watchdog.js";
-
+import { createDeferredCore } from "../../shared/deferred.js";
 import type { WorkerConnectionIdentity } from "./connection-identity.js";
 import { sameWorkerSessionTurnClaim } from "./placement-record.js";
 import type { WorkerSessionPlacementStore, WorkerSessionTurnClaim } from "./placement-store.js";
@@ -64,136 +64,208 @@ export async function createWorkerTurnRunOwner(params: {
 }): Promise<ActiveWorkerTurn> {
   const { claim: requestedClaim, turn, sessionKey } = params;
   const lifecycleGeneration = turn.lifecycleGeneration ?? getAgentEventLifecycleGeneration();
-  const startedAtMs = Date.now();
-  const executionDeadlineAtMs = startedAtMs + turn.timeoutMs;
-  const operation = turn.replyOperation;
-  const diagnosticOwner = createDiagnosticEmbeddedRunOwner({
-    sessionId: claim.sessionId,
-    sessionKey,
-    runId: claim.runId,
-    watchdogAttempt: operation
-      ? operation.watchdog.attachAttempt({
-          assertCurrent: () => {
-            if (closed || signal.aborted || !params.placements.validateTurnClaim(claim)) {
-              throw new Error("Worker attempt retired");
-            }
-            assertSessionControllerOperation(operation);
-          },
-        })
-      : undefined,
-  });
-  diagnosticOwner.watchdogAttempt?.setExecutionDeadline(executionDeadlineAtMs);
-  const cancel = (reason?: "user_abort" | "restart" | "superseded") => {
-    controller.abort(
-      reason === "restart"
-        ? createAgentRunRestartAbortError()
-        : reason === "superseded"
-          ? createAgentRunSupersededAbortError()
-          : undefined,
-    );
-  };
-  const restartSignal = getGatewayRestartDrainSignal();
-  const onRestart = () => cancel("restart");
-  if (restartSignal.aborted) {
-    onRestart();
-  } else {
-    restartSignal.addEventListener("abort", onRestart, { once: true });
-  }
-  const isCurrent = () =>
-    activeOwners.get(claim.sessionId) === owner &&
-    isAgentEventLifecycleGenerationCurrent(lifecycleGeneration) &&
-    params.placements.validateTurnClaim(claim);
-  const owner: WorkerRunOwner = {
-    claim,
-    beginApprovalWait: (deadlineAtMs, isPending) =>
-      diagnosticOwner.watchdogAttempt?.beginWait({
-        kind: "approval",
-        deadlineAtMs,
-        isCurrent: () => !closed && !signal.aborted && isCurrent() && isPending(),
-      }),
-    isCancelled: () => signal.aborted && isCurrent(),
-    record: (event) => {
-      if (signal.aborted || !isCurrent()) {
+  const claimAuthority = await params.placements.prepareTurnClaimAuthority(requestedClaim);
+  const claim = claimAuthority.claim;
+  let cleanup = () => claimAuthority.release();
+  try {
+    const assertCurrent = () => {
+      params.assertCurrent?.();
+      turn.abortSignal?.throwIfAborted();
+      if (
+        !isAgentEventLifecycleGenerationCurrent(lifecycleGeneration) ||
+        !claimAuthority.isCurrent()
+      ) {
+        throw new Error("Worker turn authority changed while preparing its run owner");
+      }
+    };
+    assertCurrent();
+    const controller = new AbortController();
+    const signal = turn.abortSignal
+      ? AbortSignal.any([turn.abortSignal, controller.signal])
+      : controller.signal;
+    let closed = false;
+    const startedAtMs = Date.now();
+    const executionDeadlineAtMs = startedAtMs + turn.timeoutMs;
+    const operation = turn.replyOperation;
+    const diagnosticOwner = createDiagnosticEmbeddedRunOwner({
+      sessionId: claim.sessionId,
+      sessionKey,
+      runId: claim.runId,
+      watchdogAttempt: operation
+        ? operation.watchdog.attachAttempt({
+            assertCurrent: () => {
+              if (closed || signal.aborted || !claimAuthority.isCurrent()) {
+                throw new Error("Worker attempt retired");
+              }
+              assertSessionControllerOperation(operation);
+            },
+          })
+        : undefined,
+    });
+    diagnosticOwner.watchdogAttempt?.setExecutionDeadline(executionDeadlineAtMs);
+    const cancel = (reason?: "user_abort" | "restart" | "superseded") => {
+      controller.abort(
+        reason === "restart"
+          ? createAgentRunRestartAbortError()
+          : reason === "superseded"
+            ? createAgentRunSupersededAbortError()
+            : undefined,
+      );
+    };
+    const restartSignal = getGatewayRestartDrainSignal();
+    const onRestart = () => cancel("restart");
+    const isCurrent = () =>
+      activeOwners.get(claim.sessionId) === owner &&
+      isAgentEventLifecycleGenerationCurrent(lifecycleGeneration) &&
+      claimAuthority.isCurrent();
+    const owner: WorkerRunOwner = {
+      claim,
+      beginApprovalWait: (deadlineAtMs, isPending) =>
+        diagnosticOwner.watchdogAttempt?.beginWait({
+          kind: "approval",
+          deadlineAtMs,
+          isCurrent: () => !closed && !signal.aborted && isCurrent() && isPending(),
+        }),
+      isCancelled: () => signal.aborted && isCurrent(),
+      isCancelledFinishing: (request) =>
+        owner.isCancelled() &&
+        request.runId === claim.runId &&
+        request.runEpoch === claim.owner.ownerEpoch &&
+        request.event.kind === "lifecycle" &&
+        request.event.payload.phase === "finishing" &&
+        request.event.payload.aborted === true,
+      record: (event) => {
+        if (signal.aborted || !isCurrent()) {
+          return;
+        }
+        if (event.kind === "tool" && event.payload.phase !== "update") {
+          markDiagnosticOwnedToolActivity(diagnosticOwner, {
+            toolName: event.payload.name,
+            toolCallId: event.payload.toolCallId,
+            phase: event.payload.phase === "start" ? "start" : "end",
+            deadlineAtMs: executionDeadlineAtMs,
+          });
+        } else {
+          diagnosticOwner.watchdogAttempt?.progress(
+            event.kind === "assistant" ? "semantic" : "transport",
+            `worker:${event.kind}`,
+          );
+          markDiagnosticRunProgress({
+            sessionId: claim.sessionId,
+            sessionKey,
+            runId: claim.runId,
+            reason: `worker:${event.kind}`,
+          });
+        }
+      },
+    };
+    const queueMessage = async () => {
+      throw new Error("Cloud worker turns do not support message injection");
+    };
+    const handle = {
+      kind: "embedded",
+      runId: claim.runId,
+      startedAtMs,
+      diagnosticOwner,
+      closeDiagnostics: () => {
+        if (closed) {
+          return;
+        }
+        restartSignal.removeEventListener("abort", onRestart);
+        closed = true;
+        claimAuthority.release();
+        closeDiagnosticEmbeddedRunOwner(diagnosticOwner);
+        if (activeOwners.get(claim.sessionId) === owner) {
+          activeOwners.delete(claim.sessionId);
+        }
+      },
+      queueMessage,
+      messageInjection: { isAvailable: () => false, queueMessage },
+      isStreaming: () => false,
+      isStopped: () => closed || signal.aborted,
+      isAborted: () => signal.aborted,
+      isAbortable: () => !closed && !signal.aborted,
+      isCompacting: () => false,
+      cancel,
+      abort: cancel,
+    } satisfies EmbeddedAgentQueueHandle;
+    const completion = createDeferredCore();
+    let attachment: ReturnType<typeof setActiveEmbeddedRun>;
+    const settle = async () => {
+      cancel();
+      await completion.promise;
+    };
+    let disposed = false;
+    cleanup = () => {
+      if (disposed) {
         return;
       }
-      if (event.kind === "tool" && event.payload.phase !== "update") {
-        markDiagnosticOwnedToolActivity(diagnosticOwner, {
-          toolName: event.payload.name,
-          toolCallId: event.payload.toolCallId,
-          phase: event.payload.phase === "start" ? "start" : "end",
-          // The host owns this already-enforced run budget. A remote tool cannot
-          // choose an exemption or extend its parent while provisioning a child.
-          deadlineAtMs: executionDeadlineAtMs,
-        });
-      } else {
-        diagnosticOwner.watchdogAttempt?.progress(
-          event.kind === "assistant" ? "semantic" : "transport",
-          `worker:${event.kind}`,
-        );
-        markDiagnosticRunProgress({
-          sessionId: claim.sessionId,
-          sessionKey,
-          runId: claim.runId,
-          reason: `worker:${event.kind}`,
-        });
-      }
-    },
-  };
-  const queueMessage = async () => {
-    throw new Error("Cloud worker turns do not support message injection");
-  };
-  const handle = {
-    kind: "embedded",
-    runId: claim.runId,
-    startedAtMs,
-    diagnosticOwner,
-    closeDiagnostics: () => {
-      restartSignal.removeEventListener("abort", onRestart);
-      closed = true;
-      closeDiagnosticEmbeddedRunOwner(diagnosticOwner);
-      if (activeOwners.get(claim.sessionId) === owner) {
-        activeOwners.delete(claim.sessionId);
-      }
-    },
-    queueMessage,
-    messageInjection: { isAvailable: () => false, queueMessage },
-    isStreaming: () => false,
-    isStopped: () => closed || signal.aborted,
-    isAborted: () => signal.aborted,
-    isAbortable: () => !closed && !signal.aborted,
-    isCompacting: () => false,
-    cancel,
-    abort: cancel,
-  } satisfies EmbeddedAgentQueueHandle;
-  const attachment = setActiveEmbeddedRun(
-    claim.sessionId,
-    handle,
-    sessionKey,
-    turn.sessionFile,
-    turn.agentId,
-    turn.replyOperation,
-    lifecycleGeneration,
-  );
-  if (!signal.aborted) {
-    activeOwners.set(claim.sessionId, owner);
-  }
-  return {
-    claim,
-    sessionKey,
-    signal,
-    dispose: () => {
+      disposed = true;
       turn.replyOperation?.detachBackend(handle);
-      clearActiveEmbeddedRun(
-        claim.sessionId,
-        handle,
-        sessionKey,
-        turn.sessionFile,
-        undefined,
-        attachment,
-      );
-    },
-  };
-
+      try {
+        clearActiveEmbeddedRun(
+          claim.sessionId,
+          handle,
+          sessionKey,
+          turn.sessionFile,
+          undefined,
+          attachment,
+        );
+      } finally {
+        try {
+          handle.closeDiagnostics();
+        } finally {
+          completion.resolve();
+        }
+      }
+    };
+    if (restartSignal.aborted) {
+      onRestart();
+    } else {
+      restartSignal.addEventListener("abort", onRestart, { once: true });
+    }
+    signal.throwIfAborted();
+    assertCurrent();
+    withSessionPlacementForcedTerminalSettlement(
+      settle,
+      () => {
+        params.assertCurrent?.();
+        if (
+          !isAgentEventLifecycleGenerationCurrent(lifecycleGeneration) ||
+          !claimAuthority.isCurrent()
+        ) {
+          throw createSessionPlacementSettlementClosedAbortError();
+        }
+        signal.throwIfAborted();
+      },
+      () => {
+        attachment = setActiveEmbeddedRun(
+          claim.sessionId,
+          handle,
+          sessionKey,
+          turn.sessionFile,
+          turn.agentId,
+          turn.replyOperation,
+          lifecycleGeneration,
+        );
+      },
+    );
+    if (turn.replyOperation) {
+      registerReplyOperationSuccessorBarrier({
+        operation: turn.replyOperation,
+        sessionId: claim.sessionId,
+        sessionKeys: [sessionKey],
+        start: settle,
+      });
+    }
+    assertCurrent();
+    signal.throwIfAborted();
+    activeOwners.set(claim.sessionId, owner);
+    return { claim, sessionKey, signal, dispose: cleanup };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
 }
 
 // Capture before buffering or notifying listeners: neither a reused run ID nor
