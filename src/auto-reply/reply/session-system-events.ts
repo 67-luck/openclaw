@@ -10,7 +10,7 @@ import {
   formatZonedTimestamp,
   resolveTimezone,
 } from "../../infra/format-time/format-datetime.ts";
-import { isExecCompletionSystemEvent } from "../../infra/heartbeat-events-filter.js";
+import { isExecCompletionEvent } from "../../infra/heartbeat-events-filter.js";
 import {
   isSystemEventStoreCurrent,
   resolveSystemEventQueueKey,
@@ -20,11 +20,9 @@ import {
   peekSystemEventEntries,
   type SystemEvent,
 } from "../../infra/system-events.js";
-import { channelRouteDedupeKey } from "../../plugin-sdk/channel-route.js";
 import { SESSION_CREATED_NOTICE_CONTEXT_PREFIX } from "../../sessions/session-state-event-kinds.js";
 import { acknowledgeSessionStateNotices } from "../../sessions/session-state-events.js";
 import { decodeSessionStateNoticeContextKey } from "../../sessions/session-state-notices.js";
-import type { DeliveryContext } from "../../utils/delivery-context.shared.js";
 
 function compactSystemEvent(event: SystemEvent): string | null {
   const trimmed = event.text.trim();
@@ -90,21 +88,28 @@ function formatSystemEventTimestamp(ts: number, cfg: OpenClawConfig) {
   );
 }
 
-export async function consumePreparedSystemEventEntries(params: {
+/** Drain queued system events, format as `System:` lines, return the block text (or undefined). */
+export async function drainFormattedSystemEvents(params: {
+  cfg: OpenClawConfig;
   agentId: string;
   sessionKey: string;
-  events: readonly SystemEvent[];
+  isMainSession: boolean;
+  isNewSession: boolean;
+  events?: readonly SystemEvent[];
   deferredEventIds?: readonly string[];
-}): Promise<SystemEvent[]> {
+}): Promise<string | undefined> {
+  const systemLines: string[] = [];
   const queueKey = resolveSystemEventQueueKey(params.sessionKey, params.agentId);
-  const consumed = consumeSelectedSystemEventEntries(queueKey, params.events, {
-    deferredEventIds: params.deferredEventIds,
-  });
-  const deferredIds = new Set(params.deferredEventIds);
-  const sessionStateNotices = consumed.flatMap((event) => {
-    if (event.id && deferredIds.has(event.id)) {
-      return [];
-    }
+  // Exec completions have a dedicated heartbeat prompt; leave those entries queued
+  // so the heartbeat path can consume and deliver them.
+  const queued = consumeSelectedSystemEventEntries(
+    queueKey,
+    (params.events ?? peekSystemEventEntries(queueKey)).filter(
+      (event) => !isExecCompletionEvent(event.text),
+    ),
+    { deferredEventIds: params.deferredEventIds },
+  );
+  const sessionStateNotices = queued.flatMap((event) => {
     const targetSessionKey = event.contextKey
       ? decodeSessionStateNoticeContextKey(event.contextKey)
       : undefined;
@@ -115,45 +120,6 @@ export async function consumePreparedSystemEventEntries(params: {
   if (sessionStateNotices.length > 0) {
     await acknowledgeSessionStateNotices(params.sessionKey, sessionStateNotices);
   }
-  return consumed;
-}
-
-/** Drain queued system events, format as `System:` lines, return the block text (or undefined). */
-export async function drainFormattedSystemEvents(params: {
-  cfg: OpenClawConfig;
-  agentId: string;
-  sessionKey: string;
-  isMainSession: boolean;
-  isNewSession: boolean;
-  events?: readonly SystemEvent[];
-  deferredEventIds?: readonly string[];
-  deliveryContext?: DeliveryContext;
-}): Promise<string | undefined> {
-  const systemLines: string[] = [];
-  const queueKey = resolveSystemEventQueueKey(params.sessionKey, params.agentId);
-  // Exec completions have a dedicated heartbeat prompt; leave those entries queued
-  // so the heartbeat path can consume and deliver them.
-  const requested = params.events ?? peekSystemEventEntries(queueKey);
-  const requestedRouteKey = params.deliveryContext
-    ? channelRouteDedupeKey(params.deliveryContext)
-    : undefined;
-  const selected = requested
-    .filter((event) => !event.deliveryHeld && !isExecCompletionSystemEvent(event))
-    .filter((event) => {
-      if (params.events || !event.deliveryContext) {
-        return true;
-      }
-      return (
-        requestedRouteKey !== undefined &&
-        channelRouteDedupeKey(event.deliveryContext) === requestedRouteKey
-      );
-    });
-  const queued = await consumePreparedSystemEventEntries({
-    agentId: params.agentId,
-    sessionKey: params.sessionKey,
-    events: selected,
-    deferredEventIds: params.deferredEventIds,
-  });
   for (const event of queued) {
     // A same-store resolver handoff does not retire already-consumed events.
     if (!isSystemEventStoreCurrent(params.sessionKey, event.sessionStorePath, params.agentId)) {

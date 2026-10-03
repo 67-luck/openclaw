@@ -51,7 +51,6 @@ import {
   parseMessageWithAttachments,
   persistInboundImagesForTranscript,
 } from "./chat-attachments.js";
-import { shouldSuppressRun as suppressRun } from "./node-system-run-event-authority.js";
 import { normalizeRpcAttachmentsToChatAttachments } from "./server-methods/attachment-normalize.js";
 import { registerNodeApnsEvent } from "./server-node-events-apns.js";
 import { enqueueNodeExecNotice } from "./server-node-events-exec-notice.js";
@@ -900,8 +899,8 @@ export const handleNodeEvent = async (
         return undefined;
       }
       const sessionKeyRaw = normalizeOptionalString(obj.sessionKey) ?? `node-${nodeId}`;
-      const { canonicalKey: sessionKey, agentId, entry } = loadSessionEntry(sessionKeyRaw);
-      const [cfg, route] = [getRuntimeConfig(), deliveryContextFromSession(entry)];
+      const { canonicalKey: sessionKey, agentId } = loadSessionEntry(sessionKeyRaw);
+      const cfg = getRuntimeConfig();
       const runId = normalizeOptionalString(obj.runId) ?? "";
       const auth = ctx.authorizeNodeSystemRunEvent({
         nodeId,
@@ -918,7 +917,7 @@ export const handleNodeEvent = async (
           reason: "unmatched_exec_event",
         };
       }
-      if (suppressRun(obj, auth, route, cfg.tools?.exec?.notifyOnExit)) {
+      if (cfg.tools?.exec?.notifyOnExit === false || obj.suppressNotifyOnExit === true) {
         return undefined;
       }
       if (evt.event === "exec.denied") {
@@ -965,7 +964,6 @@ export const handleNodeEvent = async (
         cfg,
         sessionKey,
         agentId,
-        route,
         authorization: auth,
         runId,
         text,

@@ -849,25 +849,22 @@ describe("node host invoke", () => {
                   approved: true,
                   approvalDecision: "allow-once",
                   suppressNotifyOnExit: true,
-                  notifyOnExit: false,
                 }),
               },
               client,
               { current: async () => [] },
             );
-            expect(request).toHaveBeenNthCalledWith(2, "node.event", {
+            expect(request).toHaveBeenNthCalledWith(1, "node.event", {
               event: "exec.finished",
               payloadJSON: expect.any(String),
             });
-            const event = request.mock.calls[1]?.[1] as { payloadJSON: string };
+            const event = request.mock.calls[0]?.[1] as { payloadJSON: string };
             expect(JSON.parse(event.payloadJSON)).toMatchObject({
               suppressNotifyOnExit: true,
-              notifyOnExit: false,
-              invokeResultSentFirst: true,
               output,
             });
             expect(request).toHaveBeenNthCalledWith(
-              1,
+              2,
               "node.invoke.result",
               expect.objectContaining({ ok: true }),
             );

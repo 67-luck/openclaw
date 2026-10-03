@@ -26,6 +26,7 @@ import {
 import {
   hasDeliverableHeartbeatTurnSource,
   heartbeatExecRouteKey,
+  normalizeHeartbeatExecRoute,
   isPositivelyDirectHeartbeatOwnerTarget,
 } from "./heartbeat-route-context.js";
 import { isPotentialConfiguredMessageChannel } from "./message-account-selection.js";
@@ -249,7 +250,18 @@ export async function resolveHeartbeatDeliveryTarget(params: {
   }
 
   const execOwnsRoute = params.turnSourceKind === "exec";
-  const turnSource = execOwnsRoute ? { ...params.turnSource } : params.turnSource;
+  const sourcePlugin =
+    execOwnsRoute && params.turnSource?.channel
+      ? resolveOutboundChannelPlugin({
+          channel: params.turnSource.channel,
+          cfg,
+          agentId: params.agentId,
+          allowBootstrap: true,
+        })
+      : undefined;
+  const turnSource = execOwnsRoute
+    ? normalizeHeartbeatExecRoute({ ...params.turnSource }, sourcePlugin)
+    : params.turnSource;
   if (execOwnsRoute && !hasDeliverableHeartbeatTurnSource(turnSource)) {
     return buildNoHeartbeatDeliveryTarget({ reason: "no-route" });
   }

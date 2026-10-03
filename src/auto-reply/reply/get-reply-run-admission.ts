@@ -28,7 +28,6 @@ import {
   normalizeThinkLevel,
   resolveThinkingSelectionForModel,
 } from "../thinking.js";
-import { resolveReplyRunDeliveryContext } from "./agent-runner-core.js";
 import { removeDirectiveSpan } from "./directive-parsing.js";
 import type { PreparedReplyRunContext } from "./get-reply-run-context.js";
 import {
@@ -151,17 +150,6 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
       return;
     }
     const eventContext = getReplySystemEventContext(opts);
-    const turnDeliveryContext =
-      context.isHeartbeat || sessionKey === undefined
-        ? undefined
-        : resolveReplyRunDeliveryContext({
-            cfg,
-            sessionCtx,
-            sessionEntry,
-            sessionKey,
-            runtimePolicySessionKey: context.runtimePolicySessionKey,
-            opts,
-          });
     const routeSystemEventSessionKey = normalizeOptionalString(eventContext?.sessionKey);
     const systemEventSessionKeys = context.isHeartbeat
       ? [routeSystemEventSessionKey ?? sessionKey]
@@ -183,7 +171,6 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
         // dedicated reminders or arrivals that were not part of this turn.
         events: context.isHeartbeat ? (eventContext?.events ?? []) : undefined,
         deferredEventIds: context.isHeartbeat ? eventContext?.deferredEventIds : undefined,
-        deliveryContext: turnDeliveryContext,
       });
       if (eventsBlock) {
         drainedSystemEventBlocks.push(eventsBlock);

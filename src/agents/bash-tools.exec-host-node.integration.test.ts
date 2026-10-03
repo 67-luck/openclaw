@@ -27,7 +27,6 @@ import { resolvePreparedExecEnvironment } from "./bash-tools.exec-request-prepar
 import { createExecTool } from "./bash-tools.exec-run.js";
 
 const rpc = vi.hoisted(() => vi.fn());
-const nodeProtocolFeatures = vi.hoisted(() => ({ value: ["system-run-result-first-v1"] }));
 vi.mock("./tools/gateway.js", () => ({
   callGatewayTool: rpc,
   readGatewayCallOptions: vi.fn(() => ({})),
@@ -39,7 +38,6 @@ vi.mock("./tools/nodes-utils.js", () => ({
       connected: true,
       platform: "darwin",
       commands: ["system.run", "system.run.prepare"],
-      protocolFeatures: nodeProtocolFeatures.value,
     },
   ],
   resolveNodeIdFromList: () => "node-1",
@@ -47,7 +45,6 @@ vi.mock("./tools/nodes-utils.js", () => ({
 
 let state: OpenClawTestState;
 let invokeCount: number;
-let nodeEvents: Array<{ event: string; payloadJSON: string }>;
 let afterPrepare: () => Promise<void>;
 let request: ExecuteNodeHostCommandParams & { workdir: string };
 let resolveDecision: (result: { decision: string }) => void;
@@ -70,8 +67,6 @@ beforeEach(async ({ onTestFinished }) => {
   await state.writeConfig({});
   saveExecApprovals({ version: 1, defaults: { security: "full", ask: "off" } });
   invokeCount = 0;
-  nodeProtocolFeatures.value = ["system-run-result-first-v1"];
-  nodeEvents = [];
   afterPrepare = async () => {};
   request = {
     command: "/usr/bin/printf node-policy-proof",
@@ -122,9 +117,6 @@ beforeEach(async ({ onTestFinished }) => {
       },
       {
         async request<T>(name: string, value?: unknown): Promise<T> {
-          if (name === "node.event") {
-            nodeEvents.push(value as { event: string; payloadJSON: string });
-          }
           if (name === "node.invoke.result") {
             response = value as typeof response;
           }
@@ -146,83 +138,6 @@ beforeEach(async ({ onTestFinished }) => {
 });
 afterEach(async () => {
   await state.cleanup();
-});
-
-it("suppresses foreground completion wakes while preserving the notification opt-out", async () => {
-  const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
-  const result = await executeNodeHostCommand({
-    ...request,
-    sessionKey,
-    turnSourceChannel: "telegram",
-    turnSourceTo: "telegram:-100155462274:topic:42",
-    turnSourceThreadId: 42,
-    notifyOnExit: false,
-  });
-
-  expect(result.details).toMatchObject({ status: "completed", aggregated: "node-policy-proof" });
-  const finished = nodeEvents.find((event) => event.event === "exec.finished");
-  expect(finished).toBeDefined();
-  expect(JSON.parse(finished?.payloadJSON ?? "{}")).toMatchObject({
-    sessionKey,
-    suppressNotifyOnExit: true,
-    notifyOnExit: false,
-  });
-});
-
-it("marks ordinary foreground completion for result-first recovery", async () => {
-  const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
-  await executeNodeHostCommand({
-    ...request,
-    sessionKey,
-    turnSourceChannel: "telegram",
-    turnSourceTo: "telegram:-100155462274:topic:42",
-    turnSourceThreadId: 42,
-  });
-
-  const finished = nodeEvents.find((event) => event.event === "exec.finished");
-  expect(JSON.parse(finished?.payloadJSON ?? "{}")).toMatchObject({
-    sessionKey,
-    suppressNotifyOnExit: true,
-    notifyOnExit: true,
-    invokeResultSentFirst: true,
-  });
-});
-
-it("preserves the terminal fallback for a legacy node without result-first support", async () => {
-  nodeProtocolFeatures.value = [];
-  const sessionKey = "agent:main:telegram:group:-100155462274:topic:42";
-  await executeNodeHostCommand({
-    ...request,
-    sessionKey,
-    turnSourceChannel: "telegram",
-    turnSourceTo: "telegram:-100155462274:topic:42",
-    turnSourceThreadId: 42,
-  });
-
-  const finished = nodeEvents.find((event) => event.event === "exec.finished");
-  expect(JSON.parse(finished?.payloadJSON ?? "{}")).toMatchObject({
-    sessionKey,
-    suppressNotifyOnExit: false,
-    notifyOnExit: true,
-  });
-});
-
-it("preserves the terminal fallback for a non-Telegram result-first node", async () => {
-  const sessionKey = "agent:main:webchat:node-proof";
-  await executeNodeHostCommand({
-    ...request,
-    sessionKey,
-    turnSourceChannel: "webchat",
-    turnSourceTo: "dashboard:node-proof",
-  });
-
-  const finished = nodeEvents.find((event) => event.event === "exec.finished");
-  expect(JSON.parse(finished?.payloadJSON ?? "{}")).toMatchObject({
-    sessionKey,
-    suppressNotifyOnExit: false,
-    notifyOnExit: true,
-    invokeResultSentFirst: true,
-  });
 });
 
 it.each([

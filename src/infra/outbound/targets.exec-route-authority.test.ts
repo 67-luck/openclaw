@@ -1,7 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import type { ChannelPlugin } from "../../channels/plugins/types.plugin.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { resolveNodeSystemRunEventDeliveryContext } from "../../gateway/node-system-run-event-authority.js";
 import {
   captureActivePluginRegistrySnapshot,
   restoreActivePluginRegistrySnapshot,
@@ -124,21 +123,7 @@ it.each([
     setActivePluginRegistry(
       createTestRegistry([{ pluginId: "telegram", plugin: telegramPlugin, source: "test" }]),
     );
-    const turnSource = resolveNodeSystemRunEventDeliveryContext(
-      {
-        channel: "telegram",
-        to,
-        accountId: "work",
-        threadId,
-      },
-      {
-        invocationSessionKey: "agent:main:telegram:group:-100155462274:direct-topic:42",
-        turnSourceAccountId: "work",
-      },
-    );
-    if (!turnSource) {
-      throw new Error("verified route capture failed");
-    }
+    const turnSource = { channel: "telegram", to, accountId: "work", threadId };
     const result = await resolveHeartbeatDeliveryTargetWithSessionRoute({
       cfg,
       agentId: "main",

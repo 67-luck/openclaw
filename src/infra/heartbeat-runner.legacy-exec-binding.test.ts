@@ -93,13 +93,13 @@ afterEach(async () => {
 it.each([
   { name: "forum source", source: forumSource, explicitDm: false },
   { name: "shared group session", source: forumSource, explicitDm: false },
-  { name: "reject serialized chat substitution", source: forumSource, explicitDm: false },
+  { name: "reject session chat substitution", source: forumSource, explicitDm: false },
   {
-    name: "reject serialized chat substitution for bare direct source",
+    name: "reject session chat substitution for bare direct source",
     source: { ...forumSource, to: "telegram:987654321", threadId: undefined },
     explicitDm: false,
   },
-  { name: "reject serialized thread substitution", source: forumSource, explicitDm: false },
+  { name: "reject session thread substitution", source: forumSource, explicitDm: false },
   { name: "reject asynchronous target exception", source: forumSource, explicitDm: false },
   { name: "reject asynchronous target rejection", source: forumSource, explicitDm: false },
   { name: "reject asynchronous session exception", source: forumSource, explicitDm: false },
@@ -139,10 +139,16 @@ it.each([
         }
         const messaging: NonNullable<ChannelPlugin["messaging"]> = { ...base.messaging };
         const plugin: ChannelPlugin = { ...base, messaging };
-        if (name.includes("serialized chat")) {
-          messaging.resolveSessionTarget = () => ownerDm;
-        } else if (name.includes("serialized thread")) {
-          messaging.resolveSessionTarget = () => "-100123456789:topic:99";
+        if (name.includes("session chat") || name.includes("session thread")) {
+          messaging.resolveOutboundSessionRoute = async () => ({
+            sessionKey: "agent:main:main",
+            baseSessionKey: "agent:main:main",
+            peer: { kind: "group", id: "-100123456789" },
+            chatType: "group",
+            from: "telegram:group:-100123456789",
+            to: name.includes("session chat") ? ownerDm : source.to,
+            threadId: name.includes("session thread") ? 99 : source.threadId,
+          });
         } else if (name.includes("target exception")) {
           messaging.targetResolver = {
             looksLikeId: () => {
@@ -346,7 +352,7 @@ it.each([
         expect(result.status).toBe("ran");
         expect(runEmbeddedAgent).toHaveBeenCalledOnce();
         expect(modelRoute).toMatchObject({
-          to: source.to.replace(/^telegram:/, ""),
+          to: source.to,
           accountId: "work",
           threadId: source.threadId,
           chatType: source.threadId ? "group" : "direct",

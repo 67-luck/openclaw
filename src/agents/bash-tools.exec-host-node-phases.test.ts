@@ -240,7 +240,6 @@ function createDirectNodeRun(signal?: AbortSignal): DirectNodeRun {
       invokeWaitMs: 35_000,
       runTimeoutMs: 30_000,
       supportsSystemRunPrepare: true,
-      supportsResultFirstCompletion: false,
     },
   };
 }

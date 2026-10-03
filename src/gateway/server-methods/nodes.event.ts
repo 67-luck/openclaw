@@ -91,13 +91,7 @@ export const nodeEventHandlers: GatewayRequestHandlers = {
             sessionKey: eventParams.sessionKey,
             terminal: eventParams.event !== "exec.started",
           });
-          return authorization
-            ? {
-                ...authorization,
-                event: eventParams.event,
-                onTelegramRouteMismatch: context.logGateway.warn,
-              }
-            : false;
+          return authorization ?? false;
         },
         updateNodePresenceActivity: (activity) => {
           const updated = context.nodeRegistry.updatePresenceActivity(activity);

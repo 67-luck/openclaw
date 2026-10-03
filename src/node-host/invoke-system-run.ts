@@ -5,6 +5,7 @@ import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { describeInterpreterInlineEval } from "../infra/command-analysis/inline-eval.js";
 import { detectInlineEvalInSegments } from "../infra/command-analysis/risks.js";
@@ -74,7 +75,6 @@ import {
   resolveExecApprovalDecision,
   resolveNodeExecConfigPolicy,
 } from "./exec-policy.js";
-import { buildExecFinishedEventPayload } from "./invoke-exec-finished-event.js";
 import type { runCommand } from "./invoke-run-command.js";
 import {
   applyOutputTruncation,
@@ -82,11 +82,6 @@ import {
   resolvePlannedAllowlistArgv,
   resolveSystemRunExecArgv,
 } from "./invoke-system-run-allowlist.js";
-import {
-  publishSystemRunCompletion,
-  resolveSystemRunNotifyOnExit,
-  type SystemRunExecutionContext,
-} from "./invoke-system-run-completion.js";
 import {
   buildEnvOverrideRejectionMessage,
   hardenApprovedExecutionPaths,
@@ -97,6 +92,8 @@ import type {
   SkillBinsProvider,
   SystemRunParams,
 } from "./invoke-types.js";
+
+const OUTPUT_EVENT_TAIL = 20_000;
 
 type SystemRunInvokeResult = {
   ok: boolean;
@@ -114,6 +111,13 @@ type SystemRunDeniedReason =
   | "companion-unavailable"
   | "cwd-unavailable"
   | "permission:screenRecording";
+
+type SystemRunExecutionContext = {
+  sessionKey: string;
+  runId: string;
+  commandText: string;
+  suppressNotifyOnExit: boolean;
+};
 
 type SystemRunParsePhase = NonNullable<Awaited<ReturnType<typeof parseSystemRunPhase>>>;
 type SystemRunPolicyPhase = NonNullable<Awaited<ReturnType<typeof evaluateSystemRunPolicyPhase>>>;
@@ -256,18 +260,29 @@ async function sendSystemRunCompleted(
   result: ExecHostRunResult | RunResult,
   payloadJSON: string,
 ) {
-  const sendNodeEvent = opts.sendNodeEvent;
-  await publishSystemRunCompletion(
-    {
-      sendInvokeResult: opts.sendInvokeResult,
-      sendExecFinishedEvent: sendNodeEvent
-        ? (params) => sendNodeEvent("exec.finished", buildExecFinishedEventPayload(params))
-        : undefined,
-    },
-    execution,
-    result,
+  if (opts.sendNodeEvent) {
+    const combined = [result.stdout, result.stderr, result.error].filter(Boolean).join("\n");
+    const trimmed = combined.trim();
+    await opts.sendNodeEvent("exec.finished", {
+      sessionKey: execution.sessionKey,
+      runId: execution.runId,
+      host: "node",
+      command: execution.commandText,
+      exitCode: result.exitCode ?? undefined,
+      timedOut: result.timedOut,
+      success: result.success,
+      output: !trimmed
+        ? combined
+        : trimmed.length <= OUTPUT_EVENT_TAIL
+          ? trimmed
+          : `... (truncated) ${sliceUtf16Safe(trimmed, trimmed.length - OUTPUT_EVENT_TAIL)}`,
+      suppressNotifyOnExit: execution.suppressNotifyOnExit,
+    });
+  }
+  await opts.sendInvokeResult({
+    ok: true,
     payloadJSON,
-  );
+  });
 }
 
 function argvArraysMatch(left: readonly string[] | undefined, right: readonly string[]): boolean {
@@ -310,10 +325,6 @@ async function parseSystemRunPhase(opts: HandleSystemRunInvokeOptions) {
   const runId = normalizeOptionalString(opts.params.runId) ?? crypto.randomUUID();
   const cwd = normalizeOptionalString(opts.params.cwd);
   const suppressNotifyOnExit = opts.params.suppressNotifyOnExit === true;
-  const notifyOnExit = resolveSystemRunNotifyOnExit({
-    suppressNotifyOnExit,
-    notifyOnExit: opts.params.notifyOnExit,
-  });
   const approvalSource = opts.params.approvalSource;
   if (
     approvalSource != null &&
@@ -394,7 +405,7 @@ async function parseSystemRunPhase(opts: HandleSystemRunInvokeOptions) {
     agentId,
     sessionKey,
     runId,
-    execution: { sessionKey, runId, commandText, suppressNotifyOnExit, notifyOnExit },
+    execution: { sessionKey, runId, commandText, suppressNotifyOnExit },
     approvalDecision,
     approvalSource: validatedApprovalSource,
     delayedApprovalPolicySnapshot,

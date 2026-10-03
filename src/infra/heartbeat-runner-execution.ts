@@ -38,21 +38,13 @@ import { getAgentEventLifecycleGeneration } from "./agent-events.js";
 import { formatErrorMessage } from "./errors.js";
 import { isWithinActiveHours } from "./heartbeat-active-hours.js";
 import { tryResolveAmbientHeartbeatAgentId } from "./heartbeat-agent-resolution.js";
-import {
-  resolveHeartbeatForWake,
-  resolveHeartbeatConfig,
-  type HeartbeatConfig,
-} from "./heartbeat-config.js";
+import { resolveHeartbeatForWake, type HeartbeatConfig } from "./heartbeat-config.js";
 import {
   isExecCompletionSystemEvent,
   isRestartContinuationEvent,
 } from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent } from "./heartbeat-events.js";
 import { heartbeatLog as log } from "./heartbeat-log.js";
-import {
-  normalizeRequestedHeartbeatDestination,
-  resolveRequestedHeartbeatWithContinuation,
-} from "./heartbeat-route-continuation.js";
 import { shouldUseHeartbeatResponseToolPrompt } from "./heartbeat-runner-config.js";
 import {
   resolveHeartbeatPreflight,
@@ -77,7 +69,6 @@ import {
   type HeartbeatScheduledTask,
   type HeartbeatWakeIntent,
   type HeartbeatWakeSource,
-  type HeartbeatWakeRequest,
 } from "./heartbeat-wake.js";
 import type { OutboundSendDeps } from "./outbound/deliver.js";
 import {
@@ -129,9 +120,6 @@ export type HeartbeatRunOptions = {
   agentId?: string;
   sessionKey?: string;
   heartbeat?: HeartbeatConfig;
-  /** Present on scheduler calls, even when undefined: configuration is not a request. */
-  heartbeatOverride?: HeartbeatConfig;
-  routeContinuation?: HeartbeatWakeRequest["routeContinuation"];
   source?: HeartbeatWakeSource;
   intent?: HeartbeatWakeIntent;
   reason?: string;
@@ -153,21 +141,10 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
   }
   const agentId = normalizeAgentId(resolvedAgentId);
   const wakeSource = opts.source ?? inferHeartbeatWakeSourceFromReason(opts.reason);
-  const continuationHeartbeat = resolveRequestedHeartbeatWithContinuation(
-    undefined,
-    opts.routeContinuation,
-    resolveHeartbeatConfig(cfg, agentId),
-  );
-  const heartbeatOverride = Object.hasOwn(opts, "heartbeatOverride")
-    ? opts.heartbeatOverride
-    : normalizeRequestedHeartbeatDestination(
-        wakeSource ?? "other",
-        opts.heartbeat ?? continuationHeartbeat,
-      );
   const heartbeat = resolveHeartbeatForWake({
     cfg,
     agentId,
-    requestedHeartbeat: opts.heartbeat ?? continuationHeartbeat,
+    requestedHeartbeat: opts.heartbeat,
     source: wakeSource,
   });
   const scheduledTasks = [...(opts.tasks ?? [])].toSorted((left, right) =>
@@ -210,7 +187,6 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
       agentId,
       heartbeat,
       source: wakeSource,
-      cronPayload: opts.routeContinuation?.cronPayload,
       scheduledTasks,
     });
   let preflight = shouldPreflightBeforeBusy ? await resolvePreflight() : undefined;
@@ -371,7 +347,6 @@ export async function resolveHeartbeatWakeStage(opts: HeartbeatRunOptions) {
     agentId,
     wakeSource,
     heartbeat,
-    heartbeatOverride,
     scheduledTasks,
     startedAt,
     isEmbeddedRunActive,
@@ -424,15 +399,15 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   const execOwnsRoute =
     scheduledTasks.length === 0 &&
     preflight.turnSourceDeliveryContext !== undefined &&
-    preflight.selectedEventEntries.some((event) => isExecCompletionSystemEvent(event));
+    preflight.selectedEventEntries.some(isExecCompletionSystemEvent);
   const resolvedDelivery = await resolveHeartbeatDeliveryTargetWithSessionRoute({
     cfg,
     agentId,
     entry: conversationEntry,
     heartbeat,
     currentSessionKey: sessionKey,
-    // Dedicated exec output owns its captured route even when generic base-queue
-    // notices are excluded from isolated admission. Scheduled work keeps its own target.
+    // A base queue's route stays excluded; events on the actual isolated queue
+    // own their route, including exec completion after the base route moves.
     turnSource:
       execOwnsRoute || preflight.session.inspectsRunQueue
         ? preflight.turnSourceDeliveryContext
@@ -443,13 +418,9 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   // an explicit target that never resolves to a route also reports `target-none`.
   // Gate here so neither the relay prompt nor the session publication path can
   // see a projection target the resolver already declined to deliver to.
-  // A captured external conversation is authoritative even when its model
-  // session is also visible in the Control UI. Never redirect that result into
-  // internal publication, including when external validation rejects its route.
-  const externalExecOwnsRoute =
-    execOwnsRoute && !isInternalMessageChannel(preflight.turnSourceDeliveryContext?.channel);
   const internalProjection =
-    resolvedDelivery.reason === "target-none" || externalExecOwnsRoute
+    resolvedDelivery.reason === "target-none" ||
+    (execOwnsRoute && !isInternalMessageChannel(preflight.turnSourceDeliveryContext?.channel))
       ? undefined
       : projectionCandidate;
   // Session-owned work in an internal session (the same eligibility as the routeless

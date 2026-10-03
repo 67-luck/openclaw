@@ -8,11 +8,7 @@ authoring dates (2026), not package publication dates.
 
 ## Unreleased
 
-- Add the optional `ConnectParams.protocolFeatures` list behind the advertised
-  `node-protocol-features-v1` server capability. Updated node hosts use it to
-  declare result-first `system.run` completion support without widening their
-  approved command or device capability surface; clients omit it for older
-  Gateways.
+No changes outside the dated history below.
 
 ## Deferred to the next wire version
 

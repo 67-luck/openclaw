@@ -3,7 +3,10 @@ import type { AnyChannelPlugin as ChannelPlugin } from "../../channels/plugins/t
 import { channelRouteDedupeKey } from "../../plugin-sdk/channel-route.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import { isDeliverableMessageChannel } from "../../utils/message-channel.js";
-import { stripTargetProviderPrefix } from "./channel-target-prefix.js";
+import {
+  stripOutboundTargetKindPrefix,
+  stripTargetProviderPrefix,
+} from "./channel-target-prefix.js";
 import { normalizeTargetForProvider } from "./target-normalization.js";
 
 /** Compare the plugin-owned conversation grammar; do not create a parallel target parser. */
@@ -80,4 +83,52 @@ export function isPositivelyDirectHeartbeatOwnerTarget(params: {
   // classifier; syntax alone (even `user:`) never admits, so unclassified
   // shapes fail closed and operator alerts cannot escape into a shared chat.
   return chatType === "direct";
+}
+
+/** Canonicalize scoped topics using the channel's parser/serializer pair. */
+export function normalizeHeartbeatExecRoute(
+  route: DeliveryContext,
+  plugin?: ChannelPlugin,
+): DeliveryContext | undefined {
+  const grammar = plugin?.messaging;
+  if (
+    !plugin ||
+    !grammar?.resolveSessionConversation ||
+    !grammar.resolveSessionTarget ||
+    !route.to
+  ) {
+    return route;
+  }
+  const raw = stripOutboundTargetKindPrefix(
+    stripTargetProviderPrefix(route.to, plugin.id, ...(grammar.targetPrefixes ?? [])),
+  );
+  const embedded = grammar.resolveSessionConversation({ kind: "group", rawId: raw });
+  const explicit =
+    route.threadId == null
+      ? null
+      : grammar.resolveSessionConversation({ kind: "group", rawId: String(route.threadId) });
+  const id = embedded?.id ?? raw;
+  if (
+    explicit &&
+    (explicit.id !== id || (embedded?.threadId && explicit.threadId !== embedded.threadId))
+  ) {
+    return undefined;
+  }
+  const threadId = embedded?.threadId ?? explicit?.threadId;
+  if (!threadId) {
+    return route;
+  }
+  const to = grammar.resolveSessionTarget({ kind: "group", id, threadId });
+  if (!to) {
+    return undefined;
+  }
+  const verified = grammar.resolveSessionConversation({ kind: "group", rawId: to });
+  if (verified?.id !== id || verified.threadId !== threadId) {
+    return undefined;
+  }
+  const target = grammar.resolveDeliveryTarget?.({ conversationId: to });
+  if (route.threadId != null && !explicit && target?.threadId !== String(route.threadId)) {
+    return undefined;
+  }
+  return { ...route, to, threadId: target?.threadId ?? route.threadId };
 }

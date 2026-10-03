@@ -28,7 +28,6 @@ export type NodeListNode = {
   pathEnv?: string;
   caps?: string[];
   commands?: string[];
-  protocolFeatures?: string[];
   computerUse?: ComputerUseCapabilityDescriptor;
   /** Node has explicitly enabled session hosting; live slots own current capacity. */
   sessionHost?: boolean;

@@ -89,19 +89,6 @@ describe("lazy protocol validators", () => {
     expect(validateConnectParams.errors).toBeNull();
   });
 
-  it("accepts nonempty optional node protocol features", () => {
-    const connect = {
-      minProtocol: 3,
-      maxProtocol: 4,
-      client: { id: "test", version: "1.0.0", platform: "test", mode: "test" },
-    };
-    expectAccepted(validateConnectParams, [
-      connect,
-      { ...connect, protocolFeatures: ["system-run-result-first-v1"] },
-    ]);
-    expectRejected(validateConnectParams, [{ ...connect, protocolFeatures: [""] }]);
-  });
-
   it("rejects caller-provided hidden prompts in Skill Workshop revisions", () => {
     const request = {
       proposalId: "proposal-1",

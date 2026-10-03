@@ -1,6 +1,7 @@
 // Gateway node registry.
 // Tracks connected node clients, invoke requests, broadcasts, and system.run approvals.
 import { expectDefined } from "@openclaw/normalization-core";
+import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 // NodeSession is plugin-SDK-reachable; importing these types from the
 // gateway-protocol index would retain the whole ProtocolSchemas registry in
 // the public plugin-sdk dts (check-plugin-sdk-exports guards this).
@@ -66,6 +67,7 @@ import {
   type NodeInvokeProgressParams,
   type NodeInvokeResultParams,
   type PendingInvoke,
+  type PendingSystemRunEvent,
 } from "./node-registry.invoke-stream.js";
 import {
   updateNodePresenceActivity,
@@ -74,13 +76,13 @@ import {
   selectActiveNodesByProfile,
   type NodePresenceActivityUpdate,
 } from "./node-registry.presence.js";
+import {
+  authorizedSystemRunEventExpiresAt,
+  authorizedSystemRunEventKey,
+} from "./node-registry.system-run.js";
 import { isNodeWorkerHostClientId } from "./node-runner-inventory-runtime.js";
 import type { NodeSession } from "./node-session.types.js";
 import { normalizeNodeSkillDescriptors } from "./node-skill-descriptors.js";
-import {
-  NodeSystemRunEventAuthority,
-  type SystemRunEventAuthorization,
-} from "./node-system-run-event-authority.js";
 import { WEBSOCKET_OPEN_READY_STATE } from "./server-constants.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
 
@@ -139,6 +141,13 @@ type PairingLeaseResolution =
   | { status: "current"; session: PairingBoundNodeSession }
   | { status: "stale"; presenceInvalidated: boolean }
   | { status: "unavailable" };
+
+/** Authorized system.run event window bound to one node connection. */
+type AuthorizedSystemRunEvent = PendingSystemRunEvent & {
+  nodeId: string;
+  connId: string;
+  expiresAtMs: number | null;
+};
 
 /** Connectivity probe result for a registered node. */
 export type NodeConnectivityResult =
@@ -231,7 +240,7 @@ export class NodeRegistry {
     },
     onFailedResult: (pending) => {
       if (pending.systemRunEvent) {
-        this.systemRunEventAuthority.forget({
+        this.forgetAuthorizedSystemRunEvent({
           nodeId: pending.nodeId,
           connId: pending.connId,
           ...pending.systemRunEvent,
@@ -251,7 +260,7 @@ export class NodeRegistry {
       });
     },
   });
-  private systemRunEventAuthority = new NodeSystemRunEventAuthority();
+  private authorizedSystemRunEvents = new Map<string, AuthorizedSystemRunEvent>();
   private pairingGenerationEventChains = new Map<string, Promise<void>>();
   private committedConfig: OpenClawConfig | undefined;
 
@@ -286,7 +295,7 @@ export class NodeRegistry {
           ? this.sendEventToSession(current, event, payload)
           : false;
       },
-      rememberAuthorizedSystemRunEvent: (event) => this.systemRunEventAuthority.remember(event),
+      rememberAuthorizedSystemRunEvent: (event) => this.rememberAuthorizedSystemRunEvent(event),
       publishActiveNodeContext: () => this.publishActiveNodeContext(),
     });
   }
@@ -604,7 +613,11 @@ export class NodeRegistry {
       }
     }
     this.invokeStreams.handleDisconnect(connId);
-    this.systemRunEventAuthority.clearConnection(connId);
+    for (const [key, event] of this.authorizedSystemRunEvents) {
+      if (event.connId === connId) {
+        this.authorizedSystemRunEvents.delete(key);
+      }
+    }
     reconcileNodeRunnerAvailability(this, nodeId);
     return unregistersCurrentNode ? nodeId : null;
   }
@@ -699,7 +712,11 @@ export class NodeRegistry {
     removeConnectedNodePluginTools(node.nodeId);
     removeRemoteNodeSkills(node.nodeId);
     this.invokeStreams.handleDisconnect(node.connId);
-    this.systemRunEventAuthority.clearConnection(node.connId);
+    for (const [key, event] of this.authorizedSystemRunEvents) {
+      if (event.connId === node.connId) {
+        this.authorizedSystemRunEvents.delete(key);
+      }
+    }
     reconcileNodeRunnerAvailability(this, node.nodeId);
     this.options.onPairingInvalidated?.({ nodeId: node.nodeId, connId: node.connId });
     return node.lastActiveAtMs !== undefined;
@@ -1132,20 +1149,86 @@ export class NodeRegistry {
     return this.authorizeSystemRunEventWithState(params) !== null;
   }
 
-  /** Consume event authority and report whether the paired invoke result already arrived. */
   authorizeSystemRunEventWithState(params: {
     nodeId: string;
     connId?: string;
     runId?: string;
     sessionKey: string;
     terminal: boolean;
-  }): SystemRunEventAuthorization | null {
-    return this.systemRunEventAuthority.authorize({
-      ...params,
-      allowLegacyRunIdFallback:
-        params.connId !== undefined &&
-        this.allowsLegacyMacRunIdFallback({ nodeId: params.nodeId, connId: params.connId }),
-    });
+  }): Pick<PendingSystemRunEvent, "invocationDeliveryContext"> | null {
+    if (!params.connId || !params.sessionKey) {
+      return null;
+    }
+    const connId = params.connId;
+    this.pruneAuthorizedSystemRunEvents();
+    let match = params.runId
+      ? this.matchAuthorizedSystemRunEvent({
+          nodeId: params.nodeId,
+          connId,
+          runId: params.runId,
+          sessionKey: params.sessionKey,
+        })
+      : null;
+    if (match === null && this.allowsLegacyMacRunIdFallback({ nodeId: params.nodeId, connId })) {
+      match = this.matchAuthorizedSystemRunEvent({
+        nodeId: params.nodeId,
+        connId,
+        sessionKey: params.sessionKey,
+      });
+    }
+    if (match === null) {
+      return null;
+    }
+    const source = this.authorizedSystemRunEvents.get(match)?.invocationDeliveryContext;
+    if (params.terminal) {
+      this.authorizedSystemRunEvents.delete(match);
+    }
+    return source ? { invocationDeliveryContext: { ...source } } : {};
+  }
+
+  private rememberAuthorizedSystemRunEvent(
+    event: Omit<AuthorizedSystemRunEvent, "expiresAtMs">,
+  ): void {
+    this.pruneAuthorizedSystemRunEvents();
+    const authorized: AuthorizedSystemRunEvent = {
+      ...event,
+      expiresAtMs: authorizedSystemRunEventExpiresAt(event.timeoutMs),
+    };
+    this.authorizedSystemRunEvents.set(authorizedSystemRunEventKey(authorized), authorized);
+  }
+
+  private forgetAuthorizedSystemRunEvent(
+    event: Omit<AuthorizedSystemRunEvent, "expiresAtMs">,
+  ): void {
+    this.authorizedSystemRunEvents.delete(authorizedSystemRunEventKey(event));
+  }
+
+  private matchAuthorizedSystemRunEvent(params: {
+    nodeId: string;
+    connId: string;
+    runId?: string;
+    sessionKey: string;
+  }): string | null {
+    let match: string | null = null;
+    for (const [key, event] of this.authorizedSystemRunEvents) {
+      if (
+        event.nodeId !== params.nodeId ||
+        event.connId !== params.connId ||
+        (params.runId !== undefined && event.runId !== params.runId) ||
+        (event.sessionKey && event.sessionKey !== params.sessionKey)
+      ) {
+        continue;
+      }
+      if (params.runId !== undefined) {
+        return key;
+      }
+      // Legacy macOS events may omit the run ID, but only one pending run may match.
+      if (match !== null) {
+        return null;
+      }
+      match = key;
+    }
+    return match;
   }
 
   private allowsLegacyMacRunIdFallback(params: { nodeId: string; connId: string }): boolean {
@@ -1157,17 +1240,19 @@ export class NodeRegistry {
     );
   }
 
-  handleInvokeResult(params: NodeInvokeResultParams): boolean {
-    const pending = this.pendingInvokes.get(params.id);
-    const handled = this.invokeStreams.handleResult(params);
-    if (handled && params.ok && pending?.systemRunEvent) {
-      this.systemRunEventAuthority.markInvokeResultReceived({
-        nodeId: pending.nodeId,
-        connId: pending.connId,
-        ...pending.systemRunEvent,
-      });
+  private pruneAuthorizedSystemRunEvents(now = Date.now()): void {
+    for (const [key, event] of this.authorizedSystemRunEvents) {
+      if (
+        event.expiresAtMs !== null &&
+        !isFutureDateTimestampMs(event.expiresAtMs, { nowMs: now })
+      ) {
+        this.authorizedSystemRunEvents.delete(key);
+      }
     }
-    return handled;
+  }
+
+  handleInvokeResult(params: NodeInvokeResultParams): boolean {
+    return this.invokeStreams.handleResult(params);
   }
 
   sendEvent(nodeId: string, event: string, payload?: unknown): boolean {

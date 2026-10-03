@@ -42,7 +42,7 @@ import {
   shouldRetryGatewayWithDeviceToken,
 } from "./connect-auth.js";
 import { buildDeviceAuthPayloadV3 } from "./device-auth.js";
-import { type ConnectFeatures, resolveModelCatalogConnect } from "./model-catalog-connect.js";
+import { resolveModelCatalogConnect } from "./model-catalog-connect.js";
 import type { GatewayProtocolRequestTiming } from "./pending-request.js";
 import type {
   GatewayClientCloseInfo,
@@ -159,7 +159,7 @@ export class GatewayClientRequestTimeoutError extends GatewayProtocolRequestTime
 
 class GatewayClientTransportPolicyError extends GatewayWebSocketTransportConfigurationError {}
 
-export interface GatewayClientOptions extends GatewayWebSocketTargetOptions, ConnectFeatures {
+export type GatewayClientOptions = GatewayWebSocketTargetOptions & {
   origin?: string;
   /** Already-resolved edge-proxy auth headers (identity-aware proxy in front of the Gateway). */
   edgeAuthHeaders?: Readonly<Record<string, string>>;
@@ -191,6 +191,7 @@ export interface GatewayClientOptions extends GatewayWebSocketTargetOptions, Con
   mode?: GatewayClientMode;
   role?: string;
   scopes?: string[];
+  modelCatalog?: ConnectParams["modelCatalog"];
   caps?: string[];
   commands?: string[];
   computerUse?: ConnectParams["computerUse"];
@@ -212,7 +213,7 @@ export interface GatewayClientOptions extends GatewayWebSocketTargetOptions, Con
   onClose?: (code: number, reason: string, info?: GatewayClientCloseInfo) => void;
   onGap?: (info: { expected: number; received: number }) => void;
   onRequestTiming?: (timing: GatewayProtocolRequestTiming) => void;
-}
+};
 
 export type {
   GatewayClientCloseInfo,
@@ -743,8 +744,8 @@ export class GatewayClient {
           instanceId: this.opts.instanceId,
         },
         ...resolveModelCatalogConnect({
-          features: useLegacyNodeProtocolEnvelope ? undefined : this.opts,
           caps: Array.isArray(this.opts.caps) ? this.opts.caps : [],
+          modelCatalog: useLegacyNodeProtocolEnvelope ? undefined : this.opts.modelCatalog,
           serverCapabilities: params.serverCapabilities,
         }),
         commands: Array.isArray(this.opts.commands) ? this.opts.commands : undefined,

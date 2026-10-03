@@ -8,8 +8,6 @@ import { requestHeartbeat } from "../infra/heartbeat-wake.js";
 import { withSystemEventOwner } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
 import { isUnscopedSessionKeySentinel } from "../routing/session-key.js";
-import type { DeliveryContext } from "../utils/delivery-context.types.js";
-import { resolveNodeSystemRunEventDeliveryContext } from "./node-system-run-event-authority.js";
 import type { NodeEventContext } from "./server-node-events-types.js";
 
 /** One exec-notice handoff: validate authority, enqueue, then wake only its admitted scope. */
@@ -17,20 +15,17 @@ export function enqueueNodeExecNotice(params: {
   cfg: OpenClawConfig;
   sessionKey: string;
   agentId: string;
-  route: DeliveryContext | undefined;
   authorization: ReturnType<NodeEventContext["authorizeNodeSystemRunEvent"]>;
   runId: string;
   text: string;
 }): void {
   const { cfg, sessionKey, agentId, runId, text } = params;
-  const deliveryContext = resolveNodeSystemRunEventDeliveryContext(
-    params.route,
-    params.authorization,
-  );
-  // A verified route that cannot be normalized must not become a legacy route-less notice.
-  if (deliveryContext === null) {
-    return;
-  }
+  // The registry owns this snapshot; the terminal payload never supplies a route.
+  // Legacy calls without a host-bound source retain the existing session fallback.
+  const deliveryContext =
+    typeof params.authorization === "object"
+      ? params.authorization.invocationDeliveryContext
+      : undefined;
   const policy = resolveEventSessionRoutingPolicy({ cfg, sessionKey });
   const queued = enqueueSystemEvent(
     text,
