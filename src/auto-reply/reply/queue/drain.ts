@@ -3,9 +3,8 @@ import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../../../ag
 import {
   getGatewayRestartDrainSignal,
   isGatewayRestartDrainError,
-
   waitForGatewayRestartFenceSettlement,
-  runWithGatewayIndependentRootWorkContinuation,
+  runWithGatewayDetachedWorkContinuation,
 } from "../../../process/gateway-work-admission.js";
 import { defaultRuntime } from "../../../runtime.js";
 import {
@@ -256,7 +255,9 @@ export function rememberFollowupDrainCallback(
     for (;;) {
       let entered = false;
       try {
-        await runWithGatewayIndependentRootWorkContinuation(
+        // The turn owns a fresh async work scope: tracked agent work must keep running
+        // after the request that triggered the drain has closed its own scope.
+        await runWithGatewayDetachedWorkContinuation(
           () =>
             runOutsidePreparedModelRuntimePluginGenerationScope(() => {
               entered = true;
@@ -289,7 +290,6 @@ export function rememberFollowupDrainCallback(
             { sources: claim.sources, droppedCount: claim.sources.length },
             false,
           );
-
         }
         releaseSessionControllerClaim(claim);
         return;
@@ -339,5 +339,4 @@ export async function dropAbortedFollowups(
   }
   queue.wake();
   return sources.length;
-
 }
