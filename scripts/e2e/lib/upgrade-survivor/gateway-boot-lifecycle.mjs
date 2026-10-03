@@ -237,22 +237,7 @@ function observeCopiedCanary() {
 
 function captureCandidateBoundary(gatewayLog) {
   const fixture = readJson(fixturePath());
-  const database = new DatabaseSync(sourceDatabasePath(), { readOnly: true });
-  let breakerRows;
-  try {
-    breakerRows = database
-      .prepare(
-        "SELECT boot_id, started_at_ms FROM gateway_boot_lifecycle WHERE startup_reason = ? AND started_at_ms > ? ORDER BY started_at_ms",
-      )
-      .all(BREAKER_REASON, fixture.seededAtMs)
-      .map((row) => Object.assign({}, row));
-  } finally {
-    database.close();
-  }
-  assert(
-    breakerRows.length > 0,
-    "Published baseline did not persist a breaker transition from completed stopped-daemon failures",
-  );
+  assertRows(sourceDatabasePath(), fixture.rows, "Published baseline");
   assert(
     fs
       .readFileSync(gatewayLog, "utf8")
