@@ -2520,7 +2520,7 @@ if [ "$SCENARIO" = "gateway-boot-lifecycle" ]; then
   phase assert-gateway-boot-installed-package node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs \
     installed "$(package_root)" "$CANDIDATE_SPEC"
   phase assert-gateway-boot-recovery node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs \
-    assert-recovery "$SYSTEMCTL_SHIM_DAEMON_LOG"
+    assert-recovery "$SYSTEMCTL_SHIM_DAEMON_LOG" "$UPDATE_JSON"
   phase stop-recovered-gateway stop_update_restart_probe_gateway "$COMMAND_TIMEOUT"
   phase seed-genuine-gateway-failures node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs \
     seed-genuine "$SYSTEMCTL_SHIM_DAEMON_LOG"

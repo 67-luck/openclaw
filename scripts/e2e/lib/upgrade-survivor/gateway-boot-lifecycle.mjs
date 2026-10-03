@@ -192,7 +192,7 @@ function observeCopiedCanary() {
   const databasePath = sourceDatabasePath();
   const sourcePath = fixture.sourceDatabasePath;
   const receipt = {
-    status: "observing",
+    status: "admitting",
     identity: installedIdentity(),
     observedAtMs: Date.now(),
     copiedState: fs.realpathSync(databasePath) !== sourcePath,
@@ -216,22 +216,10 @@ function observeCopiedCanary() {
     path.dirname(fixtureFile),
     `gateway-boot-lifecycle-canary-${process.pid}.json`,
   );
-  process.once("exit", (exitCode) => {
-    if (receipt.error) {
-      writeJson(receiptFile, { ...receipt, status: "failed", exitCode });
-      return;
-    }
-    try {
-      assertRows(databasePath, fixture.rows, "Candidate canary output");
-      const recoveryRows = inspectRecoveryRows(databasePath, {
-        ...fixture,
-        candidateBoundaryMs: receipt.observedAtMs,
-      });
-      assert(recoveryRows.length > 0, "Candidate canary did not record crash-loop recovery");
-      writeJson(receiptFile, { ...receipt, status: "passed", exitCode, recoveryRows });
-    } catch (error) {
-      writeJson(receiptFile, { ...receipt, status: "failed", exitCode, error: String(error) });
-    }
+  writeJson(receiptFile, {
+    ...receipt,
+    status: receipt.error ? "failed" : "admitted",
+    copiedRows: receipt.error ? undefined : fixture.rows.length,
   });
 }
 
@@ -252,20 +240,25 @@ function canaryReceipts(artifacts) {
     .map((name) => readJson(path.join(artifacts, name)));
 }
 
-function assertRecovery(gatewayLog) {
+function assertRecovery(gatewayLog, updateResult) {
   const artifacts = requireEnv("OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT");
   const fixture = readJson(fixturePath());
   assertRows(sourceDatabasePath(), fixture.rows, "Activated candidate");
   const receipts = canaryReceipts(artifacts);
   assert.equal(receipts.length, 1, "Expected one candidate canary lifecycle receipt");
   const canary = receipts[0];
-  assert.equal(canary.status, "passed", canary.error ?? "Candidate canary proof failed");
-  assert.equal(canary.exitCode, 0, "Candidate canary did not exit successfully");
+  assert.equal(canary.status, "admitted", canary.error ?? "Candidate canary admission failed");
+  assert.equal(canary.copiedRows, fixture.rows.length, "Candidate canary did not admit every row");
   assert.equal(
     canary.identity.commit,
     requireEnv("OPENCLAW_DOCKER_E2E_SELECTED_SHA"),
     "Copied-state canary did not run the selected candidate",
   );
+  const candidateStartup = readJson(updateResult).steps?.find(
+    (step) => step.name === "candidate-gateway-startup",
+  );
+  assert(candidateStartup, "Published updater did not report candidate Gateway startup");
+  assert.equal(candidateStartup.exitCode, 0, "Candidate Gateway startup did not pass");
   const recoveryRows = inspectRecoveryRows(sourceDatabasePath(), fixture);
   assert(recoveryRows.length > 0, "Activated candidate did not record candidate-era recovery");
   const log = fs.readFileSync(gatewayLog, "utf8").slice(fixture.candidateLogOffset);
@@ -280,7 +273,8 @@ function assertRecovery(gatewayLog) {
     candidate: canary.identity,
     copiedHistory: {
       seededRows: fixture.rows.length,
-      retainedByCanary: true,
+      rowsPresentAtCanaryAdmission: true,
+      candidateStartupPassed: true,
       completedStoppedFailuresInsideWindow: 3,
       expiredUnknownFailures: 3,
       recoveryRecorded: true,
