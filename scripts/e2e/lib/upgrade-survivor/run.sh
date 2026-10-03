@@ -2493,10 +2493,15 @@ if [ "$SCENARIO" = "update-report-recovery" ]; then
 fi
 install_gateway_boot_canary_plugin() {
   local plugin_root="$ARTIFACT_ROOT/gateway-boot-lifecycle-canary-plugin"
+  local plugin_tgz="$ARTIFACT_ROOT/openclaw-gateway-boot-lifecycle-canary-0.0.0.tgz"
   node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs \
     write-canary-plugin "$plugin_root"
+  rm -f "$plugin_tgz"
+  npm pack --ignore-scripts --silent --pack-destination "$ARTIFACT_ROOT" "$plugin_root" \
+    >"$ARTIFACT_ROOT/gateway-boot-lifecycle-canary-plugin-pack.log"
+  test -f "$plugin_tgz"
   openclaw_e2e_fixture_plugin_command openclaw -- \
-    plugins install "$plugin_root" --force \
+    plugins install "npm-pack:$plugin_tgz" --force \
     >"$ARTIFACT_ROOT/gateway-boot-lifecycle-canary-plugin-install.log" 2>&1
 }
 
