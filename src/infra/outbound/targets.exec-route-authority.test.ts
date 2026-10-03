@@ -109,7 +109,8 @@ it.each([
       chatType: "direct",
     });
   } else {
-    expect(result).toMatchObject({ channel: "none", reason: "exec-route-conflict" });
+    // Scoped tuple disagreement is rejected before target refinement.
+    expect(result).toMatchObject({ channel: "none", reason: "no-route" });
   }
 });
 
