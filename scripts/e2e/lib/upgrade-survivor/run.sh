@@ -191,6 +191,7 @@ MOBILE_PAIRING_CANDIDATE_FIRST_EVIDENCE="$ARTIFACT_ROOT/mobile-pairing-candidate
 MOBILE_PAIRING_CANDIDATE_RESTART_EVIDENCE="$ARTIFACT_ROOT/mobile-pairing-candidate-restart.json"
 MOBILE_PAIRING_FINAL_EVIDENCE="$ARTIFACT_ROOT/mobile-pairing-final.json"
 HISTORICAL_PACKAGE_REPLACEMENT_EVIDENCE="$ARTIFACT_ROOT/historical-package-replacement.json"
+GATEWAY_BOOT_LIFECYCLE_PROOF="$ARTIFACT_ROOT/gateway-boot-lifecycle-proof.json"
 export OPENCLAW_UPGRADE_SURVIVOR_CONFIG_COVERAGE_JSON="$CONFIG_COVERAGE_JSON"
 rm -f "$SUMMARY_JSON" "$CONFIG_COVERAGE_JSON" "$ARTIFACT_ROOT/backup-rollback.json" "$ARTIFACT_ROOT/baseline-companion.json"
 : >"$PHASE_LOG"
@@ -289,6 +290,7 @@ write_summary() {
     SUMMARY_WATCH_RESTART_CONNECT="$WATCH_RESTART_CONNECT_JSON" \
     SUMMARY_WATCH_RESTART_STATE="$WATCH_RESTART_STATE_JSON" \
     SUMMARY_HISTORICAL_PACKAGE_REPLACEMENT="$HISTORICAL_PACKAGE_REPLACEMENT_EVIDENCE" \
+    SUMMARY_GATEWAY_BOOT_LIFECYCLE="$GATEWAY_BOOT_LIFECYCLE_PROOF" \
     SUMMARY_RESTART_FIXTURE="$restart_fixture_evidence" \
     SUMMARY_RESTART_RUNTIME_FIXTURE="$restart_runtime_evidence" \
     SUMMARY_RESTART_INFERENCE="$restart_inference" \
@@ -357,6 +359,9 @@ const summary = {
     : undefined,
   backupSchedule: process.env.SUMMARY_SCENARIO === "backup-schedule"
     ? readJsonOrNull(path.join(path.dirname(process.env.SUMMARY_JSON), "backup-schedule.json"))
+    : undefined,
+  gatewayBootLifecycle: process.env.SUMMARY_SCENARIO === "gateway-boot-lifecycle"
+    ? readJsonOrNull(process.env.SUMMARY_GATEWAY_BOOT_LIFECYCLE)
     : undefined,
   nativeAssignmentEligibility: readJsonOrNull(path.join(path.dirname(process.env.SUMMARY_JSON), "native-assignment-eligibility.json")),
   nativeAssignments: process.env.SUMMARY_SCENARIO === "legacy-operator-state"
@@ -1511,7 +1516,8 @@ update_candidate() {
   local previous_service_pid="" previous_systemctl_lines=0 verify_restart=0
   if [ "$UPDATE_RESTART_MODE" = "auto-auth" ] && {
     [ "$after_repair" = "1" ] ||
-    [ "$SCENARIO" = "legacy-operator-state" ]
+    [ "$SCENARIO" = "legacy-operator-state" ] ||
+    [ "$SCENARIO" = "gateway-boot-lifecycle" ]
   }; then
     verify_restart=1
     previous_service_pid="$(cat "$SYSTEMCTL_SHIM_PID_FILE")"
@@ -1556,6 +1562,10 @@ update_candidate() {
   if [ "$SCENARIO" = "cron-owner-doctor" ]; then
     update_node_options+=" --import=$PWD/scripts/e2e/lib/upgrade-survivor/cron-owner-doctor.mjs"
     update_env+=("OPENCLAW_UPGRADE_SURVIVOR_CRON_OWNER_FIXTURE=$ARTIFACT_ROOT/cron-owner-fixture.json")
+  fi
+  if [ "$SCENARIO" = "gateway-boot-lifecycle" ]; then
+    update_node_options+=" --import=$PWD/scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs"
+    update_env+=("OPENCLAW_UPGRADE_SURVIVOR_GATEWAY_BOOT_FIXTURE=$ARTIFACT_ROOT/gateway-boot-lifecycle-fixture.json")
   fi
   if [ "$SCENARIO" = "legacy-operator-state" ] && [ "$UPDATE_RESTART_MODE" = "manual" ] &&
     { [ "${baseline_version:-}" = "2026.9.3" ] || [ "${baseline_version:-}" = "2026.9.4" ]; }; then
@@ -2483,6 +2493,43 @@ if [ "$SCENARIO" = "update-report-recovery" ]; then
   phase prove-report-recovery node scripts/e2e/lib/upgrade-survivor/update-report-recovery.mjs run "$(package_root)"
   run_completed="1"
   echo "Update report recovery passed: published updater installed the candidate; rejected uploads retry and uncertain uploads only reconcile."
+  exit 0
+fi
+if [ "$SCENARIO" = "gateway-boot-lifecycle" ]; then
+  if [ "$baseline_spec" != "openclaw@2026.9.6" ] || [ "$CANDIDATE_KIND" != "tarball" ] ||
+    [ "$UPDATE_RESTART_MODE" != "auto-auth" ] || [ "$ROOT_MANAGED_VPS" != "0" ] || [ "$LIVE_ENABLED" != "0" ]; then
+    echo "gateway-boot-lifecycle requires published openclaw@2026.9.6, a candidate tarball, managed restart, and no live provider" >&2
+    exit 2
+  fi
+  phase configure-gateway-boot-baseline apply_baseline_config_recipe
+  phase validate-gateway-boot-baseline validate_baseline_config
+  phase resolve-gateway-boot-candidate resolve_candidate_version
+  phase capture-gateway-boot-candidate node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs \
+    candidate "$(package_root)" "$CANDIDATE_SPEC"
+  phase prepare-gateway-boot-service prepare_update_restart_probe
+  phase seed-gateway-boot-history node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs seed
+  phase start-gateway-boot-baseline-service run_update_restart_probe_gateway start 18789 "$COMMAND_TIMEOUT"
+  phase capture-gateway-boot-candidate-boundary node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs \
+    capture-candidate-boundary "$SYSTEMCTL_SHIM_DAEMON_LOG"
+  phase update-gateway-boot-candidate update_candidate
+  if [ "$update_outcome" != "success" ] || [ "$update_repair_required" != "0" ]; then
+    echo "gateway-boot-lifecycle requires successful original-driver replacement without follow-up repair" >&2
+    exit 1
+  fi
+  phase assert-gateway-boot-installed-package node scripts/e2e/lib/upgrade-survivor/worker-cell-package.mjs \
+    installed "$(package_root)" "$CANDIDATE_SPEC"
+  phase assert-gateway-boot-recovery node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs \
+    assert-recovery "$SYSTEMCTL_SHIM_DAEMON_LOG"
+  phase stop-recovered-gateway stop_update_restart_probe_gateway "$COMMAND_TIMEOUT"
+  phase seed-genuine-gateway-failures node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs \
+    seed-genuine "$SYSTEMCTL_SHIM_DAEMON_LOG"
+  phase start-suppressed-gateway run_update_restart_probe_gateway start 18789 "$COMMAND_TIMEOUT"
+  phase probe-suppressed-gateway check_gateway_probes
+  phase assert-genuine-gateway-suppression node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs \
+    assert-suppressed "$SYSTEMCTL_SHIM_DAEMON_LOG"
+  phase stop-suppressed-gateway stop_update_restart_probe_gateway "$COMMAND_TIMEOUT"
+  run_completed="1"
+  echo "Gateway boot lifecycle survived the published updater: copied history recovered after expiry, completed stopped-daemon failures stayed exempt, and genuine/open failures retained channel suppression."
   exit 0
 fi
 if [ "$SCENARIO" = "workshop-doctor-recovery" ]; then
