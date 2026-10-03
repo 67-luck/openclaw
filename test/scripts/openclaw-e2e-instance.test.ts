@@ -477,6 +477,23 @@ describe("scripts/lib/openclaw-e2e-instance.sh", () => {
     });
   });
 
+  it("waits for required startup evidence before accepting gateway readiness", () => {
+    withTempDir("openclaw-e2e-required-startup-log-", (tempDir) => {
+      const logPath = path.join(tempDir, "gateway.log");
+      const probePath = path.join(tempDir, "probe-count.txt");
+      const result = runBashWithHelper([
+        `printf '[gateway] ready\n' >${shellQuote(logPath)}`,
+        `openclaw_e2e_probe_http() { printf 'probe\n' >>${shellQuote(probePath)}; return 0; }`,
+        `sleep() { printf '[gateway] restart-loop breaker tripped: 3 unclean boot(s)\n' >>${shellQuote(logPath)}; }`,
+        'gateway_pid="$$"',
+        `openclaw_e2e_wait_gateway_ready "$gateway_pid" ${shellQuote(logPath)} 2 18789 strict 'restart-loop breaker tripped: 3 unclean boot'`,
+      ]);
+
+      expectShellSuccess(result);
+      expect(fs.readFileSync(probePath, "utf8").trim().split("\n")).toEqual(["probe"]);
+    });
+  });
+
   it.for([
     ["accepts the March listening marker", "listening on", true, "legacy-ready-log-ok", 0],
     ["rejects a closed March listener", "listening on", false, "legacy-ready-log-ok", 1],

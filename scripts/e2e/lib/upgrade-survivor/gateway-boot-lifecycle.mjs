@@ -238,12 +238,6 @@ function observeCopiedCanary() {
 function captureCandidateBoundary(gatewayLog) {
   const fixture = readJson(fixturePath());
   assertRows(sourceDatabasePath(), fixture.rows, "Published baseline");
-  assert(
-    fs
-      .readFileSync(gatewayLog, "utf8")
-      .indexOf("gateway restart-loop breaker tripped: 3 unclean boot(s)") !== -1,
-    "Published baseline did not count completed stopped-daemon failures",
-  );
   writeJson(fixturePath(), {
     ...fixture,
     candidateBoundaryMs: Date.now(),

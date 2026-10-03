@@ -2508,7 +2508,8 @@ if [ "$SCENARIO" = "gateway-boot-lifecycle" ]; then
     candidate "$(package_root)" "$CANDIDATE_SPEC"
   phase prepare-gateway-boot-service prepare_update_restart_probe
   phase seed-gateway-boot-history node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs seed
-  phase start-gateway-boot-baseline-service run_update_restart_probe_gateway start 18789 "$COMMAND_TIMEOUT"
+  phase start-gateway-boot-baseline-service run_update_restart_probe_gateway start 18789 "$COMMAND_TIMEOUT" strict \
+    'gateway restart-loop breaker tripped: 3 unclean boot'
   phase capture-gateway-boot-candidate-boundary node scripts/e2e/lib/upgrade-survivor/gateway-boot-lifecycle.mjs \
     capture-candidate-boundary "$SYSTEMCTL_SHIM_DAEMON_LOG"
   phase update-gateway-boot-candidate update_candidate
