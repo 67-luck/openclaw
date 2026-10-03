@@ -22,9 +22,8 @@ import {
 import * as subagentControl from "../agents/subagents/registry/subagent-control.js";
 import { createQueueTestRun } from "../auto-reply/reply/queue.test-helpers.js";
 import * as queueCleanup from "../auto-reply/reply/queue/cleanup.js";
-import { clearFollowupDrainCallback } from "../auto-reply/reply/queue/drain.js";
 import { enqueueFollowupRun } from "../auto-reply/reply/queue/enqueue.js";
-import { clearFollowupQueue, getExistingFollowupQueue } from "../auto-reply/reply/queue/state.js";
+import { getExistingFollowupQueue } from "../auto-reply/reply/queue/state.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
 import { getRpcSourceIdentity } from "../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
@@ -48,7 +47,7 @@ const gatewayToken = "abort-authorization-test-token";
 let harness: Awaited<ReturnType<typeof createGatewaySuiteHarness>>;
 let registration: MockInstance<typeof chatAbort.registerChatAbortController>;
 let childCancellation: MockInstance<typeof subagentControl.killAllControlledSubagentRuns>;
-let queueClearing: MockInstance<typeof queueCleanup.clearSessionLifecycleQueues>;
+let queueClearing: MockInstance<typeof queueCleanup.clearSessionQueues>;
 
 beforeAll(async () => {
   harness = await createGatewaySuiteHarness({
@@ -57,7 +56,7 @@ beforeAll(async () => {
   // Observe production admission and effects without replacing their implementations.
   registration = vi.spyOn(chatAbort, "registerChatAbortController");
   childCancellation = vi.spyOn(subagentControl, "killAllControlledSubagentRuns");
-  queueClearing = vi.spyOn(queueCleanup, "clearSessionLifecycleQueues");
+  queueClearing = vi.spyOn(queueCleanup, "clearSessionQueues");
 });
 
 beforeEach(async () => {
@@ -283,8 +282,7 @@ describe("native sessions.abort requester authorization over WebSocket", () => {
       expect(events).toContain("sessions.changed");
     } finally {
       owner.ws.off("message", record);
-      clearFollowupQueue(run.sessionKey);
-      clearFollowupDrainCallback(run.sessionKey);
+      queueCleanup.clearSessionQueues([run.sessionKey]);
       try {
         await run.finish();
       } finally {
@@ -373,7 +371,8 @@ describe("native sessions.abort requester authorization over WebSocket", () => {
     const owner = await openOperator("recovered-owner");
     const sessionKey = "agent:main:recovered";
     const runId = "native-recovered";
-    const abort = vi.fn();
+    const stopped = createDeferred();
+    const abort = vi.fn(() => stopped.resolve());
     const handle = {
       runId,
       abort,
@@ -382,15 +381,23 @@ describe("native sessions.abort requester authorization over WebSocket", () => {
       queueMessage: async () => {},
     };
     setActiveEmbeddedRun("recovered-session", handle, sessionKey);
+    const request = rpcReq(owner.ws, "sessions.abort", { key: sessionKey, runId });
     try {
-      expect(await rpcReq(owner.ws, "sessions.abort", { key: sessionKey, runId })).toMatchObject({
+      const first = await Promise.race([
+        stopped.promise.then(() => "stopped"),
+        request.then((result) => ({ result })),
+      ]);
+      expect(first).toBe("stopped");
+      expect(abort).toHaveBeenCalledTimes(1);
+      clearActiveEmbeddedRun("recovered-session", handle, sessionKey);
+      expect(await request).toMatchObject({
         ok: true,
         payload: { status: "aborted", abortedRunId: runId },
       });
-      expect(abort).toHaveBeenCalledTimes(1);
     } finally {
       clearActiveEmbeddedRun("recovered-session", handle, sessionKey);
       owner.ws.close();
+      await request.catch(() => {});
     }
   });
 });

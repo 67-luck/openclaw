@@ -3,6 +3,7 @@ import { registerChatAbortController } from "../../../gateway/chat-abort.js";
 import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
+import { getRpcSource } from "../../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import {
   bindSubagentSpawnCleanup,
@@ -44,6 +45,7 @@ describe("subagent spawn cleanup identity", () => {
       childSessionKey,
       resolveGatewayContext: () => context,
       isCurrent: () => true,
+      canAbortAcceptedRun: () => getRpcSource(runId) === original.entry,
       getSessionIdentity: () => ({
         expectedSessionId: "child-session",
         expectedLifecycleRevision: "revision",

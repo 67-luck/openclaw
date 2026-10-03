@@ -34,11 +34,9 @@ vi.mock("../auto-reply/reply/queue/drain.js", () => {
   };
 });
 
-import { resolveEmbeddedSessionLane } from "../agents/embedded-agent-runner/lanes.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
 import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
-
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGatewayWorkerPlacementLocalDispatchBarrier } from "./server-worker-placement-local-dispatch.js";
 import { createGatewayWorkerPlacementMoveBarrier } from "./server-worker-placement-move-barrier.js";
@@ -96,7 +94,7 @@ describe("worker placement move destination", () => {
       (["current", "revoked after commit"] as const).map((authority) => ({ action, authority })),
     ),
   )(
-    "$action preserves another agent's lane commands under the global key ($authority authority)",
+    "$action preserves another agent's controller work under the global key ($authority authority)",
     async ({ action, authority }) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const sessionKey = "global";
@@ -125,27 +123,17 @@ describe("worker placement move destination", () => {
           worktree: { id: "research-worktree", path: "/gateway/research" },
           workspace: { kind: "local", path: "/gateway/research" },
         });
-        const entered = createDeferred();
-        const release = createDeferred();
-        const lane = resolveEmbeddedSessionLane(sessionKey);
-        const blocker = enqueueCommandInLane(lane, async () => {
-          entered.resolve();
-          await release.promise;
-        });
-        await entered.promise;
-        const queued = [
-          enqueueCommandInLane(lane, async () => "main", {
-            sessionTarget: { agentId: "main", sessionKey, sessionId: "main-global" },
-          }),
-          enqueueCommandInLane(lane, async () => "legacy-main"),
-          enqueueCommandInLane(lane, async () => "research", {
-            sessionTarget: { agentId, sessionKey, sessionId },
-          }),
-        ];
-        const results = Promise.allSettled(queued);
         const effects: string[] = [];
+        const mainAdmission = await beginSessionEffect({
+          scope: "/tmp/openclaw-worker-placement-main.sqlite",
+          identities: [sessionKey, "main-global"],
+          assertAllowed: () => {},
+          onInterrupt: () => {
+            effects.push("main interrupt");
+          },
+        });
         let releaseAdmission = () => {};
-        const admission = await beginSessionWorkAdmission({
+        const admission = await beginSessionEffect({
           scope: target.storePath,
           identities: [sessionKey, sessionId],
           assertAllowed: () => {},
@@ -204,21 +192,11 @@ describe("worker placement move destination", () => {
             "interrupt",
             ...(action === "abandon" ? [] : ["claims released"]),
           ]);
-          release.resolve();
-          await blocker;
-          expect(await results).toEqual([
-            { status: "fulfilled", value: "main" },
-            { status: "fulfilled", value: "legacy-main" },
-            {
-              status: "rejected",
-              reason: expect.objectContaining({ name: "CommandLaneClearedError" }),
-            },
-          ]);
+          expect(mainAdmission.isActive()).toBe(true);
+          expect(admission.isActive()).toBe(false);
         } finally {
           admission.release();
-          release.resolve();
-          clearCommandLane(lane);
-          await Promise.allSettled([blocker, results]);
+          mainAdmission.release();
         }
       });
     },

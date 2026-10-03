@@ -29,7 +29,7 @@ import { createDiagnosticEmbeddedRunOwner } from "../logging/diagnostic-run-acti
 import { diagnosticLogger } from "../logging/diagnostic-runtime.js";
 import { getSessionControllerOperation } from "../sessions/session-controller.js";
 import * as messageInjection from "../sessions/session-controller.message-injection.js";
-
+import { closeSkillsWatchers } from "../skills/runtime/refresh.js";
 import {
   agentCommandMock,
   connectOk,

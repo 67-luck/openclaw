@@ -13,8 +13,9 @@ import {
   isSessionMutationActive,
 } from "../../sessions/session-controller.lifecycle.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
-import { clearSessionQueues, enqueueFollowupRun, getFollowupQueueDepth } from "./queue.js";
+import { enqueueFollowupRun, getFollowupQueueDepth } from "./queue.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
+import { clearSessionQueues } from "./queue/cleanup.js";
 import {
   initSessionState,
   writeSessionStore as writeSessionStoreFast,

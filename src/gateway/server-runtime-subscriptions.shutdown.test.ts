@@ -26,28 +26,7 @@ vi.mock("../audit/audit-recorder.js", () => ({
   }),
 }));
 
-function createParams(signal: AbortSignal): Parameters<typeof startGatewayEventSubscriptions>[0] {
-  const chatRunState = createChatRunState();
-  return {
-    scheduler: createTestGatewayScheduler(),
-    signal,
-    log: createSubsystemLogger("test/subscriptions-shutdown"),
-    broadcast: vi.fn(),
-    broadcastToConnIds: vi.fn(),
-    nodeHasSessionSubscribers: () => false,
-    nodeSendToSession: vi.fn(),
-    agentRunSeq: new Map(),
-    chatRunState,
-    toolEventRecipients: chatRunState.toolEventRecipients,
-    sessionEventSubscribers: createSessionEventSubscriberRegistry(),
-    sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
-    restartRecoveryCandidates: new Map(),
-    refreshConnectedUserProfiles: vi.fn(),
-  };
-}
-
-it.each(["before startup", "before inherited connection drain"] as const)(
-
+it.for(["before startup", "before inherited connection drain"] as const)(
   "cancels auxiliary model work %s",
   async (phase, { signal }) => {
     let unsubs: ReturnType<typeof startGatewayEventSubscriptions> | undefined;

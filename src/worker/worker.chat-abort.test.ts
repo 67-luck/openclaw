@@ -130,8 +130,7 @@ describe("worker chat.abort settlement", () => {
         throw new Error("expected admitted worker operation");
       }
       expect(registration.markExecutionStarted()).toBe(true);
-      const owner = createWorkerTurnRunOwner({
-
+      const ownerInput = {
         placements: harness.placementStore,
         claim: claim!,
         sessionKey: SESSION_KEY,

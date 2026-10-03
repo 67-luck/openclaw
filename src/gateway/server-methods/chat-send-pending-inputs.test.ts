@@ -476,13 +476,12 @@ describe("ordinary chat input admission", () => {
     fixture.beforeApprove.mockImplementation(() => {
       rejectedInput = rpcSourceTesting.get(fixture.params.idempotencyKey)?.input;
     });
-    const database = openOpenClawAgentDatabase(
-      toDatabaseOptions(resolveSqliteScope(fixture.scope)),
-    ).db;
-    ensureSessionPendingInputsSchema(database);
-    database.exec(
-      "CREATE TRIGGER reject_browser_custody BEFORE INSERT ON session_pending_inputs BEGIN SELECT RAISE(ABORT, 'custody unavailable'); END",
-    );
+    const refusal = refusePendingInputCommit({
+      operation: "stage",
+      message: "custody unavailable",
+      sessionId: fixture.scope.sessionId,
+      runId: fixture.params.idempotencyKey,
+    });
 
     try {
       const rejected = await fixture.send();
@@ -494,13 +493,12 @@ describe("ordinary chat input admission", () => {
       );
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
       expect(loadTranscriptEventsSync(fixture.scope)).toEqual(fixture.activeTranscript);
-      expect(listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
+      expect(await listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
       expect(rpcSourceTesting.has(fixture.params.idempotencyKey)).toBe(false);
       if (!rejectedInput) {
         throw new Error("Expected the rejected RPC source input");
       }
       await rejectedInput.settlement.promise;
-
 
       refusal.mockRestore();
       const retried = await fixture.send();

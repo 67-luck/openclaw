@@ -274,12 +274,12 @@ it.each([
     if (phase === "queued") {
       const mutate = controllerLifecycle.runSessionMutation;
       vi.spyOn(controllerLifecycle, "runSessionMutation").mockImplementation((params) => {
-          const mutation = mutate(params);
-          if (params.scope === storePath && params.prepare) {
-            mutationQueued.resolve();
-          }
-          return mutation;
-        });
+        const mutation = mutate(params);
+        if (params.prepare) {
+          mutationQueued.resolve();
+        }
+        return mutation;
+      });
     }
     const readEntered = createDeferred();
     const releaseRead = createDeferred();

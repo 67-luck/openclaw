@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { resolveEmbeddedSessionLane } from "../../agents/embedded-agent-runner/lanes.js";
 import { createEmbeddedRunLaneController } from "../../agents/embedded-agent-runner/run/lane-controller.js";
 import { abortAndDrainEmbeddedAgentRun } from "../../agents/embedded-agent-runner/runs.js";
 import {
@@ -10,14 +9,14 @@ import {
   type SessionPlacementTurnParams,
 } from "../../agents/session-placement-admission.js";
 import { resolveSessionPlacementTurnSettlementAssertion } from "../../agents/session-placement-forced-terminal-settlement.js";
+import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import { recoverStuckDiagnosticSession } from "../../logging/diagnostic-stuck-session-recovery.runtime.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
-
 import {
   createReplyOperation,
   waitForReplyRunSuccessorAdmission,
 } from "../../sessions/session-controller.js";
-
 import {
   advancePlacementFixtureToActive,
   writePlacementEnvironmentFixture,
@@ -65,7 +64,6 @@ function createLane(initialParams: SessionPlacementTurnParams) {
     },
     initialQueuedLifecycleGeneration: generation,
     globalLane: "claim-recovery-global",
-
   });
 }
 
@@ -609,7 +607,7 @@ describe("worker pre-launch claim recovery", () => {
       expect(launch).toHaveBeenCalledTimes(dispatched ? 2 : 1);
       vi.useFakeTimers();
       vi.setSystemTime(Date.now() + 360_000);
-      recovery = recoverStuckDiagnosticSession({
+      const pendingRecovery = recoverStuckDiagnosticSession({
         sessionId: SESSION_ID,
         sessionKey: SESSION_KEY,
         ageMs: 360_000,
@@ -617,8 +615,9 @@ describe("worker pre-launch claim recovery", () => {
         allowActiveAbort: true,
         staleActiveProgressAbortMs: 360_000,
       });
+      recovery = pendingRecovery;
       let recovered = false;
-      void recovery.then(() => {
+      void pendingRecovery.then(() => {
         recovered = true;
       });
       await vi.advanceTimersByTimeAsync(15_100);
@@ -627,7 +626,7 @@ describe("worker pre-launch claim recovery", () => {
         expect(placements.get(SESSION_ID)?.turnClaim).toEqual(oldClaim);
         resume.resolve();
       }
-      await expect(recovery).resolves.toMatchObject({
+      await expect(pendingRecovery).resolves.toMatchObject({
         status: "aborted",
         action: "abort_embedded_run",
       });
@@ -684,7 +683,6 @@ describe("worker pre-launch claim recovery", () => {
       await expect(waitForReplyRunSuccessorAdmission(SESSION_KEY, null)).resolves.toMatchObject({
         settled: true,
       });
-      expect(getCommandLaneSnapshot(resolveEmbeddedSessionLane(SESSION_KEY)).activeCount).toBe(0);
       const third = turn("successor-third");
       const thirdLane = createLane(third);
       successor = thirdLane.enqueueSession(() =>

@@ -1,8 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "../../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
-import { clearFollowupDrainCallback } from "../../auto-reply/reply/queue/drain.js";
-import { clearFollowupQueue } from "../../auto-reply/reply/queue/state.js";
+import { clearSessionQueues } from "../../auto-reply/reply/queue/cleanup.js";
 import { runDetachedWebhookWork } from "../../plugin-sdk/webhook-request-guards.js";
 import {
   getActiveGatewayRootWorkCount,
@@ -92,8 +91,7 @@ describe("channel ingress drain async work ownership", () => {
         turnGate.resolve();
         followupGate.resolve();
         await monitor.stop();
-        clearFollowupQueue(followupKey);
-        clearFollowupDrainCallback(followupKey);
+        clearSessionQueues([followupKey]);
         await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
       }
     });

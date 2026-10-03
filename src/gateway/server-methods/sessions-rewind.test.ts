@@ -1,17 +1,15 @@
 import fs from "node:fs";
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
-  clearSessionQueues,
   enqueueFollowupRun,
   getFollowupQueueDepth,
   type FollowupRun,
 } from "../../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
-import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
-
+import { clearSessionQueues } from "../../auto-reply/reply/queue/cleanup.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../../state/openclaw-agent-db-resources.js";
 import {
   closeOpenClawAgentDatabasesForTest,
@@ -32,30 +30,6 @@ const mocks = vi.hoisted(() => ({
   readMediaBuffer: vi.fn(),
 }));
 
-// Queued sources stay idle: this boundary only cuts history and settles pending work.
-vi.mock("../../auto-reply/reply/queue/drain.js", () => ({
-  clearFollowupDrainCallback: vi.fn(),
-  dropAbortedFollowups: () => {
-    throw new Error("Unexpected followup drain");
-  },
-  kickFollowupDrainIfIdle: () => {
-    throw new Error("Unexpected followup drain");
-  },
-  rememberFollowupDrainCallback: () => {
-    throw new Error("Unexpected followup drain");
-  },
-}));
-vi.mock("../../auto-reply/reply/queue/delivery-context.js", () => ({
-  createOverflowSummaryRetrySource: () => {
-    throw new Error("Unexpected queue overflow");
-  },
-  resolveFollowupAuthorizationKey: () => {
-    throw new Error("Unexpected queue overflow");
-  },
-  resolveFollowupDeliveryContextKey: () => {
-    throw new Error("Unexpected queue overflow");
-  },
-}));
 vi.mock("../../agents/model-thinking-default.js", () => ({
   resolveThinkingSelection: () => {
     throw new Error("Unexpected model selection refresh");
@@ -84,6 +58,10 @@ import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
+import {
+  registerRpcSource,
+  retireRpcSource,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { listSessionStateEventsSince } from "../../sessions/session-state-events.js";
 import { upsertSessionUpstreamLink } from "../../sessions/session-upstream-links.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -221,18 +199,18 @@ it("drains rewind fixture owners before closing handles and restoring selectors"
 });
 
 async function context(active = false): Promise<GatewayRequestContext> {
+  if (active) {
+    const source = await createActiveRpcSourceForTest(
+      {},
+      { sessionId: sourceSessionId, sessionKey },
+    );
+    registerRpcSource("active-run", source);
+    onTestFinished(() => {
+      retireRpcSource("active-run", source);
+    });
+  }
   return {
     broadcastToConnIds: vi.fn(),
-    rpcSourceTesting: new Map(
-      active
-        ? [
-            [
-              "active-run",
-              await createActiveRpcSourceForTest({}, { sessionId: sourceSessionId, sessionKey }),
-            ],
-          ]
-        : undefined,
-    ),
     getRuntimeConfig: () => ({ agents: { list: [{ id: "main", default: true }] } }),
     getSessionEventSubscriberConnIds: () => new Set(),
   } as unknown as GatewayRequestContext;
@@ -308,13 +286,11 @@ function enqueueSessionWork(label: string): QueuedSessionWork {
 function expectSessionWorkQueued(work: QueuedSessionWork): void {
   expect(getFollowupQueueDepth(sessionKey)).toBe(1);
   expect(work.followup.queueAbortSignal?.aborted).toBe(false);
-
 }
 
 function expectSessionWorkCleared(work: QueuedSessionWork): void {
   expect(getFollowupQueueDepth(sessionKey)).toBe(0);
   expect(work.followup.queueAbortSignal?.aborted).toBe(true);
-
 }
 
 function linkToUpstreamConversation(): void {
@@ -536,7 +512,7 @@ describe("session message-cut methods", () => {
         req: { id: "committed-rewind" } as never,
         params: { sessionKey, entryId: "user-entry" },
         respond,
-        context: context(),
+        context: await context(),
         client: null,
         isWebchatConnect: () => false,
         sessionMutationCommitGuard: () => {
@@ -557,7 +533,6 @@ describe("session message-cut methods", () => {
 
   it("rewinds research's global session without clearing main's shared lane", async () => {
     const key = "global";
-    const lane = resolveEmbeddedSessionLane(key);
     const target = { agentId: "research", sessionKey: key, sessionId: "research-rewind" };
     await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
     await appendTranscriptMessage(target, {
@@ -565,15 +540,16 @@ describe("session message-cut methods", () => {
       message: { role: "user", content: "research question" },
       parentId: null,
     });
-    setCommandLaneConcurrency(lane, 0);
-    const commands = [
-      enqueueCommandInLane(lane, async () => "main tagged", {
-        sessionTarget: { agentId: "main", sessionKey: key, sessionId: "main-rewind" },
-      }),
-      enqueueCommandInLane(lane, async () => "main untagged"),
-      enqueueCommandInLane(lane, async () => "research", { sessionTarget: target }),
-    ];
-    const settled = Promise.allSettled(commands);
+    const main = createQueueTestRun({ prompt: "main queued work" });
+    Object.assign(main.run, { agentId: "main", sessionKey: key, sessionId: "main-rewind" });
+    const research = createQueueTestRun({ prompt: "research queued work" });
+    Object.assign(research.run, target);
+    expect(enqueueFollowupRun(key, main, { mode: "followup" }, "none", undefined, false)).toBe(
+      true,
+    );
+    expect(enqueueFollowupRun(key, research, { mode: "followup" }, "none", undefined, false)).toBe(
+      true,
+    );
     try {
       const respond = vi.fn();
       await sessionRewindHandlers["sessions.rewind"]!({
@@ -581,23 +557,18 @@ describe("session message-cut methods", () => {
         params: { sessionKey: key, agentId: target.agentId, entryId: "research-user" },
         respond,
         context: {
-          ...context(),
+          ...(await context()),
           getRuntimeConfig: () => ({ agents: { entries: { main: {}, research: {} } } }),
         },
         client: null,
         isWebchatConnect: () => false,
       });
       expect(respond).toHaveBeenCalledWith(true, { editorText: "research question" }, undefined);
-      setCommandLaneConcurrency(lane, 1);
-      expect(await settled).toEqual([
-        { status: "fulfilled", value: "main tagged" },
-        { status: "fulfilled", value: "main untagged" },
-        { status: "rejected", reason: expect.any(CommandLaneClearedError) },
-      ]);
+      expect(main.queueAbortSignal?.aborted).toBe(false);
+      expect(research.queueAbortSignal?.aborted).toBe(true);
     } finally {
-      clearCommandLane(lane);
-      setCommandLaneConcurrency(lane, 1);
-      await settled;
+      clearSessionQueues([key], main.controllerInput?.mailbox.owner.target);
+      clearSessionQueues([key], research.controllerInput?.mailbox.owner.target);
     }
   });
 
@@ -773,7 +744,6 @@ describe("session message-cut methods", () => {
     const mutationEntered = createDeferredCore();
     const releaseMutation = createDeferredCore();
     const archiving = runSessionMutation({
-
       scope: storePath,
       identities: [sourceSessionId],
       run: async () => {

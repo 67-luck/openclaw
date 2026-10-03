@@ -22,7 +22,7 @@ import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-messa
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { claimAgentRunContext, releaseAgentRunContext } from "../../infra/agent-run-registry.js";
 import type { SpawnResult } from "../../process/exec.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
@@ -760,7 +760,7 @@ describe("worker turn launcher terminal results", () => {
     });
 
     const workerTurn = turn("run-reconcile-tunnel-loss");
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: sessionTarget.storePath,
       identities: [SESSION_KEY, SESSION_ID],
       assertAllowed: () => {},

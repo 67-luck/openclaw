@@ -5,7 +5,6 @@ import { setCurrentPluginMetadataSnapshot } from "../../plugins/current-plugin-m
 import { resolveInstalledPluginIndexPolicyHash } from "../../plugins/installed-plugin-index-policy.js";
 import { getPluginRuntimeGenerationRegistry } from "../../plugins/runtime/generation-scope.js";
 import { runPreparedReply } from "./get-reply-run.js";
-import type { RunPreparedReplyParams } from "./get-reply-run.types.js";
 import { bindPreparedReplyDispatchRuntime } from "./prepared-reply-dispatch-context.js";
 
 const mocks = vi.hoisted(() => ({
@@ -62,92 +61,18 @@ it("keeps the admitted Gateway generation active through a different reply works
       metadataSnapshot: options.pluginGeneration.pluginMetadataSnapshot,
       pluginRegistry: selectedGeneration.pluginRegistry,
       workspaceDir,
-    });
-    mocks.acquireRuntime.mockImplementation(async (_input, options) => ({
-      snapshot: {
-        config,
-        metadataSnapshot: options.pluginGeneration.pluginMetadataSnapshot,
-        pluginRegistry: selectedGeneration.pluginRegistry,
-        workspaceDir,
-      },
-      [Symbol.asyncDispose]: release,
-      pluginGeneration: selectedGeneration,
-    }));
-    let admissionSnapshot: unknown;
-    let admissionRegistry: unknown;
-    let admissionPluginGeneration: unknown;
-    mocks.prepareAdmission.mockImplementation(async () => {
-      admissionSnapshot = getCurrentPluginMetadataSnapshot({ config, workspaceDir });
-      admissionRegistry = getPluginRuntimeGenerationRegistry();
-      admissionPluginGeneration = getPreparedModelRuntimePluginGeneration();
-      return { kind: "run" };
-    });
-    let executionSnapshot: unknown;
-    let executionRegistry: unknown;
-    let executionPluginGeneration: unknown;
-    mocks.execute.mockImplementation(async () => {
-      executionSnapshot = getCurrentPluginMetadataSnapshot({ config, workspaceDir });
-      executionRegistry = getPluginRuntimeGenerationRegistry();
-      executionPluginGeneration = getPreparedModelRuntimePluginGeneration();
-      return { text: "ok" };
-    });
-    const preparedInput = {
-      cfg: config,
-      sessionCtx: {},
-      ctx: {},
-      agentId: "main",
-      sessionKey: "",
-      workspaceDir,
-      provider: "selected",
-      model: "model",
-    } satisfies Pick<
-      RunPreparedReplyParams,
-      | "cfg"
-      | "sessionCtx"
-      | "ctx"
-      | "agentId"
-      | "sessionKey"
-      | "workspaceDir"
-      | "provider"
-      | "model"
-    >;
-
-    const run = bindPreparedReplyDispatchRuntime(
-      {
-        agentId: "main",
-        agentDir: "/tmp/openclaw-reply-agent",
-        workspaceDir: gatewayWorkspaceDir,
-        config,
-        pluginGeneration,
-      } as never,
-      async () => await runPreparedReply(preparedInput as RunPreparedReplyParams),
-    );
-
-    await expect(run()).resolves.toEqual({ text: "ok" });
-    expect(mocks.acquireRuntime).toHaveBeenCalledWith(
-      {
-        config,
-        agentId: "main",
-        agentDir: "/tmp/openclaw-reply-agent",
-        allowGatewaySubagentBinding: true,
-        workspaceDir,
-        runtimePluginSelections: [
-          { provider: "selected", modelId: "model", runtime: "selected-harness" },
-        ],
-      },
-      { catalogMode: "static", pluginGeneration },
-    );
-    expect(admissionSnapshot).toBe(metadataSnapshot);
-    expect(executionSnapshot).toBe(metadataSnapshot);
-    expect(admissionRegistry === selectedGeneration.pluginRegistry).toBe(true);
-    expect(executionRegistry === selectedGeneration.pluginRegistry).toBe(true);
-    expect(admissionPluginGeneration === selectedGeneration).toBe(true);
-    expect(executionPluginGeneration === selectedGeneration).toBe(true);
-    expect(release).toHaveBeenCalledOnce();
-    expect(getCurrentPluginMetadataSnapshot({ config, workspaceDir })).toBeUndefined();
-    expect(getPluginRuntimeGenerationRegistry()).toBeUndefined();
-    expect(getPreparedModelRuntimePluginGeneration()).toBeUndefined();
-
+    },
+    [Symbol.asyncDispose]: release,
+    pluginGeneration: selectedGeneration,
+  }));
+  const expectSelectedScope = () => {
+    expect(getCurrentPluginMetadataSnapshot({ config, workspaceDir })).toBe(metadataSnapshot);
+    expect(getPluginRuntimeGenerationRegistry()).toBe(selectedGeneration.pluginRegistry);
+    expect(getPreparedModelRuntimePluginGeneration()).toBe(selectedGeneration);
+  };
+  mocks.prepareAdmission.mockImplementation(async () => {
+    expectSelectedScope();
+    return { kind: "ready" };
   });
   mocks.execute.mockImplementation(async () => {
     expectSelectedScope();

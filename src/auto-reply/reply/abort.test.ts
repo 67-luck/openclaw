@@ -1,13 +1,12 @@
 // Tests abort request handling, cutoff persistence, and active run cleanup.
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
-import {
-  registryPersistence,
-} from "./abort-subagent-registry.test-support.js";
+import { useChatAbortRegistryFixture } from "../../gateway/server-methods/chat.abort-registry.test-support.js";
 
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { isSubagentRegistryWriteCommand } from "../../agents/subagent-test-fixtures.test-helpers.js";
 import { registerSubagentRun } from "../../agents/subagents/registry/subagent-registry.js";
 import { rowToSubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.store.codec.js";
@@ -26,15 +25,18 @@ import {
   createReplyOperation,
   isSessionRunActiveForKey,
 } from "../../sessions/session-controller.js";
-import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
+import { resetSessionControllerStateForTest } from "../../sessions/session-lifecycle-admission.test-support.js";
+import * as stateWorker from "../../state/openclaw-state-worker-store.js";
 import { stopSubagentsForRequester } from "./abort-operation.js";
 import { getAbortMemory, setAbortMemory } from "./abort-primitives.js";
+import {
+  addSubagentFixture,
+  type SubagentRunFixture,
+} from "./abort-subagent-registry.test-support.js";
 import { registerAbortDetectionCases } from "./abort.detection.cases.js";
-
 import { formatAbortReplyText, tryFastAbortFromMessage } from "./abort.js";
-import { getFollowupQueueDepth } from "./queue.js";
+import { enqueueFollowupRun, getFollowupQueueDepth, type FollowupRun } from "./queue.js";
 import { clearFollowupQueue } from "./queue/state.js";
-import { testing as replyRunRegistryTesting } from "./reply-run-registry.test-support.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 type AbortEmbeddedAgentRunOptions = Parameters<
@@ -44,7 +46,6 @@ type AbortEmbeddedAgentRunOptions = Parameters<
 vi.mock("../../agents/embedded-agent.js", () => ({
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(true),
 }));
-
 
 const acpManagerMocks = vi.hoisted(() => ({
   resolveSession: vi.fn<
@@ -196,13 +197,18 @@ describe("abort detection", () => {
     });
   }
 
-  function enqueueQueuedFollowupRun(params: Parameters<typeof enqueueAbortFollowupRun>[0]) {
+  function enqueueQueuedFollowupRun(params: {
+    root: string;
+    cfg: OpenClawConfig;
+    sessionId: string;
+    sessionKey: string;
+  }) {
     trackedAbortMemoryKeys.add(params.sessionKey);
     const followupRun: FollowupRun = {
       prompt: "queued",
       enqueuedAt: Date.now(),
       run: {
-        agentId: "main",
+        agentId: resolveSessionAgentId({ config: params.cfg, sessionKey: params.sessionKey }),
         agentDir: path.join(params.root, "agent"),
         sessionId: params.sessionId,
         sessionKey: params.sessionKey,
@@ -231,7 +237,6 @@ describe("abort detection", () => {
     const cancel = vi.fn(() => queueMicrotask(() => operation.complete()));
     operation.attachBackend({ kind: "embedded", cancel, isStreaming: () => true });
     return { operation, cancel };
-
   }
 
   function bindAcpSessionForTest(targetSessionKey: string) {
@@ -247,11 +252,6 @@ describe("abort detection", () => {
     );
   }
 
-  beforeEach(() => {
-    registryPersistence.persistSubagentRunsToDiskOrThrow.mockReset();
-
-  });
-
   afterEach(() => {
     for (const key of trackedAbortMemoryKeys) {
       setAbortMemory(key, false);
@@ -261,13 +261,10 @@ describe("abort detection", () => {
     vi.restoreAllMocks();
     vi.mocked(markSessionAbortTarget).mockReset();
     vi.mocked(resolveSessionAbortTarget).mockReset();
-    replyRunRegistryTesting.resetReplyRunRegistry();
+    resetSessionControllerStateForTest();
     acpManagerMocks.resolveSession.mockReset().mockReturnValue({ kind: "none" });
     acpManagerMocks.cancelSession.mockReset().mockResolvedValue(undefined);
     runtimeAbortMocks.abortEmbeddedAgentRun.mockReset().mockReturnValue(true);
-    await settleSubagentRegistryPersistenceWork();
-    resetSubagentRegistryForTests({ persist: false });
-
   });
 
   registerAbortDetectionCases(setTrackedAbortMemory);
@@ -347,7 +344,7 @@ describe("abort detection", () => {
     });
     cfg.commands = { ...cfg.commands, ownerAllowFrom: ["telegram:123"] };
     enqueueQueuedFollowupRun({ root, cfg, sessionId, sessionKey });
-    addSubagentFixture({
+    await addSubagentFixture({
       runId: "bare-stop-child-run",
       childSessionKey: childKey,
       requesterSessionKey: sessionKey,

@@ -122,7 +122,7 @@ it("falls back after one label attempt when naming starts after its turn settled
       settledTurn(),
     );
     await started.promise;
-    const released = getSessionWorkAdmissionRelease({
+    const released = captureSessionControllerSettlement({
       scope: scope.storePath,
       identities: [scope.sessionKey, scope.sessionId],
     });

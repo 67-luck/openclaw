@@ -8,7 +8,6 @@ import {
   getFollowupQueueDepth,
   scheduleFollowupDrain,
 } from "../../auto-reply/reply/queue.js";
-import { clearFollowupDrainCallback } from "../../auto-reply/reply/queue/drain.js";
 import { resetRecentQueuedMessageIdDedupe } from "../../auto-reply/reply/queue/enqueue.test-support.js";
 import { clearFollowupQueue } from "../../auto-reply/reply/queue/state.js";
 import type { ReplyOperationRunState } from "../../auto-reply/reply/reply-operation-run-state.js";
@@ -332,7 +331,6 @@ describe("AgentSession handoff adoption integration", () => {
       activeOperation.complete();
       clearActiveEmbeddedRun(sessionId, queueHandle, queueKey);
       clearFollowupQueue(queueKey);
-      clearFollowupDrainCallback(queueKey);
       embeddedRunsTesting.resetActiveEmbeddedRuns();
       replyRunTesting.resetReplyRunRegistry();
       resetRecentQueuedMessageIdDedupe();

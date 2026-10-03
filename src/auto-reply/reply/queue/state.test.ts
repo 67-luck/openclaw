@@ -112,6 +112,7 @@ describe("clearRemovedQueuedAuthProfiles", () => {
     queue.summarySources.push(source(summarized));
     queue.summaryElisions.push({
       contextKey: "context",
+      count: 1,
       sources: [source(elided)],
       summaryLines: ["pending summary"],
       sourceRefs: new Map(),
@@ -164,6 +165,7 @@ describe("refreshQueuedFollowupSession", () => {
     queue.summarySources.push(summarizedRun);
     queue.summaryElisions.push({
       contextKey: "context",
+      count: 2,
       sources: [
         {
           prompt: "elided summary",
@@ -327,6 +329,7 @@ describe("refreshQueuedFollowupSession", () => {
       queue.summarySources.push(wrap(runs[2]!));
       queue.summaryElisions.push({
         contextKey: "elided",
+        count: 1,
         sources: [wrap(runs[3]!)],
         summaryLines: ["queued"],
         sourceRefs: new Map(),
@@ -506,6 +509,7 @@ describe("getFollowupQueue", () => {
     ] as const) {
       queue.summaryElisions.push({
         contextKey,
+        count,
         sources: Array.from({ length: count }, () => ({
           prompt: contextKey,
           enqueuedAt: Date.now(),

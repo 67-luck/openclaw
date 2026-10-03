@@ -22,7 +22,6 @@ import {
   closeOpenClawAgentDatabasesForTest,
 } from "../../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
-
 import { testing } from "./reply-run-registry.test-support.js";
 import { admitReplyTurn } from "./reply-turn-admission.js";
 
@@ -35,86 +34,10 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   }),
 );
 
-it.each([
-  "cancelled",
-  "foreign-store",
-  "request-changed",
-  "later-foreign-store",
-  "later-rekey",
-  "later-rebound-store",
-] as const)("does not admit a delayed healthy rotation after %s", async (change) => {
-  const root = tempDirs.make("reply-delayed-rotation-");
-  const ownerStore = path.join(root, "owner.sqlite");
-  const foreignStore = path.join(root, "target.sqlite");
-  const isForeignStore = change === "foreign-store" || change === "later-foreign-store";
-  const storePath = isForeignStore ? foreignStore : ownerStore;
-  const sessionKey = "global";
-  const sessionId = "before-compaction";
-  const nextSessionId = "after-compaction";
-  const stores = new Set([ownerStore, storePath]);
-  if (change === "later-rebound-store") {
-    stores.add(foreignStore);
-  }
-  for (const target of stores) {
-    sessionEntries.replaceSessionEntrySync(
-      { storePath: target, sessionKey },
-      { sessionId, updatedAt: 1 },
-    );
-  }
-  let preparingOwner = false;
-  const registerOwner = async () => {
-    preparingOwner = true;
-    try {
-      const result = await admitReplyTurn({
-        storePath: ownerStore,
-        sessionKey,
-        sessionId,
-        kind: "visible",
-        resetTriggered: false,
-      });
-      if (result.status !== "owned" || !result.databaseClaim) {
-        throw new Error("Fixture requires an admitted physical database owner");
-      }
-      return result;
-    } finally {
-      preparingOwner = false;
-    }
-  };
-  let owner = change.startsWith("later-") ? undefined : await registerOwner();
-  const captured =
-    createDeferred<Awaited<ReturnType<typeof sessionEntries.loadSessionEntryForAdmission>>>();
-  const release = createDeferred();
-  const load = sessionEntries.loadSessionEntryForAdmission;
-  let reads = 0;
-  vi.spyOn(sessionEntries, "loadSessionEntryForAdmission").mockImplementation(async (...args) => {
-    if (preparingOwner) {
-      return await load(...args);
-    }
-    const read = ++reads;
-    // A foreign controller cannot invalidate this physical read after it has
-    // completed. Hold its final read before sampling the replaced target row.
-    if (read === 2 && isForeignStore) {
-      const observed = await load(...args);
-      captured.resolve(observed);
-      await release.promise;
-      await observed.databaseClaim.release();
-      return await load(...args);
-    }
-    const snapshot = await load(...args);
-    if (read === 1 && change.startsWith("later-")) {
-      expect(registry.getSessionControllerOperation(sessionKey)).toBeUndefined();
-      owner = await registerOwner();
-    }
-    if (read === 2) {
-      captured.resolve(snapshot);
-      await release.promise;
-    }
-    return snapshot;
-  });
-  const controller = new AbortController();
-  let requestFailure: Error | undefined;
-  const pending = admitReplyTurn({
-
+const sessionKey = "global";
+const sessionId = "original-session";
+function admit(storePath: string, request: Partial<Parameters<typeof admitReplyTurn>[0]> = {}) {
+  return admitReplyTurn({
     storePath,
     sessionKey,
     sessionId,
@@ -172,7 +95,7 @@ it.each(["cancelled", "request-changed", "later-rebound-store"] as const)(
       const read = ++reads;
       const snapshot = await load(...args);
       if (read === 1 && change.startsWith("later-")) {
-        expect(registry.replyRunRegistry.get(sessionKey)).toBeUndefined();
+        expect(registry.getSessionControllerOperation(sessionKey)).toBeUndefined();
         owner = await registerOwner();
       }
       if (read === 2) {
@@ -244,43 +167,15 @@ it.each(["cancelled", "request-changed", "later-rebound-store"] as const)(
       } else {
         await expect(pending).rejects.toMatchObject({ code: "SESSION_WORK_START_CHANGED" });
       }
-      expect(registry.replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(registry.getSessionControllerOperation(sessionKey)).toBeUndefined();
     } finally {
       release.resolve();
       owner?.operation.complete();
       const result = await pending.catch(() => undefined);
       complete(result);
     }
-    owner.operation.updateSessionId(nextSessionId);
-    owner.operation.complete();
-    if (change === "cancelled") {
-      controller.abort();
-    } else if (change === "request-changed") {
-      requestFailure = new Error("Original caller was retired during preparation");
-      await closeOpenClawAgentDatabaseByPathAsync(storePath);
-    }
-    release.resolve();
-    if (change === "cancelled") {
-      await expect(pending).resolves.toEqual({ status: "skipped", reason: "aborted" });
-      expect(reads).toBe(2);
-    } else if (change === "request-changed") {
-      // Caller refusal keeps precedence over a concurrent physical-store retirement.
-      await expect(pending).rejects.toBe(requestFailure);
-      expect(reads).toBe(2);
-    } else {
-      await expect(pending).rejects.toMatchObject({ code: "SESSION_WORK_START_CHANGED" });
-    }
-    expect(registry.getSessionControllerOperation(sessionKey)).toBeUndefined();
-  } finally {
-    release.resolve();
-    owner?.operation.complete();
-    const result = await pending.catch(() => undefined);
-    if (result?.status === "owned") {
-      result.operation.complete();
-    }
-  }
-});
-
+  },
+);
 
 it.for(
   (["writer", "active", "delivery"] as const).flatMap((wait) =>
@@ -322,13 +217,29 @@ it.for(
         owner.completeWithAfterClearBarrier(release.promise);
       }
     }
-    const loaded = vi.spyOn(sessionEntries, "loadSessionEntryForAdmission");
-    const waiting =
-      wait === "active"
-        ? vi.spyOn(controllerWait, "waitForSessionRunIdle")
-        : wait === "delivery"
-          ? vi.spyOn(registry, "waitForReplyRunFollowupAdmission")
-          : loaded;
+    const enteredWait = createDeferred();
+    const load = sessionEntries.loadSessionEntryForAdmission;
+    const loaded = vi
+      .spyOn(sessionEntries, "loadSessionEntryForAdmission")
+      .mockImplementation((...args) => {
+        if (wait === "writer") {
+          enteredWait.resolve();
+        }
+        return load(...args);
+      });
+    if (wait === "active") {
+      const waitForIdle = controllerWait.waitForSessionRunIdle;
+      vi.spyOn(controllerWait, "waitForSessionRunIdle").mockImplementation((...args) => {
+        enteredWait.resolve();
+        return waitForIdle(...args);
+      });
+    } else if (wait === "delivery") {
+      const waitForAdmission = registry.waitForReplyRunFollowupAdmission;
+      vi.spyOn(registry, "waitForReplyRunFollowupAdmission").mockImplementation((...args) => {
+        enteredWait.resolve();
+        return waitForAdmission(...args);
+      });
+    }
 
     const controller = new AbortController();
     const pending = admit(storePath, {
@@ -432,6 +343,5 @@ it("cancels an in-flight admission read when its lifecycle owner interrupts ingr
     upstream.abort();
     await pending;
     await runSessionMutation({ ...target, run: async () => {} });
-
   }
 });

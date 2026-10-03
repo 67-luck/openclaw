@@ -8,7 +8,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { createDeferred } from "../../../test/helpers/promise.js";
 import * as mcpFixture from "../../agents/agent-bundle-mcp-manager.test-support.js";
 import { testing as sessionMcpTesting } from "../../agents/agent-bundle-mcp-runtime.js";
-
 import * as bootstrapCache from "../../agents/bootstrap-cache.js";
 import {
   clearEmbeddedSessionPromptStates,
@@ -74,9 +73,9 @@ import { maybeHandleResetCommand } from "./commands-reset.js";
 import { parseInlineSessionDirectives } from "./directive-handling.parse.js";
 import { resolveDispatchResetAdmission } from "./dispatch-from-config.context.js";
 import { finalizeInboundContext } from "./inbound-context.js";
-import { clearSessionQueues, enqueueFollowupRun, getFollowupQueueDepth } from "./queue.js";
+import { enqueueFollowupRun, getFollowupQueueDepth } from "./queue.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
-
+import { clearSessionQueues } from "./queue/cleanup.js";
 import { admitReplyTurn, runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission.js";
 import { drainFormattedSystemEvents } from "./session-system-events.js";
 import { persistSessionUsageUpdate } from "./session-usage.js";
@@ -1029,7 +1028,7 @@ describe("initSessionState thread forking", () => {
       expect(cancel).not.toHaveBeenCalled();
     } finally {
       clearEmbeddedSessionPromptStates([threadSessionKey]);
-      clearFollowupQueueForTest(threadSessionKey);
+      clearSessionQueues([threadSessionKey]);
       activeReply.complete();
     }
   });
@@ -2955,7 +2954,6 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
     }
   });
 
-
   it("cancels a competing admitted rollover without deadlocking the session", async () => {
     const storePath = await makeStorePath("openclaw-rollover-contenders-");
     const sessionKey = "agent:main:telegram:dm:rollover-contenders";
@@ -3093,7 +3091,6 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       releaseMutation = resolve;
     });
     const blockingMutation = runSessionMutation({
-
       scope: storePath,
       identities: [sessionKey, staleSessionId],
       run: async () => {
@@ -3331,14 +3328,21 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       await vi.advanceTimersByTimeAsync(0);
       const result = await initialization;
 
-
-        const cfg = {
-          session: { store: storePath, reset: { mode: "daily", atHour: 4 } },
-        } as OpenClawConfig;
-        const result = await initSessionState({
-          ctx: telegramTurn(sessionKey, "hello after boundary", "user-queued-stale"),
-          cfg,
-        });
+      expect(operation.phase).toBe("queued");
+      expect(result.isNewSession).toBe(true);
+      expect(result.resetTriggered).toBe(false);
+      expect(result.sessionId).toBe(existingSessionId);
+      expect(result.previousSessionEntry?.sessionId).toBe(existingSessionId);
+      expect(await fs.stat(transcriptPath).catch(() => null)).not.toBeNull();
+      const archived = (await fs.readdir(path.dirname(storePath))).filter((entry) =>
+        entry.startsWith(`${existingSessionId}.jsonl.reset.`),
+      );
+      expect(archived).toHaveLength(0);
+    } finally {
+      operation?.complete();
+      vi.useRealTimers();
+    }
+  });
 
   it("does not defer stale boundary append for a different active session id", async () => {
     vi.useFakeTimers();
@@ -3396,7 +3400,6 @@ describe("initSessionState preserves behavior overrides across /new and /reset",
       vi.useRealTimers();
     }
   });
-
 
   it("keeps provider-owned CLI sessions under the default no-reset policy", async () => {
     vi.useFakeTimers();

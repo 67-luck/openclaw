@@ -9,6 +9,8 @@ import { createChatSendLateFollowupDisposition } from "../../gateway/server-meth
 import { createChatSendLateReplyFinalizer } from "../../gateway/server-methods/chat-send-source-finalization.js";
 import { createGatewayRequestContext } from "../../gateway/server-request-context.js";
 import { makeContextParams } from "../../gateway/server-request-context.test-support.js";
+import { createReplyOperation, type ReplyOperation } from "../../sessions/session-controller.js";
+import { resetSessionControllerStateForTest } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import {
   createSqliteTranscriptTarget,
@@ -24,15 +26,11 @@ import {
   type FollowupRun,
   type QueueSettings,
 } from "./queue.js";
-import { clearFollowupDrainCallback } from "./queue/drain.js";
-import { clearFollowupQueue } from "./queue/state.js";
+import { clearSessionQueues } from "./queue/cleanup.js";
 import {
   REPLY_OPERATION_RUN_STATE,
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
-import { createReplyOperation, type ReplyOperation } from "./reply-run-registry.js";
-import { expireStaleReplyOperation } from "./reply-run-registry.state.js";
-import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
 import { createMockTypingController } from "./test-helpers.js";
 
 const mocks = vi.hoisted(() => ({
@@ -166,7 +164,7 @@ function createStalledRun(
 async function stallBeforeOutput(stalled: StalledRun) {
   await executionStarted.promise;
   expect(executeAgentTurnMock).toHaveBeenCalledOnce();
-  expect(expireStaleReplyOperation(stalled.operation, "stuck_recovery")).toBe(false);
+  expect(stalled.operation.abortForStall()).toBe(true);
 }
 
 async function settleStalledOwner(stalled: StalledRun) {
@@ -191,9 +189,8 @@ function createQueuedRequest(from: { senderId: string; to: string }): FollowupRu
 
 describe("runReplyAgent stalled turn continuation", () => {
   beforeEach(() => {
-    replyRunTesting.resetReplyRunRegistry();
-    clearFollowupQueue(queueKey);
-    clearFollowupDrainCallback(queueKey);
+    resetSessionControllerStateForTest();
+    clearSessionQueues([queueKey]);
     drainedRuns.mockClear();
     mocks.executeFollowups = false;
     executionStarted = createDeferred();
@@ -214,9 +211,8 @@ describe("runReplyAgent stalled turn continuation", () => {
   });
 
   afterEach(() => {
-    clearFollowupQueue(queueKey);
-    clearFollowupDrainCallback(queueKey);
-    replyRunTesting.resetReplyRunRegistry();
+    clearSessionQueues([queueKey]);
+    resetSessionControllerStateForTest();
   });
 
   it("queues exactly one transcript-only recovery run when nothing else is queued", async () => {
@@ -260,7 +256,7 @@ describe("runReplyAgent stalled turn continuation", () => {
       ).toBe(true);
       await stallBeforeOutput(stalled);
       executeAgentTurnMock.mockImplementationOnce(async ({ replyOperation }) => {
-        expireStaleReplyOperation(replyOperation, "stuck_recovery");
+        replyOperation.abortForStall();
         return { runId: "recovery-run", outcome: { kind: "aborted", reason: "user" } };
       });
 
@@ -329,7 +325,7 @@ describe("runReplyAgent stalled turn continuation", () => {
     const stalled = createStalledRun();
     const settled = stalled.run.catch(() => undefined);
     await preflightStarted.promise;
-    expireStaleReplyOperation(stalled.operation, "stuck_recovery");
+    stalled.operation.abortForStall();
 
     const continued = stalled.runState.continueStalledTurn?.();
     await settled;
@@ -426,7 +422,7 @@ describe("runReplyAgent stalled turn continuation", () => {
     });
     await stallBeforeOutput(stalled);
     executeAgentTurnMock.mockImplementationOnce(async ({ replyOperation }) => {
-      expireStaleReplyOperation(replyOperation, "stuck_recovery");
+      replyOperation.abortForStall();
       return { runId: "recovery-run", outcome: { kind: "aborted", reason: "user" } };
     });
 

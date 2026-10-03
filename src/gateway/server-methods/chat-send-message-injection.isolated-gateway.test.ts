@@ -136,10 +136,10 @@ installConnectedControlUiServerSuite((started) => {
   ws = started.ws;
 });
 
-function clearLiveOperation(cause: string) {
+function clearLiveOperation() {
   if (liveOperation) {
     try {
-      forceClearReplyOperation(liveOperation, cause);
+      liveOperation.complete();
     } catch {
       // Best-effort cleanup of an operation left behind by a failed test.
     }
@@ -155,14 +155,7 @@ beforeEach(() => {
   delete resolverCapture.runId;
   delete resolverCapture.messageInjectionDisposition;
   // Tear down any reply operation left over from the prior test.
-  if (liveOperation) {
-    try {
-      liveOperation.op.complete();
-    } catch {
-      // best-effort
-    }
-    liveOperation = undefined;
-  }
+  clearLiveOperation();
   // Default dispatch: record the inbound, emit a final reply via the
   // dispatcher so the wire response and chat-final event settle.
 
@@ -218,19 +211,18 @@ async function seedActiveTurn(params: {
     },
   });
   if (params.sourceTurnId) {
-    replyRunRegistry.bindSourceTurnId(operation, params.sourceTurnId);
+    bindSessionControllerSourceTurnId(operation, params.sourceTurnId);
   }
 }
 
+async function makeSessionDir(): Promise<string> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-iso-gw-"));
+  sharedTempDirs.push(dir);
+  return dir;
+}
+
 afterAll(async () => {
-  if (liveOperation) {
-    try {
-      liveOperation.op.complete();
-    } catch {
-      // best-effort
-    }
-    liveOperation = undefined;
-  }
+  clearLiveOperation();
 
   for (const dir of sharedTempDirs.splice(0)) {
     // Defer removal until Gateway teardown; Windows may still hold SQLite handles.
@@ -264,46 +256,9 @@ describe("terminal-receipt steer fence isolated-gateway proof (#128971)", () => 
   ])(
     "$name rejects steering and delivers exactly one follow-up reply over the real transport",
     { timeout: 30_000 },
-    async () => {
-      const dir = await makeSessionDir();
-      testState.sessionStorePath = path.join(dir, "sessions.json");
-      // Real persisted entry: terminal tombstone for the active source turn.
-      await writeSessionStore({
-        entries: {
-          [SESSION_KEY]: {
-            sessionId: "session-failclosed",
-            updatedAt: Date.now(),
-            restartRecoveryTerminalRunIds: [SOURCE_TURN_ID],
-            restartRecoveryDeliverySourceRunId: SOURCE_TURN_ID,
-            status: "running",
-          },
-        },
-      });
-      // Real reply-run registry: a live run owns this source turn.
-      const operation = createReplyOperation({
-        sessionKey: SESSION_KEY,
-        sessionId: "session-failclosed",
-        resetTriggered: false,
-      });
-      liveOperation = { key: SESSION_KEY, op: operation as never };
-      operation.setPhase("running");
-      // Attach a backend so the gate resolves an injection target (not
-      // "injection_unavailable"); the steer is then attempted through the
-      // real fence and either enqueued or rejected by it.
-      operation.attachBackend({
-        kind: "embedded",
-        runId: "live-run-failclosed",
-        cancel: () => {},
-        isStreaming: () => false,
-        messageInjection: {
-          isAvailable: () => true,
-          queueMessage: async () => {},
-        },
-      });
-      bindSessionControllerSourceTurnId(operation, SOURCE_TURN_ID);
-
+    async (scenario) => {
+      await seedActiveTurn(scenario);
       const registrySpy = vi.spyOn(sessionControllerModule, "beginReplyMessageInjectionTarget");
-
 
       // Resetting this seam uses the production dispatcher and delivery owner;
       // only the reply source is controlled. Observe its final on the real socket.
@@ -409,14 +364,14 @@ describe("terminal-receipt steer fence isolated-gateway proof (#128971)", () => 
           },
         },
       });
-      // Real reply-run registry: a live run with NO source-turn binding, so
+      // Real session controller: a live run with NO source-turn binding, so
       // the fence observes an unknown ("") active source identity.
       const operation = createReplyOperation({
         sessionKey: unknownSessionKey,
         sessionId: "session-unknown-source",
         resetTriggered: false,
       });
-      liveOperation = { key: unknownSessionKey, op: operation as never };
+      liveOperation = operation;
       operation.setPhase("running");
       // Attach a backend so the gate resolves an injection target (not
       // "injection_unavailable"); the steer is then attempted through the
@@ -554,9 +509,6 @@ describe("terminal-receipt steer fence isolated-gateway proof (#128971)", () => 
         terminalRunId: "source-old",
         sourceTurnId: SOURCE_TURN_ID,
       });
-      // Bind a different active source turn than the tombstoned one.
-      bindSessionControllerSourceTurnId(operation, SOURCE_TURN_ID);
-
       // Spy and resolve so the steer path is observable. Return a valid
       // attempt with acceptance=true so the chat-send handler treats the
       // steer as enqueued (skips follow-up dispatch) instead of falling
@@ -621,7 +573,7 @@ describe("terminal-receipt steer fence isolated-gateway proof (#128971)", () => 
         sessionId: "session-before-fix",
         resetTriggered: false,
       });
-      liveOperation = { key: SESSION_KEY, op: operation as never };
+      liveOperation = operation;
       operation.setPhase("running");
       operation.attachBackend({
         kind: "embedded",

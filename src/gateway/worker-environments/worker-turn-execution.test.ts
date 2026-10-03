@@ -105,7 +105,6 @@ describe("worker turn execution", () => {
         { ...sessionTarget, runId: input.runId },
         {
           ...input,
-          pluginGeneration: runtime.pluginGeneration,
           userTurnTranscriptRecorder: recorder,
           onUserMessagePersisted,
         },
@@ -170,7 +169,7 @@ describe("worker turn execution", () => {
     let current = true;
     const execution = provider.executeTurn(
       { ...sessionTarget, runId: input.runId },
-      { ...input, pluginGeneration: runtime.pluginGeneration },
+      input,
       vi.fn(),
       undefined,
       () => {

@@ -135,7 +135,7 @@ describe("dispatch Stop before provider allocation", () => {
     const allocate = vi.spyOn(environments, "createWithRequest");
     const start = vi.spyOn(placements, "startDispatch");
     const runtime = createRuntime(placements, environments);
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: `${support.testState.root}/sessions.sqlite`,
       identities: [REQUEST.sessionKey, REQUEST.sessionId],
       assertAllowed: () => {},
@@ -374,7 +374,6 @@ describe("dispatch Stop before provider allocation", () => {
         release.resolve();
         await Promise.allSettled([moving, stopping]);
         await runSessionMutation({
-
           scope: sessionTarget.storePath,
           identities: [REQUEST.sessionKey, REQUEST.sessionId],
           run: async () => {},
@@ -639,7 +638,6 @@ describe("dispatch Stop before provider allocation", () => {
       // A task kill acquires this mutation outside the admitted operation's ALS,
       // then drains admissions while its own lifecycle mutation remains active.
       const mutation = runSessionMutation({
-
         ...identity,
         prepare: async () => {
           mutationEntered.resolve();
@@ -666,7 +664,6 @@ describe("dispatch Stop before provider allocation", () => {
         await Promise.allSettled([operation, mutation]);
         // Flush the canceled contender: it must never execute after its predecessor releases.
         await runSessionMutation({ ...identity, run: async () => {} });
-
       }
       expect(events).toEqual(["admission-released", "mutation-finished"]);
     },

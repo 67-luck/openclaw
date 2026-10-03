@@ -743,31 +743,9 @@ describe("main-session-restart-recovery", () => {
         } finally {
           admission.release();
         }
-
       });
-      try {
-        await expect(
-          markRestartAbortedMainSessions({
-            resolveGatewayContext,
-            cfg: {
-              agents: { ownership: "explicit", entries: { ops: {} } },
-              session: { store: storePath },
-            },
-            stateDir: tmpDir,
-            activeRuns: [],
-          }),
-        ).resolves.toEqual({ marked: 1, skipped: 0 });
-        expect(sessionAccessor.loadSessionEntry(retired)).toMatchObject({
-          sessionId: "retired-active-session",
-          abortedLastRun: true,
-          restartRecoveryForceSafeTools: true,
-        });
-        expect(sessionAccessor.loadSessionEntry(configured)).toEqual(configuredBefore);
-      } finally {
-        admission.release();
-      }
-    });
-  });
+    },
+  );
 
   it("keeps a configured fixed store when its path carries a retired owner id", async () => {
     const sessionsDir = await makeSessionsDir("old");
@@ -2823,7 +2801,10 @@ describe("main-session-restart-recovery", () => {
     ).rejects.toThrow();
   });
 
-  it("keeps a live session running after delayed stale registration", async () => {
+  it.each([
+    ["current owner before delayed stale registration", "current-first"],
+    ["stale owner before current registration", "stale-first"],
+  ] as const)("keeps a live session running with %s", async (_label, registrationOrder) => {
     const sessionsDir = await makeSessionsDir();
     const cutoff = Date.now();
     const sessionKey = "agent:main:generation-race";
@@ -2867,7 +2848,6 @@ describe("main-session-restart-recovery", () => {
       );
     }
 
-
     rotateAgentEventLifecycleGeneration();
     const currentHandle = createHandle("current-generation-run");
     setActiveEmbeddedRun(sessionId, currentHandle, sessionKey);
@@ -2882,7 +2862,6 @@ describe("main-session-restart-recovery", () => {
         priorLifecycleGeneration,
       );
     }
-
 
     const recovery = scheduleRestartAbortedMainSessionRecovery({
       getConfig: () => ({}),
@@ -3690,7 +3669,7 @@ describe("main-session-restart-recovery", () => {
       { role: "user", content: "leave this row pending" },
     ]);
 
-    const result = await retryRestartAbortedMainSessionRecoveryAfterOwnerRelease({
+    const result = await retryRestartAbortedMainSessionRecovery({
       expectedSessionId: "main-session",
       sessionKey: "agent:main:main",
       storePath,
@@ -3708,7 +3687,6 @@ describe("main-session-restart-recovery", () => {
       false,
     );
   });
-
 
   it("retries a failed exact owner-release recovery with bounded backoff", async () => {
     const { sessionsDir, storePath } = await makeMainSessionFixture({
@@ -4023,7 +4001,6 @@ describe("main-session-restart-recovery", () => {
     expect(callGateway).not.toHaveBeenCalled();
   });
 
-
   it("aborts an exact recovery accepted after the execution-start deadline", async () => {
     vi.useFakeTimers();
     let accept: (() => void) | undefined;
@@ -4329,7 +4306,6 @@ describe("main-session-restart-recovery", () => {
       await dispatchEntered.promise;
       expect(isSessionControllerWorkActive(storePath, [sessionKey, sessionId])).toBe(true);
       mutation = runSessionMutation({
-
         scope: storePath,
         identities: [sessionKey, sessionId],
         prepare: async () => {

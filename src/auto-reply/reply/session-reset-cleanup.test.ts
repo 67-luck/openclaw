@@ -92,6 +92,8 @@ describe("clearSessionResetRuntimeState", () => {
       clearSessionResetRuntimeState(["agent:main:slack:room:1", "old-session"], {
         agentId: "main",
         activeReplySessionId: "old-session",
+        sessionKey: "agent:main:slack:room:1",
+        assertCurrent: () => {},
       });
       expect(cancel).toHaveBeenCalledWith("restart");
       expect(isSessionRunActiveForKey("agent:main:slack:room:1")).toBe(true);
@@ -116,7 +118,6 @@ describe("clearSessionResetRuntimeState", () => {
       raw.resolve();
       await producer;
     }
-
   });
 
   it("does not clear a fresh active reply under the same key when only the archived id is reset", () => {

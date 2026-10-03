@@ -55,7 +55,7 @@ import {
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import type { ReplyOperation } from "../../sessions/session-controller.js";
-
+import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import type { ReplyPayload } from "../types.js";
 import {
   runMemoryFlushIfNeeded as runMemoryFlushIfNeededRaw,

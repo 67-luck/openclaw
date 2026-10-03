@@ -65,12 +65,28 @@ const mocks = vi.hoisted(() => ({
   workspace: vi.fn(),
   store: vi.fn(),
   open: vi.fn(),
+  beforeWrite: vi.fn<() => Promise<void>>(),
 }));
 vi.mock("../session-utils.js", () => ({ loadGatewaySessionEntryReadOnly: mocks.load }));
 vi.mock("../../config/sessions/session-accessor.js", async (original) => ({
   ...(await original<typeof import("../../config/sessions/session-accessor.js")>()),
   loadSessionEntryReadOnly: () => mocks.load().entry,
 }));
+vi.mock("../../infra/fs-safe.js", async (original) => {
+  const actual = await original<typeof import("../../infra/fs-safe.js")>();
+  return {
+    ...actual,
+    root: async (...args: Parameters<typeof actual.root>) => {
+      const root = await actual.root(...args);
+      const write = root.write.bind(root);
+      root.write = async (...writeArgs) => {
+        await mocks.beforeWrite();
+        await write(...writeArgs);
+      };
+      return root;
+    },
+  };
+});
 vi.mock("../../agents/agent-scope.js", async (original) => ({
   ...(await original<typeof import("../../agents/agent-scope.js")>()),
   resolveAgentWorkspaceDir: mocks.workspace,
@@ -589,7 +605,6 @@ it.each(["stop", "reset"])(
   },
 );
 
-
 it("keeps stopped inspection limited to verified changed artifacts", async () => {
   const base = await captureWorkspaceManifest({
     root: workspace,
@@ -806,7 +821,6 @@ it("keeps a timed-out remote save owned until its physical write drains before S
   let stopEntered = false;
   let contentAtStop: string | undefined;
   const stopping = runSessionMutation({
-
     scope: path.join(gatewayRoot, "sessions.sqlite"),
     identities: [sessionKey, identity.sessionId],
     run: async () => {

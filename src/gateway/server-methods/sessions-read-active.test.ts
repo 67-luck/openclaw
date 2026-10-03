@@ -562,7 +562,7 @@ it.each(["settled", "replaced"] as const)(
           ),
         );
       }
-      await changeDuringReadiness(context, async () => {
+      const readiness = await changeDuringReadiness(context, async () => {
         rpcSourceTesting.get("run-main")?.input.claim?.operation?.complete();
         rpcSourceTesting.delete("run-main");
 
@@ -611,8 +611,7 @@ it.each([false, true])(
       const sessionKey = "agent:main:active";
       const sessionId = "main-active";
       const runId = "new-model-run";
-      await changeDuringReadiness(context, async () => {
-
+      const readiness = await changeDuringReadiness(context, async () => {
         registerChatAbortController({
           target: captureRpcTargetForTest({ sessionKey, sessionId, agentId: "main" }),
           runId,
@@ -717,7 +716,7 @@ it.each(
         getAgentRunContext(runId)!,
       );
 
-      await changeDuringReadiness(context, async () => {
+      const readiness = await changeDuringReadiness(context, async () => {
         rpcSourceTesting.get(runId)?.input.claim?.operation?.complete();
         rpcSourceTesting.delete(runId);
 

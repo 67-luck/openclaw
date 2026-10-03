@@ -114,8 +114,6 @@ async function registerCompletion(
   const context = createContext();
   context.localEmbedded = true;
   context.getRuntimeConfig = getRuntimeConfig;
-  context.chatAbortControllers = new Map();
-  context.chatQueuedTurns = new Map();
   const registry = createGatewayMethodRegistry([
     {
       name: "agent",

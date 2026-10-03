@@ -3,6 +3,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createSessionMaintenanceOwner } from "../../agents/session-maintenance/coordinator.js";
+import { SessionWorkStartChangedError } from "../../config/sessions/lifecycle.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import * as registry from "../../sessions/session-controller.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
@@ -26,18 +27,31 @@ const work: Promise<unknown>[] = [];
 let controller = new AbortController();
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
+    controller.abort();
+    operations.forEach((operation) => operation.complete());
+    releases.forEach((release) => release());
+    await Promise.allSettled(work);
+    for (const pending of admissions) {
+      const result = await pending.catch(() => undefined);
+      if (result?.status === "owned") {
+        result.operation.complete();
+      }
+    }
     testing.resetReplyRunRegistry();
     await closeOpenClawAgentDatabasesAsync();
     vi.restoreAllMocks();
     cleanup();
+    operations.clear();
+    releases.length = admissions.length = work.length = 0;
+    controller = new AbortController();
   }),
 );
 const sessionKey = "global";
 const sessionId = "copied-session-id";
 const successorId = "compacted-session-id";
 
-function seed(storePath: string, id = sessionId) {
-  replaceSessionEntrySync({ storePath, sessionKey }, { sessionId: id, updatedAt: 1 });
+function seed(storePath: string, id = sessionId, key = sessionKey) {
+  replaceSessionEntrySync({ storePath, sessionKey: key }, { sessionId: id, updatedAt: 1 });
 }
 
 async function admitOwner(storePath?: string, id = sessionId) {
@@ -240,28 +254,21 @@ it.each([true, false])(
         result.operation.complete();
       }
     }
-    testing.resetReplyRunRegistry();
-    await closeOpenClawAgentDatabasesAsync();
-    vi.restoreAllMocks();
-    cleanup();
-    operations.clear();
-    releases.length = admissions.length = work.length = 0;
-    controller = new AbortController();
-  }),
+  },
 );
-const sessionKey = "global";
-const sessionId = "copied-session-id";
-const successorId = "compacted-session-id";
 const invalidated = { status: "skipped", reason: "lifecycle-invalidated" };
 
-it("rejects rotation recorded after the waited owner moves to another physical store", async () => {
-  const ownerStore = path.join(tempDirs.make("reply-wait-owner-"), "sessions.json");
-  const adoptedStore = path.join(tempDirs.make("reply-wait-adopted-"), "sessions.json");
-  seed(ownerStore);
-  seed(adoptedStore);
-  const owner = await admitOwner(ownerStore);
-  const waited = vi.spyOn(controllerWait, "waitForSessionRunIdle");
-
+function store() {
+  const storePath = path.join(tempDirs.make("reply-owner-"), "sessions.json");
+  seed(storePath);
+  return storePath;
+}
+function deferred() {
+  const value = createDeferred();
+  releases.push(value.resolve);
+  return value;
+}
+function admit(storePath?: string, overrides: Partial<Parameters<typeof admitReplyTurn>[0]> = {}) {
   const pending = admitReplyTurn({
     sessionKey,
     sessionId,
@@ -335,7 +342,7 @@ it("preserves same-store rotation across foreground maintenance", async () => {
   rotate(active, ownerStore);
   active.complete();
   await Promise.resolve();
-  expect(registry.replyRunRegistry.get(sessionKey)).toBeUndefined();
+  expect(registry.getSessionControllerOperation(sessionKey)).toBeUndefined();
   expect(settled).toBe(false);
   releaseMaintenance.resolve();
   await running;
@@ -509,7 +516,6 @@ it("rejects a replacement committed while the predecessor delivery retains custo
     reason: "lifecycle-invalidated",
   });
   await owner.ownerSettlement;
-
 });
 
 it("keeps rekeyed source lineage separate from the adopted target", async () => {
@@ -589,7 +595,6 @@ it("admits selected mailbox claims independently for identical keys in two store
   expect(second.status).toBe("owned");
   if (first.status !== "owned" || second.status !== "owned") {
     throw new Error("both physical claims must own a turn");
-
   }
   expect(firstSource.mailbox.owner.active).toBe(first.operation);
   expect(secondSource.mailbox.owner.active).toBe(second.operation);

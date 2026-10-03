@@ -12,8 +12,8 @@ import type { GatewayAccessGrantRef } from "../../plugins/gateway-access-policy.
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import type { ReplyToolAuthorityOverlay } from "../../sessions/session-controller.contracts.js";
 import type { ReplyBackendQueueMessageOptions } from "../../sessions/session-controller.js";
-import { ensureProfileForEmail, setUserProfileRole } from "../../state/user-profiles.js";
-
+import { setUserProfileRole } from "../../state/user-profile-writes.worker.js";
+import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
 import {

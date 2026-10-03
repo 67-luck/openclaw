@@ -2,6 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { SubagentRegistryWriteError } from "../../agents/subagents/registry/subagent-registry-persistence.js";
 import type * as SubagentRegistry from "../../agents/subagents/registry/subagent-registry.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import { markAgentRunFailureReplyPayload } from "./agent-runner-failure-reply.js";
 import { accountAgentTurn } from "./agent-runner-result-accounting.js";
@@ -15,7 +16,6 @@ import {
   createMockReplyOperation,
   createMockTypingController,
 } from "./test-helpers.js";
-
 import { createTypingSignaler } from "./typing-mode.js";
 vi.mock("../../agents/subagents/registry/subagent-registry.js", async (importOriginal) => ({
   ...(await importOriginal<typeof SubagentRegistry>()),
@@ -42,7 +42,6 @@ function createContext(): FinalizeReplyAgentRunInput {
     sessionId: followupRun.run.sessionId,
     resetTriggered: false,
   });
-  retainReplyOperationUntilComplete(replyOperation);
   onTestFinished(() => replyOperation.complete());
   return {
     activeIsNewSession: false,

@@ -736,7 +736,7 @@ describe("worker live events", () => {
         beginApprovalWait: () => undefined,
         record: diagnostic,
         isCancelled: () => false,
-
+        isCancelledFinishing: () => false,
       });
       const stop = onAgentRuntimeEvent((event) => {
         if (event.runId === RUN && event.stream === stream) {

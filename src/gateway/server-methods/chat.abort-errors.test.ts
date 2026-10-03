@@ -15,7 +15,7 @@ import {
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   createEmbeddedRunHandle,
 } from "../../agents/embedded-agent-runner/runs.test-support.js";
-
+import * as subagentControlSession from "../../agents/subagents/registry/subagent-control-session.js";
 import { killSubagentRunAdmin } from "../../agents/subagents/registry/subagent-control.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "../../agents/subagents/registry/subagent-control.types.js";
 import { subscribeSubagentRunChanges } from "../../agents/subagents/registry/subagent-registry-publication.js";
@@ -468,6 +468,8 @@ it.for(["cascade native new", "RPC reset", "RPC delete"])(
         childTerminated.resolve();
       }
     });
+    const native = boundary.endsWith("native new");
+    const childHandle = createEmbeddedRunHandle();
     const childOperation = createReplyOperation({
       sessionKey: childKey,
       sessionId: "incarnation-child",
@@ -489,7 +491,6 @@ it.for(["cascade native new", "RPC reset", "RPC delete"])(
       childOperation,
     );
     const parentAdmission = await beginSessionEffect({
-
       scope: storePath,
       identities: [sessionKey, sessionId],
       assertAllowed: () => {},
@@ -538,12 +539,15 @@ it.for(["cascade native new", "RPC reset", "RPC delete"])(
       completed = true;
     });
     try {
-      await Promise.race([
-        entered.promise,
-        abort.then(() => {
-          throw new Error("abort completed before child gate");
-        }),
-      ]);
+      await withinTest(
+        Promise.race([
+          Promise.all([entered.promise, childTerminated.promise]),
+          abort.then(() => {
+            throw new Error("abort completed before child gate");
+          }),
+        ]),
+        signal,
+      );
       expect(parent.input.abortSignal.aborted).toBe(true);
       expect(rpcSourceTesting.has("parent")).toBe(false);
 
@@ -622,11 +626,10 @@ it.for(["cascade native new", "RPC reset", "RPC delete"])(
       parentAdmission.release();
       operation.complete();
       release.resolve();
-      await writer;
+      markerWriter.mockRestore();
       clearActiveEmbeddedRun("incarnation-child", childHandle, childKey);
       childOperation.complete();
       await abort;
-
     }
   },
 );

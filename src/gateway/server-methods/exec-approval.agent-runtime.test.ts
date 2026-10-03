@@ -132,6 +132,7 @@ describe("exec approval signed agent runtime", () => {
       beginApprovalWait,
       record: vi.fn(),
       isCancelled: () => false,
+      isCancelledFinishing: () => false,
     });
     const entered = createDeferredCore();
     const release = createDeferredCore();
@@ -161,6 +162,7 @@ describe("exec approval signed agent runtime", () => {
           beginApprovalWait: successorWait,
           record: vi.fn(),
           isCancelled: () => false,
+          isCancelledFinishing: () => false,
         });
         release.resolve();
         const { pending } = await requested;

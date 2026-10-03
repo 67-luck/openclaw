@@ -194,7 +194,7 @@ describe("applyFileBackedSessionStoreMaintenance", () => {
     let trajectoryCleanupReferencedIds: Set<string> | undefined;
 
     const storePath = "/tmp/openclaw-sessions/sessions.json";
-    const admission = await beginSessionWorkAdmission({
+    const admission = await beginSessionEffect({
       scope: storePath,
       identities: ["active"],
       assertAllowed: () => {},

@@ -56,12 +56,15 @@ import {
   setupAgentRunnerTestHooks,
   tempDirs,
 } from "./agent-runner.misc.runreplyagent.test-support.js";
-import { type BaseRunOptions, createBaseRun } from "./agent-runner.runreplyagent.test-support.js";
+import {
+  createTestQueueSettings,
+  createTestQueuedFollowupRun,
+  createTestTemplateContext,
+} from "./agent-runner.test-fixtures.js";
 import { clearPendingFinalDeliveryAfterSuccess } from "./dispatch-from-config.pending-final.js";
 import { scheduleFollowupDrain } from "./queue.js";
 import { REPLY_OPERATION_RUN_STATE } from "./reply-operation-run-state.js";
 import { createMockTypingController } from "./test-helpers.js";
-
 
 function createCliBackendTestConfig() {
   return {};
@@ -119,7 +122,6 @@ function createBaseRun(options: BaseRunOptions = {}) {
       messageProvider,
       sessionFile: path.join(rootDir, "session.jsonl"),
       workspaceDir: rootDir,
-      config: runConfig,
       skillsSnapshot: {},
       provider: "anthropic",
       model: "claude",
@@ -173,7 +175,6 @@ function createBaseRun(options: BaseRunOptions = {}) {
     run: () => runReplyAgent(replyParams),
   };
 }
-
 
 const requireRecord = createRequireRecord("record", "expected-label-object");
 

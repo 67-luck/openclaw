@@ -55,11 +55,11 @@ describe("Gateway dispatch run ownership", () => {
         message: "continue",
         sessionKey: f.sessionKey,
         allowModelOverride: false,
-        ...(terminalProducer ? { abortSignal: f.entry.controller.signal } : {}),
+        ...(terminalProducer ? { abortSignal: f.entry.input.abortSignal } : {}),
       },
       runId: f.runId,
       dedupeKeys: [],
-      abortController: f.entry.controller,
+      abortController: testRpcSourceController(f.entry),
       cleanupAbortController: vi.fn(),
       io: { emitAcceptance: vi.fn(), emitFinal: vi.fn() },
       context: f.context,
@@ -115,7 +115,7 @@ describe("Gateway dispatch run ownership", () => {
   }
 
   it("joins a captured terminal save when command startup fails before its delivery hook", async () => {
-    const { entry, params } = createDispatch(true);
+    const { runId, sessionKey, context, entry } = createDispatch(true);
     const finishCommand = createDeferred();
     const saving = createDeferred();
     const finishSave = createDeferred();
@@ -167,7 +167,7 @@ describe("Gateway dispatch run ownership", () => {
   it.each(["registration", "controller", "session", "instance"] as const)(
     "rejects captured transcript custody after %s replacement",
     async (replacement) => {
-      const { runId, context, entry, params } = createDispatch(true);
+      const { runId, sessionKey, context, entry } = createDispatch(true);
       const finish = createDeferred();
       mocks.agentCommand.mockImplementationOnce(async () => {
         await finish.promise;
@@ -229,18 +229,23 @@ describe("Gateway dispatch run ownership", () => {
     const emitFinal = vi.fn();
 
     await dispatchAgentRunFromGateway({
-      ...params,
       assertCurrent() {
         if (rpcSourceTesting.get(runId) !== entry) {
           throw new Error("Gateway run owner replaced");
         }
       },
+      admittedRunEntry: entry,
+      ingressOpts: {
+        message: "run only for the admitted owner",
+        sessionKey,
+        allowModelOverride: false,
+      },
+      runId,
       dedupeKeys: [`agent:${runId}`],
       abortController: testRpcSourceController(entry),
       cleanupAbortController: vi.fn(),
       io: { emitAcceptance: vi.fn(), emitFinal },
       context,
-
     });
     expect(mocks.agentCommand).not.toHaveBeenCalled();
     expect(mocks.clearAgentRunContext).not.toHaveBeenCalled();
@@ -256,13 +261,13 @@ describe("Gateway dispatch run ownership", () => {
         entry: expect.objectContaining({ ok: false }),
       }),
     );
-    expect(params.io.emitFinal).toHaveBeenCalledOnce();
+    expect(emitFinal).toHaveBeenCalledOnce();
   });
 
   it.each(["success", "failure", "cancelled"] as const)(
     "joins continuation and input settlement before publishing final or replay for %s",
     async (outcome) => {
-      const { runId, entry, params } = createDispatch();
+      const { runId, sessionKey, context, entry, params } = createDispatch();
       const entered = createDeferred();
       const resume = createDeferred();
       const cleanupEntered = createDeferred();
@@ -299,7 +304,6 @@ describe("Gateway dispatch run ownership", () => {
         cleanupAbortController,
         io: { emitAcceptance: vi.fn(), emitFinal },
         context,
-
         onSettled,
       });
       try {
@@ -449,7 +453,7 @@ describe("Gateway dispatch run ownership", () => {
   it.each(["Primitive command failure", 42])(
     "retains the rendered message and original cause for synchronous throw %s",
     async (failure) => {
-      const { params } = createDispatch();
+      const { entry, sessionKey, runId, context } = createDispatch();
       mocks.agentCommand.mockImplementationOnce(() => {
         // oxlint-disable-next-line typescript/only-throw-error -- Exercise JavaScript primitive throws at the dispatch boundary.
         throw failure;
@@ -466,7 +470,6 @@ describe("Gateway dispatch run ownership", () => {
         context,
       });
       expect(emitFinal).toHaveBeenCalledWith(
-
         [
           false,
           expect.objectContaining({ status: "error", summary: String(failure) }),

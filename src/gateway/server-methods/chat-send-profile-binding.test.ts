@@ -23,8 +23,8 @@ import {
   captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
-import { ensureProfileForEmail, linkEmail } from "../../state/user-profiles.js";
-
+import { linkEmail } from "../../state/user-profile-writes.worker.js";
+import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { createExpectedProfileBinding } from "../expected-profile.js";
 import { PENDING_CHAT_SEND_DEDUPE_PREFIX } from "../server-shared.js";
 import { dispatchInboundMessageMock, installGatewayTestHooks } from "../test-helpers.js";
@@ -229,8 +229,7 @@ describe("native profile-bound input admission", () => {
         expect.anything(),
       );
       expect.soft(rpcSourceTesting.size).toBe(0);
-      expect.soft(listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
-
+      expect.soft(await listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
     } finally {
       await fixture.cleanup();
     }

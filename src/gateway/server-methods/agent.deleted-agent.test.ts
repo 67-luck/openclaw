@@ -47,7 +47,6 @@ async function invoke(
       respond,
       context: {
         dedupe,
-        chatAbortControllers: new Map(),
         getRuntimeConfig: () => ({}),
       } as never,
       client,
@@ -124,7 +123,6 @@ describe("agent RPC deleted-agent guard", () => {
       },
     );
 
-
     expect(respond).toHaveBeenCalledWith(false, undefined, {
       code: ErrorCodes.INVALID_REQUEST,
       message: 'Agent "deleted-agent" no longer exists in configuration',
@@ -158,7 +156,6 @@ describe("agent RPC deleted-agent guard", () => {
           client: { connect: { scopes: ["operator.admin"] } } as never,
           isWebchatConnect: () => false,
         },
-
       );
 
       expect(respond).toHaveBeenCalledWith(false, undefined, {
@@ -174,21 +171,9 @@ describe("agent RPC deleted-agent guard", () => {
     const { respond, dedupe } = await invoke(
       "req-followup",
       {
-        req: { id: "req-followup" } as never,
-        params: {
-          sessionKey: orphanKey,
-          message: "approval followup",
-          idempotencyKey: "exec-approval-followup:req-followup",
-          execApprovalFollowupExpectedSessionId: "old-session",
-        },
-        respond,
-        context: {
-          dedupe,
-          getRuntimeConfig: () => ({}),
-        } as never,
-        client: { connect: { client: { mode: "backend" } } } as never,
-        isWebchatConnect: () => false,
-
+        message: "approval followup",
+        idempotencyKey: "exec-approval-followup:req-followup",
+        execApprovalFollowupExpectedSessionId: "old-session",
       },
       { connect: { client: { mode: "backend" } } } as never,
     );

@@ -34,7 +34,7 @@ import {
   beginSessionEffect,
   captureSessionEffectOwnerSettlement,
 } from "../sessions/session-controller.lifecycle.js";
-
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { countPendingQueueItems } from "../utils/queue-helpers.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";

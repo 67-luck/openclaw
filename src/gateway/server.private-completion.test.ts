@@ -746,7 +746,11 @@ describe("private subagent completion processing receipts", () => {
             };
           });
         const stop = observeSessionWorkAdmissionDrain(async (params, released) => {
-          if (released && [...params.identities].includes(childSessionKey)) {
+          const identities =
+            "target" in params
+              ? [params.target.sessionKey, params.target.incarnation, ...params.target.aliases]
+              : params.identities;
+          if (released && [...identities].includes(childSessionKey)) {
             await terminalPublished.promise;
             signal.throwIfAborted();
           }

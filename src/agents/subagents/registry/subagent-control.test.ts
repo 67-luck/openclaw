@@ -31,7 +31,7 @@ import {
 import { closeOpenClawAgentDatabasesAsync } from "../../../state/openclaw-agent-db.js";
 import { loadAgentRuntimePluginRegistryHandle } from "../../runtime-plugins.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
-import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
+import { enqueueSwarmRun, holdQueuedSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
 import { testing as swarmSchedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
 import * as killSession from "./subagent-control-session.js";
 import {
@@ -48,7 +48,11 @@ import {
 } from "./subagent-lifecycle-events.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { mutateSubagentRuns } from "./subagent-registry-persistence.js";
-import { replaceSubagentRunAfterSteerCore, startQueuedSubagentRun } from "./subagent-registry.js";
+import {
+  markSubagentRunTerminated,
+  replaceSubagentRunAfterSteerCore,
+  startQueuedSubagentRun,
+} from "./subagent-registry.js";
 import {
   addSubagentRunForTests,
   getSubagentRunByChildSessionKey,
@@ -1848,25 +1852,42 @@ describe("killAllControlledSubagentRuns", () => {
     reserve();
     let writes = 0;
     resetRegistryLeafMocks();
-    vi.mocked(registryState.persistSubagentRunsToDiskOrThrow).mockImplementation(() => {
-      writes += 1;
-      if (
-        ["session replacement at intent", "session replacement release"].includes(failure) &&
-        writes === 1
-      ) {
-        replaceSessionEntrySync(
-          { storePath, sessionKey: entry.childSessionKey },
-          { sessionId: "new-session", updatedAt: 2 },
-        );
-      }
-      if (
-        (failure === "intent write" && writes === 1) ||
-        (["tombstone write", "claim release", "session replacement release"].includes(failure) &&
-          writes === 2)
-      ) {
-        throw new Error("sqlite busy");
-      }
-    });
+    fixture.worker.mockImplementation((context, operation, options) =>
+      runSubagentStateWorkerOperation(
+        context,
+        (scope) =>
+          operation({
+            ...scope,
+            execute: async (command, commandOptions) => {
+              if (command.type === "subagents.persistChanges") {
+                writes += 1;
+                if (
+                  ["session replacement at intent", "session replacement release"].includes(
+                    failure,
+                  ) &&
+                  writes === 1
+                ) {
+                  replaceSessionEntrySync(
+                    { storePath, sessionKey: entry.childSessionKey },
+                    { sessionId: "new-session", updatedAt: 2 },
+                  );
+                }
+                if (
+                  (failure === "intent write" && writes === 1) ||
+                  (["tombstone write", "claim release", "session replacement release"].includes(
+                    failure,
+                  ) &&
+                    writes === 2)
+                ) {
+                  throw new Error("sqlite busy");
+                }
+              }
+              return scope.execute(command, commandOptions);
+            },
+          }),
+        options,
+      ),
+    );
     setSubagentControlDepsForTest({
       isTargetSessionRunActive: () => {
         if (failure === "session replacement") {
@@ -1898,7 +1919,9 @@ describe("killAllControlledSubagentRuns", () => {
             "scheduled pump cannot dispatch while cancellation owns the reservation",
           ).not.toHaveBeenCalled();
           if (failure === "row replacement") {
-            expect(removeQueuedSwarmRun(entry.runId)).toBe(true);
+            const reservation = holdQueuedSwarmRun(entry.runId);
+            expect(reservation?.withdraw()).toBe(true);
+            await reservation?.release();
             addSubagentRunForTests({ ...entry, generation: 2, createdAt: 2 });
             reserve();
           }

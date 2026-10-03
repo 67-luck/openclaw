@@ -446,15 +446,12 @@ for (const { name, fault, replaceParent } of [
             releaseSwarmRun(runId);
           }
           socket.close();
-          expect(getActiveSessionLifecycleMutationCount()).toBe(0);
-          expect(getActiveSessionWorkAdmissionCount()).toBe(0);
         } finally {
           await Promise.all(reservationReleases);
         }
         socket.close();
         expect(getSessionMutationCount()).toBe(0);
         expect(getSessionControllerWorkCount()).toBe(0);
-
       },
     );
   });

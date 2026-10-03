@@ -514,9 +514,8 @@ describe("hosted creation transfers accepted child input", () => {
         expect(listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
         expect(rpcSourceTesting.has(accepted.runId)).toBe(false);
       } finally {
-        await fixture.cleanup();
+        await fixture[Symbol.asyncDispose]();
       }
-
     },
   );
 
@@ -540,7 +539,7 @@ describe("hosted creation transfers accepted child input", () => {
         expect(fixture.provider).not.toHaveBeenCalled();
         expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
       } finally {
-        await fixture.cleanup();
+        await fixture[Symbol.asyncDispose]();
       }
     },
   );
@@ -565,9 +564,8 @@ describe("hosted creation transfers accepted child input", () => {
         expect(listSessionPendingInputs(scope)).toEqual({ items: [], total: 0 });
         expect(rpcSourceTesting.has(accepted.runId)).toBe(false);
       } finally {
-        await fixture.cleanup();
+        await fixture[Symbol.asyncDispose]();
       }
-
     },
   );
 

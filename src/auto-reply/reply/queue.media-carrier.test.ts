@@ -23,6 +23,7 @@ import { createReplyOperation } from "../../sessions/session-controller.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
 import { prepareChannelRunAdmission } from "./channel-run-admission.js";
+import { createQueueCase } from "./queue.case.test-support.js";
 import type { FollowupRun, QueueSettings } from "./queue.js";
 import { enqueueFollowupRun, scheduleFollowupDrain } from "./queue.js";
 import {
@@ -34,12 +35,64 @@ import {
   createOverflowSummaryRetrySource,
   resolveFollowupDeliveryContextKey,
 } from "./queue/delivery-context.js";
-
 import { clearFollowupQueue } from "./queue/state.js";
 import { createMockTypingController } from "./test-helpers.js";
 import { createTypingSignaler } from "./typing-mode.js";
 const queueKeys = new Set<string>();
 const evidenceCleanups = new Set<() => void>();
+
+function addCombinedCarrierFacts(run: FollowupRun): void {
+  run.toolsAllow = attachToolAllowlistIntersection(["exec"], [["exec"], ["exec", "message"]]);
+  run.disableTools = true;
+  run.run = {
+    ...run.run,
+    provider: "openai",
+    model: "gpt-route",
+    memberRoleIds: ["operator", "member"],
+    trustedInternalHandoff: {
+      kind: "subagent-completion",
+      sourceSessionKey: "agent:child",
+      targetSessionKey: "agent:parent",
+      targetSessionId: "session-1",
+      provider: "openai",
+      model: "gpt-route",
+    },
+    scheduledToolPolicy: { version: 1, mode: "trusted" },
+    runtimePluginToolGrant: {
+      pluginId: "workboard",
+      toolNames: ["workboard_complete"],
+    },
+  };
+}
+
+function expectCombinedCarrierFacts(run: FollowupRun | undefined): void {
+  expect(run).toBeDefined();
+  expect(run?.toolsAllow).toEqual(["exec"]);
+  expect(run?.toolsAllow ? readToolAllowlistIntersection(run.toolsAllow) : undefined).toEqual([
+    ["exec"],
+    ["exec", "message"],
+  ]);
+  expect(run?.disableTools).toBe(true);
+  expect(run?.run).toMatchObject({
+    provider: "openai",
+    model: "gpt-route",
+    memberRoleIds: ["operator", "member"],
+    trustedInternalHandoff: {
+      kind: "subagent-completion",
+      sourceSessionKey: "agent:child",
+      targetSessionKey: "agent:parent",
+      targetSessionId: "session-1",
+      provider: "openai",
+      model: "gpt-route",
+    },
+    scheduledToolPolicy: { version: 1, mode: "trusted" },
+    runtimePluginToolGrant: {
+      pluginId: "workboard",
+      toolNames: ["workboard_complete"],
+    },
+  });
+}
+
 const carrierRun = {
   provider: "openai",
   model: "gpt-route",
@@ -267,7 +320,6 @@ describe("followup prompt metadata carrier", () => {
       invoker: { state: "present", kind: "person" },
     });
   });
-
 
   it.each([
     { name: "trace", first: { traceLevelOverride: "off" }, second: { traceLevelOverride: "raw" } },

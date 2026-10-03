@@ -407,7 +407,6 @@ it.each(["native", "dispatch", "abort", "retry", "clearRun", "clear"] as const)(
             { runId, sessionKey },
           ).aborted,
         ).toBe(true);
-
       }
       expect(broadcaster.getBufferedAmount(client.connId)).toBe(socket.bufferedAmount);
       expected = "successor reply";
@@ -425,9 +424,12 @@ it.each(["native", "dispatch", "abort", "retry", "clearRun", "clear"] as const)(
       });
       chatRunState.clearRun(runId);
     } else {
-      const chatAbortControllers = new Map();
       registerChatAbortController({
-        chatAbortControllers,
+        target: captureSessionTarget({
+          storeScope: "/synthetic/chat-wire/" + runId,
+          sessionKey,
+          incarnation: runId,
+        }),
         runId,
         sessionId: runId,
         sessionKey,
@@ -438,7 +440,6 @@ it.each(["native", "dispatch", "abort", "retry", "clearRun", "clear"] as const)(
           {
             ...harness,
             ...broadcaster,
-            chatAbortControllers,
             removeChatRun: (sourceRunId, clientRunId, key) =>
               chatRunState.registry.remove(sourceRunId, clientRunId, key),
           },

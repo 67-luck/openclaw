@@ -20,10 +20,10 @@ import {
 } from "../config/sessions/targets.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.js";
+import { initializeSqliteRuntimeCapabilities } from "../infra/bun-sqlite-library.js";
 import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db-lifecycle.js";
-
 import {
   listOpenClawRegisteredAgentDatabases,
   unregisterOpenClawAgentDatabase,

@@ -12,7 +12,6 @@ it.each([false, true])(
   async (preparedPublication) => {
     const context = {
       getRuntimeConfig: () => ({}),
-      chatAbortControllers: new Map(),
       getSessionEventSubscriberConnIds: () => new Set(["listener"]),
       broadcastToConnIds: vi.fn(),
     } satisfies Parameters<typeof emitSessionsChanged>[0];

@@ -28,8 +28,8 @@ import { runReplyAgent } from "./agent-runner-run.js";
 import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
 import { enqueueFollowupRun, type FollowupRun } from "./queue.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
-import { clearFollowupDrainCallback } from "./queue/drain.js";
-import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
+import { clearSessionQueues } from "./queue/cleanup.js";
+import { getExistingFollowupQueue } from "./queue/state.js";
 import {
   REPLY_OPERATION_RUN_STATE,
   type ReplyOperationRunState,
@@ -142,8 +142,7 @@ describe("question response custody through reply adoption", () => {
         releaseFirst.resolve();
         await Promise.allSettled(followup.mock.results.map((result) => result.value));
         clearAgentRunContext("accepted-backing-work");
-        clearFollowupQueue(key);
-        clearFollowupDrainCallback(key);
+        clearSessionQueues([key]);
       }
     });
   });
@@ -242,8 +241,7 @@ describe("question response custody through reply adoption", () => {
       } finally {
         firstOutcome.resolve();
         await Promise.allSettled([firstSteer, waitingSteer]);
-        clearFollowupQueue(key);
-        clearFollowupDrainCallback(key);
+        clearSessionQueues([key]);
       }
     });
   });
@@ -372,8 +370,7 @@ describe("question response custody through reply adoption", () => {
         } finally {
           delivery.resolve();
           await adoption.catch(() => undefined);
-          clearFollowupQueue(key);
-          clearFollowupDrainCallback(key);
+          clearSessionQueues([key]);
         }
       });
     },
@@ -923,8 +920,7 @@ describe("question response custody through reply adoption", () => {
             await answerOutcome;
             await adoption.catch(() => undefined);
             claim.dispose();
-            clearFollowupQueue(key);
-            clearFollowupDrainCallback(key);
+            clearSessionQueues([key]);
             if (hidden) {
               clearAgentRunContext("accepted-backing-work");
             }

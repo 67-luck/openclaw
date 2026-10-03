@@ -13,7 +13,9 @@ import type { MsgContext } from "../templating.js";
 import { handleStopCommand } from "./commands-session-abort.js";
 import type { HandleCommandsParams } from "./commands-types.js";
 
-const persistAbortTargetEntryMock = vi.hoisted(() => vi.fn(async () => true));
+const persistAbortTargetEntryMock = vi.hoisted(() =>
+  vi.fn<typeof import("./commands-session-store.js").persistAbortTargetEntry>(async () => true),
+);
 
 const resolveCommandSessionEntryForKeyMock = vi.hoisted(() =>
   vi.fn(() => ({ entry: undefined, key: undefined })),
@@ -61,7 +63,6 @@ vi.mock("./commands-session-store.js", () => ({
   persistAbortTargetEntry: persistAbortTargetEntryMock,
   resolveCommandSessionEntryForKey: resolveCommandSessionEntryForKeyMock,
 }));
-
 
 const formatAllowFrom = ({ allowFrom }: { allowFrom: Array<string | number> }) => {
   const values: string[] = [];

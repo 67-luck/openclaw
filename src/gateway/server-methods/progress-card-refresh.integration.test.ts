@@ -1,7 +1,8 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
 import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
-
+import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
+import { prepareReplyToolAuthority } from "../../auto-reply/reply/reply-tool-authority.js";
 import { loadTranscriptEventsSync } from "../../config/sessions/session-accessor.js";
 import {
   getAgentRunContext,

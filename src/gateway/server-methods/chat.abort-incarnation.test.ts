@@ -124,7 +124,6 @@ it.each([false, true].flatMap((reset) => [true, false].map((completed) => ({ res
     const mutation = vi
       .spyOn(sessionLifecycle, "runSessionMutation")
       .mockImplementation(async (params) => {
-
         if (
           holdEndedMutation &&
           "scope" in params &&
@@ -137,7 +136,7 @@ it.each([false, true].flatMap((reset) => [true, false].map((completed) => ({ res
           endedMutationEntered.resolve();
           await resumeEndedMutation.promise;
         }
-        return await mutateSession(operation, params);
+        return await mutateSession(params);
       });
     const restoreDrain = observeSessionWorkAdmissionDrain(async (params, released) => {
       if (

@@ -12,8 +12,8 @@ import {
   getExistingFollowupQueue,
   getFollowupQueue,
 } from "../auto-reply/reply/queue/state.js";
-import { SESSION_TOTAL_TOKENS_VERSION } from "../config/sessions.js";
-
+import { SESSION_TOTAL_TOKENS_VERSION, type SessionEntry } from "../config/sessions.js";
+import { contextBudgetStatusFixture } from "../config/sessions/context-budget.test-support.js";
 import {
   appendTranscriptMessage,
   appendTranscriptEvent,
@@ -71,13 +71,18 @@ function expectMainCompactionResult(
   expect(compacted.payload?.compacted, JSON.stringify(compacted)).toBe(expectedCompacted);
 }
 
-async function createCompactionSession(sessionId: string, { totalLines = 3 } = {}) {
-  const sessionKey = "agent:main:main";
+async function createCompactionSession(
+  sessionId: string,
+  {
+    totalLines = 3,
+    entry = {},
+    sessionKey = "agent:main:main",
+  }: { totalLines?: number; entry?: Partial<SessionEntry>; sessionKey?: string } = {},
+) {
   const { dir, storePath } = await createSessionStoreDir();
-  await seedSessionEntry({ entry: sessionStoreEntry(sessionId), sessionKey, storePath });
+  await seedSessionEntry({ entry: sessionStoreEntry(sessionId, entry), sessionKey, storePath });
   await seedTranscriptRows({ sessionId, sessionKey, storePath, totalLines });
   return { dir, storePath, sessionId, sessionKey };
-
 }
 
 test("sessions.compact without maxLines runs embedded manual compaction without checkpoint metadata", async () => {
@@ -679,7 +684,6 @@ test("sessions.compact preserves summary-elided queued follow-up work", async ()
     sources: [elidedRun],
     summaryLines: ["elided summary"],
     sourceRefs: new Map(),
-
   });
 
   const { ws } = await openClient();
@@ -694,7 +698,6 @@ test("sessions.compact preserves summary-elided queued follow-up work", async ()
     clearFollowupQueue(sessionKey);
     ws.close();
   }
-
 });
 
 test("sessions.compact refuses real compaction while a worker inference owns the session", async () => {

@@ -331,55 +331,21 @@ describe("worker turn launcher reclaimed placement", () => {
     }
   });
 
-  it("rejects an actual worker turn when its lifecycle rotates during placement admission", async () => {
-    await seedActivePlacement();
-    const runId = "run-worker-rotated-during-admission";
-    const registeredAt = Date.now();
-    const clock = vi.spyOn(Date, "now").mockReturnValue(registeredAt);
-    let lifecycleGeneration = getAgentEventLifecycleGeneration();
-    const onLaneWait = vi.fn<NonNullable<RunEmbeddedAgentParams["onLaneWait"]>>();
-    let params: RunEmbeddedAgentParams & { sessionFile: string } = {
-      ...turn(runId),
-      lifecycleGeneration,
-      trigger: "user",
-      onLaneWait,
-    };
-    registerAgentRunContext(runId, { lifecycleGeneration, registeredAt, sessionKey: SESSION_KEY });
-
-    const workspaceResolutionStarted = createDeferred();
-    const resumeWorkspaceResolution = createDeferred();
-    const environments = unusedEnvironments();
-    const provider = createWorkerSessionTurnPlacementProvider({
-      environments,
-      placements,
-      resolveWorkspace: async () => {
-        workspaceResolutionStarted.resolve();
-        await resumeWorkspaceResolution.promise;
-        return { kind: "local", path: root };
-      },
-    });
-    const uninstallPlacement = installSessionPlacementAdmissionProvider(provider);
-    const controller = createEmbeddedRunLaneController({
-      getLifecycleGeneration: () => lifecycleGeneration,
-      getParams: () => params,
-      globalLane: `global:${runId}`,
-      initialQueuedLifecycleGeneration: lifecycleGeneration,
-      setLifecycleGeneration: (generation) => {
-        lifecycleGeneration = generation;
-      },
-      setParams: (next) => {
-        params = next;
-      },
-    });
-    const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
-    const pending = controller.enqueueSession(() => controller.enqueueGlobal(runLocal));
-
-    try {
-      await workspaceResolutionStarted.promise;
-      clock.mockReturnValue(registeredAt + 30 * 60 * 1000 + 1);
-      const replacementGeneration = rotateAgentEventLifecycleGeneration();
-      expect(sweepStaleRunContexts()).toBe(1);
-
+  it.each(["placement admission", "worker preparation"] as const)(
+    "rejects an actual worker turn when its lifecycle rotates during %s",
+    async (phase) => {
+      await seedActivePlacement();
+      const runId = "run-worker-rotated-during-admission";
+      const registeredAt = Date.now();
+      const clock = vi.spyOn(Date, "now").mockReturnValue(registeredAt);
+      let lifecycleGeneration = getAgentEventLifecycleGeneration();
+      const onLaneWait = vi.fn<NonNullable<RunEmbeddedAgentParams["onLaneWait"]>>();
+      let params: RunEmbeddedAgentParams & { sessionFile: string } = {
+        ...turn(runId),
+        lifecycleGeneration,
+        trigger: "user",
+        onLaneWait,
+      };
       registerAgentRunContext(runId, {
         lifecycleGeneration,
         registeredAt,
@@ -412,7 +378,6 @@ describe("worker turn launcher reclaimed placement", () => {
         getParams: () => params,
         globalLane: `global:${runId}`,
         initialQueuedLifecycleGeneration: lifecycleGeneration,
-        sessionLane: `session:${runId}`,
         setLifecycleGeneration: (generation) => {
           lifecycleGeneration = generation;
         },

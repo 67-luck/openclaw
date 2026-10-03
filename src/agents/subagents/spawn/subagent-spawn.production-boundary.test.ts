@@ -1,9 +1,9 @@
-import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 /** Recursive spawn authority must survive the real Gateway and agent-command admission path. */
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
 import { cleanupPreparedModelRuntimeHarness, getPreparedModelRuntimeMocks, resetPreparedModelRuntimeHarness } from "../../prepared-model-runtime.test-harness.js";
 import { expectDefined } from "@openclaw/normalization-core";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
@@ -37,7 +37,11 @@ import { withTimeout } from "../../../infra/fs-safe.js";
 import { getActivePluginRegistry } from "../../../plugins/runtime.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import { beginSessionEffect } from "../../../sessions/session-controller.lifecycle.js";
-import { isRpcSourceExecuting } from "../../../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSource,
+  getRpcSourceIdentity,
+  isRpcSourceExecuting,
+} from "../../../sessions/session-controller.rpc-sources.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { createTestRegistry } from "../../../test-utils/channel-plugins.js";
 import {
@@ -83,7 +87,6 @@ import {
   createBoundWorker,
   createSpawnBoundaryParent,
   createSpawnOperatorSource,
-  readBoundExecutionState,
   registerYieldedRequesterBatchCase,
 } from "./subagent-spawn.production-boundary.test-support.js";
 import { registerOperatorSpawnRollbackCases } from "./subagent-spawn.rollback.test-support.js";
@@ -287,7 +290,7 @@ function readBoundExecutionState(
   const receipt = childRunId ? context.dedupe.get(`agent:${childRunId}`) : undefined;
   const payload = asOptionalRecord(receipt?.payload);
   const cause = asOptionalRecord(asOptionalRecord(receipt?.error)?.cause);
-  const controller = childRunId ? rpcSourceTesting.get(childRunId) : undefined;
+  const controller = childRunId ? getRpcSource(childRunId) : undefined;
   const execution = childRunId ? subagentRuns.get(childRunId)?.execution : undefined;
   const collector = childRunId ? subagentRuns.get(childRunId) : undefined;
   const label = (value: unknown, allowed: readonly string[]) =>
@@ -363,7 +366,7 @@ async function closeBoundGateway(
       () => {
         expect(bound.execution.hasPendingWork).toBe(false);
         if (childRunId) {
-          expect(rpcSourceTesting.has(childRunId)).toBe(false);
+          expect(getRpcSource(childRunId)).toBeUndefined();
         }
         // Fence new work in the same turn that observes idle; never start an unbounded drain.
         return bound.execution.drain();
@@ -578,9 +581,12 @@ describe("recursive spawn production boundary", () => {
         provider: "custom",
         model: "child-model",
       });
-      expect(rpcSourceTesting.get(details.runId)?.adapter).toMatchObject({
+      const source = expectDefined(getRpcSource(details.runId), "accepted child source");
+      expect(getRpcSourceIdentity(source)).toMatchObject({
         agentId: "main",
         sessionKey: details.childSessionKey,
+      });
+      expect(source.adapter).toMatchObject({
         operationalRunInstance: { runId: details.runId },
       });
       const observedRuntimeIdentity = identities.at(-1);
@@ -793,7 +799,7 @@ describe("recursive spawn production boundary", () => {
             );
           }
           expect(runEmbeddedAgent).not.toHaveBeenCalled();
-          expect(rpcSourceTesting.has(childRunId)).toBe(false);
+          expect(getRpcSource(childRunId)).toBeUndefined();
           expect(
             loadSessionEntry({ storePath: bound.storePath, sessionKey: parentSessionKey }),
           ).toMatchObject({ sessionId: "parent-session" });
@@ -811,7 +817,7 @@ describe("recursive spawn production boundary", () => {
         if (parentState === "stopped" || parentState === "operator-stopped") {
           await Promise.resolve();
           expect(runEmbeddedAgent).not.toHaveBeenCalled();
-          expect(rpcSourceTesting.has(childRunId)).toBe(false);
+          expect(getRpcSource(childRunId)).toBeUndefined();
           expect(subagentRuns.get(childRunId)).toMatchObject({
             collectorCompletion: { status: "killed" },
           });
@@ -821,8 +827,11 @@ describe("recursive spawn production boundary", () => {
             runId: childRunId,
             sessionKey: details.childSessionKey,
           });
-          expect(rpcSourceTesting.get(childRunId)?.adapter).toMatchObject({
+          const source = expectDefined(getRpcSource(childRunId), "started child source");
+          expect(getRpcSourceIdentity(source)).toMatchObject({
             sessionKey: details.childSessionKey,
+          });
+          expect(source.adapter).toMatchObject({
             operationalRunInstance: { runId: childRunId },
           });
           expect(subagentRuns.get(childRunId)).toMatchObject({

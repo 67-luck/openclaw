@@ -1,4 +1,3 @@
-import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
 import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
@@ -18,7 +17,7 @@ import {
   retireSessionControllerInput,
   releaseSessionControllerClaim,
 } from "../../sessions/session-controller.mailbox.js";
-
+import { getRpcSource, registerRpcSource } from "../../sessions/session-controller.rpc-sources.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import {
@@ -41,7 +40,6 @@ afterEach(async () => {
     retireSessionControllerInput(input);
   }
   await Promise.allSettled(inputs.map((input) => input.settlement.promise));
-
 });
 
 async function setup() {
@@ -86,8 +84,8 @@ async function setup() {
     sessionId,
     owner: { connId: client.connId },
   });
-  rpcSourceTesting.set("active", active);
-  rpcSourceTesting.set("queued", queued);
+  registerRpcSource("active", active);
+  registerRpcSource("queued", queued);
   let current = true;
   const respond = vi.fn();
   const stop = () =>
@@ -140,7 +138,7 @@ it("UI-style narrow Stop clears owned lane entries through their signals and pre
     sessionId: "previous-incarnation",
     owner: { connId: fixture.client.connId },
   });
-  rpcSourceTesting.set("foreign", foreign);
+  registerRpcSource("foreign", foreign);
   const ownFollowup = followup("owned");
   const foreignFollowup = followup("foreign", "previous-incarnation");
   const queue = readQueue();
@@ -173,7 +171,7 @@ it("UI-style narrow Stop clears owned lane entries through their signals and pre
     expect(fixture.active.input.abortSignal.aborted).toBe(true);
     expect(fixture.queued.input.abortSignal.aborted).toBe(true);
     expect(foreign.input.abortSignal.aborted).toBe(false);
-    expect(rpcSourceTesting.get("foreign")).toBe(foreign);
+    expect(getRpcSource("foreign")).toBe(foreign);
     expect(ownFollowup.settled).toHaveBeenCalledOnce();
     expect(foreignFollowup.settled).not.toHaveBeenCalled();
     expect(readQueue()).toBe(queue);
@@ -243,31 +241,6 @@ it.each([true, false])(
       "research-previous",
       "research-next",
     );
-    const entered = createDeferred();
-    const release = createDeferred();
-    const lane = resolveEmbeddedSessionLane(sharedKey);
-    const blocker = enqueueCommandInLane(lane, async () => {
-      entered.resolve();
-      await release.promise;
-    });
-    await entered.promise;
-    const commands = [
-      enqueueCommandInLane(lane, async () => "main tagged", {
-        sessionTarget: { agentId: "main", sessionKey: sharedKey, sessionId: "main-shared" },
-      }),
-      enqueueCommandInLane(lane, async () => "main untagged"),
-      enqueueCommandInLane(lane, async () => "research", {
-        sessionTarget: { agentId: "research", sessionKey: sharedKey, sessionId: researchSessionId },
-      }),
-      enqueueCommandInLane(lane, async () => "research previous", {
-        sessionTarget: {
-          agentId: "research",
-          sessionKey: sharedKey,
-          sessionId: "research-previous",
-        },
-      }),
-    ];
-    const settled = Promise.allSettled(commands);
     try {
       const respond = vi.fn();
       await handleGatewayRequest({
@@ -289,30 +262,20 @@ it.each([true, false])(
       expect(owned.settled).toHaveBeenCalledOnce();
       expect(otherIncarnation.settled).toHaveBeenCalledOnce();
       expect
-        .soft(FOLLOWUP_QUEUES.get(sharedKey)?.items, "main follow-up must remain queued")
+        .soft(
+          getExistingFollowupQueue(sharedKey, foreign.run.controllerInput?.mailbox.owner.target)
+            ?.items,
+          "main follow-up must remain queued",
+        )
         .toEqual([foreign.run]);
-      release.resolve();
-      await blocker;
-      expect(await settled).toEqual([
-        { status: "fulfilled", value: "main tagged" },
-        { status: "fulfilled", value: "main untagged" },
-        {
-          status: "rejected",
-          reason: expect.objectContaining({ name: "CommandLaneClearedError" }),
-        },
-        {
-          status: "rejected",
-          reason: expect.objectContaining({ name: "CommandLaneClearedError" }),
-        },
-      ]);
     } finally {
-      release.resolve();
-      for (const queueKey of [sharedKey, canonicalKey, researchSessionId]) {
-        clearFollowupQueue(queueKey);
-        clearFollowupDrainCallback(queueKey);
+      for (const run of [foreign.run, owned.run, otherIncarnation.run]) {
+        const input = run.controllerInput;
+        if (input) {
+          retireSessionControllerInput(input);
+          await input.settlement.promise.catch(() => {});
+        }
       }
-      clearCommandLane(lane);
-      await Promise.allSettled([blocker, settled]);
     }
   },
 );

@@ -3,12 +3,11 @@
  */
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
-import { registerSubagentRun } from "../../agents/subagents/registry/subagent-registry.js";
 import {
+  addSubagentRunForTests,
   getSubagentRunByChildSessionKey,
   resetSubagentRegistryForTests,
 } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
-
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { bindSessionRowProjection } from "../session-row-projection-access.js";
@@ -17,7 +16,7 @@ import { workerService } from "./environments.test-support.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./types.js";
 
 const chatAbortMock = vi.fn();
-const resolveSessionKeyForRunMock = vi.fn();
+const resolveSessionForRunMock = vi.fn();
 
 const loadSessionEntryMock = vi.fn((sessionKey: string, _opts?: { agentId?: string }) => ({
   canonicalKey: sessionKey,
@@ -47,7 +46,6 @@ vi.mock("../session-utils.js", async () => {
       loadScopedSession(...(args as [string, { agentId?: string }?])),
   };
 });
-
 
 import { createSessionRowProjectionFixture } from "../session-row-projection.test-support.js";
 import { callSessions } from "./sessions.abort-agent-scope.request.test-support.js";
@@ -132,7 +130,6 @@ describe("sessions.abort agent scope", () => {
     chatAbortMock.mockReset();
     resolveSessionForRunMock.mockReset();
     loadSessionEntryMock.mockReset();
-
   });
 
   it("does not abort an active run whose session key belongs to another requested agent", async () => {
@@ -231,7 +228,7 @@ describe("sessions.abort agent scope", () => {
   it("kills controlled subagents after the parent run has already ended", async () => {
     await useRealChatAbortHandlerOnce();
     const childSessionKey = "agent:main:subagent:orphaned-after-parent-stop";
-    addSubagentRunForTests({
+    await addSubagentRunForTests({
       runId: "run-orphaned-child",
       childSessionKey,
       controllerSessionKey: "agent:main:main",
@@ -257,31 +254,26 @@ describe("sessions.abort agent scope", () => {
       },
     });
 
+    loadSessionEntryMock.mockImplementation((sessionKey: string) => ({
+      cfg: context.getRuntimeConfig(),
+      canonicalKey: sessionKey,
+    }));
 
-        loadSessionEntryMock.mockImplementation((sessionKey: string) => ({
-          cfg: context.getRuntimeConfig(),
-          canonicalKey: sessionKey,
-        }));
+    const respond = await callSessions(
+      "sessions.abort",
+      { key: "agent:main:main" },
+      { context, reqId: "req-orphaned-child" },
+    );
 
-        const respond = await callSessions(
-          "sessions.abort",
-          { key: "agent:main:main" },
-          { context, reqId: "req-orphaned-child" },
-        );
-
-        expect(respond).toHaveBeenCalledWith(
-          true,
-          { ok: true, abortedRunId: null, status: "aborted" },
-          undefined,
-          undefined,
-        );
-        expect(getSubagentRunByChildSessionKey(childSessionKey)).toMatchObject({
-          endedReason: "subagent-killed",
-          killReconciliation: { suppressTaskDelivery: true },
-        });
-      } finally {
-        await resetSubagentRegistryForTests({ persist: false });
-      }
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      { ok: true, abortedRunId: null, status: "aborted" },
+      undefined,
+      undefined,
+    );
+    expect(getSubagentRunByChildSessionKey(childSessionKey)).toMatchObject({
+      endedReason: "subagent-killed",
+      killReconciliation: { suppressTaskDelivery: true },
     });
   });
 
@@ -607,7 +599,6 @@ describe("sessions.abort agent scope", () => {
     expect(selected.input.abortSignal.aborted).toBe(true);
     expect(foreign.input.abortSignal.aborted).toBe(false);
   });
-
 
   it("leaves global-scope cleanup on chat.abort without an agent-qualified queue key", async () => {
     mockChatSuccess(chatAbortMock, { ok: true, aborted: false, runIds: [] });

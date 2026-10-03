@@ -2,14 +2,13 @@
 import { expect, it } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { captureSessionControllerSourceSettlement } from "../../../sessions/session-controller.mailbox.js";
-import { clearSessionQueues, enqueueFollowupRun } from "../queue.js";
-
+import { enqueueFollowupRun } from "../queue.js";
 import {
   createQueueTestRun as createRun,
   installQueueRuntimeErrorSilencer,
 } from "../queue.test-helpers.js";
+import { clearSessionQueues } from "./cleanup.js";
 import { getExistingFollowupQueue } from "./state.js";
-
 import type { FollowupRun, QueueSettings } from "./types.js";
 
 installQueueRuntimeErrorSilencer();

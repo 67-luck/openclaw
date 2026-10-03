@@ -8,8 +8,7 @@ import {
   resolveActiveSessionRunId,
 } from "../../sessions/session-controller.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { resolvePreparedReplyQueueState } from "./get-reply-run-queue.js";
-
+import { waitForPreparedReplyQueue } from "./get-reply-run-queue.js";
 
 describe("waitForPreparedReplyQueue", () => {
   it("waits for the active session before refreshing and rechecking admission", async () => {
@@ -95,8 +94,7 @@ describe("waitForPreparedReplyQueue", () => {
       if (!target) {
         throw new Error("Missing interrupt owner");
       }
-      const waiting = resolvePreparedReplyQueueState({
-        activeRunQueueAction: "run-now",
+      const waiting = waitForPreparedReplyQueue({
         activeSessionId: operation.sessionId,
         queueMode: "interrupt",
         interruptActiveRun: async () => (await interruptReplyRunTarget(target, 100)).settled,
@@ -113,7 +111,9 @@ describe("waitForPreparedReplyQueue", () => {
       operation.completeWithAfterClearBarrier(delivery.promise);
       expect(isSessionRunActiveForKey(operation.key)).toBe(false);
       await vi.advanceTimersByTimeAsync(100);
-      await expect(waiting).resolves.toMatchObject({ kind: "reply" });
+      await expect(waiting).resolves.toMatchObject({
+        text: expect.stringContaining("shutting down"),
+      });
       expect(refreshPreparedState).not.toHaveBeenCalled();
     } finally {
       delivery.resolve();

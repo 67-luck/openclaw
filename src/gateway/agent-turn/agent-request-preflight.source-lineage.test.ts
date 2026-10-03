@@ -6,9 +6,10 @@ import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { createChatRunState } from "../server-chat-state.js";
 import { prepareAgentRequestPreflight } from "./agent-request-preflight.js";
-import { createTrackedDispatch } from "./agent-run-dispatch.test-support.js";
 import { createAgentTurnIo } from "./io.js";
+import type { AgentTurnContext } from "./types.js";
 
 it.each([
   { kind: "child", location: "configured", expectedRole: "subagent" },

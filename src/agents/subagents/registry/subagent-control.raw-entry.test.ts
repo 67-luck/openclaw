@@ -5,20 +5,19 @@ import { expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../../test/helpers/promise.js";
 import { enqueueFollowupRun } from "../../../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../../../auto-reply/reply/queue.test-helpers.js";
-import {
-  clearFollowupQueue,
-  getExistingFollowupQueue,
-} from "../../../auto-reply/reply/queue/state.js";
+import { clearSessionQueues } from "../../../auto-reply/reply/queue/cleanup.js";
+import { getExistingFollowupQueue } from "../../../auto-reply/reply/queue/state.js";
 import { setRuntimeConfigSnapshot } from "../../../config/config.js";
 import {
   loadSessionEntry,
   replaceSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
-import { clearCommandLane, enqueueCommandInLane } from "../../../process/command-queue.js";
-import { beginSessionWorkAdmission } from "../../../sessions/session-lifecycle-admission.js";
+import {
+  beginSessionEffect,
+  captureSessionTarget,
+} from "../../../sessions/session-controller.lifecycle.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
-import { resolveEmbeddedSessionLane } from "../../embedded-agent-runner/lanes.js";
 import { clearActiveEmbeddedRun, setActiveEmbeddedRun } from "../../embedded-agent-runner/runs.js";
 import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";
 import { isSubagentRegistryWriteCommand } from "../../subagent-test-fixtures.test-helpers.js";
@@ -122,23 +121,14 @@ it.each(["main", "research"] as const)(
       sessionId: foreignId,
     });
     enqueueFollowupRun("global", followup, { mode: "followup" }, "none", undefined, false);
-    const lane = resolveEmbeddedSessionLane("global");
-    const entered = createDeferred();
-    const release = createDeferred();
-    const blocker = enqueueCommandInLane(lane, async () => {
-      entered.resolve();
-      await release.promise;
+    const foreignTarget = captureSessionTarget({
+      storeScope: foreignStorePath,
+      sessionKey: "global",
+      agentId: foreignAgent,
+      incarnation: foreignId,
     });
-    await entered.promise;
-    const foreignCommand = enqueueCommandInLane(lane, async () => "foreign command survived", {
-      sessionTarget: { agentId: foreignAgent, sessionKey: "global", sessionId: foreignId },
-    });
-    const childCommand = enqueueCommandInLane(lane, async () => "child must not start", {
-      sessionTarget: { agentId: owner, sessionKey: "global", sessionId: childId },
-    });
-    const outcome = Promise.allSettled([foreignCommand, childCommand]);
     const interruptChild = vi.fn(() => childAdmission.release());
-    const childAdmission = await beginSessionWorkAdmission({
+    const childAdmission = await beginSessionEffect({
       scope: childStorePath,
       identities: ["global", childId],
       assertAllowed: () => {},
@@ -157,17 +147,9 @@ it.each(["main", "research"] as const)(
           ?.abortedLastRun,
       ).toBe(true);
       expect.soft(foreignAbort).not.toHaveBeenCalled();
-      expect.soft(getExistingFollowupQueue("global")?.items.includes(followup) ?? false).toBe(true);
-      release.resolve();
-      await blocker;
-      const [foreignResult, childResult] = await outcome;
       expect
-        .soft(foreignResult)
-        .toEqual({ status: "fulfilled", value: "foreign command survived" });
-      expect(childResult).toMatchObject({
-        status: "rejected",
-        reason: { name: "CommandLaneClearedError" },
-      });
+        .soft(getExistingFollowupQueue("global", foreignTarget)?.items.includes(followup) ?? false)
+        .toBe(true);
       expect
         .soft(
           loadSessionEntry({
@@ -179,11 +161,8 @@ it.each(["main", "research"] as const)(
         .not.toBe(true);
     } finally {
       childAdmission.release();
-      release.resolve();
-      clearCommandLane(lane);
-      clearFollowupQueue("global");
+      clearSessionQueues(["global"], foreignTarget);
       clearActiveEmbeddedRun(foreignId, foreignHandle, "global");
-      await Promise.allSettled([blocker, outcome]);
     }
   },
 );

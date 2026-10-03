@@ -13,7 +13,7 @@ import {
   loadTranscriptEvents,
   replaceSessionEntry,
 } from "../../../config/sessions/session-accessor.js";
-import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
+import { createContext } from "../../../gateway/server-plugin-in-process-dispatch.test-support.js";
 import { persistGatewaySessionLifecycleEvent } from "../../../gateway/session-lifecycle-state.js";
 import {
   getAgentEventLifecycleGeneration,
@@ -86,11 +86,10 @@ describe("subagent parent recovery — durable yielded continuation", () => {
       },
     });
     let previousOpen = true;
-    const previousContext = {
+    const previousContext = Object.assign(createContext(), {
       recoveryRuntime: gatewayRuntime,
-      chatAbortControllers: new Map(),
       resolveGatewayContext: () => (previousOpen ? previousContext : undefined),
-    } as GatewayRequestContext;
+    });
     bindGatewayContextResolver(predecessor, previousContext.resolveGatewayContext);
     await addSubagentRunForTests(predecessor);
     const registeredPredecessor = getSubagentRunByChildSessionKey(childSessionKey)!;
@@ -101,11 +100,10 @@ describe("subagent parent recovery — durable yielded continuation", () => {
 
     let replacementOpen = true;
     const replacementRuntime = { ...gatewayRuntime };
-    const replacementContext = {
+    const replacementContext = Object.assign(createContext(), {
       recoveryRuntime: replacementRuntime,
-      chatAbortControllers: new Map(),
       resolveGatewayContext: () => (replacementOpen ? replacementContext : undefined),
-    } as GatewayRequestContext;
+    });
     bindGatewayContextResolver(replacementRuntime, replacementContext.resolveGatewayContext);
     await activateSubagentRegistry(() => replacementContext);
     await testing.sweepOnceForTests();

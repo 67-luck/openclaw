@@ -25,7 +25,7 @@ it("retargets an already queued follow-up after a committed model reset", () => 
       provider: "anthropic",
       model: "old-override",
       hasSessionModelOverride: true,
-      modelOverrideSource: "user",
+      modelOverrideSource: "user" as const,
       timeoutMs: 30_000,
       blockReplyBreak: "message_end" as const,
     },

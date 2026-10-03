@@ -237,7 +237,7 @@ describe("queued chat input withdrawal", () => {
           await recorder.persistApproved();
         }
         const queuedBefore = isRpcSourceQueued(active);
-        const pending = listSessionPendingInputs(fixture.scope);
+        const pending = await listSessionPendingInputs(fixture.scope);
 
         const transcript = loadTranscriptEventsSync(fixture.scope);
         const params = { sessionKey: fixture.scope.sessionKey, runId, discardPendingInput: true };
@@ -256,7 +256,7 @@ describe("queued chat input withdrawal", () => {
         expect(active.input.abortSignal.aborted).toBe(false);
         expect(rpcSourceTesting.get(runId)).toBe(active);
         expect(isRpcSourceQueued(active)).toBe(queuedBefore);
-        expect(listSessionPendingInputs(fixture.scope)).toEqual(pending);
+        expect(await listSessionPendingInputs(fixture.scope)).toEqual(pending);
 
         expect(loadTranscriptEventsSync(fixture.scope)).toEqual(transcript);
       } finally {
@@ -327,15 +327,20 @@ describe("queued chat input withdrawal", () => {
         let requestCurrent = true;
         unsubscribe = sessionChanges.subscribe((change) => {
           if ("sessionKey" in change && change.sessionKey === fixture.scope.sessionKey) {
-            const input = listSessionPendingInputs(fixture.scope).items[0];
-            const withdrawn = input?.state === "cancelled" && input.message.display === false;
-            published.push(withdrawn);
-            if (withdrawn && afterRefusal === "retired" && !replacement) {
+            published.push(
+              Promise.allSettled([
+                listSessionPendingInputs(fixture.scope).then(({ items }) => {
+                  const input = items[0];
+                  return input?.state === "cancelled" && input.message.display === false;
+                }),
+              ]).then(([result]) => result),
+            );
+            // Revoke during publication; awaiting the schema-24 read would miss this race.
+            if (afterRefusal === "retired" && !replacement) {
               // Replace correlation during publication, but reserve the new source
               // through its real physical owner. The hold still belongs to old input.
               rpcSourceTesting.delete(runId);
               const registration = registerChatAbortController({
-
                 runId,
                 ...fixture.scope,
                 target: captureSessionTarget({
@@ -385,7 +390,7 @@ describe("queued chat input withdrawal", () => {
           expect(isRpcSourceQueued(active)).toBe(true);
         }
         expect(active.input.abortSignal.aborted).toBe(false);
-        expect(listSessionPendingInputs(fixture.scope).items[0]?.state).toBe("queued");
+        expect((await listSessionPendingInputs(fixture.scope)).items[0]?.state).toBe("queued");
 
         expect(published).toEqual([]);
 

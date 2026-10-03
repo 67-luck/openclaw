@@ -16,7 +16,6 @@ import {
 } from "../agents/tools/gateway-caller-context.js";
 import * as followupCustody from "../agents/tools/sessions-send-followup-custody.js";
 import { createSessionsSendTool } from "../agents/tools/sessions-send-tool.js";
-import { createReplyTurnParticipants } from "../auto-reply/reply/reply-run-registry.tool-authority.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import { listSessionPendingInputs } from "../config/sessions/session-accessor.pending-inputs.js";
 import {
@@ -24,8 +23,11 @@ import {
   runExclusiveSqliteSessionWrite,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { registerInternalHook, unregisterInternalHook } from "../hooks/internal-hooks.js";
+import { emitAgentEvent } from "../infra/agent-events.js";
+import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
+import * as gatewayWork from "../process/gateway-work-admission.js";
+import { createReplyTurnParticipants } from "../sessions/session-controller.tool-authority.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
-
 import type { PreparedAgentRunDispatch } from "./agent-turn/agent-run-admission-types.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import { createOperatorClient } from "./server-plugin-in-process-dispatch.test-support.js";

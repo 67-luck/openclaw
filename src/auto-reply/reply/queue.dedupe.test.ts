@@ -15,14 +15,38 @@ import {
   createDrainRecorder,
   installQueueRuntimeErrorSilencer,
 } from "./queue.test-helpers.js";
-import { clearFollowupDrainCallback } from "./queue/drain.js";
 import { resetRecentQueuedMessageIdDedupe } from "./queue/enqueue.test-support.js";
 import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
 
 installQueueRuntimeErrorSilencer();
+const collectSettings: QueueSettings = {
+  mode: "collect",
+  debounceMs: 0,
+  cap: 50,
+  dropPolicy: "summarize",
+};
 const settings = createQueueSettings();
 let sequence = 0;
 let key: string;
+
+function createFollowupCollector(expectedCalls = 1): {
+  calls: FollowupRun[];
+  done: ReturnType<typeof createDeferred<void>>;
+  runFollowup: (run: FollowupRun) => Promise<void>;
+} {
+  const calls: FollowupRun[] = [];
+  const done = createDeferred();
+  return {
+    calls,
+    done,
+    runFollowup: async (run: FollowupRun) => {
+      calls.push(run);
+      if (calls.length >= expectedCalls) {
+        done.resolve();
+      }
+    },
+  };
+}
 
 function source(prompt: string, overrides: Partial<Parameters<typeof createRun>[0]> = {}) {
   return createRun({
@@ -40,7 +64,6 @@ beforeEach(() => {
 });
 afterEach(() => {
   clearFollowupQueue(key);
-  clearFollowupDrainCallback(key);
   vi.useRealTimers();
 });
 
@@ -213,7 +236,6 @@ describe("followup queue deduplication", () => {
     expect(calls).toHaveLength(1);
   });
 
-
   it("deduplicates same message_id across distinct enqueue module instances", async () => {
     const enqueueA = await importFreshModule<typeof import("./queue/enqueue.js")>(
       import.meta.url,
@@ -300,32 +322,6 @@ describe("followup queue deduplication", () => {
             false,
           ),
         ).toBe(true);
-        expect(onAbandoned).not.toHaveBeenCalled();
-        expect(runFollowup).not.toHaveBeenCalled();
-
-        controller.abort(new Error("ingress watchdog released claim"));
-        const retry = createRun({
-          prompt: "retry me",
-          messageId: "retry-id",
-          originatingChannel: "discord",
-          originatingTo: "channel:dormant",
-        });
-        retry.turnAdoptionLifecycle = { onAdopted: () => {} };
-        // No drain, promise join, or owner-clear event may be needed before ingress retries.
-        expect(
-          enqueueFollowupRun(key, retry, collectSettings, "message-id", runFollowup, false),
-        ).toBe(true);
-        expect(onAbandoned).toHaveBeenCalledOnce();
-        await first.controllerInput!.settlement.promise;
-        expect(onSettled).toHaveBeenCalledOnce();
-        await Promise.resolve();
-        expect(runFollowup.mock.calls.map(([run]) => run.messageId)).toEqual(
-          storage === "pending" ? ["retry-id"] : [],
-        );
-        expect(getExistingFollowupQueue(key)?.draining).toBe(false);
-      } finally {
-        clearSessionQueues([key]);
-
       }
       const queue = getExistingFollowupQueue(key);
       const sources =
@@ -345,6 +341,7 @@ describe("followup queue deduplication", () => {
       // Retrying ingress must not need a drain or an owner-clear event.
       expect(enqueueFollowupRun(key, retry, settings, "message-id", runFollowup, false)).toBe(true);
       expect(onAbandoned).toHaveBeenCalledOnce();
+      await first.controllerInput!.settlement.promise;
       expect(onSettled).toHaveBeenCalledOnce();
       await Promise.resolve();
       expect(runFollowup.mock.calls.map(([run]) => run.messageId)).toEqual(
@@ -364,7 +361,6 @@ describe("followup queue deduplication", () => {
       expect(enqueueFollowupRun(key, source(messageId, { messageId }), capped)).toBe(true);
     }
     clearFollowupQueue(key);
-    clearFollowupDrainCallback(key);
     expect(onAbandoned).toHaveBeenCalledOnce();
     const retry = source("first");
     retry.turnAdoptionLifecycle = { onAdopted: () => {} };
@@ -384,7 +380,6 @@ describe("followup queue deduplication", () => {
     const admission = admitFollowupRunLifecycle(first);
     await vi.advanceTimersByTimeAsync(0);
     clearFollowupQueue(key);
-    clearFollowupDrainCallback(key);
     await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
     const replacement = source("replacement");
     replacement.turnAdoptionLifecycle = { onAdopted: () => {} };
@@ -404,7 +399,6 @@ describe("followup queue deduplication", () => {
     completeFollowupRunLifecycle(run);
     expect(onAbandoned).not.toHaveBeenCalled();
     clearFollowupQueue(key);
-    clearFollowupDrainCallback(key);
     expect(enqueueFollowupRun(key, source("redelivery"), settings)).toBe(false);
   });
 });

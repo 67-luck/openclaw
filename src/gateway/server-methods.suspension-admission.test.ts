@@ -24,7 +24,7 @@ import {
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
-
+import { getAsyncWorkSignal, trackAsyncWork } from "../shared/async-work-scope.js";
 import { createCoreGatewayMethodDescriptors } from "./methods/core-method-policy.js";
 import { createPluginGatewayMethodDescriptor } from "./methods/descriptor.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
@@ -509,12 +509,13 @@ describe("gateway request suspension admission", () => {
           captureGatewayRootWorkAdmissionContinuationScope(),
           "admitted observation",
         );
-        child = trackAsyncWork(async () => {
+        const acceptedChild = trackAsyncWork(async () => {
           signal.addEventListener("abort", draining.resolve, { once: true });
           await finishChild.promise;
           admission.runSync(settledChild);
         });
-        void child.catch(() => {});
+        child = acceptedChild;
+        void acceptedChild.catch(() => {});
         respond(true, { status: "ok" });
       },
     });

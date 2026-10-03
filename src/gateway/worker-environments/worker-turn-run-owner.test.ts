@@ -5,7 +5,6 @@ import {
   queueEmbeddedAgentMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunOwner,
 } from "../../agents/embedded-agent-runner/runs.js";
-
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import {
@@ -276,7 +275,7 @@ describe("cloud worker run ownership", () => {
       resetTriggered: false,
     });
     operation.setPhase("running");
-    const worker = createWorkerTurnRunOwner({
+    const worker = await createWorkerTurnRunOwner({
       placements,
       claim,
       sessionKey: SESSION_KEY,
@@ -318,10 +317,18 @@ describe("cloud worker run ownership", () => {
     }
   });
 
-  it.each(["replacement", "claim-loss", "shutdown"] as const)(
-    "fences retained event recorders after %s, including a reused run ID",
-    async (closure) => {
-
+  it.each([
+    { closure: "replacement", cancelled: false },
+    { closure: "claim-loss", cancelled: false },
+    { closure: "shutdown", cancelled: false },
+    { closure: "replacement", cancelled: true },
+    { closure: "claim-loss", cancelled: true },
+    { closure: "shutdown", cancelled: true },
+    { closure: "same-claim replacement", cancelled: true },
+    { closure: "same-claim readmission", cancelled: true },
+  ] as const)(
+    "fences retained event recorders after $closure, cancelled: $cancelled",
+    async ({ closure, cancelled }) => {
       const { captureWorkerTurnLiveEventOwner, createWorkerTurnRunOwner } =
         await import("./worker-turn-run-owner.js");
       await seedActivePlacement();
@@ -340,7 +347,7 @@ describe("cloud worker run ownership", () => {
         agentId: "main",
         resetTriggered: false,
       });
-      const first = createWorkerTurnRunOwner({
+      const first = await createWorkerTurnRunOwner({
         placements,
         claim: firstClaim,
         turn: { ...turn(runId), replyOperation: operation },
@@ -374,7 +381,7 @@ describe("cloud worker run ownership", () => {
           args: {},
         },
       };
-      let replacement: ReturnType<typeof createWorkerTurnRunOwner> | undefined;
+      let replacement: Awaited<ReturnType<typeof createWorkerTurnRunOwner>> | undefined;
       let replacementOperation: ReturnType<typeof createReplyOperation> | undefined;
 
       try {
@@ -392,7 +399,9 @@ describe("cloud worker run ownership", () => {
           expect(captureWorkerTurnLiveEventOwner(identity)).not.toBe(eventOwner);
         } else {
           await placements.releaseTurn(firstClaim);
-          if (closure === "replacement") {
+          if (closure === "same-claim readmission") {
+            await placements.claimTurn({ ...claimInput, claimId: firstClaim.claimId });
+          } else if (closure === "replacement") {
             first.dispose();
             operation.complete();
             await operation.ownerSettlement;
@@ -407,8 +416,7 @@ describe("cloud worker run ownership", () => {
               agentId: "main",
               resetTriggered: false,
             });
-            replacement = createWorkerTurnRunOwner({
-
+            replacement = await createWorkerTurnRunOwner({
               placements,
               claim: nextClaim,
               turn: { ...turn(runId), replyOperation: replacementOperation },

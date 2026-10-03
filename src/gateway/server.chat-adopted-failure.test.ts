@@ -22,7 +22,7 @@ import { clearConfigCache, getRuntimeConfig, readConfigFileSnapshot } from "../c
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { captureSessionControllerSettlement } from "../sessions/session-controller.lifecycle.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
-
+import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./server-methods/types.js";

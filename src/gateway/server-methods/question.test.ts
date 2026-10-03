@@ -7,15 +7,20 @@ import {
   claimAgentRunDelegatedAuthority,
   getAgentRunContext,
   releaseAgentRunDelegatedAuthority,
+  rotateAgentRunRegistryLifecycleGeneration,
   type AgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
 import { isSecretValueRegisteredForRedaction } from "../../logging/secret-redaction-registry.js";
 import * as secretsRuntimeState from "../../secrets/runtime-state.js";
-import { listSecretStoreEntries, readSecretStoreValue } from "../../secrets/store/secret-store.js";
+import {
+  listSecretStoreEntries,
+  readSecretStoreValue,
+  writeSecretStoreEntry,
+} from "../../secrets/store/secret-store.js";
 import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
-import { ensureProfileForEmail, setUserProfileRole } from "../../state/user-profiles.js";
-
+import { setUserProfileRole } from "../../state/user-profile-writes.worker.js";
+import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { abortChatRunById, registerChatAbortController } from "../chat-abort.js";
 import { createGatewayBroadcaster } from "../server-broadcast.js";
@@ -250,63 +255,196 @@ it("preserves a browser URL through request, get, and list", async () => {
     publicationOptions,
   );
 
-  it.each(["release", "replacement", "rotation", "abort"] as const)(
-    "fences a pending credential on exact requester %s while preserving ordinary questions",
-    async (closure) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        const id = await requestSecretQuestion();
-        const ordinary = await call("question.request", requestParams);
-        const ordinaryId = (ordinary[1] as { id: string }).id;
-        const waiting = manager.waitAnswer(id);
-        let successor: AgentRunDelegatedAuthority | undefined;
-        if (closure === "release") {
-          releaseAgentRunDelegatedAuthority(requesterAuthority);
-        } else if (closure === "replacement") {
-          successor = claimAgentRunDelegatedAuthority({
-            instanceId: "successor-instance",
-            runId: requestParams.runId,
-          });
-        } else if (closure === "rotation") {
-          rotateAgentRunRegistryLifecycleGeneration();
-        } else {
-          rpcSourceTesting.clear();
-          const registration = registerChatAbortController({
-            target: captureRpcTargetForTest({
-              sessionKey: requestParams.sessionKey,
-              sessionId: "question-session",
-            }),
-            runId: requestParams.runId,
-            sessionId: "question-session",
-            sessionKey: requestParams.sessionKey,
-            timeoutMs: 60_000,
-            operationalRunInstance: requesterAuthority.operationalRunInstance,
-          });
-          registration.bindAgentRunDelegatedAuthority(requesterAuthority);
-          // Projection cleanup is not an abort; exercise the owner that revokes
-          // the exact claim before notifying the run's abort listeners.
-          try {
-            expect(
-              abortChatRunById(
-                {
-                  chatRunState: createChatRunState(),
-                  removeChatRun: () => undefined,
-                  agentRunSeq: new Map(),
-                  broadcast: vi.fn(),
-                  nodeSendToSession: vi.fn(),
-                },
-                { runId: requestParams.runId, sessionKey: requestParams.sessionKey },
-              ),
-            ).toEqual({ aborted: true });
-          } finally {
-            registration.cleanup();
-          }
-        }
+  expect(await call("question.get", { id })).toEqual([
+    true,
+    {
+      question: expect.objectContaining({
+        id,
+        questions,
+        runId: "run-main",
+        status: "pending",
+      }),
+    },
+    undefined,
+  ]);
+  expect(await call("question.list", {})).toEqual([
+    true,
+    { questions: [expect.objectContaining({ id, questions, runId: "run-main" })] },
+    undefined,
+  ]);
+});
 
+const credentialUrl = new URL("https://example.test/connect");
+credentialUrl.username = "fixture-user";
+credentialUrl.password = "fixture-password";
+
+it.each([
+  ["script", "javascript:alert(1)"],
+  ["relative", "/connect"],
+  ["credentials", credentialUrl.href],
+])("rejects a %s browser URL before publishing", async (_name, url) => {
+  expect(
+    await call("question.request", {
+      ...requestParams,
+      questions: [{ ...requestParams.questions[0], url }],
+    }),
+  ).toMatchObject(invalidRequest);
+  expect(manager.list()).toEqual([]);
+  expect(broadcast).not.toHaveBeenCalled();
+});
+
+it("rejects duplicate ids and admits a bounded rich single-option question at the request boundary", async () => {
+  const duplicate = await call("question.request", {
+    questions: [requestParams.questions[0], requestParams.questions[0]],
+  });
+  expect(duplicate[0]).toBe(false);
+  expect((duplicate[2] as { message: string }).message).toContain("duplicate question id");
+
+  const oneOption = await call("question.request", {
+    id: "rich-question",
+    questions: [
+      {
+        ...requestParams.questions[0],
+        allowEmpty: true,
+        presentation: "form",
+        options: [{ label: "Only", thumbnail: "https://example.com/only.png" }],
+      },
+    ],
+  });
+  expect(oneOption[0]).toBe(true);
+  expect(
+    (
+      await call("question.resolve", {
+        id: "rich-question",
+        answers: { answers: { destination: [] } },
+      })
+    )[1],
+  ).toEqual({ status: "answered", answers: { answers: { destination: [] } } });
+  expect(
+    (
+      await call("question.request", {
+        questions: [
+          {
+            ...requestParams.questions[0],
+            options: [{ label: "Unsafe", thumbnail: "javascript:alert(1)" }],
+          },
+        ],
+      })
+    )[0],
+  ).toBe(false);
+
+  const clientId = "duplicate-client-id";
+  expect((await call("question.request", { ...requestParams, id: clientId }))[0]).toBe(true);
+  const reusedId = await call("question.request", { ...requestParams, id: clientId });
+  expect(reusedId[0]).toBe(false);
+  expect(reusedId[2]).toMatchObject({
+    code: "INVALID_REQUEST",
+    details: { reason: "QUESTION_ID_IN_USE" },
+  });
+});
+
+it("rejects secret questions and duplicate normalized option labels", async () => {
+  const secret = await call("question.request", {
+    ...requestParams,
+    questions: [{ ...requestParams.questions[0], isSecret: true }],
+  });
+  expect(secret[0]).toBe(false);
+  expect((secret[2] as { message: string }).message).toContain(
+    "question 'destination': secret questions are not supported yet",
+  );
+
+  const duplicateLabels = await call("question.request", {
+    ...requestParams,
+    questions: [
+      {
+        ...requestParams.questions[0],
+        options: [{ label: " Deploy " }, { label: "deploy" }],
+      },
+    ],
+  });
+  expect(duplicateLabels[0]).toBe(false);
+  expect((duplicateLabels[2] as { message: string }).message).toContain(
+    "question 'destination' has duplicate option label",
+  );
+});
+
+it.each([
+  {
+    behavior: "bindings without the secret-input marker",
+    questions: [{ ...secretRequestParams.questions[0], isSecret: false }],
+  },
+  {
+    behavior: "secret requests mixed with another question",
+    questions: [secretRequestParams.questions[0], requestParams.questions[0]],
+  },
+  {
+    behavior: "invalid secret store entry names",
+    questions: [
+      {
+        ...secretRequestParams.questions[0],
+        secretStore: { ...secretRequestQuestion.secretStore, name: "lowercase" },
+      },
+    ],
+  },
+])("rejects $behavior before opening a pending secret question", async ({ questions }) => {
+  const response = await call(
+    "question.request",
+    { ...requestParams, questions },
+    { client: adminRequestClient },
+  );
+
+  expect(response).toMatchObject(invalidRequest);
+  expect(manager.list()).toEqual([]);
+});
+
+it("requires admin scope to mint store-bound questions", async () => {
+  const client = { connect: { scopes: ["operator.questions"] } } as GatewayClient;
+  expect(await call("question.request", secretRequestParams, { client })).toMatchObject([
+    false,
+    undefined,
+    { code: "INVALID_REQUEST", message: expect.stringContaining("operator.admin") },
+  ]);
+  expect(manager.list()).toEqual([]);
+});
+
+it.each(["release", "replacement", "rotation", "abort"] as const)(
+  "fences a pending credential on exact requester %s while preserving ordinary questions",
+  async (closure) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const id = await requestSecretQuestion();
+      const ordinary = await call("question.request", requestParams);
+      const ordinaryId = (ordinary[1] as { id: string }).id;
+      const waiting = manager.waitAnswer(id);
+      let successor: AgentRunDelegatedAuthority | undefined;
+      if (closure === "release") {
+        releaseAgentRunDelegatedAuthority(requesterAuthority);
+      } else if (closure === "replacement") {
+        successor = claimAgentRunDelegatedAuthority({
+          instanceId: "successor-instance",
+          runId: requestParams.runId,
+        });
+      } else if (closure === "rotation") {
+        rotateAgentRunRegistryLifecycleGeneration();
+      } else {
+        rpcSourceTesting.clear();
+        const registration = registerChatAbortController({
+          target: captureRpcTargetForTest({
+            sessionKey: requestParams.sessionKey,
+            sessionId: "question-session",
+          }),
+          runId: requestParams.runId,
+          sessionId: "question-session",
+          sessionKey: requestParams.sessionKey,
+          timeoutMs: 60_000,
+          operationalRunInstance: requesterAuthority.operationalRunInstance,
+        });
+        registration.bindAgentRunDelegatedAuthority(requesterAuthority);
+        // Projection cleanup is not an abort; exercise the owner that revokes
+        // the exact claim before notifying the run's abort listeners.
         try {
           expect(
             abortChatRunById(
               {
-                chatAbortControllers,
                 chatRunState: createChatRunState(),
                 removeChatRun: () => undefined,
                 agentRunSeq: new Map(),
@@ -320,6 +458,7 @@ it("preserves a browser URL through request, get, and list", async () => {
           registration.cleanup();
         }
       }
+
       try {
         if (closure !== "abort") {
           expect(getAgentRunContext(requestParams.runId)).toBeDefined();

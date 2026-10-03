@@ -54,7 +54,7 @@ it("keeps cross-profile question answers out of a backend restricted to its turn
     });
     operation.setPhase("running");
     try {
-      const target = replyRunRegistry.resolveCurrentMessageInjectionTarget(operation.key)!;
+      const target = captureCurrentReplyMessageInjectionTarget(operation.key)!;
       const answer = (operatorAuthority: typeof owner) =>
         beginReplyMessageInjectionTarget(target, "Green", {
           isInboundUserMessage: true,

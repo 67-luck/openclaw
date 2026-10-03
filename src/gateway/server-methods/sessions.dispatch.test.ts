@@ -993,7 +993,6 @@ describe("sessions.dispatch", () => {
           });
           const context = reclaimContext(() => placement, reclaim, {
             broadcastToConnIds: vi.fn(),
-            chatAbortControllers: new Map(),
             getSessionEventSubscriberConnIds: () => new Set(["another-client"]),
           });
 

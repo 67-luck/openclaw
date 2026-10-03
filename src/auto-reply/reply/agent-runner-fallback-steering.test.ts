@@ -13,8 +13,7 @@ import { bindReplyFallbackSteeringRoute } from "./agent-runner-fallback-authorit
 import { runReplyAgent } from "./agent-runner-run.js";
 import { createPersonalToolScreenDispatcher } from "./personal-tool-turn.test-support.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
-import { clearFollowupDrainCallback } from "./queue/drain.js";
-import { clearFollowupQueue } from "./queue/state.js";
+import { clearSessionQueues } from "./queue/cleanup.js";
 import {
   REPLY_OPERATION_RUN_STATE,
   type ReplyOperationRunState,
@@ -270,8 +269,7 @@ describe("ordinary steering into automatic model fallback", () => {
         );
       }
     } finally {
-      clearFollowupQueue(key);
-      clearFollowupDrainCallback(key);
+      clearSessionQueues([key]);
       operation.complete();
     }
   });

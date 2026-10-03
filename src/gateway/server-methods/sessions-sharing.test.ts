@@ -17,7 +17,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { listSessionMembers } from "../../config/sessions/session-sharing-store.js";
 import { addSessionMember } from "../../config/sessions/session-sharing-store.native.js";
-import * as sharingLifecycle from "../../sessions/session-lifecycle-admission.js";
+import * as sharingLifecycle from "../../sessions/session-controller.lifecycle.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   resolveIncognitoOpenClawAgentSqlitePath,
@@ -413,23 +413,21 @@ describe("session sharing handlers", () => {
           visibility: "shared",
         },
       );
-      const run = sharingLifecycle.runExclusiveSessionLifecycleMutation;
-      vi.spyOn(sharingLifecycle, "runExclusiveSessionLifecycleMutation").mockImplementationOnce(
-        async (operation, params) => {
-          replaceSessionEntrySync(
-            { agentId: "main", sessionKey },
-            {
-              sessionId: "session-replaced",
-              updatedAt: Date.now(),
-              visibility: "shared",
-            },
-          );
-          expect(loadSessionEntry({ agentId: "main", sessionKey })?.sessionId).toBe(
-            "session-replaced",
-          );
-          return run(operation, params);
-        },
-      );
+      const run = sharingLifecycle.runSessionMutation;
+      vi.spyOn(sharingLifecycle, "runSessionMutation").mockImplementationOnce(async (params) => {
+        replaceSessionEntrySync(
+          { agentId: "main", sessionKey },
+          {
+            sessionId: "session-replaced",
+            updatedAt: Date.now(),
+            visibility: "shared",
+          },
+        );
+        expect(loadSessionEntry({ agentId: "main", sessionKey })?.sessionId).toBe(
+          "session-replaced",
+        );
+        return run(params);
+      });
       const broadcast = vi.fn();
 
       await expect(

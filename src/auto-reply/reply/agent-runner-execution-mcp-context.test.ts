@@ -20,7 +20,37 @@ import {
 
 const state = await setupAgentRunnerExecutionTestState();
 const executeAgentTurn = await getExecuteAgentTurnForTest();
+beforeEach(() => viewTesting.clearViewStore());
+afterEach(() => viewTesting.clearViewStore());
+const image = {
+  type: "image" as const,
+  mimeType: "image/png",
+  data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRz0AAAAASUVORK5CYII=",
+};
 
+async function prepareView(runtime: SessionMcpRuntime, requesterId?: string, agentId = "main") {
+  Object.assign(runtime, {
+    sessionKey: "main",
+    mcpAppsEnabled: true,
+    readResource: async () => ({
+      contents: [
+        { uri: "ui://demo/app", mimeType: "text/html;profile=mcp-app", text: "<p>app</p>" },
+      ],
+    }),
+  });
+  const descriptor = await fetchMcpAppView({
+    runtime,
+    agentId,
+    serverName: "native",
+    toolName: "show",
+    uiResourceUri: "ui://demo/app",
+    toolInput: {},
+    toolResult: { content: [] },
+    allowedAppToolNames: new Set(),
+    requesterId,
+  });
+  return getMcpAppViewLease(descriptor!.viewId, runtime)!;
+}
 
 describe("executeAgentTurn MCP App context", () => {
   it.each([

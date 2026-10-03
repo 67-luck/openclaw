@@ -1,21 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+// Dedupe-record maintenance: TTL retention for active runs/queued sends and
+// overflow eviction ordering. Split from server-maintenance.test.ts, which
+// sits at the max-lines cap; mocks are hoisted per file, so the module-mock
+// preamble is repeated while pure fixtures stay local to each block.
+import { retireSessionControllerInput } from "../sessions/session-controller.mailbox.js";
+import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
 import { createArtifactDownload } from "./artifact-download-grants.js";
-import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "./server-constants.js";
-// Dedupe-record maintenance: TTL retention for active runs/queued sends and
-// overflow eviction ordering. Split from server-maintenance.test.ts, which
-// sits at the max-lines cap; mocks are hoisted per file, so the module-mock
-// preamble is repeated while pure fixtures stay local to each block.
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { retireSessionControllerInput } from "../sessions/session-controller.mailbox.js";
-import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
-import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
-import { DEDUPE_MAX, DEDUPE_TTL_MS } from "./server-constants.js";
-
+import { startGatewayMaintenanceTimers } from "./server-maintenance.js";
+import type { GatewayClient } from "./server-methods/client-types.js";
 import { createGatewayMaintenanceStateForTest } from "./test-helpers.maintenance-state.js";
 import { createRpcSourceForTest } from "./test-helpers.rpc-source.js";
 

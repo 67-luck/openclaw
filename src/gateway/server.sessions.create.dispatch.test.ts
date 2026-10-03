@@ -1,11 +1,11 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, test, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
 import { getRuntimeConfig } from "../config/io.js";
 import { loadSessionEntry, loadTranscriptEvents } from "../config/sessions/session-accessor.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import {
-  beginSessionEffect,
   captureSessionControllerSettlement,
   isSessionControllerWorkActive,
 } from "../sessions/session-controller.lifecycle.js";
@@ -79,7 +79,7 @@ test("sessions.create publishes repository metadata before the next socket read"
 test("chat.send fences dashboard title persistence from concurrent session deletion", async () => {
   const { storePath } = await createSessionStoreDir();
   const { ws } = await openClient();
-  let releaseDrainProbe = () => {};
+  let restoreInterruptionObserver = () => {};
   let deletionCleanup: Promise<unknown> | undefined;
   let dispatchAdmissionsReleased: Promise<void> | undefined;
   const scheduleTitle = await actualDashboardTitleScheduler();
@@ -133,17 +133,17 @@ test("chat.send fences dashboard title persistence from concurrent session delet
     expect(dispatchAdmissionsReleased).toBeDefined();
     await dispatchAdmissionsReleased;
     expect(isSessionControllerWorkActive(storePath, [sessionKey])).toBe(true);
-    const drainStarted = createDeferredCore();
-    const drainProbe = await beginSessionEffect({
-      scope: storePath,
-      identities: [sessionKey],
-      assertAllowed: () => {},
-      onInterrupt: () => {
-        drainStarted.resolve();
-        releaseDrainProbe();
-      },
-    });
-    releaseDrainProbe = drainProbe.release;
+    const lifecycle = await import("../sessions/session-controller.lifecycle.js");
+    const closeAdmission = lifecycle.closeSessionControllerAdmission;
+    const interruptionStarted = createDeferredCore();
+    const interruptionObserver = vi
+      .spyOn(lifecycle, "closeSessionControllerAdmission")
+      .mockImplementation((params) => {
+        const release = closeAdmission(params);
+        interruptionStarted.resolve();
+        return release;
+      });
+    restoreInterruptionObserver = () => interruptionObserver.mockRestore();
     let deletionSettled = false;
     const deletion = directSessionReq<{ deleted: boolean }>("sessions.delete", {
       key: sessionKey,
@@ -151,13 +151,12 @@ test("chat.send fences dashboard title persistence from concurrent session delet
       deletionSettled = true;
     });
     deletionCleanup = deletion.catch(() => {});
-    // Deletion drains title work outside its mutation lock; observe the drain owner itself.
-    await Promise.race([
-      drainStarted.promise,
-      deletion.then((result) => {
-        throw new Error(`Deletion returned before draining: ${JSON.stringify(result)}`);
-      }),
-    ]);
+    // Deletion drains title work outside its mutation lock; observe the controller interruption.
+    await awaitGateBeforeSettlement(
+      interruptionStarted.promise,
+      deletion,
+      "Deletion returned before draining title work",
+    );
     expect(isSessionControllerWorkActive(storePath, [sessionKey])).toBe(true);
     expect(deletionSettled).toBe(false);
 
@@ -167,7 +166,7 @@ test("chat.send fences dashboard title persistence from concurrent session delet
     expect(deleted.payload?.deleted).toBe(true);
     expect(loadSessionEntry({ agentId: "main", sessionKey, storePath })).toBeUndefined();
   } finally {
-    releaseDrainProbe();
+    restoreInterruptionObserver();
     finishDispatch?.();
     finishTitle?.();
     await deletionCleanup;
@@ -337,7 +336,7 @@ test("chat.send retries a title that failed during its turn once that turn settl
     expect(retriedAfterTurn).toEqual([true]);
   } finally {
     stopTitleObserver();
-    const released = getSessionWorkAdmissionRelease({
+    const released = captureSessionControllerSettlement({
       scope: storePath,
       identities: [sessionKey],
     });

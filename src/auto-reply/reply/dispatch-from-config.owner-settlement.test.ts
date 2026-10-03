@@ -320,7 +320,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
     const dispatcher = createDispatcher();
     const replyResolver = vi.fn(async (_ctx: MsgContext, opts?: ResolverOptions) => {
       operation = opts?.replyOperation;
-      signalResolverEntered();
+      resolverEntered.resolve();
       await resolverGate;
       resumedResolverOwner = getSessionControllerOperation(sessionKey);
 
@@ -347,7 +347,6 @@ describe("dispatchReplyFromConfig owner settlement", () => {
     const mutation = externalLifecycleRequest.runInAsyncScope(
       async () =>
         await runSessionMutation({
-
           scope: "/tmp/mock-sessions.json",
           identities: [sessionKey, sessionId],
           prepare: async () => {

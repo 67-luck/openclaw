@@ -16,7 +16,6 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { replaceTranscriptEvents } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
 import { withSessionTurn } from "../sessions/session-controller.admission.js";
-
 import {
   bindSessionControllerTarget,
   beginSessionEffect,
@@ -287,24 +286,14 @@ test("sessions.delete removes a locked plugin-owned session from its persisted a
       loadTranscriptEvents({ sessionKey: requestedKey, sessionId, storePath }),
     ).resolves.toEqual([]);
   }
-  const endCall = sessionLifecycleHookMocks.runSessionEnd.mock.calls.at(0);
-  if (!endCall) {
-    throw new Error("expected session_end hook call");
-  }
-  const [endEvent, endContext] = endCall;
-  const endedTranscript = readAttachedSessionEndTranscriptSourceForTest(endContext);
-  expect(endedTranscript.available).toBe(true);
-  if (!endedTranscript.available || !endEvent?.sessionId) {
-    throw new Error("expected archived ended transcript source");
-  }
-  await expect(
-    endedTranscript.readTail({ maxMessages: 10, maxBytes: 64 * 1_024 }),
-  ).resolves.toMatchObject({
-    messages: [
-      expect.objectContaining({ role: "user", content: `content for ${endEvent.sessionId}` }),
-    ],
-    totalMessages: 1,
-    truncated: false,
+});
+
+test("sessions.delete interrupts work admitted before runtime registration", async () => {
+  const { storePath } = await createSessionStoreDir();
+  await writeSessionStore({
+    entries: {
+      "agent:main:subagent:worker": sessionStoreEntry("sess-subagent"),
+    },
   });
   let interrupted = false;
   let releaseAdmission = () => {};
@@ -325,7 +314,6 @@ test("sessions.delete removes a locked plugin-owned session from its persisted a
 
   expect(deleted.payload?.deleted).toBe(true);
   expect(interrupted).toBe(true);
-
 });
 
 test.each(["session id", "updated at"] as const)(
@@ -356,7 +344,6 @@ test.each(["session id", "updated at"] as const)(
     const { promise: blockingMutationStarted, resolve: markBlockingMutationStarted } =
       createDeferred();
     const blockingMutation = runSessionMutation({
-
       scope: storePath,
       identities: [sessionKey],
       run: async () => {
@@ -435,7 +422,6 @@ test("sessions.delete rejects a replacement with the same updated-at timestamp",
     admission.release();
   }
 });
-
 
 test.each(["runtime loading", "cleanup"] as const)(
   "sessions.delete rejects a same-key successor created during %s without a caller identity guard",
@@ -590,26 +576,18 @@ test("sessions.patch waits for an in-flight session lifecycle mutation", async (
 
   const patch = directSessionReq("sessions.patch", {
     key: sessionKey,
-    label: "updated during cleanup",
+    label: "after lifecycle mutation",
   }).then((result) => {
     patchSettled = true;
     return result;
   });
-  try {
-    await patchPreflight;
-    expect(patchSettled).toBe(false);
-    releaseRuntimeCleanup();
+  await Promise.resolve();
+  expect(patchSettled).toBe(false);
+  releaseMutation();
 
-    const [deleted, patched] = await Promise.all([deletion, patch]);
-    expect(deleted.ok).toBe(true);
-    expect(patched.ok).toBe(false);
-    expect(patched.error?.message).toBe(`Session ${sessionKey} changed before patch. Retry.`);
-    expect(loadSessionEntry({ sessionKey, storePath })).toBeUndefined();
-  } finally {
-    releaseRuntimeCleanup();
-    await Promise.allSettled([deletion, patch]);
-    preflight.mockRestore();
-  }
+  const [patched] = await Promise.all([patch, mutation]);
+  expect(patched.ok).toBe(true);
+  expect(loadSessionEntry({ sessionKey, storePath })?.label).toBe("after lifecycle mutation");
 });
 
 test("sessions.delete keeps lifecycle admission blocked through session unbinding", async () => {

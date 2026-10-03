@@ -129,6 +129,8 @@ async function expectResetWithConfigSkipsBrowserCleanup(config: ConfigFilePatch)
 
 test("sessions.reset preempts the controller run and clears queues", async () => {
   const { activeRun, storePath } = await seedWaitingActiveMainSession();
+  const parentGrant = RESET_PARENT_GRANT_FIXTURE;
+  await upsertSessionEntryCore({ storePath, sessionKey: "agent:main:main" }, parentGrant);
 
   enqueueSystemEvent("stale event via alias", { sessionKey: "main" });
   enqueueSystemEvent("stale event via canonical key", { sessionKey: "agent:main:main" });
@@ -359,7 +361,6 @@ test("sessions.reset rejects an active lifecycle mutation without interrupting a
   const { promise: mutationReleased, resolve: releaseMutation } = createDeferred();
   const { promise: mutationStarted, resolve: markMutationStarted } = createDeferred();
   const blocker = runSessionMutation({
-
     scope: storePath,
     identities: ["agent:main:main", "sess-main"],
     run: async () => {
@@ -581,7 +582,6 @@ test("sessions.patch rejects an archive queued behind a rotated session", async 
   });
   await blockerStarted;
   const queuedReset = runSessionMutation({
-
     scope: storePath,
     identities: [sessionKey, initialSessionId],
     run: async () => {

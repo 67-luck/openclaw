@@ -142,7 +142,6 @@ function fixture(options: { parkSteer?: boolean } = {}) {
       controller: AbortController;
       sourceRef: RpcSourceRef;
       parked?: ReturnType<typeof reserveSteerCandidate>;
-
     }
   >();
   const runFollowup = createFollowupRunner({
@@ -213,12 +212,8 @@ function fixture(options: { parkSteer?: boolean } = {}) {
       },
       hasCronCreatorAuthority: false,
       suppressReplies: true,
-      releaseSourceWorkAdmission: work.release,
-      retainWorkAdmission: () => {
-        const release = vi.fn(work.retain());
-        releases.set(runId, release);
-        return release;
-      },
+      releaseSourceWorkAdmission: release,
+      retainWorkAdmission: () => release,
     });
     const queued: FollowupRun = {
       prompt: String(request.params.message),

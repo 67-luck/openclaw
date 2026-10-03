@@ -567,7 +567,7 @@ describe("native completion final-effect authority", () => {
               expect(sessionAccessor.loadTranscriptEventsSync(completion.sessionScope)).toEqual(
                 before,
               );
-              expect(listSessionPendingInputs(completion.sessionScope).total).toBe(0);
+              expect((await listSessionPendingInputs(completion.sessionScope)).total).toBe(0);
             }
             if (boundary === "automatic compaction") {
               expect(prepared.subscription.isCompacting()).toBe(false);
@@ -590,7 +590,6 @@ describe("native completion final-effect authority", () => {
           }
         },
       );
-
     },
   );
 });

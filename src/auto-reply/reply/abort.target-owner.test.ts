@@ -12,6 +12,7 @@ import {
   patchSessionEntry,
 } from "../../plugin-sdk/session-store-runtime.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
+import { resetSessionControllerStateForTest } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createSuiteTempRootTracker } from "../../test-helpers/temp-dir.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { tryFastAbortFromMessage } from "./abort.js";
@@ -20,8 +21,8 @@ import type { HandleCommandsParams } from "./commands-types.js";
 import { parseInlineSessionDirectives } from "./directive-handling.parse.js";
 import { enqueueFollowupRun, getFollowupQueueDepth } from "./queue.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
-
-import { testing } from "./reply-run-registry.test-support.js";
+import { clearSessionQueues } from "./queue/cleanup.js";
+import { getExistingFollowupQueue } from "./queue/state.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 const dirs = createSuiteTempRootTracker({ prefix: "openclaw-stop-owner-" });
@@ -30,9 +31,8 @@ const sessionKey = "agent:main:slack:group:g12345678";
 beforeAll(() => dirs.setup());
 afterAll(() => dirs.cleanup());
 afterEach(() => {
-  clearFollowupQueue(sessionKey);
-  clearFollowupDrainCallback(sessionKey);
-  testing.resetReplyRunRegistry();
+  clearSessionQueues([sessionKey]);
+  resetSessionControllerStateForTest();
 });
 
 async function setupStop() {
@@ -223,49 +223,18 @@ describe.each(["fast", "command"] as const)("%s Stop current owner", (pathKind) 
           "sessions",
           "sessions.json",
         ),
-      },
-    };
-    const scope = { agentId, storePath, sessionKey: globalKey };
-    await replaceSessionEntry(scope, state.entry);
-    const ctx = { ...state.ctx, AgentId: agentId, CommandTargetSessionKey: globalKey };
-    const isCommandTargetCurrent = () =>
-      loadSessionEntry(scope)?.sessionId === state.entry.sessionId;
-    const operation = createReplyOperation({
-      sessionKey: globalKey,
-      sessionId: state.entry.sessionId,
-      resetTriggered: false,
-    });
-    operation.attachBackend({
-      kind: "embedded",
-      cancel: () => queueMicrotask(() => operation.complete()),
-      isStreaming: () => true,
-    });
-    try {
-      const result = await (pathKind === "fast"
-        ? tryFastAbortFromMessage({ cfg, ctx, isCommandTargetCurrent })
-        : handleStopCommand(
-            {
-              ...state.params,
-              cfg,
-              ctx,
-              agentId,
-              sessionKey: globalKey,
-              sessionStore: { [globalKey]: state.entry },
-              storePath,
-              opts: { isCommandTargetCurrent },
-            },
-            true,
-          ));
-      expect(operation.abortSignal.aborted).toBe(true);
-      expect(result).toMatchObject(
-        pathKind === "fast"
-          ? { handled: true, aborted: true }
-          : { shouldContinue: false, reply: { text: "⚙️ Agent was aborted." } },
-      );
-      expect(loadSessionEntry(scope)).toMatchObject({
-        sessionId: state.entry.sessionId,
-        abortedLastRun: true,
-
+        sessionKey: globalKey,
+      };
+      await replaceSessionEntry(otherScope, otherEntry);
+      const ctx = { ...state.ctx, AgentId: agentId, CommandTargetSessionKey: globalKey };
+      const isCommandTargetCurrent = () =>
+        loadSessionEntry(scope)?.sessionId === state.entry.sessionId;
+      const ownsActiveRun = agentId === activeAgentId;
+      const operation = createReplyOperation({
+        agentId: activeAgentId,
+        sessionKey: globalKey,
+        sessionId: ownsActiveRun ? state.entry.sessionId : otherEntry.sessionId,
+        resetTriggered: false,
       });
       operation.attachBackend({ kind: "embedded", cancel: () => {}, isStreaming: () => true });
       try {
@@ -317,8 +286,7 @@ describe.each(["fast", "command"] as const)("%s Stop current owner", (pathKind) 
         expect(loadSessionEntry(otherScope)?.abortedLastRun).not.toBe(true);
       } finally {
         operation.complete();
-        clearFollowupQueue(globalKey);
-        clearFollowupDrainCallback(globalKey);
+        clearSessionQueues([globalKey]);
       }
     },
   );

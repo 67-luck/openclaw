@@ -3,6 +3,8 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { formatBillingErrorMessage } from "../../agents/failover/user-copy.js";
 import { readAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import { RUN_STALE_TAKEOVER_MS } from "../../logging/diagnostic-run-activity.js";
+import { getSessionControllerOperation } from "../../sessions/session-controller.js";
+import { SESSION_WATCHDOG_CLEANUP_MS } from "../../sessions/session-controller.watchdog-state.js";
 import { withReplyDispatcher } from "../dispatch-dispatcher.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
@@ -423,7 +425,7 @@ describe("dispatchReplyFromConfig visible admission recovery", () => {
     expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledTimes(1);
   });
 
-  it("reclaims stale pre-backend work after bounded terminal settlement", async () => {
+  it("keeps stale pre-backend work owned through cleanup grace until its producer settles", async () => {
     vi.useFakeTimers();
     const startedAt = Date.now();
     const activeOperation = createReplyOperation({
@@ -440,9 +442,12 @@ describe("dispatchReplyFromConfig visible admission recovery", () => {
     await vi.waitFor(() => {
       expect(activeOperation.result).toEqual({ kind: "failed", code: "run_stalled" });
     });
-    expect(replyRunRegistry.get(sessionKey)).toBe(activeOperation);
+    expect(getSessionControllerOperation(sessionKey)).toBe(activeOperation);
 
-    await vi.advanceTimersByTimeAsync(REPLY_RUN_TERMINAL_SETTLE_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS);
+    expect(getSessionControllerOperation(sessionKey)).toBe(activeOperation);
+    expect(replyResolver).not.toHaveBeenCalled();
+    activeOperation.complete();
     const result = await resultPromise;
 
     expect(activeOperation.result).toEqual({ kind: "failed", code: "run_stalled" });
@@ -452,18 +457,16 @@ describe("dispatchReplyFromConfig visible admission recovery", () => {
   });
 
   it.each([
-    { reason: "no_activity", continued: undefined, notice: true },
-    { reason: "stuck_recovery", continued: undefined, notice: true },
-    { reason: "stuck_recovery", continued: false, notice: true },
-    { reason: "stuck_recovery", continued: true, notice: false },
-    { reason: "finalization_stalled", continued: true, notice: false },
+    { continued: undefined, notice: true },
+    { continued: false, notice: true },
+    { continued: true, notice: false },
     // A final message-tool answer reached the source before the watchdog fired.
-    { reason: "stuck_recovery", continued: true, notice: false, answered: true },
+    { continued: true, notice: false, answered: true },
     // A newer input steered in after that answer still needs one.
-    { reason: "stuck_recovery", continued: true, notice: false, answered: true, steered: true },
+    { continued: true, notice: false, answered: true, steered: true },
   ] as const)(
-    "sends the stall notice only as a last resort ($reason, continued=$continued)",
-    async ({ reason, continued, notice, ...testCase }) => {
+    "sends the watchdog stall notice only as a last resort (continued=$continued)",
+    async ({ continued, notice, ...testCase }) => {
       const answered = "answered" in testCase;
       const steered = "steered" in testCase;
       const resolverStarted = createDeferred();
@@ -473,11 +476,15 @@ describe("dispatchReplyFromConfig visible admission recovery", () => {
         if (runState && continued !== undefined) {
           runState.continueStalledTurn = continueStalledTurn;
         }
+        const operation = getSessionControllerOperation(sessionKey);
+        if (!operation) {
+          throw new Error("dispatch did not bind its reply operation");
+        }
         if (answered) {
-          replyRunRegistry.get(sessionKey)?.markSourceReplyDelivered();
+          operation.markSourceReplyDelivered();
         }
         if (steered) {
-          replyRunRegistry.get(sessionKey)?.markSteeredInputAccepted({ inboundAudio: false });
+          operation.markSteeredInputAccepted({ inboundAudio: false });
         }
         resolverStarted.resolve();
         await new Promise<void>((resolve) => {
@@ -490,15 +497,13 @@ describe("dispatchReplyFromConfig visible admission recovery", () => {
 
       const dispatchPromise = dispatchReplyFromConfig(dispatchParams);
       await resolverStarted.promise;
-      const operation = replyRunRegistry.get(sessionKey);
+      const operation = getSessionControllerOperation(sessionKey);
       expect(operation).toBeDefined();
-      expect(expireStaleReplyOperation(operation!, reason)).toBe(false);
+      expect(operation?.abortForStall()).toBe(true);
 
       await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: notice });
       expect(continueStalledTurn).toHaveBeenCalledTimes(
-        continued !== undefined && reason !== "finalization_stalled" && (!answered || steered)
-          ? 1
-          : 0,
+        continued !== undefined && (!answered || steered) ? 1 : 0,
       );
       if (notice) {
         expect(dispatchParams.dispatcher.sendFinalReply).toHaveBeenCalledWith({

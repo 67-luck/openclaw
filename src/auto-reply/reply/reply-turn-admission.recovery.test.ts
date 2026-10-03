@@ -1,5 +1,5 @@
 import { setImmediate } from "node:timers/promises";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER } from "../../agents/main-session-recovery/main-session-recovery-admission.js";
 import * as recoveryLifecycle from "../../agents/main-session-recovery/main-session-recovery-lifecycle.js";
@@ -26,9 +26,12 @@ import {
   type SessionEffectRef,
 } from "../../sessions/session-controller.lifecycle.js";
 import * as sessionLifecycle from "../../sessions/session-controller.lifecycle.js";
-
 import { testing } from "./reply-run-registry.test-support.js";
-import { admitTestReplyTurn, createSessionStore } from "./reply-turn-admission.test-support.js";
+import {
+  admitTestReplyTurn,
+  createSessionStore,
+  createSessionStoreFor,
+} from "./reply-turn-admission.test-support.js";
 
 type Admission = Awaited<ReturnType<typeof admitTestReplyTurn>>;
 const sessionKey = "agent:main:main";
@@ -629,6 +632,97 @@ describe("reply turn recovery admission", () => {
       sessionId,
       expectedSessionId: sessionId,
       storePath,
+      kind: "queued_followup",
+      upstreamAbortSignal: controller.signal,
+    });
+    let settled = false;
+    void admission.then(() => {
+      settled = true;
+    });
+    let result: Awaited<typeof admission> | undefined;
+    let completed = false;
+    try {
+      await Promise.race([
+        waitEntered.promise,
+        admission.then(() => {
+          throw new Error("Queued followup completed before observing its recovery owner");
+        }),
+      ]);
+      await setImmediate();
+      expect(settled).toBe(false);
+      owner.release();
+      result = await admission;
+      expect(result.status).toBe("owned");
+      if (result.status === "owned") {
+        result.operation.complete();
+        completed = true;
+      }
+    } finally {
+      controller.abort();
+      owner.release();
+      result ??= await admission;
+      if (!completed && result.status === "owned") {
+        result.operation.complete();
+      }
+      waitSpy.mockRestore();
+    }
+  });
+});
+
+function complete(result: Admission | undefined) {
+  if (result?.status === "owned") {
+    result.operation.complete();
+  }
+}
+function owned(result: Admission) {
+  expect(result.status).toBe("owned");
+  if (result.status !== "owned") {
+    throw new Error("Fixture requires an admitted reply operation");
+  }
+  return result;
+}
+function observe(pending: Promise<Admission>) {
+  const outcome: { result?: Admission; failure?: unknown } = {};
+  const settled = pending.then(
+    (result) => {
+      outcome.result = result;
+    },
+    (failure: unknown) => {
+      outcome.failure = failure;
+    },
+  );
+  return Object.assign(outcome, { settled });
+}
+function recoveryFixture(overrides: Partial<SessionEntry> = {}) {
+  const entry: SessionEntry = {
+    sessionId,
+    updatedAt: 100,
+    status: "running",
+    abortedLastRun: true,
+    ...overrides,
+  };
+  const storePath = createSessionStore({ [sessionKey]: entry });
+  const scope = { scope: storePath, identities: [sessionKey, sessionId] };
+  const abort = new AbortController();
+  const pending: Promise<Admission>[] = [];
+  const results: Admission[] = [];
+  const cleanup: (() => void | Promise<void>)[] = [];
+  disposals.push(async () => {
+    abort.abort();
+    for (const release of cleanup) {
+      await release();
+    }
+    results.forEach(complete);
+    for (const admission of pending) {
+      complete(await admission.catch(() => undefined));
+    }
+  });
+  const admit = (request: Partial<Parameters<typeof admitTestReplyTurn>[0]> = {}) => {
+    const admission = admitTestReplyTurn({
+      sessionKey,
+      sessionId,
+      expectedSessionId: sessionId,
+      storePath,
       ...request,
     });
     pending.push(admission);
@@ -638,8 +732,8 @@ describe("reply turn recovery admission", () => {
     );
     return admission;
   };
-  const begin = async (request: Partial<Parameters<typeof beginSessionWorkAdmission>[0]> = {}) => {
-    const lease = await beginSessionWorkAdmission({
+  const begin = async (request: Partial<Parameters<typeof beginSessionEffect>[0]> = {}) => {
+    const lease = await beginSessionEffect({
       ...scope,
       assertAllowed: () => {},
       ...request,
@@ -719,7 +813,7 @@ it("keeps deferred owner release retries from retaining a successor", async () =
     expect(deferredReleases).toHaveLength(1);
     accessorSpy.mockRestore();
     owned(admitted);
-    const released = getSessionWorkAdmissionRelease(f.scope);
+    const released = captureSessionControllerSettlement(f.scope);
     expect(released).toBeDefined();
     complete(admitted);
     await released;
@@ -770,7 +864,7 @@ it("settles a committed recovery claim without replay when preparation changes",
   await expect(pending).rejects.toMatchObject({ code: "SESSION_WORK_START_CHANGED" });
   expect(claimSpy).toHaveBeenCalledOnce();
   expect(f.read()?.mainRestartRecovery?.foregroundClaims).toBeUndefined();
-  expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+  expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
 });
 
 it("keeps new input and followups behind a concurrent recovery winner", async () => {
@@ -786,7 +880,7 @@ it("keeps new input and followups behind a concurrent recovery winner", async ()
   const context = createRecoveryGatewayContext();
   const resolveGatewayContext = () => ({ ...context });
   const root = await f.begin({ resolveGatewayContext });
-  let recoveryLease: SessionWorkAdmissionLease | undefined;
+  let recoveryLease: SessionEffectRef | undefined;
   const retry = vi
     .spyOn(restartRecovery, "retryRestartAbortedMainSessionRecovery")
     .mockImplementationOnce(async (request) => {
@@ -796,22 +890,22 @@ it("keeps new input and followups behind a concurrent recovery winner", async ()
         expectedRecoverySourceRunId: "old-channel-source",
         gatewayRuntime: context.recoveryRuntime,
       });
-      expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+      expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
       expect(root.isActive()).toBe(true);
       const owner = await f.begin({
         owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
         resolveGatewayContext,
       });
-      recoveryLease = consumeSessionWorkAdmissionHandoff({
+      recoveryLease = consumeSessionEffectHandoff({
         handoffId: owner.createHandoff(),
         ...f.scope,
       });
       expect(recoveryLease).toBe(owner);
       await owner.run(() => {
-        expect(isCompetingSessionWorkAdmissionActive(f.storePath, [sessionKey, sessionId])).toBe(
+        expect(isCompetingSessionControllerWorkActive(f.storePath, [sessionKey, sessionId])).toBe(
           false,
         );
-        return runExclusiveSessionLifecycleMutation("recover", {
+        return runSessionMutation({
           ...f.scope,
           run: () =>
             f.write({
@@ -834,7 +928,7 @@ it("keeps new input and followups behind a concurrent recovery winner", async ()
   expect(f.read()).toMatchObject(delivery);
   expect(f.read()?.mainRestartRecovery?.foregroundClaims).toBeUndefined();
   expect(
-    getSessionWorkAdmissionOwnerRelease({
+    captureSessionEffectOwnerSettlement({
       ...f.scope,
       owner: MAIN_SESSION_RECOVERY_WORK_ADMISSION_OWNER,
     }),
@@ -887,7 +981,7 @@ it.each([
     expect(retry).toHaveBeenCalledOnce();
     await setImmediate();
     expect(f.read()).toMatchObject(f.entry);
-    expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+    expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
     if (failed) {
       await outcome.settled;
       expect(outcome.failure).toMatchObject({
@@ -918,7 +1012,7 @@ it.each(["started", "cancelled", "replaced"] as const)(
     await setImmediate();
     expect(admission.failure).toBeUndefined();
     expect(admission.result).toBeUndefined();
-    expect(replyRunRegistry.get(sessionKey)).toBeUndefined();
+    expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
     if (outcome === "cancelled") {
       f.abort.abort();
     } else {

@@ -54,7 +54,6 @@ import {
   registerTalkRealtimeRelayAgentRun,
   sendTalkRealtimeRelayAudio,
   steerTalkRealtimeRelayAgentRun,
-  stopTalkRealtimeRelaySession,
   submitTalkRealtimeRelayToolResult,
 } from "./index.js";
 import { createRelaySessionFixture } from "./index.session-fixture.test-support.js";
@@ -113,7 +112,6 @@ async function createOwnedTalkRunControllers(backend?: Parameters<typeof setActi
     );
   }
   indexRpcSourceForTest(ref);
-
 }
 
 function ensureActiveRelayTurnId(relaySessionId: string): string {
@@ -647,7 +645,6 @@ describe("talk realtime gateway relay", () => {
       connId: "conn-runner",
     });
   });
-
 
   it("rejects a consult when its relay is replaced during startup", async () => {
     let bridgeRequest: RealtimeVoiceBridgeCreateRequest | undefined;
@@ -1456,7 +1453,7 @@ describe("talk realtime gateway relay", () => {
       return makeRelayTransport({
         submitToolResult,
       });
-    };
+    });
     const fixture = await createAbortableRelayRunFixture(provider);
 
     await Promise.resolve();
@@ -1563,7 +1560,7 @@ describe("talk realtime gateway relay", () => {
       return makeRelayTransport({
         submitToolResult: vi.fn(() => cancellationAccepted.promise),
       });
-    };
+    });
     const fixture = await createAbortableRelayRunFixture(provider, { register: false });
 
     await Promise.resolve();
@@ -1626,7 +1623,7 @@ describe("talk realtime gateway relay", () => {
       return makeRelayTransport({
         submitToolResult,
       });
-    };
+    });
     const fixture = await createAbortableRelayRunFixture(provider, { register: false });
 
     const relay = relaySessions.get(fixture.session.relaySessionId);
@@ -1693,7 +1690,7 @@ describe("talk realtime gateway relay", () => {
       return makeRelayTransport({
         submitToolResult,
       });
-    };
+    });
     const fixture = await createAbortableRelayRunFixture(provider);
 
     await Promise.resolve();
@@ -3426,11 +3423,11 @@ describe("talk realtime gateway relay", () => {
         }),
       ).toEqual({ status: "applied", turnId: "turn-b" });
 
-
-    expect(relay?.harness.talk.activeTurnId).toBeUndefined();
-    expect(abortController.signal.aborted).toBe(true);
-    expect(broadcast).toHaveBeenCalled();
-  });
+      expect(relay?.harness.talk.activeTurnId).toBeUndefined();
+      expect(abortController.signal.aborted).toBe(true);
+      expect(broadcast).toHaveBeenCalled();
+    },
+  );
 
   it.each<{
     mode: "continuous" | "capability";
@@ -3618,7 +3615,7 @@ describe("talk realtime gateway relay", () => {
           throw new Error("provider rejected cancellation");
         }),
       });
-    };
+    });
     const { session } = await createAbortableRelayRunFixture(provider);
 
     bridgeRequest?.onEvent?.({
@@ -3673,7 +3670,7 @@ describe("talk realtime gateway relay", () => {
       const provider = createIdleRelayProvider((request) => {
         bridgeRequest = request;
         return makeRelayTransport({ close });
-      };
+      });
       const { broadcastToConnIds, session } = await createAbortableRelayRunFixture(provider);
 
       bridgeRequest?.onEvent?.({
@@ -3722,7 +3719,7 @@ describe("talk realtime gateway relay", () => {
     const provider = createIdleRelayProvider((request) => {
       bridgeRequest = request;
       return makeRelayTransport({ close });
-    };
+    });
     const { broadcastToConnIds, session } = await createAbortableRelayRunFixture(provider);
 
     bridgeRequest?.onEvent?.({
@@ -3764,7 +3761,7 @@ describe("talk realtime gateway relay", () => {
     const provider = createIdleRelayProvider((request) => {
       bridgeRequest = request;
       return makeRelayTransport({ close, submitToolResult: vi.fn(() => pending.promise) });
-    };
+    });
     const { session } = await createAbortableRelayRunFixture(provider);
 
     const cancellation = cancelTalkRealtimeRelayTurn({
@@ -4067,7 +4064,7 @@ describe("talk realtime gateway relay", () => {
           submitToolResult,
           supportsToolResultSuppression: false,
         });
-      };
+      });
       const { broadcastToConnIds, session } = await createAbortableRelayRunFixture(provider);
 
       bridgeRequest?.onToolCall?.({
@@ -5115,7 +5112,6 @@ describe("talk realtime gateway relay", () => {
       await createAbortableRelayRunFixture();
     stopTalkRealtimeRelaySession({ relaySessionId: session.relaySessionId, connId: "conn-1" });
 
-
     expect(abortController.signal.aborted).toBe(true);
     expect(chatRunState.runs.get("run-1")?.agentText).toBeUndefined();
     expectChatAbortPayload(broadcast, "relay-closed");
@@ -5246,49 +5242,13 @@ describe("talk realtime gateway relay", () => {
   );
 
   it("aborts linked agent consult runs when the provider closes the relay", async () => {
-    const source = createRpcSourceForTest(
-      {
-        requester: { connectionId: "conn-1" },
-        lifecycleGeneration: getAgentEventLifecycleGeneration(),
-      },
-      {
-        runId: "run-1",
-        sessionId: "run-1",
-        sessionKey: "main",
-        agentId: "main",
-      },
-    );
-    await claimRpcSourceForTest(source);
-    const abortController = {
-      signal: source.input.abortSignal,
-      abort: (reason?: unknown) => requestRpcSourceCancellation(source, reason),
-    };
-
     let bridgeRequest: RealtimeVoiceBridgeCreateRequest | undefined;
     const provider = createIdleRelayProvider((request) => {
       bridgeRequest = request;
       return makeRelayTransport();
     });
-    indexRpcSourceForTest(source);
-    const context = {
-      broadcastToConnIds: vi.fn(),
-      broadcast,
-      nodeSendToSession,
-      chatRunState,
-      removeChatRun,
-      agentRunSeq: new Map(),
-    } as never;
-    const session = createTalkRealtimeRelaySession({
-      context,
-      provider,
-    });
-
-    registerTalkRealtimeRelayAgentRun({
-      relaySessionId: session.relaySessionId,
-      connId: "conn-1",
-      sessionKey: "main",
-      runId: "run-1",
-    });
+    const { abortController, broadcast, nodeSendToSession, chatRunState } =
+      await createAbortableRelayRunFixture(provider);
 
     bridgeRequest?.onClose?.("error");
 

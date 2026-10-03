@@ -5,7 +5,7 @@ import {
   emptySqliteCounts,
   observeParentSqlite,
 } from "../../../test/helpers/sqlite-parent-observer.js";
-import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
 import {
@@ -92,14 +92,14 @@ it.each([
     config: maintenanceConfig(ownerStorePath),
   });
   const outcome = pending.catch((error: unknown) => error);
-  let admission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+  let admission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
   try {
     await awaitGateBeforeSettlement(
       delayed.entered.promise,
       pending,
       "Cold selection was not dispatched",
     );
-    admission = await beginSessionWorkAdmission({
+    admission = await beginSessionEffect({
       scope: ownerStorePath,
       identities: [
         protectsHistory ? fixture.scope.sessionKey.toUpperCase() : "agent:main:unrelated-work",
@@ -213,7 +213,7 @@ it("retains an embedded archive when its window gains an admitted owner after pr
   const delayed = delayPreparation();
   const pending = runSessionColdStorageMaintenance({ config });
   const outcome = pending.catch((error: unknown) => error);
-  let admission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+  let admission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
   try {
     await awaitGateBeforeSettlement(
       delayed.entered.promise,
@@ -225,7 +225,7 @@ it("retains an embedded archive when its window gains an admitted owner after pr
       .prepare("UPDATE session_windows SET session_key = ? WHERE session_id = ?")
       .run(reboundKey, historicalId);
     const before = fixture.snapshot();
-    admission = await beginSessionWorkAdmission({
+    admission = await beginSessionEffect({
       scope: fixture.scope.storePath,
       identities: [reboundKey],
       assertAllowed: () => {},

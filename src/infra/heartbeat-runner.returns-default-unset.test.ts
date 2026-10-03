@@ -630,26 +630,23 @@ describe("runHeartbeatOnce", () => {
           heartbeat: {
             every: "30m",
             activeHours: { start: "08:00", end: "24:00", timezone: "user" },
-
           },
         },
-      };
-      const replySpy = vi.fn().mockResolvedValue({ text: "heartbeat reply" });
-      const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "m1", toJid: "jid" });
+      },
+    };
 
-      const res = await runHeartbeatOnce({
-        cfg,
-        deps: createHeartbeatDeps(sendWhatsApp, {
-          getReplyFromConfig: replySpy,
-          listActiveEmbeddedRunSessionKeys: () => [activeKey()],
-        }),
-      });
+    const res = await runHeartbeatOnce({
+      cfg,
+      deps: { nowMs: () => Date.UTC(2025, 0, 1, 7, 0, 0) },
+    });
 
-      expect(res).toEqual({ status: "skipped", reason: "requests-in-flight" });
-      expect(replySpy).not.toHaveBeenCalled();
-      expect(sendWhatsApp).not.toHaveBeenCalled();
-    },
-  );
+    expect(res.status).toBe("skipped");
+    if (res.status === "skipped") {
+      expect(res.reason).toBe("quiet-hours");
+    }
+    // Documented observable skip: `system heartbeat last` must show the window.
+    expect(getLastHeartbeatEvent()).toMatchObject({ status: "skipped", reason: "quiet-hours" });
+  });
 
   it("skips a routeless interval poll before the agent run", async () => {
     const tmpDir = await createCaseDir("hb-no-route");

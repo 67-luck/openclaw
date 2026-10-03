@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { testing as controllerTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
 import { resolveSessionStorePathCore } from "../../config/sessions.js";
 import {
   loadSessionEntry,
@@ -11,13 +10,12 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { claimSessionControllerTask } from "../../sessions/session-controller.mailbox.js";
 import { createReplyOperation } from "../../sessions/session-controller.operation.js";
-import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import {
-  ensureProfileForEmail,
-  linkEmail,
-  resolveUserProfileId,
-} from "../../state/user-profiles.js";
-
+  resetSessionControllerStateForTest,
+  rpcSourceTesting,
+} from "../../sessions/session-lifecycle-admission.test-support.js";
+import { linkEmail } from "../../state/user-profile-writes.worker.js";
+import { ensureProfileForEmail, resolveUserProfileId } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { registerChatAbortController } from "../chat-abort.js";
@@ -118,7 +116,7 @@ function expectConflict(respond: RetryParams["respond"]) {
   );
 }
 
-afterEach(() => controllerTesting.resetReplyRunRegistry());
+afterEach(() => resetSessionControllerStateForTest());
 
 beforeEach(() => {
   vi.mocked(readSessionSubmittedInput).mockReset();

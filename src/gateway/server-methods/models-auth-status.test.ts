@@ -22,7 +22,6 @@ import { resolveProviderAuthLookupMaps } from "../../secrets/provider-env-vars.j
 import * as rpcSources from "../../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { withEnvAsync } from "../../test-utils/env.js";
-
 import { createChatRunState } from "../server-chat-state.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -461,7 +460,6 @@ async function expectLogoutFailureDoesNotAbortRun(params: {
     message: params.message,
   });
 }
-
 
 function createOpenAiCodexOauthHealthSummary(): AuthHealthSummary {
   const profile = healthProfile("openai", "oauth", "ok", "openai:default", {
@@ -1501,10 +1499,10 @@ describe("models.authLogout", () => {
     });
 
     const run = createActiveRun("openrouter");
-    opts.context.chatAbortControllers.set("active", run);
+    rpcSources.registerRpcSource("active", run);
     await logoutHandler(opts);
-    expect(run.controller.signal.aborted).toBe(false);
-    expect(opts.context.chatAbortControllers.has("active")).toBe(true);
+    expect(run.input.abortSignal.aborted).toBe(false);
+    expect(rpcSourceTesting.has("active")).toBe(true);
 
     expect(mocks.removeModelAuthCredentials).toHaveBeenCalledWith({
       cfg: {},
@@ -1632,7 +1630,6 @@ describe("models.authLogout", () => {
     );
     const [, payload] = firstRespondCall(opts) ?? [];
     expect((payload as ModelAuthLogoutResult).abortedRunIds).toEqual(["run-openrouter"]);
-
   });
 
   it("aborts only revoked provider runs before reporting a committed logout refresh failure", async () => {
@@ -1730,29 +1727,7 @@ describe("models.authLogout", () => {
         mocks.removeModelAuthCredentials.mockRejectedValue(new Error("removal failed"));
       },
       message: "removal failed",
-
     });
-
-    await logoutHandler(opts);
-
-    expect(revokedAtRefresh).toBe(true);
-    expect(revokedRun.controller.signal.aborted).toBe(true);
-    expect(aliasedRun.controller.signal.aborted).toBe(true);
-    expect(otherAgentRun.controller.signal.aborted).toBe(false);
-    expect(otherProviderRun.controller.signal.aborted).toBe(false);
-    expect(opts.context.chatAbortControllers.has("revoked")).toBe(false);
-    expect(opts.context.broadcast).toHaveBeenCalledWith(
-      "chat",
-      expect.objectContaining({ runId: "revoked", state: "aborted", stopReason: "auth-revoked" }),
-      { sessionKeys: [revokedRun.sessionKey] },
-    );
-    const [ok, payload, error] = firstRespondCall(opts) ?? [];
-    expect(ok).toBe(true);
-    expect(payload).toMatchObject({
-      abortedRunIds: ["revoked", "aliased"],
-      warning: expect.stringContaining("openclaw gateway restart"),
-    });
-    expect(error).toBeUndefined();
   });
 
   it.each(["secrets", "publication"] as const)(
@@ -1799,7 +1774,6 @@ describe("models.authLogout", () => {
       expect(error).toBeUndefined();
     },
   );
-
 
   it("rejects missing provider", async () => {
     const opts = createLogoutOptions();

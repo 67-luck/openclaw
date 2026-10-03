@@ -1,21 +1,17 @@
 import { expect, it, vi } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
-import { resolveEmbeddedSessionLane } from "../../agents/embedded-agent-runner/lanes.js";
 import {
   createQueueSettings,
   createQueueTestRun,
 } from "../../auto-reply/reply/queue.test-helpers.js";
-import { hasSessionLifecycleQueueWork } from "../../auto-reply/reply/queue/cleanup.js";
-import { clearFollowupDrainCallback } from "../../auto-reply/reply/queue/drain.js";
+import { clearSessionQueues } from "../../auto-reply/reply/queue/cleanup.js";
 import { enqueueFollowupRun } from "../../auto-reply/reply/queue/enqueue.js";
-import { clearFollowupQueue, FOLLOWUP_QUEUES } from "../../auto-reply/reply/queue/state.js";
-import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
+import { getExistingFollowupQueue } from "../../auto-reply/reply/queue/state.js";
 import { getRuntimeConfig, setRuntimeConfigSnapshot } from "../../config/config.js";
 import {
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
-import { clearCommandLane, enqueueCommandInLane } from "../../process/command-queue.js";
+import { createReplyOperation } from "../../sessions/session-controller.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
@@ -73,36 +69,9 @@ it.each([
     return { run, settled };
   };
   const foreign = followup(foreignAgentId, foreignId, key);
-  const entered = createDeferred();
-  const release = createDeferred();
-  const lane = resolveEmbeddedSessionLane(key);
-  const blocker = enqueueCommandInLane(lane, async () => {
-    entered.resolve();
-    await release.promise;
-  });
-  await entered.promise;
-  const foreignTask = vi.fn(async () => "preserved");
-  const queued = enqueueCommandInLane(lane, foreignTask, {
-    sessionTarget: { agentId: foreignAgentId, sessionKey: key, sessionId: foreignId },
-  });
-  const queuedResult = Promise.allSettled([queued]);
-  const ownedTask = vi.fn(async () => "must not run");
-  const ownedQueued = enqueueCommandInLane(lane, ownedTask, {
-    sessionTarget: { agentId, sessionKey: key, sessionId: targetId },
-  });
-  const ownedResult = Promise.allSettled([ownedQueued]);
+  let owned: ReturnType<typeof followup> | undefined;
   try {
-    expect
-      .soft(
-        hasSessionLifecycleQueueWork({
-          keys: [key],
-          agentId,
-          sessionKey: target.canonicalKey,
-          sessionId: targetId,
-        }),
-      )
-      .toBe(true);
-    const owned = followup(agentId, targetId, target.canonicalKey);
+    owned = followup(agentId, targetId, target.canonicalKey);
     const respond = vi.fn();
     const params = {
       key,
@@ -124,15 +93,9 @@ it.each([
     expect(operation.abortSignal.aborted).toBe(false);
     expect(foreign.settled).not.toHaveBeenCalled();
     expect(owned.settled).toHaveBeenCalledOnce();
-    expect(FOLLOWUP_QUEUES.get(key)?.items).toEqual([foreign.run]);
     expect(
-      hasSessionLifecycleQueueWork({
-        keys: [key],
-        agentId,
-        sessionKey: target.canonicalKey,
-        sessionId: targetId,
-      }),
-    ).toBe(false);
+      getExistingFollowupQueue(key, foreign.run.controllerInput?.mailbox.owner.target)?.items,
+    ).toEqual([foreign.run]);
     const entry = loadSessionEntry({ agentId, sessionKey: target.canonicalKey });
     if (method === "sessions.delete") {
       expect(entry).toBeUndefined();
@@ -141,25 +104,14 @@ it.each([
     } else {
       expect(entry?.archivedAt).toEqual(expect.any(Number));
     }
-    release.resolve();
-    await blocker;
-    expect(await queuedResult).toEqual([{ status: "fulfilled", value: "preserved" }]);
-    expect(foreignTask).toHaveBeenCalledOnce();
-    expect(await ownedResult).toEqual([
-      { status: "rejected", reason: expect.objectContaining({ name: "CommandLaneClearedError" }) },
-    ]);
-    expect(ownedTask).not.toHaveBeenCalled();
     operation.complete();
     expect(operation.result?.kind).toBe("completed");
   } finally {
     operation.complete();
-    release.resolve();
-    for (const queueKey of queueKeys) {
-      clearFollowupQueue(queueKey);
-      clearFollowupDrainCallback(queueKey);
+    clearSessionQueues(queueKeys, foreign.run.controllerInput?.mailbox.owner.target);
+    if (owned?.run.controllerInput?.mailbox.owner.target) {
+      clearSessionQueues(queueKeys, owned.run.controllerInput.mailbox.owner.target);
     }
-    clearCommandLane(lane);
-    await Promise.allSettled([blocker, queuedResult, ownedResult]);
   }
 });
 
@@ -199,10 +151,7 @@ it.each(["sessions.delete", "sessions.reset", "sessions.patch"])(
       expect(operation.abortSignal.aborted).toBe(true);
     } finally {
       operation.complete();
-      for (const queueKey of [key, sessionId]) {
-        clearFollowupQueue(queueKey);
-        clearFollowupDrainCallback(queueKey);
-      }
+      clearSessionQueues([key, sessionId]);
     }
   },
 );

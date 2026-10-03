@@ -62,55 +62,32 @@ async function rotate(storePath: string, active: ReplyOperation) {
   active.updateSessionId(nextSessionId);
 }
 
-function createTestReplyOperation(
-  overrides: Omit<Parameters<typeof createReplyOperation>[0], "resetTriggered"> &
-    Partial<Pick<Parameters<typeof createReplyOperation>[0], "resetTriggered">>,
-) {
-  return createReplyOperation({ resetTriggered: false, ...overrides });
-}
-
-describe("reply turn admission rotation", () => {
-  afterEach(() => {
-    testing.resetReplyRunRegistry();
-    resetDiagnosticRunActivityForTest();
-  });
-
-  it.each([
-    { initiallyActive: true, beforeRead: false, rekey: false },
-    { initiallyActive: false, beforeRead: false, rekey: false },
-    { initiallyActive: false, beforeRead: true, rekey: false },
-    { initiallyActive: false, beforeRead: false, rekey: true },
-  ])(
-    "revalidates a run rotation during admission (initially active=$initiallyActive, before read=$beforeRead, rekey=$rekey)",
-    async ({ initiallyActive, beforeRead, rekey }) => {
-      const sessionKey = "agent:main:telegram:topic:compaction";
-      const sessionId = "pre-compact-session";
-      const nextSessionId = "post-compact-session";
-      const storePath = createSessionStoreFor(sessionKey, sessionId);
-      let active = initiallyActive
-        ? await admitTestReplyOperation({ sessionKey, sessionId, storePath })
-        : undefined;
-      active?.setPhase("preflight_compacting");
-
-      const snapshotRead = createDeferred();
-      const returnAdmission = createDeferred();
+it.each([
+  { stage: "after-read", rekey: false },
+  { stage: "before-read", rekey: false },
+  { stage: "after-read", rekey: true },
+  { stage: "before-admission", rekey: false },
+])(
+  "revalidates rotation during admission: stage=$stage, rekey=$rekey",
+  async ({ stage, rekey }) => {
+    const storePath = createSessionStoreFor(sessionKey, sessionId);
+    const snapshotRead = deferred();
+    const returnAdmission = deferred();
+    let pending: ReturnType<typeof admit> | undefined;
+    if (stage !== "before-admission") {
       const beginAdmission = sessionAdmissions.beginSessionEffect;
-      const delayedAdmission = vi
-        .spyOn(sessionAdmissions, "beginSessionEffect")
-        .mockImplementationOnce(async (params) => {
-          if (beforeRead) {
-
-            snapshotRead.resolve();
-            await returnAdmission.promise;
-          }
-          const lease = await beginAdmission(params);
-          if (stage === "after-read") {
-            snapshotRead.resolve();
-            await returnAdmission.promise;
-          }
-          return lease;
-        },
-      );
+      vi.spyOn(sessionAdmissions, "beginSessionEffect").mockImplementationOnce(async (params) => {
+        if (stage === "before-read") {
+          snapshotRead.resolve();
+          await returnAdmission.promise;
+        }
+        const lease = await beginAdmission(params);
+        if (stage === "after-read") {
+          snapshotRead.resolve();
+          await returnAdmission.promise;
+        }
+        return lease;
+      });
       pending = admit(storePath, { expectedSessionId: sessionId });
       await snapshotRead.promise;
     }

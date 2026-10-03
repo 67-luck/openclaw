@@ -111,6 +111,7 @@ describe("plugin approval signed agent runtime", () => {
         beginApprovalWait,
         record: vi.fn(),
         isCancelled: () => false,
+        isCancelledFinishing: () => false,
       });
       await fixture.run(async () => {
         const opts = requestOptions({

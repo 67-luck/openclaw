@@ -21,9 +21,9 @@ import {
 } from "../../../plugins/hook-runner-global.js";
 import { createMockPluginRegistry } from "../../../plugins/hooks.test-helpers.js";
 import {
-  beginSessionWorkAdmission,
-  type SessionWorkAdmissionLease,
-} from "../../../sessions/session-lifecycle-admission.js";
+  beginSessionEffect,
+  type SessionEffectRef,
+} from "../../../sessions/session-controller.lifecycle.js";
 import { resolveOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
 import { observeMainThreadSql } from "../../../test-utils/main-thread-sql-spies.test-support.js";
@@ -325,7 +325,7 @@ it.each([
     const terminalEntered = createDeferred();
     const terminalRelease = createDeferred();
     let heldTerminal = false;
-    let admission: SessionWorkAdmissionLease | undefined;
+    let admission: SessionEffectRef | undefined;
     let runnerSettlement: Promise<void> | undefined;
     if (completesDuringStop) {
       fixture.worker.mockImplementation((context, operation, options) =>
@@ -416,7 +416,7 @@ it.each([
     const completedAtBeforeStop = earlierSuccess ? fixtureStartedAt + 1 : Date.now();
     clock?.mockReturnValue(fixtureStartedAt + 2);
     if (completesDuringStop) {
-      admission = await beginSessionWorkAdmission({
+      admission = await beginSessionEffect({
         scope: resolveSessionStorePathCore(getRuntimeConfig().session?.store, {
           agentId: "main",
         }),

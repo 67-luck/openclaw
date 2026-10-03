@@ -16,7 +16,7 @@ import {
   runSessionMutation,
   startSessionControllerInterruption,
 } from "../sessions/session-controller.lifecycle.js";
-
+import { trackAsyncWork } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   createGatewaySchedulerClock,
@@ -713,7 +713,6 @@ describe("worker placement startup recovery authority", () => {
       .finally(() => admission.release());
     await vi.waitFor(() => expect(events).toEqual(["recovery:/gateway/workspace"]));
     const contender = runSessionMutation({
-
       scope: "/tmp/openclaw-worker-placement-session.sqlite",
       identities: [
         request.sessionKey,

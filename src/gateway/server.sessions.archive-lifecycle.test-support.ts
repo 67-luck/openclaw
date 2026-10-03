@@ -66,6 +66,7 @@ export async function activeRunContext(params: {
   if (!operation) {
     throw new Error("expected active run operation");
   }
+  const activeOperation = operation;
   const aborted = createDeferredCore();
   const onAbort = () => aborted.resolve();
   entry.input.abortSignal.addEventListener("abort", onAbort, { once: true });
@@ -84,12 +85,12 @@ export async function activeRunContext(params: {
       () => {
         entry.adapter.projectSessionTerminalPersistence = undefined;
         entry.adapter.projectSessionTerminalPersisted = true;
-        operation.complete();
+        activeOperation.complete();
         releaseSessionControllerClaim(claim);
       },
       (error: unknown) => {
         markChatAbortTerminalPersistenceError(entry, error);
-        operation.complete();
+        activeOperation.complete();
         releaseSessionControllerClaim(claim);
       },
     );
@@ -119,7 +120,7 @@ export async function activeRunContext(params: {
     unsubscribe(this: void) {
       entry.input.abortSignal.removeEventListener("abort", onAbort);
       unsubscribe();
-      operation.complete();
+      activeOperation.complete();
       releaseSessionControllerClaim(claim);
       registration.cleanup();
     },

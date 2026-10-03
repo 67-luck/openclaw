@@ -21,7 +21,7 @@ import { onTrustedMessageAuditEvent } from "../../audit/message-audit-events.js"
 import type { ReplyDispatchRun } from "../../auto-reply/get-reply-options.types.js";
 import { setReplyPayloadMetadata, type ReplyPayload } from "../../auto-reply/reply-payload.js";
 import { getTotalPendingReplies } from "../../auto-reply/reply/dispatcher-registry.js";
-
+import { parseReplyDirectives } from "../../auto-reply/reply/reply-directives.js";
 import { testing as replyRunRegistryTesting } from "../../auto-reply/reply/reply-run-registry.test-support.js";
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { recordAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
@@ -776,6 +776,10 @@ const readPersistedUserMessages = createChatDirectiveUserMessageReader(() =>
   readTranscriptJsonLines(mockState.transcriptPath),
 );
 
+beforeEach(({ signal }) => {
+  testSignal = signal;
+});
+
 function expectDispatchContextFields(expected: {
   OriginatingChannel?: unknown;
   OriginatingTo?: unknown;
@@ -1165,7 +1169,6 @@ async function registerGlobalToolEventRun(runId: string, sessionId: string, agen
   globalToolEventRunReleases.push(source.release);
   rpcSourceTesting.set(runId, source);
 }
-
 
 beforeAll(() => {
   suiteResources = createChatDirectiveSuiteResources();
@@ -2032,7 +2035,6 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       await Promise.allSettled([pendingSend, delivery.promise]);
     }
   });
-
 
   it("falls back once when captured owner evidence is stale", async () => {
     const { context, respond, send } = await createSqliteChatRequest(
@@ -4011,7 +4013,6 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     const mutationStarted = createDeferred();
     const releaseMutation = createDeferred();
     const mutation = runSessionMutation({
-
       scope: storePath,
       identities: ["main", mockState.sessionId],
       run: async () => {

@@ -1,4 +1,3 @@
-import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
 import { useChatAbortRegistryFixture } from "./chat.abort-registry.test-support.js";
@@ -22,8 +21,7 @@ import { writeSubagentSessionEntry } from "../../agents/subagents/registry/subag
 import { getSubagentRunByChildSessionKey } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
 import { enqueueFollowupRun } from "../../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../../auto-reply/reply/queue.test-helpers.js";
-import { clearFollowupDrainCallback } from "../../auto-reply/reply/queue/drain.js";
-import { clearFollowupQueue } from "../../auto-reply/reply/queue/state.js";
+import { clearSessionQueues } from "../../auto-reply/reply/queue/cleanup.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import {
   loadSessionEntry,
@@ -31,6 +29,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { isPathInside } from "../../infra/path-guards.js";
+import { listRpcSourceEntries } from "../../sessions/session-controller.rpc-sources.js";
 import { closeOpenClawAgentDatabaseByPath } from "../../state/openclaw-agent-db.js";
 import { listOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.test-support.js";
 import { persistGatewaySessionLifecycleEvent } from "../session-lifecycle-state.js";
@@ -152,7 +151,7 @@ it.each(["unchanged", "new turn", "reset incarnation", "partial cancellation"] a
       getRuntimeConfig,
       getSessionEventSubscriberConnIds: () => new Set(),
     });
-    expect(rpcSourceTesting.size).toBe(0);
+    expect(listRpcSourceEntries()).toHaveLength(0);
     expect(resolveActiveEmbeddedRunOwner(parentId)).toBeUndefined();
     const captured = loadSessionEntry({ agentId: "main", sessionKey: parentKey });
     if (!captured) {
@@ -331,9 +330,6 @@ it("does not cancel a yielded parent when Stop only clears a queued follow-up", 
     ]);
     expect(loadSessionEntry({ agentId: "main", sessionKey: parentKey })).toEqual(before);
   } finally {
-    for (const key of [parentKey, parentId]) {
-      clearFollowupQueue(key);
-      clearFollowupDrainCallback(key);
-    }
+    clearSessionQueues([parentKey, parentId]);
   }
 });

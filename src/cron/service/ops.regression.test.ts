@@ -9,6 +9,7 @@ import {
 } from "../../../test/helpers/cron/service-regression-fixtures.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { createEmbeddedAttemptTranscriptLifecycle } from "../../agents/embedded-agent-runner/run/attempt-transcript-lifecycle.js";
+import { DEFAULT_CRON_MAX_CONCURRENT_RUNS } from "../../config/cron-limits.js";
 import {
   runWithOwnedSessionTranscriptWrite,
   withOwnedSessionTranscriptWrites,
@@ -43,7 +44,6 @@ import {
 import { loadCronStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
 import { start, stop } from "./ops-lifecycle.js";
-
 import { remove, update } from "./ops-mutations.js";
 import { enqueueRun, run } from "./ops-run.js";
 import type { CronEvent } from "./state.js";
@@ -61,6 +61,15 @@ function expectQueuedRunAck(result: unknown) {
   expect(ack.enqueued).toBe(true);
   expect(typeof ack.runId).toBe("string");
   return ack.runId as string;
+}
+
+function expectIsolatedRunJobId(
+  runIsolatedAgentJob: ReturnType<typeof vi.fn>,
+  callIndex: number,
+  jobId: string,
+) {
+  const [params] = mockCall(runIsolatedAgentJob, callIndex) as [{ job?: { id?: string } }?];
+  expect(params?.job?.id).toBe(jobId);
 }
 
 function latestRunReceipt(storePath: string, jobId: string) {
@@ -138,7 +147,6 @@ describe("cron service ops regressions", () => {
   it("runs a manual run queued from an agent turn outside that turn's transcript lifecycle", async () => {
     vi.useRealTimers();
     resetGatewayWorkAdmission();
-    clearCommandLane(CommandLane.Cron);
     const store = opsRegressionFixtures.makeStorePath();
     const now = Date.parse("2026-02-06T10:05:00.000Z");
     const job = createDueIsolatedJob({
@@ -185,8 +193,9 @@ describe("cron service ops regressions", () => {
       expect(await finished.promise).toMatchObject({ status: "ok" });
       expect(reportWrites).toEqual(["report"]);
     } finally {
+      stop(state);
       callerTurnEnded.resolve();
-      clearCommandLane(CommandLane.Cron);
+      await enqueueCommandInLane(CommandLane.Cron, async () => {});
       resetGatewayWorkAdmission();
     }
   });
@@ -684,7 +693,6 @@ describe("cron service ops regressions", () => {
     }
   });
 
-
   it("keeps a queued quiet schedule event separate from its one terminal event", async () => {
     vi.useRealTimers();
     setCommandLaneConcurrency(CommandLane.Cron, 1);
@@ -806,7 +814,6 @@ describe("cron service ops regressions", () => {
       await enqueueCommandInLane(CommandLane.Cron, async () => {});
     }
   });
-
 
   it.each([
     {

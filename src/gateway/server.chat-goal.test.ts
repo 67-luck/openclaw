@@ -646,7 +646,7 @@ describe("Goal chat admission and continuation", () => {
         );
         expect(loadSessionEntry(scope())).toBeUndefined();
         expectNoDispatch();
-        expect(isSessionWorkAdmissionActive(storePath, [sessionKey])).toBe(false);
+        expect(isSessionControllerWorkActive(storePath, [sessionKey])).toBe(false);
         if (change === "replaced") {
           expect(context.dedupe.get(key)?.payload).toMatchObject({
             attemptId: "successor-attempt",
@@ -700,7 +700,7 @@ describe("Goal chat admission and continuation", () => {
         }),
       );
       expect(loadSessionEntry(scope())?.sessionId).toBe(reboundSessionId);
-      expect(context.chatAbortControllers.size).toBe(0);
+      expect(rpcSourceTesting.size).toBe(0);
       expect(runEmbeddedAgent).toHaveBeenCalledOnce();
     } finally {
       release.resolve();

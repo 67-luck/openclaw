@@ -5,11 +5,11 @@ import {
   type QueueSettings,
 } from "../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../auto-reply/reply/queue.test-helpers.js";
+import { clearSessionQueues } from "../auto-reply/reply/queue/cleanup.js";
 import { testing } from "../auto-reply/reply/reply-run-registry.test-support.js";
 import { createReplyOperation } from "../sessions/session-controller.operation.js";
 import { getSessionControllerOperation } from "../sessions/session-controller.state.js";
 import { createDeferredCore } from "../shared/deferred.js";
-
 import { recoverStuckDiagnosticSession } from "./diagnostic-stuck-session-recovery.runtime.js";
 
 const key = "agent:main:watchdog-followup";
@@ -33,7 +33,6 @@ afterEach(() => {
   clearSessionQueues([key]);
   vi.useRealTimers();
 });
-
 
 describe("controller watchdog and actual followup delivery custody", () => {
   it.each(["followup", "collect"] as const)(

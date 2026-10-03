@@ -10,6 +10,8 @@ import {
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
 import { addSessionSuggestion } from "../../config/sessions/session-suggestion-store.js";
+import { getExistingSessionControllerMailbox } from "../../sessions/session-controller.mailbox.js";
+import { hasRpcSource } from "../../sessions/session-controller.rpc-sources.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { linkEmail } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
@@ -107,8 +109,8 @@ describe("suggestion dispatch through real chat input custody", () => {
         expect.soft(await listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
         expect.soft(loadTranscriptEventsSync(fixture.scope)).toEqual(fixture.activeTranscript);
         expect.soft(dispatchInboundMessageMock).not.toHaveBeenCalled();
-        expect.soft(fixture.context.chatAbortControllers.has(runId)).toBe(false);
-        expect.soft(fixture.context.chatQueuedTurns.size).toBe(0);
+        expect.soft(hasRpcSource(runId)).toBe(false);
+        expect.soft(getExistingSessionControllerMailbox(fixture.scope.sessionKey)).toBeUndefined();
         return;
       }
 
@@ -172,8 +174,8 @@ describe("suggestion dispatch through real chat input custody", () => {
           },
         });
       }
-      expect(fixture.context.chatAbortControllers.size).toBe(0);
-      expect(fixture.context.chatQueuedTurns.size).toBe(0);
+      expect(hasRpcSource(runId)).toBe(false);
+      expect(getExistingSessionControllerMailbox(fixture.scope.sessionKey)).toBeUndefined();
     } finally {
       await pendingAtApproval;
       await fixture.cleanup();

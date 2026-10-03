@@ -9,6 +9,7 @@ import { expect, it, vi } from "vitest";
 import { finalizeInboundContext } from "../../../auto-reply/reply/inbound-context.js";
 import { enqueueFollowupRun, getFollowupQueueDepth } from "../../../auto-reply/reply/queue.js";
 import { createQueueTestRun } from "../../../auto-reply/reply/queue.test-helpers.js";
+import { clearSessionQueues } from "../../../auto-reply/reply/queue/cleanup.js";
 import { initSessionState } from "../../../auto-reply/reply/session.js";
 import { getRuntimeConfig } from "../../../config/config.js";
 import {
