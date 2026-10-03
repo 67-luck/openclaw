@@ -397,6 +397,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
   // sending the full conversation history (~100K tokens) to the LLM.
   // Delivery routing uses the selected conversation, not the fresh execution row.
   const execOwnsRoute =
+    preflight.shouldInspectPendingEvents &&
     scheduledTasks.length === 0 &&
     preflight.turnSourceDeliveryContext !== undefined &&
     preflight.selectedEventEntries.some(isExecCompletionSystemEvent);

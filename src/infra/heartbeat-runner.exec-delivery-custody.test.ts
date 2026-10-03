@@ -286,3 +286,47 @@ it("continues a deferred route after permanent rejection without replaying the r
     }
   });
 });
+
+it("does not let an uninspected exec route retarget an interval heartbeat", async () => {
+  await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+    const cfg = heartbeatTestConfig(tmpDir, "telegram", "telegram", storePath);
+    cfg.agents!.defaults!.heartbeat = {
+      ...cfg.agents!.defaults!.heartbeat,
+      target: "telegram",
+      to: "123456789",
+      accountId: "personal",
+    };
+    const sessionKey = await seedMainSessionStore(storePath, cfg, {
+      lastChannel: "telegram",
+      lastProvider: "telegram",
+      lastTo: "123456789",
+      lastAccountId: "personal",
+    });
+    enqueueSystemEvent("Exec completed (not-selected, code 0) :: PRIVATE_EXEC_RESULT", {
+      sessionKey,
+      contextKey: "exec:not-selected",
+      deliveryContext: {
+        channel: "telegram",
+        to: "telegram:-1003774691294:topic:47",
+        accountId: "work",
+        threadId: 47,
+      },
+    });
+    replySpy.mockResolvedValue({ text: "Scheduled monitor output" });
+    const telegram = vi.fn().mockResolvedValue({ messageId: "monitor", chatId: "123456789" });
+    await runHeartbeatOnce({
+      cfg,
+      sessionKey,
+      source: "interval",
+      reason: "interval",
+      deps: { getReplyFromConfig: replySpy, telegram },
+    });
+    expect(replySpy.mock.calls[0]?.[0].Body).not.toContain("PRIVATE_EXEC_RESULT");
+    expect(telegram).toHaveBeenCalledExactlyOnceWith(
+      "123456789",
+      expect.stringContaining("Scheduled monitor output"),
+      expect.objectContaining({ accountId: "personal" }),
+    );
+    expect(peekDeliverableSystemEventEntries(sessionKey)).toHaveLength(1);
+  });
+});

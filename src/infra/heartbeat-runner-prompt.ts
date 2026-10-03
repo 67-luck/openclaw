@@ -148,7 +148,7 @@ export async function resolveHeartbeatPreflight(params: {
     ? pendingEventEntries.filter((event) => !selectedEventEntries.includes(event))
     : [];
   const turnSourceDeliveryContext = resolveSystemEventDeliveryContext(
-    params.scheduledTasks?.length
+    params.scheduledTasks?.length || !shouldInspectPendingEvents
       ? []
       : firstExec
         ? selectedEventEntries.filter(isExecCompletionSystemEvent)
