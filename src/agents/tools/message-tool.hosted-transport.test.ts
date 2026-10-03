@@ -445,7 +445,7 @@ it("retains scheduled invocation config through bound Gateway dispatch after pre
     expect(mismatched).toMatchObject({
       ok: true,
       messageActionConfig: undefined,
-      messageActionAuthorization: { allowNativeChannelNamespace: true },
+      messageActionAuthorization: { allowNativeChannelNamespace: undefined },
     });
     const inferred = withMessageActionInvocationConfig(
       "unrelated-host-token",
