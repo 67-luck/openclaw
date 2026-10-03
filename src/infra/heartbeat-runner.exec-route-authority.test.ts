@@ -80,6 +80,7 @@ it.each([
     });
     enqueueSystemEvent(`Exec completed (captured, code 0) :: ${marker}`, {
       sessionKey,
+      contextKey: "exec:fixture-1",
       deliveryContext: captured,
     });
     const telegram = vi.fn().mockResolvedValue({ messageId: "sent", chatId: "-1003774691294" });
@@ -145,6 +146,7 @@ it.each(["none", "direct-policy", "alerts-disabled"])(
       });
       enqueueSystemEvent(`Exec completed (suppressed, code 0) :: ${marker}`, {
         sessionKey,
+        contextKey: "exec:fixture-2",
         deliveryContext:
           suppression === "direct-policy"
             ? { ...captured, to: "9988776655", threadId: undefined }
@@ -268,6 +270,7 @@ it.each(["chat", "thread", "configuration"] as const)(
       );
       enqueueSystemEvent(`Exec completed (refinement, code 0) :: ${marker}`, {
         sessionKey,
+        contextKey: "exec:fixture-3",
         deliveryContext: captured,
       });
       const telegram = vi.fn().mockResolvedValue({ messageId: "sent" });
@@ -333,6 +336,7 @@ it("does not replace an unavailable captured account with a configured heartbeat
     );
     enqueueSystemEvent(`Exec completed (account, code 0) :: ${marker}`, {
       sessionKey,
+      contextKey: "exec:fixture-4",
       deliveryContext: captured,
     });
     const telegram = vi.fn();

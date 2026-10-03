@@ -157,7 +157,9 @@ export async function resolveHeartbeatPreflight(params: {
     params.scheduledTasks?.length || !shouldInspectPendingEvents
       ? []
       : firstExec
-        ? selectedEventEntries.filter(isExecCompletionSystemEvent)
+        ? selectedEventEntries.filter(
+            (event) => isExecCompletionSystemEvent(event) && event.contextKey != null,
+          )
         : selectedEventEntries,
   );
   const shouldBypassScratchGates =

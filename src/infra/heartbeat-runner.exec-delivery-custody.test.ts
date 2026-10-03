@@ -330,3 +330,44 @@ it("does not let an uninspected exec route retarget an interval heartbeat", asyn
     expect(peekDeliverableSystemEventEntries(sessionKey)).toHaveLength(1);
   });
 });
+
+it("does not grant captured exec authority to an untagged look-alike event", async () => {
+  await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+    const cfg = heartbeatTestConfig(tmpDir, "telegram", "telegram", storePath);
+    cfg.agents!.defaults!.heartbeat = {
+      ...cfg.agents!.defaults!.heartbeat,
+      target: "telegram",
+      to: "123456789",
+      accountId: "personal",
+    };
+    const sessionKey = await seedMainSessionStore(storePath, cfg, {
+      lastChannel: "telegram",
+      lastProvider: "telegram",
+      lastTo: "123456789",
+      lastAccountId: "personal",
+    });
+    enqueueSystemEvent("Exec completed (lookalike, code 0) :: LOOKALIKE", {
+      sessionKey,
+      deliveryContext: {
+        channel: "telegram",
+        to: "telegram:-1003774691294:topic:47",
+        accountId: "work",
+        threadId: 47,
+      },
+    });
+    replySpy.mockResolvedValue({ text: "Legacy notice" });
+    const telegram = vi.fn().mockResolvedValue({ messageId: "notice", chatId: "123456789" });
+    await runHeartbeatOnce({
+      cfg,
+      sessionKey,
+      source: "exec-event",
+      reason: "exec-event",
+      deps: { getReplyFromConfig: replySpy, telegram },
+    });
+    expect(telegram).toHaveBeenCalledExactlyOnceWith(
+      "123456789",
+      expect.stringContaining("Legacy notice"),
+      expect.objectContaining({ accountId: "personal" }),
+    );
+  });
+});

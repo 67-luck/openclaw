@@ -187,6 +187,7 @@ describe("Heartbeat event routing", () => {
           });
           const completion = "Exec completed (background-report, code 0) :: report is ready";
           enqueueSystemEvent(completion, {
+            contextKey: "exec:fixture-source",
             sessionKey: queueKey,
             ...(eventThreadId === undefined
               ? {}
@@ -279,6 +280,7 @@ describe("Heartbeat event routing", () => {
       expect(readEntry(baseKey)?.sessionId).toBe("base-conversation");
       enqueueSystemEvent("Exec completed (legacy, code 0) :: ready", {
         sessionKey: queueKey,
+        contextKey: "exec:fixture-1",
         deliveryContext: { channel: "telegram", to: "-100155462274", threadId: 47 },
       });
       enqueueSystemEvent("Reminder: Legacy queue work", {
@@ -374,6 +376,7 @@ describe("Heartbeat event routing", () => {
       const reminder = "Reminder: review the scheduled report";
       if (dedicated === "exec") {
         enqueueSystemEvent(completion, {
+          contextKey: "exec:fixture-source",
           sessionKey: queueKey,
           ...(queue === "base"
             ? { deliveryContext: { channel: "telegram", to: "-100999999999", threadId: 42 } }
@@ -473,6 +476,7 @@ describe("Heartbeat event routing", () => {
         });
         const completion = "Exec completed (group-report, code 0) :: group report is ready";
         enqueueSystemEvent(completion, {
+          contextKey: "exec:fixture-source",
           sessionKey: isolatedKey,
           deliveryContext: { channel: "telegram", to: "group:ops" },
         });
@@ -502,6 +506,7 @@ describe("Heartbeat event routing", () => {
       });
       enqueueSystemEvent("Exec completed (mixed-run, code 0) :: ready", {
         sessionKey,
+        contextKey: "exec:fixture-2",
         deliveryContext: {
           channel: "telegram",
           to: "telegram:-1003774691294:topic:47",
@@ -561,6 +566,7 @@ describe("Heartbeat event routing", () => {
       });
       enqueueSystemEvent(`Exec completed (review-run, code 0)${output ? ` :: ${output}` : ""}`, {
         sessionKey,
+        contextKey: "exec:fixture-3",
         deliveryContext: {
           channel: "telegram",
           to: "telegram:-1003774691294:topic:47",
@@ -603,6 +609,7 @@ describe("Heartbeat event routing", () => {
       const enqueueCompletion = (name: string, accountId: string, threadId: number) =>
         enqueueSystemEvent(`Exec completed (${name}, code 0) :: ${name} is ready`, {
           sessionKey,
+          contextKey: "exec:fixture-4",
           deliveryContext: {
             channel: "telegram",
             to: `telegram:-1003774691294:topic:${threadId}`,
@@ -672,6 +679,7 @@ describe("Heartbeat event routing", () => {
       });
       enqueueSystemEvent("Exec completed (work-report, code 0) :: report is ready", {
         sessionKey,
+        contextKey: "exec:fixture-5",
         deliveryContext: {
           channel: "telegram",
           to: "telegram:-1003774691294:topic:47",
