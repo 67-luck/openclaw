@@ -371,3 +371,54 @@ it("does not grant captured exec authority to an untagged look-alike event", asy
     );
   });
 });
+
+it.each([true, false])(
+  "separates same-route tagged and untagged completions (tagged first=%s)",
+  async (taggedFirst) => {
+    await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
+      const cfg = heartbeatTestConfig(tmpDir, "telegram", "telegram", storePath);
+      cfg.agents!.defaults!.heartbeat = {
+        ...cfg.agents!.defaults!.heartbeat,
+        target: "telegram",
+        to: "123456789",
+        accountId: "personal",
+      };
+      const sessionKey = await seedMainSessionStore(storePath, cfg, {
+        lastChannel: "telegram",
+        lastProvider: "telegram",
+        lastTo: "123456789",
+        lastAccountId: "personal",
+      });
+      const route = {
+        channel: "telegram",
+        to: "telegram:-1003774691294:topic:47",
+        accountId: "work",
+        threadId: 47,
+      };
+      for (const tagged of [taggedFirst, !taggedFirst]) {
+        enqueueSystemEvent(
+          "Exec completed (" +
+            (tagged ? "tagged" : "untagged") +
+            ", code 0) :: " +
+            (tagged ? "TAGGED_RESULT" : "UNTRUSTED_RESULT"),
+          { sessionKey, deliveryContext: route, ...(tagged ? { contextKey: "exec:tagged" } : {}) },
+        );
+      }
+      replySpy.mockImplementation(async (ctx) => ({
+        text: ctx.Body?.includes("TAGGED_RESULT") ? "TAGGED_RESULT" : "UNTRUSTED_RESULT",
+      }));
+      const telegram = vi.fn().mockResolvedValue({ messageId: "receipt", chatId: "123456789" });
+      const deps = { getReplyFromConfig: replySpy, telegram };
+      await runHeartbeatOnce({ cfg, sessionKey, source: "exec-event", reason: "exec-event", deps });
+      expect(replySpy.mock.calls[0]?.[0].Body).not.toContain(
+        taggedFirst ? "UNTRUSTED_RESULT" : "TAGGED_RESULT",
+      );
+      await runHeartbeatOnce({ cfg, sessionKey, source: "exec-event", reason: "exec-event", deps });
+      expect(replySpy.mock.calls[1]?.[0].Body).not.toContain(
+        taggedFirst ? "TAGGED_RESULT" : "UNTRUSTED_RESULT",
+      );
+      expect(telegram.mock.calls[taggedFirst ? 0 : 1]?.[0]).toBe(route.to);
+      expect(telegram.mock.calls[taggedFirst ? 1 : 0]?.[0]).toBe("123456789");
+    });
+  },
+);

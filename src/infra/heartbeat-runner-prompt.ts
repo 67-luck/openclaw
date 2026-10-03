@@ -144,6 +144,7 @@ export async function resolveHeartbeatPreflight(params: {
     ? pendingEventEntries.filter(
         (event) =>
           isExecCompletionSystemEvent(event) &&
+          Boolean(event.contextKey) === Boolean(firstExec.contextKey) &&
           (!firstExec.deliveryContext
             ? !event.deliveryContext
             : event === firstExec ||
