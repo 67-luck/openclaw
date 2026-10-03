@@ -148,6 +148,7 @@ export function renderSidebarUpdateSurface(params: {
   const context = params.context;
   const snapshot = context.overlays.snapshot;
   const gateway = context.gateway.snapshot;
+  const canCheck = canCallGatewayMethod(gateway, "update.status", "operator.admin");
   return html`<openclaw-sidebar-update-card
     class="sidebar-issues-panel__update"
     data-attention-kind="updateAvailable"
@@ -160,10 +161,10 @@ export function renderSidebarUpdateSurface(params: {
     .updateRunAcknowledged=${snapshot.updateRunAcknowledged}
     .connected=${gateway.phase === "connected"}
     .onAcknowledge=${() => context.overlays.acknowledgeUpdateRun()}
-    .onCheckStatus=${() => context.overlays.refreshUpdateStatus()}
-    .statusBanner=${snapshot.updateStatusBanner}
+    .onCheckStatus=${canCheck ? () => context.overlays.refreshUpdateStatus() : undefined}
+    .statusBanner=${snapshot.updateStatusCheckBanner ? { ...snapshot.updateStatusCheckBanner, source: "read" } : snapshot.updateStatusBanner}
     .watchUpdateProgress=${params.watchUpdateProgress}
-    .canUpdate=${canCallGatewayMethod(gateway, "update.run", "operator.admin")}
+    .canUpdate=${canCheck && canCallGatewayMethod(gateway, "update.run", "operator.admin")}
     .canHoldUpdate=${canCallGatewayMethod(gateway, "update.hold", "operator.admin")}
     .onUpdate=${() => void context.overlays.runUpdate()}
     .refreshRequired=${false}

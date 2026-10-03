@@ -26,7 +26,6 @@ import { checkTelemetryUpdate } from "./telemetry.js";
 import { UpdateCampaignController } from "./update-campaign.js";
 import {
   channelToNpmTag,
-  DEV_BRANCH,
   normalizeUpdateChannel,
   resolveEffectiveUpdateChannel,
   DEFAULT_PACKAGE_CHANNEL,
@@ -43,7 +42,6 @@ import {
   type UpdateCheckResult,
 } from "./update-check.js";
 import { devUpdateTargetFromGitTarget } from "./update-dev-target.js";
-import { resolveDevGitCommits } from "./update-git-metadata.js";
 import {
   prepareStartupUpdateInstall,
   resolveStartupInstallStatus,
@@ -51,6 +49,7 @@ import {
 } from "./update-install-status.js";
 import { runCampaignUpdate, type AutoUpdateRunner } from "./update-startup-auto-run.js";
 import { scheduleGatewayRemoteCatalogChecks } from "./update-startup-catalog.js";
+import { canRunDevGitCampaign, resolveDevGitUpdate } from "./update-startup-refresh.js";
 import {
   getUpdateSchedule,
   resetUpdateStatusState,
@@ -288,11 +287,35 @@ async function runGatewayUpdateCheckOwned(
     return;
   }
   const autoDisabledByExternalSupervisor = isGatewayExternallySupervised();
+  const initialized = await lifecycle.initialize();
+  params.signal.throwIfAborted();
+  const potentialChannel = resolveEffectiveUpdateChannel({
+    configChannel,
+    currentVersion: VERSION,
+    ...initialized.status,
+  }).channel;
+  const generation =
+    potentialChannel === "dev" && initialized.status.installKind === "git"
+      ? ++lifecycle.devGitCheckGeneration
+      : undefined;
+  const isCurrent = () =>
+    lifecycle.isCurrent() &&
+    lifecycle.installStatus?.status.installKind === initialized.status.installKind &&
+    !params.signal.aborted &&
+    updateCampaign.getState()?.state !== "applying" &&
+    (generation === undefined || generation === lifecycle.devGitCheckGeneration);
   const {
     installStatus,
     channel: configuredChannel,
     readOnlySchedule,
-  } = await prepareStartupUpdateInstall(lifecycle.initialize, configChannel, params.signal);
+  } = await prepareStartupUpdateInstall(
+    () => Promise.resolve(initialized),
+    configChannel,
+    params.signal,
+  );
+  if (!isCurrent()) {
+    return;
+  }
   if (readOnlySchedule) {
     updateCampaign.clear();
     setAvailable(null);
@@ -398,6 +421,9 @@ async function runGatewayUpdateCheckOwned(
   }
   const telemetryUpdate = await checkTelemetryUpdate(params.getConfig, { surface: "gateway" });
   params.signal?.throwIfAborted();
+  if (!isCurrent()) {
+    return;
+  }
   const state = readState();
   const rawNow = Date.now();
   const now = resolveUpdateCheckNowMs(rawNow);
@@ -439,16 +465,19 @@ async function runGatewayUpdateCheckOwned(
       target,
       inspect: params.activeWorkInspectors,
       onChange: onCampaignChange,
-      apply: ({ forced }) =>
+      apply: ({ forced, target: admittedTarget }) =>
         lifecycle.run(() =>
           runCampaignUpdate({
             channel,
-            mode: target.kind === "git" ? "git" : status.packageManager,
-            version: target.kind === "git" ? target.upstreamSha : target.version,
+            mode: admittedTarget.kind === "git" ? "git" : status.packageManager,
+            version:
+              admittedTarget.kind === "git" ? admittedTarget.upstreamSha : admittedTarget.version,
             tag,
             forced,
             root: root ?? status.root ?? undefined,
-            ...(target.kind === "git" ? { devTarget: devUpdateTargetFromGitTarget(target) } : {}),
+            ...(admittedTarget.kind === "git"
+              ? { devTarget: devUpdateTargetFromGitTarget(admittedTarget) }
+              : {}),
             log: params.log,
             runAuto,
             canApply,
@@ -481,53 +510,23 @@ async function runGatewayUpdateCheckOwned(
   if (isDevGit) {
     clearAvailabilityState(nextState);
     clearAutoState(nextState);
-    const git = status.git;
-    if (
-      typeof git?.behind !== "number" ||
-      git.behind <= 0 ||
-      !git.sha ||
-      !git.upstream ||
-      !git.upstreamSha
-    ) {
+    const update = await resolveDevGitUpdate(status, params.signal);
+    if (!isCurrent()) {
+      return;
+    }
+    if (!update) {
       updateCampaign.clear();
       setAvailable(null);
       setSchedule(withoutUpdateTarget(getUpdateSchedule() ?? initialSchedule));
       writeState(nextState);
       return;
     }
-    const currentSha = git.sha;
-    const upstreamRef = git.upstream;
-    const upstreamSha = git.upstreamSha;
-    const commitsBehind = git.behind;
-    const commits = await resolveDevGitCommits({
-      root: git.root,
-      currentSha,
-      upstreamSha,
-      signal: params.signal,
-    });
-    params.signal?.throwIfAborted();
-
-    const target: NonNullable<UpdateScheduleState["target"]> = {
-      kind: "git",
-      upstreamRef,
-      upstreamSha,
-      commitsBehind,
-    };
+    const { git, target, available } = update;
+    const { upstreamSha } = target;
     if (!updateCampaign.reconcileTarget(target)) {
       return;
     }
-    const nextAvailable: UpdateAvailable = {
-      currentVersion: VERSION,
-      latestVersion: VERSION,
-      channel: "dev",
-      currentSha,
-      upstreamRef,
-      upstreamSha,
-      ...(git.repositoryUrl ? { repositoryUrl: git.repositoryUrl } : {}),
-      commitsBehind,
-      commits,
-    };
-    setAvailable(nextAvailable);
+    setAvailable(available);
     setSchedule({ ...(getUpdateSchedule() ?? initialSchedule), target });
 
     if (autoEnabled && autoDisabledByExternalSupervisor) {
@@ -537,12 +536,7 @@ async function runGatewayUpdateCheckOwned(
         reason: EXTERNAL_SUPERVISOR_UPDATE_REQUIRED_REASON,
       });
     }
-    const hasTrackedDevUpstream =
-      (git.branch === DEV_BRANCH || git.branch === "HEAD") && git.upstreamSource === "tracking";
-    const hasReceiptBackedDetachedHead = git.branch === "HEAD" && git.upstreamSource === "receipt";
-    const canRunTrackedDevCampaign =
-      (hasTrackedDevUpstream || hasReceiptBackedDetachedHead) && git.ahead === 0;
-    if (shouldRunAutoUpdate && canRunTrackedDevCampaign) {
+    if (shouldRunAutoUpdate && canRunDevGitCampaign(git)) {
       const lastAttemptAt = state.autoLastAttemptAt ? Date.parse(state.autoLastAttemptAt) : null;
       const recentAttempt =
         lastAttemptAt != null &&
@@ -577,6 +571,9 @@ async function runGatewayUpdateCheckOwned(
           version: telemetryUpdate?.version ?? null,
         };
   params.signal?.throwIfAborted();
+  if (!isCurrent()) {
+    return;
+  }
   const tag = resolved.tag;
   if (!resolved.version) {
     if (channel === "extended-stable") {

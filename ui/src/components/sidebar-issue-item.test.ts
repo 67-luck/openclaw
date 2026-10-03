@@ -211,6 +211,75 @@ describe("renderSidebarUpdateSurface", () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
+  it.each([
+    { scope: "operator.read", methods: ["update.status"], canCheck: false, canUpdate: false },
+    { scope: "operator.admin", methods: ["update.status"], canCheck: true, canUpdate: false },
+    { scope: "operator.admin", methods: ["update.run"], canCheck: false, canUpdate: false },
+    {
+      scope: "operator.admin",
+      methods: ["update.run", "update.status"],
+      canCheck: true,
+      canUpdate: true,
+    },
+  ])(
+    "gates discovery and fresh confirmation for $scope with $methods",
+    async ({ scope, methods, canCheck, canUpdate }) => {
+      const request = vi.fn(async () => ({}));
+      const harness = updateRunHarness(request);
+      harness.update({
+        hello: {
+          ...harness.gateway.snapshot.hello!,
+          auth: { role: "operator", scopes: [scope] },
+          features: { methods },
+        },
+      });
+      const overlays = createApplicationOverlays(harness.gateway);
+      try {
+        render(
+          renderSidebarUpdateSurface({
+            context: { gateway: harness.gateway, overlays },
+            onDismiss: vi.fn(),
+            onNavigate: vi.fn(),
+            watchUpdateProgress: undefined,
+          }),
+          container,
+        );
+        const card = container.querySelector<
+          HTMLElement & {
+            updateComplete: Promise<boolean>;
+            canUpdate: boolean;
+            onCheckStatus?: () => Promise<boolean>;
+          }
+        >("openclaw-sidebar-update-card")!;
+        await card.updateComplete;
+        expect(card.canUpdate).toBe(canUpdate);
+        expect(Boolean(card.onCheckStatus)).toBe(canCheck);
+        const details = card.querySelector("details")!;
+        const expanded = new Promise<void>((resolve) => {
+          details.addEventListener("toggle", () => resolve(), { once: true });
+        });
+        details.open = true;
+        await expanded;
+        await card.updateComplete;
+        if (canCheck) {
+          expect(request).toHaveBeenCalledWith(
+            "update.status",
+            { refreshCheckout: true },
+            { timeoutMs: null },
+          );
+        } else {
+          expect(request).not.toHaveBeenCalledWith(
+            "update.status",
+            { refreshCheckout: true },
+            expect.anything(),
+          );
+          expect(card.textContent).not.toContain("Could not check");
+        }
+      } finally {
+        overlays.dispose();
+      }
+    },
+  );
   it.each(["acknowledged", "expired", "visible"] as const)(
     "dismisses the producer's current notice beside a %s terminal run",
     async (state) => {

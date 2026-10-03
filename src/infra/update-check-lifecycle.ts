@@ -1,15 +1,26 @@
+import type {
+  UpdateAvailable,
+  UpdateScheduleState,
+} from "../../packages/gateway-protocol/src/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import type { GatewayScheduler } from "./gateway-scheduler.js";
 import type { UpdateCampaignController } from "./update-campaign.js";
 import type { StartupInstallStatus } from "./update-install-status.types.js";
 
-export type UpdateCheckLifecycle = {
+type UpdateCheckNotifications = {
+  onUpdateAvailableChange?: (updateAvailable: UpdateAvailable | null) => void;
+  onUpdateScheduleChange?: (schedule: UpdateScheduleState) => void;
+};
+
+export type UpdateCheckLifecycle = UpdateCheckNotifications & {
   scheduler: GatewayScheduler;
   signal: AbortSignal;
   campaign?: UpdateCampaignController;
   installStatus?: StartupInstallStatus;
   isCurrent: () => boolean;
+  /** Shared publication order for background and interactive Dev discovery. */
+  devGitCheckGeneration: number;
   refreshes: WeakMap<OpenClawConfig, Promise<void>>;
   run: <T>(work: (signal: AbortSignal) => Promise<T>) => Promise<T>;
   initialize: () => Promise<StartupInstallStatus>;
@@ -18,7 +29,10 @@ export type UpdateCheckLifecycle = {
 };
 let updateCheckLifecycle: UpdateCheckLifecycle | undefined;
 
-export function createGatewayUpdateLifecycle(scheduler: GatewayScheduler): UpdateCheckLifecycle {
+export function createGatewayUpdateLifecycle(
+  scheduler: GatewayScheduler,
+  notifications: UpdateCheckNotifications = {},
+): UpdateCheckLifecycle {
   const predecessor = updateCheckLifecycle?.stop();
   const scope = new AsyncWorkScope();
   const scheduled = scheduler.scope();
@@ -73,8 +87,10 @@ export function createGatewayUpdateLifecycle(scheduler: GatewayScheduler): Updat
   };
   const lifecycle: UpdateCheckLifecycle = {
     scheduler,
+    ...notifications,
     signal,
     isCurrent: () => updateCheckLifecycle === lifecycle,
+    devGitCheckGeneration: 0,
     refreshes: new WeakMap(),
     run,
     initialize,
