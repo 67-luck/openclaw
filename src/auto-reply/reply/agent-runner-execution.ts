@@ -507,6 +507,8 @@ async function executeAgentTurnInternal(
       params.followupRun.run.skillLibraryAuthoring?.bind(context);
     },
   });
+  const controllerAbortSignal = params.replyOperation?.abortSignal;
+  const callerAbortSignal = params.opts?.abortSignal;
   const deferredLifecycle = createDeferredEmbeddedRunLifecycleManager({
     replyOperation: params.replyOperation,
     runId,
@@ -515,7 +517,10 @@ async function executeAgentTurnInternal(
     sessionKey: params.sessionKey,
     sessionFile: params.followupRun.run.sessionFile,
     abortSignal: resolveFollowupAbortSignal({
-      abortSignal: params.replyOperation?.abortSignal ?? params.opts?.abortSignal,
+      abortSignal:
+        controllerAbortSignal && callerAbortSignal
+          ? AbortSignal.any([controllerAbortSignal, callerAbortSignal])
+          : (controllerAbortSignal ?? callerAbortSignal),
       operatorAuthority: params.followupRun.operatorAuthority,
     }),
   });

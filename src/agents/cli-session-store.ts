@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { CliSessionBinding, InternalSessionEntry, SessionEntry } from "../config/sessions.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
@@ -90,19 +91,60 @@ async function patchCliSessionForkBinding(
   if (!entry || entry.cliSessionBindings?.[provider]?.sessionId !== expectedCliSessionId) {
     return undefined;
   }
-  return await patchCliSessionBindingInStore({
+  let transition: { original: CliSessionBinding; committed: CliSessionBinding } | undefined;
+  try {
+    const committed = await patchCliSessionBindingInStore({
+      ...params,
+      expectedSession: entry,
+      update: (current) => {
+        const binding = current.cliSessionBindings?.[provider];
+        if (binding?.sessionId !== expectedCliSessionId) {
+          return false;
+        }
+        const nextBinding = updateBinding(binding);
+        if (!nextBinding) {
+          return false;
+        }
+        // Capture the normalized durable post-image before the commit can outlive
+        // a late authority rejection observed by the calling process.
+        const original = structuredClone(binding);
+        setCliSessionBinding(current, provider, nextBinding);
+        transition = {
+          original,
+          committed: structuredClone(current.cliSessionBindings![provider]!),
+        };
+        return true;
+      },
+    });
+    // Commit admission cannot observe cancellation that arrives while the async
+    // patch publishes its result, so reject that late window before returning.
+    params.assertCommitAllowed?.();
+    return committed;
+  } catch (error) {
+    if (transition) {
+      await restoreRejectedCliSessionForkTransition(params, entry, transition);
+    }
+    throw error;
+  }
+}
+
+/** Restores a rejected fork write only while its exact post-image still owns the binding. */
+async function restoreRejectedCliSessionForkTransition(
+  params: CliSessionForkStoreParams,
+  expectedSession: SessionEntry,
+  transition: { original: CliSessionBinding; committed: CliSessionBinding },
+): Promise<void> {
+  await patchCliSessionBindingInStore({
     ...params,
-    expectedSession: entry,
+    assertCommitAllowed: undefined,
+    expectedSession,
     update: (current) => {
-      const binding = current.cliSessionBindings?.[provider];
-      if (binding?.sessionId !== expectedCliSessionId) {
+      // The session controller serializes binding owners. Other row writers can
+      // carry this value forward, while a different binding proves a later owner won.
+      if (!isDeepStrictEqual(current.cliSessionBindings?.[params.provider], transition.committed)) {
         return false;
       }
-      const nextBinding = updateBinding(binding);
-      if (!nextBinding) {
-        return false;
-      }
-      setCliSessionBinding(current, provider, nextBinding);
+      setCliSessionBinding(current, params.provider, transition.original);
       return true;
     },
   });

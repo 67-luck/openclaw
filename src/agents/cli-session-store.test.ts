@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import {
+  replaceSessionEntry,
+  replaceSessionEntrySync,
+} from "../config/sessions/session-accessor.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { buildAgentRunTerminalOutcomeFromLifecycleEvent } from "./agent-run-terminal-outcome.js";
@@ -262,6 +265,51 @@ describe("CLI binding settlement", () => {
       });
     },
   );
+
+  it("does not roll back a binding replaced after a rejected fork commit", async () => {
+    await withTempSessionStore(async ({ storePath }) => {
+      const sessionKey = "agent:main:cli-fork-post-commit-rebind";
+      const entry: SessionEntry = {
+        sessionId: "openclaw-session-1",
+        updatedAt: 1,
+        cliSessionBindings: {
+          "claude-cli": { sessionId: "claude-source-session", forkNextResume: true },
+        },
+      };
+      const sessionStore = await seedSessionFixture(storePath, sessionKey, entry);
+      const concurrentBinding = { sessionId: "claude-concurrent-session", forceReuse: true };
+      let authorityChecks = 0;
+      const callbacks = buildCliSessionForkRunParams(
+        {
+          agentId: "main",
+          provider: "claude-cli",
+          sessionKey,
+          sessionStore,
+          storePath,
+          expectedCliSessionId: "claude-source-session",
+          assertCommitAllowed: () => {
+            authorityChecks += 1;
+            if (authorityChecks !== 2) {
+              return;
+            }
+            const committed = loadPersistedSessionEntry(storePath, sessionKey);
+            replaceSessionEntrySync(
+              { sessionKey, storePath },
+              { ...committed!, cliSessionBindings: { "claude-cli": concurrentBinding } },
+            );
+            throw new Error("claim released after commit");
+          },
+        },
+        () => {},
+      );
+
+      await expect(callbacks.claimCliSessionFork()).rejects.toThrow("claim released after commit");
+      expect(authorityChecks).toBe(2);
+      expect(
+        loadPersistedSessionEntry(storePath, sessionKey)?.cliSessionBindings?.["claude-cli"],
+      ).toEqual(concurrentBinding);
+    });
+  });
 });
 
 describe("CLI session binding mutations", () => {
