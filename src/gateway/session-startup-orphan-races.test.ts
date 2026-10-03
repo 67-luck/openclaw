@@ -80,7 +80,7 @@ it.each([
 ] as const)(
   "retains the row and emits no receipt when %s changes after repair preparation",
   async (race) => {
-    let admission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
+    let admission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
     await withStartupGateway(
       "startup-orphan-race-",
       async () => {
@@ -93,74 +93,27 @@ it.each([
           startedAt: Math.floor(performance.timeOrigin) - 100,
           updatedAt: Math.floor(performance.timeOrigin) - 100,
         });
-        if (!lock) {
-          throw new Error("expected isolated Gateway ownership");
-        }
-        let admission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
-        try {
-          await lock.run(async () => {
-            const scope = { agentId: "main", sessionKey: "agent:main:subagent:race" };
-            await accessor.replaceSessionEntry(scope, {
-              sessionId: "predecessor",
-              lifecycleRevision: "generation-1",
-              lifecycleRunId: "run-1",
-              status: "running",
-              startedAt: Math.floor(performance.timeOrigin) - 100,
-              updatedAt: Math.floor(performance.timeOrigin) - 100,
-            });
-            const database = openOpenClawAgentDatabase({ agentId: "main" });
-            const original = accessor.loadSessionEntryReadOnly(scope);
-            assert(original);
-            const writeReceipt = sessionRunError.recordGatewaySessionRunFailure;
-            let prepared = false;
-            vi.spyOn(sessionRunError, "recordGatewaySessionRunFailure").mockImplementationOnce(
-              async (params) => {
-                await Promise.resolve();
-                if (race === "session") {
-                  accessor.replaceSessionEntrySync(scope, {
-                    ...original,
-                    sessionId: "successor",
-                  });
-                } else if (race === "generation") {
-                  // Keep the separate connection, but serialize its write with maintenance.
-                  await runOpenClawAgentWriteAdmission(
-                    { agentId: "main", path: database.path },
-                    () => {
-                      const other = new DatabaseSync(database.path);
-                      try {
-                        other
-                          .prepare(
-                            "UPDATE session_nodes SET entry_json = json_set(entry_json, ?, ?) WHERE session_key = ?",
-                          )
-                          .run("$.lifecycleRevision", "successor", scope.sessionKey);
-                        // Keep row validity from masking the lifecycle-generation fence.
-                        ensureSessionEntryValidityProjection(other);
-                      } finally {
-                        other.close();
-                      }
-                    },
-                  );
-                } else if (race === "local-owner") {
-                  registerAgentRunContext("startup-race-owner", {
-                    sessionKey: scope.sessionKey,
-                    sessionId: "predecessor",
-                    projectSessionActive: false,
-                  });
-                } else if (race === "session-admission") {
-                  admission = await beginSessionEffect({
-                    scope: database.path,
-                    identities: [scope.sessionKey, "predecessor"],
-                    assertAllowed: () => {},
-                  });
-                } else if (race === "snapshot-lease-release") {
-                  openOpenClawStateDatabase()
-                    .db.prepare("DELETE FROM state_leases WHERE scope = ? AND lease_key = ?")
-                    .run("gateway-owner", "global");
-                } else if (race === "snapshot-lease-replace") {
-                  openOpenClawStateDatabase()
-                    .db.prepare(
-                      "UPDATE state_leases SET owner = ? WHERE scope = ? AND lease_key = ?",
-
+        const database = openOpenClawAgentDatabase({ agentId: "main" });
+        const original = accessor.loadSessionEntryReadOnly(scope);
+        assert(original);
+        const writeReceipt = sessionRunError.recordGatewaySessionRunFailure;
+        let prepared = false;
+        vi.spyOn(sessionRunError, "recordGatewaySessionRunFailure").mockImplementationOnce(
+          async (params) => {
+            await Promise.resolve();
+            if (race === "session") {
+              accessor.replaceSessionEntrySync(scope, {
+                ...original,
+                sessionId: "successor",
+              });
+            } else if (race === "generation") {
+              // Keep the separate connection, but serialize its write with maintenance.
+              await runOpenClawAgentWriteAdmission({ agentId: "main", path: database.path }, () => {
+                const other = new DatabaseSync(database.path);
+                try {
+                  other
+                    .prepare(
+                      "UPDATE session_nodes SET entry_json = json_set(entry_json, ?, ?) WHERE session_key = ?",
                     )
                     .run("$.lifecycleRevision", "successor", scope.sessionKey);
                   // Keep row validity from masking the lifecycle-generation fence.
@@ -176,7 +129,7 @@ it.each([
                 projectSessionActive: false,
               });
             } else if (race === "session-admission") {
-              admission = await beginSessionWorkAdmission({
+              admission = await beginSessionEffect({
                 scope: database.path,
                 identities: [scope.sessionKey, "predecessor"],
                 assertAllowed: () => {},
