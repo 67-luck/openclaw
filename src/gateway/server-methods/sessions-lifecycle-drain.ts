@@ -8,7 +8,6 @@ import {
 // Session-owned cancellation and authoritative lifecycle drains.
 import { createAgentRunDirectAbortError } from "../../agents/run-termination.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-
 import { withTimeout } from "../../infra/fs-safe.js";
 import {
   closeSessionControllerAdmission,
@@ -72,13 +71,12 @@ function hasAuthoritativeSessionWork(
   params: SessionLifecycleParams,
   workerDrain: WorkerInferenceSessionDrain | undefined,
   terminalDrain: AgentTerminalSessionDrain | undefined,
-  queueTarget: SessionLifecycleQueueTarget,
+  workIdentities: string[],
 ): boolean {
   const sessionId = params.sessionId;
   return (
     isCompetingSessionControllerWorkActive(params.storePath, params.lifecycleIdentities) ||
     hasSessionControllerQueuedWork(params.storePath, workIdentities) ||
-
     hasGatewaySessionAbortOwner({
       context: params.context,
       sessionKeys: params.sessionKeys,
@@ -184,7 +182,6 @@ export async function prepareSessionLifecycleDrain(
           void reclaimed.catch(() => {});
         }
         let controllerDrain = Promise.resolve(true);
-        const replyRuns = resolveReplyOperationsForSession(params);
         const cancellation = abortChatRunsForSessionKeyWithPartials({
           context: params.context,
           ops: createChatAbortOps(params.context),
@@ -204,11 +201,10 @@ export async function prepareSessionLifecycleDrain(
               timeoutMs,
             });
           },
-
         });
         // Observe failures immediately while the short mutation releases its queues.
         void cancellation.catch(() => {});
-        return { workerStop, cancellation, controllerDrain, replyRuns };
+        return { workerStop, cancellation, controllerDrain };
       },
     });
     const abortResult = await prepared.cancellation;
@@ -297,7 +293,7 @@ export async function prepareSessionLifecycleDrain(
         } catch {
           return true;
         }
-        return hasAuthoritativeSessionWork(params, workerDrain, terminalDrain, queueTarget);
+        return hasAuthoritativeSessionWork(params, workerDrain, terminalDrain, workIdentities);
       },
     };
   } catch (error) {

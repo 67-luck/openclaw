@@ -21,8 +21,7 @@ import {
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { resolveReplyRunForCurrentSessionId } from "../../sessions/session-controller.state.js";
-import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
-
+import { chatRunBelongsToAgent, resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 
 /** Active-run matcher including hidden remote lifecycle projections. */
 type TrackedActiveSessionRun = {

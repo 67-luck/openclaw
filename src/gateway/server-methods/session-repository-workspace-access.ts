@@ -1,5 +1,5 @@
+import type { SessionEntryCurrentFacts } from "../../config/sessions/session-entry-current.types.js";
 import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
-
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import {
   parseWorkspaceInspectionResult,
@@ -146,7 +146,6 @@ export async function resolveRepositoryWorkspaceAccess(
         throw new Error("Cloud repository editing is unavailable; restart the Gateway and retry.");
       }
       return await runSessionMutation({
-
         scope: loaded.storePath,
         identities: [loaded.canonicalKey, ...loaded.storeKeys, sessionId],
         run: () => {

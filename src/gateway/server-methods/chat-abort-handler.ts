@@ -29,9 +29,9 @@ import {
   waitForChatAbortAcknowledgment,
   waitForChatAbortTerminalPersistence,
 } from "../chat-abort-lifecycle-internal.js";
-import { createChatAbortOps } from "../chat-abort-ops.js";
+import { captureWorkerInferenceForSession, createChatAbortOps } from "../chat-abort-ops.js";
 import { abortChatRunById, captureChatRunAbortPresentation } from "../chat-abort.js";
-
+import { formatStopRequest } from "../control-plane-audit.js";
 import {
   resolveRequestedSessionAgentId,
   tryResolveSessionCompatibilityOwnerAgentId,
@@ -269,7 +269,9 @@ export async function handleChatAbortRequestWithLifecycle(
   // Capture the exact input once; an await must never select a successor by run ID.
   const active = getRpcSource(runId);
   const activeIdentity = active && getRpcSourceIdentity(active);
-  const workerTarget = resolveWorkerInferenceTarget(context.workerEnvironmentService, runId);
+  const workerTarget = getWorkerInferenceSessionControl(
+    context.workerEnvironmentService,
+  )?.resolveSessionTargetForRunId(runId);
 
   const workerCancellation = captureWorkerInferenceForSession({
     context,
@@ -350,11 +352,12 @@ export async function handleChatAbortRequestWithLifecycle(
       return;
     }
     assertCurrent();
-    workerSettlement = workerCancellation.cancel({
+    const settlement = workerCancellation.cancel({
       assertCurrent,
       onCancelled: (id) => workerRunIds.add(id),
     });
-    void workerSettlement.catch(() => undefined);
+    workerSettlement = settlement;
+    void settlement.catch(() => undefined);
   };
   const respondWithWorkerRuns = async (localRunIds: string[], warning?: string): Promise<void> => {
     await workerSettlement;
@@ -370,7 +373,6 @@ export async function handleChatAbortRequestWithLifecycle(
     });
   };
   if (!active) {
-
     if (!workerCancellation?.runIds.length) {
       if (!abortSession.ok) {
         throw abortSession.error;

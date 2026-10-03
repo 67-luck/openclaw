@@ -10,7 +10,7 @@ import {
   type SessionsBranchesSwitchParams,
   type SessionsRewindParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { clearSessionLifecycleQueues } from "../../auto-reply/reply/queue/cleanup.js";
+import { clearSessionQueues } from "../../auto-reply/reply/queue/cleanup.js";
 import {
   forkSessionAtMessage,
   listSessionBranches,
@@ -310,8 +310,7 @@ async function mutateSessionAtMessage(
       // Reject live work before transcript mutation instead of interrupting it.
       blockedByActiveRun =
         isCompetingSessionControllerWorkActive(initial.storePath, lifecycleIdentities) ||
-        (asWorkerInferenceControl(context.workerEnvironmentService)?.hasInferenceForSession(
-
+        (getWorkerInferenceSessionControl(context.workerEnvironmentService)?.hasSession(
           initialSessionId,
         ) ??
           false) ||
@@ -651,14 +650,7 @@ async function mutateSessionAtMessage(
               )),
             ];
       if (action !== "fork") {
-        clearSessionLifecycleQueues({
-          keys: lifecycleIdentities,
-          agentId: current.target.agentId,
-          sessionKey: current.canonicalKey,
-          sessionId: initialSessionId,
-          // History is committed; settling its original queues must finish after revocation.
-          assertCurrent: () => {},
-        });
+        clearSessionQueues(lifecycleIdentities);
       } else {
         recordSessionCreated(cfg, {
           sessionKey: result.key,

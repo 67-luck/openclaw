@@ -21,7 +21,8 @@ import {
   getRpcSourceLifecycleGeneration,
   getRpcSourceProjectSessionActive,
 } from "../../sessions/session-controller.rpc-sources.js";
-
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
+import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { generateWorktreeSessionTitle } from "../dashboard-session-title.js";
 import { githubApiToken } from "../github-public-api.js";

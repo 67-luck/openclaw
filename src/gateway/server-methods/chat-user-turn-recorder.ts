@@ -113,20 +113,17 @@ export function createGatewayChatUserTurnController(params: {
       ? {
           // Attribution and submitted bytes survive reconnect; display names, leaf
           // cursors and generated media paths are not immutable request identity.
-          pendingInputRequestFingerprint: createHash("sha256")
-            .update(
-              stableStringify([
-                {
-                  ...request.p,
-                  sessionId: getRpcSourceIdentity(admission.sourceRef).sessionId,
-                  expectedLeafEntryId: undefined,
-                },
-                sender.identity ?? sender.id,
-                hasGatewayAdminScope(params.client),
-              ]),
-            )
-            .digest("hex"),
-
+          pendingInputRequestFingerprint: sha256Hex(
+            stableStringify([
+              {
+                ...request.p,
+                sessionId: getRpcSourceIdentity(admission.sourceRef).sessionId,
+                expectedLeafEntryId: undefined,
+              },
+              sender.identity ?? sender.id,
+              hasGatewayAdminScope(params.client),
+            ]),
+          ),
         }
       : {}),
     ...(request.goalOperation

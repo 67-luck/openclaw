@@ -224,8 +224,7 @@ export const sessionCompactHandlers: GatewayRequestHandlers = {
             }
           }
           blockedByActiveRun =
-            (asWorkerInferenceControl(context.workerEnvironmentService)?.hasInferenceForSession(
-
+            (getWorkerInferenceSessionControl(context.workerEnvironmentService)?.hasSession(
               sessionId,
             ) ??
               false) ||

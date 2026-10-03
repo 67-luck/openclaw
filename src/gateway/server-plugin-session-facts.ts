@@ -70,10 +70,7 @@ export async function readTrustedPluginSessionFacts(
             read,
             resolved.client,
             Date.now(),
-            createVisibleActiveSessionRunProjector(
-              resolved.context,
-              read.state.rowContext.projectedAgentRuns,
-            ),
+            createVisibleActiveSessionRunProjector(read.state.rowContext.projectedAgentRuns),
           );
           const sessions: RuntimeSessionFacts[] = [];
           let unavailable = false;

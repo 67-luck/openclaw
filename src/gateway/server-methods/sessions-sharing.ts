@@ -52,7 +52,6 @@ import { assertValidParams, defineValidatedGatewayHandler } from "./validation.j
 
 function runExclusiveSharingMutation<T>(
   target: SessionSharingTarget,
-  storePath: string,
   run: () => Promise<T>,
 ): Promise<T> {
   // Sharing and lifecycle mutations share one exact-row fence so authorization
@@ -337,7 +336,7 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
         return;
       }
       let publicShare: SessionPublicShare | undefined;
-      await runExclusiveSharingMutation(managed, access.lifecycleStorePath, async () => {
+      await runExclusiveSharingMutation(managed, async () => {
         const { target: current } = access.current();
         const tokenCodec = params.enabled ? loadPublicSessionShareTokenCodec() : undefined;
         let changed = false;
@@ -437,7 +436,7 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      await runExclusiveSharingMutation(managed, access.lifecycleStorePath, async () => {
+      await runExclusiveSharingMutation(managed, async () => {
         const { target: current } = access.current();
         const scope = {
           agentId: current.agentId,
@@ -531,7 +530,7 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unknown identity"));
       return;
     }
-    await runExclusiveSharingMutation(managed, access.lifecycleStorePath, async () => {
+    await runExclusiveSharingMutation(managed, async () => {
       const { target: current } = access.current();
       const scope = {
         agentId: current.agentId,
@@ -589,7 +588,7 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
         return;
       }
       const managed = access.target;
-      await runExclusiveSharingMutation(managed, access.lifecycleStorePath, async () => {
+      await runExclusiveSharingMutation(managed, async () => {
         const { target: current } = access.current();
         const scope = {
           agentId: current.agentId,

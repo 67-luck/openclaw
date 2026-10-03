@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { hasPendingFollowupQueueWork } from "../../auto-reply/reply/queue/state.js";
-
+import type { SessionTranscriptTurnMutation } from "../../config/sessions/goals-operations.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { retireProviderReviewAcknowledgment } from "../../sessions/provider-review.js";
@@ -17,7 +17,7 @@ import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources
 import type { registerChatAbortController } from "../chat-abort.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
-
+import { resolveOperatorSessionCreation } from "../session-creation-provenance.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { captureGatewayClientUploadCommitGuard } from "../upload-policy.js";
 import { formatForLog } from "../ws-log.js";

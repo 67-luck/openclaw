@@ -13,8 +13,7 @@ import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { chatRunBelongsToAgent, resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import { createChatAbortMarker } from "../server-chat-state.js";
-import { pendingChatSendDedupeKey } from "../server-shared.js";
-
+import { pendingChatSendDedupeKey, type DedupeEntry } from "../server-shared.js";
 import type {
   GatewayRequestContext,
   GatewayRequestHandlerOptions,
@@ -134,6 +133,7 @@ export function resolveChatAbortTargetRejection(params: {
   requestedAgentId: string;
   defaultAgentId?: string;
   requiredSessionId?: string;
+  includeHidden?: boolean;
   discardPendingInput?: boolean;
   narrow: boolean;
 }): string | undefined {
@@ -176,6 +176,7 @@ export function readPreRegisteredAgentDedupePayloadForSession(params: {
   agentId?: string;
   defaultAgentId?: string;
   requiredSessionId?: string;
+  includeHidden?: boolean;
 }): PreRegisteredAgentDedupePayload | undefined {
   if (!params.entry?.ok) {
     return undefined;
@@ -383,7 +384,6 @@ function createChatAbortRunSelection<T extends { runId: string }>() {
   };
 }
 
-
 export function resolveAuthorizedRunsForSessionKeys(params: {
   sessionKeys: Iterable<string>;
   sessionIds?: Iterable<string | undefined>;
@@ -394,7 +394,6 @@ export function resolveAuthorizedRunsForSessionKeys(params: {
   preserveSideRuns?: boolean;
   includeProtectedRuns?: boolean;
 }) {
-
   const selection = createChatAbortRunSelection<{
     runId: string;
     sessionKey: string;
@@ -496,10 +495,7 @@ export function hasGatewaySessionAbortOwner(params: SessionAbortOwnerParams): bo
       sessionIds: [params.sessionId],
       ...ownerScope,
       includeProtectedRuns: true,
-    }).authorizedRuns.some(
-      ({ entry }) =>
-        !isCurrentChatAbortExecution(entry) || !isChatAbortTerminalPersistenceSettled(entry),
-    ) ||
+    }).authorizedRuns.length > 0 ||
     resolveAuthorizedQueuedTurnsForSession({
       context: params.context,
       sessionId: params.sessionId,

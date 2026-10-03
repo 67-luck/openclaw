@@ -39,7 +39,7 @@ import {
 import { errorShapeFromError } from "../error-shape.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
 import {
-  captureWorkerInferenceCancellation,
+  getWorkerInferenceSessionControl,
   type WorkerInferenceCancellation,
 } from "../worker-environments/inference-control-internal.js";
 import {
@@ -221,11 +221,9 @@ export function captureWorkerInferenceForSession(params: {
   if (!sessionId) {
     return undefined;
   }
-  return captureWorkerInferenceCancellation(
+  return getWorkerInferenceSessionControl(
     params.context.workerEnvironmentService,
-    sessionId,
-    params.runId,
-  );
+  )?.captureSessionCancellation(sessionId, params.runId);
 }
 
 export type ChatSessionAbortParams = {

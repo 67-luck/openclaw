@@ -12,7 +12,6 @@ import {
   captureChannelSessionStop,
   stopSubagentsForRequester,
 } from "./abort-operation.js";
-
 import { setAbortMemory } from "./abort-primitives.js";
 import { isAbortTrigger } from "./abort-trigger-text.js";
 import { formatAbortReplyText } from "./abort.js";
@@ -22,7 +21,6 @@ import {
   resolveCommandSessionEntryForKey,
 } from "./commands-session-store.js";
 import type { CommandHandler } from "./commands-types.js";
-
 
 type AbortTarget = {
   agentId: string;
@@ -82,15 +80,15 @@ async function recordAbortTarget(params: {
   }
 
   const persisted = await persistAbortTargetEntry({
-    isCurrent,
+    isCurrent: params.isCurrent,
     entry: abortTarget.entry,
     key: abortTarget.key,
-    sessionStore,
-    storePath,
-    abortCutoff,
+    sessionStore: params.sessionStore,
+    storePath: params.storePath,
+    abortCutoff: params.abortCutoff,
   });
-  if (!persisted && abortKey && isCurrent?.() !== false) {
-    setAbortMemory(abortKey, true);
+  if (!persisted && params.abortKey && params.isCurrent?.() !== false) {
+    setAbortMemory(params.abortKey, true);
   }
 }
 
@@ -196,7 +194,6 @@ async function executeChannelUserStop(params: Parameters<CommandHandler>[0]) {
 export const handleStopCommand: CommandHandler = defineAuthorizedTextCommand(
   { label: "/stop", match: (body) => (body === "/stop" ? true : null) },
   executeChannelUserStop,
-
 );
 
 export const handleAbortTrigger: CommandHandler = defineAuthorizedTextCommand(
@@ -205,5 +202,4 @@ export const handleAbortTrigger: CommandHandler = defineAuthorizedTextCommand(
     match: (_body, params) => (isAbortTrigger(params.command.rawBodyNormalized) ? true : null),
   },
   executeChannelUserStop,
-
 );

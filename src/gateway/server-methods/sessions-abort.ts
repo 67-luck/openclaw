@@ -1,6 +1,9 @@
 // Session active-run cancellation and agent-scope resolution.
-import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-
+import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
+import {
+  hasNonEmptyString,
+  normalizeOptionalString,
+} from "@openclaw/normalization-core/string-coerce";
 import {
   ErrorCodes,
   errorShape,
@@ -14,7 +17,6 @@ import {
 } from "../../agents/embedded-agent-runner/runs.js";
 import { captureYieldedMainSessionContinuation } from "../../agents/main-session-recovery/main-session-restart-recovery-target.js";
 import {
-
   isConfiguredSessionStoreAgentId,
   resolveExistingAgentSessionStoreTargetsSync,
 } from "../../config/sessions.js";
@@ -43,8 +45,7 @@ import {
   tryResolveSessionCompatibilityOwnerAgentId,
 } from "../session-request-agent.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
-import { resolveSessionStoreAgentId, resolveSessionStoreKey } from "../session-store-key.js";
-
+import { resolveSessionStoreKey } from "../session-store-key.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { getWorkerInferenceSessionControl } from "../worker-environments/inference-control-internal.js";
 import { resolveChatAbortRequester } from "./chat-abort-authorization.js";
@@ -71,7 +72,6 @@ import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 export { resolveAbortSessionKey } from "./sessions-abort-target.js";
-
 
 export const sessionAbortHandlers: GatewayRequestHandlers = {
   "sessions.abort": async (options) => {

@@ -63,8 +63,6 @@ import {
 } from "../sessions/session-controller.lifecycle.js";
 import { isSessionRunActive } from "../sessions/session-controller.queries.js";
 import { recordSessionCreated } from "../sessions/session-created.js";
-import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
-
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "./operator-role-policy.js";
 import { ADMIN_SCOPE } from "./operator-scopes.js";
@@ -1252,7 +1250,6 @@ export async function createGatewaySession(
   // lifecycle owner's canonical identity order and one active mutation fence.
   onPhase?.("lifecycleAdmission");
   const result = await runSessionMutation({
-
     targets: lifecycleTargets,
     run: createChildSession,
     finalize: async () => {

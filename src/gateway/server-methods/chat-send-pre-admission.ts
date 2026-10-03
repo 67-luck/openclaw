@@ -338,9 +338,10 @@ export function inspectGoalChatSendRetry({
       cachedResponse !== undefined &&
       cachedResponse !== prepared?.dedupe;
     if (
-      pending?.payload.goalFingerprint === request.goalOperation.requestFingerprint ||
-      (!pending && !durableClaimAccepted && hasRpcSource(clientRunId))
-
+      !identityConflict &&
+      (pending?.payload.goalFingerprint === request.goalOperation.requestFingerprint ||
+        newlyPublishedResponse ||
+        (!pending && !durableClaimAccepted && hasRpcSource(clientRunId)))
     ) {
       respond(
         false,
@@ -463,11 +464,6 @@ export async function runChatSendPreAdmission(
       respondChatSessionRoutingChanged(respond);
       return false;
     }
-    const stopOwnerScope = resolveChatSendStopOwnerScope({
-      cfg,
-      selectedAgentId: selectedAgent.agentId,
-      sessionKey,
-    });
     const stopRequester = resolveChatAbortRequester(client);
 
     const stopStorePath = session.readSource?.path ?? storePath;

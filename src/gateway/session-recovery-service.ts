@@ -24,6 +24,7 @@ import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
+  captureSessionTarget,
   closeSessionControllerAdmission,
   isSessionControllerWorkActive,
   runSessionMutation,
@@ -208,12 +209,15 @@ export async function reconcileOrphanedGatewaySessionRecovery(params: {
   ) {
     return undefined;
   }
-  const readSource = () =>
-    loadGatewaySessionEntryReadOnly(target.canonicalKey, { agentId: target.agentId }).entry;
+  using source = await prepareRecoverySource(params);
   return await runSessionMutation({
-
-    scope: target.storePath,
-    identities,
+    target: captureSessionTarget({
+      storeScope: target.storePath,
+      sessionKey: target.canonicalKey,
+      aliases: identities,
+      agentId: target.agentId,
+      incarnation: initialSource.sessionId,
+    }),
     run: async () => {
       if (isSessionControllerWorkActive(target.storePath, identities)) {
         return undefined;
@@ -394,6 +398,20 @@ export async function recoverGatewaySession(params: {
     sourceTarget.canonicalKey,
     initialSource.sessionId,
   ];
+  const sourceControllerTarget = captureSessionTarget({
+    storeScope: sourceTarget.storePath,
+    sessionKey: sourceTarget.canonicalKey,
+    aliases: sourceIdentities,
+    agentId: sourceTarget.agentId,
+    incarnation: initialSource.sessionId,
+  });
+  const successorControllerTarget = captureSessionTarget({
+    storeScope: successorTarget.storePath,
+    sessionKey: successorTarget.canonicalKey,
+    aliases: [successorTarget.canonicalKey, successorSessionId],
+    agentId: successorTarget.agentId,
+    incarnation: successorSessionId,
+  });
   const stopFailure = (error: unknown) =>
     errorShape(
       ErrorCodes.UNAVAILABLE,
@@ -404,9 +422,7 @@ export async function recoverGatewaySession(params: {
     let release = () => {};
     try {
       const prepared = await runSessionMutation({
-
-        scope: sourceTarget.storePath,
-        identities: sourceIdentities,
+        target: sourceControllerTarget,
         run: async () => {
           await source.refresh();
           const current = resolveCurrentSource();
@@ -430,8 +446,7 @@ export async function recoverGatewaySession(params: {
           }
           // Reclaim may need both queues after this short exact-owner preflight.
           release = closeSessionControllerAdmission({
-            scope: sourceTarget.storePath,
-            identities: sourceIdentities,
+            target: sourceControllerTarget,
             reason: createAgentRunDirectAbortError(),
           });
           return { ...current, stop };
@@ -455,14 +470,7 @@ export async function recoverGatewaySession(params: {
         }
       }
       return await runSessionMutation({
-
-        targets: [
-          { scope: sourceTarget.storePath, identities: sourceIdentities },
-          {
-            scope: successorTarget.storePath,
-            identities: [successorTarget.canonicalKey, successorSessionId],
-          },
-        ],
+        targets: [sourceControllerTarget, successorControllerTarget],
         prepare: async () => release(),
         run: async () => {
           await source.refresh();

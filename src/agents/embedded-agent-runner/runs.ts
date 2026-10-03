@@ -930,6 +930,14 @@ export function isEmbeddedAgentRunHandleActive(sessionId: string): boolean {
   return active;
 }
 
+/** True when work other than the externally admitted run currently owns the session. */
+export function isEmbeddedAgentSessionHeldByOtherRun(sessionId: string, runId: string): boolean {
+  const handle = getActiveNativeAttempt(sessionId);
+  return handle
+    ? handle.runId !== runId
+    : Boolean(resolveActiveReplyOperationForSessionId(sessionId));
+}
+
 export function resolveActiveEmbeddedRunHandleSessionId(sessionKey: string): string | undefined {
   const normalizedSessionKey = sessionKey.trim();
   if (!normalizedSessionKey) {

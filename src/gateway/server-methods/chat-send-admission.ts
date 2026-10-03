@@ -212,6 +212,7 @@ export async function admitChatSend(
   let reservationSuperseded = false;
   let supersedingResult: DedupeEntry | undefined;
   let assertSourceAuthority: (() => void) | undefined = params.assertCurrent;
+  let preparedGoalEntry: Awaited<ReturnType<typeof prepareChatSendSessionEntry>> | undefined;
   const admittedRunAbort = registerChatAbortController({
     target: captureSessionTarget({
       storeScope: storePath,
@@ -248,8 +249,7 @@ export async function admitChatSend(
     admittedRunAbort.entry?.input.policy.mode === "interrupt"
       ? captureCurrentSessionRunInterruptTarget(admittedRunAbort.entry.input.mailbox.owner.id)
       : undefined;
-  const commitChatWorkAdmission = () => {
-
+  const commitChatWorkAdmission = async (): Promise<void> => {
     params.assertCurrent?.();
     const retainedRequestConflict = resolveChatSendRequestConflict(params);
     if (retainedRequestConflict) {

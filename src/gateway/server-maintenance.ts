@@ -48,8 +48,8 @@ import {
 } from "../sessions/session-controller.rpc-sources.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { registerSkillUsageTracking } from "../skills/workshop/curator.js";
+import { pruneExpiredArtifactDownloads } from "./artifact-download-grants.js";
 import type { RestartRecoveryCandidate } from "./chat-abort.js";
-
 import { pruneStaleControlPlaneBuckets } from "./control-plane-rate-limit.js";
 import type { HealthSummary } from "./health/types.js";
 import {

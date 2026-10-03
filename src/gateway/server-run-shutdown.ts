@@ -1,5 +1,5 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { isAgentEventLifecycleGenerationCurrent } from "../infra/agent-events.js";
-
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { hasGatewayContextOwner } from "../plugins/runtime/gateway-request-scope.js";
 import { sessionControllerMailboxes } from "../sessions/session-controller.mailbox.js";
