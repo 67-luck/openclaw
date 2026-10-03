@@ -6,6 +6,7 @@ import { createChatFlowE2eSuite, installMockGateway } from "./chat-flow.test-sup
 import { openChatSidePanelType } from "./chat-side-panel.test-support.ts";
 
 const suite = createChatFlowE2eSuite();
+const sessionKey = "agent:main:main";
 
 suite.define(() => {
   it.each([false, true])(
@@ -15,7 +16,7 @@ suite.define(() => {
         missing ? "files-missing-directory" : "files-existing-directory",
       );
       await suite.withPage({}, async ({ page }) => {
-        const baseListing = { sessionKey: "main", root: "/workspace", files: [] };
+        const baseListing = { sessionKey, root: "/workspace", files: [] };
         const rootListing = {
           ...baseListing,
           browser: {
@@ -99,7 +100,7 @@ suite.define(() => {
     const artifacts = createControlUiE2eArtifactDir("files-directory-selection");
     await suite.withPage({}, async ({ page }) => {
       const rootListing = {
-        sessionKey: "main",
+        sessionKey,
         root: "/workspace",
         files: [],
         browser: { path: "", entries: [{ kind: "directory", name: "reports", path: "reports" }] },
@@ -121,7 +122,7 @@ suite.define(() => {
           "artifacts.list": { artifacts: [] },
           "sessions.files.list": rootListing,
           "sessions.files.get": {
-            sessionKey: "main",
+            sessionKey,
             root: "/workspace",
             file: {
               name: "inventory.csv",
