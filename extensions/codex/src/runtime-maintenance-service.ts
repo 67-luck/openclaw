@@ -5,7 +5,6 @@ import type {
   OpenClawPluginServiceContextV2,
   PluginServiceSchedulerV1,
 } from "openclaw/plugin-sdk/plugin-entry";
-import { isTruthyEnvValue } from "openclaw/plugin-sdk/runtime-env";
 
 const MAINTENANCE_INTERVAL_MS = 24 * 60 * 60_000;
 
@@ -35,6 +34,9 @@ export function createCodexRuntimeMaintenanceService(params: {
               }
             };
             try {
+              assertCurrent();
+              // The env facade also exports networking runtime; keep it out of registration.
+              const { isTruthyEnvValue } = await import("openclaw/plugin-sdk/runtime-env");
               assertCurrent();
               // Match the host's explicit non-updating/rehearsal environments.
               if (
