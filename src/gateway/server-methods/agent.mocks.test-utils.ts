@@ -116,9 +116,9 @@ vi.mock("../../config/sessions.js", async () => {
     ...actual,
     updateSessionStore: mocks.updateSessionStore,
     resolveSessionLifecycleTimestamps: mocks.resolveSessionLifecycleTimestamps,
-    resolveAgentIdFromSessionKey: (sessionKey: string) => {
+    resolveAgentIdFromSessionKey: (sessionKey: string, configuredDefaultAgentId?: string) => {
       const m = /^agent:([^:]+):/.exec(sessionKey.trim());
-      return m?.[1] ?? "main";
+      return m?.[1] ?? configuredDefaultAgentId ?? "main";
     },
     resolveExplicitAgentSessionKey: mocks.resolveExplicitAgentSessionKey,
     resolveAgentMainSessionKey: ({
