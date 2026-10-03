@@ -434,18 +434,16 @@ export function startGatewayEventSubscriptions(params: {
       evt.stream === "lifecycle" && typeof evt.data?.phase === "string"
         ? evt.data.phase
         : undefined;
-    if (lifecyclePhase === "start" || lifecyclePhase === "end" || lifecyclePhase === "error") {
-      const terminal = lifecyclePhase !== "start";
+    if (lifecyclePhase === "end" || lifecyclePhase === "error") {
       const chatLink = evt.contextClaimId
         ? undefined
         : params.chatRunState.registry.peek(evt.runId);
       const clientRunId = chatLink?.clientRunId ?? evt.runId;
       const candidateRunIds = trackedRunIds(evt.runId, clientRunId);
-      const observedAt = terminal
-        ? typeof evt.data.endedAt === "number" && Number.isFinite(evt.data.endedAt)
+      const observedAt =
+        typeof evt.data.endedAt === "number" && Number.isFinite(evt.data.endedAt)
           ? evt.data.endedAt
-          : evt.ts
-        : undefined;
+          : evt.ts;
       for (const candidateRunId of candidateRunIds) {
         const entry = getRpcSource(candidateRunId);
         const eventLifecycleGeneration = evt.lifecycleGeneration;
@@ -500,10 +498,10 @@ export function startGatewayEventSubscriptions(params: {
         trackedOwnerIsCurrent &&
         claimIsComplete;
       const writeContext = captureAgentRunTerminalWriteContext(evt.runId);
-      const prepareTerminalPersistence = (sessionKey: string) => {
+      const prepareTerminalPersistence = (sessionKey: string, agentId = sessionAgentId) => {
         const persistence = sessionLifecyclePersistence.observe({
           sessionKey,
-          ...(sessionAgentId ? { agentId: sessionAgentId } : {}),
+          ...(agentId ? { agentId } : {}),
           event: evt,
           ...(terminalAuthority ? { authority: terminalAuthority } : {}),
           ...(writeContext ? { writeContext } : {}),
@@ -532,34 +530,24 @@ export function startGatewayEventSubscriptions(params: {
         if (!tracked) {
           void persistence.catch((error: unknown) => {
             params.log.warn("Terminal session persistence failed", { runId: evt.runId, error });
-
           });
-          if (terminalAuthority) {
-            // A failed lazy handler cannot consume the prepared write and release
-            // its claim. Persistence settlement becomes that cleanup boundary.
-            const clearTerminalAuthority = () =>
-              clearAgentRunContext(
-                terminalAuthority.runId,
-                terminalAuthority.lifecycleGeneration,
-                terminalAuthority.claimId,
-              );
-            failedDispatchCleanup = () => {
-              void persistence.then(clearTerminalAuthority, clearTerminalAuthority);
-            };
-          }
-          clearTrackedActiveRun({ runId: evt.runId, clientRunId });
-          const tracked = trackTrackedRunTerminalPersistence({
-            runId: evt.runId,
-            clientRunId,
-            sessionId: evt.sessionId,
-            persistence,
-          });
-          if (!tracked) {
-            void persistence.catch((error: unknown) => {
-              params.log.warn("Terminal session persistence failed", { runId: evt.runId, error });
+        }
+        return persistence;
+      };
+      if (canPersistTerminal) {
+        if (knownSessionKey) {
+          const persistence = prepareTerminalPersistence(knownSessionKey);
+          writeContext?.track(persistence);
+        } else {
+          // Context cleanup can precede a terminal event. Resolve its persisted
+          // run mapping before the lazy chat handler consumes the same event.
+          terminalPreparation = getSessionKeyModule().then(async ({ resolveSessionForRun }) => {
+            const selected = resolveSessionForRun(evt.runId, {
+              agentId: sessionAgentId,
+              projection: params.getSessionRowProjection?.(),
             });
-            if (sessionKey) {
-              await prepareTerminalPersistence(sessionKey);
+            if (selected) {
+              await prepareTerminalPersistence(selected.sessionKey, selected.agentId);
             }
           });
           writeContext?.track(terminalPreparation);
@@ -583,7 +571,6 @@ export function startGatewayEventSubscriptions(params: {
         ) {
           entry.adapter.projectSessionTerminalPending = false;
           entry.adapter.projectSessionTerminalObservedAt = undefined;
-
         }
       }
     }

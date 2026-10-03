@@ -361,74 +361,104 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
       agentId: requestedAgent.agentId,
       allowMissing: true,
     });
-    if (!target) {
-      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, `unknown session: ${key}`));
-      return;
-    }
-    const authorizeView = (candidate: NonNullable<typeof target>) =>
-      authorizeIncognitoSessionTarget({ client, sessionKey: key, target: candidate }) ??
-      (createSessionListEntryFilter({ client, cfg })?.(candidate.storeKey, candidate.entry) ===
-      false
-        ? errorShape(ErrorCodes.FORBIDDEN, "session is not visible to this connection")
-        : null);
-    const visibilityError = authorizeView(target);
-    if (visibilityError) {
-      respond(false, undefined, visibilityError);
-      return;
-    }
-    const ownerIdentityById = new Map<string, SessionActorProfileIdentity | undefined>();
-    const projectedOwner = projectAssignableSessionOwner(params.owner, ownerIdentityById, cfg);
-    if (!projectedOwner) {
-      respond(
-        false,
-        undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, `unknown session owner "${params.owner.id}"`),
-      );
-      return;
-    }
-    const owner = { type: projectedOwner.type, id: projectedOwner.id };
-    const assignment = await runSessionMutation({
-      target: captureSessionTarget({
-        storeScope: target.storePath,
-        sessionKey: target.canonicalKey,
-        aliases: [target.storeKey],
-        incarnation: target.entry.sessionId,
-        agentId: target.agentId,
-      }),
-      policy: "allow-live",
-      run: async () =>
-        assignSessionOwner(
-          {
-            agentId: target.agentId,
-            sessionKey: target.storeKey,
-            storePath: target.storePath,
-          },
-          {
-            owner,
-            assignedBy,
-            assertCurrent: () => {
-              sessionMutationAuthorization?.assertCurrent();
-              const current = resolveSessionSharingTarget({
-                cfg: context.getRuntimeConfig(),
-                sessionKey: target.canonicalKey,
-                agentId: target.agentId,
-              });
-              const currentError = current ? authorizeView(current) : null;
-              if (
-                !current ||
-                current.entry.sessionId !== target.entry.sessionId ||
-                current.storeKey !== target.storeKey ||
-                currentError
-              ) {
-                throw new SessionMutationAuthorizationChangedError(
-                  currentError ??
-                    errorShape(
-                      ErrorCodes.INVALID_REQUEST,
-                      "session changed before sessions.assignOwner; retry the request",
-                    ),
-                );
-              }
-
+    try {
+      const target = facts.readCurrent(context.getRuntimeConfig()).target;
+      if (!target) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, `unknown session: ${key}`),
+        );
+        return;
+      }
+      const authorizeView = (
+        candidate: NonNullable<typeof target>,
+        currentCfg = context.getCommittedRuntimeConfig?.() ?? context.getRuntimeConfig(),
+      ) =>
+        authorizeIncognitoSessionTarget({ client, sessionKey: key, target: candidate }) ??
+        (createSessionListEntryFilter({ client, cfg: currentCfg })?.(
+          candidate.storeKey,
+          candidate.entry,
+        ) === false
+          ? errorShape(ErrorCodes.FORBIDDEN, "session is not visible to this connection")
+          : null);
+      const visibilityError = authorizeView(target);
+      if (visibilityError) {
+        respond(false, undefined, visibilityError);
+        return;
+      }
+      const ownerIdentityById = new Map<string, SessionActorProfileIdentity | undefined>();
+      const projectedOwner = projectAssignableSessionOwner(params.owner, ownerIdentityById, cfg);
+      if (!projectedOwner) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, `unknown session owner "${params.owner.id}"`),
+        );
+        return;
+      }
+      const owner = { type: projectedOwner.type, id: projectedOwner.id };
+      const expectedSessionId = target.entry.sessionId;
+      const assertCurrent = () => {
+        signal?.throwIfAborted();
+        sessionMutationAuthorization?.assertCurrent();
+        const currentCfg = context.getRuntimeConfig();
+        const current = facts.readCurrent(currentCfg).target;
+        ownerIdentityById.clear();
+        const currentOwner = projectAssignableSessionOwner(
+          params.owner,
+          ownerIdentityById,
+          currentCfg,
+        );
+        const currentError = current
+          ? authorizeView(current, context.getCommittedRuntimeConfig?.() ?? currentCfg)
+          : null;
+        if (
+          !current ||
+          current.agentId !== target.agentId ||
+          current.canonicalKey !== target.canonicalKey ||
+          current.storeKey !== target.storeKey ||
+          current.storePath !== target.storePath ||
+          current.entry.sessionId !== expectedSessionId ||
+          currentOwner?.id !== owner.id ||
+          currentOwner.type !== owner.type ||
+          currentError
+        ) {
+          throw new SessionMutationAuthorizationChangedError(
+            currentError ??
+              errorShape(
+                ErrorCodes.INVALID_REQUEST,
+                "session changed before sessions.assignOwner; retry the request",
+              ),
+          );
+        }
+      };
+      const assignment = await runSessionMutation({
+        target: captureSessionTarget({
+          storeScope: target.storePath,
+          sessionKey: target.canonicalKey,
+          aliases: [target.storeKey],
+          incarnation: expectedSessionId,
+          agentId: target.agentId,
+        }),
+        requiredSessionId: expectedSessionId,
+        policy: "allow-live",
+        signal,
+        run: () =>
+          assignSessionOwnerInWorker(
+            {
+              agentId: target.agentId,
+              sessionKey: target.storeKey,
+              storePath: target.storePath,
+            },
+            {
+              owner,
+              assignedBy,
+              expectedSessionId,
+              expectedEntry: {
+                ...sharingExpectedEntry(target),
+                lifecycleRevision: target.entry.lifecycleRevision,
+              },
             },
             assertCurrent,
           ),

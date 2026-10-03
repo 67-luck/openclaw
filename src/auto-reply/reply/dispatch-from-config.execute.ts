@@ -110,57 +110,74 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
       await forward();
     }
   };
-  const replyResult = await runWithDispatchLifecycleAdmission(
-    async () =>
-      await runWithDispatchAbortSignal(
-        getDispatchAbortSignal(),
-        () =>
-          state.traceReplyPhase("reply.run_reply_resolver", async () => {
-            const result = await replyResolver(
-              ctx,
-              {
-                ...state.getReplyOptions(),
-                [REPLY_OPERATION_RUN_STATE]: state.replyOperationRunState,
-                sourceReplyDeliveryMode: state.sourceReplyDeliveryMode,
-                sessionPromptSourceReplyDeliveryMode: state.sessionStableSourceReplyDeliveryMode,
-                ...state.sourceReplyDeliveryRuntimeOptions,
-                mediaNormalizationOwner: state.isInternalWebchatTurn ? "gateway" : undefined,
-                onPendingContinuation: (settlement) => {
-                  pendingContinuation = true;
-                  pendingContinuationSettlement ??= settlement;
-                },
-                onSessionMetadataChanges: notifySessionMetadataChanges,
-                onSessionPrepared: state.notePreparedSession,
-                onRunVerbosityResolved: (settings) => {
-                  state.noteRunVerbosity(settings);
-                  params.replyOptions?.onRunVerbosityResolved?.(settings);
-                },
-                onObservedReplyDelivery: state.markObservedReplyDelivery,
-                typingPolicy: typing.typingPolicy,
-                suppressTyping: typing.suppressTyping,
-                onPartialReply: deferFinalTtsText
-                  ? undefined
-                  : wrapProgressCallback(params.replyOptions?.onPartialReply, {
-                      onVisible: (payload) => {
-                        if (hasOutboundReplyContent(payload, { trimText: true })) {
-                          didDeliverVisiblePartialReply = true;
-                          state
-                            .getDispatchReplyOperation()
-                            ?.watchdog.progress("finalization", "reply:partial_delivered");
-                        }
-                      },
-                    }),
-                onReasoningStream,
-                streamReasoningInNonStreamModes:
-                  params.replyOptions?.streamReasoningInNonStreamModes,
-                onReasoningEnd: wrapProgressCallback(params.replyOptions?.onReasoningEnd),
-                onAssistantMessageStart: wrapProgressCallback(
-                  params.replyOptions?.onAssistantMessageStart,
-                ),
-                onQueuedFollowupSettled: async () => {
-                  // Retained block callbacks only enqueue; cleanup must join their
-                  // delivery even when this dispatch has already returned.
-
+  const replyResult = await runWithDispatchLifecycleAdmission(async () => {
+    const resolverWork = runWithDispatchAbortSignal(
+      getDispatchAbortSignal(),
+      () =>
+        state.traceReplyPhase("reply.run_reply_resolver", async () => {
+          const toolProgressOptions = {
+            forwardWhenSourceDeliverySuppressed: true,
+            requiresToolSummaryVisibility: true,
+            waitForDirectBlockReplyDelivery: true,
+          };
+          const toolLifecycleOptions = {
+            ...toolProgressOptions,
+            allowWhenToolSummariesHidden:
+              params.replyOptions?.allowToolLifecycleWhenProgressHidden === true,
+          };
+          const result = await replyResolver(
+            ctx,
+            {
+              ...state.getReplyOptions(),
+              [REPLY_OPERATION_RUN_STATE]: state.replyOperationRunState,
+              sourceReplyDeliveryMode: state.sourceReplyDeliveryMode,
+              sessionPromptSourceReplyDeliveryMode: state.sessionStableSourceReplyDeliveryMode,
+              ...state.sourceReplyDeliveryRuntimeOptions,
+              mediaNormalizationOwner: state.isInternalWebchatTurn ? "gateway" : undefined,
+              onPendingContinuation: (settlement) => {
+                pendingContinuation = true;
+                pendingContinuationSettlement ??= settlement;
+              },
+              onSessionMetadataChanges: notifySessionMetadataChanges,
+              onSessionPrepared: state.notePreparedSession,
+              onRunVerbosityResolved: (settings) => {
+                state.noteRunVerbosity(settings);
+                params.replyOptions?.onRunVerbosityResolved?.(settings);
+              },
+              onObservedReplyDelivery: state.markObservedReplyDelivery,
+              typingPolicy: typing.typingPolicy,
+              suppressTyping: typing.suppressTyping,
+              onPartialReply: deferFinalTtsText
+                ? undefined
+                : wrapProgressCallback(params.replyOptions?.onPartialReply, {
+                    onVisible: (payload) => {
+                      if (hasOutboundReplyContent(payload, { trimText: true })) {
+                        didDeliverVisiblePartialReply = true;
+                        state
+                          .getDispatchReplyOperation()
+                          ?.watchdog.progress("finalization", "reply:partial_delivered");
+                      }
+                    },
+                  }),
+              onReasoningStream,
+              streamReasoningInNonStreamModes: params.replyOptions?.streamReasoningInNonStreamModes,
+              onReasoningEnd: wrapProgressCallback(params.replyOptions?.onReasoningEnd),
+              onAssistantMessageStart: wrapProgressCallback(
+                params.replyOptions?.onAssistantMessageStart,
+              ),
+              onQueuedFollowupSettled: async () => {
+                // Retained block callbacks only enqueue; cleanup must join their
+                // delivery even when this dispatch has already returned.
+                try {
+                  await flushBlockTtsText();
+                  await waitForPendingDirectBlockReplyDelivery();
+                  if (
+                    dispatcher.getFailedCounts().block > 0 &&
+                    state.turnLedger.canAttemptFallback()
+                  ) {
+                    await dispatcher.waitForIdle();
+                  }
+                } catch (error) {
                   try {
                     await params.replyOptions?.onQueuedFollowupSettled?.();
                   } catch (cleanupError) {

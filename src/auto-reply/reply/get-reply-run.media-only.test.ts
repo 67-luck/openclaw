@@ -79,7 +79,6 @@ import { resolveFollowupAbortSignal } from "./queue/types.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
 import { bindReplySourceInput } from "./reply-source-binding.js";
 import { routeReply } from "./route-reply.runtime.js";
-
 import { drainFormattedSystemEvents } from "./session-system-events.js";
 import {
   createSourceReplyDeliveryRuntime,
@@ -431,7 +430,6 @@ function preparedTarget(sessionId: string) {
     incarnation: sessionId,
     agentId: "default",
   });
-
 }
 
 function runPrepared(overrides: Partial<Parameters<typeof runPreparedReply>[0]> = {}) {
@@ -723,7 +721,6 @@ describe("runPreparedReply media-only handling", () => {
 
   registerPreparedReplyThinkingCases({ runPrepared, requireRunReplyAgentCall });
 
-
   it("projects prepared embedded prompt variants without changing CLI session guidance", async () => {
     vi.mocked(buildDirectChatContext).mockImplementation(
       ({ sourceReplyDeliveryMode }) => `direct:${sourceReplyDeliveryMode ?? "automatic"}`,
@@ -921,7 +918,6 @@ describe("runPreparedReply media-only handling", () => {
       expect(call?.followupRun.originatingChannel).toBe(channel);
     },
   );
-
 
   it("prefers a one-turn queue override over the stored session mode", async () => {
     const queueSettings = await import("./queue/settings-runtime.js");
@@ -1523,14 +1519,21 @@ describe("runPreparedReply media-only handling", () => {
       expect(followupRun.media?.[0]).not.toHaveProperty("hydrationSuppressed");
       expect(followupRun).toMatchObject({
         media: [{ path: sharedPath }, { path: sharedPath, hydrationSuppressed: true }],
-
         mediaImageLayout: {
-          slots: [{ kind: "inline", factIndex: 1 }],
-          suppressedFactIndexes: [2],
+          slots: [{ kind: "inline", factIndex: 0 }],
+          suppressedFactIndexes: [1],
         },
-      },
-    });
-  });
+      });
+      expect(followupRun.userTurnTranscriptRecorder?.message).toMatchObject({
+        __openclaw: {
+          mediaImageLayout: {
+            slots: [{ kind: "inline", factIndex: 1 }],
+            suppressedFactIndexes: [2],
+          },
+        },
+      });
+    },
+  );
 
   it("keeps /reset soft tails even when the bare reset prompt is empty", async () => {
     const result = await runPrepared({
@@ -1573,7 +1576,6 @@ describe("runPreparedReply media-only handling", () => {
     ).rejects.toThrow("auth failed");
 
     expect(listActiveReplyRunSessionKeys().length).toBe(activeBefore);
-
   });
 
   it.each([false, true])(
@@ -1720,7 +1722,6 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(sessionNativeRuntime.waitForSessionRunEnd).mockImplementation(async () => {
       embeddedRunActive = false;
       return true;
-
     });
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({ mode: "interrupt" });
     vi.mocked(embeddedAgentRuntime.resolveActiveEmbeddedRunSessionId).mockReturnValue(
@@ -1759,7 +1760,6 @@ describe("runPreparedReply media-only handling", () => {
     expect(embeddedAgentRuntime.abortEmbeddedAgentRun).not.toHaveBeenCalled();
     expect(sessionNativeRuntime.waitForSessionRunEnd).not.toHaveBeenCalled();
     expect(vi.mocked(runReplyAgent)).toHaveBeenCalledOnce();
-
   });
   it("drains an embedded heartbeat hidden by the visible pre-dispatch operation", async () => {
     const queueSettings = await import("./queue/settings-runtime.js");
@@ -1963,7 +1963,6 @@ describe("runPreparedReply media-only handling", () => {
       .mockReturnValueOnce("active-session");
     vi.mocked(sessionQueries.isSessionRunActive).mockReturnValueOnce(true);
 
-
     await runPrepared({
       opts: { isHeartbeat: true },
     });
@@ -2049,7 +2048,6 @@ describe("runPreparedReply media-only handling", () => {
       .mockReturnValueOnce("active-session");
     vi.mocked(sessionQueries.isSessionRunActive).mockReturnValueOnce(true);
 
-
     try {
       await runPrepared({
         isNewSession: false,
@@ -2129,7 +2127,6 @@ describe("runPreparedReply media-only handling", () => {
     );
     vi.mocked(sessionQueries.isSessionRunActive).mockReturnValue(true);
 
-
     try {
       await authEntered.promise;
       intruder = createReplyOperation({
@@ -2172,7 +2169,6 @@ describe("runPreparedReply media-only handling", () => {
       expect(call.followupRun.run.sessionId).toBe("session-after-rollover");
     } finally {
       operation.complete();
-
     }
   });
 
@@ -2362,7 +2358,6 @@ describe("runPreparedReply media-only handling", () => {
       storePath: "/tmp/sessions.json",
     });
   });
-
 
   it("keeps route and dispatch system events queued when busy admission returns", async () => {
     vi.useFakeTimers();
@@ -2898,136 +2893,8 @@ describe("runPreparedReply media-only handling", () => {
           ? { messages: { visibleReplies: "message_tool" } }
           : {}),
       };
-      const sessionEntry: SessionEntry = {
-        sessionId: "session-telegram-group",
-        updatedAt: 1,
-        systemSent: true,
-        chatType: "group",
-        delivery: normalizeSessionDeliveryState({
-          context: { channel: "telegram", to: "-100123" },
-          origin: {
-            provider: "telegram",
-            surface: "telegram",
-            chatType: "group",
-            to: "-100123",
-          },
-        }),
-      };
-
-      await runPrepared({
-        cfg: caseCfg,
-        opts: {
-          sourceReplyDeliveryMode: "message_tool_only",
-          sessionPromptSourceReplyDeliveryMode: stableMode,
-        },
-        isNewSession: false,
-        systemSent: true,
-        sessionEntry,
-        ctx: {
-          ...createInboundTurn("@bot check this", "telegram", "group"),
-          MessageSid: "msg-1",
-        },
-        sessionCtx: {
-          ...createSessionTurn("@bot check this", "telegram", "group"),
-          InboundEventKind: "room_event",
-          MessageSid: "msg-1",
-        },
-      });
-      await runPrepared({
-        cfg: caseCfg,
-        opts: {
-          sourceReplyDeliveryMode: stableMode,
-          sessionPromptSourceReplyDeliveryMode: stableMode,
-        },
-        isNewSession: false,
-        systemSent: true,
-        sessionEntry,
-        ctx: { ...createInboundTurn("@bot check this", "telegram", "group"), MessageSid: "msg-2" },
-        sessionCtx: {
-          ...createSessionTurn("@bot check this", "telegram", "group"),
-          MessageSid: "msg-2",
-        },
-      });
-      await runPrepared({
-        cfg: caseCfg,
-        opts: {
-          isHeartbeat: true,
-          sourceReplyDeliveryMode: stableMode,
-          sessionPromptSourceReplyDeliveryMode: stableMode,
-        },
-        isNewSession: false,
-        systemSent: true,
-        sessionEntry,
-        ctx: {
-          ...createInboundBody("scheduled wake"),
-          InternalTurnSource: "cron",
-          SessionKey: "agent:main:telegram:-100123",
-        },
-        sessionCtx: {
-          ...createSessionBody("scheduled wake"),
-          InternalTurnSource: "cron",
-        },
-      });
-      // Production heartbeat wakes call the reply resolver directly, without
-      // dispatch's injected delivery modes; their binding facts must still
-      // match dispatched turns or the CLI session ping-pongs (#121485).
-      await runPrepared({
-        cfg: caseCfg,
-        opts: { isHeartbeat: true },
-        isNewSession: false,
-        systemSent: true,
-        sessionEntry,
-        ctx: {
-          ...createInboundBody("scheduled wake"),
-          InternalTurnSource: "heartbeat",
-          SessionKey: "agent:main:telegram:-100123",
-        },
-        sessionCtx: {
-          ...createSessionBody("scheduled wake"),
-          InternalTurnSource: "heartbeat",
-        },
-      });
-      // Response-tool heartbeats carry an effective message_tool_only turn
-      // mode; that is per-turn enforcement and must not become the session
-      // policy fact, or these heartbeats keep ping-ponging the binding.
-      await runPrepared({
-        cfg: caseCfg,
-        opts: { isHeartbeat: true, sourceReplyDeliveryMode: "message_tool_only" },
-        isNewSession: false,
-        systemSent: true,
-        sessionEntry,
-        ctx: {
-          ...createInboundBody("scheduled wake"),
-          InternalTurnSource: "heartbeat",
-          SessionKey: "agent:main:telegram:-100123",
-        },
-        sessionCtx: {
-          ...createSessionBody("scheduled wake"),
-          InternalTurnSource: "heartbeat",
-        },
-      });
-
-      const roomEventRun = requireRunReplyAgentCall(0).followupRun.run;
-      const primaryRun = requireRunReplyAgentCall(1).followupRun.run;
-      const heartbeatRun = requireRunReplyAgentCall(2).followupRun.run;
-      const directHeartbeatRun = requireRunReplyAgentCall(3).followupRun.run;
-      const responseToolHeartbeatRun = requireRunReplyAgentCall(4).followupRun.run;
-      expect(roomEventRun.sourceReplyDeliveryMode).toBe("message_tool_only");
-      expect(primaryRun.sourceReplyDeliveryMode).toBe(stableMode);
-      expect(heartbeatRun.sourceReplyDeliveryMode).toBe(stableMode);
-      expect(roomEventRun.extraSystemPrompt).toBe(expectedPrompt);
-      expect(requireRunReplyAgentCall(0).followupRun.currentInboundContext?.text).toContain(
-        "You were not explicitly tagged or mentioned in this room event",
-      );
-      expect(roomEventRun.extraSystemPromptStatic).toBe(expectedPrompt);
-      expect(roomEventRun.extraSystemPromptStatic).not.toContain(
-        "You were not explicitly tagged or mentioned in this room event",
-      );
-      expect(primaryRun.extraSystemPromptStatic).toBe(roomEventRun.extraSystemPromptStatic);
-      expect(heartbeatRun.extraSystemPromptStatic).toBe(roomEventRun.extraSystemPromptStatic);
-      expect(roomEventRun.cliSessionBindingFacts).toEqual({
-        extraSystemPromptStatic: expectedPrompt,
-
+      const sessionEntry = telegramGroupSession();
+      const stableOptions: ReplyRunParams["opts"] = {
         sourceReplyDeliveryMode: stableMode,
         sessionPromptSourceReplyDeliveryMode: stableMode,
       };

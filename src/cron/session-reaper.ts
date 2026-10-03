@@ -19,7 +19,8 @@ import type { CronConfig } from "../config/types.cron.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { isCompetingSessionControllerWorkActive } from "../sessions/session-controller.lifecycle.js";
-
+import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
+import { prepareCronDescendantDeletion } from "./isolated-agent/run-subagent-registry.runtime.js";
 import { deleteCronSessionViaGateway } from "./isolated-agent/session-cleanup.js";
 import { resolveCronAgentSessionKey } from "./isolated-agent/session-key.js";
 import type { Logger } from "./service/state.js";
@@ -185,7 +186,7 @@ export async function sweepCronRunSessions(params: {
         // The shared deletion guard still closes the race between selection and commit.
         if (
           entry.sessionId &&
-          isCompetingSessionWorkAdmissionActive(storePath, [sessionKey, entry.sessionId])
+          isCompetingSessionControllerWorkActive(storePath, [sessionKey, entry.sessionId])
         ) {
           continue;
         }
@@ -197,43 +198,31 @@ export async function sweepCronRunSessions(params: {
           archiveRemovedTranscript: true,
         });
       }
-      // Skip known-busy rows so one active generation cannot abort idle sibling cleanup.
-      // The shared deletion guard still closes the race between selection and commit.
-      if (
-        entry.sessionId &&
-        isCompetingSessionControllerWorkActive(storePath, [sessionKey, entry.sessionId])
-      ) {
-        continue;
-      }
-      removals.push({
-        sessionKey,
-        expectedEntry: entry,
-        ...(entry.sessionId ? { expectedSessionId: entry.sessionId } : {}),
-        expectedUpdatedAt: entry.updatedAt,
-        archiveRemovedTranscript: true,
-      });
-    }
-    if (removals.length > 0) {
-      // Archive-age cleanup follows the session maintenance retention knob:
-      // the reaper's cron retention decides which rows die, but archived
-      // transcript files are conversation history owned by the archive
-      // retention policy (null = keep until the disk budget evicts).
-      const archiveRetentionMs = resolveMaintenanceConfig().resetArchiveRetentionMs;
-      const result = await applySessionEntryLifecycleMutation({
-        agentId: params.agentId,
-        storePath,
-        removals,
-        beforeCommitInTransaction: () => {
-          // Descendants can acquire the continuation while deletion preparation awaits.
-          for (const removal of removals) {
-            if (
-              removal.expectedEntry?.cronRunContinuation &&
-              hasDescendantRunAwaitingSettle(removal.sessionKey)
-            ) {
-              throw new Error(
-                `Cannot prune cron run continuation while subagents await settlement for ${removal.sessionKey}`,
-              );
-
+      if (removals.length > 0) {
+        // Archive-age cleanup follows the session maintenance retention knob:
+        // the reaper's cron retention decides which rows die, but archived
+        // transcript files are conversation history owned by the archive
+        // retention policy (null = keep until the disk budget evicts).
+        const archiveRetentionMs = resolveMaintenanceConfig().resetArchiveRetentionMs;
+        const result = await applySessionEntryLifecycleMutation({
+          agentId: params.agentId,
+          env: context.environment,
+          storePath,
+          removals,
+          descendantRunBasis: descendants?.basis,
+          commitGuard: () => {
+            assertCurrent();
+            // Descendants can acquire the continuation while deletion preparation awaits.
+            for (const removal of removals) {
+              if (
+                removal.expectedEntry?.cronRunContinuation &&
+                (descendants?.hasUnsettled(removal.sessionKey) ||
+                  hasPendingGeneratedMediaTaskForSessionKey(removal.sessionKey))
+              ) {
+                throw new Error(
+                  `Cannot prune cron run continuation while subagents await settlement for ${removal.sessionKey}`,
+                );
+              }
             }
           },
           ...(archiveRetentionMs == null

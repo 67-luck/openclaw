@@ -1,6 +1,4 @@
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { parseAgentSessionKey } from "../routing/session-key.js";
-
 // Gateway connection and run registries.
 // This state is transport-fed but can be constructed without HTTP or WebSocket servers.
 import {
@@ -117,56 +115,7 @@ export function createGatewayConnectionState(params: {
       if (!projection) {
         return undefined;
       }
-      const source = payload;
-      if (source.reason === "delete" || typeof source.sessionKey !== "string") {
-        if (typeof source.sessionKey === "string") {
-          forgetAncestor(source.sessionKey);
-        } else {
-          ancestorReferences = new WeakMap();
-        }
-        return undefined;
-      }
-      const scope = resolveSessionEventAgentScope(
-        loadRuntimeConfig(),
-        source.sessionKey,
-        typeof source.agentId === "string" ? source.agentId : eventScope.agentId,
-      );
-      if (!scope?.[1] || (!scope[0] && !scope[2] && !parseAgentSessionKey(source.sessionKey))) {
-        return undefined;
-      }
-      const query = { key: source.sessionKey, agentId: scope[1] };
-      const record = projection.describe(query);
-      if (
-        !record ||
-        (typeof source.sessionId === "string" && source.sessionId !== record.entry.sessionId)
-      ) {
-        return () => undefined;
-      }
-      const base = isRecord(source.session)
-        ? source
-        : {
-            ...buildGatewaySessionSnapshot({
-              sessionRow: projection.snapshot(query).row,
-              agentId: scope[0],
-              includeSession: true,
-            }),
-            ...source,
-          };
-      const sourceRow = base.session;
-      if (
-        !isRecord(sourceRow) ||
-        sourceRow.sessionId !== record.entry.sessionId ||
-        (sourceRow.lifecycleRevision !== undefined &&
-          sourceRow.lifecycleRevision !== record.entry.lifecycleRevision)
-      ) {
-        return () => undefined;
-      }
-      const presentRecipient = prepareSessionRowPublication(projection, Date.now());
-      const encodedRows = new WeakMap<object, string>();
-      const preparedAncestors = new WeakMap<object, ReturnType<typeof prepareSessionAncestor>>();
-      const ancestors = projection.ancestorRows(record);
-      const enrichment = { includeDerivedTitles: true, includeLastMessage: true };
-      let projectedAgentRuns = projection.state.rowContext.projectedAgentRuns;
+      let projectedAgentRuns: SessionRowProjection["state"]["rowContext"]["projectedAgentRuns"];
       let registrations: Array<{
         runId: string;
         ref: RpcSourceRef;
@@ -177,113 +126,17 @@ export function createGatewayConnectionState(params: {
         controlUiVisible?: boolean;
       }> = [];
       let projectRun: ReturnType<typeof createVisibleActiveSessionRunProjector> | undefined;
-      return (client) => {
-        if (!projection.isCurrent(record)) {
-          return undefined;
-        }
-        if (
-          !projectRun ||
-          registrations.length !== listRpcSourceEntries().length ||
-          // Compare copied fields: registrations can mutate in place between recipients.
-          registrations.some((previous) => {
-            const current = getRpcSource(previous.runId);
-            const identity = current ? getRpcSourceIdentity(current) : undefined;
-            return (
-              current !== previous.ref ||
-              identity?.sessionKey !== previous.sessionKey ||
-              identity?.sessionId !== previous.sessionId ||
-              identity?.agentId !== previous.agentId ||
-              isRpcSourceActive(current) !== previous.active ||
-              current.adapter.controlUiVisible !== previous.controlUiVisible
-            );
-          }) ||
-          projectedAgentRuns !== projection.state.rowContext.projectedAgentRuns
-        ) {
-          registrations = listRpcSourceEntries().map(([runId, ref]) => {
-            const identity = getRpcSourceIdentity(ref);
-            return {
-              runId,
-              ref,
-              ...identity,
-              active: isRpcSourceActive(ref),
-              controlUiVisible: ref.adapter.controlUiVisible,
-            };
-          });
-          projectedAgentRuns = projection.state.rowContext.projectedAgentRuns;
-          projectRun = createVisibleActiveSessionRunProjector(
-            projectedAgentRuns,
-            registrations.map(({ runId, ref }) => [runId, ref] as const),
-          );
-        }
-        const presentation = presentRecipient(client, projectRun);
-        const row = presentation.present(record, enrichment);
-        if (!row) {
-          return undefined;
-        }
-        let references = ancestorReferences.get(client);
-        if (!references) {
-          references = new SessionAncestorReferences();
-          ancestorReferences.set(client, references);
-        }
-        const ancestorRows = ancestors?.every((ancestor) => projection.isCurrent(ancestor))
-          ? ancestors.flatMap((ancestor) => {
-              if (presentation.sharing.entryFilter?.(ancestor.key, ancestor.entry) === false) {
-                references.forget(ancestor.key);
-                return [];
-              }
-              const presented = presentation.present(ancestor, enrichment);
-              if (!presented) {
-                return [];
-              }
-              let prepared = preparedAncestors.get(presented);
-              if (!prepared) {
-                prepared = prepareSessionAncestor(presented);
-                preparedAncestors.set(presented, prepared);
-              }
-              return [prepared];
-            })
-          : undefined;
-        const ancestorDelivery = ancestorRows && references.prepare(ancestorRows);
-        if (!ancestorDelivery) {
-          ancestorReferences.delete(client);
-        }
-        const projected: Record<string, unknown> = {
-          ...base,
-          session: row,
-          ancestorSessions: ancestorDelivery?.ancestorSessions,
-          ancestorSessionRefs: ancestorDelivery?.ancestorSessionRefs,
-          visibility: row.visibility,
-          sharingRole: row.sharingRole,
-          ...(isRecord(base.activitySummary) && row.activitySummary
-            ? {
-                activitySummary: {
-                  ...base.activitySummary,
-                  canEnsure: row.activitySummary.canEnsure,
-                },
-              }
-            : {}),
-        };
-        if (Object.hasOwn(projected, "childSessions")) {
-          projected.childSessions = row.childSessions;
-        }
-        return {
-          payload: projected,
-          serializeSession: () => {
-            let encoded = encodedRows.get(row);
-            if (encoded === undefined) {
-              encoded = JSON.stringify(row);
-              encodedRows.set(row, encoded);
-            }
-            return encoded;
-          },
-          delivered: () => {
-            references.forget(row.key);
-            if (event === "sessions.changed" && source.reason === "activity-summary") {
-              // Rosters skip recaps, so a full recap row cannot certify a later reference.
-              for (const ancestor of ancestorDelivery?.ancestorSessions ?? []) {
-                references.forget(ancestor.key);
-              }
-
+      return (eventScope.prepareSessionProjection ?? prepareSessionEventProjection(projection))(
+        event,
+        payload,
+        eventScope,
+        {
+          isCurrentProjection: (owner) => owner === sessionRowProjection,
+          resolveAgentScope: (key, agentId) =>
+            resolveSessionEventAgentScope(loadRuntimeConfig(), key, agentId),
+          forgetAncestors: (key) => {
+            if (key !== undefined) {
+              forgetAncestor(key);
             } else {
               ancestorReferences = new WeakMap();
             }
@@ -300,29 +153,36 @@ export function createGatewayConnectionState(params: {
           getRunProjector: () => {
             if (
               !projectRun ||
-              registrations.length !== chatAbortControllers.size ||
+              registrations.length !== listRpcSourceEntries().length ||
               // Compare copied fields: registrations can mutate in place between recipients.
-              registrations.some(([runId, previous]) => {
-                const current = chatAbortControllers.get(runId);
+              registrations.some((previous) => {
+                const current = getRpcSource(previous.runId);
+                const identity = current ? getRpcSourceIdentity(current) : undefined;
                 return (
-                  !current ||
-                  current.sessionKey !== previous.sessionKey ||
-                  current.sessionId !== previous.sessionId ||
-                  current.agentId !== previous.agentId ||
-                  current.projectSessionActive !== previous.projectSessionActive ||
-                  current.controlUiVisible !== previous.controlUiVisible
+                  current !== previous.ref ||
+                  identity?.sessionKey !== previous.sessionKey ||
+                  identity?.sessionId !== previous.sessionId ||
+                  identity?.agentId !== previous.agentId ||
+                  isRpcSourceActive(current) !== previous.active ||
+                  current?.adapter.controlUiVisible !== previous.controlUiVisible
                 );
               }) ||
               projectedAgentRuns !== projection.state.rowContext.projectedAgentRuns
             ) {
-              registrations = Array.from(chatAbortControllers, ([runId, entry]) => [
-                runId,
-                { ...entry },
-              ]);
+              registrations = listRpcSourceEntries().map(([runId, ref]) => {
+                const identity = getRpcSourceIdentity(ref);
+                return {
+                  runId,
+                  ref,
+                  ...identity,
+                  active: isRpcSourceActive(ref),
+                  controlUiVisible: ref.adapter.controlUiVisible,
+                };
+              });
               projectedAgentRuns = projection.state.rowContext.projectedAgentRuns;
               projectRun = createVisibleActiveSessionRunProjector(
-                { chatAbortControllers: new Map(registrations) },
                 projectedAgentRuns,
+                registrations.map(({ runId, ref }) => [runId, ref] as const),
               );
             }
             return projectRun;

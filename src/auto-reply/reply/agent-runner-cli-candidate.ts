@@ -513,21 +513,8 @@ export async function runCliFallbackCandidate(
           sessionStore: turn.activeSessionStore,
           preserveBinding: shouldPreserveUserFacingSessionStateForInputProvenance(
             turn.followupRun.run.inputProvenance,
-          )
-        ) {
-          return await persistCliSessionBindingResult({
-            agentId: turn.followupRun.run.agentId,
-            provider: params.cliExecutionProvider,
-            result: candidateResult,
-            sessionKey,
-            storePath: turn.storePath,
-            sessionStore: turn.activeSessionStore,
-            expectedSession: sessionEntry,
-            assertSettlementCurrent,
-            abortSignal: params.runAbortSignal,
-          });
-        }
-        return candidateResult;
+          ),
+        });
       },
       {
         preparedRunAdmission: params.preparedRunAdmission,
@@ -537,7 +524,6 @@ export async function runCliFallbackCandidate(
         trigger: turn.isHeartbeat ? "heartbeat" : "user",
         inputProvenance: turn.followupRun.run.inputProvenance,
         replyOperation: turn.replyOperation,
-
       },
     ),
   );
