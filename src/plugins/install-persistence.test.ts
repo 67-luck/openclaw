@@ -2,7 +2,8 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   buildPluginSnapshotReportMock,
   clearPluginRegistryLoadCacheMock,
@@ -23,6 +24,8 @@ import { createTestConfigSnapshot } from "../commands/test-runtime-config-helper
 import type { OpenClawConfig } from "../config/config.js";
 import { hasRetainedManagedNpmInstallMarker } from "./managed-npm-retention.js";
 import { clearPluginMetadataLifecycleCaches } from "./plugin-metadata-lifecycle.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function requireMockCallArg(
   mockFn: { mock: { calls: unknown[][] } },
@@ -274,13 +277,16 @@ describe("persistPluginInstall", () => {
 
   it("removes a replaced managed install directory before refreshing the registry", async () => {
     const { persistPluginInstall } = await import("./install-persistence.js");
+    const root = tempDirs.make("plugin-persist-replaced-");
+    const previousInstallPath = path.join(root, "extensions", "codex");
+    const nextInstallPath = path.join(root, "npm", "node_modules", "@openclaw", "codex");
     const baseConfig: OpenClawConfig = { plugins: { entries: {} } };
     mockEnabledPlugin("codex");
     setInstalledPluginIndexInstallRecords({
       codex: {
         source: "clawhub",
         spec: "clawhub:@openclaw/codex",
-        installPath: "/tmp/openclaw/extensions/codex",
+        installPath: previousInstallPath,
       },
     });
     planPluginUninstallMock.mockReturnValueOnce({
@@ -299,7 +305,7 @@ describe("persistPluginInstall", () => {
         directory: false,
       },
       directoryRemoval: {
-        target: "/tmp/openclaw/extensions/codex",
+        target: previousInstallPath,
       },
     });
     applyPluginUninstallDirectoryRemovalMock.mockResolvedValueOnce({
@@ -313,7 +319,7 @@ describe("persistPluginInstall", () => {
       install: {
         source: "npm",
         spec: "@openclaw/codex",
-        installPath: "/tmp/openclaw/npm/node_modules/@openclaw/codex",
+        installPath: nextInstallPath,
       },
     });
 
@@ -325,7 +331,7 @@ describe("persistPluginInstall", () => {
               codex: {
                 source: "clawhub",
                 spec: "clawhub:@openclaw/codex",
-                installPath: "/tmp/openclaw/extensions/codex",
+                installPath: previousInstallPath,
               },
             },
           },
@@ -335,25 +341,32 @@ describe("persistPluginInstall", () => {
       }),
     );
     expect(applyPluginUninstallDirectoryRemovalMock.mock.calls.map(([removal]) => removal)).toEqual(
-      [{ target: "/tmp/openclaw/extensions/codex" }],
+      [{ target: previousInstallPath }],
     );
     expect(applyPluginUninstallDirectoryRemovalMock).toHaveBeenCalledBefore(
       refreshPluginRegistryMock,
     );
     expect(pluginsCliRuntimeLogs.join("\n")).toContain(
-      "Removed previous plugin install directory: /tmp/openclaw/extensions/codex",
+      `Removed previous plugin install directory: ${previousInstallPath}`,
     );
   });
 
   it("preserves replaced install directories when the new install path overlaps", async () => {
     const { persistPluginInstall } = await import("./install-persistence.js");
+    const installPath = path.join(
+      tempDirs.make("plugin-persist-overlap-"),
+      "npm",
+      "node_modules",
+      "@openclaw",
+      "codex",
+    );
     const baseConfig: OpenClawConfig = { plugins: { entries: {} } };
     mockEnabledPlugin("codex");
     setInstalledPluginIndexInstallRecords({
       codex: {
         source: "npm",
         spec: "@openclaw/codex",
-        installPath: "/tmp/openclaw/npm/node_modules/@openclaw/codex",
+        installPath,
       },
     });
 
@@ -363,7 +376,7 @@ describe("persistPluginInstall", () => {
       install: {
         source: "npm",
         spec: "@openclaw/codex@latest",
-        installPath: "/tmp/openclaw/npm/node_modules/@openclaw/codex",
+        installPath,
       },
     });
 
@@ -507,6 +520,13 @@ describe("persistPluginInstall", () => {
 
   it("does not warn when the config-selected source is inside the npm install path", async () => {
     const { persistPluginInstall } = await import("./install-persistence.js");
+    const installPath = path.join(
+      tempDirs.make("plugin-persist-config-source-"),
+      "npm",
+      "node_modules",
+      "@openclaw",
+      "discord",
+    );
     const baseConfig: OpenClawConfig = { plugins: { entries: {} } };
     mockEnabledPlugin("discord");
     buildPluginSnapshotReportMock.mockReturnValue({
@@ -514,7 +534,7 @@ describe("persistPluginInstall", () => {
         {
           id: "discord",
           origin: "config",
-          source: "/tmp/openclaw/npm/node_modules/@openclaw/discord/dist/index.js",
+          source: path.join(installPath, "dist", "index.js"),
           status: "loaded",
         },
       ],
@@ -527,7 +547,7 @@ describe("persistPluginInstall", () => {
       install: {
         source: "npm",
         spec: "@openclaw/discord",
-        installPath: "/tmp/openclaw/npm/node_modules/@openclaw/discord",
+        installPath,
       },
     });
 

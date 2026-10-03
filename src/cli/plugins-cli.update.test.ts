@@ -32,6 +32,7 @@ import {
   writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock,
 } from "./plugins-cli-test-helpers.js";
 import {
+  createManagedNpmUpdatePaths,
   expectInstallRecordsWrittenWithLease,
   writtenIndexCustody,
 } from "./plugins-cli.update.test-support.js";
@@ -622,9 +623,7 @@ describe("plugins cli update", () => {
   });
 
   it("commits a moved managed npm load path with its replacement record", async () => {
-    const previousInstallPath = "/tmp/openclaw/npm/projects/brave-v1/node_modules/brave";
-    const nextInstallPath = "/tmp/openclaw/npm/projects/brave-v2/node_modules/brave";
-    const customPath = "/tmp/custom-plugin";
+    const { previousInstallPath, nextInstallPath, customPath } = createManagedNpmUpdatePaths();
     const cfg = {
       plugins: {
         load: { paths: [previousInstallPath, customPath] },

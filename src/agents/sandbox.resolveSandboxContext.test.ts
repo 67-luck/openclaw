@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
+import { STATE_DIR } from "../config/paths.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import type { AgentSandboxConfig } from "../config/types.agents-shared.js";
 import { createWarnLogCapture } from "../logging/test-helpers/warn-log-capture.js";
@@ -103,6 +104,7 @@ function sandboxConfig(backend: string, overrides: AgentSandboxConfig = {}): Ope
   };
 }
 
+const configuredStateDir = STATE_DIR;
 let sandboxFixtureRoot = "";
 let sandboxFixtureCount = 0;
 
@@ -798,7 +800,7 @@ describe("resolveSandboxContext", () => {
     const [syncOptions] = syncSkillsToWorkspaceMock.mock.calls[0] ?? [];
     expect(syncOptions?.sourceWorkspaceDir).toBe(workspaceDir);
     expect(syncOptions?.targetWorkspaceDir).toContain(
-      path.join(".openclaw", "sandbox", "skills-workspaces"),
+      path.join(configuredStateDir, "sandbox", "skills-workspaces"),
     );
     expect(syncOptions?.targetWorkspaceDir).toMatch(
       /[\\/]workspace-[a-f0-9]{32}[\\/]\.openclaw[\\/]sandbox-skills$/,
@@ -858,7 +860,7 @@ describe("resolveSandboxContext", () => {
     );
     expect(result?.containerWorkdir).not.toBe("/workspace");
     expect(result?.skillsWorkspaceDir).toContain(
-      path.join(".openclaw", "sandbox", "skills-workspaces"),
+      path.join(configuredStateDir, "sandbox", "skills-workspaces"),
     );
   }, 15_000);
 
@@ -898,7 +900,7 @@ describe("resolveSandboxContext", () => {
     const [syncOptions] = syncSkillsToWorkspaceMock.mock.calls[0] ?? [];
     expect(syncOptions?.sourceWorkspaceDir).toBe(workspaceDir);
     expect(syncOptions?.targetWorkspaceDir).toContain(
-      path.join(".openclaw", "sandbox", "skills-workspaces"),
+      path.join(configuredStateDir, "sandbox", "skills-workspaces"),
     );
     expect(syncOptions?.targetWorkspaceDir).toMatch(
       /[\\/]shared-[a-f0-9]{8}[\\/]\.openclaw[\\/]sandbox-skills$/,

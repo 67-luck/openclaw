@@ -66,6 +66,9 @@ sqlite.DatabaseSync = new Proxy(original, {
     if (location !== ":memory:") {
       assert(!location.replaceAll(path.sep, "/").split("/").includes(".."), "SQLite parent traversal refused");
       const absolute = path.resolve(location);
+      const relative = relativePath(root, absolute);
+      const within = (value) => !path.isAbsolute(value) && value !== ".." && !value.startsWith(".." + path.sep);
+      assert(relative !== "" && within(relative), "SQLite must stay in its owned fixture");
       let ancestor = absolute;
       let entry = fs.lstatSync(ancestor, { throwIfNoEntry: false });
       while (!entry) {
@@ -74,10 +77,7 @@ sqlite.DatabaseSync = new Proxy(original, {
       }
       assert(!entry.isSymbolicLink() || fs.existsSync(ancestor), "Dangling SQLite alias refused");
       const physical = fs.realpathSync(ancestor);
-      const relative = relativePath(root, absolute);
       const physicalRelative = relativePath(root, physical);
-      const within = (value) => !path.isAbsolute(value) && value !== ".." && !value.startsWith(".." + path.sep);
-      assert(relative !== "" && within(relative), "SQLite must stay in its owned fixture");
       assert(within(physicalRelative), "SQLite alias escaped its owned fixture");
     }
     if (path.basename(location) === "managed-update-handoffs.sqlite") {

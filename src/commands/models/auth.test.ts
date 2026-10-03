@@ -9,6 +9,8 @@ import type { ConfigWriteOptions } from "../../config/io.js";
 import type { ProviderAuthProfile, ProviderPlugin } from "../../plugins/types.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { ProviderAuthConfigApplyError } from "../../shared/provider-auth-result.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { pastedApiKeyCases } from "./auth-api-key-command.test-support.js";
 
 type AuthRunCall = {
   agentDir?: string;
@@ -1790,64 +1792,56 @@ describe("modelsAuthLoginCommand", () => {
     expect(mocks.updateConfig).not.toHaveBeenCalled();
   });
 
-  it("writes pasted API keys to the requested agent store", async () => {
-    const runtime = createRuntime();
-    useCoderAgentConfig();
-    mocks.clackPassword.mockResolvedValue("sk-openai-chatgpt-api-key-value");
+  for (const { name, agent, input, key, piped } of pastedApiKeyCases) {
+    it(name, async () => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const runtime = createRuntime();
+        if (agent) {
+          useCoderAgentConfig();
+        }
+        mocks.resolveAgentDir.mockImplementation((_cfg: OpenClawConfig, id: string) =>
+          state.agentDir(id),
+        );
+        if (piped) {
+          restoreStdin?.();
+          restoreStdin = withPipedStdin(input);
+        } else {
+          mocks.clackPassword.mockResolvedValue(input);
+        }
 
-    await modelsAuthPasteApiKeyCommand({ provider: "openai", agent: "coder" }, runtime);
+        await modelsAuthPasteApiKeyCommand(
+          { provider: "openai", ...(agent ? { agent } : {}) },
+          runtime,
+        );
 
-    expect(mocks.resolveDefaultAgentId).not.toHaveBeenCalled();
-    expect(mocks.upsertAuthProfileWithLock).toHaveBeenCalledWith({
-      profileId: "openai:manual",
-      credential: {
-        type: "api_key",
-        provider: "openai",
-        key: "sk-openai-chatgpt-api-key-value",
-      },
-      agentDir: "/tmp/openclaw/agents/coder",
-      preserveApiKeyMetadata: true,
-      validateCurrentCredential: expect.any(Function),
+        expect(mocks.upsertAuthProfileWithLock).toHaveBeenCalledWith({
+          profileId: "openai:manual",
+          credential: { type: "api_key", provider: "openai", key },
+          agentDir: state.agentDir(agent ?? "main"),
+          preserveApiKeyMetadata: true,
+          validateCurrentCredential: expect.any(Function),
+        });
+        expect(lastUpdatedConfig?.auth?.profiles?.["openai:manual"]).toEqual({
+          provider: "openai",
+          mode: "api_key",
+        });
+        if (piped) {
+          expect(mocks.clackPassword).not.toHaveBeenCalled();
+        } else {
+          expect(mocks.resolveDefaultAgentId).not.toHaveBeenCalled();
+          expect(runtime.log).toHaveBeenCalledWith("Auth profile: openai:manual (openai/api_key)");
+          expect(runtime.error).toHaveBeenCalledWith(
+            expect.stringContaining("Gateway has not confirmed applying the provider settings"),
+          );
+          expect(mocks.callGateway).toHaveBeenCalledWith(
+            expect.objectContaining({
+              params: { operation: "login", agentId: "coder" },
+            }),
+          );
+        }
+      });
     });
-    expect(lastUpdatedConfig?.auth?.profiles?.["openai:manual"]).toEqual({
-      provider: "openai",
-      mode: "api_key",
-    });
-    expect(runtime.log).toHaveBeenCalledWith("Auth profile: openai:manual (openai/api_key)");
-    expect(runtime.error).toHaveBeenCalledWith(
-      expect.stringContaining("Gateway has not confirmed applying the provider settings"),
-    );
-    expect(mocks.callGateway).toHaveBeenCalledWith(
-      expect.objectContaining({
-        params: { operation: "login", agentId: "coder" },
-      }),
-    );
-  });
-
-  it("normalizes line-wrapped piped OpenAI Codex API keys before storing", async () => {
-    const runtime = createRuntime();
-    restoreStdin?.();
-    restoreStdin = withPipedStdin("sk-openai-\nchat-api-key-value\n");
-
-    await modelsAuthPasteApiKeyCommand({ provider: "openai" }, runtime);
-
-    expect(mocks.clackPassword).not.toHaveBeenCalled();
-    expect(mocks.upsertAuthProfileWithLock).toHaveBeenCalledWith({
-      profileId: "openai:manual",
-      credential: {
-        type: "api_key",
-        provider: "openai",
-        key: "sk-openai-chat-api-key-value",
-      },
-      agentDir: "/tmp/openclaw/agents/main",
-      preserveApiKeyMetadata: true,
-      validateCurrentCredential: expect.any(Function),
-    });
-    expect(lastUpdatedConfig?.auth?.profiles?.["openai:manual"]).toEqual({
-      provider: "openai",
-      mode: "api_key",
-    });
-  });
+  }
 
   it("rejects token material pasted into the OpenAI Codex API-key command", async () => {
     const runtime = createRuntime();

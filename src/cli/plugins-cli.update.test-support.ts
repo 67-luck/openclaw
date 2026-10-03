@@ -1,5 +1,18 @@
-import { expect } from "vitest";
+import path from "node:path";
+import { afterEach, expect } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock } from "./plugins-cli-test-helpers.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+export function createManagedNpmUpdatePaths() {
+  const root = tempDirs.make("plugin-update-load-path-");
+  return {
+    previousInstallPath: path.join(root, "npm", "projects", "brave-v1", "node_modules", "brave"),
+    nextInstallPath: path.join(root, "npm", "projects", "brave-v2", "node_modules", "brave"),
+    customPath: path.join(root, "custom-plugin"),
+  };
+}
 
 export function expectInstallRecordsWrittenWithLease(records: unknown, config: unknown) {
   expect(writePersistedInstalledPluginIndexInstallRecordsWithLeaseMock).toHaveBeenCalledWith(
