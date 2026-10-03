@@ -30,7 +30,6 @@ import type {
 } from "./session-controller.mailbox.types.js";
 import {
   getSessionControllerEntry,
-  findSessionControllerEntry,
   findSessionControllerEntries,
   sessionControllers,
   pruneSessionControllerEntry,
