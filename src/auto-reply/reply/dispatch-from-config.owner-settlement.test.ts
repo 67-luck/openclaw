@@ -321,7 +321,7 @@ describe("dispatchReplyFromConfig owner settlement", () => {
     const replyResolver = vi.fn(async (_ctx: MsgContext, opts?: ResolverOptions) => {
       operation = opts?.replyOperation;
       resolverEntered.resolve();
-      await resolverGate;
+      await resolverGate.promise;
       resumedResolverOwner = getSessionControllerOperation(sessionKey);
 
       await requireBlockReplyHandler(opts?.onBlockReply)({ text: "stale late block" });
