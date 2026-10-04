@@ -30,8 +30,6 @@ import {
   registerTestEmbeddedRun as setActiveEmbeddedRun,
   testing as runsTesting,
 } from "../runs.test-support.js";
-import type { EmbeddedAgentRunResult } from "../types.js";
-import { createEmbeddedRunLaneController } from "./lane-controller.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 import { claimAgentSessionWriter } from "./session-bootstrap.js";
 
@@ -39,14 +37,6 @@ const fixture = useTempSessionsFixture("lane-writer-claim-");
 const sessionId = "writer-session";
 const sessionKey = "agent:main:writer-session";
 const lifecycleRevision = "writer-revision";
-
-const completedResult: EmbeddedAgentRunResult = {
-  payloads: [],
-  meta: {
-    durationMs: 0,
-    agentMeta: { sessionId, provider: "openai", model: "gpt-test" },
-  },
-};
 
 describe("embedded run durable writer admission", () => {
   beforeEach(() => {
@@ -119,7 +109,7 @@ describe("embedded run durable writer admission", () => {
       }
     });
 
-    let params: RunEmbeddedAgentParams & { sessionFile: string } = {
+    const params: RunEmbeddedAgentParams & { sessionFile: string } = {
       agentId: "main",
       lifecycleGeneration,
       prompt: "hello",
@@ -132,19 +122,12 @@ describe("embedded run durable writer admission", () => {
       workspaceDir: "/tmp",
       enqueue: async (task) => await task(),
     };
-    const controller = createEmbeddedRunLaneController({
-      getLifecycleGeneration: () => lifecycleGeneration,
-      getParams: () => params,
-      globalLane: "writer-global",
-      initialQueuedLifecycleGeneration: lifecycleGeneration,
-      setLifecycleGeneration: () => {},
-      setParams: (next) => {
-        params = next;
-      },
-    });
 
     try {
-      await controller.enqueueSession(() => controller.enqueueGlobal(async () => completedResult));
+      await expect(claimAgentSessionWriter(params)).resolves.toMatchObject({
+        expectedLifecycleRevision: lifecycleRevision,
+        expectedWriterRunId: "run-b",
+      });
     } finally {
       unsubscribe();
     }
@@ -163,10 +146,6 @@ describe("embedded run durable writer admission", () => {
       activeWriterRunId: "run-b",
       lifecycleRevision,
       sessionId,
-    });
-    expect(params.sessionTarget).toMatchObject({
-      expectedLifecycleRevision: lifecycleRevision,
-      expectedWriterRunId: "run-b",
     });
     expect(() =>
       staleManager.appendMessage(
@@ -194,6 +173,41 @@ describe("embedded run durable writer admission", () => {
       storePath: fixture.storePath(),
     });
     expect(staleAppend).toMatchObject({ ok: false, code: "session-rebound" });
+  });
+
+  it("revokes an exact terminal writer claim before rejecting its late append", async () => {
+    const scope = { agentId: "main", sessionKey, storePath: fixture.storePath() };
+    await replaceSessionEntry(scope, {
+      lifecycleRevision,
+      sessionId,
+      updatedAt: 1,
+    } as InternalSessionEntry);
+    const claim = await claimAgentSessionWriter({
+      ...scope,
+      prompt: "terminal turn",
+      runId: "terminal-writer",
+      sessionId,
+      sessionTarget: { ...scope, sessionId },
+      timeoutMs: 30_000,
+      workspaceDir: "/tmp",
+    });
+    expect(claim).toBeDefined();
+
+    await expect(claim?.revoke()).resolves.toBe(true);
+    expect(loadSessionEntry(scope)).not.toHaveProperty("activeWriterRunId");
+    const lateAppend = await appendExactAssistantMessageToSessionTranscript({
+      ...scope,
+      expectedLifecycleRevision: lifecycleRevision,
+      expectedSessionId: sessionId,
+      expectedWriterRunId: "terminal-writer",
+      message: buildAssistantMessage({
+        model: { api: "openai-responses", provider: "openai", id: "gpt-test" },
+        content: [{ type: "text", text: "late terminal output" }],
+        stopReason: "stop",
+        usage: buildUsageWithNoCost({}),
+      }),
+    });
+    expect(lateAppend).toMatchObject({ ok: false, code: "session-rebound" });
   });
 
   it("silently replaces a persisted claim whose prior run is no longer live", async () => {
@@ -444,7 +458,7 @@ describe("embedded run durable writer admission", () => {
     vi.spyOn(sessionAccessor, "patchSessionEntryCore").mockRejectedValueOnce(
       new Error("replacement claim conflict"),
     );
-    let params: RunEmbeddedAgentParams & { sessionFile: string } = {
+    const params: RunEmbeddedAgentParams & { sessionFile: string } = {
       agentId: "main",
       prompt: "hello",
       runId: "run-b",
@@ -456,21 +470,9 @@ describe("embedded run durable writer admission", () => {
       workspaceDir: "/tmp",
       enqueue: async (task) => await task(),
     };
-    const controller = createEmbeddedRunLaneController({
-      getLifecycleGeneration: () => getAgentEventLifecycleGeneration(),
-      getParams: () => params,
-      globalLane: "writer-global-conflict",
-      initialQueuedLifecycleGeneration: getAgentEventLifecycleGeneration(),
-      setLifecycleGeneration: () => {},
-      setParams: (next) => {
-        params = next;
-      },
-    });
 
     try {
-      await expect(
-        controller.enqueueSession(() => controller.enqueueGlobal(async () => completedResult)),
-      ).rejects.toThrow("replacement claim conflict");
+      await expect(claimAgentSessionWriter(params)).rejects.toThrow("replacement claim conflict");
     } finally {
       unsubscribe();
     }

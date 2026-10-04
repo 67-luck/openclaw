@@ -342,6 +342,10 @@ export type ReplyOperation = {
   readonly abortFrozen: boolean;
   /** Retire exact placement authority on cleanup; never a raw writer-settlement receipt. */
   registerExecutionCleanup(cleanup: () => Promise<void>): () => void;
+  /** Fence one exact persisted writer before terminal cleanup may release the run slot. */
+  registerTerminalProducerFence(fence: () => Promise<boolean>): () => void;
+  /** True after cleanup could not prove every unsettled producer durably fenced. */
+  readonly terminalProducerBlocked: boolean;
   /** Set when a stale-watchdog expiry forced this operation's run_stalled result. */
   readonly staleExpiryReason?: ReplyOperationStaleReason;
   readonly startedAtMs: number;

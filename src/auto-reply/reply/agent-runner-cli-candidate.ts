@@ -11,12 +11,15 @@ import {
 import { shouldClearFailedCliSessionBinding } from "../../agents/cli-session.js";
 import { resolveDelegationCapability } from "../../agents/delegation-capability.js";
 import { withAdmittedCliCandidate } from "../../agents/embedded-agent-runner/run-entry-cli.js";
+import { claimAgentSessionWriterFromAdmission } from "../../agents/embedded-agent-runner/run/session-bootstrap.js";
 import {
   getGeneratedMediaTaskIdsForSessionKey,
   hasNewGeneratedMediaTaskForSessionKey,
 } from "../../agents/media-generation-activity.js";
 import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
+import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
+import { resolveSessionPinnedHarnessId } from "../../sessions/agent-harness-session-key.js";
 import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
 import { createAgentLifecycleTerminalBackstop } from "./agent-lifecycle-terminal.js";
 import { resolveRunAuthProfile } from "./agent-runner-auth-profile.js";
@@ -147,8 +150,38 @@ export async function runCliFallbackCandidate(
     (turn.blockStreamingEnabled || turn.opts?.commentaryPayloadsEnabled === true);
   const toolAuthorityRoute = { provider: params.provider, model: params.model };
   const toolAuthorityFingerprint = turn.replyOperation?.bindToolAuthorityRoute(toolAuthorityRoute);
-  return params.timing.measure("cli_run", () =>
-    withAdmittedCliCandidate(
+  return params.timing.measure("cli_run", async () => {
+    const writerAdmissionEntry = sessionTarget
+      ? await readSessionEntryReadOnlyInWorker(sessionTarget, () =>
+          params.runAbortSignal?.throwIfAborted(),
+        )
+      : undefined;
+    const writerClaim =
+      sessionTarget && writerAdmissionEntry
+        ? await claimAgentSessionWriterFromAdmission(
+            {
+              agentHarnessId: resolveSessionPinnedHarnessId(writerAdmissionEntry),
+              modelSelectionLocked: writerAdmissionEntry.modelSelectionLocked,
+              agentId: turn.followupRun.run.agentId,
+              abortSignal: params.runAbortSignal,
+              config: params.runtimeConfig,
+              prompt: turn.commandBody,
+              replyOperation: turn.replyOperation,
+              runId: params.runId,
+              sessionFile: turn.followupRun.run.sessionFile,
+              sessionId: turn.followupRun.run.sessionId,
+              sessionKey,
+              sessionTarget,
+              timeoutMs: turn.followupRun.run.timeoutMs,
+              workspaceDir: turn.followupRun.run.workspaceDir,
+            },
+            { entry: writerAdmissionEntry, target: sessionTarget },
+          )
+        : undefined;
+    const releaseTerminalProducerFence =
+      writerClaim && turn.replyOperation?.registerTerminalProducerFence(() => writerClaim.revoke());
+    let producerStarted = false;
+    const execution = withAdmittedCliCandidate(
       {
         claim: {
           sessionId: turn.followupRun.run.sessionId,
@@ -179,6 +212,13 @@ export async function runCliFallbackCandidate(
         settleResult,
       }) => {
         let sessionEntry = initialSessionEntry;
+        assertSettlementCurrent();
+        if (writerClaim && sessionEntry) {
+          sessionEntry = { ...sessionEntry, activeWriterRunId: writerClaim.expectedWriterRunId };
+          if (sessionKey && turn.activeSessionStore) {
+            turn.activeSessionStore[sessionKey] = sessionEntry;
+          }
+        }
         // The CLI owner must see explicit pins before provider scoping can discard them.
         const authProfileId = allowCliAuthProfileForwarding
           ? resolveCliExecutionAuthProfileId({
@@ -219,7 +259,8 @@ export async function runCliFallbackCandidate(
           turn.followupRun.run.agentId,
         );
         let droppedCliSessionReplacement = false;
-        const candidateResult = await runCliAgentWithLifecycle({
+        producerStarted = true;
+        const candidateExecution = runCliAgentWithLifecycle({
           runId: params.runId,
           lifecycleGeneration: params.lifecycleGeneration,
           startedAt: cliLifecycleStartedAt,
@@ -363,6 +404,8 @@ export async function runCliFallbackCandidate(
             sessionKey,
             sessionTarget,
             sessionEntry,
+            expectedLifecycleRevision: writerClaim?.expectedLifecycleRevision,
+            expectedWriterRunId: writerClaim?.expectedWriterRunId,
             chatType:
               normalizeChatType(turn.followupRun.originatingChatType) ??
               normalizeChatType(turn.sessionCtx.ChatType) ??
@@ -485,6 +528,9 @@ export async function runCliFallbackCandidate(
             replyOperation: turn.replyOperation,
           },
         });
+        const candidateResult = await candidateExecution.finally(() =>
+          releaseTerminalProducerFence?.(),
+        );
         if (droppedCliSessionReplacement) {
           // The room-event transform removed native continuity; only its guarded
           // invalidation remains, and failure must retain the returned turn.
@@ -512,6 +558,14 @@ export async function runCliFallbackCandidate(
           ),
         });
       },
-    ),
-  );
+    );
+    try {
+      return await execution;
+    } finally {
+      if (!producerStarted) {
+        releaseTerminalProducerFence?.();
+        await writerClaim?.revoke();
+      }
+    }
+  });
 }

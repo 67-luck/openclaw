@@ -4380,9 +4380,9 @@ describe("runReplyAgent typing (heartbeat)", () => {
 
   it.each([
     {
-      name: "releases a queued followup after the pending tool delivery idle bound",
+      name: "keeps a queued followup owned after the pending tool delivery idle bound",
       elapsedMs: 30_000,
-      owned: false,
+      owned: true,
     },
     {
       name: "keeps a queued followup owned until pending tool delivery settles",

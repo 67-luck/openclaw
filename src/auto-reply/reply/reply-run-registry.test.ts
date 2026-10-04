@@ -406,6 +406,8 @@ describe("reply run registry", () => {
     "retires exact stale custody at the cleanup deadline when cancellation is %s",
     async (cancellation) => {
       const operation = createTestReplyOperation({ sessionId: "session-cancel-pending" });
+      const revokeWriter = vi.fn(async () => true);
+      operation.registerTerminalProducerFence(revokeWriter);
       operation.setPhase("running");
       const cancel = vi.fn(() => {
         if (cancellation === "throws") {
@@ -444,6 +446,7 @@ describe("reply run registry", () => {
       expect(afterClear).toHaveBeenCalledExactlyOnceWith("session-cancel-pending");
       expect(lateAfterClear).toHaveBeenCalledExactlyOnceWith("session-cancel-pending");
       await operation.ownerSettlement;
+      expect(revokeWriter).toHaveBeenCalledOnce();
       expect(ownerSettled).toHaveBeenCalledOnce();
       const successor = createTestReplyOperation({ sessionId: "successor" });
       operation.complete();
@@ -731,6 +734,8 @@ describe("reply run registry", () => {
         sessionKey: `agent:main:${testCase.reason}-${testCase.phase}`,
         sessionId: `session-${testCase.reason}-${testCase.phase}`,
       });
+      const revokeWriter = vi.fn(async () => true);
+      operation.registerTerminalProducerFence(revokeWriter);
       operation.attachBackend({ kind: "embedded", cancel, isStreaming: () => true });
       operation.setPhase(testCase.phase);
       const afterClear = vi.fn();
@@ -752,6 +757,7 @@ describe("reply run registry", () => {
       expect(afterClear).toHaveBeenCalledOnce();
       expect(cancel).toHaveBeenCalledTimes(2);
       expect(cancel).toHaveBeenLastCalledWith("superseded");
+      expect(revokeWriter).toHaveBeenCalledOnce();
       operation.complete();
       expect(isSessionRunActiveForKey(operation.key)).toBe(false);
       expect(afterClear).toHaveBeenCalledOnce();
@@ -765,6 +771,8 @@ describe("reply run registry", () => {
         sessionKey: "agent:main:hung-abort",
         sessionId: "session-hung-abort",
       });
+      const revokeWriter = vi.fn(async () => true);
+      operation.registerTerminalProducerFence(revokeWriter);
       operation.attachBackend({
         kind: "embedded",
         cancel,
@@ -796,6 +804,7 @@ describe("reply run registry", () => {
         next?.status === "owned" ? next.operation : undefined,
       );
       expect(afterClear).toHaveBeenCalledTimes(1);
+      expect(revokeWriter).toHaveBeenCalledOnce();
       operation.complete();
       if (next?.status === "owned") {
         expect(getSessionControllerOperation("agent:main:hung-abort")).toBe(next.operation);

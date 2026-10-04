@@ -226,7 +226,7 @@ describe("operation-owned watchdog through controller admission", () => {
   });
 
   it.each(["backend-throw", "cleanup-throw", "attempt-close"] as const)(
-    "retires the terminal writer after requesting every captured cleanup for %s",
+    "keeps an unfenced terminal writer after requesting every captured cleanup for %s",
     async (failure) => {
       const operation = begin();
       const attempt = operation.watchdog.attachAttempt({ assertCurrent() {} });
@@ -255,8 +255,8 @@ describe("operation-owned watchdog through controller admission", () => {
       expect(getSessionControllerOperation(key)).toBe(operation);
       vi.setSystemTime(abortMs + SESSION_WATCHDOG_CLEANUP_MS);
       await operation.watchdog.tick();
-      expect(operation.watchdog.snapshot().recovery?.status).toBe("settled");
-      expect(getSessionControllerOperation(key)).toBeUndefined();
+      expect(operation.watchdog.snapshot().recovery?.status).toBe("blocked");
+      expect(getSessionControllerOperation(key)).toBe(operation);
       operation.complete();
       await operation.ownerSettlement;
     },

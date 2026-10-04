@@ -79,6 +79,21 @@ describe("waitForPreparedReplyQueue", () => {
       text: "⚠️ Previous run is still shutting down. Please try again in a moment.",
     });
   });
+
+  it("reports the operator recovery path when an unfenced terminal producer remains", async () => {
+    const result = await waitForPreparedReplyQueue({
+      activeSessionId: "session-active",
+      queueMode: "followup",
+      interruptActiveRun: vi.fn(async () => false),
+      waitForActiveRunEnd: vi.fn(async () => undefined),
+      refreshPreparedState: vi.fn(async () => undefined),
+      resolveBusyState: () => ({ isActive: true, terminalProducerBlocked: true }),
+    });
+
+    expect(result).toEqual({
+      text: expect.stringMatching(/separate session or restart the Gateway/u),
+    });
+  });
   it("does not admit after interrupt timeout merely because the old slot cleared", async () => {
     vi.useFakeTimers();
     const operation = createReplyOperation({

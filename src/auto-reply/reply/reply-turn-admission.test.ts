@@ -1244,6 +1244,7 @@ describe("reply turn admission", () => {
       });
       await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS);
       expect(admitted).toBe(false);
+      expect(active.terminalProducerBlocked).toBe(true);
       expect(getSessionControllerOperation("agent:main:telegram:topic:terminal-unreleased")).toBe(
         active,
       );

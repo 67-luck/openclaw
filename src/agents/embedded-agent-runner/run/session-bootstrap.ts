@@ -20,7 +20,7 @@ import {
   type InitialSessionTranscriptWriter,
   type SessionTranscriptWriterFence,
 } from "../../../config/sessions/transcript-write-context.js";
-import type { InternalSessionEntry } from "../../../config/sessions/types.js";
+import type { InternalSessionEntry, SessionEntry } from "../../../config/sessions/types.js";
 import type { ContextEngineSessionTarget } from "../../../context-engine/types.js";
 import { emitAgentEventIfCurrent } from "../../../infra/agent-events.js";
 import { getAgentRunContext } from "../../../infra/agent-run-registry.js";
@@ -346,6 +346,40 @@ type AgentSessionWriterAdmissionSnapshot = {
   storePath: string;
 };
 
+type AgentSessionWriterFence = {
+  expectedLifecycleRevision: string | undefined;
+  expectedWriterRunId: string;
+  revoke(): Promise<boolean>;
+};
+
+async function revokeAgentSessionWriterClaim(params: {
+  snapshot: AgentSessionWriterAdmissionSnapshot;
+  sessionId: string;
+  runId: string;
+}): Promise<boolean> {
+  let matched = false;
+  const revoked = await patchSessionEntryCore(
+    {
+      ...(params.snapshot.agentId ? { agentId: params.snapshot.agentId } : {}),
+      sessionKey: params.snapshot.sessionKey,
+      storePath: params.snapshot.storePath,
+    },
+    (entry) => {
+      if (
+        entry.sessionId !== params.sessionId ||
+        entry.lifecycleRevision !== params.snapshot.entry.lifecycleRevision ||
+        entry.activeWriterRunId !== params.runId
+      ) {
+        return null;
+      }
+      matched = true;
+      return { activeWriterRunId: undefined };
+    },
+    { preserveActivity: true, skipMaintenance: true, workerGuard: {} },
+  );
+  return !matched || revoked?.activeWriterRunId !== params.runId;
+}
+
 export async function assertAgentHarnessRunAdmission(
   params: RunEmbeddedAgentParams,
 ): Promise<AgentSessionWriterAdmissionSnapshot | undefined> {
@@ -413,17 +447,10 @@ export async function assertAgentHarnessRunAdmission(
     : undefined;
 }
 
-export async function claimAgentSessionWriter(params: RunEmbeddedAgentParams): Promise<
-  | {
-      expectedLifecycleRevision: string | undefined;
-      expectedWriterRunId: string;
-    }
-  | undefined
-> {
-  const snapshot = await assertAgentHarnessRunAdmission(params);
-  if (!snapshot) {
-    return undefined;
-  }
+async function claimPersistedAgentSessionWriter(
+  params: RunEmbeddedAgentParams,
+  snapshot: AgentSessionWriterAdmissionSnapshot,
+): Promise<AgentSessionWriterFence | undefined> {
   const expectedSessionId = params.sessionId;
   const expectedLifecycleRevision = snapshot.entry.lifecycleRevision;
   if (snapshot.entry.sessionId !== expectedSessionId) {
@@ -492,5 +519,52 @@ export async function claimAgentSessionWriter(params: RunEmbeddedAgentParams): P
   return {
     expectedLifecycleRevision,
     expectedWriterRunId: params.runId,
+    revoke: () =>
+      revokeAgentSessionWriterClaim({
+        snapshot,
+        sessionId: expectedSessionId,
+        runId: params.runId,
+      }),
   };
+}
+
+/** Claims a persisted writer from the authoritative row retained by CLI candidate admission. */
+export async function claimAgentSessionWriterFromAdmission(
+  params: RunEmbeddedAgentParams,
+  admission: { entry: SessionEntry; target: SessionTranscriptRuntimeTarget },
+): Promise<AgentSessionWriterFence | undefined> {
+  if (params.sessionPersistence === "detached") {
+    return undefined;
+  }
+  const sessionKey = normalizeOptionalString(params.sessionKey);
+  if (
+    !sessionKey ||
+    sessionKey !== admission.target.sessionKey ||
+    params.sessionId !== admission.target.sessionId
+  ) {
+    throw new Error("Session changed before writer admission");
+  }
+  const admissionError = resolveAgentHarnessRunAdmissionError({
+    agentHarnessId: params.agentHarnessId,
+    entry: admission.entry,
+    modelSelectionLocked: params.modelSelectionLocked,
+    sessionId: params.sessionId,
+    sessionKey,
+  });
+  if (admissionError) {
+    throw new Error(admissionError);
+  }
+  return claimPersistedAgentSessionWriter(params, {
+    agentId: admission.target.agentId,
+    entry: admission.entry as InternalSessionEntry,
+    sessionKey,
+    storePath: admission.target.storePath,
+  });
+}
+
+export async function claimAgentSessionWriter(
+  params: RunEmbeddedAgentParams,
+): Promise<AgentSessionWriterFence | undefined> {
+  const snapshot = await assertAgentHarnessRunAdmission(params);
+  return snapshot ? claimPersistedAgentSessionWriter(params, snapshot) : undefined;
 }

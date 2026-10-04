@@ -18,6 +18,7 @@ import { isFastTestRuntimeEnv } from "../../infra/env.js";
 import { replyRunInterruptTargetOperation } from "../../sessions/session-controller.contracts.js";
 import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
+  getSessionControllerOperation,
   interruptReplyRunTarget,
   isSessionRunActive,
   resolveActiveSessionRunThreadId,
@@ -539,9 +540,12 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
     const replyOperationActive = sourceInput
       ? sourceInput.mailbox.owner.active !== undefined
       : replyOperationActiveSessionId != null && isSessionRunActive(replyOperationActiveSessionId);
+    const activeOperation =
+      sourceInput?.mailbox.owner.active ?? getSessionControllerOperation(queueKey);
     return {
       activeSessionId,
       isActive: replyOperationActive || recoveryOwnerActive,
+      terminalProducerBlocked: activeOperation?.terminalProducerBlocked,
     };
   };
   const { activeSessionId, isActive } = resolveQueueBusyState();

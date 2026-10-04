@@ -43,6 +43,8 @@ export function createMockReplyOperation(
     watchdog,
     ownerSettlement: owner.promise,
     registerExecutionCleanup: vi.fn(() => () => {}),
+    registerTerminalProducerFence: vi.fn(() => () => {}),
+    terminalProducerBlocked: false,
     key: overrides.key ?? "main",
     get sessionId() {
       return sessionId;

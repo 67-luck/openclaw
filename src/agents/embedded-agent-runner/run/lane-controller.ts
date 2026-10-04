@@ -383,7 +383,7 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
         };
         options.setParams(params);
       }
-      return await withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
+      const laneExecution = withAgentRunLifecycleGeneration(lifecycleGeneration, () =>
         withSessionPlacementTurnAdmission(
           {
             sessionId: params.sessionId,
@@ -438,6 +438,10 @@ export function createEmbeddedRunLaneController<TParams extends LaneParams>(opti
           },
         ),
       );
+      const releaseTerminalProducerFence =
+        writerClaim &&
+        params.replyOperation?.registerTerminalProducerFence(() => writerClaim.revoke());
+      return await laneExecution.finally(() => releaseTerminalProducerFence?.());
     };
     const params = options.getParams();
     let queuedRun: Promise<EmbeddedAgentRunResult>;

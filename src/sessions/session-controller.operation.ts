@@ -55,6 +55,7 @@ import {
   updateSuccessorAdmissionSessionId,
 } from "./session-controller.state.js";
 import { captureSessionControllerStop, stopSession } from "./session-controller.stop.js";
+import { createTerminalProducerFenceRegistry } from "./session-controller.terminal-producer-fences.js";
 import { createReplyOperationToolAuthority } from "./session-controller.tool-authority.js";
 import {
   createSessionControllerWatchdog,
@@ -91,6 +92,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
   let installed = false;
   let cleanupPreservesOutcome = false;
   const executionCleanups = new Set<() => Promise<void>>();
+  const terminalProducerFences = createTerminalProducerFenceRegistry(() => ownerSettled);
   let phaseWait: SessionWatchdogWait | undefined;
   const finishOwner = () => {
     if (ownerSettled) {
@@ -271,11 +273,14 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       }
     }
     if (cleanup && state.result && owner.active === operation) {
-      // The cleanup deadline is the terminal producer's final opportunity to
-      // release its own slot. Clear only this exact operation; a late complete()
-      // remains idempotent and cannot clear a successor installed afterward.
-      clearState();
-      settleOwner();
+      const { failures: fenceFailures, fenced } = await terminalProducerFences.revokeAll();
+      failures.push(...fenceFailures);
+      if (fenced) {
+        // Durable revocation rejects a late writer before this exact operation
+        // releases its slot. A later complete() cannot clear its successor.
+        clearState();
+        settleOwner();
+      }
     }
     if (failures.length) {
       throw new AggregateError(failures, "Watchdog cleanup remains blocked");
@@ -387,6 +392,10 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       return () => {
         executionCleanups.delete(cleanup);
       };
+    },
+    registerTerminalProducerFence: (fence) => terminalProducerFences.register(fence),
+    get terminalProducerBlocked() {
+      return terminalProducerFences.blocked;
     },
     get staleExpiryReason() {
       return staleExpiryReason;
