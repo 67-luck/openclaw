@@ -125,8 +125,8 @@ export function resolveContinueTimeout(config: VoiceCallConfig): number {
   );
 }
 
-function resolveVoiceCallDeadlineMs(timeoutMs: number, nowMs = Date.now()): number {
-  return nowMs + (clampTimerTimeoutMs(timeoutMs) ?? MAX_TIMER_TIMEOUT_MS);
+function resolveVoiceCallDeadlineMs(timeoutMs: number): number {
+  return Date.now() + (clampTimerTimeoutMs(timeoutMs) ?? MAX_TIMER_TIMEOUT_MS);
 }
 
 function readGatewayPollTimeoutMs(payload: unknown, fallbackTimeoutMs: number): number {
