@@ -114,6 +114,15 @@ export class ChatPaneSessionPanelToggleController {
     if (detail.dock) {
       layout = setSidebarDock(layout, detail.dock);
     }
+    const panel = layout.columns
+      .flatMap((column) => column.panels)
+      .find((entry) => entry.slot === slot);
+    if (detail.open && panel && typeof detail.expanded === "boolean") {
+      layout =
+        detail.expanded && panel.id !== layout.mainPanelId
+          ? toggleSidebarPanelExpanded(layout, panel.id)
+          : setSidebarExpanded(layout, detail.expanded);
+    }
     this.options.updateSidebarLayout(layout);
     return true;
   }

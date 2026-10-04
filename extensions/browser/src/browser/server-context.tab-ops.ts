@@ -1,5 +1,4 @@
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
-import { resolveBrowserNavigationProxyMode } from "./browser-proxy-mode.js";
 import {
   assertChromeMcpCdpTransportAllowed,
   resolveCdpControlPolicy,
@@ -29,8 +28,8 @@ import {
   assertBrowserNavigationResultAllowed,
   InvalidBrowserNavigationUrlError,
   requiresInspectableBrowserNavigationRedirectsForUrl,
-  withBrowserNavigationPolicy,
 } from "./navigation-guard.js";
+import { resolveBrowserNavigationPolicy } from "./navigation-policy.js";
 import { getBrowserProfileCapabilities } from "./profile-capabilities.js";
 import { getPwAiModule } from "./pw-ai-module.js";
 import {
@@ -98,13 +97,7 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
   const cdpHttpBase = normalizeCdpHttpBaseForJsonEndpoints(profile.cdpUrl);
   const capabilities = getBrowserProfileCapabilities(profile);
   const getCdpControlPolicy = () => resolveCdpControlPolicy(profile, state().resolved.ssrfPolicy);
-  const getNavigationPolicy = () =>
-    withBrowserNavigationPolicy(state().resolved.ssrfPolicy, {
-      browserProxyMode: resolveBrowserNavigationProxyMode({
-        resolved: state().resolved,
-        profile,
-      }),
-    });
+  const getNavigationPolicy = () => resolveBrowserNavigationPolicy(state().resolved, profile);
   const getRemoteCdpActionTimeouts = (): CdpActionTimeouts | undefined => {
     if (profile.cdpIsLoopback && !profile.attachOnly) {
       return undefined;
@@ -378,7 +371,9 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
         }
       }
 
-      if (requiresInspectableBrowserNavigationRedirectsForUrl(url, state().resolved.ssrfPolicy)) {
+      if (
+        requiresInspectableBrowserNavigationRedirectsForUrl(url, getNavigationPolicy().ssrfPolicy)
+      ) {
         throw new InvalidBrowserNavigationUrlError(
           "Navigation blocked: strict browser SSRF policy requires Playwright-backed redirect-hop inspection",
         );

@@ -6,6 +6,7 @@
  */
 import { isIP } from "node:net";
 import {
+  SsrFBlockedError,
   isPrivateNetworkAllowedByPolicy,
   matchesHostnameAllowlist,
   normalizeHostname,
@@ -13,6 +14,7 @@ import {
   type LookupFn,
   type SsrFPolicy,
 } from "openclaw/plugin-sdk/security-runtime";
+import { BrowserNavigationBlockedError } from "./errors.js";
 
 const NETWORK_NAVIGATION_PROTOCOLS = new Set(["http:", "https:"]);
 const SAFE_NON_NETWORK_URLS = new Set(["about:blank"]);
@@ -157,11 +159,18 @@ export async function assertBrowserNavigationAllowed(
     );
   }
 
-  await resolvePinnedHostnameWithPolicy(parsed.hostname, {
-    lookupFn: opts.lookupFn,
-    policy: opts.ssrfPolicy,
-    signal: opts.signal,
-  });
+  try {
+    await resolvePinnedHostnameWithPolicy(parsed.hostname, {
+      lookupFn: opts.lookupFn,
+      policy: opts.ssrfPolicy,
+      signal: opts.signal,
+    });
+  } catch (err) {
+    if (!(err instanceof SsrFBlockedError)) {
+      throw err;
+    }
+    throw new BrowserNavigationBlockedError(parsed.hostname);
+  }
 }
 
 /**

@@ -3,7 +3,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionPanelToggleSlot } from "../../components/session-panel-toggle-buffer.ts";
 import { terminalIntentQueue } from "../../components/terminal/terminal-pending-actions.ts";
-import { ChatPaneSessionPanelToggleController, type PendingSessionPanelToggle } from "./chat-pane-session-panel-toggle.ts";
+import {
+  ChatPaneSessionPanelToggleController,
+  type PendingSessionPanelToggle,
+} from "./chat-pane-session-panel-toggle.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import {
   closeSlot,

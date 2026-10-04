@@ -180,6 +180,7 @@ export function createBrowserTool(
   opts?: BrowserScreenshotOptions & {
     sandboxBridgeUrl?: string;
     allowHostControl?: boolean;
+    allowLocalLoopback?: boolean;
     agentSessionKey?: string;
     agentId?: string;
     runToolBinding?: unknown;
@@ -526,21 +527,28 @@ export function createBrowserTool(
           },
         });
       const dashboardTarget = browserDashboard;
-      const result = dashboardTarget
-        ? await withBrowserRequestScope(
-            {
-              managedOnly: true,
-              assertCurrent: async (admittedProfile) =>
-                (await import("./browser-dashboard.js")).assertBrowserDashboardTargetCurrent(
-                  dashboardTarget,
-                  opts?.agentId,
-                  { signal },
-                  admittedProfile,
-                ),
-            },
-            dispatchTabAction,
-          )
-        : await dispatchTabAction();
+      const result = await withBrowserRequestScope(
+        {
+          allowLocalLoopback: opts?.allowLocalLoopback === true && !baseUrl && !proxyRequest,
+          ...(dashboardTarget
+            ? {
+                managedOnly: true as const,
+                assertCurrent: async (
+                  admittedProfile?: Parameters<
+                    typeof import("./browser-dashboard.js").assertBrowserDashboardTargetCurrent
+                  >[3],
+                ) =>
+                  (await import("./browser-dashboard.js")).assertBrowserDashboardTargetCurrent(
+                    dashboardTarget,
+                    opts?.agentId,
+                    { signal },
+                    admittedProfile,
+                  ),
+              }
+            : {}),
+        },
+        dispatchTabAction,
+      );
       if (browserDashboard) {
         // Dashboard presentation owns this tab; ordinary preview metadata would steal its panel.
         return { ...result, details: { ...asNullableRecord(result.details), browserDashboard } };

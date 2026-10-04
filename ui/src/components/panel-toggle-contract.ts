@@ -32,6 +32,7 @@ export type PluginPanelToggleDetail = {
   agentId?: string;
   open: boolean;
   dock?: "bottom" | "right";
+  expanded?: boolean;
 };
 
 export const UI_COMMAND_EVENT = "openclaw:ui-command";
