@@ -3295,7 +3295,7 @@ node -e 'const fs=require("node:fs");const p=process.argv[1];const value=JSON.pa
       const consumer = workflow.jobs[testCase.consumerName];
       expect(workflowStep(producer, "Checkout trusted release harness").with).toMatchObject({
         repository: "openclaw/openclaw",
-        ref: "main",
+        ref: "${{ github.sha }}",
         "fetch-depth": 1,
         "persist-credentials": false,
       });
@@ -3305,7 +3305,7 @@ node -e 'const fs=require("node:fs");const p=process.argv[1];const value=JSON.pa
 
       expect(workflowStep(consumer, "Checkout trusted release harness").with).toMatchObject({
         repository: "openclaw/openclaw",
-        ref: "main",
+        ref: "${{ github.sha }}",
         "fetch-depth": 1,
         "persist-credentials": false,
       });

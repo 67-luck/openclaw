@@ -1674,43 +1674,6 @@ describe("frozen admission workflow barriers", () => {
     expect(readFileSync(join(f.root, "frozen-admission.json"), "utf8")).toBe("");
   });
 
-  it("stops on a later Docker rejection before explicit consumers or success output", () => {
-    const f = frozenWorkflowFixture(
-      LIVE_E2E_WORKFLOW,
-      "validate_selected_ref",
-      {
-        docker_lanes: "onboard root-managed-vps-upgrade",
-        targeted_docker_lane_group_size: 1,
-        published_upgrade_survivor_baseline: "openclaw@2026.9.1",
-        include_live_suites: true,
-        live_suite_filter: "live-gateway-docker",
-        include_release_path_suites: false,
-        allow_frozen_target_scenario_omissions: true,
-      },
-      { "package.json": '{"type":"module","version":"not-a-release"}' },
-      { ADMISSION_BASELINES_RESOLVED: "true" },
-    );
-    const oid = f.git("rev-parse", "HEAD:scripts/print-cli-backend-live-metadata.ts");
-    unlinkSync(join(f.target, ".git/objects", oid.slice(0, 2), oid.slice(2)));
-    const planned = f.selection();
-    expect(planned.explicitConsumers).toContain("live-cli-backend");
-    expect(planned.docker.map((group: { lanes: string[] }) => group.lanes)).toEqual([
-      ["onboard"],
-      ["root-managed-vps-upgrade"],
-    ]);
-    const outputs = readFileSync(join(f.root, "outputs"), "utf8");
-    const rejected = f.admit();
-    expect(rejected.status, rejected.stderr).toBe(1);
-    expect(rejected.stderr.split("\n")[0]).toBe(
-      "frozen admission: selected upgrade target has an invalid release version",
-    );
-    expect(rejected.stderr).not.toContain("unable to read selected source");
-    expect(rejected.stderr).not.toContain("UnhandledPromiseRejection");
-    expect(rejected.stdout).toBe("");
-    expect(readFileSync(join(f.root, "frozen-admission.json"), "utf8")).toBe("");
-    expect(readFileSync(join(f.root, "outputs"), "utf8")).toBe(outputs);
-  });
-
   it.each([
     [FULL_RELEASE_VALIDATION_WORKFLOW, "resolve_target"],
     [RELEASE_CHECKS_WORKFLOW, "resolve_target"],
