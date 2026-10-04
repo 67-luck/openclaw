@@ -31,6 +31,7 @@ import {
   resolveActiveEmbeddedRunOwner,
   resolveActiveEmbeddedRunOwnerByRunId,
   resolveEmbeddedRunAbandonment,
+  setActiveEmbeddedRun as setDetachedEmbeddedRun,
   supersedeEmbeddedAgentRunByRunId,
 } from "./runs.js";
 import {
@@ -308,6 +309,31 @@ describe("embedded run ownership", () => {
       expect(result).toEqual({ aborted: true, drained: true, forceCleared: false });
       expect(operation.result).toEqual({ kind: "failed", code: "run_stalled" });
       expect(cancel).toHaveBeenCalledWith("superseded");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a detached handle during stuck recovery", async () => {
+    vi.useFakeTimers();
+    try {
+      const abort = vi.fn();
+      const handle = createEmbeddedRunHandle({ abort, runId: "detached-stuck" });
+      setDetachedEmbeddedRun("session-detached-stuck", handle);
+
+      const pending = abortAndDrainEmbeddedAgentRun({
+        sessionId: "session-detached-stuck",
+        reason: "stuck_recovery",
+        settleMs: 100,
+      });
+
+      expect(abort).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(pending).resolves.toEqual({
+        aborted: true,
+        drained: false,
+        forceCleared: false,
+      });
     } finally {
       vi.useRealTimers();
     }

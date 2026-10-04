@@ -1120,6 +1120,9 @@ export async function abortAndDrainEmbeddedAgentRun(params: {
         (!wasAborted && operation.abortSignal.aborted) ||
         decision.action === "stop" ||
         decision.action === "expire_cleanup";
+    } else if (handle) {
+      handle.abort();
+      aborted = true;
     }
   } else if (operation) {
     aborted = operation.abortByUser();
