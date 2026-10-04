@@ -1,4 +1,5 @@
 import type { DatabaseSync as HandoffDatabase } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { isChildProcessTreeAlive } from "../process/child-process-tree.js";
 import { executeSqliteQuerySync } from "./kysely-sync.js";
 import {
@@ -20,8 +21,23 @@ import type {
 
 export function managedCommandCustody(
   lease: ManagedHandoffParent | ManagedHandoffLeasePayload | null,
+  key?: string,
 ) {
-  return lease?.version === 2 && lease.action.kind === "update" ? lease.action.custody : undefined;
+  if (
+    lease?.version !== 2 ||
+    lease.action.kind !== "update" ||
+    lease.action.mutationProtocol !== undefined ||
+    lease.mutationOriginal !== undefined
+  ) {
+    return undefined;
+  }
+  const commandKey = "key" in lease ? lease.key : key;
+  if (!commandKey || !/\/\.openclaw-update-child-[a-f0-9-]{36}-command$/.test(commandKey)) {
+    return undefined;
+  }
+  return (
+    lease.action.custody ?? (isDeepStrictEqual(lease.helper, lease.executor) ? "reserved" : "bound")
+  );
 }
 
 /** Tracked command reservations outlive their helper; only group extinction closes a binding. */
@@ -42,10 +58,43 @@ export function managedCommandAllowsBinding(
   return custody
     ? custody === "reserved" &&
         action.kind === "update" &&
-        action.custody === "bound" &&
+        action.mutationProtocol === undefined &&
         executor !== undefined &&
         executor.pid !== lease.helper.pid
-    : action.kind !== "update" || !action.custody;
+    : true;
+}
+
+function releasedManagedCommandAction(action: ManagedHandoffLease["action"]) {
+  if (action.kind !== "update") {
+    return action;
+  }
+  return {
+    kind: "update" as const,
+    ...("mutationProtocol" in action && action.mutationProtocol
+      ? { mutationProtocol: action.mutationProtocol }
+      : {}),
+  };
+}
+
+export function managedCommandBinding(leases: readonly ManagedHandoffLease[], pid: number) {
+  const custody = managedCommandCustody(leases[0]!);
+  return leases.some((lease) => managedCommandCustody(lease) !== custody) ||
+    (custody !== undefined && pid === process.pid)
+    ? null
+    : { custody };
+}
+
+export function serializeManagedCommandBinding(
+  lease: ManagedHandoffLease,
+  executor: HandoffProcessIdentity,
+  custody: ReturnType<typeof managedCommandCustody>,
+) {
+  return JSON.stringify({
+    version: 2,
+    helper: lease.helper,
+    executor,
+    action: custody ? releasedManagedCommandAction(lease.action) : lease.action,
+  });
 }
 
 export function createManagedHandoffChildReader(deps: {

@@ -13,8 +13,10 @@ import { createManagedHandoffCancellation } from "./update-managed-service-hando
 import {
   createManagedHandoffChildReader,
   managedCommandAllowsBinding,
+  managedCommandBinding,
   managedCommandCustody,
   managedCommandUnsettled,
+  serializeManagedCommandBinding,
 } from "./update-managed-service-handoff-children.js";
 import {
   createManagedHandoffLeaseDatabase,
@@ -165,7 +167,7 @@ export function createManagedHandoffLeaseStore(
     legacyParent?: BorrowedLegacyHandoffParent,
     originalParent?: ManagedHandoffParent,
   ): LeaseAcquisition {
-    const custody = managedCommandCustody(parseManagedHandoffLeasePayload(payload));
+    const custody = managedCommandCustody(parseManagedHandoffLeasePayload(payload), root);
     if (custody && (custody !== "reserved" || !root.includes("/.openclaw-update-child-"))) {
       throw new Error("Managed command custody requires a child reservation");
     }
@@ -416,11 +418,8 @@ export function createManagedHandoffLeaseStore(
     ) {
       return null;
     }
-    const custody = managedCommandCustody(leases[0]!);
-    if (
-      leases.some((lease) => managedCommandCustody(lease) !== custody) ||
-      (custody && pid === process.pid)
-    ) {
+    const binding = managedCommandBinding(leases, pid);
+    if (!binding) {
       return null;
     }
     const executor = processIdentity(pid, argv);
@@ -432,12 +431,7 @@ export function createManagedHandoffLeaseStore(
           return null;
         }
         return leases.map((lease) => {
-          const payload = JSON.stringify({
-            version: 2,
-            helper: lease.helper,
-            executor,
-            action: custody ? { ...lease.action, custody: "bound" } : lease.action,
-          });
+          const payload = serializeManagedCommandBinding(lease, executor, binding.custody);
           const updatedAt = Math.max(Date.now(), lease.updatedAt + 1);
           if (!updateRow(db, lease, { payload_json: payload, updated_at: updatedAt })) {
             throw new Error("Candidate process binding changed.");
