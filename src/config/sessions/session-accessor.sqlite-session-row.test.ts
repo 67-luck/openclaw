@@ -92,7 +92,7 @@ describe("SQLite session row persistence", () => {
   it.each(["sessionId", "lifecycleRevision"] as const)(
     "releases migrated history references when %s changes",
     async (changedField) => {
-      const scope = createScope(`retained-history-${changedField}`);
+      const scope = createScope(`retained-history-${changedField.toLowerCase()}`);
       const entry: InternalSessionEntry = {
         sessionId: "current-generation",
         lifecycleRevision: "current-lifecycle",
