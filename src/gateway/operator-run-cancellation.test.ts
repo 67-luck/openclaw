@@ -479,14 +479,17 @@ describe("operator access cancellation", () => {
     });
   });
 
-  it("still stops its exact run if partial transcript capture fails", async () => {
+  it("persists an authority-revoked partial to the source's rotated session", async () => {
     await withCancellationFixture(async (f) => {
       const source = new AbortController();
-      const guest = await f.register("failed-partial-capture");
-      updateRpcSourceSessionId(guest.entry, "retired-session");
-      f.context.chatRunState.getOrCreate("failed-partial-capture").buffer =
+      const guest = await f.register("rotated-partial-capture");
+      const retained = await f.retain(source.signal, "rotated-partial-capture", guest.entry);
+      retained.armCancellation();
+      const rotatedScope = { ...f.scope, sessionId: "rotated-session" };
+      await replaceSessionEntry(f.scope, { sessionId: rotatedScope.sessionId, updatedAt: 2 });
+      updateRpcSourceSessionId(guest.entry, rotatedScope.sessionId);
+      f.context.chatRunState.getOrCreate("rotated-partial-capture").buffer =
         "Preserve this progress.";
-      (await f.retain(source.signal, "failed-partial-capture", guest.entry)).armCancellation();
       const aborted = createDeferredCore();
       guest.controller.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
       source.abort();
@@ -494,9 +497,14 @@ describe("operator access cancellation", () => {
       await f.finishClaim(guest.entry);
       await f.settle();
       expect(guest.controller.signal.aborted).toBe(true);
-      expect(f.warn).toHaveBeenCalledWith(
-        expect.stringContaining("Aborted partial transcript session changed before persistence"),
+      expect(loadTranscriptEventsSync(rotatedScope)).toContainEqual(
+        expect.objectContaining({
+          message: expect.objectContaining({
+            content: [{ type: "text", text: "Preserve this progress." }],
+          }),
+        }),
       );
+      expect(f.warn).not.toHaveBeenCalled();
     });
   });
 });

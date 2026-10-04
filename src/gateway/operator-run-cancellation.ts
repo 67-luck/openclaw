@@ -74,8 +74,7 @@ function createGatewayOperatorRunCancellation(params: {
 }) {
   const { signal, runId, entry, context } = params;
   const input = entry.input;
-  const identity = getRpcSourceIdentity(entry);
-  const sessionKey = identity.sessionKey;
+  const sessionKey = getRpcSourceIdentity(entry).sessionKey;
   const lifecycleGeneration = getRpcSourceLifecycleGeneration(entry);
   let released = false;
   let armed = false;
@@ -121,6 +120,7 @@ function createGatewayOperatorRunCancellation(params: {
     // A provider can settle and release its run during source abortion. Capture
     // and stop this exact owner before yielding; children retain their own source.
     const text = context.chatRunState.resolveBuffer(runId, { final: true }).text;
+    const identity = getRpcSourceIdentity(entry);
     // Internal runs use a separate transcript target; coordination and progress
     // refresh output stay hidden. This snapshot would create a visible reply.
     const snapshot =
