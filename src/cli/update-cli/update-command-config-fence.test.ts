@@ -91,6 +91,42 @@ it("retains the stored channel during tolerant invalid config reads without rewr
   );
 });
 
+it("retains a source-bound legacy repair plan for candidate-owned target reads", async () => {
+  const home = channelDirs.make("update-legacy-candidate-read-");
+  const configPath = path.join(home, "openclaw.json");
+  const original = JSON.stringify({
+    update: { channel: "stable" },
+    agents: { list: [{ id: "main", default: true }] },
+  });
+  await fs.writeFile(configPath, original);
+  await withEnvAsync(
+    {
+      HOME: home,
+      USERPROFILE: home,
+      OPENCLAW_HOME: undefined,
+      OPENCLAW_PROFILE: undefined,
+      OPENCLAW_STATE_DIR: home,
+      OPENCLAW_CONFIG_PATH: configPath,
+      OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+    },
+    async () => {
+      const current = await readUpdateChannelConfig(false, { tolerateReadFailure: true });
+
+      expect(current.configSnapshot.valid).toBe(false);
+      expect(current.legacyConfigPlan?.snapshot).toBe(current.configSnapshot);
+      expect(current.legacyConfigPlan?.config.agents).toMatchObject({
+        entries: { main: {} },
+      });
+      expect(current.legacyConfigPlan?.changes).toEqual(
+        expect.arrayContaining([expect.stringContaining("agents.list")]),
+      );
+      expect(current.storedChannel).toBe("stable");
+      expect(await fs.readFile(configPath, "utf8")).toBe(original);
+      expect(await fs.readdir(home)).toEqual(["openclaw.json"]);
+    },
+  );
+});
+
 it.each(["root", "include", "repaired include"] as const)(
   "refreshes the legacy projection after a concurrent %s save during planning",
   async (changed) => {
