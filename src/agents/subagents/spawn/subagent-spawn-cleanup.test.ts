@@ -4,6 +4,7 @@ import type { GatewayRequestContext } from "../../../gateway/server-methods/type
 import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
 import { getRpcSource } from "../../../sessions/session-controller.rpc-sources.js";
+import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import {
   bindSubagentSpawnCleanup,
@@ -91,6 +92,77 @@ describe("subagent spawn cleanup identity", () => {
     ).resolves.toBe(false);
 
     expect(callGateway).not.toHaveBeenCalled();
+  });
+
+  it("interrupts accepted-run settlement when its cleanup scope is cancelled", async () => {
+    const childSessionKey = "agent:main:subagent:cancelled-cleanup";
+    const runId = "cancelled-cleanup-run";
+    const execution = new AsyncWorkScope();
+    const waitingForSettlement = createDeferredCore();
+    const dispatchSessionMethod = vi.fn(async () => {
+      throw new Error("gateway unavailable");
+    });
+    const warn = vi.fn((message: string) => {
+      if (message.includes("termination remains unconfirmed")) {
+        waitingForSettlement.resolve();
+      }
+    });
+    const context = Object.assign({} as GatewayRequestContext, {
+      recoveryRuntime: { dispatchSessionMethod },
+      trackExecution: <T>(run: () => T | Promise<T>) => execution.track(run),
+      logGateway: { warn },
+    });
+    const source = registerChatAbortController({
+      target: captureSessionTarget({
+        storeScope: "/synthetic/cancelled-cleanup.db",
+        sessionKey: childSessionKey,
+        incarnation: "cancelled-cleanup-session",
+      }),
+      runId,
+      sessionId: "cancelled-cleanup-session",
+      sessionKey: childSessionKey,
+      timeoutMs: 60_000,
+    });
+    let inputSettled = false;
+    void source.entry.input.settlement.promise.then(() => {
+      inputSettled = true;
+    });
+    let current = true;
+    const cleanup = bindSubagentSpawnCleanup({
+      childSessionKey,
+      resolveGatewayContext: () => context,
+      isCurrent: () => true,
+      canAbortAcceptedRun: () => current,
+      getSessionIdentity: () => ({
+        expectedSessionId: "cancelled-cleanup-session",
+        expectedLifecycleRevision: "revision",
+      }),
+    });
+    cleanup.bindAcceptedRun(runId);
+    try {
+      await expect(cleanup.terminateAcceptedRun?.(() => vi.fn())).resolves.toMatchObject({
+        status: "pending",
+      });
+      current = false;
+      await waitingForSettlement.promise;
+      expect(execution.hasPendingWork).toBe(true);
+
+      let drained = false;
+      const drain = execution.drain().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve);
+      });
+
+      expect(drained).toBe(true);
+      expect(getRpcSource(runId)).toBe(source.entry);
+      expect(inputSettled).toBe(false);
+      await drain;
+    } finally {
+      source.cleanup();
+      await execution.drain();
+    }
   });
 
   it("accepts chat.abort only when it confirms the exact run", async () => {

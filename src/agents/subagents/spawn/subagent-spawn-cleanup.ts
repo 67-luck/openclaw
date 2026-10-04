@@ -6,6 +6,7 @@ import { bindGatewayLifecycleRequest } from "../../../gateway/server-recovery-ru
 import { isFastTestRuntimeEnv } from "../../../infra/env.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { getPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
+import { waitUnlessAborted } from "../../../sessions/session-controller.lifecycle-observation.js";
 import {
   getRpcSource,
   getRpcSourceIdentity,
@@ -198,7 +199,7 @@ export function bindSubagentSpawnCleanup(params: {
                     getRpcSource(runId) === entry &&
                     entry.adapter.operationalRunInstance === operationalRunInstance
                   ) {
-                    await entry.input.settlement.promise;
+                    await waitUnlessAborted(entry.input.settlement.promise, signal);
                   }
                 }
               } finally {
