@@ -480,20 +480,13 @@ it("presents current recipient roles without SQLite while rejecting source overr
       }
       expect(vi.mocked(clients[2]!.socket).send.mock.calls).toHaveLength(0);
       const replacement = rpcSourceTesting.get("replacement-run")!;
-      for (const change of [
-        "session-id",
-        "session-key",
-        "terminal",
-        "visibility",
-        "agent",
-      ] as const) {
+      for (const change of ["session-id", "session-key", "terminal", "agent"] as const) {
         setRpcSourceIdentityForTest(replacement, {
           sessionKey: change === "session-key" ? query.key : "agent:main:adopted-source",
           sessionId: change === "session-key" ? "adopted-session" : entry.sessionId,
           agentId: query.agentId,
         });
         setRpcSourceProjectSessionActive(replacement, true);
-        replacement.adapter.controlUiVisible = true;
         for (const client of clients) {
           vi.mocked(client.socket).send.mockClear();
         }
@@ -506,8 +499,6 @@ it("presents current recipient roles without SQLite while rejecting source overr
             });
           } else if (change === "terminal") {
             setRpcSourceProjectSessionActive(replacement, false);
-          } else if (change === "visibility") {
-            replacement.adapter.controlUiVisible = false;
           } else {
             setRpcSourceIdentityForTest(replacement, { agentId: "other" });
           }
@@ -529,7 +520,6 @@ it("presents current recipient roles without SQLite while rejecting source overr
         agentId: query.agentId,
       });
       setRpcSourceProjectSessionActive(replacement, true);
-      replacement.adapter.controlUiVisible = true;
       const joining = rpcSourceTesting.get("unrelated-0")!;
       for (const client of clients) {
         vi.mocked(client.socket).send.mockClear();
