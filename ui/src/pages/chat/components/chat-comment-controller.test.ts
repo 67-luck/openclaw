@@ -6,6 +6,7 @@ import {
   getChatAttachmentDataUrl,
   releaseChatAttachmentPayload,
 } from "../attachment-payload-store.ts";
+import { resetChatViewState } from "../chat-view-state.ts";
 import { createChatProps } from "../chat-view.test-helpers.ts";
 import { renderChat } from "../chat-view.ts";
 import type { ChatAttachmentControlsProps } from "./chat-attachment-controls.types.ts";
@@ -24,6 +25,7 @@ type CommentControllerElement = HTMLElement & {
 };
 
 afterEach(() => {
+  resetChatViewState();
   document.body.replaceChildren();
   vi.restoreAllMocks();
   for (const id of payloads) {
