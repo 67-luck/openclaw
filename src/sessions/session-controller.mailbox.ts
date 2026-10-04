@@ -593,6 +593,8 @@ export function reserveSessionControllerSource(
     protocolRunId?: string;
     sourceSessionId?: string;
     reservationId?: string;
+    /** Restart recovery may retire an unclaimed reservation bound to an older target. */
+    replaceInactiveTarget?: boolean;
     continuationCaller?: SessionControllerInput["continuationCaller"];
     policy: QueueSettings;
     adapter?: SessionControllerSourceAdapter;
@@ -615,16 +617,22 @@ export function reserveSessionControllerSource(
           !input.retirementRequested,
       );
     if (existing) {
+      const targetChanged =
+        target !== undefined &&
+        existing.mailbox.owner !== findSessionControllerEntry(target.sessionKey, target);
       if (
         (existing.protocolRunId !== undefined &&
           params.protocolRunId !== undefined &&
           existing.protocolRunId !== params.protocolRunId) ||
         !sameQueueSettings(existing.policy, params.policy) ||
-        (target && existing.mailbox.owner !== findSessionControllerEntry(target.sessionKey, target))
+        (targetChanged && (!params.replaceInactiveTarget || !isUnboundPreparingSource(existing)))
       ) {
         throw new Error("Reserved source identity belongs to a different delivery");
       }
-      return existing;
+      if (!targetChanged) {
+        return existing;
+      }
+      retireSessionControllerInput(existing);
     }
   }
   const mailbox = getSessionControllerMailbox(key, target);

@@ -229,7 +229,6 @@ export function createSubagentRegistryRestorer(config: {
       }
     };
     const cfg = getRuntimeConfig();
-    reserveRestoredSubagentControllerSources([...runs.values()]);
     const requesterTurns = new Map<string, Map<string, SubagentRunRecord[]>>();
     const resolveRequesterAgentId = (entry: SubagentRunRecord) =>
       resolveSubagentRequesterAgentId(cfg, entry);
@@ -273,6 +272,7 @@ export function createSubagentRegistryRestorer(config: {
         assertCurrent();
       }
     }
+    reserveRestoredSubagentControllerSources([...runs.values()]);
     if (runs.size === 0) {
       activated = true;
       return;

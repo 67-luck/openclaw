@@ -373,6 +373,7 @@ export function registerRequesterWakeReceiptBoundaryTests({
     ).resolves.toMatchObject({ details: { status: "yielded" } });
 
     setWakeRefusal(rejectRequesterWake, rejectPersistence);
+    releaseAgentCall(beta.childSessionKey);
     const { withLocalSessionPlacementTurnSettlement } =
       await import("../../session-placement-admission.js");
     await withLocalSessionPlacementTurnSettlement(

@@ -19,6 +19,7 @@ export function reserveSubagentControllerSource(
   reservationId: string,
   protocolRunId?: string,
   continuationCaller?: SessionControllerInput["continuationCaller"],
+  options: { replaceInactiveTarget?: boolean } = {},
 ): SessionControllerInput | undefined {
   const requester = loadRequesterSessionEntry(entry.requesterSessionKey, entry.requesterAgentId);
   if (!requester.entry?.sessionId || !requester.storePath) {
@@ -27,6 +28,7 @@ export function reserveSubagentControllerSource(
   return reserveSessionControllerSource(requester.canonicalKey, {
     reservationId,
     protocolRunId,
+    replaceInactiveTarget: options.replaceInactiveTarget,
     continuationCaller,
     policy: { mode: "followup" },
     target: captureSessionTarget({
@@ -58,7 +60,14 @@ export function reserveRestoredSubagentControllerSources(
     ) {
       reservations.push([
         entry.delivery.createdAt ?? entry.execution.endedAt ?? entry.createdAt,
-        () => reserveSubagentCompletionControllerSource(entry),
+        () =>
+          reserveSubagentControllerSource(
+            entry,
+            subagentCompletionSourceId(entry),
+            undefined,
+            undefined,
+            { replaceInactiveTarget: true },
+          ),
       ]);
     }
     const wake = entry.requesterSettleWake;
@@ -88,7 +97,10 @@ export function reserveRestoredSubagentControllerSources(
     });
     reservations.push([
       Math.max(...batch.map((member) => member.execution.endedAt ?? member.createdAt)),
-      () => reserveSubagentControllerSource(entry, sourceId, undefined, caller),
+      () =>
+        reserveSubagentControllerSource(entry, sourceId, undefined, caller, {
+          replaceInactiveTarget: true,
+        }),
     ]);
   }
   return reservations.toSorted(([a], [b]) => a - b).flatMap(([, reserve]) => reserve() ?? []);
