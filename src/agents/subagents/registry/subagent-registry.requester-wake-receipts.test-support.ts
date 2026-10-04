@@ -3,6 +3,9 @@ import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayRequestContext } from "../../../gateway/server-methods/types.js";
 import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
+import { getActiveGatewayRootWorkCount } from "../../../process/gateway-work-admission.js";
+import { getExistingSessionControllerMailbox } from "../../../sessions/session-controller.mailbox.js";
+import { isSessionRunActiveForKey } from "../../../sessions/session-controller.queries.js";
 import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
 import type { EmbeddedAgentRunResult } from "../../embedded-agent-runner/types.js";
@@ -330,7 +333,6 @@ export function registerRequesterWakeReceiptBoundaryTests({
     holdAgentCall(beta.childSessionKey);
     emitCompleted(alpha.runId, alpha.childSessionKey, "alpha complete");
     await waitForAgentCallCount(1);
-    await flushOwnedWork();
     const beforeCleanup = Date.now();
     await waitForDeliveredCleanup(alpha.runId, { allowPendingRequesterSettleWake: true });
     expect(Date.now(), "cleanup observation must not spend the retry clock").toBe(beforeCleanup);
@@ -383,34 +385,31 @@ export function registerRequesterWakeReceiptBoundaryTests({
         executionTrace: { runner: "cli" as const, attempts: [], fallbackUsed: false },
       },
     };
-    const overlapsCompletionCleanup = receiptDrift || outcomeDrift;
-    const requesterSettlement = overlapsCompletionCleanup
-      ? (await import("../../requester-run-settlement.js")).settleRequesterRun(
-          {
-            sessionKey: requesterSessionKey,
-            agentId: "main",
-            runId: requesterTurnRunId,
-          },
+    const { withSessionTurn } = await import("../../../sessions/session-controller.admission.js");
+    const { assertSessionControllerOperation } =
+      await import("../../../sessions/session-controller.state.js");
+    const { settleRequesterRun } = await import("../../requester-run-settlement.js");
+    const requesterSettlement = withSessionTurn(
+      {
+        sessionId: "sess-main",
+        sessionKey: requesterSessionKey,
+        agentId: "main",
+      },
+      async (operation) => {
+        if (!operation) {
+          throw new Error("Requester settlement requires its admitted controller turn");
+        }
+        await settleRequesterRun(
+          { sessionKey: requesterSessionKey, agentId: "main", runId: requesterTurnRunId },
           requesterResult,
-          () => {},
-        )
-      : (
-          await import("../../session-placement-admission.js")
-        ).withLocalSessionPlacementTurnSettlement(
-          {
-            sessionId: "sess-main",
-            sessionKey: requesterSessionKey,
-            agentId: "main",
-            runId: requesterTurnRunId,
-          },
-          async () => requesterResult,
+          () => assertSessionControllerOperation(operation),
         );
+      },
+    );
     void requesterSettlement.catch(() => {});
-    if (!overlapsCompletionCleanup) {
-      // Settlement is queued behind beta. Its held transition still owns the
-      // writer lane before the equivalent metadata successor starts below.
-      releaseAgentCall(beta.childSessionKey);
-    }
+    // Settlement is queued behind beta. Its held transition still owns the
+    // writer lane before the equivalent metadata successor starts below.
+    releaseAgentCall(beta.childSessionKey);
     if (heldReceipts) {
       const members = await heldReceipts.transition.entered.promise;
       expect(members).toHaveLength(2);
@@ -480,10 +479,6 @@ export function registerRequesterWakeReceiptBoundaryTests({
     }
     await requesterSettlement;
     expect(requesterResult.requesterContinuationSettled).toBe(true);
-    if (overlapsCompletionCleanup) {
-      // The settle wake queues behind beta's in-flight completion turn in the requester mailbox.
-      releaseAgentCall(beta.childSessionKey);
-    }
     await waitForAgentCallCount(rejectRequesterWake ? 2 : 3);
     if (outcomeDrift && heldReceipts && settleWakeOwner) {
       const members = await heldReceipts.outcome.entered.promise;
@@ -596,6 +591,10 @@ export function registerRequesterWakeReceiptBoundaryTests({
     expect(delivery?.payload).toBeUndefined();
     expect(delivery?.lastError).toBeUndefined();
     expect(delivery?.lastDropReason).toBeUndefined();
+    await flushOwnedWork();
+    expect(getActiveGatewayRootWorkCount()).toBe(0);
+    expect(isSessionRunActiveForKey(requesterSessionKey)).toBe(false);
+    expect(getExistingSessionControllerMailbox(requesterSessionKey)?.claim).toBeUndefined();
   });
 
   it.each(["unchanged", "source-change", "callback-failure"] as const)(
