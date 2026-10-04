@@ -830,7 +830,7 @@ async function importProofSession(
       entry,
       readTranscriptEvents(append) {
         append(legacySessionEvent(sessionId));
-        events.forEach(append);
+        events.forEach((event) => append(event));
       },
       sessionKey,
       storePath: context.storePath,
