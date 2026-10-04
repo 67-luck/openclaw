@@ -8,9 +8,11 @@ import {
   inputMatchesSessionId,
 } from "../../../sessions/session-controller.lifecycle-projections.js";
 import {
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
   isSessionMutationActive,
   runSessionMutation,
   captureSessionTarget,
+  waitForSessionControllerSettlement,
 } from "../../../sessions/session-controller.lifecycle.js";
 import {
   cancelCapturedSessionControllerSource,
@@ -223,7 +225,13 @@ export async function reconcileDurableSubagentKillIntent(params: {
         if ((active || hasLiveRunContext) && !aborted) {
           return false;
         }
-        await capture.settled;
+        const settled = await waitForSessionControllerSettlement(
+          capture.settled,
+          SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+        );
+        if (!settled) {
+          throw new Error("Durable subagent kill source settlement exceeded its drain deadline");
+        }
         if (!ownsCurrentGeneration()) {
           return false;
         }
