@@ -28,6 +28,7 @@ import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-ke
 import {
   getRpcSource,
   getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
   listRpcSourceEntries,
 } from "../../sessions/session-controller.rpc-sources.js";
 import {
@@ -386,7 +387,13 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const preAbortDedupe = new Map(context.dedupe);
     const persistedSessionId = sessionEntry?.sessionId;
     const preAbortSessions = new Map(
-      [...preAbortRuns].map(([runId, entry]) => [runId, captureAgentJobSession(entry.adapter)]),
+      [...preAbortRuns].map(([runId, entry]) => [
+        runId,
+        captureAgentJobSession({
+          ...getRpcSourceIdentity(entry),
+          lifecycleGeneration: getRpcSourceLifecycleGeneration(entry),
+        }),
+      ]),
     );
     let abortedRunIds: string[] = [];
     let abortedRunId: string | null = null;

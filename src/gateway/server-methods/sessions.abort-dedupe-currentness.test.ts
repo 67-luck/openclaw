@@ -12,7 +12,13 @@ import {
   replaceSessionEntry,
 } from "../../config/sessions/session-accessor.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import {
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  updateRpcSourceSessionId,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { createAgentDedupeLifecycle } from "../agent-turn/agent-dedupe-lifecycle.js";
+import * as agentJob from "../agent-turn/agent-job.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { claimRpcSourceForTest } from "../test-helpers.rpc-source.js";
@@ -170,3 +176,60 @@ it.each(["unchanged", "absent", "successor", "successor from absent"] as const)(
     }
   },
 );
+
+it("sessions.abort records the rotated RPC source identity on its terminal receipt", async () => {
+  const scope = { agentId: "main", sessionKey: "agent:main:rotated-abort-receipt" };
+  const initialSessionId = "initial-abort-receipt-session";
+  const rotatedSessionId = "rotated-abort-receipt-session";
+  const runId = "rotated-abort-receipt-run";
+  const context = createDirectChatContext({ getRuntimeConfig });
+  await replaceSessionEntry(scope, { sessionId: initialSessionId, updatedAt: 1 });
+  const registration = registerChatAbortController({
+    ...scope,
+    target: captureRpcTargetForTest({ ...scope, sessionId: initialSessionId }),
+    sessionId: initialSessionId,
+    runId,
+    kind: "chat-send",
+    timeoutMs: 60_000,
+  });
+  const entry = expectDefined(registration.entry, "registered RPC source");
+  const releaseExecution = await claimRpcSourceForTest(entry);
+  registration.controller.signal.addEventListener("abort", releaseExecution, { once: true });
+  expect(registration.markExecutionStarted()).toBe(true);
+  await replaceSessionEntry(scope, { sessionId: rotatedSessionId, updatedAt: 2 });
+  updateRpcSourceSessionId(entry, rotatedSessionId);
+  context.chatRunState.getOrCreate(runId).buffer = "Rotated abort partial";
+  const respond = vi.fn<RespondFn>();
+  const setDedupeEntry = vi.spyOn(agentJob, "setGatewayDedupeEntry");
+
+  try {
+    await sessionAbortHandlers["sessions.abort"]!({
+      req: { type: "req", id: "rotated-abort-receipt", method: "sessions.abort" },
+      params: { key: scope.sessionKey, runId },
+      context,
+      client: null,
+      respond,
+      isWebchatConnect: () => false,
+    });
+
+    expect(respond).toHaveBeenCalledExactlyOnceWith(
+      true,
+      { ok: true, abortedRunId: runId, status: "aborted" },
+      undefined,
+      undefined,
+    );
+    const expectedSession = {
+      ...getRpcSourceIdentity(entry),
+      lifecycleGeneration: getRpcSourceLifecycleGeneration(entry),
+    };
+    expect(setDedupeEntry).toHaveBeenCalledWith(
+      expect.objectContaining({ key: `chat:${runId}`, session: expectedSession }),
+    );
+    expect(agentJob.getAgentJobSession(runId, "chat")).toEqual(expectedSession);
+  } finally {
+    setDedupeEntry.mockRestore();
+    releaseExecution();
+    registration.cleanup();
+    context.chatRunState.clearRun(runId);
+  }
+});
