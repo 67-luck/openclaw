@@ -1,7 +1,9 @@
 import { registerListener } from "../../../../src/shared/listeners.js";
-import type { ApplicationContext } from "../../app/context.ts";
+import type { ApplicationConfigCapability } from "../../app/config.ts";
 import { registerControlUiReloadGuard } from "../../app/document-reload-guard.ts";
 import { gatewayPresentationScope } from "../../app/gateway-presentation-scope.ts";
+import type { ApplicationGateway } from "../../app/gateway.ts";
+import type { UiPreferences } from "../../app/settings.ts";
 import { t } from "../../i18n/index.ts";
 import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import type { ChatAttachment, HumanMention } from "../../lib/chat/chat-types.ts";
@@ -16,6 +18,14 @@ import { releaseChatAttachmentPayloads } from "../chat/attachment-payload-store.
 import { NewSessionAttachmentDraft } from "./attachment-draft.ts";
 
 registerNewSessionSetupEnglish();
+
+// The retained input owner needs connection and composer preferences, not app routing.
+type CreationComposerContext = {
+  readonly gateway: ApplicationGateway;
+  readonly config: ApplicationConfigCapability;
+  readonly lifecycleAbortSignal?: AbortSignal;
+  readonly theme?: { readonly settings: Pick<UiPreferences, "chatSendShortcut"> };
+};
 
 /** Before sessions.create accepts a destination these are inputs, not send attempts. */
 export type CreationComposerInput = {
@@ -64,7 +74,7 @@ export class CreationComposer {
   private disposed = false;
 
   constructor(
-    readonly context: ApplicationContext,
+    readonly context: CreationComposerContext,
     readonly agentId: string,
     public incognito: boolean,
     private readonly notifyDraft: () => void,
@@ -292,12 +302,12 @@ export class CreationComposer {
 
 // Accepted input stays app-scoped, but only the lazy creation/chat surfaces load its owner.
 const acceptedComposers = new WeakMap<
-  ApplicationContext,
+  CreationComposerContext,
   { entries: Map<string, CreationComposer>; release: () => void }
 >();
 
 export function retainCreatedComposer(
-  context: ApplicationContext,
+  context: CreationComposerContext,
   key: string,
   composer: CreationComposer,
 ): void {
@@ -343,7 +353,7 @@ export function retainCreatedComposer(
 }
 
 export function takeCreatedComposer(
-  context: ApplicationContext,
+  context: CreationComposerContext,
   sessionKey: string,
   client: object | null,
 ): CreationComposerTransfer | undefined {
