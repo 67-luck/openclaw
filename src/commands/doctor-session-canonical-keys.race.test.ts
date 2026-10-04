@@ -1,8 +1,11 @@
+import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
-  listCanonicalSessionRepairFacts,
+  readCanonicalSessionRepairInventory,
   loadCanonicalSessionRepairEntries,
   loadExactSessionEntryReadOnly,
 } from "../config/sessions/session-accessor.js";
@@ -10,6 +13,7 @@ import * as lifecycle from "../config/sessions/session-accessor.sqlite-projectio
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
@@ -24,6 +28,103 @@ afterEach(() => {
 });
 
 describe("doctor canonical session decision races", () => {
+  it("rejects a hard-linked source before backup or validity admission", async () => {
+    await withStateDirEnv("openclaw-doctor-canonical-linked-", async ({ stateDir }) => {
+      const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+      const storePath = resolveSessionStorePathCore(undefined, { agentId: "main", env });
+      const sqlitePath = resolveSqliteTargetFromSessionStorePath(storePath, {
+        agentId: "main",
+        env,
+      }).path;
+      insertLegacySession({
+        agentId: "main",
+        entry: { sessionId: "linked-source", updatedAt: 20 },
+        env,
+        sessionKey: " MAIN ",
+        storePath,
+      });
+      await closeOpenClawAgentDatabasesAsync(stateDir);
+      const original = fs.readFileSync(sqlitePath);
+      const aliasPath = `${sqlitePath}.linked`;
+      fs.linkSync(sqlitePath, aliasPath);
+      await expect(repairCanonicalSessionKeys({ apply: true, cfg: {}, env })).rejects.toThrow(
+        "hard-linked path",
+      );
+      expect(fs.readFileSync(sqlitePath)).toEqual(original);
+      expect(fs.readFileSync(aliasPath)).toEqual(original);
+      expect(
+        fs
+          .readdirSync(path.dirname(sqlitePath))
+          .some((name) => name.startsWith(`${path.basename(sqlitePath)}.pre-startup-migration-`)),
+      ).toBe(false);
+    });
+  });
+
+  it.each(["held", "reopened"] as const)(
+    "backs up pending empty owners before %s admission with no selected repair facts",
+    async (handle) => {
+      await withStateDirEnv("openclaw-doctor-pending-validity-", async ({ stateDir }) => {
+        const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
+        const storePath = resolveSessionStorePathCore(undefined, { agentId: "main", env });
+        const options = {
+          agentId: "main",
+          env,
+          path: resolveSqliteTargetFromSessionStorePath(storePath, { agentId: "main", env }).path,
+        };
+        const sessionKey = "agent:main:retained";
+        insertLegacySession({
+          agentId: "main",
+          entry: { sessionId: "pending-retained", updatedAt: 20 },
+          env,
+          sessionKey,
+          storePath,
+        });
+        const database = openOpenClawAgentDatabase(options);
+        database.db
+          .prepare("UPDATE session_nodes SET entry_json = '{}' WHERE session_key = ?")
+          .run(sessionKey);
+        const nodesBefore = database.db.prepare("SELECT * FROM session_nodes").all();
+        const windowsBefore = database.db.prepare("SELECT * FROM session_windows").all();
+        expect(nodesBefore).toHaveLength(1);
+        expect(nodesBefore[0]).toMatchObject({ entry_json: "{}", entry_valid: 0 });
+        if (handle === "reopened") {
+          await closeOpenClawAgentDatabasesAsync(stateDir);
+        }
+        const cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
+        expect(await repairCanonicalSessionKeys({ apply: false, cfg, env })).toMatchObject({
+          foundGroups: 0,
+          repairedGroups: 0,
+        });
+        expect(await repairCanonicalSessionKeys({ apply: true, cfg, env })).toMatchObject({
+          foundGroups: 0,
+          repairedGroups: 0,
+        });
+        const repaired = openOpenClawAgentDatabase(options);
+        expect(repaired.db.prepare("SELECT * FROM session_nodes").all()).toEqual(
+          nodesBefore.map((row) => ({ ...row, entry_valid: -1 })),
+        );
+        expect(repaired.db.prepare("SELECT * FROM session_windows").all()).toEqual(windowsBefore);
+        const backups = fs
+          .readdirSync(path.dirname(database.path))
+          .filter(
+            (name) =>
+              name.startsWith(`${path.basename(database.path)}.pre-startup-migration-`) &&
+              name.endsWith(".bak"),
+          );
+        expect(backups).toHaveLength(1);
+        using backup = new DatabaseSync(
+          path.join(
+            path.dirname(database.path),
+            expectDefined(backups[0], "original state backup"),
+          ),
+          { readOnly: true },
+        );
+        expect(backup.prepare("SELECT * FROM session_nodes").all()).toEqual(nodesBefore);
+        expect(backup.prepare("SELECT * FROM session_windows").all()).toEqual(windowsBefore);
+      });
+    },
+  );
+
   it("retains the source when protected destination history changes before source cleanup", async () => {
     await withStateDirEnv("openclaw-doctor-canonical-custody-race-", async ({ stateDir }) => {
       const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
@@ -120,7 +221,7 @@ describe("doctor canonical session decision races", () => {
         sessionKey,
         storePath,
       });
-      const facts = listCanonicalSessionRepairFacts({ agentId: "main", env, storePath });
+      const { facts } = readCanonicalSessionRepairInventory({ agentId: "main", env, storePath });
       const database = openOpenClawAgentDatabase({
         agentId: "main",
         env,
@@ -142,7 +243,8 @@ describe("doctor canonical session decision races", () => {
         .run(sessionKey);
 
       expect(
-        listCanonicalSessionRepairFacts({ agentId: "main", env, storePath })[0]?.decisionToken,
+        readCanonicalSessionRepairInventory({ agentId: "main", env, storePath }).facts[0]
+          ?.decisionToken,
       ).not.toBe(facts[0]?.decisionToken);
       expect(() =>
         loadCanonicalSessionRepairEntries({ agentId: "main", env, storePath }, facts),

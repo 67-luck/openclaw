@@ -43,6 +43,12 @@ export type CanonicalSessionRepairFact = CanonicalSessionDecision & {
   inventoryToken: string;
 };
 
+export type CanonicalSessionRepairInventory = {
+  facts: CanonicalSessionRepairFact[];
+  inventoryToken: string;
+  pendingAdmission: boolean;
+};
+
 type ScannedCanonicalSessionFact = {
   currentSessionId: string;
   currentWindowOwnerSessionKey: string | null;
@@ -184,9 +190,7 @@ function canonicalRepairQuery(database: Pick<OpenClawAgentDatabase, "db">) {
 function scanCanonicalSessionFactsFromDatabase(
   database: Pick<OpenClawAgentDatabase, "db">,
   selectedKeys?: ReadonlySet<string>,
-): {
-  facts: CanonicalSessionRepairFact[];
-  inventoryToken: string;
+): CanonicalSessionRepairInventory & {
   loaded: Map<string, { entry: SessionEntry; rawEntryJson: string; rawSnapshotRevision: number }>;
 } {
   const scanned: ScannedCanonicalSessionFact[] = [];
@@ -196,7 +200,9 @@ function scanCanonicalSessionFactsFromDatabase(
   >();
   const validSessionKeysById = new Map<string, string[]>();
   const inventoriedSessionKeys = new Set<string>();
+  let pendingAdmission = false;
   for (const row of iterateSqliteQuerySync(database.db, canonicalRepairQuery(database))) {
+    pendingAdmission ||= row.entry_valid === 0;
     inventoriedSessionKeys.add(row.session_key);
     const persistedEntry = parseSessionEntryJson(row);
     if (row.entry_valid === 1 && persistedEntry) {
@@ -291,13 +297,15 @@ function scanCanonicalSessionFactsFromDatabase(
   return {
     facts: facts.map((fact) => Object.assign(fact, { inventoryToken })),
     inventoryToken,
+    pendingAdmission,
     loaded,
   };
 }
 
-function loadCanonicalRepairEntriesFromDatabase(
+export function loadCanonicalRepairEntriesFromDatabase(
   database: Pick<OpenClawAgentDatabase, "db">,
   facts: readonly CanonicalSessionRepairFact[],
+  inventoryToken?: string,
 ): CanonicalSessionRepairEntry[] {
   const current = scanCanonicalSessionFactsFromDatabase(
     database,
@@ -305,6 +313,9 @@ function loadCanonicalRepairEntriesFromDatabase(
   );
   const currentByKey = new Map(current.facts.map((fact) => [fact.sessionKey, fact]));
   const expectedInventoryTokens = new Set(facts.map((fact) => fact.inventoryToken));
+  if (inventoryToken !== undefined) {
+    expectedInventoryTokens.add(inventoryToken);
+  }
   if (expectedInventoryTokens.size !== 1 || !expectedInventoryTokens.has(current.inventoryToken)) {
     throw new Error("Canonical session repair inputs changed during scan; retry Doctor");
   }
@@ -332,27 +343,32 @@ function loadCanonicalRepairEntriesFromDatabase(
   });
 }
 
-export function listCanonicalSessionRepairFacts(
+export function readCanonicalSessionRepairInventory(
   scope: DoctorSessionScanScope,
-): CanonicalSessionRepairFact[] {
+): CanonicalSessionRepairInventory {
   const resolved = resolveSqliteScope({ ...scope, sessionKey: "" });
-  const result = withOpenClawAgentDatabaseReadOnly(
-    (database) => scanCanonicalSessionFactsFromDatabase(database).facts,
-    toDatabaseOptions(resolved),
-  );
-  return result.found ? result.value : [];
+  const result = withOpenClawAgentDatabaseReadOnly((database) => {
+    const { facts, inventoryToken, pendingAdmission } =
+      scanCanonicalSessionFactsFromDatabase(database);
+    return { facts, inventoryToken, pendingAdmission };
+  }, toDatabaseOptions(resolved));
+  if (!result.found) {
+    throw new Error("Canonical session repair database disappeared during scan; retry Doctor");
+  }
+  return result.value;
 }
 
 export function loadCanonicalSessionRepairEntries(
   scope: DoctorSessionScanScope,
   facts: readonly CanonicalSessionRepairFact[],
+  inventoryToken?: string,
 ): CanonicalSessionRepairEntry[] {
-  if (facts.length === 0) {
+  if (facts.length === 0 && inventoryToken === undefined) {
     return [];
   }
   const resolved = resolveSqliteScope({ ...scope, sessionKey: "" });
   const result = withOpenClawAgentDatabaseReadOnly(
-    (database) => loadCanonicalRepairEntriesFromDatabase(database, facts),
+    (database) => loadCanonicalRepairEntriesFromDatabase(database, facts, inventoryToken),
     toDatabaseOptions(resolved),
   );
   if (!result.found) {

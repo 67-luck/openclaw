@@ -3,8 +3,11 @@ import { listAgentIds } from "../agents/agent-scope-config.js";
 import { resolveAgentMainSessionKey } from "../config/sessions/main-session.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
-  listCanonicalSessionRepairFacts,
+  readCanonicalSessionRepairInventory,
+  loadCanonicalSessionRepairEntries,
   type CanonicalSessionRepairFact,
+  type CanonicalSessionRepairInventory,
+  type SessionEntryLifecycleRemoval,
 } from "../config/sessions/session-accessor.js";
 import { preserveCreationStamp } from "../config/sessions/session-entry-provenance.js";
 import { mergeRetainedHistoryReferences } from "../config/sessions/session-retained-history.js";
@@ -59,6 +62,11 @@ type CanonicalSessionRepairGroup = {
   removedRows: number;
 };
 
+type CanonicalSessionStoreInventory = {
+  target: ExistingAgentDatabaseTarget;
+  inventory: CanonicalSessionRepairInventory;
+};
+
 export function listCanonicalSessionStores(params: {
   cfg: OpenClawConfig;
   env: NodeJS.ProcessEnv;
@@ -72,7 +80,7 @@ export function listCanonicalSessionStores(params: {
 
 function collectCanonicalSessionCandidateFacts(
   params: { cfg: OpenClawConfig; env: NodeJS.ProcessEnv },
-  stores: readonly ExistingAgentDatabaseTarget[],
+  inventories: readonly CanonicalSessionStoreInventory[],
 ): CanonicalSessionCandidateFact[] {
   const defaultAgentRemoved = !listAgentIds(params.cfg).includes(DEFAULT_AGENT_ID);
   const mainKey = normalizeMainKey(params.cfg.session?.mainKey);
@@ -92,11 +100,8 @@ function collectCanonicalSessionCandidateFacts(
       preserveQualifiedAddress: !repairLegacyMainHead,
     });
   };
-  const inventory = stores.flatMap((target) =>
-    listCanonicalSessionRepairFacts({
-      agentId: target.agentId,
-      storePath: target.storePath,
-    }).map((inventoryFact) => {
+  const inventory = inventories.flatMap(({ target, inventory }) =>
+    inventory.facts.map((inventoryFact) => {
       const { canonicalOwnerSessionKey, sessionKey } = inventoryFact;
       const storedKey = resolveStoredKey(target.agentId, sessionKey);
       return {
@@ -226,11 +231,25 @@ function groupRepairCandidates(
   });
 }
 
-export function collectCanonicalSessionRepairGroups(
+export function collectCanonicalSessionRepairs(
   params: { cfg: OpenClawConfig; env: NodeJS.ProcessEnv },
   stores: readonly ExistingAgentDatabaseTarget[],
-): CanonicalSessionRepairGroup[] {
-  return groupRepairCandidates(collectCanonicalSessionCandidateFacts(params, stores), params);
+): { groups: CanonicalSessionRepairGroup[]; inventories: CanonicalSessionStoreInventory[] } {
+  const inventories = stores.map((target) => ({
+    target,
+    inventory: readCanonicalSessionRepairInventory({
+      agentId: target.agentId,
+      storePath: target.storePath,
+      env: params.env,
+    }),
+  }));
+  return {
+    groups: groupRepairCandidates(
+      collectCanonicalSessionCandidateFacts(params, inventories),
+      params,
+    ),
+    inventories,
+  };
 }
 
 function mergeCanonicalSessionEntryCandidates<T>(
@@ -320,4 +339,139 @@ export function selectCanonicalSessionCandidate(
     entry,
     destination,
   };
+}
+
+function hydrateCanonicalSessionCandidate(
+  fact: CanonicalSessionCandidateFact,
+  loaded: ReturnType<typeof loadCanonicalSessionRepairEntries>[number],
+): CanonicalSessionCandidate {
+  const entry = { ...loaded.entry };
+  if (fact.normalizedParentSessionKey) {
+    entry.parentSessionKey = fact.normalizedParentSessionKey;
+  } else {
+    delete entry.parentSessionKey;
+  }
+  if (fact.normalizedSpawnedBy) {
+    entry.spawnedBy = fact.normalizedSpawnedBy;
+  } else {
+    delete entry.spawnedBy;
+  }
+  if (entry.forkSource && fact.normalizedForkSourceSessionKey) {
+    entry.forkSource = {
+      ...entry.forkSource,
+      sessionKey: fact.normalizedForkSourceSessionKey,
+    };
+  } else if (entry.forkSource?.sessionKey !== undefined) {
+    // A present but empty-normalized key cannot survive strict runtime validation. Missing
+    // legacy keys remain untouched so unrelated repair does not erase independent provenance.
+    const { sessionKey: _invalidSessionKey, ...forkProvenance } = entry.forkSource;
+    entry.forkSource = forkProvenance as typeof entry.forkSource;
+  }
+  const candidate = {
+    agentId: fact.agentId,
+    canonicalKey: fact.canonicalKey,
+    entry,
+    expectedEntry: loaded.entry,
+    ownerEvidenceOnly: fact.ownerEvidenceOnly,
+    sessionKey: fact.sessionKey,
+    sqlitePath: fact.sqlitePath,
+    storePath: fact.storePath,
+  };
+  return loaded.rawEntryJson !== undefined
+    ? {
+        ...candidate,
+        rawEntryJson: loaded.rawEntryJson,
+        rawSnapshotRevision: loaded.rawSnapshotRevision,
+      }
+    : candidate;
+}
+
+export function hydrateCanonicalSessionCandidates(
+  facts: readonly CanonicalSessionCandidateFact[],
+): CanonicalSessionCandidate[] {
+  const loaded = new Map<
+    CanonicalSessionCandidateFact,
+    ReturnType<typeof loadCanonicalSessionRepairEntries>[number]
+  >();
+  const byStore = new Map<string, CanonicalSessionCandidateFact[]>();
+  for (const fact of facts) {
+    const key = `${fact.agentId}\0${fact.storePath}`;
+    byStore.set(key, [...(byStore.get(key) ?? []), fact]);
+  }
+  for (const group of byStore.values()) {
+    const first = group[0]!;
+    const entries = loadCanonicalSessionRepairEntries(
+      { agentId: first.agentId, storePath: first.storePath },
+      group.map((fact) => fact.inventoryFact),
+    );
+    group.forEach((fact, index) => loaded.set(fact, entries[index]!));
+  }
+  return facts.map((fact) => hydrateCanonicalSessionCandidate(fact, loaded.get(fact)!));
+}
+
+export type SingleDatabaseCanonicalRepairGroup = {
+  candidates: readonly CanonicalSessionCandidate[];
+  selected: NonNullable<ReturnType<typeof selectCanonicalSessionCandidate>>;
+};
+
+export function resolveSingleDatabaseCanonicalRepairGroup(
+  candidates: readonly CanonicalSessionCandidate[],
+  params: { cfg: OpenClawConfig; env: NodeJS.ProcessEnv },
+): SingleDatabaseCanonicalRepairGroup | undefined {
+  const selected = selectCanonicalSessionCandidate(candidates, params);
+  if (
+    !selected ||
+    selected.winner.sqlitePath !== selected.destination.sqlitePath ||
+    candidates.some((candidate) => candidate.sqlitePath !== selected.destination.sqlitePath)
+  ) {
+    return undefined;
+  }
+  return { candidates, selected };
+}
+
+export function createCanonicalRepairRemoval(
+  candidate: CanonicalSessionCandidate,
+  params: {
+    archiveRemovedTranscript: boolean;
+    deleteOwnedWindows: boolean;
+    deliveryCleanupKeys?: readonly string[];
+  },
+): SessionEntryLifecycleRemoval {
+  const removal = {
+    archiveRemovedTranscript: params.archiveRemovedTranscript,
+    deleteOwnedWindows: params.deleteOwnedWindows,
+    ...(params.deliveryCleanupKeys ? { deliveryCleanupKeys: params.deliveryCleanupKeys } : {}),
+    exactStoredKey: true,
+    expectedEntry: candidate.expectedEntry,
+    sessionKey: candidate.sessionKey,
+  } satisfies SessionEntryLifecycleRemoval;
+  return candidate.rawEntryJson === undefined
+    ? removal
+    : Object.assign(removal, {
+        expectedRawEntryJson: candidate.rawEntryJson,
+        expectedSnapshotRevision: candidate.rawSnapshotRevision,
+      });
+}
+
+export function createCanonicalDestinationRemovals(
+  candidates: readonly CanonicalSessionCandidate[],
+  selected: NonNullable<ReturnType<typeof selectCanonicalSessionCandidate>>,
+): SessionEntryLifecycleRemoval[] {
+  const relatedSessionIds = new Set(
+    [selected.entry.sessionId, selected.entry.previousSessionId].filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    ),
+  );
+  return candidates
+    .filter(
+      (candidate) =>
+        candidate.sessionKey !== selected.winner.canonicalKey ||
+        candidate.rawEntryJson !== undefined,
+    )
+    .map((candidate) =>
+      createCanonicalRepairRemoval(candidate, {
+        archiveRemovedTranscript: !relatedSessionIds.has(candidate.entry.sessionId),
+        deleteOwnedWindows: false,
+      }),
+    );
 }

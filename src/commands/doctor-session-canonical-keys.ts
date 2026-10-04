@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import { note } from "../../packages/terminal-core/src/note.js";
 import { SessionStoreMigrationRequiredError } from "../config/sessions/migration-required.js";
 import { resolveSessionArtifactDirectory } from "../config/sessions/paths.js";
 import {
@@ -10,9 +13,9 @@ import {
   loadTranscriptEvents,
   rehomeSessionDeliveryReferencesForCanonicalRepair,
   rehomeSessionDeliveryReferencesForCanonicalRepairBatch,
-  type SessionEntryLifecycleRemoval,
 } from "../config/sessions/session-accessor.js";
 import { writeTranscriptArchive } from "../config/sessions/session-accessor.sqlite-archive-artifact.js";
+import { loadCanonicalRepairEntriesFromDatabase } from "../config/sessions/session-accessor.sqlite-canonical-inventory.js";
 import {
   readSqliteSessionGenerationClaim,
   readSqliteSessionGenerationWindows,
@@ -37,43 +40,39 @@ import { serializeJsonlLines } from "../config/sessions/transcript-jsonl.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { iterateSqliteQuerySync, sqliteStringSet } from "../infra/kysely-sync.js";
 import { resolveTargetSqliteOptions } from "../infra/session-sqlite-migration-readers.js";
+import {
+  assertExistingDatabaseIdentity,
+  readDatabasePathIdentitySync,
+} from "../infra/sqlite-worker-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
+import { ensureSessionEntryValidityProjection } from "../state/openclaw-agent-db-session-migrations.js";
 import {
   openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
+import { backupDoctorSqliteDatabases } from "./doctor-migration-backup.js";
 import {
-  collectCanonicalSessionRepairGroups,
+  collectCanonicalSessionRepairs,
+  createCanonicalDestinationRemovals,
+  createCanonicalRepairRemoval,
+  hydrateCanonicalSessionCandidates,
   listCanonicalSessionStores,
   resolveCanonicalSessionDestination,
+  resolveSingleDatabaseCanonicalRepairGroup,
   selectCanonicalSessionCandidate,
   type CanonicalSessionCandidate,
-  type CanonicalSessionCandidateFact,
+  type SingleDatabaseCanonicalRepairGroup,
 } from "./doctor-session-canonical-candidates.js";
-
-function createCanonicalRepairRemoval(
-  candidate: CanonicalSessionCandidate,
-  params: {
-    archiveRemovedTranscript: boolean;
-    deleteOwnedWindows: boolean;
-    deliveryCleanupKeys?: readonly string[];
-  },
-): SessionEntryLifecycleRemoval {
-  const removal = {
-    archiveRemovedTranscript: params.archiveRemovedTranscript,
-    deleteOwnedWindows: params.deleteOwnedWindows,
-    ...(params.deliveryCleanupKeys ? { deliveryCleanupKeys: params.deliveryCleanupKeys } : {}),
-    exactStoredKey: true,
-    expectedEntry: candidate.expectedEntry,
-    sessionKey: candidate.sessionKey,
-  } satisfies SessionEntryLifecycleRemoval;
-  return candidate.rawEntryJson === undefined
-    ? removal
-    : Object.assign(removal, {
-        expectedRawEntryJson: candidate.rawEntryJson,
-        expectedSnapshotRevision: candidate.rawSnapshotRevision,
-      });
-}
+import {
+  resolveDoctorSessionSqliteMaintenancePaths,
+  resolveDoctorSessionSqliteMaintenanceRoots,
+} from "./doctor-session-sqlite-targets.js";
+import {
+  assertDoctorSqliteMaintenancePathsNotAliased,
+  withDoctorSqliteMaintenanceLock,
+  type DoctorSqliteMaintenanceAuthority,
+} from "./doctor-sqlite-maintenance-lock.js";
 
 export type CanonicalSessionKeyRepairReport = {
   archivedTranscriptDirectories: string[];
@@ -85,74 +84,6 @@ export type CanonicalSessionKeyRepairReport = {
 };
 
 const CANONICAL_SESSION_REPAIR_BATCH_GROUP_LIMIT = 64;
-
-function hydrateCanonicalSessionCandidate(
-  fact: CanonicalSessionCandidateFact,
-  loaded: ReturnType<typeof loadCanonicalSessionRepairEntries>[number],
-): CanonicalSessionCandidate {
-  const entry = { ...loaded.entry };
-  if (fact.normalizedParentSessionKey) {
-    entry.parentSessionKey = fact.normalizedParentSessionKey;
-  } else {
-    delete entry.parentSessionKey;
-  }
-  if (fact.normalizedSpawnedBy) {
-    entry.spawnedBy = fact.normalizedSpawnedBy;
-  } else {
-    delete entry.spawnedBy;
-  }
-  if (entry.forkSource && fact.normalizedForkSourceSessionKey) {
-    entry.forkSource = {
-      ...entry.forkSource,
-      sessionKey: fact.normalizedForkSourceSessionKey,
-    };
-  } else if (entry.forkSource?.sessionKey !== undefined) {
-    // A present but empty-normalized key cannot survive strict runtime validation. Missing
-    // legacy keys remain untouched so unrelated repair does not erase independent provenance.
-    const { sessionKey: _invalidSessionKey, ...forkProvenance } = entry.forkSource;
-    entry.forkSource = forkProvenance as typeof entry.forkSource;
-  }
-  const candidate = {
-    agentId: fact.agentId,
-    canonicalKey: fact.canonicalKey,
-    entry,
-    expectedEntry: loaded.entry,
-    ownerEvidenceOnly: fact.ownerEvidenceOnly,
-    sessionKey: fact.sessionKey,
-    sqlitePath: fact.sqlitePath,
-    storePath: fact.storePath,
-  };
-  return loaded.rawEntryJson !== undefined
-    ? {
-        ...candidate,
-        rawEntryJson: loaded.rawEntryJson,
-        rawSnapshotRevision: loaded.rawSnapshotRevision,
-      }
-    : candidate;
-}
-
-function hydrateCanonicalSessionCandidates(
-  facts: readonly CanonicalSessionCandidateFact[],
-): CanonicalSessionCandidate[] {
-  const loaded = new Map<
-    CanonicalSessionCandidateFact,
-    ReturnType<typeof loadCanonicalSessionRepairEntries>[number]
-  >();
-  const byStore = new Map<string, CanonicalSessionCandidateFact[]>();
-  for (const fact of facts) {
-    const key = `${fact.agentId}\0${fact.storePath}`;
-    byStore.set(key, [...(byStore.get(key) ?? []), fact]);
-  }
-  for (const group of byStore.values()) {
-    const first = group[0]!;
-    const entries = loadCanonicalSessionRepairEntries(
-      { agentId: first.agentId, storePath: first.storePath },
-      group.map((fact) => fact.inventoryFact),
-    );
-    group.forEach((fact, index) => loaded.set(fact, entries[index]!));
-  }
-  return facts.map((fact) => hydrateCanonicalSessionCandidate(fact, loaded.get(fact)!));
-}
 
 function assertCanonicalHistoryCustody(
   candidates: readonly CanonicalSessionCandidate[],
@@ -279,49 +210,6 @@ function assertCanonicalHistoryCustody(
     }
   }
   selected.entry.retainedHistoryReferences = references;
-}
-
-type SingleDatabaseCanonicalRepairGroup = {
-  candidates: readonly CanonicalSessionCandidate[];
-  selected: NonNullable<ReturnType<typeof selectCanonicalSessionCandidate>>;
-};
-
-function resolveSingleDatabaseCanonicalRepairGroup(
-  candidates: readonly CanonicalSessionCandidate[],
-  params: { cfg: OpenClawConfig; env: NodeJS.ProcessEnv },
-): SingleDatabaseCanonicalRepairGroup | undefined {
-  const selected = selectCanonicalSessionCandidate(candidates, params);
-  if (
-    !selected ||
-    selected.winner.sqlitePath !== selected.destination.sqlitePath ||
-    candidates.some((candidate) => candidate.sqlitePath !== selected.destination.sqlitePath)
-  ) {
-    return undefined;
-  }
-  return { candidates, selected };
-}
-
-function createCanonicalDestinationRemovals(
-  candidates: readonly CanonicalSessionCandidate[],
-  selected: NonNullable<ReturnType<typeof selectCanonicalSessionCandidate>>,
-): SessionEntryLifecycleRemoval[] {
-  const relatedSessionIds = new Set(
-    [selected.entry.sessionId, selected.entry.previousSessionId].filter(
-      (value): value is string => typeof value === "string" && value.length > 0,
-    ),
-  );
-  return candidates
-    .filter(
-      (candidate) =>
-        candidate.sessionKey !== selected.winner.canonicalKey ||
-        candidate.rawEntryJson !== undefined,
-    )
-    .map((candidate) =>
-      createCanonicalRepairRemoval(candidate, {
-        archiveRemovedTranscript: !relatedSessionIds.has(candidate.entry.sessionId),
-        deleteOwnedWindows: false,
-      }),
-    );
 }
 
 function listCanonicalDestinationAliasKeys(
@@ -568,6 +456,7 @@ async function repairCanonicalSessionGroup(
 /** Doctor-owned durable repair; process-held incognito databases are intentionally excluded. */
 export async function repairCanonicalSessionKeys(params: {
   apply: boolean;
+  authority?: DoctorSqliteMaintenanceAuthority;
   cfg: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
 }): Promise<CanonicalSessionKeyRepairReport> {
@@ -579,7 +468,9 @@ export async function repairCanonicalSessionKeys(params: {
   const archivedTranscriptDirectories = new Set<string>();
   let repairBatches = 0;
   let repairedGroups = 0;
-  let repairGroups = collectCanonicalSessionRepairGroups({ cfg: params.cfg, env }, stores);
+  const inventory = collectCanonicalSessionRepairs({ cfg: params.cfg, env }, stores);
+  let repairGroups = inventory.groups;
+  const mutationTargets = [...stores];
   if (params.apply) {
     for (const group of repairGroups) {
       const first = group.candidates[0]!;
@@ -589,6 +480,7 @@ export async function repairCanonicalSessionKeys(params: {
         env,
         sourceAgentId: first.agentId,
       });
+      mutationTargets.push(destination);
       if (group.candidates.every((candidate) => candidate.sqlitePath === destination.sqlitePath)) {
         continue;
       }
@@ -598,12 +490,112 @@ export async function repairCanonicalSessionKeys(params: {
         assertCanonicalHistoryCustody(candidates, selected, env);
       }
     }
-    for (const store of stores) {
-      setCanonicalSqliteSessionMainKey(
-        openOpenClawAgentDatabase(resolveTargetSqliteOptions(store, env)),
-        params.cfg.session?.mainKey,
-      );
+  }
+  const assertPaths = () =>
+    assertDoctorSqliteMaintenancePathsNotAliased(
+      "canonical session-key repair",
+      resolveDoctorSessionSqliteMaintenancePaths(mutationTargets),
+      resolveDoctorSessionSqliteMaintenanceRoots(mutationTargets, env),
+    );
+  if (params.apply) {
+    assertPaths();
+  }
+  const pendingPaths = new Set([
+    ...repairGroups.flatMap((group) => group.candidates.map((candidate) => candidate.sqlitePath)),
+    ...inventory.inventories
+      .filter(({ inventory }) => inventory.pendingAdmission)
+      .map(({ target }) => target.sqlitePath),
+  ]);
+  if (params.apply && pendingPaths.size > 0 && !params.authority) {
+    return await withDoctorSqliteMaintenanceLock({
+      env,
+      operation: "canonical session-key repair",
+      run: (authority) => repairCanonicalSessionKeys({ ...params, env, authority }),
+    });
+  }
+  const identities = params.apply
+    ? inventory.inventories.map(({ target, inventory }) => ({
+        target,
+        identity: readDatabasePathIdentitySync(target.sqlitePath),
+        pendingAdmission: inventory.pendingAdmission,
+      }))
+    : [];
+  const assertCurrent = () => {
+    params.authority?.assertCurrent();
+    assertPaths();
+    for (const { target, identity } of identities) {
+      assertExistingDatabaseIdentity(target.sqlitePath, identity.key, identity.birthtime);
     }
+  };
+  if (params.apply && pendingPaths.size > 0) {
+    assertCurrent();
+    const inventoriesByPath = new Map(
+      inventory.inventories.map(({ target, inventory }) => [
+        fs.realpathSync(target.sqlitePath),
+        inventory,
+      ]),
+    );
+    const backup = await backupDoctorSqliteDatabases({
+      env,
+      pendingDatabasePaths: [...pendingPaths],
+      databasePaths: stores.map((target) => target.sqlitePath),
+      authority: { assertCurrent },
+      repair: {
+        key: `canonical-session-keys-${randomUUID()}`,
+        validate: (database, sourcePath) => {
+          const expected = inventoriesByPath.get(sourcePath);
+          if (expected) {
+            loadCanonicalRepairEntriesFromDatabase({ db: database }, [], expected.inventoryToken);
+          }
+        },
+      },
+    });
+    assertCurrent();
+    // Revalidate the backed-up inventory before admission changes derived entry validity.
+    for (const store of stores) {
+      const expected = inventoriesByPath.get(fs.realpathSync(store.sqlitePath));
+      if (expected) {
+        loadCanonicalSessionRepairEntries(
+          { agentId: store.agentId, storePath: store.storePath, env },
+          [],
+          expected.inventoryToken,
+        );
+      }
+    }
+    note(
+      [...backup.changes, ...backup.warnings].map((message) => `- ${message}`).join("\n"),
+      "Session SQLite backups",
+    );
+  }
+  if (params.apply) {
+    for (const { target, identity, pendingAdmission } of identities) {
+      const options = resolveTargetSqliteOptions(target, env);
+      // Cached handles still need the admission owner's pending validity repair.
+      const database = pendingAdmission
+        ? runOpenClawAgentWriteTransaction(
+            (database) => {
+              assertCurrent();
+              ensureSessionEntryValidityProjection(database.db);
+              return database;
+            },
+            options,
+            {
+              operationLabel: "doctor.canonical-session-validity",
+              repairAdmission: { assertCurrent, expectedIdentity: identity },
+            },
+          )
+        : openOpenClawAgentDatabase(options);
+      setCanonicalSqliteSessionMainKey(database, params.cfg.session?.mainKey);
+    }
+    // Admission settles pending validity; hydrate only its committed inventory.
+    const admitted = collectCanonicalSessionRepairs({ cfg: params.cfg, env }, stores);
+    if (
+      admitted.inventories.some(({ inventory }) => inventory.pendingAdmission) ||
+      (admitted.groups.length > 0 && (!params.authority || pendingPaths.size === 0))
+    ) {
+      throw new Error("Canonical session repair inputs changed during admission; rerun Doctor");
+    }
+    repairGroups = admitted.groups;
   }
   const foundGroups = repairGroups.length;
   const removedRows = repairGroups.reduce((total, group) => total + group.removedRows, 0);
@@ -636,7 +628,7 @@ export async function repairCanonicalSessionKeys(params: {
         }
         repairBatches += 1;
         repairedGroups += 1;
-        repairGroups = collectCanonicalSessionRepairGroups({ cfg: params.cfg, env }, stores);
+        repairGroups = collectCanonicalSessionRepairs({ cfg: params.cfg, env }, stores).groups;
         continue;
       }
       const batch = [singleDatabaseGroup];
@@ -661,7 +653,7 @@ export async function repairCanonicalSessionKeys(params: {
       }
       repairBatches += 1;
       repairedGroups += batch.length;
-      repairGroups = collectCanonicalSessionRepairGroups({ cfg: params.cfg, env }, stores);
+      repairGroups = collectCanonicalSessionRepairs({ cfg: params.cfg, env }, stores).groups;
     }
   }
   return {
