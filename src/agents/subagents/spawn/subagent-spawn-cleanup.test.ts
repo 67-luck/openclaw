@@ -123,6 +123,9 @@ describe("subagent spawn cleanup identity", () => {
       sessionKey: childSessionKey,
       timeoutMs: 60_000,
     });
+    if (!source.registered) {
+      throw new Error("Cancelled cleanup proof requires a registered controller source");
+    }
     let inputSettled = false;
     void source.entry.input.settlement.promise.then(() => {
       inputSettled = true;
