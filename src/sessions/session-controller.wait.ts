@@ -11,6 +11,7 @@ import type {
   ReplyRunWaiter,
   SessionControllerEntry,
 } from "./session-controller.state.types.js";
+import type { SessionTarget } from "./session-controller.target.js";
 
 function waitForSessionControllerEntryIdle(
   owner: SessionControllerEntry,
@@ -84,6 +85,7 @@ async function waitForReplyRunAdmissionBarrier(params: {
   minimumTimeoutMs: number;
   sessionKey: string;
   signal?: AbortSignal;
+  target?: SessionTarget;
   timeoutMs?: number | null;
 }): Promise<ReplyRunAdmissionSettlement> {
   const deadline =
@@ -96,7 +98,7 @@ async function waitForReplyRunAdmissionBarrier(params: {
     if (params.signal?.aborted) {
       return { settled: false };
     }
-    const barrier = getSessionControllerEntry(params.sessionKey)[params.barrierKind];
+    const barrier = getSessionControllerEntry(params.sessionKey, params.target)[params.barrierKind];
     if (!barrier) {
       return { settled: true, ...(sources.size ? { sources: [...sources.values()] } : {}) };
     }
@@ -152,7 +154,7 @@ async function waitForReplyRunAdmissionBarrier(params: {
 export async function waitForReplyRunFollowupAdmission(
   sessionKey: string,
   timeoutMs: number,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; target?: SessionTarget },
 ): Promise<ReplyRunAdmissionSettlement> {
   const normalizedSessionKey = normalizeOptionalString(sessionKey);
   return normalizedSessionKey
@@ -161,6 +163,7 @@ export async function waitForReplyRunFollowupAdmission(
         minimumTimeoutMs: 100,
         sessionKey: normalizedSessionKey,
         signal: opts?.signal,
+        target: opts?.target,
         timeoutMs,
       })
     : { settled: true };
@@ -169,7 +172,7 @@ export async function waitForReplyRunFollowupAdmission(
 export async function waitForReplyRunSuccessorAdmission(
   sessionKey: string,
   timeoutMs?: number | null,
-  opts?: { signal?: AbortSignal },
+  opts?: { signal?: AbortSignal; target?: SessionTarget },
 ): Promise<ReplyRunAdmissionSettlement> {
   const normalizedSessionKey = normalizeOptionalString(sessionKey);
   return normalizedSessionKey
@@ -178,6 +181,7 @@ export async function waitForReplyRunSuccessorAdmission(
         minimumTimeoutMs: 0,
         sessionKey: normalizedSessionKey,
         signal: opts?.signal,
+        target: opts?.target,
         timeoutMs,
       })
     : { settled: true };
