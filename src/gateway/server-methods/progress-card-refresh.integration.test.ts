@@ -11,7 +11,14 @@ import {
 } from "../../infra/agent-run-registry.js";
 import type { ReplyBackendMessageInjectionV2 } from "../../sessions/session-controller.contracts.js";
 import { createReplyOperation } from "../../sessions/session-controller.js";
-import { getRpcSourceIdentity } from "../../sessions/session-controller.rpc-sources.js";
+import {
+  releaseSessionControllerClaim,
+  tryClaimSessionControllerTask,
+} from "../../sessions/session-controller.mailbox.js";
+import {
+  getRpcSourceIdentity,
+  getRpcSourceProjectSessionActive,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { setUserProfileRole } from "../../state/user-profile-writes.worker.js";
@@ -29,6 +36,34 @@ import type { GatewayClient, GatewayRequestHandlers, RespondFn } from "./types.j
 
 installGatewayTestHooks();
 const createFixture = useBrowserFollowupFixture();
+
+async function claimRefreshOperation(f: Awaited<ReturnType<typeof createFixture>>, runId: string) {
+  const source = rpcSourceTesting.get(runId);
+  if (!source) {
+    throw new Error("Missing controller-owned refresh source");
+  }
+  if (f.activeRun && !f.activeRun.result) {
+    f.activeRun.complete();
+    await f.activeRun.ownerSettlement;
+  }
+  const claim = tryClaimSessionControllerTask(source.input);
+  if (!claim) {
+    throw new Error("Refresh source was not selected by its controller");
+  }
+  const operation = createReplyOperation({
+    ...f.scope,
+    resetTriggered: false,
+    mailboxClaim: claim,
+  });
+  return {
+    operation,
+    source,
+    release: () => {
+      operation.complete();
+      releaseSessionControllerClaim(claim);
+    },
+  };
+}
 
 function refreshCard(
   f: Awaited<ReturnType<typeof createFixture>>,
@@ -269,6 +304,7 @@ describe("registered progress refresh admission", () => {
     "starts a hidden status-only turn when idle or steering is unavailable (active=%s)",
     async (active) => {
       const f = await createFixture({ active, preserveContent: true });
+      let releaseRefresh: (() => void) | undefined;
       try {
         await progressCardStore.put(
           f.scope.sessionKey,
@@ -298,10 +334,8 @@ describe("registered progress refresh admission", () => {
           projectSessionActive: false,
           projectSessionLifecycle: false,
         });
-        expect(rpcSourceTesting.get(payload.runId)?.adapter).toMatchObject({
-          controlUiVisible: false,
-          projectSessionActive: false,
-        });
+        const source = rpcSourceTesting.get(payload.runId);
+        expect(source?.adapter).toMatchObject({ controlUiVisible: false });
         const dispatch = dispatchInboundMessageMock.mock.calls[0]?.[0] as Parameters<
           typeof dispatchInboundMessage
         >[0];
@@ -318,8 +352,10 @@ describe("registered progress refresh admission", () => {
           sessionId: f.scope.sessionId,
           storePath: f.scope.storePath,
         });
-        const source = rpcSourceTesting.get(payload.runId);
-        expect(source && getRpcSourceIdentity(source).sessionId).toBe(f.scope.sessionId);
+        const claimed = await claimRefreshOperation(f, payload.runId);
+        releaseRefresh = claimed.release;
+        expect(getRpcSourceProjectSessionActive(claimed.source)).toBe(false);
+        expect(getRpcSourceIdentity(claimed.source).sessionId).toBe(f.scope.sessionId);
         await recorder.persistApproved();
         const rows = loadTranscriptEventsSync(f.scope);
         const messages = rows.flatMap((row) =>
@@ -329,6 +365,8 @@ describe("registered progress refresh admission", () => {
         expect(JSON.stringify(projectChatDisplayMessages(messages))).not.toContain(
           "Refresh this session",
         );
+        releaseRefresh();
+        releaseRefresh = undefined;
         await f.finishDispatch();
         expect(() =>
           prepared({
@@ -353,6 +391,7 @@ describe("registered progress refresh admission", () => {
           vi.mocked(f.context.broadcast).mock.calls.filter(([event]) => event === "chat"),
         ).toHaveLength(0);
       } finally {
+        releaseRefresh?.();
         await f.cleanup();
       }
     },
@@ -476,7 +515,7 @@ describe("registered progress refresh admission", () => {
   );
   it("keeps a new human message on its own visible turn while a hidden refresh runs", async () => {
     const f = await createFixture({ active: false, preserveContent: true });
-    let hiddenOperation: ReturnType<typeof createReplyOperation> | undefined;
+    let releaseHidden: (() => void) | undefined;
     try {
       await progressCardStore.put(
         f.scope.sessionKey,
@@ -490,7 +529,21 @@ describe("registered progress refresh admission", () => {
         throw new Error("Missing hidden refresh acceptance");
       }
       await f.dispatchedRecorder;
-      hiddenOperation = createReplyOperation({ ...f.scope, resetTriggered: false });
+      const hiddenDispatch = dispatchInboundMessageMock.mock.calls[0]?.[0] as Parameters<
+        typeof dispatchInboundMessage
+      >[0];
+      const prepareHidden = hiddenDispatch.replyOptions?.onSessionPrepared;
+      if (!prepareHidden) {
+        throw new Error("Missing hidden refresh preparation callback");
+      }
+      prepareHidden({
+        sessionKey: f.scope.sessionKey,
+        sessionId: f.scope.sessionId,
+        storePath: f.scope.storePath,
+      });
+      const hidden = await claimRefreshOperation(f, accepted.runId);
+      releaseHidden = hidden.release;
+      const hiddenOperation = hidden.operation;
       hiddenOperation.bindToolAuthoritySnapshot({
         fingerprint: () => "same-authority",
         project: () => "same-authority",
@@ -533,7 +586,7 @@ describe("registered progress refresh admission", () => {
       expect(getAgentRunContext(f.params.idempotencyKey)?.projectSessionMessages).not.toBe(false);
       expect(getAgentRunContext(accepted.runId)?.projectSessionMessages).toBe(false);
     } finally {
-      hiddenOperation?.complete();
+      releaseHidden?.();
       await f.cleanup();
     }
   });

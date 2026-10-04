@@ -128,6 +128,8 @@ export type SessionControllerSourceAdapter = {
   readonly requester?: Readonly<{ deviceId?: string; connectionId?: string; clientId?: string }>;
   /** False for internal work that ordinary operator chat surfaces must preserve. */
   readonly controlUiVisible?: boolean;
+  /** Initial presentation copied to the claimed operation; the adapter is not a runtime owner. */
+  readonly projectSessionActive?: boolean;
   /** Side questions stay independent from main-turn session stops. */
   readonly turnKind?: "main" | "btw";
   cancel?(reason?: unknown): void;

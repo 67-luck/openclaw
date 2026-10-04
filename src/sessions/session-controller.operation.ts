@@ -700,6 +700,10 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       : getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext,
   );
   owner.active = operation;
+  const projectSessionActive = params.mailboxClaim?.inputs[0]?.sourceAdapter?.projectSessionActive;
+  if (projectSessionActive !== undefined) {
+    owner.attachment = { operation, projectSessionActive };
+  }
   addSessionControllerEntryAlias(owner, sessionId);
   controllerEntryByOperation.set(operation, owner);
   retainSessionControllerOperation(operation);

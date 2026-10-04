@@ -193,6 +193,7 @@ export function registerChatAbortController(params: {
     providerId: normalizeOptionalLowercaseString(params.providerId),
     authProviderId: normalizeOptionalLowercaseString(params.authProviderId),
     controlUiVisible: params.controlUiVisible ?? params.projectSessionActive,
+    projectSessionActive: params.projectSessionActive,
     kind: params.kind,
     turnKind: params.turnKind,
   };
