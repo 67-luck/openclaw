@@ -4,13 +4,22 @@ import { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it } from "vitest";
 import { getSessionKysely } from "../config/sessions/session-accessor.sqlite-scope.js";
+import { resolveSessionColdArchivePath } from "../config/sessions/session-cold-storage-codec.js";
 import { readSessionColdTranscript } from "../config/sessions/session-cold-storage-state.js";
 import { runSessionColdStorageMaintenance } from "../config/sessions/session-cold-storage.js";
 import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
+import { acquireGatewayStateOwner } from "../infra/gateway-state-owner.js";
 import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
 import { autoMigrateLegacyState } from "../infra/state-migrations.doctor.js";
+import { buildLegacyStateMigrationPreludeSteps } from "../infra/state-migrations.prelude.js";
+import { buildUpdateRehearsalPathEnv } from "../infra/update-rehearsal-paths.js";
 import { EMPTY_LEGACY_SESSION_SURFACES } from "../plugins/legacy-session-surfaces.types.js";
-import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  openOpenClawAgentDatabase,
+} from "../state/openclaw-agent-db.js";
+import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
+import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import {
   withOpenClawTestState,
   type OpenClawTestState,
@@ -471,6 +480,150 @@ it.each([
           expect(observed.raw).toBe(fixture.raw);
           expect(observed.event?.event_json).toBe(fixture.eventJson);
           expect(observed.transcriptUpdatedAt).toBe(42);
+        }
+      },
+    );
+  },
+);
+
+it.each(["rehearsal", "rehearsal-zero", "live", "flag-only", "corrupt-rehearsal"])(
+  "preserves cold data while repairing compaction state in %s",
+  async (mode) => {
+    await withOpenClawTestState(
+      { label: "doctor-compaction-copy", scenario: "minimal" },
+      async (state) => {
+        const cold = seedHistory(state, "copied-cold", {});
+        await runSessionColdStorageMaintenance({
+          config: {
+            agents: { ownership: "explicit", entries: { main: {} } },
+            session: {
+              store: cold.databasePath,
+              maintenance: { coldStorage: { enabled: true, afterDays: 30 } },
+            },
+          },
+        });
+        const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+        const archived = expectDefined(
+          readSessionColdTranscript(database.db, cold.sessionId),
+          "file-backed cold transcript before rehearsal",
+        );
+        expect(archived.storage).toBe("file");
+        const coldRows = () => {
+          const current = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+          return {
+            archive: current.db
+              .prepare("SELECT * FROM session_transcript_cold_archives WHERE session_id = ?")
+              .get(cold.sessionId),
+            events: current.db
+              .prepare("SELECT * FROM transcript_events WHERE session_id = ? ORDER BY seq")
+              .all(cold.sessionId),
+          };
+        };
+        const beforeCold = coldRows();
+        const archivePath = resolveSessionColdArchivePath(cold.databasePath, archived.archive_name);
+        if (mode === "corrupt-rehearsal") {
+          fs.writeFileSync(archivePath, "damaged archive");
+        } else {
+          fs.unlinkSync(archivePath);
+        }
+        database.db
+          .prepare(
+            "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.compactionCheckpoints', json(?)) WHERE session_key = ?",
+          )
+          .run(JSON.stringify([checkpoint(cold.sessionId)]), cold.sessionKey);
+        const hot = seedHistory(state, "copied-hot", {
+          compactionCheckpoints: [checkpoint("session-copied-hot")],
+        });
+        const before = cold.read();
+        await closeOpenClawAgentDatabasesAsync(state.stateDir);
+        expect(fs.existsSync(`${cold.databasePath}-wal`)).toBe(false);
+        expect(fs.existsSync(`${cold.databasePath}-shm`)).toBe(false);
+        const canDefer = mode === "rehearsal" || mode === "rehearsal-zero";
+        const env =
+          canDefer || mode === "corrupt-rehearsal"
+            ? {
+                ...state.env,
+                ...buildUpdateRehearsalPathEnv(state.stateDir),
+                OPENCLAW_UPDATE_IN_PROGRESS: mode === "rehearsal-zero" ? "0" : "1",
+                OPENCLAW_SERVICE_REPAIR_POLICY: "external",
+                OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_SERVICE_REPAIR: "0",
+                OPENCLAW_UPDATE_PARENT_ALLOWS_GATEWAY_ACTIVATION: "0",
+              }
+            : {
+                ...state.env,
+                ...(mode === "flag-only" ? { OPENCLAW_UPDATE_IN_PROGRESS: "1" } : {}),
+              };
+        const owner = acquireGatewayStateOwner({
+          databasePath: resolveOpenClawStateSqlitePath(env),
+        });
+        const maintenance = createOpenClawDatabaseMaintenanceScope({
+          schemaMaintenance: true,
+          assertOwnerCurrent: owner.assertCurrent,
+          assertDatabaseAccess: owner.assertDatabaseAccess,
+        });
+        try {
+          await maintenance.run(async () => {
+            if (canDefer) {
+              const step = expectDefined(
+                buildLegacyStateMigrationPreludeSteps({
+                  mode: "doctor",
+                  invocationPurpose: "doctor",
+                  config: {},
+                  configPath: state.configPath,
+                  configIncludedPaths: [],
+                  stateDir: state.stateDir,
+                  env,
+                  homedir: () => state.home,
+                  agentDatabaseTargets: [{ agentId: "main", path: cold.databasePath }],
+                  pluginSessionStoreAgentIds: [],
+                  legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
+                  readOnlyPlanning: true,
+                }).find((candidate) => candidate.id === "session-entry-state"),
+                "registered entry-state migration",
+              );
+              expect(await step.run()).toMatchObject({
+                changes: ["Canonicalized entry state for 2 durable session row(s)."],
+                warnings: [
+                  expect.stringContaining("Deferred compaction metrics for 1 cold transcript"),
+                ],
+                warningDisposition: "recoverable",
+              });
+              const after = cold.read();
+              expect(JSON.parse(String(after.raw))).toMatchObject({
+                retainedHistoryReferences: {
+                  sessionIds: ["previous", cold.sessionId],
+                  artifactPaths: [],
+                },
+              });
+              expect(after.raw).not.toContain("compactionCheckpoints");
+              expect(after.raw).toContain('"opaqueCount":9007199254740993');
+              expect(after.event).toBeUndefined();
+              expect(after.updatedAt).toBe(before.updatedAt);
+              expect(after.transcriptUpdatedAt).toBe(before.transcriptUpdatedAt);
+              expect(
+                JSON.parse(expectDefined(hot.read().event, "hot compaction event").event_json),
+              ).toMatchObject({
+                tokensBefore: 90,
+                tokensAfter: 40,
+              });
+            } else {
+              await expect(
+                repairLegacySessionEntryStates({ apply: true, cfg: {}, env }),
+              ).rejects.toThrow(/Cold transcript archive/);
+              expect(cold.read().raw).toBe(before.raw);
+              expect(hot.read().raw).toBe(hot.raw);
+            }
+            expect(coldRows()).toEqual(beforeCold);
+            expect(cold.read().event).toBeUndefined();
+            if (mode === "corrupt-rehearsal") {
+              expect(fs.readFileSync(archivePath, "utf8")).toBe("damaged archive");
+            } else {
+              expect(fs.existsSync(archivePath)).toBe(false);
+            }
+          });
+        } finally {
+          await maintenance.close();
+          owner.release();
         }
       },
     );

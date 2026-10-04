@@ -4,6 +4,8 @@ import type { DatabaseSync } from "node:sqlite";
 import { note } from "../../packages/terminal-core/src/note.js";
 import { scanDoctorSessionEntriesTolerant } from "../config/sessions/session-accessor.js";
 import { getSessionKysely } from "../config/sessions/session-accessor.sqlite-scope.js";
+import { resolveSessionColdArchivePath } from "../config/sessions/session-cold-storage-codec.js";
+import { readSessionColdTranscript } from "../config/sessions/session-cold-storage-state.js";
 import {
   hasLegacySessionEntryState,
   hasLegacySessionProviderState,
@@ -33,6 +35,7 @@ import {
   createLegacyStateMigrationStepReceipt,
   DoctorStateMigrationRefusalError,
 } from "../infra/state-migrations.messages.js";
+import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "../state/openclaw-agent-db-migration-required.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import {
@@ -43,6 +46,7 @@ import {
 import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { runDoctorAgentDatabaseOperation } from "./doctor-agent-database-operation.js";
 import { backupDoctorSqliteDatabases } from "./doctor-migration-backup.js";
+import { createDoctorRehearsalDatabaseCoverage } from "./doctor-rehearsal-databases.js";
 import {
   applyLegacyCompactionEventFacts,
   createLegacyCompactionTranscriptTransform,
@@ -50,6 +54,7 @@ import {
   type LegacyCompactionEventFact,
 } from "./doctor-session-compaction-history.js";
 import type { DoctorSqliteMaintenanceAuthority } from "./doctor-sqlite-maintenance-lock.js";
+import { createRehearsalPathInspector } from "./doctor-update-rehearsal-paths.js";
 import {
   rewriteDoctorSessionEntries,
   scanDoctorSessionEntryRecords,
@@ -60,6 +65,8 @@ export type SessionDeliveryStateRepairReport = {
   found: number;
   repaired: number;
   scannedStores: number;
+  warnings?: string[];
+  warningDisposition?: "recoverable";
 };
 
 /** Scan or rewrite legacy delivery fields inside existing session row JSON. */
@@ -319,6 +326,7 @@ export async function repairLegacySessionEntryStates(params: {
   deferSchemaRepair?: boolean;
 }): Promise<SessionDeliveryStateRepairReport> {
   try {
+    const deferredMetrics = new Map<string, Set<string>>();
     const preparedFacts = new Map<string, Map<string, string>>();
     const preparedEntries = new Map<string, ReadonlyMap<string, string>>();
     const preparedTransforms = new Map<
@@ -356,14 +364,20 @@ export async function repairLegacySessionEntryStates(params: {
         }
         applyLegacyCompactionEventFacts(
           database,
-          prepared.eventFacts,
+          prepared.eventFacts.filter(
+            (fact) => !deferredMetrics.get(database.path)?.has(fact.sessionId),
+          ),
           preparedTransforms.get(database.path),
         );
         return prepared.entry;
       },
       updateDeliveryProjection: true,
     });
-    const report = { found: plan.found, repaired: 0, scannedStores: plan.scannedStores };
+    const report: SessionDeliveryStateRepairReport = {
+      found: plan.found,
+      repaired: 0,
+      scannedStores: plan.scannedStores,
+    };
     if (!params.apply || plan.found === 0) {
       return report;
     }
@@ -376,11 +390,21 @@ export async function repairLegacySessionEntryStates(params: {
     if (!authority) {
       throw new Error("Session entry state repair requires Doctor maintenance ownership.");
     }
+    const rehearsalRoot = resolveUpdateRehearsalRoot(params.env);
+    const rehearsalPaths = rehearsalRoot
+      ? createRehearsalPathInspector(rehearsalRoot, [])
+      : undefined;
     const identities = new Map(plan.pending.map(({ target, identity }) => [target, identity]));
     const assertTargetCurrent = (target: ExistingAgentDatabaseTarget) => {
       authority.assertCurrent();
       const identity = identities.get(target)!;
       assertExistingDatabaseIdentity(target.sqlitePath, identity.key, identity.birthtime);
+      if (deferredMetrics.has(target.sqlitePath)) {
+        if (resolveUpdateRehearsalRoot(params.env) !== rehearsalRoot) {
+          throw new Error("Disposable compaction rehearsal namespace changed before repair.");
+        }
+        rehearsalPaths?.inspectPath(target.sqlitePath);
+      }
     };
     const assertCurrent = () => {
       for (const target of identities.keys()) {
@@ -466,6 +490,32 @@ export async function repairLegacySessionEntryStates(params: {
         const { restoreSessionColdTranscript } =
           await import("../config/sessions/session-cold-storage.js");
         for (const sessionId of preimage.sessionIds) {
+          if (rehearsalPaths) {
+            assertTargetCurrent(target);
+            const cold = withOpenClawAgentDatabaseReadOnly(
+              (database) => readSessionColdTranscript(database.db, sessionId),
+              { agentId: target.agentId, path: target.sqlitePath, env: params.env },
+            );
+            if (
+              cold.found &&
+              cold.value?.storage === "file" &&
+              !rehearsalPaths.inspectPath(
+                resolveSessionColdArchivePath(target.sqlitePath, cold.value.archive_name),
+              )
+            ) {
+              const coverage = createDoctorRehearsalDatabaseCoverage(params.env);
+              coverage?.admit([target.sqlitePath]);
+              if (coverage?.excludes(target.sqlitePath)) {
+                coverage.assertCurrent();
+                // Published 9.7 omits cold files. Admission ends before repair can create
+                // journal companions; live Doctor must verify the original archive.
+                const deferred = deferredMetrics.get(target.sqlitePath) ?? new Set<string>();
+                deferred.add(sessionId);
+                deferredMetrics.set(target.sqlitePath, deferred);
+                continue;
+              }
+            }
+          }
           await restoreSessionColdTranscript({ ...scope, sessionId }, () =>
             assertTargetCurrent(target),
           );
@@ -474,6 +524,14 @@ export async function repairLegacySessionEntryStates(params: {
       assertTargetCurrent(target);
     }
     report.repaired = plan.apply(assertTargetCurrent);
+    if (deferredMetrics.size > 0) {
+      const count = [...deferredMetrics.values()].reduce((total, ids) => total + ids.size, 0);
+      report.warnings = [
+        `Deferred compaction metrics for ${count} cold transcript(s) in the disposable update rehearsal because archive files are absent from the private copy. Original-state Doctor must verify and migrate them before Gateway activation.`,
+      ];
+      report.warningDisposition = "recoverable";
+      note(report.warnings.join("\n"), "Session SQLite rehearsal");
+    }
     for (const { target, scope, identity } of plan.pending) {
       assertTargetCurrent(target);
       scanDoctorSessionEntryRecords(

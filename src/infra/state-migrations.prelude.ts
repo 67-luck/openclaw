@@ -233,7 +233,8 @@ export function buildLegacyStateMigrationPreludeSteps(params: {
               report.repaired > 0
                 ? [`Canonicalized entry state for ${report.repaired} durable session row(s).`]
                 : [],
-            warnings: [],
+            warnings: report.warnings ?? [],
+            warningDisposition: report.warningDisposition,
           };
         },
         undefined,
