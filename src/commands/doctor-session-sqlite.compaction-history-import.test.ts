@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -7,6 +8,7 @@ import { loadExactSessionEntry } from "../config/sessions/session-accessor.sqlit
 import { loadTranscriptEventsSync } from "../config/sessions/session-accessor.sqlite-read.js";
 import { getSessionKysely } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { updateSqliteTranscriptEventJsonInTransaction } from "../config/sessions/session-accessor.sqlite-transcript-store.js";
+import { resolveSessionColdArchivePath } from "../config/sessions/session-cold-storage-codec.js";
 import { runSessionColdStorageMaintenance } from "../config/sessions/session-cold-storage.js";
 import { transcriptEventJsonSql } from "../config/sessions/transcript-payload.js";
 import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
@@ -204,7 +206,13 @@ it("imports checkpoint metrics with their historical transcript and replays rest
   if (!coldBefore.found || !coldBefore.value) {
     throw new Error("Expected current transcript to be cold before replay");
   }
-  expect(coldBefore.value.archive_blob).toBeInstanceOf(Uint8Array);
+  expect(coldBefore.value).toMatchObject({ storage: "file", archive_blob: null });
+  const coldArchivePath = resolveSessionColdArchivePath(sqlitePath, coldBefore.value.archive_name);
+  const coldArchiveBytes = fs.readFileSync(coldArchivePath);
+  expect(coldArchiveBytes.length).toBe(coldBefore.value.archive_bytes);
+  expect(createHash("sha256").update(coldArchiveBytes).digest("hex")).toBe(
+    coldBefore.value.archive_sha256,
+  );
   const reimported = await importCheckpointStore(store);
   expect(reimported.targets.flatMap((target) => target.issues)).toEqual([]);
   expect(loadExactSessionEntry(scope)?.entry).toEqual(entry);
@@ -229,6 +237,7 @@ it("imports checkpoint metrics with their historical transcript and replays rest
       .prepare("SELECT * FROM session_transcript_cold_archives WHERE session_id = ?")
       .get("session-1"),
   ).toEqual(coldBefore.value);
+  expect(fs.readFileSync(coldArchivePath)).toEqual(coldArchiveBytes);
   expect(
     String(
       backup
