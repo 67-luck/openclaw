@@ -2163,8 +2163,10 @@ describe("state migrations", () => {
     expect(mergedStore["voice:15550001111"]).toBeUndefined();
     expect(mergedStore["agent:worker-1:voice:15550001111"]?.sessionId).toBe("shared-voice");
     expect(mergedStore["agent:worker-1:voice:15550001111"]?.acp).toBeUndefined();
-    expect(mergedStore["agent:worker-1:legacy-prototype"]?.sessionId).toBe("prototype-row");
-    expect(mergedStore["agent:worker-1:legacy-prototype"]).not.toHaveProperty("sessionFile");
+    expect(mergedStore["agent:worker-1:legacy-prototype"]).toMatchObject({
+      sessionId: "prototype-row",
+      sessionFile: "trace.jsonl",
+    });
     expect(mergedStore["agent:worker-1:acp:task"]?.acp).toBeUndefined();
 
     await expect(fs.readFile(path.join(stateDir, "sessions", "trace.jsonl"), "utf8")).resolves.toBe(
