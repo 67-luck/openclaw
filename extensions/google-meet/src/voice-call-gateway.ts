@@ -41,7 +41,7 @@ async function createConnectedGatewayClient(params: {
             clientDisplayName: params.surface.clientDisplayName,
             scopes: ["operator.write"],
             onHelloOk: () => resolve(),
-            onConnectError: (error) => {
+            onConnectError: (error: unknown) => {
               abortStart.abort();
               reject(error instanceof Error ? error : new Error(String(error)));
             },
