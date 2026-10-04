@@ -1,3 +1,4 @@
+import { racePromiseWithAbortSignal, raceWithTimeout } from "@openclaw/retry";
 import type {
   PluginControlUiDiagnostic,
   PluginControlUiModule,
@@ -317,7 +318,6 @@ export class ControlUiPluginRuntime implements ControlUiPluginCapability {
       selections: new Map<ControlUiSurface, string | null>(),
     };
     this.loadingOwners.add(owner);
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const styles: HTMLLinkElement[] = [];
       const initialize = async (): Promise<ControlUiPluginOwner | undefined> => {
@@ -326,25 +326,19 @@ export class ControlUiPluginRuntime implements ControlUiPluginCapability {
           this.disposeOwner(owner),
         );
       };
-      const complete = await Promise.race([
-        initialize(),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  "Plugin UI initialization timed out. Check the plugin and reload its UI.",
-                ),
-              ),
-            ACTIVATION_TIMEOUT_MS,
+      const complete = await raceWithTimeout(
+        racePromiseWithAbortSignal(
+          initialize(),
+          abort.signal,
+          () => new Error("Plugin UI activation ended."),
+        ),
+        ACTIVATION_TIMEOUT_MS,
+        () => {
+          throw new Error(
+            "Plugin UI initialization timed out. Check the plugin and reload its UI.",
           );
-          abort.signal.addEventListener(
-            "abort",
-            () => reject(new Error("Plugin UI activation ended.")),
-            { once: true },
-          );
-        }),
-      ]);
+        },
+      );
       if (!complete || !current() || abort.signal.aborted) {
         this.disposeOwner(owner);
         return;
@@ -412,7 +406,6 @@ export class ControlUiPluginRuntime implements ControlUiPluginCapability {
         await this.reportActivation(descriptor, client, current, "failed", error);
       }
     } finally {
-      clearTimeout(timer);
       this.loadingOwners.delete(owner);
     }
   }

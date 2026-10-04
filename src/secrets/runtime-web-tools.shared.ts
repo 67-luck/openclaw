@@ -1,7 +1,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { resolveSecretInputRef, type SecretRef } from "../config/types.secrets.js";
+import { coerceSecretRef, type SecretRef } from "../config/types.secrets.js";
 import { sortPluginEntriesForAutoDetect } from "../plugins/plugin-entry-order.js";
 import type {
   PluginWebFetchProviderEntry,
@@ -22,7 +22,7 @@ import {
   type SecretResolutionResult,
 } from "./runtime-web-tools-selection.types.js";
 import type { RuntimeWebDiagnostic } from "./runtime-web-tools.types.js";
-import { isRecord } from "./shared.js";
+import { isRecord, parseDotPath } from "./shared.js";
 
 const loadResolveManifestContractOwnerPluginId = createLazyRuntimeNamedExport(
   () => import("./runtime-web-tools-manifest.runtime.js"),
@@ -116,7 +116,7 @@ function pushInactiveProviderCredentialWarnings<
       config: params.selection.sourceConfig,
       toolConfig: params.selection.toolConfig,
     });
-    if (!hasConfiguredSecretRef(value, params.selection.defaults)) {
+    if (!coerceSecretRef(value, params.selection.defaults)) {
       continue;
     }
     for (const path of params.selection.inactivePathsForProvider(provider)) {
@@ -139,18 +139,6 @@ function normalizeKnownProvider(
     : undefined;
 }
 
-/**
- * Returns whether a configured value or sibling ref field contains a SecretRef.
- */
-function hasConfiguredSecretRef(value: unknown, defaults: SecretDefaults | undefined): boolean {
-  return Boolean(
-    resolveSecretInputRef({
-      value,
-      defaults,
-    }).ref,
-  );
-}
-
 function getProviderEnvVars(provider: object): string[] {
   return "envVars" in provider && Array.isArray(provider.envVars) ? provider.envVars : [];
 }
@@ -160,10 +148,7 @@ function setResolvedCredentialPath(params: {
   path: string;
   value: string;
 }): void {
-  const pathSegments = params.path
-    .split(".")
-    .map((segment) => segment.trim())
-    .filter((segment) => segment.length > 0);
+  const pathSegments = parseDotPath(params.path);
   if (pathSegments.length === 0) {
     return;
   }
@@ -397,7 +382,7 @@ export async function resolveRuntimeWebProviderSelection<
         const fallback = provider.getConfiguredCredentialFallback?.(params.sourceConfig);
         if (
           fallback?.value !== undefined &&
-          hasConfiguredSecretRef(fallback.value, params.defaults)
+          coerceSecretRef(fallback.value, params.defaults) !== null
         ) {
           const fallbackResolution = await params.resolveSecretInput({
             providerId: provider.id,

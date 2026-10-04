@@ -13,6 +13,9 @@ import { afterEach, expect, test, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { SqliteBoardStore } from "../../boards/sqlite-board-store.js";
 import { runWithDiagnosticTraceContext } from "../../infra/diagnostic-trace-context.js";
+import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
+import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
+import * as workerCpu from "../../infra/worker-cpu.js";
 import { flushLogger, setLoggerOverride } from "../../logging/logger.js";
 import { onSessionIdentityMutation } from "../../sessions/session-lifecycle-events.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
@@ -38,11 +41,12 @@ import {
   replaceSessionEntrySync,
 } from "./session-accessor.sqlite-entry.js";
 import { ensureSessionEntrySync } from "./session-accessor.sqlite-initial-entry.js";
+import type { SqliteSessionReclamationPlan } from "./session-accessor.sqlite-lifecycle-types.js";
 import { withSqliteSessionPageReclamation } from "./session-accessor.sqlite-page-reclamation.js";
 import { runSqliteSessionReclamation } from "./session-accessor.sqlite-reclamation-run.js";
 import {
-  createHistoryEvictionReclamationPlan,
   createLifecycleArtifactReclamationPlan,
+  resolveSessionReclamationDatabaseOptions,
 } from "./session-accessor.sqlite-reclamation.js";
 import { runExclusiveSqliteSessionWrite } from "./session-accessor.sqlite-scope.js";
 import {
@@ -176,13 +180,14 @@ function createFixture(alias = false) {
     symlinkSync(database.path, aliasPath);
     openOpenClawAgentDatabase({ ...options, path: aliasPath });
   }
-  const plan = createHistoryEvictionReclamationPlan({
-    databaseOptions,
+  const plan = {
+    kind: "history-eviction",
+    databaseOptions: resolveSessionReclamationDatabaseOptions(databaseOptions),
     diskBudget: {},
     materializedPlans: [],
-    protectedSessionIds: new Set(scopes.map((scope) => scope.sessionId)),
+    protectedSessionIds: [...new Set(scopes.map((scope) => scope.sessionId))],
     sessionId: "already-removed-history",
-  });
+  } satisfies SqliteSessionReclamationPlan;
   return {
     database,
     databaseOptions,
@@ -193,13 +198,23 @@ function createFixture(alias = false) {
 
 function observeWorkers() {
   const workers: Array<{ worker: Worker; id: number; exits: number[] }> = [];
-  const observe = (worker: Worker) => {
-    const observed: (typeof workers)[number] = { worker, id: worker.threadId, exits: [] };
-    workers.push(observed);
-    worker.once("exit", (code) => observed.exits.push(code));
-  };
-  process.on("worker", observe);
-  return { workers, stopObserving: () => process.off("worker", observe) };
+  const heartbeatUrl = String(
+    resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.gatewayStateOwnerHeartbeat),
+  );
+  const createWorker = workerCpu.createCpuTrackedWorker;
+  const observe = vi
+    .spyOn(workerCpu, "createCpuTrackedWorker")
+    .mockImplementation((filename, options) => {
+      const worker = createWorker(filename, options);
+      // Schema admission has its own heartbeat; this suite owns data-worker lifetime checks.
+      if (String(filename) !== heartbeatUrl) {
+        const observed: (typeof workers)[number] = { worker, id: worker.threadId, exits: [] };
+        workers.push(observed);
+        worker.once("exit", (code) => observed.exits.push(code));
+      }
+      return worker;
+    });
+  return { workers, stopObserving: () => observe.mockRestore() };
 }
 
 async function readLogRecords(file: string) {
@@ -381,13 +396,14 @@ test("captures removal identity when a synchronous writer authorizes a reused re
   const { databaseOptions, scopes } = createFixture();
   await runSqliteSessionReclamation({
     forceInProcess: false,
-    plan: createHistoryEvictionReclamationPlan({
-      databaseOptions,
+    plan: {
+      kind: "history-eviction",
+      databaseOptions: resolveSessionReclamationDatabaseOptions(databaseOptions),
       diskBudget: {},
       materializedPlans: [],
-      protectedSessionIds: new Set(),
+      protectedSessionIds: [],
       sessionId: "previous-victim",
-    }),
+    },
   });
   const removed = scopes[0]!;
   const writer = scopes[1]!;

@@ -58,29 +58,50 @@ export function commitSessionEntryPatch(
         : undefined;
       result = { kind: "session-entry-patch", entry: mutation.entry, publication };
     }
-    // Deliver the exact candidate before COMMIT; the small native receipt certifies it afterward.
-    const transfer = createSqliteWorkerTransferOwner();
-    const handle = transfer.start([{ kind: "patch", value: result }].values(), {
-      kinds: ["patch"],
-    });
-    try {
-      admit("transaction", { kind: "session-entry-patch-transfer", handle });
-      for (;;) {
-        const frame = transfer.next(handle.id);
-        admit("transaction", { kind: "session-entry-patch-frame", frame });
-        if (frame.done) {
-          break;
-        }
-      }
-      const receipt: SessionEntryPatchReceipt = {
-        kind: "session-entry-patch-committed",
-        transferId: handle.id,
-      };
-      deferSqliteWorkerCommitReceipt(database.db, receipt);
-      admit("commit", receipt);
-      return receipt;
-    } finally {
-      transfer.cancel();
-    }
+    return transferSessionEntryWorkerCandidate(database, admit, result);
   });
+}
+
+export function transferSessionEntryWorkerCandidate(
+  database: OpenClawAgentDatabase,
+  admit: AgentWorkerOperationContext["admit"],
+  result: { kind: string },
+): SessionEntryPatchReceipt;
+export function transferSessionEntryWorkerCandidate<Receipt>(
+  database: OpenClawAgentDatabase,
+  admit: AgentWorkerOperationContext["admit"],
+  result: { kind: string },
+  wrapReceipt: (receipt: SessionEntryPatchReceipt) => Receipt,
+): Receipt;
+export function transferSessionEntryWorkerCandidate<Receipt>(
+  database: OpenClawAgentDatabase,
+  admit: AgentWorkerOperationContext["admit"],
+  result: { kind: string },
+  wrapReceipt?: (receipt: SessionEntryPatchReceipt) => Receipt,
+): SessionEntryPatchReceipt | Receipt {
+  // Deliver the exact candidate before COMMIT; the small native receipt certifies it afterward.
+  const transfer = createSqliteWorkerTransferOwner();
+  const handle = transfer.start([{ kind: "patch", value: result }].values(), {
+    kinds: ["patch"],
+  });
+  try {
+    admit("transaction", { kind: "session-entry-patch-transfer", handle });
+    for (;;) {
+      const frame = transfer.next(handle.id);
+      admit("transaction", { kind: "session-entry-patch-frame", frame });
+      if (frame.done) {
+        break;
+      }
+    }
+    const receipt: SessionEntryPatchReceipt = {
+      kind: "session-entry-patch-committed",
+      transferId: handle.id,
+    };
+    const publication = wrapReceipt ? wrapReceipt(receipt) : receipt;
+    deferSqliteWorkerCommitReceipt(database.db, publication);
+    admit("commit", publication);
+    return publication;
+  } finally {
+    transfer.cancel();
+  }
 }

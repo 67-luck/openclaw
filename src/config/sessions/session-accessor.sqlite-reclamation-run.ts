@@ -1,5 +1,6 @@
 import { isMainThread } from "node:worker_threads";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
+import { ownedWorkerBytes } from "../../infra/worker-transfer-bytes.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { retainOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import { captureOpenClawAgentDatabaseValidationTransfer } from "../../state/openclaw-agent-db-validation-cache.js";
@@ -18,7 +19,10 @@ import type {
   SqliteSessionReclamationDiagnostics,
 } from "./session-accessor.sqlite-contract.js";
 import { prepareSessionDeletionInDatabase } from "./session-accessor.sqlite-deletion-plan.js";
-import { hasPreparedNativeSessionDeletion } from "./session-accessor.sqlite-deletion.js";
+import {
+  hasPreparedNativeSessionDeletion,
+  captureNativeSessionWorkerDeletion,
+} from "./session-accessor.sqlite-deletion.js";
 import { assertSessionSubagentRunsCurrent } from "./session-accessor.sqlite-descendant-basis.js";
 import { publishSessionEntryWorkerInvalidations } from "./session-accessor.sqlite-entry-cache-publication.js";
 import type {
@@ -115,6 +119,22 @@ export async function runSqliteSessionReclamation(params: {
 }): Promise<SqliteSessionReclamationResult> {
   if (params.diagnostics) {
     params.diagnostics.kind = params.plan.kind;
+  }
+  if (
+    params.plan.kind === "entry" &&
+    supportsOpenClawAgentDatabaseExecution(params.plan.databaseOptions)
+  ) {
+    const participants = captureNativeSessionWorkerDeletion(params.plan.preparedTargetSnapshot);
+    if (participants) {
+      const { deleteSessionWithNativeBindingsInWorker } =
+        await import("./session-native-binding.js");
+      return deleteSessionWithNativeBindingsInWorker(
+        params.plan,
+        participants,
+        () => params.assertCommitAllowed?.(),
+        params.onWorkerResult,
+      );
+    }
   }
   if (
     params.forceInProcess ||
@@ -362,22 +382,9 @@ function prepareReclamationWorkerTransferList(plan: SqliteArchiveReclamationPlan
     if (!archive) {
       continue;
     }
-    const bytes = archive.bytes;
-    let owned = bytes;
-    let buffer: ArrayBuffer;
-    if (
-      bytes.buffer instanceof ArrayBuffer &&
-      bytes.byteOffset === 0 &&
-      bytes.byteLength === bytes.buffer.byteLength
-    ) {
-      buffer = bytes.buffer;
-    } else {
-      buffer = new ArrayBuffer(bytes.byteLength);
-      owned = new Uint8Array(buffer);
-      owned.set(bytes);
-    }
-    materializedPlan.archive = { ...archive, bytes: owned };
-    buffers.add(buffer);
+    const bytes = ownedWorkerBytes(archive.bytes);
+    materializedPlan.archive = { ...archive, bytes };
+    buffers.add(bytes.buffer);
   }
   return [...buffers];
 }

@@ -53,6 +53,12 @@ export function createSessionHistoryWorkerReaders(
       );
   }
   return {
+    readRuntimeTarget: reader(
+      "session-runtime-target",
+      "runtime transcript target",
+      (input) => ({ kind: "session-runtime-target", ...input }),
+      (value) => value.target,
+    ),
     readConversations: reader(
       "conversation-rows",
       "conversations",
@@ -219,6 +225,7 @@ export function createSessionHistoryWorkerReaders(
             value.kind !== "source-messages" &&
             value.kind !== "recent-page" &&
             value.kind !== "rpc" &&
+            value.kind !== "rpc-message" &&
             value.kind !== "http" &&
             value.kind !== "delta" &&
             value.kind !== "inline-visibility" &&
@@ -392,6 +399,12 @@ export function createSessionHistoryWorkerReaders(
       "pending input receipts",
       (input) => ({ kind: "session-pending-input-receipts", ...input }),
       (value) => value.receipts,
+    ),
+    readPendingInputSource: reader(
+      "session-pending-input-source",
+      "a submitted input source",
+      (input) => ({ kind: "session-pending-input-source", ...input }),
+      (value) => value.snapshot,
     ),
     readConversationDelivery: reader(
       "conversation-delivery",

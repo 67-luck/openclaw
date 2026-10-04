@@ -13,6 +13,7 @@ import {
   validateSessionsPluginPatchParams,
   validateSessionsResetParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { readAcpSessionMetaForEntries } from "../../acp/runtime/session-meta-readonly.js";
 import { updateSessionProfileInvolvement } from "../../config/sessions/session-accessor.js";
 import { assignSessionOwnerInWorker } from "../../config/sessions/session-metadata-write.async.js";
 import { patchPluginSessionExtension } from "../../plugins/host-hook-state.js";
@@ -21,6 +22,7 @@ import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lif
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
+import { resolveOperatorSessionCreation } from "../session-creation-provenance.js";
 import { prepareSessionFastModePresentation } from "../session-fast-mode-presentation.js";
 import {
   projectAssignableSessionOwner,
@@ -40,7 +42,6 @@ import { projectSessionPatchResult } from "../session-utils-model.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
 import { isSyntheticGatewayCaller } from "./gateway-personal-caller.js";
 import { emitSessionsChanged } from "./session-change-event.js";
-import { resolveOperatorSessionCreation } from "./session-creation-provenance.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
 import type { SessionPatchTargetIdentity } from "./session-unread-ack.js";
 import { startSessionPatchDiagnostics } from "./sessions-patch-diagnostics.js";
@@ -133,6 +134,9 @@ function createSessionPatchHandler(
         context,
         diagnostics,
         operatorAuthority: preparingOperator,
+        onCreatedSessionCommitted: request.many
+          ? undefined
+          : sessionMutationAuthorization?.recordCreatedSession,
         patch,
         targets: targets.map((target) => ({
           ...target,
@@ -176,11 +180,23 @@ function createSessionPatchHandler(
       const prepared = executed.preparedByIndex[0]!;
       diagnostics?.scope("response");
       const catalog = await executed.catalogs.available(prepared.targetAgentId);
+      const [acpMeta] = await readAcpSessionMetaForEntries({
+        cfg: executed.cfg,
+        entries: [
+          {
+            agentId: prepared.targetAgentId,
+            sessionKey: prepared.canonicalKey,
+            entry: outcome.entry,
+          },
+        ],
+      });
+      assertCurrent();
       respond(
         true,
         projectSessionPatchResult({
           ...prepared,
           cfg: executed.cfg,
+          preparedAcpMeta: acpMeta ?? null,
           entry: {
             ...outcome.entry,
             fastMode: prepareSessionFastModePresentation(client)(outcome.entry.fastMode),
@@ -430,7 +446,7 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
           );
         }
       };
-      const assignment = await runExclusiveSessionLifecycleMutation({
+      const assignment = await runExclusiveSessionLifecycleMutation("assign-owner", {
         scope: target.storePath,
         identities: [target.storeKey, expectedSessionId],
         run: () =>

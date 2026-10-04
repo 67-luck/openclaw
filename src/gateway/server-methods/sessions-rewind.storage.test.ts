@@ -42,7 +42,7 @@ import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lif
 import { createDeferredCore } from "../../shared/deferred.js";
 import * as storeWriterQueue from "../../shared/store-writer-queue.js";
 import {
-  closeOpenClawAgentDatabaseByPath,
+  closeOpenClawAgentDatabaseByPathAsync,
   openOpenClawAgentDatabase,
   resolveIncognitoOpenClawAgentSqlitePath,
   resolveOpenClawAgentSqlitePath,
@@ -393,7 +393,7 @@ async function revokeWithPublicLifecyclePredecessor(
   const storePath = resolveSessionStorePathCore(undefined, { agentId: scope.agentId });
   const entered = createDeferredCore();
   const release = createDeferredCore();
-  const heldLifecycle = runExclusiveSessionLifecycleMutation({
+  const heldLifecycle = runExclusiveSessionLifecycleMutation("rewind", {
     scope: storePath,
     identities: [scope.sessionId],
     run: async () => {
@@ -603,7 +603,7 @@ describe("sessions.fork storage ownership", () => {
           ? resolveIncognitoOpenClawAgentSqlitePath({ agentId: "main" })
           : resolveOpenClawAgentSqlitePath({ agentId: "main" });
         expect(fs.existsSync(databasePath)).toBe(!incognito);
-        expect(closeOpenClawAgentDatabaseByPath(databasePath)).toBe(true);
+        expect(await closeOpenClawAgentDatabaseByPathAsync(databasePath)).toBe(true);
         expect(loadSessionEntry(childScope)).toEqual(incognito ? undefined : child);
         await expect(loadTranscriptEvents(childTranscriptScope)).resolves.toEqual(
           incognito ? [] : childEvents,

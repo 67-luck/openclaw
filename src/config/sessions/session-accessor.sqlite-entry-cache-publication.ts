@@ -119,6 +119,15 @@ export function emitPreparedSessionSharingChange(
   sessionChanges.emit(change, database.db);
 }
 
+function invalidateSessionEntryCaches(databaseIdentity: string): void {
+  invalidateOpenClawAgentWritableProjections(databaseIdentity, (database) =>
+    sessionEntryCaches.delete(database),
+  );
+  invalidateOpenClawAgentReadOnlyProjections(databaseIdentity, (database) =>
+    sessionEntryCaches.delete(database),
+  );
+}
+
 /** A committed metadata-only worker write invalidates caches without changing retained identity. */
 export function publishSessionEntryWorkerMetadataInvalidation(params: {
   agentId: string;
@@ -126,12 +135,7 @@ export function publishSessionEntryWorkerMetadataInvalidation(params: {
   databaseIdentity: string;
   sessionKey: string;
 }): void {
-  invalidateOpenClawAgentWritableProjections(params.databaseIdentity, (database) =>
-    sessionEntryCaches.delete(database),
-  );
-  invalidateOpenClawAgentReadOnlyProjections(params.databaseIdentity, (database) =>
-    sessionEntryCaches.delete(database),
-  );
+  invalidateSessionEntryCaches(params.databaseIdentity);
   const change: SessionRowChange = {
     agentId: params.agentId,
     storePath: params.storePath,
@@ -207,16 +211,28 @@ export function runWithSessionEntryCreationPublication<T>(
 
 export function assertSessionEntryCreationPublication(
   operation: SessionEntryCreationOperation,
-  target: { agentId: string; sessionKey: string; paths: ReadonlySet<string> },
+  target: {
+    agentId: string;
+    sessionKey: string;
+    paths: ReadonlySet<string>;
+    databaseIdentity?: string;
+  },
 ): void {
   const creation = preparedSharingChanges.operations.get(operation);
   assertCreationCurrent(creation);
   const sourcePath =
     creation.source.kind === "native" ? creation.source.database.path : creation.source.path;
+  const matchesDatabaseIdentity =
+    creation.source.kind === "file" &&
+    target.databaseIdentity === `file:${creation.source.databaseIdentity}`;
+  const matchesTarget =
+    target.databaseIdentity !== undefined
+      ? matchesDatabaseIdentity
+      : target.paths.has(path.resolve(sourcePath));
   if (
     creation.agentId !== target.agentId ||
     creation.sessionKey !== target.sessionKey ||
-    !target.paths.has(path.resolve(sourcePath))
+    !matchesTarget
   ) {
     throw new Error("Session creation publication owner is no longer current");
   }
@@ -462,12 +478,7 @@ export function publishSessionEntryWorkerInvalidations(
     changes.push(change);
   }
   if (keys.length > 0) {
-    invalidateOpenClawAgentWritableProjections(params.databaseIdentity, (database) =>
-      sessionEntryCaches.delete(database),
-    );
-    invalidateOpenClawAgentReadOnlyProjections(params.databaseIdentity, (database) =>
-      sessionEntryCaches.delete(database),
-    );
+    invalidateSessionEntryCaches(params.databaseIdentity);
   }
   sessionChanges.emitBatch(changes, undefined, beforePublicNotifications);
 }
@@ -577,12 +588,7 @@ export function retainSessionEntryWorkerPublication(params: {
         ]),
       ];
       if (changed.length) {
-        invalidateOpenClawAgentWritableProjections(params.databaseIdentity, (database) =>
-          sessionEntryCaches.delete(database),
-        );
-        invalidateOpenClawAgentReadOnlyProjections(params.databaseIdentity, (database) =>
-          sessionEntryCaches.delete(database),
-        );
+        invalidateSessionEntryCaches(params.databaseIdentity);
       }
       const changes: SessionRowChange[] = [];
       const sharingUnchanged = new Set(replacement?.sharingUnchangedKeys);

@@ -39,13 +39,13 @@ import {
 } from "../sessions/agent-session-compaction.js";
 import { type AgentSession, estimateTokens, SessionManager } from "../sessions/index.js";
 import { getModelRegistryRuntime } from "../sessions/model-registry-runtime.js";
+import { DefaultResourceLoader } from "../sessions/resource-loader.js";
 import { createAgentSessionForEmbeddedRunner } from "../sessions/sdk.js";
 import { setSessionModelUsageSink } from "../sessions/session-model-usage.js";
 import { normalizeUsage, type UsageLike } from "../usage.js";
 import { resolveCompactionFailure } from "./compact-reasons.js";
 import {
   containsRealConversationMessages,
-  normalizeObservedTokenCount,
   summarizeCompactionMessages,
 } from "./compaction-diagnostics.js";
 import { dedupeDuplicateUserMessagesForCompaction } from "./compaction-duplicate-user-messages.js";
@@ -66,14 +66,17 @@ import { log } from "./logger.js";
 import type { PreparedCompactionRuntime } from "./prepared-compaction-runtime.js";
 import { declarePromptHistoryRewrite } from "./prompt-cache-observability.js";
 import { sanitizeSessionHistory, validateReplayTurns } from "./replay-history.js";
-import { createEmbeddedAgentResourceLoader } from "./resource-loader.js";
 import { wrapStreamFnWithDiagnosticModelCallEvents } from "./run/attempt.model-diagnostic-events.js";
 import { readCompactionAccountingRecorder } from "./run/compaction-accounting-bridge.js";
 import { estimateLlmBoundaryTokenPressure } from "./run/preemptive-compaction.js";
 import { attemptServerEndpointCompaction } from "./server-endpoint-compaction.js";
 import { applySystemPromptToSession } from "./system-prompt.js";
 import { collectRegisteredToolNames, toSessionToolAllowlist } from "./tool-name-allowlist.js";
-import { mapThinkingLevel, mapThinkingLevelForProvider } from "./utils.js";
+import {
+  mapThinkingLevel,
+  mapThinkingLevelForProvider,
+  normalizeContextTokenBudget,
+} from "./utils.js";
 import { flushPendingToolResultsAfterIdle } from "./wait-for-idle-before-flush.js";
 
 export async function executePreparedCompactionSession(runtime: PreparedCompactionRuntime) {
@@ -193,7 +196,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
       sessionKey: params.sessionKey ?? sandboxSessionKey,
       runId,
     });
-    const resourceLoader = createEmbeddedAgentResourceLoader({
+    const resourceLoader = new DefaultResourceLoader({
       cwd: effectiveCwd,
       agentDir,
       settingsManager,
@@ -298,18 +301,6 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           effectiveWorkspace,
           agentDir,
           runtimePlan,
-          sessionKey: sandboxSessionKey,
-          sandboxToolPolicy: sandbox?.tools,
-          messageProvider: resolvedMessageProvider,
-          agentAccountId: params.agentAccountId,
-          groupId: params.groupId,
-          groupChannel: params.groupChannel,
-          groupSpace: params.groupSpace,
-          spawnedBy: params.spawnedBy,
-          senderId: params.senderId,
-          senderName: params.senderName,
-          senderUsername: params.senderUsername,
-          senderE164: params.senderE164,
         });
         const compactionReplayEnabled = resolveCompactionReplayEligibility(effectiveModel, {
           extraParams: effectiveExtraParams,
@@ -406,7 +397,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           session.agent.state.messages = limited;
         }
         const hookRunner = getGlobalHookRunner();
-        const observedTokenCount = normalizeObservedTokenCount(params.currentTokenCount);
+        const observedTokenCount = normalizeContextTokenBudget(params.currentTokenCount);
         const beforeHookMetrics = buildBeforeCompactionHookMetrics({
           originalMessages,
           currentMessages: session.messages,

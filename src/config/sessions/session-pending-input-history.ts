@@ -1,9 +1,6 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
-import {
-  assertExistingDatabaseIdentity,
-  readDatabasePathIdentitySync,
-} from "../../infra/sqlite-worker-identity.js";
+import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import {
   createSqliteWorkerOperationAdmission,
   type SqliteWorkerOperationAdmission,
@@ -37,7 +34,10 @@ import type {
   PendingInputHistoryReceipt,
   PendingInputHistorySnapshot,
 } from "./session-pending-input-history.types.js";
-import { assertSessionStoreReadCandidate } from "./session-store-read-candidates.js";
+import {
+  assertSessionStoreReadCandidate,
+  captureSessionStoreCandidateIdentities,
+} from "./session-store-read-candidates.js";
 import { captureSessionStoreReadCandidates } from "./session-store-target-inventory.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
@@ -138,14 +138,7 @@ async function readPendingInputRows(
     captured.storePath ??
     resolveOpenClawAgentSqlitePath(toDatabaseOptions(logical));
   const candidates = captureSessionStoreReadCandidates(storePath);
-  const identities = new Map(
-    candidates
-      .filter((candidate) => !candidate.scope)
-      .map((candidate) => {
-        const identity = readDatabasePathIdentitySync(candidate.path);
-        return [identity.canonicalPath, identity] as const;
-      }),
-  );
+  const identities = captureSessionStoreCandidateIdentities(candidates);
   const resolved = await prepareSqliteScope(captured);
   const databaseOptions = toDatabaseOptions(resolved);
   const path = resolveOpenClawAgentSqlitePath(databaseOptions);
@@ -175,7 +168,10 @@ async function readPendingInputRows(
     });
     assertCurrent();
     const ids = snapshot.rows
-      .filter((row) => row.state === "queued" && !owns(path, row, snapshot.currentSessionId))
+      .filter(
+        (row) =>
+          row.state === "queued" && !owns(identity.canonicalPath, row, snapshot.currentSessionId),
+      )
       .map((row) => row.input_id);
     if (!ids.length) {
       return snapshot;
@@ -215,8 +211,12 @@ async function readPendingInputRows(
                     if (!isRecord(facts) || facts.kind !== "pending-input-history-custody") {
                       throw new Error("Pending input history omitted custody facts");
                     }
-                    // SAFETY: The paired bounded kernel owns this grant payload; it conveys facts, never authority.
-                    admitCustody(path, request.stage, facts as PendingInputHistoryGrant);
+                    admitCustody(
+                      identity.canonicalPath,
+                      request.stage,
+                      // SAFETY: The paired bounded kernel owns this grant payload; it conveys facts, never authority.
+                      facts as PendingInputHistoryGrant,
+                    );
                     if (request.stage === "commit") {
                       admitted = { admission, retained };
                     }
