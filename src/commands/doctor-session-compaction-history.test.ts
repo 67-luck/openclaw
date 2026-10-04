@@ -306,7 +306,8 @@ it("restores cold compaction metrics after backup without changing marker text",
         tokensAfter: 40,
       });
       expect(after.event?.event_json).toContain('"opaqueCount":9007199254740993');
-      expect(after.transcriptUpdatedAt).toBe(42);
+      expect(after.updatedAt).toBe(42);
+      expect(after.transcriptUpdatedAt).toBe(43);
       const reopened = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
       expect(readSessionColdTranscript(reopened.db, fixture.sessionId)).toBeUndefined();
       const backupName = expectDefined(

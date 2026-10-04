@@ -194,7 +194,8 @@ function prepareSessionEntryRepairs(params: PreparedSessionEntryRepairParams) {
             ...(assertCurrent ? { assertCurrent: () => assertCurrent(target) } : {}),
           });
         } finally {
-          if (!wasOpen) {
+          // Maintenance owns joined cleanup after verification, including cold-read workers.
+          if (!wasOpen && !getOpenClawDatabaseMaintenanceScope()) {
             closeOpenClawAgentDatabaseByPath(target.sqlitePath);
           }
         }
