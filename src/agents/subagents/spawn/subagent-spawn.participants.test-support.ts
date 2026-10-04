@@ -115,6 +115,8 @@ export function registerParticipantSpawnCases(options: {
               runId: parentRunId,
               admittedRunContext: bound.admitted,
               gatewayContextResolver: () => context,
+              controllerInput: expectDefined(getRpcSource(parentRunId), "parent controller source")
+                .input,
             },
             async (turn) => {
               const spawn = async (user: string | undefined, profileId: string) => {
@@ -252,6 +254,8 @@ export function registerParticipantSpawnCases(options: {
             runId: parentRunId,
             admittedRunContext: bound.admitted,
             gatewayContextResolver: () => context,
+            controllerInput: expectDefined(getRpcSource(parentRunId), "parent controller source")
+              .input,
           },
           async (turn) => {
             const steered = await turn.steer({

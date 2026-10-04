@@ -20,7 +20,7 @@ export function prepareAgentTurnWait(context: AgentTurnContext, params: AgentWai
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
   const queuedResult = () => {
     const queued = getRpcSource(runId);
-    return queued && isRpcSourceQueued(queued)
+    return queued && queued.input.phase !== "preparing" && isRpcSourceQueued(queued)
       ? {
           session: captureAgentJobSession({
             ...getRpcSourceIdentity(queued),

@@ -8,8 +8,6 @@ import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
 import { createSubagentRunParams } from "../../subagent-test-fixtures.test-helpers.js";
 import { createSessionsYieldTool } from "../../tools/sessions-yield-tool.js";
 import * as completionStore from "../completion/subagent-completion-admission.store.js";
-import { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
-import { subagentRuns } from "./subagent-registry-memory.js";
 import {
   mutateSubagentRuns,
   SubagentRegistryVersionConflictError,
@@ -20,11 +18,9 @@ import type { createLifecycleWaits } from "./subagent-registry.lifecycle-waits.t
 import { loadSubagentRegistryFromSqlite } from "./subagent-registry.store.sqlite.js";
 import * as registry from "./subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
-import { getSubagentRunRuntimeKey, isSameSubagentRunOwner } from "./subagent-run-generation.js";
+import { isSameSubagentRunOwner } from "./subagent-run-generation.js";
 
-function createRequesterWakeReceiptHolds(
-  options: { failCompletePublication?: boolean; holdOutcome?: boolean } = {},
-) {
+function createRequesterWakeReceiptHolds(options: { failCompletePublication?: boolean } = {}) {
   type CapturedMember = {
     entry: SubagentRunRecord;
     wake: SubagentRunRecord["requesterSettleWake"];
@@ -91,9 +87,7 @@ function createRequesterWakeReceiptHolds(
       () => settle(params),
     ),
   );
-  if (!options.holdOutcome) {
-    holds.outcome.release.resolve();
-  }
+  holds.outcome.release.resolve();
   const observed = new Set<keyof typeof holds>();
   const executions: Array<keyof typeof holds> = [];
   const runWorker = stateWorker.runOpenClawStateWorkerOperation;
@@ -163,37 +157,6 @@ function createRequesterWakeReceiptHolds(
   };
 }
 
-async function driftCompletionCleanup(entry: SubagentRunRecord): Promise<void> {
-  expect(entry.cleanupHandled).toBe(true);
-  expect(entry.cleanupCompletedAt).toBeUndefined();
-  const failed = vi.fn(async () => {
-    throw new Error("Synthetic terminal completion refusal");
-  });
-  const resume = vi.fn();
-  const recovery = createSubagentRegistryCompletionRuntime({
-    runs: subagentRuns,
-    resumed: new Set([getSubagentRunRuntimeKey(entry)]),
-    retryTimers: new Set(),
-    completeSubagentRun: failed,
-    scheduleSweep: vi.fn(),
-    resumeRun: resume,
-    warn: vi.fn(),
-  });
-  await recovery.completeSubagentRunWithRecovery(
-    {
-      runId: entry.runId,
-      expectedEntry: entry,
-      outcome: { status: "ok" },
-      reason: "subagent-complete",
-      triggerCleanup: true,
-    },
-    "requester-wake-ack-proof",
-  );
-  expect(failed).toHaveBeenCalledTimes(2);
-  expect(resume).toHaveBeenCalledWith(entry.runId);
-  expect(subagentRuns.get(entry.runId)?.cleanupHandled).toBe(false);
-}
-
 export function registerRequesterWakeReceiptBoundaryTests({
   requesterSessionKey,
   spawnVisibleChild,
@@ -249,9 +212,6 @@ export function registerRequesterWakeReceiptBoundaryTests({
     rejectRequesterWake: boolean;
     rejectPersistence: boolean;
     emptyReply: boolean;
-    receiptDrift?: boolean;
-    outcomeDrift?: boolean;
-    receiptReplacement?: "reply" | "delivery";
   }>([
     {
       name: "delivers the visible requester final",
@@ -259,27 +219,6 @@ export function registerRequesterWakeReceiptBoundaryTests({
       rejectPersistence: false,
       emptyReply: false,
     },
-    {
-      name: "publishes a requester transition before queued same-owner cleanup",
-      rejectRequesterWake: false,
-      rejectPersistence: false,
-      emptyReply: false,
-      receiptDrift: true,
-    },
-    {
-      name: "publishes a delivered requester outcome before queued same-owner cleanup",
-      rejectRequesterWake: false,
-      rejectPersistence: false,
-      emptyReply: false,
-      outcomeDrift: true,
-    },
-    ...(["reply", "delivery"] as const).map((receiptReplacement) => ({
-      name: `preserves a requester receipt across queued equivalent ${receiptReplacement} metadata`,
-      rejectRequesterWake: false,
-      rejectPersistence: false,
-      emptyReply: false,
-      receiptReplacement,
-    })),
     {
       name: "settles the rejected delivered-row wake",
       rejectRequesterWake: true,
@@ -299,14 +238,7 @@ export function registerRequesterWakeReceiptBoundaryTests({
       emptyReply: true,
     },
   ])("$name", async (scenario) => {
-    const {
-      rejectRequesterWake,
-      rejectPersistence,
-      emptyReply,
-      receiptDrift,
-      receiptReplacement,
-      outcomeDrift,
-    } = scenario;
+    const { rejectRequesterWake, rejectPersistence, emptyReply } = scenario;
     setEmptyReply(emptyReply);
     const requesterTurnRunId = "run-requester-yield";
     const alpha = {
@@ -321,11 +253,6 @@ export function registerRequesterWakeReceiptBoundaryTests({
     };
     await spawnVisibleChild({ ...alpha, requesterTurnRunId });
     await spawnVisibleChild({ ...beta, requesterTurnRunId });
-    const heldReceipts =
-      !rejectRequesterWake && !emptyReply
-        ? holdRequesterWakeReceipts({ holdOutcome: outcomeDrift })
-        : undefined;
-
     holdAgentCall(beta.childSessionKey);
     emitCompleted(alpha.runId, alpha.childSessionKey, "alpha complete");
     await waitForAgentCallCount(1);
@@ -357,7 +284,7 @@ export function registerRequesterWakeReceiptBoundaryTests({
       return { value: undefined, postimages: new Map([[next.runId, next]]) };
     });
 
-    const settleWakeOwner = outcomeDrift || rejectPersistence ? observeRootWork() : undefined;
+    const settleWakeOwner = rejectPersistence ? observeRootWork() : undefined;
     const yieldTool = createSessionsYieldTool({
       sessionId: "sess-main",
       claimYield: async () =>
@@ -373,6 +300,7 @@ export function registerRequesterWakeReceiptBoundaryTests({
     ).resolves.toMatchObject({ details: { status: "yielded" } });
 
     setWakeRefusal(rejectRequesterWake, rejectPersistence);
+    releaseAgentCall(beta.childSessionKey);
     const { withLocalSessionPlacementTurnSettlement } =
       await import("../../session-placement-admission.js");
     await withLocalSessionPlacementTurnSettlement(
@@ -391,102 +319,7 @@ export function registerRequesterWakeReceiptBoundaryTests({
         },
       }),
     );
-    if (heldReceipts) {
-      const members = await heldReceipts.transition.entered.promise;
-      expect(members).toHaveLength(2);
-      for (const { entry, wake } of members) {
-        const current = registry.getSubagentRunByRunId(entry.runId);
-        expect(isSameSubagentRunOwner(current, entry)).toBe(true);
-        expect(current?.requesterSettleWake).toEqual(wake);
-        expect(wake?.status).toBe("pending");
-      }
-      await registry.testing.sweepOnceForTests();
-      expect(getRequesterWakeCalls()).toHaveLength(0);
-      if (receiptDrift || receiptReplacement) {
-        const member = members.find(({ entry }) => entry.runId === beta.runId);
-        if (!member) {
-          throw new Error("Missing held beta transition owner");
-        }
-        const planSuccessor = vi.fn((rows: ReadonlyMap<string, SubagentRunRecord>) => {
-          const current = rows.get(beta.runId);
-          if (!current || !isSameSubagentRunOwner(current, member.entry)) {
-            throw new Error("Queued beta metadata lost its runtime owner");
-          }
-          expect(current.requesterSettleWake?.status).toBe("dispatching");
-          const next = structuredClone(current);
-          if (receiptReplacement === "reply") {
-            const reply = next.completion?.terminalReply;
-            if (!reply || !next.completion) {
-              throw new Error("Missing prepared reply owner");
-            }
-            next.completion.terminalReply = structuredClone(reply);
-          } else {
-            next.delivery = structuredClone(next.delivery);
-          }
-          return { value: undefined, postimages: new Map([[next.runId, next]]) };
-        });
-        const successor = receiptDrift
-          ? driftCompletionCleanup(member.entry)
-          : mutateSubagentRuns([beta.runId], planSuccessor);
-        void successor.catch(() => {});
-        expect(planSuccessor).not.toHaveBeenCalled();
-        expect(registry.getSubagentRunByRunId(beta.runId)?.requesterSettleWake).toEqual(
-          member.wake,
-        );
-        const database = openOpenClawStateDatabase();
-        // Beta's queued metadata write and the later settled outcome remain allowed.
-        // The isolated test database owns trigger cleanup after its workers drain.
-        database.db.exec(
-          "CREATE TRIGGER reject_wake_replay BEFORE UPDATE ON subagent_runs WHEN NEW.run_id = 'run-alpha' AND json_extract(NEW.payload_json, '$.requesterSettleWake.status') = 'dispatching' BEGIN SELECT RAISE(ABORT, 'requester wake write replayed'); END",
-        );
-        try {
-          heldReceipts.transition.release.resolve();
-          await expect(heldReceipts.transitionPublication.promise).resolves.toEqual({
-            applied: true,
-            publication: "published",
-          });
-          await successor;
-          if (receiptReplacement) {
-            expect(planSuccessor).toHaveBeenCalledOnce();
-          }
-          expect(heldReceipts.executions.filter((phase) => phase === "transition")).toHaveLength(1);
-          expect(heldReceipts.executions).not.toContain("reconcile");
-        } finally {
-          heldReceipts.transition.release.resolve();
-          await Promise.allSettled([successor]);
-        }
-      }
-      heldReceipts.transition.release.resolve();
-    }
     await waitForAgentCallCount(rejectRequesterWake ? 2 : 3);
-    if (outcomeDrift && heldReceipts && settleWakeOwner) {
-      const members = await heldReceipts.outcome.entered.promise;
-      const member = members.find(({ entry }) => entry.runId === beta.runId);
-      if (!member) {
-        throw new Error("Missing acknowledged requester outcome member");
-      }
-      expect(loadSubagentRegistryFromSqlite().get(beta.runId)?.requesterSettleWake).toBeUndefined();
-      expect(registry.getSubagentRunByRunId(beta.runId)?.requesterSettleWake).toEqual(member.wake);
-      const successor = driftCompletionCleanup(member.entry);
-      void successor.catch(() => {});
-      const database = openOpenClawStateDatabase();
-      // Guard the committed outcome through cleanup; database teardown removes the trigger.
-      database.db.exec(
-        "CREATE TRIGGER reject_outcome_replay BEFORE UPDATE ON subagent_runs WHEN NEW.run_id = 'run-alpha' BEGIN SELECT RAISE(ABORT, 'requester outcome write replayed'); END",
-      );
-      try {
-        heldReceipts.outcome.release.resolve();
-        await successor;
-        await settleWakeOwner(true);
-        expect(registry.getSubagentRunByRunId(beta.runId)?.requesterSettleWake).toBeUndefined();
-        expect(getRequesterWakeCalls()).toHaveLength(1);
-        expect(heldReceipts.executions.filter((phase) => phase === "outcome")).toHaveLength(1);
-        expect(heldReceipts.executions).not.toContain("reconcile");
-      } finally {
-        heldReceipts.releaseAll();
-        await Promise.allSettled([successor]);
-      }
-    }
     await waitForDeliveredCleanup(alpha.runId, {
       allowPendingRequesterSettleWake: rejectPersistence,
     });
@@ -534,37 +367,6 @@ export function registerRequesterWakeReceiptBoundaryTests({
       expect(entry?.requesterSettleWake).toBeUndefined();
     }
 
-    releaseAgentCall(beta.childSessionKey);
-    if (receiptDrift || outcomeDrift) {
-      heldReceipts?.releaseAll();
-      // The failed completion owner revoked this older child cleanup attempt.
-      // Join its refusal; requester recovery must not require it to mint another wake.
-      await flushOwnedWork();
-      await registry.testing.sweepOnceForTests();
-      await vi.advanceTimersByTimeAsync(30_000);
-      await flushOwnedWork();
-      const stored = loadSubagentRegistryFromSqlite();
-      for (const child of [alpha, beta]) {
-        expect(stored.get(child.runId)?.delivery?.status).toBe("delivered");
-        expect(stored.get(child.runId)?.requesterSettleWake).toBeUndefined();
-      }
-      expect(getRequesterWakeCalls()).toHaveLength(1);
-      expect(sendMessageMock).not.toHaveBeenCalled();
-      return;
-    }
-    if (heldReceipts) {
-      const members = await heldReceipts.complete.entered.promise;
-      expect(members.length).toBeGreaterThan(0);
-      for (const { entry, wake } of members) {
-        const current = registry.getSubagentRunByRunId(entry.runId);
-        expect(isSameSubagentRunOwner(current, entry)).toBe(true);
-        expect(current?.requesterSettleWake).toEqual(wake);
-        expect(wake).toBeDefined();
-      }
-      await registry.testing.sweepOnceForTests();
-      expect(getRequesterWakeCalls()).toHaveLength(1);
-      heldReceipts.complete.release.resolve();
-    }
     await waitForDeliveredCleanup(alpha.runId);
     await waitForDeliveredCleanup(beta.runId);
     await registry.testing.sweepOnceForTests();

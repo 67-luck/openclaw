@@ -523,6 +523,10 @@ describe("subagent registry lifecycle error grace", () => {
         requesterTurnRunId,
       }),
     ).toBe(2);
+    // The beta completion owns the earlier controller source. Let that turn
+    // settle before the later yielded-batch followup can claim the mailbox.
+    agentCallGates.delete(betaSessionKey);
+    releaseAgentCallGate?.();
     await settleYieldedCliTurn({
       requesterSessionKey: MAIN_REQUESTER_SESSION_KEY,
       requesterSessionId: "sess-main",
@@ -571,8 +575,6 @@ describe("subagent registry lifecycle error grace", () => {
     await waitForAgentCallCount(3);
     expect(getRequesterWakeCalls()).toHaveLength(1);
 
-    agentCallGates.delete(betaSessionKey);
-    releaseAgentCallGate?.();
     await waitForDeliveredCleanup("run-yield-alpha");
     await waitForDeliveredCleanup("run-yield-beta");
 

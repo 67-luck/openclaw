@@ -23,6 +23,7 @@ import { withSessionTurn } from "../../../sessions/session-controller.admission.
 import {
   beginSessionEffect,
   captureSessionTarget,
+  getCurrentSessionControllerClaim,
 } from "../../../sessions/session-controller.lifecycle.js";
 import { getExistingSessionControllerMailbox } from "../../../sessions/session-controller.mailbox.js";
 import { markReplyOperationExecutionStarted } from "../../../sessions/session-controller.state.js";
@@ -219,12 +220,12 @@ describe("requester settle dispatch deadline", () => {
       await releaseTurn.promise;
     });
     await currentTurnStarted.promise;
-    startTurn.mockImplementation(async ({ preflight, io }) => {
+    startTurn.mockImplementation(async ({ controllerInput, preflight, io }) => {
       const request = preflight.request;
       io.emitAcceptance([true, { runId: request.idempotencyKey, status: "accepted" }], {
         runId: request.idempotencyKey,
       });
-      const queued = withSessionTurn(REQUESTER_TURN, async () => {
+      const queued = withSessionTurn({ ...REQUESTER_TURN, controllerInput }, async () => {
         io.emitExecutionStarted?.();
         received.push(request.message);
       });
@@ -241,6 +242,7 @@ describe("requester settle dispatch deadline", () => {
         cfg: {},
         canonicalKey: REQUESTER_KEY,
         agentId: "main",
+        storePath: REQUESTER_TARGET.storeScope,
         entry: { sessionId: "requester-session", updatedAt: 1 },
       }),
       getRequesterSessionActivity: () => ({ sessionId: "requester-session", isActive: false }),
@@ -265,7 +267,7 @@ describe("requester settle dispatch deadline", () => {
       const mailbox = getExistingSessionControllerMailbox(REQUESTER_KEY, REQUESTER_TARGET);
       expect({
         activeCount: Number(Boolean(mailbox?.claim)),
-        queuedCount: mailbox?.entries.length ?? 0,
+        queuedCount: mailbox?.entries.filter((entry) => entry.phase !== "claimed").length ?? 0,
       }).toEqual({ activeCount: 1, queuedCount: 1 });
       releaseTurn.resolve();
       await currentTurn;
@@ -584,7 +586,7 @@ describe("requester settle dispatch deadline", () => {
       const completeBatch = vi.fn();
       const finalReceipts: string[] = [];
       let acceptedSignal: AbortSignal | undefined;
-      startTurn.mockImplementation(async ({ preflight, io }) => {
+      startTurn.mockImplementation(async ({ controllerInput, preflight, io }) => {
         const request = preflight.request as { idempotencyKey: string; sessionKey: string };
         const registration = registerChatAbortController({
           target: REQUESTER_TARGET,
@@ -593,6 +595,7 @@ describe("requester settle dispatch deadline", () => {
           sessionKey: request.sessionKey,
           timeoutMs,
           kind: "agent",
+          sourceInput: controllerInput,
         });
         acceptedSignal = registration.controller.signal;
         io.emitAcceptance([true, { runId: request.idempotencyKey, status: "accepted" }], {
@@ -649,8 +652,10 @@ describe("requester settle dispatch deadline", () => {
             { status: "ok", result: { payloads: [{ text: finalReceipts[0] }] } },
           ]);
         } finally {
+          const claim = registration.entry?.input.claim;
           registration.cleanup();
           await registration.entry?.input.settlement.promise;
+          await claim?.settlement.promise;
         }
       });
       setSubagentAnnounceDeliveryDepsForTest({
@@ -659,6 +664,7 @@ describe("requester settle dispatch deadline", () => {
           cfg,
           canonicalKey: REQUESTER_KEY,
           agentId: "main",
+          storePath: REQUESTER_TARGET.storeScope,
           entry: { sessionId: "requester-session", updatedAt: 1 },
         }),
         getRequesterSessionActivity: () => ({ sessionId: "requester-session", isActive: false }),
@@ -711,7 +717,12 @@ describe("requester settle dispatch deadline", () => {
           expect(child.requesterSettleWake).toMatchObject({ status: "pending", attemptCount: 1 });
         }
         const later = vi.fn();
-        await withSessionTurn(REQUESTER_TURN, async () => later());
+        let laterClaim: ReturnType<typeof getCurrentSessionControllerClaim>;
+        await withSessionTurn(REQUESTER_TURN, async () => {
+          laterClaim = getCurrentSessionControllerClaim();
+          later();
+        });
+        await laterClaim?.settlement.promise;
         expect(later).toHaveBeenCalledOnce();
         const mailbox = getExistingSessionControllerMailbox(REQUESTER_KEY, REQUESTER_TARGET);
         expect(mailbox?.claim).toBeUndefined();

@@ -2,6 +2,8 @@ import { vi, type MockInstance } from "vitest";
 import * as configRuntime from "../../../config/config.js";
 import * as sessionAccessor from "../../../config/sessions/session-accessor.js";
 import * as sessionHistory from "../../../config/sessions/session-history.js";
+import { withSessionTurn } from "../../../sessions/session-controller.admission.js";
+import { adoptSessionControllerSource } from "../../../sessions/session-controller.mailbox.js";
 import * as sessionQueries from "../../../sessions/session-controller.queries.js";
 import * as embeddedRuns from "../../embedded-agent-runner/runs.js";
 import * as deliveryRuntime from "./subagent-announce-delivery.runtime.js";
@@ -52,6 +54,48 @@ type Scope = "announce" | "output" | "delivery";
 const scopes = new Map<Scope, Overrides>();
 const restoreOverrides: Array<() => void> = [];
 
+/** Exercise reserved-source adoption when a test replaces the in-process Gateway adapter. */
+async function dispatchThroughTestGateway(
+  callGateway: AnnounceTestDeps["callGateway"],
+  method: string,
+  params: Record<string, unknown>,
+  options: Parameters<typeof announceRuntime.dispatchGatewayMethodInProcess>[2],
+) {
+  const dispatch = () =>
+    callGateway({
+      method,
+      params,
+      expectFinal: options?.expectFinal,
+      onAccepted: options?.onAccepted,
+      timeoutMs: options?.timeoutMs,
+    });
+  const controllerInput = method === "agent" ? options?.controllerInput : undefined;
+  if (!controllerInput) {
+    return await dispatch();
+  }
+  const runId = typeof params.idempotencyKey === "string" ? params.idempotencyKey : undefined;
+  const target = controllerInput.target ?? controllerInput.mailbox.owner.target;
+  if (!runId || !target) {
+    throw new Error("Reserved announce source requires its run and physical target");
+  }
+  adoptSessionControllerSource(controllerInput, {
+    target,
+    policy: controllerInput.policy,
+    protocolRunId: runId,
+    adapter: {},
+  });
+  return await withSessionTurn(
+    {
+      sessionKey: controllerInput.mailbox.key,
+      sessionId: controllerInput.sourceSessionId ?? target.incarnation,
+      agentId: target.agentId,
+      target,
+      controllerInput,
+    },
+    dispatch,
+  );
+}
+
 function install<T extends (...args: never[]) => unknown>(
   original: T,
   createSpy: () => MockInstance<T>,
@@ -87,13 +131,12 @@ function replaceOverrides(scope: Scope, overrides?: Overrides) {
       ...(scope !== "output" && callGateway && !overrides.dispatchGatewayMethodInProcess
         ? {
             dispatchGatewayMethodInProcess: (async (method, params, options) =>
-              await callGateway({
+              await dispatchThroughTestGateway(
+                callGateway,
                 method,
                 params,
-                expectFinal: options?.expectFinal,
-                onAccepted: options?.onAccepted,
-                timeoutMs: options?.timeoutMs,
-              })) satisfies AnnounceTestDeps["dispatchGatewayMethodInProcess"],
+                options,
+              )) satisfies AnnounceTestDeps["dispatchGatewayMethodInProcess"],
           }
         : {}),
     });

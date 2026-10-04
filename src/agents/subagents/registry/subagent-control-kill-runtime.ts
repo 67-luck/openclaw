@@ -481,6 +481,7 @@ export async function mutateSubagentRunForKill(
       // inputs before joining admission cleanup; a claim signal alone cannot retire them.
       const preparationStop = cancelCapturedSessionControllerSource(capturedPreparation, {
         assertCurrent: assertCancellationCurrent,
+        reason: createAgentRunDirectAbortError(),
       });
       stopAcceptance.accepted ||= preparationStop.activeCancelled > 0 && killOwnerCurrent();
       assertCancellationCurrent();
@@ -719,6 +720,7 @@ export async function mutateSubagentRunForKill(
         const stopped = capturedStop
           ? cancelCapturedSessionControllerSource(capturedStop, {
               assertCurrent: assertCancellationCurrent,
+              reason: createAgentRunDirectAbortError(),
             })
           : undefined;
         const aborted =

@@ -7,10 +7,7 @@ import { formatValidationErrors } from "../../../../packages/gateway-protocol/sr
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
 import type { SessionEntry } from "../../../config/sessions.js";
 import { formatSqliteSessionFileMarker } from "../../../config/sessions/legacy-sqlite-marker.js";
-import {
-  loadTranscriptEvents,
-  replaceSessionEntry,
-} from "../../../config/sessions/session-accessor.js";
+import { replaceSessionEntry } from "../../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { InternalAgentTurnDispatchOptions } from "../../../gateway/agent-turn/internal-facade.types.js";
 import type { callGateway as runtimeCallGateway } from "../../../gateway/call.js";
@@ -404,20 +401,6 @@ async function createRequesterTranscriptFixture(sessionId: string) {
   return { agentId: "main", entry, sessionId, sessionKey, storePath };
 }
 
-async function readRequesterTranscriptMessages(fixture: {
-  agentId: string;
-  sessionId: string;
-  sessionKey: string;
-  storePath: string;
-}): Promise<Array<Record<string, unknown>>> {
-  return (await loadTranscriptEvents(fixture))
-    .map((event) => (event as { message?: unknown }).message)
-    .filter(
-      (message): message is Record<string, unknown> =>
-        Boolean(message) && typeof message === "object" && !Array.isArray(message),
-    );
-}
-
 const committedSessionSpawnEvidence = {
   acceptedSessionSpawns: [{ runId: "run-child", childSessionKey: "agent:main:child" }],
 } as const;
@@ -664,7 +647,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
     testing.setDepsForTest({
       getRuntimeConfig: () => cfg,
       loadSessionEntry,
-      isSessionRunActive: () => true,
+      getRequesterSessionActivity: () => ({ sessionId, isActive: true }),
       queueEmbeddedAgentMessageWithOutcome,
     });
     const result = await announce({ requesterSessionKey: sessionKey, requesterAgentId });
@@ -873,38 +856,6 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
 });
 
 describe("deliverSubagentAnnouncement completion delivery", () => {
-  it("stops a compacting completion wake when source ownership changes before retry", async () => {
-    let sourceEffectsAllowed = true;
-    const queueEmbeddedAgentMessageWithOutcome = vi.fn((sessionId: string) => {
-      sourceEffectsAllowed = false;
-      return {
-        queued: false as const,
-        sessionId,
-        reason: "compacting" as const,
-        gatewayHealth: "live" as const,
-      };
-    });
-    const callGateway = createGatewayMock();
-
-    const result = await deliverSlackThreadAnnouncement({
-      callGateway,
-      sessionId: "requester-session-1",
-      isActive: true,
-      directIdempotencyKey: "announce-compaction-source-owner-changed",
-      queueEmbeddedAgentMessageWithOutcome,
-      isSourceSessionEffectsAllowed: () => sourceEffectsAllowed,
-    });
-
-    expect(result).toMatchObject({
-      delivered: false,
-      path: "none",
-      reason: "source_owner_changed",
-      terminal: true,
-    });
-    expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledOnce();
-    expect(callGateway).not.toHaveBeenCalled();
-  });
-
   it.each([true])(
     "defers completion delivery when sessions_yield owns the handoff (active: %s)",
     async (isActive) => {
@@ -933,47 +884,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       expect(callGateway).not.toHaveBeenCalled();
     },
   );
-
-  it("fences an active completion delivery when sessions_yield takes ownership mid-wait", async () => {
-    let requesterYielded = false;
-    const wakeStarted = createDeferredCore();
-    const wakeGate = createDeferredCore();
-    const queueEmbeddedAgentMessageWithOutcome = vi.fn(async (sessionId: string) => {
-      wakeStarted.resolve();
-      await wakeGate.promise;
-      return {
-        queued: true as const,
-        sessionId,
-        target: "embedded_run" as const,
-        gatewayHealth: "live" as const,
-        enqueuedAtMs: 4_100,
-        deliveredAtMs: 4_200,
-      };
-    });
-    const callGateway = createGatewayMock();
-
-    const delivery = deliverSlackThreadAnnouncement({
-      callGateway,
-      sessionId: "requester-session-1",
-      isActive: true,
-      directIdempotencyKey: "announce-yield-owned-mid-wait",
-      queueEmbeddedAgentMessageWithOutcome,
-      isCompletionOwnedByRequesterYield: () => requesterYielded,
-    });
-    await wakeStarted.promise;
-    requesterYielded = true;
-    wakeGate.resolve();
-
-    await expect(delivery).resolves.toMatchObject({
-      delivered: false,
-      path: "none",
-      reason: "source_owner_changed",
-      terminal: true,
-      disposition: "intentional_non_delivery",
-    });
-    expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledOnce();
-    expect(callGateway).not.toHaveBeenCalled();
-  });
 
   it("delivers the child result when requester synthesis omits it", async () => {
     const callGateway = createGatewayMock({
@@ -1036,7 +946,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
   it.each([
     { status: "accepted", runId: "pending" },
     { status: "error", result: { payloads: [{ text: "failed" }] } },
-  ])("keeps an incomplete private handoff pending without raw fallback: %j", async (response) => {
+  ])("classifies an incomplete private handoff without raw fallback: %j", async (response) => {
     const sendMessage = createSendMessageMock();
     const delivery = await deliverDiscordDirectMessageCompletion({
       callGateway: createGatewayMock(response),
@@ -1044,7 +954,10 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       completionTarget: "parent",
       internalEvents: taskCompletionEvents(),
     });
-    expect(delivery).toMatchObject({ delivered: false, disposition: "retryable" });
+    expect(delivery).toMatchObject({
+      delivered: false,
+      disposition: response.status === "accepted" ? "session_queued" : "retryable",
+    });
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
@@ -1645,16 +1558,9 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       callOrder.push("gateway");
     });
     const sendMessage = createSendMessageMock();
-    const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeSequenceMock(
-      ["transcript_commit_wait_unsupported", "no_active_run"],
-      () => {
-        callOrder.push("queue");
-      },
-    );
     const result = await deliverSlackThreadAnnouncement({
       callGateway,
       sendMessage,
-      queueEmbeddedAgentMessageWithOutcome,
       isActive: true,
       directIdempotencyKey: "announce-thread-fallback-empty",
       internalEvents: taskCompletionEvents({
@@ -1669,35 +1575,18 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       reason: "visible_reply_missing",
     });
     expect(callGateway).toHaveBeenCalledTimes(1);
-    expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledTimes(2);
-    for (const attempt of [1, 2]) {
-      expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenNthCalledWith(
-        attempt,
-        "requester-session-4",
-        "child done",
-        expect.objectContaining({
-          debounceMs: 500,
-          deliveryTimeoutMs: 120_000,
-          steeringMode: "all",
-          waitForTranscriptCommit: true,
-          userTurnTranscriptRecorder: expect.any(Object),
-        }),
-      );
-    }
-    expect(callOrder).toEqual(["queue", "gateway", "queue"]);
+    expect(callOrder).toEqual(["gateway"]);
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
-  it("keeps typed missing output on the generic retry path", async () => {
+  it("keeps typed missing output retryable without completion steering", async () => {
     const callGateway = createPayloadGatewayMock();
     const sendMessage = createSendMessageMock();
-    const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeMock(false);
     const childSessionKey = "agent:worker:subagent:empty-success";
     const result = await deliverDiscordDirectMessageCompletion({
       callGateway,
       sendMessage,
       isActive: true,
-      queueEmbeddedAgentMessageWithOutcome,
       sourceSessionKey: childSessionKey,
       internalEvents: taskCompletionEvents({
         childSessionKey,
@@ -1716,7 +1605,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       reason: "visible_reply_missing",
     });
     expect(result.terminal).toBeUndefined();
-    expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledTimes(2);
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
@@ -2389,45 +2277,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     }
   });
 
-  it("retries active direct subagent completion wake without forced message-tool mode", async () => {
-    const callGateway = createGatewayMock({
-      result: {
-        payloads: [{ text: "The subagent is done: child completion output" }],
-        didSendViaMessagingTool: true,
-      },
-    });
-    const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeSequenceMock([
-      "source_reply_delivery_mode_mismatch",
-      true,
-    ]);
-
-    const result = await deliverDiscordDirectMessageCompletion({
-      callGateway,
-      isActive: true,
-      queueEmbeddedAgentMessageWithOutcome,
-      sourceTool: "subagent_announce",
-      internalEvents: taskCompletionEvents({
-        childSessionId: "child-session-id",
-        taskLabel: "direct completion active wake",
-      }),
-    });
-
-    expectDeliveryPath(result, "steered");
-    expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledTimes(2);
-    expectRecordFields(mockCallArg(queueEmbeddedAgentMessageWithOutcome, 0, 2), {
-      sourceReplyDeliveryMode: "message_tool_only",
-      waitForTranscriptCommit: true,
-    });
-    const retryOptions = mockCallArg(queueEmbeddedAgentMessageWithOutcome, 1, 2);
-    expectRecordFields(retryOptions, {
-      waitForTranscriptCommit: true,
-    });
-    expect(
-      (retryOptions as { sourceReplyDeliveryMode?: unknown }).sourceReplyDeliveryMode,
-    ).toBeUndefined();
-    expect(callGateway).not.toHaveBeenCalled();
-  });
-
   it("falls back to the external requester route when completion origin is internal", async () => {
     const callGateway = createPayloadGatewayMock({ text: "child completion output" });
     const result = await deliverSlackChannelAnnouncement({
@@ -2961,7 +2810,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         },
       });
     }
-    const queueEmbeddedAgentMessageWithOutcome = createQueueOutcomeSequenceMock(["no_active_run"]);
     const sendMessage = createSendMessageMock();
     const result =
       route === "direct"
@@ -2974,7 +2822,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         : await deliverSlackChannelAnnouncement({
             callGateway,
             directIdempotencyKey: "announce-retry-contract",
-            ...(route === "active" ? { isActive: true, queueEmbeddedAgentMessageWithOutcome } : {}),
+            ...(route === "active" ? { isActive: true } : {}),
           });
     expect(result).toMatchObject({
       delivered: outcome === "delivered",
@@ -2982,9 +2830,6 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
       ...(outcome === "delivered" ? {} : { disposition: outcome }),
     });
     expect(callGateway).toHaveBeenCalledTimes(attempts);
-    if (route === "active") {
-      expect(queueEmbeddedAgentMessageWithOutcome).toHaveBeenCalledTimes(1);
-    }
     if (route === "direct") {
       expect(sendMessage).not.toHaveBeenCalled();
     }

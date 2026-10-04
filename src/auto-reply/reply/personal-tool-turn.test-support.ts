@@ -26,6 +26,10 @@ import type {
   ReplyBackendQueueMessageOptions,
   ReplyMessageInjectionOutcome,
 } from "../../sessions/session-controller.contracts.js";
+import {
+  tryClaimSessionControllerTask,
+  type SessionControllerInput,
+} from "../../sessions/session-controller.mailbox.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
 import {
   createTestReplyOperation,
@@ -130,6 +134,7 @@ export async function withPersonalToolTurn<T>(
     runId?: string;
     admittedRunContext?: AdmittedRunContext;
     gatewayContextResolver?: GatewayContextResolver;
+    controllerInput?: SessionControllerInput;
   },
   test: (turn: {
     steer(
@@ -175,9 +180,16 @@ export async function withPersonalToolTurn<T>(
     clientCaps: ["ui-commands"],
     gatewayUiCommandTarget: params.owner.gatewayUiCommandTarget,
   });
+  const mailboxClaim = params.controllerInput
+    ? tryClaimSessionControllerTask(params.controllerInput)
+    : undefined;
+  if (params.controllerInput && !mailboxClaim) {
+    throw new Error("The test turn controller input is not claimable");
+  }
   const operation = createTestReplyOperation({
     sessionKey: run.run.sessionKey,
     sessionId: run.run.sessionId,
+    mailboxClaim,
   });
   operation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(run));
   const runId = params.runId ?? "personal-tool-run";

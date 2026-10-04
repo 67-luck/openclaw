@@ -149,6 +149,7 @@ export function registerNativeCancellationCases<
     let pending: ReturnType<ReturnType<typeof createSubagentsTool>["execute"]> | undefined;
     let pendingSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
     let blockedAdmission: SessionEffectRef | undefined;
+    const blockedAdmissionReleased = vi.fn();
     let stopObserving: (() => void) | undefined;
     let restoreNativeControl: (() => void) | undefined;
     vi.useFakeTimers({ toFake: ["setTimeout"] });
@@ -187,6 +188,7 @@ export function registerNativeCancellationCases<
           identities: [targetKey, getRpcSourceIdentity(target).sessionId],
           assertAllowed: () => {},
         });
+        void blockedAdmission.released.then(blockedAdmissionReleased);
       }
       if (transition === "already interrupted") {
         startSessionControllerInterruption({
@@ -248,11 +250,13 @@ export function registerNativeCancellationCases<
       const interrupted = transition !== "before interruption";
       if (interrupted) {
         await vi.advanceTimersByTimeAsync(9);
-        expect(await terminalReady.promise).toMatchObject({
+        const terminal = await terminalReady.promise;
+        expect(terminal).toMatchObject({
           stopReason: "rpc",
           timeoutPhase: "queue",
           providerStarted: false,
         });
+        expect(target.adapter.abortStopReason).toBe("rpc");
       }
       releaseCancellation.resolve();
       if (transition === "blocked drain") {
@@ -269,7 +273,8 @@ export function registerNativeCancellationCases<
           killed: false,
           error: expect.stringContaining("cleanup is pending"),
         });
-        expect(blockedAdmission?.isActive()).toBe(true);
+        expect(blockedAdmission?.isActive()).toBe(false);
+        expect(blockedAdmissionReleased).not.toHaveBeenCalled();
         expect(resolveSubagentSessionStatus(subagentRuns.get(targetRunId))).toBe("running");
         const settled = createDeferred();
         stopObserving = subscribeSubagentRunChanges("persistence", () => {

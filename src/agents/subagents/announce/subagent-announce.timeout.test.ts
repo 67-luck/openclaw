@@ -72,6 +72,17 @@ function createTimeoutHistoryWithNoReply() {
 }
 
 vi.mock("../../../gateway/call.js", createGatewayCallModuleMock);
+vi.mock("../../../sessions/session-controller.queries.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../sessions/session-controller.queries.js")>()),
+  isSessionRunActive: (sessionId: string) => isEmbeddedAgentRunActiveMock(sessionId),
+}));
+vi.mock("../../../sessions/session-controller.native-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../../sessions/session-controller.native-runtime.js")
+  >()),
+  waitForSessionRunEnd: (sessionId: string, timeoutMs?: number) =>
+    waitForEmbeddedAgentRunEndMock(sessionId, timeoutMs),
+}));
 vi.mock("../spawn/subagent-depth.js", createSubagentDepthModuleMock);
 vi.mock("./subagent-announce-delivery.runtime.js", () =>
   createSubagentAnnounceDeliveryRuntimeMock({

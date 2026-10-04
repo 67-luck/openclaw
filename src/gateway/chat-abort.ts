@@ -6,6 +6,7 @@ import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/s
 import type { OperationalRunInstanceRef } from "../agents/admitted-run-context.js";
 import {
   createAgentRunRestartAbortError,
+  isAgentRunDirectAbortReason,
   resolveAgentRunAbortLifecycleFields,
 } from "../agents/run-termination.js";
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
@@ -219,8 +220,9 @@ export function registerChatAbortController(params: {
   }
   const entry: RpcSourceRef = { input, adapter };
   adapter.cancel = (reason) => {
-    adapter.abortStopReason ??=
-      typeof reason === "string"
+    adapter.abortStopReason ??= isAgentRunDirectAbortReason(reason)
+      ? "rpc"
+      : typeof reason === "string"
         ? reason
         : resolveAgentRunAbortLifecycleFields(input.abortSignal).stopReason;
     adapter.abortDiagnosticReason ??= resolveChatAbortDiagnosticReason(input.abortSignal, adapter);
