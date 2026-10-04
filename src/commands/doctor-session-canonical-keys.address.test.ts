@@ -5,13 +5,58 @@ import {
   persistSessionTranscriptTurn,
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
+import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveSessionStoreKey } from "../gateway/session-store-key.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { repairCanonicalSessionKeys } from "./doctor-session-canonical-keys.js";
 import { insertLegacySession } from "./doctor-session-canonical-keys.test-support.js";
 
 describe("Doctor stored session addresses", () => {
+  it("preserves original rows when a fork source key has no canonical address", async () => {
+    await withOpenClawTestState({ prefix: "doctor-blank-fork-source-" }, async (state) => {
+      const storePath = state.statePath("agents", "main", "sessions.json");
+      const sessionKey = "agent:main:child";
+      const scope = { agentId: "main", env: state.env, storePath };
+      insertLegacySession({
+        ...scope,
+        sessionKey,
+        entry: {
+          sessionId: "child-history",
+          updatedAt: 7,
+          forkSource: {
+            sessionKey: " \t ",
+            sessionId: "original-source-generation",
+            entryId: "original-cut-entry",
+          },
+        },
+        eventText: "preserved child history",
+      });
+      const database = openOpenClawAgentDatabase({
+        agentId: scope.agentId,
+        env: scope.env,
+        path: resolveSqliteTargetFromSessionStorePath(storePath, scope).path,
+      });
+      const readRows = () => ({
+        nodes: database.db.prepare("SELECT * FROM session_nodes").all(),
+        windows: database.db.prepare("SELECT * FROM session_windows").all(),
+        events: database.db.prepare("SELECT * FROM transcript_events").all(),
+      });
+      const before = readRows();
+      await expect(
+        repairCanonicalSessionKeys({
+          apply: true,
+          cfg: { session: { store: storePath } },
+          env: state.env,
+        }),
+      ).rejects.toThrow(
+        /forkSource\.sessionKey.*agent:main:child.*verified source session key.*doctor --fix/,
+      );
+      expect(readRows()).toEqual(before);
+    });
+  });
+
   it.each(["custom-main", "global"])(
     "preserves literal main rows and lineage beside the %s request destination",
     async (variant) => {

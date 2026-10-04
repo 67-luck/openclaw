@@ -1,6 +1,7 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { listAgentIds } from "../agents/agent-scope-config.js";
 import { resolveAgentMainSessionKey } from "../config/sessions/main-session.js";
+import { SessionStoreMigrationRequiredError } from "../config/sessions/migration-required.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
 import {
   readCanonicalSessionRepairInventory,
@@ -142,6 +143,11 @@ function collectCanonicalSessionCandidateFacts(
       const parentSessionKey = canonicalizeLineageKey(inventoryFact.parentSessionKey);
       const spawnedBy = canonicalizeLineageKey(inventoryFact.spawnedBy);
       const forkSourceSessionKey = canonicalizeLineageKey(inventoryFact.forkSourceSessionKey);
+      if (inventoryFact.forkSourceSessionKey !== undefined && !forkSourceSessionKey) {
+        throw new SessionStoreMigrationRequiredError(
+          `Cannot repair forkSource.sessionKey for ${sessionKey}: the stored source key is empty after normalization. Restore a verified source session key, then rerun openclaw doctor --fix; the original fork provenance has been preserved.`,
+        );
+      }
       return Object.assign(
         {
           agentId: target.agentId,
@@ -361,11 +367,6 @@ function hydrateCanonicalSessionCandidate(
       ...entry.forkSource,
       sessionKey: fact.normalizedForkSourceSessionKey,
     };
-  } else if (entry.forkSource?.sessionKey !== undefined) {
-    // A present but empty-normalized key cannot survive strict runtime validation. Missing
-    // legacy keys remain untouched so unrelated repair does not erase independent provenance.
-    const { sessionKey: _invalidSessionKey, ...forkProvenance } = entry.forkSource;
-    entry.forkSource = forkProvenance as typeof entry.forkSource;
   }
   const candidate = {
     agentId: fact.agentId,
