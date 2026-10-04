@@ -43,6 +43,7 @@ import {
   getSessionControllerEntryForOperation,
   markReplyOperationExecutionStarted,
   isReplyRunEvidenceStale,
+  resolveReplyRunForCurrentSessionId,
 } from "../../sessions/session-controller.state.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { QuestionAnswerUnconfirmedError } from "../harness/gateway-question-dispatch.js";
@@ -1398,6 +1399,13 @@ export function clearActiveEmbeddedRun(
   if (!registration || registration.settled) {
     return;
   }
+  const controllerOwner = resolveReplyRunForCurrentSessionId(sessionId);
+  const ownsSessionProjection =
+    (activeHandle === handle &&
+      (registration.operation === undefined ||
+        (controllerOwner.kind === "one" &&
+          controllerOwner.operation === registration.operation))) ||
+    (!activeHandle && registration.operation !== undefined && controllerOwner.kind === "none");
   registration.closeWatchdogWait?.();
   registration.watchdogAttempt?.close();
   const operation = registration.operation;
@@ -1407,8 +1415,10 @@ export function clearActiveEmbeddedRun(
   if (operation && backend) {
     operation.detachBackend(backend);
   }
-  if (activeHandle === handle) {
-    handle.closeDiagnostics?.();
+  // The exact attachment retains its diagnostic generation after controller completion.
+  // Closing it is generation-fenced and cannot retire a successor's diagnostic owner.
+  handle.closeDiagnostics?.();
+  if (ownsSessionProjection) {
     ACTIVE_EMBEDDED_RUN_SNAPSHOTS.delete(sessionId);
     clearActiveRunSessionIndex(ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE, sessionId);
 

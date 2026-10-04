@@ -14,10 +14,13 @@ import {
   closeDiagnosticEmbeddedRunOwner,
   createDiagnosticEmbeddedRunOwner,
   getDiagnosticSessionActivitySnapshot,
+  isDiagnosticEmbeddedRunOwnerClosed,
   resetDiagnosticRunActivityForTest,
   startDiagnosticRunActivityTracking,
   type DiagnosticEmbeddedRunOwner,
 } from "../../logging/diagnostic-run-activity.js";
+import { getDiagnosticSessionState } from "../../logging/diagnostic-session-state.js";
+import { resetDiagnosticStateForTest } from "../../logging/diagnostic.test-support.js";
 import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import {
   listActiveSessionRunIds,
@@ -25,12 +28,15 @@ import {
 } from "../../sessions/session-controller.queries.js";
 import { assertSessionControllerOperation } from "../../sessions/session-controller.state.js";
 import { withGatewayToolCallerIdentity } from "../tools/gateway-caller-context.js";
-import type { EmbeddedAgentQueueHandle } from "./run-state.js";
+import { getEmbeddedRunAttachment, type EmbeddedAgentQueueHandle } from "./run-state.js";
 import {
+  clearActiveEmbeddedRun as retireActiveEmbeddedRun,
   prepareEmbeddedAgentRunCompletionClaim,
   queueEmbeddedAgentMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunHandleSessionId,
   resolveActiveEmbeddedRunSessionIdBySessionFile as resolveActiveEmbeddedRunHandleSessionIdBySessionFile,
+  resolveActiveEmbeddedRunOwnerByRunId,
+  setActiveEmbeddedRun as registerActiveEmbeddedRun,
 } from "./runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
@@ -118,8 +124,123 @@ describe("embedded run registry lifecycle generations", () => {
     testing.resetActiveEmbeddedRuns();
     replyRunTesting.resetReplyRunRegistry();
     resetDiagnosticRunActivityForTest();
+    resetDiagnosticStateForTest();
     resetDiagnosticEventsForTest();
     lifecycleMock.reset();
+  });
+
+  it("retires exact diagnostics after controller completion precedes native cleanup", () => {
+    const completedRef = {
+      sessionId: "controller-completed-session",
+      sessionKey: "agent:main:controller-completed",
+    };
+    const runId = "controller-completed-run";
+    const operation = createReplyOperation({
+      ...completedRef,
+      resetTriggered: false,
+    });
+    const diagnosticOwner = createDiagnosticEmbeddedRunOwner({
+      ...completedRef,
+      runId,
+    });
+    const handle = createRunHandle({ diagnosticOwner, runId });
+    startDiagnosticRunActivityTracking();
+    const attachment = registerActiveEmbeddedRun(
+      completedRef.sessionId,
+      handle,
+      completedRef.sessionKey,
+      undefined,
+      undefined,
+      operation,
+    );
+    expect(getDiagnosticSessionState(completedRef).state).toBe("processing");
+
+    operation.complete();
+    expect(getEmbeddedRunAttachment(handle)).toBe(attachment);
+    expect(getDiagnosticSessionActivitySnapshot(completedRef).activeWorkKind).toBe("embedded_run");
+
+    retireActiveEmbeddedRun(
+      completedRef.sessionId,
+      handle,
+      completedRef.sessionKey,
+      undefined,
+      "run_completed",
+      attachment,
+    );
+
+    expect(isDiagnosticEmbeddedRunOwnerClosed(diagnosticOwner)).toBe(true);
+    expect(getDiagnosticSessionState(completedRef).state).toBe("idle");
+    expect(getDiagnosticSessionActivitySnapshot(completedRef).activeWorkKind).toBeUndefined();
+    expect(resolveActiveEmbeddedRunOwnerByRunId(runId)).toBeUndefined();
+    expect(getEmbeddedRunAttachment(handle)).toBeUndefined();
+    expect(listActiveSessionRunIds()).not.toContain(completedRef.sessionId);
+    expect(listActiveSessionRunKeys()).not.toContain(completedRef.sessionKey);
+  });
+
+  it("preserves a successor projection when prior native cleanup arrives late", () => {
+    const successorRef = {
+      sessionId: "native-cleanup-successor-session",
+      sessionKey: "agent:main:native-cleanup-successor",
+    };
+    const priorOperation = createReplyOperation({ ...successorRef, resetTriggered: false });
+    const priorOwner = createDiagnosticEmbeddedRunOwner({
+      ...successorRef,
+      runId: "prior-native-run",
+    });
+    const priorHandle = createRunHandle({ diagnosticOwner: priorOwner, runId: "prior-native-run" });
+    startDiagnosticRunActivityTracking();
+    const priorAttachment = registerActiveEmbeddedRun(
+      successorRef.sessionId,
+      priorHandle,
+      successorRef.sessionKey,
+      undefined,
+      undefined,
+      priorOperation,
+    );
+    priorOperation.complete();
+
+    const successorOperation = createReplyOperation({ ...successorRef, resetTriggered: false });
+    const successorOwner = createDiagnosticEmbeddedRunOwner({
+      ...successorRef,
+      runId: "successor-native-run",
+    });
+    const successorHandle = createRunHandle({
+      diagnosticOwner: successorOwner,
+      runId: "successor-native-run",
+    });
+    const successorAttachment = registerActiveEmbeddedRun(
+      successorRef.sessionId,
+      successorHandle,
+      successorRef.sessionKey,
+      undefined,
+      undefined,
+      successorOperation,
+    );
+
+    retireActiveEmbeddedRun(
+      successorRef.sessionId,
+      priorHandle,
+      successorRef.sessionKey,
+      undefined,
+      "run_completed",
+      priorAttachment,
+    );
+
+    expect(isDiagnosticEmbeddedRunOwnerClosed(priorOwner)).toBe(true);
+    expect(isDiagnosticEmbeddedRunOwnerClosed(successorOwner)).toBe(false);
+    expect(getDiagnosticSessionState(successorRef).state).toBe("processing");
+    expect(resolveActiveEmbeddedRunOwnerByRunId("successor-native-run")).toBeDefined();
+    expect(getEmbeddedRunAttachment(successorHandle)).toBe(successorAttachment);
+
+    retireActiveEmbeddedRun(
+      successorRef.sessionId,
+      successorHandle,
+      successorRef.sessionKey,
+      undefined,
+      "run_completed",
+      successorAttachment,
+    );
+    successorOperation.complete();
   });
 
   it("revokes completed claims on lifecycle rotation", () => {
