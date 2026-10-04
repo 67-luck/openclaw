@@ -67,7 +67,8 @@ function hasLiveCompletionOwner(claim: HarnessCompletionRecovery, runId: string)
     getRpcSourceIdentity(admission).sessionId === claim.sessionId &&
     getRpcSourceIdentity(admission).agentId === claim.requesterAgentId &&
     getRpcSourceLifecycleGeneration(admission) === getAgentRunLifecycleGeneration() &&
-    getRpcSourceProjectSessionActive(admission) === true &&
+    admission.adapter.controlUiVisible !== false &&
+    getRpcSourceProjectSessionActive(admission) !== false &&
     !admission.input.retirementRequested &&
     !admission.input.abortSignal.aborted &&
     !admission.input.custody.cancellationRetired &&

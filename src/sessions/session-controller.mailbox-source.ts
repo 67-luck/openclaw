@@ -66,7 +66,10 @@ export function beginSessionControllerSourceInjection(
   }
   const phase = input.phase;
   const olderReservations = input.mailbox.entries
-    .filter((entry) => entry.sequence < input.sequence && entry.phase !== "consumed")
+    .filter(
+      (entry) =>
+        entry.sequence < input.sequence && entry.phase !== "consumed" && entry.claim === undefined,
+    )
     .map((entry) => entry.injectionOrder.settled);
   const predecessor =
     input.policy.mode === "interrupt" || olderReservations.length === 0

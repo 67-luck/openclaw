@@ -9,10 +9,13 @@ import {
   INTERNAL_PROVENANCE_SOURCE_CHANNEL,
   isAgentMediatedCompletionSourceTool,
 } from "../../../sessions/input-provenance.js";
+import { beginSessionControllerSourceInjection } from "../../../sessions/session-controller.mailbox.js";
 import type { SessionControllerInput } from "../../../sessions/session-controller.mailbox.js";
 import { isCronRunSessionKey } from "../../../sessions/session-key-utils.js";
+import type { UserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.types.js";
 import { isIncognitoSessionKey } from "../../../shared/incognito-session-key.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.paths.js";
+import { sessionDeliveryChannel } from "../../../utils/delivery-context.read.js";
 import {
   isGatewayMessageChannel,
   normalizeMessageChannel,
@@ -21,15 +24,26 @@ import {
   buildAgentRunTerminalOutcomeFromWaitResult,
   classifyAgentRunTerminalOutcome,
 } from "../../agent-run-terminal-outcome.js";
-import { resolveEmbeddedRunAbandonment } from "../../embedded-agent-runner/runs.js";
+import type { EmbeddedAgentQueueMessageOptions } from "../../embedded-agent-runner/run-state.js";
+import {
+  formatEmbeddedAgentQueueFailureSummary,
+  resolveEmbeddedRunAbandonment,
+} from "../../embedded-agent-runner/runs.js";
 import {
   hasFailedSubagentNoOutputCompletion,
   hasVisibleCompletionResult,
 } from "../../internal-event-contract.js";
 import { buildAgentInternalEventContext, type AgentInternalEvent } from "../../internal-events.js";
-import { RUNTIME_EVENT_USER_PROMPT } from "../../internal-runtime-context.js";
+import {
+  RUNTIME_EVENT_USER_PROMPT,
+  projectRuntimeContextFragments,
+} from "../../internal-runtime-context.js";
 import type { GatewayToolCallerReceiptAdmission } from "../../tools/gateway-caller-receipt.types.js";
-import { resolveRequesterSessionActivity } from "./subagent-announce-active-wake.js";
+import {
+  SOURCE_OWNER_CHANGED,
+  resolveActiveWakeWithRetries,
+  resolveRequesterSessionActivity,
+} from "./subagent-announce-active-wake.js";
 import {
   deliverCompletionDirect,
   isDirectMessageDeliveryTarget,
@@ -49,6 +63,7 @@ import {
   getSubagentAnnounceRuntimeConfig,
   loadRequesterSessionEntry,
   resolveExternalBestEffortDeliveryTarget,
+  resolveQueueSettings,
 } from "./subagent-announce-delivery.runtime.js";
 import { createDirectAnnounceResponseClassifier } from "./subagent-announce-direct-response.js";
 import {
@@ -87,6 +102,7 @@ export type SubagentAnnounceDirectParams = {
   isSourceSessionAdmissionAllowed?: () => boolean;
   isCompletionOwnedByRequesterYield?: () => boolean;
   requesterIsSubagent: boolean;
+  createUserTurnTranscriptRecorder?: (sessionId: string) => UserTurnTranscriptRecorder;
   onDeliveryResult?: (delivery: SubagentAnnounceDeliveryResult) => void | Promise<void>;
   signal?: AbortSignal;
   onExecutionStarted?: () => void;
@@ -292,6 +308,86 @@ export async function sendSubagentAnnounceDirectly(
         ? "message_tool_only"
         : undefined;
     const shouldDeliverAgentFinal = deliveryTarget.deliver && !requiresMessageToolDelivery;
+    const requesterQueueSettings = resolveQueueSettings({
+      cfg,
+      channel:
+        sessionDeliveryChannel(requesterEntry) ??
+        requesterSessionOrigin?.channel ??
+        params.directOrigin?.channel,
+      sessionEntry: requesterEntry,
+    });
+    if (
+      !parentOnly &&
+      params.expectsCompletionMessage &&
+      requesterActivity.sessionId &&
+      requesterActivity.isActive &&
+      params.controllerInput
+    ) {
+      const injection = beginSessionControllerSourceInjection(params.controllerInput);
+      if (await injection.admit()) {
+        let finished = false;
+        try {
+          const wakeOptions: EmbeddedAgentQueueMessageOptions = {
+            deliveryTimeoutMs: announceTimeoutMs,
+            steeringMode: "all",
+            ...(completionSourceReplyDeliveryMode
+              ? { sourceReplyDeliveryMode: completionSourceReplyDeliveryMode }
+              : {}),
+            ...(requesterQueueSettings.debounceMs !== undefined
+              ? { debounceMs: requesterQueueSettings.debounceMs }
+              : {}),
+            waitForTranscriptCommit: true,
+            ...(runtimeContextFragments.length
+              ? {
+                  currentInboundContext: {
+                    text: projectRuntimeContextFragments(runtimeContextFragments),
+                    fragments: runtimeContextFragments,
+                  },
+                }
+              : {}),
+            ...(params.createUserTurnTranscriptRecorder
+              ? {
+                  userTurnTranscriptRecorder: params.createUserTurnTranscriptRecorder(
+                    requesterActivity.sessionId,
+                  ),
+                }
+              : {}),
+          };
+          const wakeOutcome = await resolveActiveWakeWithRetries(
+            requesterActivity.sessionId,
+            turnMessage,
+            wakeOptions,
+            params.signal,
+            isCompletionDeliveryAllowed,
+            isCompletionAdmissionAllowed,
+          );
+          if (wakeOutcome === SOURCE_OWNER_CHANGED) {
+            injection.finish(false);
+            finished = true;
+            return sourceOwnerChangedResult();
+          }
+          injection.accepted(wakeOutcome.queued);
+          injection.finish(wakeOutcome.queued);
+          finished = true;
+          if (wakeOutcome.queued) {
+            return {
+              delivered: true,
+              deliveredAt: wakeOutcome.deliveredAtMs,
+              enqueuedAt: wakeOutcome.enqueuedAtMs,
+              path: "steered",
+            };
+          }
+          const wakeFailure = formatEmbeddedAgentQueueFailureSummary(wakeOutcome);
+          defaultRuntime.log(
+            `[warn] Active requester session could not be woken for subagent completion; falling back to requester-agent handoff: active requester session could not be woken${wakeFailure ? `: ${wakeFailure}` : ""}`,
+          );
+        } finally {
+          if (!finished) {
+            injection.finish(false);
+          }
+        }
+      }
+    }
     if (
       params.expectsCompletionMessage &&
       isCronRunSessionKey(canonicalRequesterSessionKey) &&

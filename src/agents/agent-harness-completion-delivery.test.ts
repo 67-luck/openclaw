@@ -813,7 +813,9 @@ describe("review3 Gateway admission custody", () => {
           () => reconcileHarnessCompletionDelivery(request),
         );
         expect(result).toBe(
-          kind === "held" || kind === "claimed-preparation" ? "pending" : "blocked",
+          kind === "held" || kind === "claimed-preparation" || kind === "cleanup-requested"
+            ? "pending"
+            : "blocked",
         );
       } finally {
         releaseClaim?.();

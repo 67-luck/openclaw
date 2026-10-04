@@ -13,8 +13,11 @@ import { defaultRuntime } from "../../../runtime.js";
 import {
   INTERNAL_PROVENANCE_SOURCE_CHANNEL,
   isAgentMediatedCompletionSourceTool,
+  type InputProvenance,
 } from "../../../sessions/input-provenance.js";
 import { isCronSessionKey } from "../../../sessions/session-key-utils.js";
+import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.js";
+import type { UserTurnTranscriptRecorder } from "../../../sessions/user-turn-transcript.types.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../../utils/message-channel.js";
@@ -82,8 +85,61 @@ function collectExpectedMediaFromInternalEvents(events: AgentInternalEvent[] | u
   };
 }
 
+function createCompletionUserTurnTranscriptRecorderFactory(params: {
+  directIdempotencyKey: string;
+  requesterAgentId?: string;
+  sourceSessionKey?: string;
+  sourceTool?: string;
+  targetRequesterSessionKey: string;
+  transcriptMessage: string;
+}): (sessionId: string) => UserTurnTranscriptRecorder {
+  const provenance: InputProvenance = {
+    kind: "inter_session",
+    ...(params.sourceSessionKey ? { sourceSessionKey: params.sourceSessionKey } : {}),
+    sourceChannel: INTERNAL_PROVENANCE_SOURCE_CHANNEL,
+    sourceTool: params.sourceTool ?? "subagent_announce",
+  };
+  const recorders = new Map<string, UserTurnTranscriptRecorder>();
+  return (sessionId) => {
+    const existing = recorders.get(sessionId);
+    if (existing) {
+      return existing;
+    }
+    // Retries targeting one session share a recorder. A successor session gets
+    // its own target guard while the logical idempotency key remains stable.
+    const recorder = createUserTurnTranscriptRecorder({
+      input: {
+        text: params.transcriptMessage,
+        idempotencyKey: `${params.directIdempotencyKey}:active-wake`,
+        provenance,
+      },
+      target: () => {
+        const loaded = loadRequesterSessionEntry(
+          params.targetRequesterSessionKey,
+          params.requesterAgentId,
+        );
+        if (!loaded.entry || loaded.entry.sessionId?.trim() !== sessionId || !loaded.agentId) {
+          return undefined;
+        }
+        return {
+          sessionId,
+          expectedSessionId: sessionId,
+          sessionKey: loaded.canonicalKey,
+          sessionEntry: loaded.entry,
+          ...(loaded.storePath ? { storePath: loaded.storePath } : {}),
+          agentId: loaded.agentId,
+          config: loaded.cfg,
+        };
+      },
+      errorContext: "active requester completion transcript",
+    });
+    recorders.set(sessionId, recorder);
+    return recorder;
+  };
+}
+
 export async function deliverSubagentAnnouncement(
-  params: SubagentAnnounceDirectParams & {
+  params: Omit<SubagentAnnounceDirectParams, "createUserTurnTranscriptRecorder"> & {
     sourceRunId?: string;
     requireDirectDelivery?: boolean;
     preparedRequester?: { binding: SessionDeliveryRequesterBinding; entry: SessionEntry };
@@ -230,6 +286,18 @@ export async function deliverSubagentAnnouncement(
   }
 
   const runtimeContextFragments = buildAgentInternalEventContext(params.internalEvents);
+  const createCompletionUserTurnTranscriptRecorder = params.expectsCompletionMessage
+    ? createCompletionUserTurnTranscriptRecorderFactory({
+        directIdempotencyKey: params.directIdempotencyKey,
+        requesterAgentId: params.requesterAgentId,
+        sourceSessionKey: params.sourceSessionKey,
+        sourceTool: params.sourceTool,
+        targetRequesterSessionKey: params.targetRequesterSessionKey,
+        transcriptMessage: runtimeContextFragments.length
+          ? RUNTIME_EVENT_USER_PROMPT
+          : params.triggerMessage,
+      })
+    : undefined;
   const delivery = await runSubagentAnnounceDispatch({
     expectsCompletionMessage: params.expectsCompletionMessage,
     requireDirectDelivery: params.requireDirectDelivery || params.completionTarget === "parent",
@@ -264,6 +332,7 @@ export async function deliverSubagentAnnouncement(
       }
       return await sendSubagentAnnounceDirectly({
         ...params,
+        createUserTurnTranscriptRecorder: createCompletionUserTurnTranscriptRecorder,
       });
     },
   });
