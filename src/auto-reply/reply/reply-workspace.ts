@@ -25,8 +25,8 @@ export async function prepareReplyWorkspace(params: {
     ],
   };
   const assertCurrent = () => {
-    assertReplyPreprocessingActive(abortSignal);
     operatorAuthority?.assertCurrent();
+    assertReplyPreprocessingActive(abortSignal);
   };
   assertCurrent();
   if (params.useFastTestBootstrap) {
