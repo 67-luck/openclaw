@@ -5,6 +5,7 @@ import type { GatewayRequestContext } from "../../../gateway/server-methods/type
 import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
+import type { EmbeddedAgentRunResult } from "../../embedded-agent-runner/types.js";
 import { createSubagentRunParams } from "../../subagent-test-fixtures.test-helpers.js";
 import { createSessionsYieldTool } from "../../tools/sessions-yield-tool.js";
 import * as completionStore from "../completion/subagent-completion-admission.store.js";
@@ -329,6 +330,7 @@ export function registerRequesterWakeReceiptBoundaryTests({
     holdAgentCall(beta.childSessionKey);
     emitCompleted(alpha.runId, alpha.childSessionKey, "alpha complete");
     await waitForAgentCallCount(1);
+    await flushOwnedWork();
     const beforeCleanup = Date.now();
     await waitForDeliveredCleanup(alpha.runId, { allowPendingRequesterSettleWake: true });
     expect(Date.now(), "cleanup observation must not spend the retry clock").toBe(beforeCleanup);
@@ -373,25 +375,42 @@ export function registerRequesterWakeReceiptBoundaryTests({
     ).resolves.toMatchObject({ details: { status: "yielded" } });
 
     setWakeRefusal(rejectRequesterWake, rejectPersistence);
-    releaseAgentCall(beta.childSessionKey);
-    const { withLocalSessionPlacementTurnSettlement } =
-      await import("../../session-placement-admission.js");
-    await withLocalSessionPlacementTurnSettlement(
-      {
-        sessionId: "sess-main",
-        sessionKey: requesterSessionKey,
-        agentId: "main",
-        runId: requesterTurnRunId,
+    const requesterResult: EmbeddedAgentRunResult = {
+      acceptedSessionSpawns: [alpha, beta],
+      meta: {
+        durationMs: 1,
+        yielded: true,
+        executionTrace: { runner: "cli" as const, attempts: [], fallbackUsed: false },
       },
-      async () => ({
-        acceptedSessionSpawns: [alpha, beta],
-        meta: {
-          durationMs: 1,
-          yielded: true,
-          executionTrace: { runner: "cli", attempts: [], fallbackUsed: false },
-        },
-      }),
-    );
+    };
+    const overlapsCompletionCleanup = receiptDrift || outcomeDrift;
+    const requesterSettlement = overlapsCompletionCleanup
+      ? (await import("../../requester-run-settlement.js")).settleRequesterRun(
+          {
+            sessionKey: requesterSessionKey,
+            agentId: "main",
+            runId: requesterTurnRunId,
+          },
+          requesterResult,
+          () => {},
+        )
+      : (
+          await import("../../session-placement-admission.js")
+        ).withLocalSessionPlacementTurnSettlement(
+          {
+            sessionId: "sess-main",
+            sessionKey: requesterSessionKey,
+            agentId: "main",
+            runId: requesterTurnRunId,
+          },
+          async () => requesterResult,
+        );
+    void requesterSettlement.catch(() => {});
+    if (!overlapsCompletionCleanup) {
+      // Settlement is queued behind beta. Its held transition still owns the
+      // writer lane before the equivalent metadata successor starts below.
+      releaseAgentCall(beta.childSessionKey);
+    }
     if (heldReceipts) {
       const members = await heldReceipts.transition.entered.promise;
       expect(members).toHaveLength(2);
@@ -458,6 +477,12 @@ export function registerRequesterWakeReceiptBoundaryTests({
         }
       }
       heldReceipts.transition.release.resolve();
+    }
+    await requesterSettlement;
+    expect(requesterResult.requesterContinuationSettled).toBe(true);
+    if (overlapsCompletionCleanup) {
+      // The settle wake queues behind beta's in-flight completion turn in the requester mailbox.
+      releaseAgentCall(beta.childSessionKey);
     }
     await waitForAgentCallCount(rejectRequesterWake ? 2 : 3);
     if (outcomeDrift && heldReceipts && settleWakeOwner) {
@@ -553,23 +578,15 @@ export function registerRequesterWakeReceiptBoundaryTests({
       expect(sendMessageMock).not.toHaveBeenCalled();
       return;
     }
-    if (heldReceipts) {
-      const members = await heldReceipts.complete.entered.promise;
-      expect(members.length).toBeGreaterThan(0);
-      for (const { entry, wake } of members) {
-        const current = registry.getSubagentRunByRunId(entry.runId);
-        expect(isSameSubagentRunOwner(current, entry)).toBe(true);
-        expect(current?.requesterSettleWake).toEqual(wake);
-        expect(wake).toBeDefined();
-      }
-      await registry.testing.sweepOnceForTests();
-      expect(getRequesterWakeCalls()).toHaveLength(1);
-      heldReceipts.complete.release.resolve();
-    }
     await waitForDeliveredCleanup(alpha.runId);
     await waitForDeliveredCleanup(beta.runId);
     await registry.testing.sweepOnceForTests();
     expect(getRequesterWakeCalls()).toHaveLength(rejectRequesterWake ? 0 : 1);
+    if (heldReceipts) {
+      // The requester mailbox serializes beta's completion before the settle wake.
+      // Its delivered outcome retires the wake without a redundant completion cycle.
+      expect(heldReceipts.executions).toEqual(["transition", "outcome"]);
+    }
     expect(sendMessageMock).not.toHaveBeenCalled();
     const delivery = registry.getSubagentRunByRunId(beta.runId)?.delivery;
     expect(delivery).toMatchObject({

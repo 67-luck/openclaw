@@ -91,12 +91,17 @@ export function createLifecycleWaits(requesterSessionKey: string) {
       const run = findRun(runId);
       if (run && matches(run)) {
         reached.resolve(run);
+        return run;
       }
+      return undefined;
     };
     const stop = subscribeSubagentRunChanges("projection", observe);
     onTestFinished(stop);
     try {
-      observe();
+      const current = observe();
+      if (current) {
+        return current;
+      }
       // Start due callbacks without spending retry time waiting for native worker reads.
       await vi.advanceTimersByTimeAsync(0);
       return await reached.promise;
