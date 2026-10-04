@@ -1,5 +1,3 @@
-import { requestRpcSourceCancellation } from "../../sessions/session-controller.rpc-sources.js";
-import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 // Keep shared fixture mock registration before the production imports.
 // oxfmt-ignore
 import {
@@ -9,7 +7,6 @@ import {
   makeContext,
   prime,
 } from "./agent.test-harness.js";
-// Provider/session fixtures are isolated; RPC admission, authority, and plugin effects are real.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -56,9 +53,11 @@ import { withPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gate
 import { createPluginRecord } from "../../plugins/status.test-helpers.js";
 import { createPluginToolFactoryContext } from "../../plugins/tool-factory-context.js";
 import { bindPluginToolCallbacks } from "../../plugins/tool-factory-runtime.js";
+// Provider/session fixtures are isolated; RPC admission, authority, and plugin effects are real.
+import { requestRpcSourceCancellation } from "../../sessions/session-controller.rpc-sources.js";
+import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
-import { abortChatRunById } from "../chat-abort.js";
 import { createContext as createInProcessContext } from "../server-plugin-in-process-dispatch.test-support.js";
 import { createSyntheticPluginRuntimeClient } from "../server-plugin-runtime-client.js";
 
@@ -368,7 +367,6 @@ describe("Gateway followup owner final effect", () => {
             for (const entry of rpcSourceTesting.values()) {
               requestRpcSourceCancellation(entry);
             }
-
           }
           // Cross the native accepted-ack yield without advancing run deadlines.
           await vi.advanceTimersByTimeAsync(10);
