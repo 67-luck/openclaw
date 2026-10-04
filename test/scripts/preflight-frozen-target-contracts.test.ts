@@ -22,6 +22,9 @@ const repo = resolve(".");
 const entrypoint = "scripts/preflight-frozen-target-contracts.mjs";
 const closure = [
   entrypoint,
+  "scripts/lib/frozen-target-workflow-request.mjs",
+  "scripts/lib/release-upgrade-baseline.mjs",
+  "scripts/lib/canonical-json.mjs",
   "scripts/lib/docker-e2e-plan.mts",
   "scripts/lib/docker-e2e-scenarios.mts",
   "scripts/lib/official-external-channel-catalog.json",
@@ -552,11 +555,12 @@ describe("frozen admission bootstrap repairs", () => {
 
   it.each([
     reader,
+    "scripts/lib/frozen-target-workflow-request.mjs",
+    "scripts/lib/release-upgrade-baseline.mjs",
+    "scripts/lib/release-version.mjs",
+    "scripts/lib/canonical-json.mjs",
     "scripts/lib/docker-e2e-scenarios.mts",
-    "scripts/lib/record-shared.mjs",
     shell,
-    "scripts/lib/trusted-native-typescript.mjs",
-    "scripts/lib/native-typescript.mts",
   ])("rejects dirty executable %s before any dependent code runs at unchanged HEAD", (path) => {
     const f = fixture({ "src/config/zod-schema.ts": "lastRunAt:" });
     const sentinel = join(f.root, "dependent-code-executed");
@@ -567,11 +571,9 @@ describe("frozen admission bootstrap repairs", () => {
         : `\n(await import("node:fs")).writeFileSync(${JSON.stringify(sentinel)}, "executed");\n`;
     writeFileSync(file, readFileSync(file, "utf8") + payload);
     expect(f.tooling.git("rev-parse", "HEAD")).toBe(f.tooling.sha);
-    const result = f.run({ consumers: ["onboard"] });
+    const result = f.run({ consumers: [] });
     expect(existsSync(sentinel), result.stderr).toBe(false);
-    expect(result.status, result.stderr).toBe(1);
-    expect(result.stderr).toContain(`tooling closure does not match committed source: ${path}`);
-    expect(result.stdout).toBe("");
+    expectRejected(result, `tooling closure does not match committed source: ${path}`);
   });
 
   it.each([
