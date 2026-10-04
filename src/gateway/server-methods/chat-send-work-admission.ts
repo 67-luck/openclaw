@@ -1,5 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
+import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { err, ok } from "@openclaw/normalization-core/result";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { hasPendingFollowupQueueWork } from "../../auto-reply/reply/queue/state.js";
 import type { SessionTranscriptTurnMutation } from "../../config/sessions/goals-operations.types.js";
@@ -25,7 +27,7 @@ import { resolveOperatorSessionCreation } from "../session-creation-provenance.j
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { captureGatewayClientUploadCommitGuard } from "../upload-policy.js";
 import { formatForLog } from "../ws-log.js";
-import { readPreRegisteredRun } from "./chat-abort-authorization.js";
+import { readPreRegisteredRun, writePreRegisteredChatAbort } from "./chat-abort-authorization.js";
 import {
   prepareChatSendRetryComparison,
   resolveChatSendRequestConflict,
@@ -142,9 +144,17 @@ export async function withCurrentChatSendRetry(
   }
 }
 
+/** Settle an invalid exact attempt before selecting its admission failure response. */
 export function respondChatSendWorkAdmissionFailure(
   params: ChatSendPreAdmissionParams,
   error: unknown,
+  admission: {
+    attemptId: string;
+    lifecycleGeneration: string;
+    pendingReservation: ReturnType<typeof readPreRegisteredRun>;
+    requestIdentity?: string;
+    runAbort: ReturnType<typeof registerChatAbortController>;
+  },
   comparison?: ChatSendRetryComparison,
 ) {
   if (error instanceof ExpectedProfileMismatchError) {
@@ -152,6 +162,30 @@ export function respondChatSendWorkAdmissionFailure(
   }
   const { context, respond, session } = params;
   const { clientRunId } = session;
+  const pending = admission.pendingReservation;
+  const pendingAttempt = normalizeOptionalString(pending?.payload.attemptId);
+  if (
+    !readChatSendDedupeResponse(context.dedupe, clientRunId) &&
+    (!pendingAttempt || pendingAttempt === admission.attemptId)
+  ) {
+    // The controller source exists before worker reads, so cancellation can win that read.
+    const stopReason = admission.runAbort.controller.signal.aborted
+      ? (admission.runAbort.entry?.adapter.abortStopReason ?? "rpc")
+      : admission.lifecycleGeneration !== getAgentEventLifecycleGeneration()
+        ? "restart"
+        : !pending || !isFutureDateTimestampMs(pending.payload.expiresAtMs, { nowMs: Date.now() })
+          ? "timeout"
+          : undefined;
+    if (stopReason) {
+      writePreRegisteredChatAbort({
+        context,
+        runId: clientRunId,
+        stopReason,
+        attemptId: admission.attemptId,
+        requestIdentity: admission.requestIdentity,
+      });
+    }
+  }
   try {
     const conflict = resolveChatSendRequestConflict(params, comparison);
     if (conflict) {

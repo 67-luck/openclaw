@@ -147,6 +147,14 @@ export async function admitChatSend(
       context.dedupe.delete(pendingChatSendKey);
     }
   };
+  const abortPendingChatSend = (stopReason: string) =>
+    writePreRegisteredChatAbort({
+      context,
+      runId: clientRunId,
+      stopReason,
+      attemptId: pendingAttemptId,
+      requestIdentity,
+    });
   const preparedGoalRetry = request.goalOperation
     ? await prepareGoalChatSendRetry(params)
     : undefined;
@@ -318,12 +326,7 @@ export async function admitChatSend(
           admittedRunAbort.entry.adapter.abortStopReason = "restart";
         }
         admittedRunAbort.controller.abort(createAgentRunRestartAbortError());
-        writePreRegisteredChatAbort({
-          context,
-          runId: clientRunId,
-          stopReason: "restart",
-          attemptId: pendingAttemptId,
-        });
+        abortPendingChatSend("restart");
         return;
       }
       if (
@@ -334,12 +337,7 @@ export async function admitChatSend(
           admittedRunAbort.entry.adapter.abortStopReason = "timeout";
         }
         admittedRunAbort.controller.abort();
-        writePreRegisteredChatAbort({
-          context,
-          runId: clientRunId,
-          stopReason: "timeout",
-          attemptId: pendingAttemptId,
-        });
+        abortPendingChatSend("timeout");
         return;
       }
       const latestEntry = latestSession.entry;
@@ -501,12 +499,7 @@ export async function admitChatSend(
         const stopReason = isAgentRunDirectAbortReason(reason) ? "rpc" : "restart";
         if (!admittedRunAbort) {
           if (!context.chatRunState.hasAbortMarker(clientRunId)) {
-            writePreRegisteredChatAbort({
-              context,
-              runId: clientRunId,
-              stopReason,
-              attemptId: pendingAttemptId,
-            });
+            abortPendingChatSend(stopReason);
           }
         } else if (!admittedRunAbort.controller.signal.aborted) {
           // A later lifecycle drain must not overwrite the first abort reason.
@@ -523,12 +516,7 @@ export async function admitChatSend(
       admittedRunAbort.controller.signal.aborted &&
       !readChatSendDedupeResponse(context.dedupe, clientRunId)
     ) {
-      writePreRegisteredChatAbort({
-        context,
-        runId: clientRunId,
-        stopReason: admittedRunAbort.entry?.adapter.abortStopReason ?? "rpc",
-        attemptId: pendingAttemptId,
-      });
+      abortPendingChatSend(admittedRunAbort.entry?.adapter.abortStopReason ?? "rpc");
     }
     admittedRunAbort.controller.signal.throwIfAborted();
     params.assertCurrent?.();
@@ -536,11 +524,23 @@ export async function admitChatSend(
       resolveChatSendRequestConflict(params, retryComparison, pendingAttemptId),
     );
   } catch (err) {
+    const pendingReservationAtFailure = readPendingReservation();
     clearPendingChatSendReservation();
     admittedRunAbort?.cleanup();
     gatewayWorkAdmission?.release();
     releaseCapturedOperator();
-    respondChatSendWorkAdmissionFailure(params, err, retryComparison);
+    respondChatSendWorkAdmissionFailure(
+      params,
+      err,
+      {
+        attemptId: pendingAttemptId,
+        lifecycleGeneration,
+        pendingReservation: pendingReservationAtFailure,
+        requestIdentity,
+        runAbort: admittedRunAbort,
+      },
+      retryComparison,
+    );
     return { ok: false as const };
   }
   if (retainedRequestConflict) {
@@ -595,12 +595,7 @@ export async function admitChatSend(
     gatewayWorkAdmission.release();
     capturedOperator.release();
     if (!readChatSendDedupeResponse(context.dedupe, clientRunId)) {
-      writePreRegisteredChatAbort({
-        context,
-        runId: clientRunId,
-        stopReason: activeRunAbort?.entry?.adapter.abortStopReason ?? "restart",
-        attemptId: pendingAttemptId,
-      });
+      abortPendingChatSend(activeRunAbort?.entry?.adapter.abortStopReason ?? "restart");
     }
     const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
     respond(aborted?.ok ?? true, aborted?.payload, aborted?.error, {
