@@ -8,23 +8,23 @@ import { getExistingSessionControllerMailbox } from "../../../sessions/session-c
 import { isSessionRunActiveForKey } from "../../../sessions/session-controller.queries.js";
 import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
 import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
-import type { EmbeddedAgentRunResult } from "../../embedded-agent-runner/types.js";
 import { createSubagentRunParams } from "../../subagent-test-fixtures.test-helpers.js";
-import { createSessionsYieldTool } from "../../tools/sessions-yield-tool.js";
 import * as completionStore from "../completion/subagent-completion-admission.store.js";
-import { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
-import { subagentRuns } from "./subagent-registry-memory.js";
 import {
   mutateSubagentRuns,
   SubagentRegistryVersionConflictError,
 } from "./subagent-registry-persistence.js";
 import { observeRootWork } from "./subagent-registry.browser-cleanup.test-support.js";
 import type { GatewayRequest } from "./subagent-registry.lifecycle-fixture.test-support.js";
-import type { createLifecycleWaits } from "./subagent-registry.lifecycle-waits.test-support.js";
+import { createLifecycleWaits } from "./subagent-registry.lifecycle-waits.test-support.js";
+import {
+  createRequesterTurnSettlement,
+  queueCompletionCleanupDrift,
+} from "./subagent-registry.requester-wake-schedule.test-support.js";
 import { loadSubagentRegistryFromSqlite } from "./subagent-registry.store.sqlite.js";
 import * as registry from "./subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
-import { getSubagentRunRuntimeKey, isSameSubagentRunOwner } from "./subagent-run-generation.js";
+import { isSameSubagentRunOwner } from "./subagent-run-generation.js";
 
 function createRequesterWakeReceiptHolds(
   options: { failCompletePublication?: boolean; holdOutcome?: boolean } = {},
@@ -167,37 +167,6 @@ function createRequesterWakeReceiptHolds(
   };
 }
 
-async function driftCompletionCleanup(entry: SubagentRunRecord): Promise<void> {
-  expect(entry.cleanupHandled).toBe(true);
-  expect(entry.cleanupCompletedAt).toBeUndefined();
-  const failed = vi.fn(async () => {
-    throw new Error("Synthetic terminal completion refusal");
-  });
-  const resume = vi.fn();
-  const recovery = createSubagentRegistryCompletionRuntime({
-    runs: subagentRuns,
-    resumed: new Set([getSubagentRunRuntimeKey(entry)]),
-    retryTimers: new Set(),
-    completeSubagentRun: failed,
-    scheduleSweep: vi.fn(),
-    resumeRun: resume,
-    warn: vi.fn(),
-  });
-  await recovery.completeSubagentRunWithRecovery(
-    {
-      runId: entry.runId,
-      expectedEntry: entry,
-      outcome: { status: "ok" },
-      reason: "subagent-complete",
-      triggerCleanup: true,
-    },
-    "requester-wake-ack-proof",
-  );
-  expect(failed).toHaveBeenCalledTimes(2);
-  expect(resume).toHaveBeenCalledWith(entry.runId);
-  expect(subagentRuns.get(entry.runId)?.cleanupHandled).toBe(false);
-}
-
 export function registerRequesterWakeReceiptBoundaryTests({
   requesterSessionKey,
   spawnVisibleChild,
@@ -214,6 +183,7 @@ export function registerRequesterWakeReceiptBoundaryTests({
   holdAgentCall,
   releaseAgentCall,
   onReceiptsHeld,
+  holdRequesterHistory,
 }: {
   requesterSessionKey: string;
   spawnVisibleChild: (params: {
@@ -240,6 +210,7 @@ export function registerRequesterWakeReceiptBoundaryTests({
   holdAgentCall: (sessionKey: string) => void;
   releaseAgentCall: (sessionKey: string) => void;
   onReceiptsHeld: (release: () => void) => void;
+  holdRequesterHistory: () => { entered: Promise<void>; release: () => void };
 }): void {
   const holdRequesterWakeReceipts = (
     options?: Parameters<typeof createRequesterWakeReceiptHolds>[0],
@@ -329,16 +300,56 @@ export function registerRequesterWakeReceiptBoundaryTests({
       !rejectRequesterWake && !emptyReply
         ? holdRequesterWakeReceipts({ holdOutcome: outcomeDrift })
         : undefined;
+    // This table observes transition/outcome publication, not quiet retirement.
+    heldReceipts?.complete.release.resolve();
 
-    holdAgentCall(beta.childSessionKey);
+    const requesterFirst = receiptDrift || outcomeDrift;
+    const heldChildSessionKey = receiptDrift ? alpha.childSessionKey : beta.childSessionKey;
+    // Completion turn custody ends before its delivery-mirror RPC and cleanup.
+    // Keep that real transport boundary pending through the outcome receipt.
+    let requesterHistory: ReturnType<typeof holdRequesterHistory> | undefined;
+    const requesterTurn = createRequesterTurnSettlement({
+      requesterFirst: requesterFirst === true,
+      requesterSessionKey,
+      requesterTurnRunId,
+      children: [alpha, beta],
+    });
+    const requesterResult = requesterTurn.result;
+    const queuedInputs = requesterTurn.inputs;
+    onReceiptsHeld(() => {
+      requesterTurn.release();
+      requesterHistory?.release();
+      releaseAgentCall(heldChildSessionKey);
+      heldReceipts?.releaseAll();
+    });
+    let requesterSettlement = requesterFirst ? requesterTurn.start() : undefined;
+    void requesterSettlement?.catch(() => {});
+    if (requesterFirst) {
+      await requesterTurn.admitted;
+    }
+
+    holdAgentCall(heldChildSessionKey);
     emitCompleted(alpha.runId, alpha.childSessionKey, "alpha complete");
-    await waitForAgentCallCount(1);
-    const beforeCleanup = Date.now();
-    await waitForDeliveredCleanup(alpha.runId, { allowPendingRequesterSettleWake: true });
-    expect(Date.now(), "cleanup observation must not spend the retry clock").toBe(beforeCleanup);
+    if (!requesterFirst) {
+      await waitForAgentCallCount(1);
+      const beforeCleanup = Date.now();
+      await waitForDeliveredCleanup(alpha.runId, { allowPendingRequesterSettleWake: true });
+      expect(Date.now(), "cleanup observation must not spend the retry clock").toBe(beforeCleanup);
+    }
     const modelRouteChange = "Model route changed: requested/model → actual/model.";
     emitCompleted(beta.runId, beta.childSessionKey, "beta complete", modelRouteChange);
-    await waitForAgentCallCount(2);
+    if (requesterFirst) {
+      // Reserve and adopt both completion inputs behind the spawning turn.
+      await requesterTurn.queued;
+      const { waitForRun } = createLifecycleWaits(requesterSessionKey);
+      for (const child of [alpha, beta]) {
+        await waitForRun(child.runId, (entry) => entry.cleanupHandled === true);
+        expect(registry.getSubagentRunByRunId(child.runId)?.cleanupCompletedAt).toBeUndefined();
+      }
+      expect(isSessionRunActiveForKey(requesterSessionKey)).toBe(true);
+    } else {
+      await waitForAgentCallCount(2);
+    }
 
     const betaBeforeYield = registry.getSubagentRunByRunId(beta.runId);
     if (!betaBeforeYield) {
@@ -362,56 +373,25 @@ export function registerRequesterWakeReceiptBoundaryTests({
     });
 
     const settleWakeOwner = outcomeDrift || rejectPersistence ? observeRootWork() : undefined;
-    const yieldTool = createSessionsYieldTool({
-      sessionId: "sess-main",
-      claimYield: async () =>
-        (await registry.markRequesterTurnYielded({
-          requesterSessionKey,
-          requesterAgentId: "main",
-          requesterTurnRunId,
-        })) > 0,
-      onYield: () => {},
-    });
-    await expect(
-      yieldTool.execute("yield-requester-wake", { message: "Wait for visible children" }),
-    ).resolves.toMatchObject({ details: { status: "yielded" } });
-
+    if (!requesterFirst) {
+      await requesterTurn.yieldRequester();
+    }
     setWakeRefusal(rejectRequesterWake, rejectPersistence);
-    const requesterResult: EmbeddedAgentRunResult = {
-      acceptedSessionSpawns: [alpha, beta],
-      meta: {
-        durationMs: 1,
-        yielded: true,
-        executionTrace: { runner: "cli" as const, attempts: [], fallbackUsed: false },
-      },
-    };
-    const { withSessionTurn } = await import("../../../sessions/session-controller.admission.js");
-    const { assertSessionControllerOperation } =
-      await import("../../../sessions/session-controller.state.js");
-    const { settleRequesterRun } = await import("../../requester-run-settlement.js");
-    const requesterSettlement = withSessionTurn(
-      {
-        sessionId: "sess-main",
-        sessionKey: requesterSessionKey,
-        agentId: "main",
-      },
-      async (operation) => {
-        if (!operation) {
-          throw new Error("Requester settlement requires its admitted controller turn");
-        }
-        await settleRequesterRun(
-          { sessionKey: requesterSessionKey, agentId: "main", runId: requesterTurnRunId },
-          requesterResult,
-          () => assertSessionControllerOperation(operation),
-        );
-      },
-    );
+    requesterSettlement ??= requesterTurn.start();
     void requesterSettlement.catch(() => {});
-    // Settlement is queued behind beta. Its held transition still owns the
-    // writer lane before the equivalent metadata successor starts below.
-    releaseAgentCall(beta.childSessionKey);
+    requesterTurn.release();
+    if (!requesterFirst) {
+      releaseAgentCall(beta.childSessionKey);
+    }
     if (heldReceipts) {
       const members = await heldReceipts.transition.entered.promise;
+      if (receiptDrift) {
+        // Alpha's admitted completion holds beta in FIFO while the wake commits.
+        expect(queuedInputs.get(alpha.runId)?.phase).toBe("claimed");
+        expect(queuedInputs.get(beta.runId)?.phase).toBe("waiting");
+        expect(registry.getSubagentRunByRunId(beta.runId)?.cleanupHandled).toBe(true);
+        expect(registry.getSubagentRunByRunId(beta.runId)?.cleanupCompletedAt).toBeUndefined();
+      }
       expect(members).toHaveLength(2);
       for (const { entry, wake } of members) {
         const current = registry.getSubagentRunByRunId(entry.runId);
@@ -444,10 +424,15 @@ export function registerRequesterWakeReceiptBoundaryTests({
           }
           return { value: undefined, postimages: new Map([[next.runId, next]]) };
         });
-        const successor = receiptDrift
-          ? driftCompletionCleanup(member.entry)
-          : mutateSubagentRuns([beta.runId], planSuccessor);
+        const drift = receiptDrift ? queueCompletionCleanupDrift(member.entry) : undefined;
+        const successor = drift?.completed ?? mutateSubagentRuns([beta.runId], planSuccessor);
         void successor.catch(() => {});
+        if (receiptDrift) {
+          // Recovery yields before reserving its write. Observe that reservation
+          // before publishing the predecessor so this remains an overlap proof.
+          await drift?.queued;
+          expect(queuedInputs.get(beta.runId)?.phase).toBe("waiting");
+        }
         expect(planSuccessor).not.toHaveBeenCalled();
         expect(registry.getSubagentRunByRunId(beta.runId)?.requesterSettleWake).toEqual(
           member.wake,
@@ -465,6 +450,9 @@ export function registerRequesterWakeReceiptBoundaryTests({
             publication: "published",
           });
           await successor;
+          if (receiptDrift) {
+            releaseAgentCall(alpha.childSessionKey);
+          }
           if (receiptReplacement) {
             expect(planSuccessor).toHaveBeenCalledOnce();
           }
@@ -477,19 +465,35 @@ export function registerRequesterWakeReceiptBoundaryTests({
       }
       heldReceipts.transition.release.resolve();
     }
+    if (receiptDrift) {
+      releaseAgentCall(alpha.childSessionKey);
+    }
     await requesterSettlement;
     expect(requesterResult.requesterContinuationSettled).toBe(true);
+    if (outcomeDrift) {
+      await waitForAgentCallCount(2);
+      const { waitForRun } = createLifecycleWaits(requesterSessionKey);
+      await waitForRun(alpha.runId, (entry) => typeof entry.cleanupCompletedAt === "number");
+      requesterHistory = holdRequesterHistory();
+      releaseAgentCall(beta.childSessionKey);
+    }
     await waitForAgentCallCount(rejectRequesterWake ? 2 : 3);
     if (outcomeDrift && heldReceipts && settleWakeOwner) {
       const members = await heldReceipts.outcome.entered.promise;
+      if (!requesterHistory) {
+        throw new Error("Outcome overlap requires its pending requester history RPC");
+      }
+      await requesterHistory.entered;
       const member = members.find(({ entry }) => entry.runId === beta.runId);
       if (!member) {
         throw new Error("Missing acknowledged requester outcome member");
       }
       expect(loadSubagentRegistryFromSqlite().get(beta.runId)?.requesterSettleWake).toBeUndefined();
       expect(registry.getSubagentRunByRunId(beta.runId)?.requesterSettleWake).toEqual(member.wake);
-      const successor = driftCompletionCleanup(member.entry);
+      const drift = queueCompletionCleanupDrift(member.entry);
+      const successor = drift.completed;
       void successor.catch(() => {});
+      await drift.queued;
       const database = openOpenClawStateDatabase();
       // Guard the committed outcome through cleanup; database teardown removes the trigger.
       database.db.exec(
@@ -498,6 +502,7 @@ export function registerRequesterWakeReceiptBoundaryTests({
       try {
         heldReceipts.outcome.release.resolve();
         await successor;
+        requesterHistory.release();
         await settleWakeOwner(true);
         expect(registry.getSubagentRunByRunId(beta.runId)?.requesterSettleWake).toBeUndefined();
         expect(getRequesterWakeCalls()).toHaveLength(1);
@@ -505,6 +510,7 @@ export function registerRequesterWakeReceiptBoundaryTests({
         expect(heldReceipts.executions).not.toContain("reconcile");
       } finally {
         heldReceipts.releaseAll();
+        requesterHistory.release();
         await Promise.allSettled([successor]);
       }
     }

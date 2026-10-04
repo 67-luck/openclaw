@@ -70,6 +70,12 @@ let rejectNextRequesterWakePersistence = false;
 let armRequesterWakePersistenceFailure = false;
 let emptyGatedAgentReply = false;
 let releaseWakeReceipts: (() => void) | undefined;
+let requesterHistoryGate:
+  | {
+      entered: ReturnType<typeof createDeferred<void>>;
+      release: ReturnType<typeof createDeferred<void>>;
+    }
+  | undefined;
 
 const sendMessageMock = vi.fn<typeof import("../../../infra/outbound/message.js").sendMessage>(
   async () => ({
@@ -86,6 +92,10 @@ const callGatewayMock = vi.fn(async (request: GatewayRequest): Promise<GatewayRe
     return { status: "pending" };
   }
   if (request.method === "chat.history") {
+    if (request.params?.sessionKey === MAIN_REQUESTER_SESSION_KEY && requesterHistoryGate) {
+      requesterHistoryGate.entered.resolve();
+      await requesterHistoryGate.release.promise;
+    }
     return { messages: chatHistoryBySessionKey.get(request.params?.sessionKey ?? "") ?? [] };
   }
   if (request.method === "agent") {
@@ -231,6 +241,7 @@ describe("requester settle wake product flow", () => {
       return () => {};
     });
     agentCallGates = new Map();
+    requesterHistoryGate = undefined;
     agentCallObserved = createDeferred();
     chatHistoryBySessionKey = new Map();
     rejectNextRequesterWake = false;
@@ -302,6 +313,8 @@ describe("requester settle wake product flow", () => {
     // Failed assertions must also release the delivery owned by this test.
     releaseAgentCallGate?.();
     releaseAgentCallGate = undefined;
+    requesterHistoryGate?.release.resolve();
+    requesterHistoryGate = undefined;
     releaseWakeReceipts?.();
     releaseWakeReceipts = undefined;
     try {
@@ -587,6 +600,11 @@ describe("requester settle wake product flow", () => {
     },
     onReceiptsHeld: (release) => {
       releaseWakeReceipts = release;
+    },
+    holdRequesterHistory: () => {
+      const gate = { entered: createDeferred(), release: createDeferred() };
+      requesterHistoryGate = gate;
+      return { entered: gate.entered.promise, release: () => gate.release.resolve() };
     },
   });
 
