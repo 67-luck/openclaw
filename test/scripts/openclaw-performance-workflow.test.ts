@@ -825,6 +825,13 @@ describe("OpenClaw performance workflow", () => {
     expect(baseline.if).toBeUndefined();
     expect(baseline.env?.CLAWGRIT_REPORTS_TOKEN).toBeUndefined();
     expect(baseline.env?.GH_TOKEN).toBe("${{ github.token }}");
+    expect(baseline.env?.QUALIFICATION_DISPATCH).toBe(
+      "${{ startsWith(inputs.dispatch_id, 'full-release-validation-') }}",
+    );
+    expect(run).toContain("advisory-not-compared");
+    expect(run.indexOf('os.environ.get("QUALIFICATION_DISPATCH")')).toBeLessThan(
+      run.indexOf('fetch(reports, "main"'),
+    );
     expect(run).toContain('remote = "https://github.com/openclaw/clawgrit-reports.git"');
     expect(run).toContain(
       'fetch(reports, "main", blobless=True, max_attempts=3, retry_failures=True)',

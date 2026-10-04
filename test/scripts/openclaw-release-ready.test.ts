@@ -396,6 +396,7 @@ describe("release readiness executable handoff", () => {
     expect(
       runInNewContext(workflow.jobs[jobName].if, {
         github: { repository: REPOSITORY, ref: "refs/heads/main" },
+        inputs: { operation: workflowName === "prepare" ? "prepare" : operation },
         startsWith: (value: string, prefix: string) => value.startsWith(prefix),
       }),
     ).toBe(true);
