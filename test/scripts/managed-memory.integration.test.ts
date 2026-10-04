@@ -13,9 +13,10 @@ it.runIf(available)(
   "contains aggregate native allocations and joins the whole cgroup after OOM",
   async ({ signal }) => {
     let memoryScope = "";
-    // Keep the buffers reachable until the kernel ends the workload.
+    // Keep a clearly over-limit workload reachable until the kernel ends it.
+    // Two exact 128 MiB allocations can leave the OOM victim signal runtime-dependent.
     const allocate =
-      "const a=globalThis.allocations=[];for(let i=0;i<16;i++)a.push(Buffer.alloc(8*1024**2,1));setInterval(()=>{},1000)";
+      "const a=globalThis.allocations=[];for(let i=0;i<20;i++)a.push(Buffer.alloc(8*1024**2,1));setInterval(()=>{},1000)";
     const code = await runManagedCommand({
       bin: process.execPath,
       args: [
