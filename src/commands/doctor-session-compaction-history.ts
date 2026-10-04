@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { asOptionalRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
-import { sql } from "kysely";
+import { sql, type AliasableExpression } from "kysely";
 import { SessionStoreMigrationRequiredError } from "../config/sessions/migration-required.js";
 import { getSessionKysely } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { updateSqliteTranscriptEventJsonInTransaction } from "../config/sessions/session-accessor.sqlite-transcript-store.js";
@@ -34,13 +34,17 @@ function patchCompactionEvent(
   event: Record<string, unknown>,
   fact: LegacyCompactionEventFact,
 ): string {
-  let patched = sql.val(eventJson);
+  let patched: AliasableExpression<string> = sql.val(eventJson);
   let changed = false;
   for (const key of ["tokensBefore", "tokensAfter"] as const) {
     const value = fact[key];
     if (value !== undefined && event[key] !== value) {
       // Preserve opaque numeric tokens and unrelated payload fields during metric repair.
-      patched = sql<string>`json_set(${patched}, ${`$.${key}`}, ${value})`;
+      patched = getSessionKysely(database).fn<string>("json_set", [
+        patched,
+        sql.val(`$.${key}`),
+        sql.val(value),
+      ]);
       changed = true;
     }
   }
@@ -244,8 +248,8 @@ export function applyLegacyCompactionEventFacts(
         .select(["seq", payload.as("event_json")])
         .where("session_id", "=", sessionId)
         // Doctor matches the persisted marker, including rows with an unbuilt identity index.
-        .where(sql<string>`json_extract(${payload}, '$.id')`, "=", entryId)
-        .where(sql<string>`json_extract(${payload}, '$.type')`, "=", "compaction")
+        .where(db.fn("json_extract", [payload, sql.val("$.id")]), "=", entryId)
+        .where(db.fn("json_extract", [payload, sql.val("$.type")]), "=", "compaction")
         .limit(2),
     ).rows;
     const row = rows[0];
