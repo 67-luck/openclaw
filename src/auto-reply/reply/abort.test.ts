@@ -25,6 +25,7 @@ import {
   createReplyOperation,
   isSessionRunActiveForKey,
 } from "../../sessions/session-controller.js";
+import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../../sessions/session-controller.lifecycle.js";
 import { resetSessionControllerStateForTest } from "../../sessions/session-lifecycle-admission.test-support.js";
 import * as stateWorker from "../../state/openclaw-state-worker-store.js";
 import { stopSubagentsForRequester } from "./abort-operation.js";
@@ -332,6 +333,54 @@ describe("abort detection", () => {
     expect(active.cancel).toHaveBeenCalledOnce();
 
     expect(getFollowupQueueDepth(sessionKey)).toBe(0);
+  });
+
+  it("bounds Stop when an accepted backend cancellation never settles", async () => {
+    vi.useFakeTimers();
+    const sessionKey = "telegram:accepted-cancellation-never-settles";
+    const sessionId = "accepted-cancellation-never-settles";
+    const { cfg } = await createAbortConfig({ sessionIdsByKey: { [sessionKey]: sessionId } });
+    const operation = createReplyOperation({ sessionKey, sessionId, resetTriggered: false });
+    const cancel = vi.fn();
+    operation.attachBackend({ kind: "embedded", cancel, isStreaming: () => true });
+    const hookCompleted = createDeferred();
+    const hook = vi.fn(() => hookCompleted.resolve());
+    registerInternalHook("command:stop", hook);
+    let observed:
+      | { status: "fulfilled"; value: Awaited<ReturnType<typeof runStopCommand>> }
+      | { status: "rejected"; reason: unknown }
+      | undefined;
+    const stopping = runStopCommand({
+      cfg,
+      sessionKey,
+      from: "telegram:123",
+      to: "telegram:123",
+    });
+    void stopping.then(
+      (value) => {
+        observed = { status: "fulfilled", value };
+      },
+      (reason: unknown) => {
+        observed = { status: "rejected", reason };
+      },
+    );
+    try {
+      await hookCompleted.promise;
+      expect(cancel).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(SESSION_CONTROLLER_DRAIN_TIMEOUT_MS + 1);
+      await Promise.resolve();
+      expect(observed).toMatchObject({
+        status: "rejected",
+        reason: expect.objectContaining({
+          message: expect.stringContaining("cleanup is still pending"),
+        }),
+      });
+    } finally {
+      operation.complete();
+      unregisterInternalHook("command:stop", hook);
+      await stopping.catch(() => undefined);
+      vi.useRealTimers();
+    }
   });
 
   it("gives a bare stop word the channel-user queue, child, and hook policy", async () => {

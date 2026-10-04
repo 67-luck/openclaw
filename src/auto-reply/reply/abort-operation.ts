@@ -27,7 +27,10 @@ import {
   normalizeAgentId,
 } from "../../routing/session-key.js";
 import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
-import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
+import {
+  captureSessionTarget,
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+} from "../../sessions/session-controller.lifecycle.js";
 import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import {
   captureSessionControllerStop,
@@ -37,6 +40,7 @@ import {
   type SessionStopHookContext,
   type SessionStopRequest,
 } from "../../sessions/session-controller.stop.js";
+import { settlesWithin } from "../../shared/settle-within.js";
 import { resolveCommandAuthorization } from "../command-auth.js";
 import type { FinalizedRuntimeMsgContext } from "../templating.js";
 import { resolveAbortCutoffFromContext, shouldPersistAbortCutoff } from "./abort-cutoff.js";
@@ -538,10 +542,18 @@ export async function executeFastAbortRequest(
         failedSubagents: outcome.childFailures,
       };
     } finally {
-      // Join even when native signaling or metadata exits exceptionally.
-      const settled = await Promise.allSettled(acpCancellations);
+      // Bound acknowledgment without releasing the exact producer or retirement custody.
+      const settled = Promise.allSettled(acpCancellations);
+      const settledInTime = await settlesWithin(settled, SESSION_CONTROLLER_DRAIN_TIMEOUT_MS);
       acpCapture.release();
-      retirementFailure = settled.find((outcome) => outcome.status === "rejected");
+      retirementFailure = settledInTime
+        ? (await settled).find((outcome) => outcome.status === "rejected")
+        : {
+            status: "rejected",
+            reason: new Error(
+              "Cancellation was requested, but cleanup is still pending. Check the turn status before retrying Stop.",
+            ),
+          };
     }
     // Preserve a primary cancellation failure; successful signaling still reports
     // failed retirement, and both paths above join every captured producer.
