@@ -178,7 +178,7 @@ export function retireDeliveredQueuedUserTurn(
   const owner = client ?? host;
   const submissions = host.chatSubmissions;
   const deliveryKey = chatOutboxDeliveryKey(host, scope, runId);
-  const stored = readDeliveredQueuedChatSendForRun(host, runId, scope)?.item;
+  const stored = readDeliveredQueuedChatSendForRun(host, runId, scope);
   if (options?.inputConsumed && runId) {
     const remembered = submissions.readDelivered(deliveryKey, owner);
     if (remembered) {
@@ -205,7 +205,7 @@ export function retireDeliveredQueuedUserTurn(
     host.connected === connected &&
     host.connectionEpoch === connectionEpoch &&
     payloadOwnerIsCurrent();
-  const currentItem = () => readDeliveredQueuedChatSendForRun(host, runId, scope)?.item;
+  const currentItem = () => readDeliveredQueuedChatSendForRun(host, runId, scope);
   const commit = (
     message: NonNullable<ReturnType<typeof buildLocalUserMessage>>,
   ): DeliveredTurnRetirement => {

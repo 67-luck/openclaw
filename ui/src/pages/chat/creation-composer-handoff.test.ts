@@ -68,6 +68,30 @@ describe("created-composer canonical outbox admission", () => {
     expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toEqual([]);
   });
 
+  it("adopts queued followers through the recovery driver for an equivalent pane key", async () => {
+    const { host, owner, scope, resume } = fixture();
+    const input = transfer({ sessionKey: host.sessionKey.toUpperCase() });
+    const resumed = createDeferred();
+    resume.mockImplementation(async () => {
+      resumed.resolve();
+    });
+    const disconnect = connectCreatedComposerQueue(
+      { gateway: { subscribe: () => () => {} } },
+      host,
+      input,
+    );
+    onTestFinished(disconnect);
+    expect(owner.snapshot(host, scope.scope).map((item) => item.id)).toEqual([
+      "first-input",
+      "second-input",
+    ]);
+    await resumed.promise;
+    expect(
+      owner.snapshot(host, scope.scope).every((item) => item.sendState === "waiting-idle"),
+    ).toBe(true);
+    expect(input.complete).toHaveBeenCalledOnce();
+  });
+
   it("holds every follower when the accepted session rejected its initial turn", async () => {
     const { host, owner, scope, resume } = fixture();
     await admitCreatedComposerQueue(host, transfer({ initialRejected: true }));

@@ -336,13 +336,13 @@ export class ChatPane extends ChatPaneLayoutRender {
         : !disabledReason &&
           !(selectedSessionArchived || restartRecoveryTombstoned || placementComposer.blocksSend));
     const composerAvailability = {
-      canCompose: composerAccess.canCompose && composerAvailable,
-      canSend: composerAccess.canSend && composerAvailable,
+      canCompose: composerAccess && composerAvailable,
+      canSend: composerAccess && composerAvailable,
       ...chatSubmitState(state, initialHistoryUnavailable, !catalog && !suggestionViewer),
       modelRequiredReason,
       disabledReason:
         catalogDisabledReason ??
-        (!composerAccess.canSend ? t("chat.sessionSharing.scopeReadOnlyNotice") : null) ??
+        (!composerAccess ? t("chat.sessionSharing.scopeReadOnlyNotice") : null) ??
         disabledReason ??
         placementComposer.busyMessage ??
         (placementComposer.state.kind === "failed" && !placementComposer.state.recoveryAction
@@ -350,7 +350,7 @@ export class ChatPane extends ChatPaneLayoutRender {
           : null) ??
         (state.connected && (placementStartup || initialHistoryUnavailable) ? null : pendingReason),
       disabledReasonTone:
-        !composerAccess.canSend ||
+        !composerAccess ||
         disabledReason ||
         placementComposer.busyMessage ||
         (sessionParticipationBlocked && !suggestionViewer)
@@ -657,7 +657,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       agentsList: state.agentsList,
       currentAgentId,
       fullMessageAgentId: scopedAgentParamsForSession(state, state.sessionKey).agentId,
-      loadFullAssistantMessage: createSidebarFullMessageLoader(state, catalog),
+      loadFullAssistantMessage: createSidebarFullMessageLoader(state, this.context.gateway),
       onSessionSelect: (next) => this.onPaneSessionChange?.(this.paneId, next),
       canvasPluginSurfaceUrl: state.canvasPluginSurfaceUrl,
       boardProvider: board.provider,

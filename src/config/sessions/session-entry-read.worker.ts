@@ -27,6 +27,7 @@ import {
   readSelectedSessionEntriesInDatabase,
 } from "./session-accessor.sqlite-entry-list.read.js";
 import {
+  readExactSessionEntryRow,
   readSessionEntryByIdInDatabase,
   readSessionEntryRow,
 } from "./session-accessor.sqlite-entry-read.js";
@@ -74,6 +75,7 @@ import {
   type SessionRowFactsWorkerInput,
   type SessionRowFactsWorkerResult,
 } from "./session-transcript-worker.types.js";
+import { normalizeStoreSessionKey } from "./store-entry.js";
 
 /** Private entry and transcript-target reads share the same admitted reader and error codec. */
 export async function readSessionEntryWorkerRequest(
@@ -299,6 +301,29 @@ export function readSessionDiagnosticText(request: SessionDiagnosticTextWorkerIn
 export function readExactSessionEntriesWithLifecycle(
   request: SessionExactEntriesWorkerInput,
 ): SessionExactEntriesWorkerResult {
+  if (request.projection === "exact") {
+    // Logical accessors validate only their candidates; unrelated rows are not listing admission.
+    const read = withOpenClawAgentDatabaseReadOnly(
+      (database) =>
+        runSqliteDeferredTransactionSync(database.db, () =>
+          request.sessionKeys.flatMap((sessionKey) => {
+            const entry = readExactSessionEntryRow(
+              database,
+              sessionKey,
+              "full",
+              "canonical",
+            )?.entry;
+            return entry ? [{ sessionKey, entry }] : [];
+          }),
+        ),
+      { ...request.database, env: request.env },
+    );
+    return {
+      kind: "session-exact-entries",
+      entries: read.found ? read.value : [],
+      lifecycleTimestamps: {},
+    };
+  }
   if (request.statusSelection) {
     const { statuses, presenceOnly } = request.statusSelection;
     const read = withOpenClawAgentDatabaseReadOnly(
@@ -395,6 +420,25 @@ export function readExactSessionEntriesWithLifecycle(
                   );
               if (!selected.ok) {
                 throw selected.error;
+              }
+              if (request.replyInitializationSessionKey) {
+                const parent = selected.value.find(
+                  ({ sessionKey }) => sessionKey === request.replyInitializationSessionKey,
+                )?.entry.parentSessionKey;
+                const parentKey = parent ? normalizeStoreSessionKey(parent) : undefined;
+                if (
+                  parentKey &&
+                  !selected.value.some(({ sessionKey }) => sessionKey === parentKey)
+                ) {
+                  const related = expectDefined(
+                    readExactSessionEntryCandidatesInDatabase(database, [[parentKey]], "full")[0],
+                    "reply initialization parent read result",
+                  );
+                  if (!related.ok) {
+                    throw related.error;
+                  }
+                  selected.value.push(...related.value);
+                }
               }
               if (request.projection === "sharing") {
                 const source = readOpenClawAgentDatabaseIdentity(database);

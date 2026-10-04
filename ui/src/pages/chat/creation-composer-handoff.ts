@@ -6,6 +6,7 @@ import { resolveCurrentUserIdentity } from "../../lib/chat/current-user-identity
 import { sameQueuedDeliveryVersion } from "../../lib/chat/outbox-store-codec.ts";
 import { captureChatOutboxAdmission } from "../../lib/chat/outbox-store.ts";
 import { formatUiError } from "../../lib/format-error.ts";
+import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
 import { generateUUID } from "../../lib/uuid.ts";
 import type { CreationComposerTransfer } from "../new-session/creation-composer.ts";
 import { setChatError } from "./chat-history-state.ts";
@@ -56,21 +57,21 @@ async function performCreatedComposerAdmission(
     return true;
   }
   if (
-    host.sessionKey !== transfer.sessionKey ||
+    !areUiSessionKeysEquivalent(host.sessionKey, transfer.sessionKey) ||
     !transfer.isCurrent() ||
     !host.connected ||
     !host.client?.recoveryScopeReady
   ) {
     return false;
   }
-  const sessionKey = host.sessionKey;
+  const sessionKey = transfer.sessionKey;
   const owner = chatOutboxOwner(host);
   const captured = captureChatOutboxAdmission(host, sessionKey);
   const ownsPayloads = captureOutboxPayloadOwner(host, captured.scope);
   const client = host.client;
   const current = () =>
     transfer.isCurrent() &&
-    host.sessionKey === sessionKey &&
+    areUiSessionKeysEquivalent(host.sessionKey, sessionKey) &&
     host.connected &&
     host.client === client &&
     client.recoveryScopeReady &&

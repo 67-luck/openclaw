@@ -1,4 +1,5 @@
 import { formatUiError } from "../../lib/format-error.ts";
+import { areUiSessionKeysEquivalent } from "../../lib/sessions/session-key.ts";
 import type { CreationComposerTransfer } from "../new-session/creation-composer.ts";
 import { setChatError } from "./chat-history-state.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
@@ -15,7 +16,12 @@ export function connectCreatedComposerQueue(
   let running = false;
   let changedWhileRunning = false;
   const sync = () => {
-    if (disposed || finished || host.sessionKey !== transfer.sessionKey || !transfer.isCurrent()) {
+    if (
+      disposed ||
+      finished ||
+      !areUiSessionKeysEquivalent(host.sessionKey, transfer.sessionKey) ||
+      !transfer.isCurrent()
+    ) {
       return;
     }
     if (running) {
