@@ -61,7 +61,11 @@ function expectedHarnessSparseCheckoutArgs(linux: boolean) {
           "/scripts/changed-lanes.mts",
           "/scripts/lib/merge-head-diff-base.mjs",
         ]
-      : ["/scripts/lib/swift-toolchain.sh"]),
+      : [
+          "/scripts/lib/swift-toolchain.sh",
+          "/scripts/lib/ci-ios-smoke-plan.mjs",
+          "/scripts/ci-xcodebuild.py",
+        ]),
   ];
 }
 

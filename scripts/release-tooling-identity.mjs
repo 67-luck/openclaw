@@ -713,9 +713,11 @@ async function main(argv = process.argv.slice(2)) {
   process.stdout.write(`${JSON.stringify(identity)}\n`);
 }
 
+function handleMainError(error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}
+
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  void main().catch((error) => {
-    console.error(error instanceof Error ? error.message : String(error));
-    process.exitCode = 1;
-  });
+  void main().catch(handleMainError);
 }
