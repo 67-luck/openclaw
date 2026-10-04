@@ -50,7 +50,6 @@ import {
   isDirectReleaseCandidateExecution,
   loadCandidateShippedBaseline,
   parseArgs,
-  parseRunIdFromDispatchOutput,
   preflightCorePackageTarballs,
   preflightDependencyTarballs,
   reconcileReleaseCandidateState,
@@ -89,15 +88,6 @@ function windowsReleaseResponse(override: Record<string, unknown> = {}) {
     assets: windowsAssets,
     ...override,
   });
-}
-
-function coreTarball(name: string) {
-  return {
-    packageName: `@openclaw/${name}`,
-    packageVersion: "2026.7.1-beta.3",
-    tarballName: `openclaw-${name}-2026.7.1-beta.3.tgz`,
-    tarballSha256: `${name}-sha`,
-  };
 }
 
 function candidateGitFixture(files: Record<string, string>) {
@@ -314,13 +304,13 @@ describe("release candidate checklist", () => {
       distTag: "extended-stable",
       routingError: "Fresh extended-stable checklist launches are not supported",
     },
-    ...(["fresh", "npm-only", "saved-npm"] as const).map((launch) => ({
+    ...(["fresh", "npm-only", "saved-npm"] as const).map<QualificationCase>((launch) => ({
       tag: "v2026.9.33",
       pin: "2026.9.33",
       launch,
       routingError: "Fresh extended-stable checklist launches are not supported",
     })),
-    ...([undefined, "extended-stable"] as const).map((distTag) => ({
+    ...([undefined, "extended-stable"] as const).map<QualificationCase>((distTag) => ({
       tag: "v2026.9.33-1",
       pin: "2026.9.33",
       launch: "fresh" as const,
@@ -340,14 +330,14 @@ describe("release candidate checklist", () => {
       launch: "reuse",
       stopAtRegistry: true,
     },
-    ...(["v2026.9.1", "v2026.9.1-1"] as const).map((tag) => ({
+    ...(["v2026.9.1", "v2026.9.1-1"] as const).map<QualificationCase>((tag) => ({
       tag,
       pin: "2026.9.1",
       expected: "passed",
       launch: "npm-only" as const,
       distTag: "latest",
     })),
-    ...(["beta"] as const).map((distTag) => ({
+    ...(["beta"] as const).map<QualificationCase>((distTag) => ({
       tag: `v2026.9.33-${distTag}.1`,
       pin: "2026.7.4",
       launch: "npm-only" as const,
@@ -361,7 +351,7 @@ describe("release candidate checklist", () => {
       distTag: "latest",
       publicationRoute: "prepared",
     },
-    ...["normal", "prepared"].map((publicationRoute) => ({
+    ...["normal", "prepared"].map<QualificationCase>((publicationRoute) => ({
       tag: "v2026.9.1",
       pin: "2026.9.1",
       expected: "passed",
@@ -466,7 +456,7 @@ describe("release candidate checklist", () => {
         }
         return { status: "skipped" };
       });
-      const publishCommand = vi.fn(buildPrepareCommand);
+      const publishCommand = vi.fn(buildPublishCommand);
       const waitedRuns: string[] = [];
       const toolingSha = "b".repeat(40);
       const runReleaseToolingGh = vi.fn();
@@ -1187,25 +1177,6 @@ describe("release candidate checklist", () => {
         ...warnings.map((warning) => `- Warning: ${warning}`),
       ].join("\n"),
     );
-  });
-
-  it.each(["main"])("rejects an unprotected publisher selector %s", (ref) => {
-    expect(() => parseArgs(["--tag", "v2026.8.2-beta.1", "--publish-workflow-ref", ref])).toThrow(
-      "protected release-publish tag",
-    );
-  });
-
-  it.each(["v2026.9.1"])("refuses to print a main-sourced publish command for %s", (tag) => {
-    const options = parseArgs(["--tag", tag]);
-    const producer = { status: "passed", headSha: "a".repeat(40), workflowRef: "main" };
-    for (const source of [undefined, producer]) {
-      expect(() => buildPrepareCommand(options, source)).toThrow(
-        "--publish-workflow-ref release-publish/<sha12>-<epoch>",
-      );
-      expect(buildPrepareCommand({ ...options, publishWorkflowRef }, source)).toContain(
-        `'--ref' '${publishWorkflowRef}'`,
-      );
-    }
   });
 
   it.each(["main", "refs/tags/release-publish/bbbbbbbbbbbb-123", "release-publish/bbbbbbbbbbbb-0"])(

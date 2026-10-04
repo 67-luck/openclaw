@@ -1477,26 +1477,7 @@ type ReleaseCiWatchState = {
   url?: string;
 };
 
-function verifyFixture(
-  fixture: Pick<
-    | ReturnType<typeof trustedMainPackageFixture>
-    | ReturnType<typeof trustedMainFullFixture>
-    | ReturnType<typeof trustedMainNpmFixture>
-    | ReturnType<typeof trustedMainChildReuseFixture>,
-    "runId" | "client"
-  >,
-) {
-  return validateReleaseRunEvidence(
-    {
-      runId: fixture.runId,
-      verifierSourceContent: readFileSync(SCRIPT),
-      verifierSourceSha: "c".repeat(40),
-    },
-    fixture.client,
-  );
-}
-
-function trustedMainChildReuseFixture() {
+function trustedMainChildReuseFixture(workflowSha?: string) {
   const fixture = trustedMainNpmFixture();
   const child = expectDefined(
     fixture.executionPlan.children.find((entry) => entry.key === "normalCi"),

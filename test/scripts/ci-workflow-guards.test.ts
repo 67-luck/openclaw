@@ -3084,6 +3084,7 @@ AFTER_CD
     { candidate: "2026.9.4-beta.1", shape: "prerelease", expected: "openclaw@2026.9.3" },
     {
       candidate: "2026.6.35",
+      shape: "extended-stable",
       context: "extended-stable/2026.6.33",
       expected: "openclaw@2026.6.34",
     },
