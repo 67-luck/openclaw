@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { addSessionMember } from "../config/sessions/session-sharing-store.native.js";
-import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
+import { registerRpcSource } from "../sessions/session-controller.rpc-sources.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -26,6 +26,7 @@ import {
   roleClient,
   rolePolicyConfig,
 } from "./session-sharing.test-utils.js";
+import { createRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 afterEach(() => closeOpenClawAgentDatabasesForTest());
 
@@ -779,8 +780,17 @@ describe("session sharing policy", () => {
       const cfg = {
         agents: { entries: { main: {}, work: {} } },
       } as never;
+      const run = createRpcSourceForTest(
+        {},
+        {
+          runId: "run-1",
+          sessionKey: "global",
+          sessionId: "session-work-global",
+          agentId: "work",
+        },
+      );
+      registerRpcSource("run-1", run);
       const context = {
-        rpcSourceTesting: new Map([["run-1", { sessionKey: "global", agentId: "work" }]]),
         execApprovalManager: {
           lookupLocalApprovalId: () => ({ kind: "exact", id: "approval-1" }),
           getLocalSnapshot: () => ({ request: { sessionKey: "global", agentId: "work" } }),
