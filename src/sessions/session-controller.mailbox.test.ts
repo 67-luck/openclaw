@@ -240,6 +240,69 @@ function earlySource(adapter?: Parameters<typeof reserveSessionControllerSource>
 }
 
 describe("early source injection custody", () => {
+  it("keeps injection FIFO when an older reservation is still preparing", async () => {
+    const first = earlySource();
+    const second = earlySource();
+    const b = beginSessionControllerSourceInjection(second);
+    const admittedSecond = vi.fn();
+    const secondAdmission = b.admit().then((admitted) => {
+      admittedSecond(admitted);
+      return admitted;
+    });
+    const a = beginSessionControllerSourceInjection(first);
+    const firstAdmission = a.admit();
+    try {
+      await expect(
+        Promise.race([firstAdmission.then(() => "first"), secondAdmission.then(() => "second")]),
+      ).resolves.toBe("first");
+      await expect(firstAdmission).resolves.toBe(true);
+      expect(admittedSecond).not.toHaveBeenCalled();
+      a.finish(false);
+      await expect(beginSessionControllerSourceInjection(first).admit()).resolves.toBe(false);
+      await expect(secondAdmission).resolves.toBe(true);
+    } finally {
+      a.finish(false);
+      b.finish(false);
+      await Promise.allSettled([firstAdmission, secondAdmission]);
+      retireSessionControllerInput(first);
+      retireSessionControllerInput(second);
+    }
+  });
+
+  it("keeps a later source behind older reservations when an interrupt bypasses them", async () => {
+    const first = earlySource();
+    const interrupt = reserveSessionControllerSource(key, {
+      protocolRunId: " interrupt ",
+      policy: { mode: "interrupt" },
+    });
+    const last = earlySource();
+    const c = beginSessionControllerSourceInjection(last);
+    const admittedLast = vi.fn();
+    const lastAdmission = c.admit().then((admitted) => {
+      admittedLast(admitted);
+      return admitted;
+    });
+    const b = beginSessionControllerSourceInjection(interrupt);
+    const a = beginSessionControllerSourceInjection(first);
+    try {
+      await expect(b.admit()).resolves.toBe(true);
+      b.finish(false);
+      await Promise.resolve();
+      expect(admittedLast).not.toHaveBeenCalled();
+      await expect(a.admit()).resolves.toBe(true);
+      a.finish(false);
+      await expect(lastAdmission).resolves.toBe(true);
+    } finally {
+      a.finish(false);
+      b.finish(false);
+      c.finish(false);
+      await Promise.allSettled([lastAdmission]);
+      retireSessionControllerInput(first);
+      retireSessionControllerInput(interrupt);
+      retireSessionControllerInput(last);
+    }
+  });
+
   it("serializes exact attempts through outcome, without synthesizing FollowupRun", async () => {
     const first = earlySource();
     const second = earlySource();

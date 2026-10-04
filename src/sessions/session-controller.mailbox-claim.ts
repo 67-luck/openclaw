@@ -6,7 +6,10 @@ import {
 } from "../plugins/runtime/gateway-request-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { ReplyOperation } from "./session-controller.contracts.js";
-import { retireSessionControllerInput } from "./session-controller.mailbox-source.js";
+import {
+  retireSessionControllerInput,
+  settleSessionControllerSourceInjectionOrder,
+} from "./session-controller.mailbox-source.js";
 import type { SessionControllerMailboxClaim } from "./session-controller.mailbox.types.js";
 import {
   isCurrentSessionControllerOperation,
@@ -59,6 +62,7 @@ export function attachSessionControllerInputOperation(
     if (!claim.sources.includes(source)) {
       claim.sources = [...claim.sources, source];
     }
+    settleSessionControllerSourceInjectionOrder(input, false);
     input.claim = claim;
     input.phase = "claimed";
     return;
@@ -75,6 +79,7 @@ export function attachSessionControllerInputOperation(
     abortController: new AbortController(),
   };
   bindGatewayContextResolver(attached, getGatewayContextResolver(operation));
+  settleSessionControllerSourceInjectionOrder(input, false);
   input.claim = attached;
   input.phase = "claimed";
   input.mailbox.claim = attached;

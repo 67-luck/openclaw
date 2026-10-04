@@ -40,12 +40,21 @@ export function isSessionControllerSourceQueued(input: SessionControllerInput): 
   return input.phase === "preparing" || input.phase === "waiting" || input.phase === "injecting";
 }
 
+/** Releases successors only after this reservation can no longer inject ahead of them. */
+export function settleSessionControllerSourceInjectionOrder(
+  input: SessionControllerInput,
+  consumed: boolean,
+): void {
+  input.injectionOrder.settle(consumed);
+}
+
 /** Retains an early source through the exact native outcome, not just its ACK. */
 export function beginSessionControllerSourceInjection(
   input: SessionControllerInput,
 ): SessionControllerSourceInjection {
   if (
     (input.phase !== "preparing" && input.phase !== "waiting") ||
+    input.injectionAttempted ||
     input.injection ||
     input.claim ||
     input.withdrawalHolds ||
@@ -56,9 +65,13 @@ export function beginSessionControllerSourceInjection(
     return { admit: async () => false, accepted() {}, finish() {} };
   }
   const phase = input.phase;
+  const olderReservations = input.mailbox.entries
+    .filter((entry) => entry.sequence < input.sequence && entry.phase !== "consumed")
+    .map((entry) => entry.injectionOrder.settled);
   const predecessor =
-    input.mailbox.entries.findLast((entry) => entry !== input && entry.injection)?.injection
-      ?.settled ?? Promise.resolve(true);
+    input.policy.mode === "interrupt" || olderReservations.length === 0
+      ? Promise.resolve(true)
+      : Promise.all(olderReservations).then(() => true);
   const outcome = createDeferredCore<boolean>();
   const pending: NonNullable<SessionControllerInput["injection"]> = {
     predecessor,
@@ -67,6 +80,7 @@ export function beginSessionControllerSourceInjection(
   };
   // Install custody before any await. Neither withdrawal nor a turn claim may
   // take this source until the captured native attempt proves its outcome.
+  input.injectionAttempted = true;
   input.injection = pending;
   input.phase = "injecting";
   let started = false;
@@ -80,6 +94,7 @@ export function beginSessionControllerSourceInjection(
     input.injection = undefined;
     input.phase = phase;
     pending.settle(mustConsume);
+    settleSessionControllerSourceInjectionOrder(input, mustConsume);
     if (mustConsume || input.retirementRequested || input.abortSignal.aborted) {
       retireSessionControllerInput(input);
     } else {
@@ -230,6 +245,7 @@ export function retireSessionControllerInput(input: SessionControllerInput): voi
   }
   const injection = input.injection;
   input.injection = undefined;
+  settleSessionControllerSourceInjectionOrder(input, false);
   input.phase = "consumed";
   input.payload = "unbound";
   if (input.mailbox.priority === input) {

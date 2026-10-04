@@ -20,6 +20,7 @@ import {
   inputCancellation,
   bindSessionControllerSource,
   abortSessionControllerInput,
+  settleSessionControllerSourceInjectionOrder,
   retireSessionControllerInput,
 } from "./session-controller.mailbox-source.js";
 import type {
@@ -434,6 +435,7 @@ function pumpSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
     mailbox.priority = undefined;
   }
   for (const input of inputs) {
+    settleSessionControllerSourceInjectionOrder(input, false);
     input.phase = "claimed";
     input.claim = claim;
   }
@@ -637,6 +639,7 @@ export function reserveSessionControllerSource(
   }
   const mailbox = getSessionControllerMailbox(key, target);
   const cancellation = new AbortController();
+  const injectionOrder = createDeferredCore<boolean>();
   const signals = [
     cancellation.signal,
     params.adapter?.signal,
@@ -657,6 +660,10 @@ export function reserveSessionControllerSource(
     continuationCaller: params.continuationCaller,
     custody: {},
     settlement: createDeferredCore(),
+    injectionOrder: {
+      settled: injectionOrder.promise,
+      settle: injectionOrder.resolve,
+    },
     phase: "preparing",
     withdrawalHolds: 0,
     payload: "unbound",

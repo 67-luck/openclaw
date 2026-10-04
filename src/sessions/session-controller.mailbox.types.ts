@@ -45,6 +45,11 @@ export type SessionControllerInput = {
     run<T>(run: () => Promise<T>): Promise<T>;
   }>;
   phase: "preparing" | "waiting" | "injecting" | "claimed" | "consumed";
+  readonly injectionOrder: {
+    settled: Promise<boolean>;
+    settle(consumed: boolean): void;
+  };
+  injectionAttempted?: true;
   injection?: {
     predecessor: Promise<boolean>;
     settled: Promise<boolean>;
