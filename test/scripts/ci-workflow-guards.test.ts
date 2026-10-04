@@ -3170,6 +3170,11 @@ AFTER_CD
         path.join(root, "package.json"),
         JSON.stringify({ version: fixture.candidate }),
       );
+      if (fixture.catalogText !== undefined || fixture.catalog !== undefined) {
+        const catalog = path.join(root, "scripts/lib/upgrade-survivor-scenarios.json");
+        mkdirSync(path.dirname(catalog), { recursive: true });
+        writeFileSync(catalog, fixture.catalogText ?? JSON.stringify(fixture.catalog));
+      }
       writeFileSync(
         path.join(root, ".ci-harness", "package.json"),
         JSON.stringify({ version: "2026.10.1" }),
@@ -3190,11 +3195,18 @@ console.log(JSON.stringify(["2026.6.34", "2026.6.35", "2026.9.1", "2026.9.2", "2
         `#!${process.execPath}
 if (process.argv.slice(2).join(" ") !== "test:docker:all") process.exit(2);
 require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC ?? "missing");
+require("node:fs").writeFileSync("scheduler-scenario", process.env.OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS ?? "missing");
+require("node:fs").writeFileSync("scheduler-restart", process.env.OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE ?? "missing");
 `,
         { mode: 0o755 },
       );
       writeFileSync(path.join(root, "github-env"), "");
       const inheritedBaseline = run.env?.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC;
+      const inheritedScenario = run.env?.OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS;
+      const inheritedRestartMode = run.env?.OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE;
+      if (typeof inheritedRestartMode !== "string") {
+        throw new Error("Docker seed restart mode must be a string");
+      }
       const result = runWorkflowShellScript(
         `set -euo pipefail\n${baseline?.run ?? ""}\nset -a\nsource "$GITHUB_ENV"\nset +a\n${run.run}`,
         {
@@ -3205,6 +3217,19 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
             GITHUB_ENV: path.join(root, "github-env"),
             OPENCLAW_UPGRADE_SURVIVOR_BASELINE_SPEC:
               typeof inheritedBaseline === "string" ? inheritedBaseline : "",
+            OPENCLAW_UPGRADE_SURVIVOR_SCENARIOS:
+              typeof inheritedScenario === "string"
+                ? String(
+                    evaluateWorkflowExpression(inheritedScenario, {
+                      eventName: "workflow_dispatch",
+                      repository: "openclaw/openclaw",
+                      runAttempt: 1,
+                      preflightOutputs: { frozen_target: String(fixture.frozen ?? false) },
+                    }),
+                  )
+                : "",
+            OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE: inheritedRestartMode,
+            FROZEN_TARGET: String(fixture.frozen ?? false),
             TARGET_CONTEXT_REF: fixture.context ?? "main",
             QUALIFICATION_BASELINES_JSON: fixture.captured
               ? JSON.stringify({
@@ -3219,9 +3244,15 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       if (fixture.expected) {
         expect(result.status, result.stderr).toBe(0);
         expect(readFileSync(receipt, "utf8")).toBe(fixture.expected);
+        expect(readFileSync(path.join(root, "scheduler-scenario"), "utf8")).toBe(
+          fixture.scenario ?? "base",
+        );
+        expect(readFileSync(path.join(root, "scheduler-restart"), "utf8")).toBe("first-hop");
       } else {
         expect(result.status).not.toBe(0);
-        expect(result.stderr).toContain("no published stable OpenClaw baseline predates candidate");
+        expect(result.stderr).toContain(
+          fixture.error ?? "no published stable OpenClaw baseline predates candidate",
+        );
         expect(existsSync(receipt)).toBe(false);
       }
     } finally {

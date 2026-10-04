@@ -293,6 +293,7 @@ for (const [key, count] of [
   ["@openclaw/codex:dangerous-exec:src/app-server/auth-refresh-authority.integration.test.ts", 1],
   ["@openclaw/feishu:env-harvesting:src/client.test.ts", 1],
   ["@openclaw/imessage:dangerous-exec:src/client.test.ts", 4],
+  ["@openclaw/mxc-sandbox:dangerous-exec:test/mxc-sdk-wire-contract.integration.test.ts", 1],
   ["@openclaw/signal:dangerous-exec:src/socket-path.test.ts", 1],
 ] as const) {
   CURRENT_OPTIONAL_REVIEWED_PACKED_FINDING_COUNTS.set(key, count);

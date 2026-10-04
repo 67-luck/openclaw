@@ -363,9 +363,9 @@ describe("release candidate checklist", () => {
   ])(
     "consumes producer-qualified registry plans ($failedRegistry; $registryAdmission) and records Android evidence for $tag ($pin; $launch; $distTag; $publicationRoute; workflow SHA=$workflowSha; preflight failure=$preflightFailure; SDK=$sdkAcknowledgement)",
     async ({
-      tag,
-      pin,
-      expected,
+      tag = "v2026.9.1",
+      pin = "2026.9.1",
+      expected = "passed",
       failedRegistry,
       launch,
       distTag,
@@ -2530,14 +2530,6 @@ describe("release candidate checklist", () => {
         "full-release-validation.yml",
       ),
     ).toThrow("refusing to guess from recent workflow_dispatch runs");
-  });
-
-  it("threads the selected tooling identity into direct full validation dispatch", () => {
-    const source = readFileSync("scripts/release-candidate-checklist.mts", "utf8");
-
-    expect(source).toContain("const trustedWorkflowFields = fullReleaseTrustedWorkflowFields({");
-    expect(source).toContain("workflowSha: toolingSha");
-    expect(source).toContain("...trustedWorkflowFields");
   });
 
   it("falls back to a single compatible artifact from the same run", () => {

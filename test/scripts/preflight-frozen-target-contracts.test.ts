@@ -70,6 +70,13 @@ function commit(root: string, excluded: string[] = []) {
   return { root, sha: git("rev-parse", "HEAD"), git };
 }
 
+function expectRejected(result: ReturnType<typeof spawnSync>, error?: string) {
+  expect(result.status, result.stderr).toBe(1);
+  if (error) {
+    expect(result.stderr).toContain(error);
+  }
+}
+
 function fixture(
   files: Record<string, string> = {},
   parser = false,

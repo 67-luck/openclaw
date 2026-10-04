@@ -1,10 +1,4 @@
 export const MAX_RELEASE_ARTIFACT_BYTES: number;
-export const WINDOWS_NODE_CI_ADVISORY: {
-  readonly id: "windows-node-ci";
-  readonly child: "normalCi";
-  readonly jobNamePattern: RegExp;
-  readonly aggregateJob: "checks-windows";
-};
 interface ReleaseAdvisoryJobBase {
   child: "normalCi";
   job: string;
@@ -12,17 +6,13 @@ interface ReleaseAdvisoryJobBase {
   runId: string;
   url: string;
 }
-export type ReleaseAdvisoryJob = ReleaseAdvisoryJobBase &
-  (
-    | { class: "windows-node-ci" }
-    | {
-        class: "recorded-flake";
-        jobId: string;
-        trackingUrl: string;
-        reason: string;
-        receiptRunId: string;
-      }
-  );
+export type ReleaseAdvisoryJob = ReleaseAdvisoryJobBase & {
+  class: "recorded-flake";
+  jobId: string;
+  trackingUrl: string;
+  reason: string;
+  receiptRunId: string;
+};
 export function releaseChildClassificationEvidence(child: ReleaseRecord): ReleaseRecord;
 export function releaseAdvisoryJobs(children: ReleaseRecord[]): ReleaseAdvisoryJob[];
 export function validateReleaseManifestAdvisoryJobs(manifest: unknown): ReleaseAdvisoryJob[];
