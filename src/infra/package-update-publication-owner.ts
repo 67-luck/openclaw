@@ -568,9 +568,15 @@ export function createPublicationOwner(
     retire,
     persistRetirement,
     preflight,
-    async supersede() {
+    async supersede(
+      reason: Extract<
+        PackageActivationIntent,
+        { replacementIdentity: string }
+      >["kind"] = "superseded-by-manual-install",
+    ) {
       const replacementIdentity = packageActivationIdentity(live, true);
       if (
+        reason === "superseded-by-manual-install" &&
         [descriptor.previous.identity, descriptor.candidate.identity].includes(replacementIdentity)
       ) {
         throw new Error("A recorded package generation still requires its original recovery.");
@@ -580,7 +586,7 @@ export function createPublicationOwner(
         assertion();
         assertJournalCurrent(record);
         if (packageActivationIdentity(live, true) !== replacementIdentity) {
-          throw new Error("The manually installed package changed during recovery settlement.");
+          throw new Error("The installed package changed during recovery settlement.");
         }
       };
       const transfers = [
@@ -616,7 +622,7 @@ export function createPublicationOwner(
           record,
           "superseded",
           {
-            kind: "superseded-by-manual-install",
+            kind: reason,
             replacementIdentity,
             settled: false,
           },
@@ -637,7 +643,10 @@ export function createPublicationOwner(
         assertSupersession();
         inspectTransfer(entry);
       }
-      if (record.intent?.kind !== "superseded-by-manual-install") {
+      if (
+        record.intent?.kind !== "superseded-by-manual-install" &&
+        record.intent?.kind !== "recovery-lease-identity-changed"
+      ) {
         throw new Error("Package supersession fact is missing.");
       }
       record = journal.transition(
