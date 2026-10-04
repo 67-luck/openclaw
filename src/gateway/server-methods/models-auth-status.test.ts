@@ -1601,8 +1601,7 @@ describe("models.authLogout", () => {
     ]);
   });
 
-  it("does not abort runs when auth profile removal fails", async () => {
-    mocks.removeModelAuthCredentials.mockRejectedValue(new Error("removal failed"));
+  it("aborts only revoked provider runs after auth profile removal succeeds", async () => {
     const opts = createLogoutOptions({ provider: "openrouter" });
     const openrouterRun = createActiveRun("openrouter");
     const openaiRun = createActiveRun("openai");
