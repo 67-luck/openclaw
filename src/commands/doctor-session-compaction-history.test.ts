@@ -591,7 +591,7 @@ it.each(["rehearsal", "rehearsal-zero", "live", "flag-only", "corrupt-rehearsal"
               const after = cold.read();
               expect(JSON.parse(String(after.raw))).toMatchObject({
                 retainedHistoryReferences: {
-                  sessionIds: ["previous", cold.sessionId],
+                  sessionIds: [cold.sessionId, "previous"],
                   artifactPaths: [],
                 },
               });
