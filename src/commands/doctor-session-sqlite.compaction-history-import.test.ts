@@ -76,6 +76,7 @@ it("imports checkpoint metrics with their historical transcript and replays rest
   ].join("\n");
   fs.writeFileSync(historicalPath, historicalBytes);
   const originalIndex = fs.readFileSync(store.storePath, "utf8");
+  const originalTranscript = fs.readFileSync(store.transcriptPath, "utf8");
   const scope = {
     agentId: "main",
     sessionId: "session-1",
@@ -138,13 +139,26 @@ it("imports checkpoint metrics with their historical transcript and replays rest
   });
   expect(restored.targets.flatMap((target) => target.issues)).toEqual([]);
   expect(fs.readFileSync(store.storePath, "utf8")).toBe(originalIndex);
+  expect(fs.readFileSync(store.transcriptPath, "utf8")).toBe(originalTranscript);
   expect(fs.readFileSync(historicalPath, "utf8")).toBe(historicalBytes);
   const validated = await runDoctorSessionSqlite({
     env: store.env,
     mode: "validate",
     store: store.storePath,
   });
-  expect(validated.targets.flatMap((target) => target.issues)).toEqual([]);
+  // Validation reports the restored active source; import owns its verified archival.
+  expect(validated.targets.flatMap((target) => target.issues)).toEqual([
+    expect.objectContaining({
+      code: "active_sqlite_transcript_jsonl",
+      sessionKey: scope.sessionKey,
+      message: expect.stringContaining(store.transcriptPath),
+    }),
+  ]);
+  expect(fs.readFileSync(store.storePath, "utf8")).toBe(originalIndex);
+  expect(fs.readFileSync(store.transcriptPath, "utf8")).toBe(originalTranscript);
+  expect(fs.readFileSync(historicalPath, "utf8")).toBe(historicalBytes);
+  expect(loadExactSessionEntry(scope)?.entry).toEqual(entry);
+  expect(readRawHistory()).toEqual(rawHistory);
   const sqlitePath = expectDefined(imported.targets[0]?.sqlitePath, "imported database");
   const databaseOptions = { agentId: "main", path: sqlitePath, env: store.env };
   const currentEvents = loadTranscriptEventsSync(scope);
