@@ -3,7 +3,10 @@ import {
   replaceSessionEntry,
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
-import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
+import type {
+  InternalSessionEntry as SessionEntry,
+  SessionEntry as PublicSessionEntry,
+} from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { buildAgentRunTerminalOutcomeFromLifecycleEvent } from "./agent-run-terminal-outcome.js";
 import {
@@ -94,6 +97,52 @@ describe("CLI binding settlement", () => {
       });
     },
   );
+
+  it("guards binding publication with a separate internal writer owner", async () => {
+    await withTempSessionStore(async ({ storePath }) => {
+      const sessionKey = "agent:main:explicit:cli-writer-owner";
+      const expectedSession: PublicSessionEntry = {
+        sessionId: "openclaw-session-1",
+        updatedAt: 1,
+        lifecycleRevision: "writer-lifecycle",
+      };
+      const sessionStore = { [sessionKey]: expectedSession };
+      await seedSessionStore(storePath, {
+        [sessionKey]: { ...expectedSession, activeWriterRunId: "cli-writer" },
+      });
+
+      const result = createRunResult({
+        sessionId: "cli-session-123",
+        cliSessionBinding: { sessionId: "cli-session-123" },
+        provider: "claude-cli",
+        model: "claude-sonnet-4-6",
+      });
+      const settled = await persistCliSessionBindingResult({
+        agentId: "main",
+        assertSettlementCurrent: () => {},
+        expectedOwner: {
+          lifecycleRevision: "writer-lifecycle",
+          activeWriterRunId: "cli-writer",
+        },
+        expectedSession,
+        provider: "claude-cli",
+        sessionKey,
+        storePath,
+        sessionStore,
+        result,
+      });
+
+      expect(settled).toBe(result);
+      expect(sessionStore[sessionKey]).not.toHaveProperty("activeWriterRunId");
+      expect(sessionStore[sessionKey].cliSessionBindings?.["claude-cli"]).toEqual({
+        sessionId: "cli-session-123",
+      });
+      expect(loadPersistedSessionEntry(storePath, sessionKey)).toMatchObject({
+        activeWriterRunId: "cli-writer",
+        cliSessionBindings: { "claude-cli": { sessionId: "cli-session-123" } },
+      });
+    });
+  });
 
   it.each([
     { state: "successful", terminal: {}, reason: "failed" },

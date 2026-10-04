@@ -180,6 +180,12 @@ export async function runCliFallbackCandidate(
         : undefined;
     const releaseTerminalProducerFence =
       writerClaim && turn.replyOperation?.registerTerminalProducerFence(() => writerClaim.revoke());
+    const expectedOwner = writerClaim
+      ? {
+          lifecycleRevision: writerClaim.expectedLifecycleRevision,
+          activeWriterRunId: writerClaim.expectedWriterRunId,
+        }
+      : undefined;
     let producerStarted = false;
     const execution = withAdmittedCliCandidate(
       {
@@ -213,12 +219,6 @@ export async function runCliFallbackCandidate(
       }) => {
         let sessionEntry = initialSessionEntry;
         assertSettlementCurrent();
-        if (writerClaim && sessionEntry) {
-          sessionEntry = { ...sessionEntry, activeWriterRunId: writerClaim.expectedWriterRunId };
-          if (sessionKey && turn.activeSessionStore) {
-            turn.activeSessionStore[sessionKey] = sessionEntry;
-          }
-        }
         // The CLI owner must see explicit pins before provider scoping can discard them.
         const authProfileId = allowCliAuthProfileForwarding
           ? resolveCliExecutionAuthProfileId({
@@ -241,6 +241,7 @@ export async function runCliFallbackCandidate(
             ? buildCliSessionForkRunParams(
                 {
                   agentId: turn.followupRun.run.agentId,
+                  expectedOwner,
                   provider: params.cliExecutionProvider,
                   expectedCliSessionId: cliSessionBinding.sessionId,
                   sessionKey,
@@ -285,6 +286,7 @@ export async function runCliFallbackCandidate(
                   }
                   await clearCliSessionInStore({
                     agentId: turn.followupRun.run.agentId,
+                    expectedOwner,
                     provider: params.cliExecutionProvider,
                     expectedCliSessionId: cliSessionBinding.sessionId,
                     expectedSessionId: sessionEntry?.sessionId,
@@ -537,6 +539,7 @@ export async function runCliFallbackCandidate(
           return await settleCliSessionResult(candidateResult, async () => {
             await clearCliSessionInStore({
               agentId: turn.followupRun.run.agentId,
+              expectedOwner,
               provider: params.cliExecutionProvider,
               expectedCliSessionId: cliSessionBinding?.sessionId,
               expectedSessionId: sessionEntry?.sessionId,
@@ -551,6 +554,7 @@ export async function runCliFallbackCandidate(
         }
         return settleResult({
           result: candidateResult,
+          expectedOwner,
           expectedSession: sessionEntry,
           sessionStore: turn.activeSessionStore,
           preserveBinding: shouldPreserveUserFacingSessionStateForInputProvenance(

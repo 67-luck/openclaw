@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { CliSessionBinding, InternalSessionEntry, SessionEntry } from "../config/sessions.js";
 import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
+import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
 import { formatErrorMessageForDisplay } from "../infra/error-diagnostics.js";
 import { redactSensitiveText } from "../logging/redact.js";
 import { appendAgentRunFailure } from "./agent-run-result.js";
@@ -16,6 +17,7 @@ import type { EmbeddedAgentRunResult } from "./embedded-agent-runner/types.js";
 
 type CliSessionStoreTarget = {
   agentId: string;
+  expectedOwner?: Pick<InternalSessionEntry, "lifecycleRevision" | "activeWriterRunId">;
   provider: string;
   sessionKey?: string;
   storePath?: string;
@@ -38,6 +40,7 @@ async function patchCliSessionBindingInStore(
     return undefined;
   }
   const expected = { ...params.expectedSession };
+  const expectedOwner = params.expectedOwner ?? expected;
   let committed: SessionEntry | undefined;
   await patchSessionEntryCore(
     { agentId: params.agentId, sessionKey, storePath },
@@ -45,8 +48,8 @@ async function patchCliSessionBindingInStore(
       // Native ids can survive reset. Publication belongs to the exact local lifecycle/writer.
       if (
         entry.sessionId !== expected.sessionId ||
-        entry.lifecycleRevision !== expected.lifecycleRevision ||
-        entry.activeWriterRunId !== expected.activeWriterRunId
+        entry.lifecycleRevision !== expectedOwner.lifecycleRevision ||
+        entry.activeWriterRunId !== expectedOwner.activeWriterRunId
       ) {
         return null;
       }
@@ -66,10 +69,11 @@ async function patchCliSessionBindingInStore(
       preserveActivity: params.preserveActivity,
       skipMaintenance: params.skipMaintenance,
       onCommitted: (entry) => {
-        committed = entry;
+        const publicEntry = projectPublicSessionEntry(entry);
+        committed = publicEntry;
         params.onCommitted?.();
         if (params.sessionStore) {
-          params.sessionStore[sessionKey] = entry;
+          params.sessionStore[sessionKey] = publicEntry;
         }
       },
     },
@@ -77,10 +81,11 @@ async function patchCliSessionBindingInStore(
   return committed;
 }
 
-type CliSessionForkStoreParams = Required<CliSessionStoreTarget> & {
-  expectedCliSessionId: string;
-  assertCommitAllowed?: () => void;
-};
+type CliSessionForkStoreParams = Omit<Required<CliSessionStoreTarget>, "expectedOwner"> &
+  Pick<CliSessionStoreTarget, "expectedOwner"> & {
+    expectedCliSessionId: string;
+    assertCommitAllowed?: () => void;
+  };
 
 async function patchCliSessionForkBinding(
   params: CliSessionForkStoreParams,
