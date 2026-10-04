@@ -10,6 +10,7 @@ import { captureSessionTarget } from "../../sessions/session-controller.lifecycl
 import { createReplyOperation } from "../../sessions/session-controller.operation.js";
 import { markReplyOperationExecutionStarted } from "../../sessions/session-controller.state.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
+import { createCanonicalAgentConfigFixture } from "../../test-utils/config-roster.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { createActiveRun as createAbortRun } from "./chat.abort.test-helpers.js";
 import type { GatewayRequestContext } from "./types.js";
@@ -31,24 +32,24 @@ export function createActiveRun(
 }
 
 type ActiveRun = ReturnType<typeof createActiveRun>;
-type TestAgentConfig = { id: string; default?: boolean };
+type LegacyTestAgentConfig = { id: string; default?: boolean };
 
-function createDefaultAgents(): TestAgentConfig[] {
+function createDefaultAgents(): LegacyTestAgentConfig[] {
   return [{ id: "main", default: true }, { id: "work" }];
 }
 
 export function createContext(
   options: {
     activeRuns?: ReadonlyArray<readonly [string, ActiveRun]>;
-    agents?: TestAgentConfig[];
+    agents?: LegacyTestAgentConfig[];
     globalScope?: boolean;
     extra?: Partial<GatewayRequestContext>;
   } = {},
 ): GatewayRequestContext {
-  const cfg = {
+  const cfg = createCanonicalAgentConfigFixture({
     agents: { list: options.agents ?? createDefaultAgents() },
     ...(options.globalScope ? { session: { scope: "global" as const } } : {}),
-  };
+  }).config;
   rpcSourceTesting.reset(options.activeRuns);
   return {
     dedupe: new Map(),

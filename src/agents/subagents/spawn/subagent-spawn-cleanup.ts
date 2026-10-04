@@ -1,4 +1,5 @@
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
+import { sleepWithAbort } from "@openclaw/retry";
 import type { callGateway } from "../../../gateway/call.js";
 import type { GatewayContextResolver } from "../../../gateway/server-methods/types.js";
 import { bindGatewayLifecycleRequest } from "../../../gateway/server-recovery-runtime-context.js";
@@ -265,10 +266,7 @@ export async function retrySubagentCleanup(
     if ((await options?.shouldRetry?.()) === false) {
       return false;
     }
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(resolve, isFastTestRuntimeEnv() ? 1 : 1_000);
-      timer.unref?.();
-    });
+    await sleepWithAbort(isFastTestRuntimeEnv() ? 1 : 1_000, undefined, { ref: false });
   }
 }
 

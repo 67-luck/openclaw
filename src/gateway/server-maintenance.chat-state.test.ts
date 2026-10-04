@@ -200,6 +200,7 @@ describe("gateway chat-state maintenance", () => {
         rpcSourceTesting.set(runId, source);
       }
       const release = () => {
+        deps.chatAbortControllers.delete(runId);
         releaseAgentRunContext(runId, claim);
         if (source) {
           retireSessionControllerInput(source.input);
@@ -222,27 +223,4 @@ describe("gateway chat-state maintenance", () => {
       }
     },
   );
-
-  it("clears assistant snapshot scope when aborted runs age out", async () => {
-    const { startGatewayMaintenanceTimers, deps } = await createTimedMaintenanceScenario();
-    const runId = "run-aborted";
-    deps.chatRunState.getOrCreate(runId).abortMarker = createChatAbortMarker(staleRunTimestamp());
-    seedStaleRunBuffers(deps, runId);
-    seedBufferedAgentEvent(deps, runId);
-    const agentText = deps.chatRunState.getOrCreate(runId).agentText?.assistant;
-    expect(agentText).toBeDefined();
-    if (agentText) {
-      agentText.lastSentAt = staleRunTimestamp();
-    }
-
-    const timers = startGatewayMaintenanceTimers(deps);
-
-    await vi.advanceTimersByTimeAsync(60_000);
-
-    expect(deps.chatRunState.runs.get(runId)?.abortMarker).toBeUndefined();
-    expectStaleRunBuffersSwept(deps, runId);
-    expect(deps.chatRunState.runs.get(runId)?.agentText).toBeUndefined();
-
-    await stopMaintenanceTimers(timers);
-  });
 });

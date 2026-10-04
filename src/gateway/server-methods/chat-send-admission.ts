@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
+import { readAcpSessionMetaForEntries } from "../../acp/runtime/session-meta-readonly.js";
 import {
   createAgentRunRestartAbortError,
   isAgentRunDirectAbortReason,
@@ -34,7 +35,6 @@ import {
 import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-controller.state.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { registerChatAbortController, resolveChatRunExpiresAtMs } from "../chat-abort.js";
-import { ExpectedProfileMismatchError } from "../expected-profile.js";
 import { PENDING_CHAT_SEND_DEDUPE_PREFIX, type DedupeEntry } from "../server-shared.js";
 import {
   buildAbortedChatSendPayload,
@@ -45,38 +45,42 @@ import { resolveChatSendOriginatingRoute } from "./chat-origin-routing.js";
 import {
   isRetryableUnadoptedChatClaim,
   resolveRestartSafeChatAdmission,
+  withRestartSafeChatPlacement,
+  type PreparedRestartSafeChatPlacement,
 } from "./chat-restart-recovery.js";
 import { assertExpectedLeafActive } from "./chat-send-active-leaf.js";
 import { prepareGoalChatSendRetry } from "./chat-send-goal-retry.js";
 import {
-  inspectGoalChatSendRetry,
-  readChatSendDedupeResponse,
+  consumeChatSendCurrent,
   resolveChatSendRequestConflict,
   respondChatSendAdmissionError,
-  respondChatSendRetry,
   respondChatSessionRoutingChanged,
-  type ChatSendPreAdmissionParams,
 } from "./chat-send-pre-admission.js";
+import type { ChatSendPreAdmissionParams } from "./chat-send-pre-admission.types.js";
+import { inspectGoalChatSendRetry, readChatSendDedupeResponse } from "./chat-send-reservation.js";
 import { bindChatSendPreparedSession } from "./chat-send-session-binding.js";
 import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";
-import {
-  loadCurrentChatSendSession,
-  prepareChatSendSessionEntry,
-  type PreparedChatSendSession,
-} from "./chat-send-session.js";
+import { withCurrentChatSendSession, prepareChatSendSessionEntry } from "./chat-send-session.js";
+import type { PreparedChatSendSession } from "./chat-send-session.js";
 import {
   admitChatSendUploads,
   assertChatSendExclusiveAdmission,
+  consumeChatSendAdmissionRetry,
   createChatSendWorkAdmission,
+  observeChatSendWork,
+  prepareChatSendAdmissionRetry,
   prepareChatSendInterruptAdmission,
   releaseChatSendCallerAuthority,
+  respondChatSendWorkAdmissionFailure,
+  withCurrentChatSendRetry,
 } from "./chat-send-work-admission.js";
-import type { GatewayRequestHandlerOptions } from "./types.js";
+import type { GatewayRequestHandlerOptions, SessionMutationAuthorization } from "./types.js";
 
 /** Reserve the session lifecycle and register the abortable run before attachment work. */
 export async function admitChatSend(
   params: ChatSendPreAdmissionParams & {
     session: PreparedChatSendSession;
+    withPreparedCurrent?: SessionMutationAuthorization["withPreparedCurrent"];
     hasCurrentClientAuthority?: GatewayRequestHandlerOptions["hasCurrentClientAuthority"];
     onAdmissionOwned?: () => Promise<boolean>;
   },
@@ -137,60 +141,59 @@ export async function admitChatSend(
   const preparedGoalRetry = request.goalOperation
     ? await prepareGoalChatSendRetry(params)
     : undefined;
-  if (request.goalOperation) {
+  const pendingRetry = prepareChatSendAdmissionRetry(params);
+  const preparedRetry = pendingRetry instanceof Promise ? await pendingRetry : pendingRetry;
+  const reserved = await consumeChatSendCurrent(params, () => {
     params.assertCurrent?.();
     assertSessionTargetCurrent();
-  }
-  const goalRetry = inspectGoalChatSendRetry({ ...params, prepared: preparedGoalRetry });
-  if (goalRetry.kind !== "new") {
-    if (goalRetry.kind === "replay") {
-      respond(true, { ...goalRetry.receipt, replayed: true }, undefined, {
-        cached: true,
-        runId: clientRunId,
-      });
+    const goalRetry = inspectGoalChatSendRetry({ ...params, prepared: preparedGoalRetry });
+    if (goalRetry.kind !== "new") {
+      if (goalRetry.kind === "replay") {
+        respond(true, { ...goalRetry.receipt, replayed: true }, undefined, {
+          cached: true,
+          runId: clientRunId,
+        });
+      }
+      return undefined;
     }
-    return { ok: false as const };
-  }
-  // A plain chat retry must not replace a Goal reservation after yielding in recovery.
-  if (readPendingReservation()?.payload.goalFingerprint) {
-    respond(
-      false,
-      undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, "Run ID is reserved by a Goal request; use a new ID."),
-    );
-    return { ok: false as const };
-  }
-  if (!request.goalOperation && respondChatSendRetry(params)) {
-    return { ok: false as const };
-  }
-  const uploadAdmission = admitChatSendUploads({ params: p, client, context, respond });
-  if (!uploadAdmission.ok) {
-    return uploadAdmission;
-  }
-  // Keep the run abortable while lifecycle mutation owns the session. Admission
-  // must reject an expired/missing reservation instead of reviving evicted work.
-  params.assertCurrent?.();
-  context.dedupe.set(pendingChatSendKey, {
-    ts: now,
-    ok: true,
-    requestIdentity,
-    payload: {
-      runId: clientRunId,
-      attemptId: pendingAttemptId,
-      status: "accepted" as const,
-      sessionKey,
-      ...(backingSessionId ? { sessionId: backingSessionId } : {}),
-      ...(rawSessionKey === sessionKey ? {} : { sessionKeyAliases: [rawSessionKey] }),
-      ...(selectedAgent.agentId ? { agentId: selectedAgent.agentId } : {}),
-      ownerConnId: normalizeOptionalString(client?.connId),
-      ownerDeviceId: normalizeOptionalString(client?.connect?.device?.id),
-      expiresAtMs: resolveChatRunExpiresAtMs({ now, timeoutMs }),
-      turnKind,
-      ...(request.goalOperation
-        ? { goalFingerprint: request.goalOperation.requestFingerprint }
-        : {}),
-    },
+    const retryComparison = consumeChatSendAdmissionRetry(params, preparedRetry);
+    if (retryComparison === false) {
+      return undefined;
+    }
+    const uploadAdmission = admitChatSendUploads({ params: p, client, context, respond });
+    if (!uploadAdmission.ok) {
+      return undefined;
+    }
+    // Keep the run abortable while lifecycle mutation owns the session. Admission
+    // must reject an expired/missing reservation instead of reviving evicted work.
+    context.dedupe.set(pendingChatSendKey, {
+      ts: now,
+      ok: true,
+      requestIdentity,
+      payload: {
+        runId: clientRunId,
+        attemptId: pendingAttemptId,
+        status: "accepted" as const,
+        sessionKey,
+        ...(backingSessionId ? { sessionId: backingSessionId } : {}),
+        ...(rawSessionKey === sessionKey ? {} : { sessionKeyAliases: [rawSessionKey] }),
+        ...(selectedAgent.agentId ? { agentId: selectedAgent.agentId } : {}),
+        ownerConnId: normalizeOptionalString(client?.connId),
+        ownerDeviceId: normalizeOptionalString(client?.connect?.device?.id),
+        expiresAtMs: resolveChatRunExpiresAtMs({ now, timeoutMs }),
+        turnKind,
+        ...(request.goalOperation
+          ? { goalFingerprint: request.goalOperation.requestFingerprint }
+          : {}),
+      },
+    });
+    return { retryComparison, uploadAdmission };
   });
+  if (!reserved) {
+    return { ok: false as const };
+  }
+  let retryComparison = reserved.retryComparison;
+  const uploadAdmission = reserved.uploadAdmission;
   const clearPendingChatSendReservation = () => {
     const pending = readPendingReservation();
     if (
@@ -249,167 +252,198 @@ export async function admitChatSend(
     admittedRunAbort.entry?.input.policy.mode === "interrupt"
       ? captureCurrentSessionRunInterruptTarget(admittedRunAbort.entry.input.mailbox.owner.id)
       : undefined;
-  const commitChatWorkAdmission = async (): Promise<void> => {
-    params.assertCurrent?.();
-    const retainedRequestConflict = resolveChatSendRequestConflict(params);
-    if (retainedRequestConflict) {
-      throw new Error(retainedRequestConflict.message);
+  const placementService = context.workerSessionPlacementService;
+  const commitChatWorkAdmission = async (
+    acpMeta: SessionEntry["acp"] | null,
+    preparedPlacement?: PreparedRestartSafeChatPlacement,
+  ): Promise<void> => {
+    if (context.workerSessionPlacementService !== placementService) {
+      throw new Error("Worker placement owner changed during chat admission; retry.");
     }
-    if (context.chatRunState.hasAbortMarker(clientRunId)) {
-      return;
-    }
-    const pendingReservation = readPendingReservation();
-    if (
-      pendingReservation &&
-      normalizeOptionalString(pendingReservation.payload.attemptId) !== pendingAttemptId
-    ) {
-      reservationSuperseded = true;
-      return;
-    }
-    if (!pendingReservation) {
-      const terminalResult = readChatSendDedupeResponse(context.dedupe, clientRunId);
-      const registeredSource = getRpcSource(clientRunId);
-      if (terminalResult || (registeredSource && registeredSource !== admittedRunAbort?.entry)) {
-        reservationSuperseded = true;
-        supersedingResult = terminalResult;
-        return;
-      }
-    }
-    if (lifecycleGeneration !== getAgentEventLifecycleGeneration()) {
-      if (admittedRunAbort.entry) {
-        admittedRunAbort.entry.adapter.abortStopReason = "restart";
-      }
-      admittedRunAbort.controller.abort(createAgentRunRestartAbortError());
-      writePreRegisteredChatAbort({
-        context,
-        runId: clientRunId,
-        stopReason: "restart",
-        attemptId: pendingAttemptId,
-      });
-      return;
-    }
-    if (
-      !pendingReservation ||
-      !isFutureDateTimestampMs(pendingReservation.payload.expiresAtMs, { nowMs: Date.now() })
-    ) {
-      if (admittedRunAbort.entry) {
-        admittedRunAbort.entry.adapter.abortStopReason = "timeout";
-      }
-      admittedRunAbort.controller.abort();
-      writePreRegisteredChatAbort({
-        context,
-        runId: clientRunId,
-        stopReason: "timeout",
-        attemptId: pendingAttemptId,
-      });
-      return;
-    }
-    const latestSession = loadCurrentChatSendSession(session);
-    const latestEntry = latestSession.entry;
-    admittedSessionEntry = latestEntry;
-    const requestConflict = resolveChatSendRequestConflict({
-      ...params,
-      session: { ...session, entry: latestEntry },
-    });
-    if (requestConflict) {
-      throw new Error(requestConflict.message);
-    }
-    // Freeze the writer-barrier snapshot; later preparation must retain this authority.
-    admittedSessionSettings = captureAdmittedChatSendSessionSettings({
-      commit: true,
-      entry: latestEntry,
-      expectedPermissionMode: p.expectedPermissionMode,
-      expectedToolOverrides: p.expectedToolOverrides,
-    });
-    assertChatSendExclusiveAdmission(request, session);
-    if (entry && !latestEntry) {
-      throw new Error(`Session "${sessionKey}" was deleted while starting work. Retry.`);
-    }
-    // Capture the exact direct owner under the writer barrier. If it clears
-    // later, the opaque target rejects instead of resolving a successor.
-    messageInjectionTarget =
-      p.queueMode === "steer"
-        ? captureCurrentReplyMessageInjectionTarget(
-            admittedRunAbort?.entry?.input.mailbox.owner.id ?? activeRunScopeKey,
-          )
-        : undefined;
-    if (p.queueMode !== "steer" && expectedLeafEntryId !== undefined) {
-      assertExpectedLeafActive(latestSession, agentId, expectedLeafEntryId, requestedSessionId, {
-        allowEmptyAncestor: true,
-      });
-    }
-    // Admission can queue behind reset. Never route a request captured
-    // against the old session into the replacement transcript. Check the expected
-    // leaf first so branch rotation retains its typed error.
-    if (backingSessionId && latestEntry?.sessionId && latestEntry.sessionId !== backingSessionId) {
-      throw new Error(`Session "${sessionKey}" changed while starting work. Retry.`);
-    }
-    const retryableClaim = isRetryableUnadoptedChatClaim(latestEntry, clientRunId);
-    if (
-      (latestEntry?.restartRecoveryDeliveryRunId &&
-        latestEntry.restartRecoveryDeliverySourceRunId === clientRunId &&
-        !retryableClaim) ||
-      hasRestartRecoveryTerminalRun(latestEntry, clientRunId)
-    ) {
-      // Recovery can settle while this retry waits on lifecycle admission.
-      // Revalidate under that admission so a stale pre-lock snapshot cannot dispatch twice.
-      reservationSuperseded = true;
-      supersedingResult = {
-        ts: Date.now(),
-        ok: true,
-        payload: { runId: clientRunId, status: "ok" as const },
-      };
-      return;
-    }
-    const archivedError = resolveSessionWorkStartError(sessionKey, latestEntry, {
-      allowPendingWorkspace: true,
-      providerReviewAcknowledgment: request.providerReviewAcknowledgment,
-      runId: clientRunId,
-    });
-    if (archivedError) {
-      throw new Error(archivedError);
-    }
-    admittedSessionId = latestEntry?.sessionId ?? backingSessionId ?? clientRunId;
-    // Retain compaction lineage before attachment/context preparation can outlive this owner.
-    expectedActiveReplyOperation = admittedRunAbort?.entry?.input.mailbox.owner.active;
-    if (request.goalOperation?.action === "start" && !latestEntry && !requestedSessionId) {
-      if (!preparedGoalEntry) {
-        preparedGoalEntry = await prepareChatSendSessionEntry({
-          cfg: latestSession.cfg,
-          client,
-          agentId,
-          getRuntimeConfig: context.getRuntimeConfig,
-        });
-        // Preparation only read facts; re-enter all current reservation and authority checks once.
-        return commitChatWorkAdmission();
-      }
-      const prepared = preparedGoalEntry;
-      initialSessionEntry = prepared.entry;
-      assertInitialSkillSelection = prepared.assertSkillSelection;
-      admittedSessionId = initialSessionEntry.sessionId;
-    }
-    restartSafeAdmission = resolveRestartSafeChatAdmission({
-      activeRunScopeKey,
-      agentId,
-      cfg: latestSession.cfg,
-      clientRunId,
-      context,
-      entry: latestEntry,
-      initialSessionEntry,
-      now: Date.now(),
-      request: restartSafeRequest,
-      requestedSessionId,
-      sessionId: admittedSessionId,
-      sessionKey: latestSession.canonicalKey,
-      storePath: latestSession.storePath,
-    });
-    if (request.goalOperation && !restartSafeAdmission) {
-      throw new Error(
-        "Goal start or resume requires the built-in OpenClaw runtime and an idle local session with recoverable history. This action is unavailable for native Codex and other external runtimes.",
+    if (placementService && preparedPlacement?.sessionId !== admittedSessionId) {
+      return withRestartSafeChatPlacement(placementService, admittedSessionId, (prepared) =>
+        commitChatWorkAdmission(acpMeta, prepared),
       );
     }
-    if (retryableClaim && !restartSafeAdmission) {
-      throw new Error("chat retry does not match its durable admission");
+    if (
+      request.goalOperation?.action === "start" &&
+      !entry &&
+      !requestedSessionId &&
+      !preparedGoalEntry
+    ) {
+      preparedGoalEntry = await prepareChatSendSessionEntry({
+        cfg: session.cfg,
+        client,
+        agentId,
+        getRuntimeConfig: context.getRuntimeConfig,
+      });
+    }
+    let refreshPlacement = false;
+    await withCurrentChatSendRetry(params, pendingAttemptId, (latestSession, comparison) => {
+      retryComparison = comparison;
+      params.assertCurrent?.();
+      const retainedRequestConflict = resolveChatSendRequestConflict(
+        { ...params, session: { ...session, entry: latestSession.entry } },
+        retryComparison,
+        pendingAttemptId,
+      );
+      if (retainedRequestConflict) {
+        throw new Error(retainedRequestConflict.message);
+      }
+      if (context.chatRunState.hasAbortMarker(clientRunId)) {
+        return;
+      }
+      const pendingReservation = readPendingReservation();
+      if (
+        pendingReservation &&
+        normalizeOptionalString(pendingReservation.payload.attemptId) !== pendingAttemptId
+      ) {
+        reservationSuperseded = true;
+        return;
+      }
+      if (!pendingReservation) {
+        const terminalResult = readChatSendDedupeResponse(context.dedupe, clientRunId);
+        const registeredSource = getRpcSource(clientRunId);
+        if (terminalResult || (registeredSource && registeredSource !== admittedRunAbort.entry)) {
+          reservationSuperseded = true;
+          supersedingResult = terminalResult;
+          return;
+        }
+      }
+      if (lifecycleGeneration !== getAgentEventLifecycleGeneration()) {
+        if (admittedRunAbort.entry) {
+          admittedRunAbort.entry.adapter.abortStopReason = "restart";
+        }
+        admittedRunAbort.controller.abort(createAgentRunRestartAbortError());
+        writePreRegisteredChatAbort({
+          context,
+          runId: clientRunId,
+          stopReason: "restart",
+          attemptId: pendingAttemptId,
+        });
+        return;
+      }
+      if (
+        !pendingReservation ||
+        !isFutureDateTimestampMs(pendingReservation.payload.expiresAtMs, { nowMs: Date.now() })
+      ) {
+        if (admittedRunAbort.entry) {
+          admittedRunAbort.entry.adapter.abortStopReason = "timeout";
+        }
+        admittedRunAbort.controller.abort();
+        writePreRegisteredChatAbort({
+          context,
+          runId: clientRunId,
+          stopReason: "timeout",
+          attemptId: pendingAttemptId,
+        });
+        return;
+      }
+      const latestEntry = latestSession.entry;
+      admittedSessionEntry = latestEntry;
+      const requestConflict = resolveChatSendRequestConflict(
+        { ...params, session: { ...session, entry: latestEntry } },
+        retryComparison,
+        pendingAttemptId,
+      );
+      if (requestConflict) {
+        throw new Error(requestConflict.message);
+      }
+      admittedSessionSettings = captureAdmittedChatSendSessionSettings({
+        commit: true,
+        entry: latestEntry,
+        expectedPermissionMode: p.expectedPermissionMode,
+        expectedToolOverrides: p.expectedToolOverrides,
+      });
+      assertChatSendExclusiveAdmission(request, session);
+      if (entry && !latestEntry) {
+        throw new Error(`Session "${sessionKey}" was deleted while starting work. Retry.`);
+      }
+      messageInjectionTarget =
+        p.queueMode === "steer"
+          ? captureCurrentReplyMessageInjectionTarget(
+              admittedRunAbort.entry?.input.mailbox.owner.id ?? activeRunScopeKey,
+            )
+          : undefined;
+      if (p.queueMode !== "steer" && expectedLeafEntryId !== undefined) {
+        assertExpectedLeafActive(latestSession, agentId, expectedLeafEntryId, requestedSessionId, {
+          allowEmptyAncestor: true,
+        });
+      }
+      if (
+        backingSessionId &&
+        latestEntry?.sessionId &&
+        latestEntry.sessionId !== backingSessionId
+      ) {
+        throw new Error(`Session "${sessionKey}" changed while starting work. Retry.`);
+      }
+      const retryableClaim = isRetryableUnadoptedChatClaim(latestEntry, clientRunId);
+      if (
+        (latestEntry?.restartRecoveryDeliveryRunId &&
+          latestEntry.restartRecoveryDeliverySourceRunId === clientRunId &&
+          !retryableClaim) ||
+        hasRestartRecoveryTerminalRun(latestEntry, clientRunId)
+      ) {
+        reservationSuperseded = true;
+        supersedingResult = {
+          ts: Date.now(),
+          ok: true,
+          payload: { runId: clientRunId, status: "ok" as const },
+        };
+        return;
+      }
+      const archivedError = resolveSessionWorkStartError(sessionKey, latestEntry, {
+        allowPendingWorkspace: true,
+        providerReviewAcknowledgment: request.providerReviewAcknowledgment,
+        runId: clientRunId,
+      });
+      if (archivedError) {
+        throw new Error(archivedError);
+      }
+      admittedSessionId = latestEntry?.sessionId ?? backingSessionId ?? clientRunId;
+      expectedActiveReplyOperation = admittedRunAbort.entry?.input.mailbox.owner.active;
+      if (request.goalOperation?.action === "start" && !latestEntry && !requestedSessionId) {
+        const prepared = preparedGoalEntry!;
+        initialSessionEntry = prepared.entry;
+        assertInitialSkillSelection = prepared.assertSkillSelection;
+        admittedSessionId = initialSessionEntry.sessionId;
+      }
+      if (context.workerSessionPlacementService !== placementService) {
+        throw new Error("Worker placement owner changed during chat admission; retry.");
+      }
+      if (placementService && preparedPlacement?.sessionId !== admittedSessionId) {
+        refreshPlacement = true;
+        return;
+      }
+      preparedPlacement?.facts.assertCurrent();
+      restartSafeAdmission = resolveRestartSafeChatAdmission({
+        activeRunScopeKey,
+        agentId,
+        cfg: latestSession.cfg,
+        clientRunId,
+        context,
+        entry: latestEntry,
+        initialSessionEntry,
+        acpMeta,
+        now: Date.now(),
+        placement: preparedPlacement?.facts.placement,
+        request: restartSafeRequest,
+        requestedSessionId,
+        sessionId: admittedSessionId,
+        sessionKey: latestSession.canonicalKey,
+        storePath: latestSession.storePath,
+      });
+      if (request.goalOperation && !restartSafeAdmission) {
+        throw new Error(
+          "Goal start or resume requires the built-in OpenClaw runtime and an idle local session with recoverable history. This action is unavailable for native Codex and other external runtimes.",
+        );
+      }
+      if (retryableClaim && !restartSafeAdmission) {
+        throw new Error("chat retry does not match its durable admission");
+      }
+    });
+    if (refreshPlacement) {
+      return commitChatWorkAdmission(acpMeta);
     }
   };
 
@@ -443,7 +477,22 @@ export async function admitChatSend(
         assertSessionTargetCurrent();
         assertChatSendExclusiveAdmission(request, session);
       },
-      revalidateAllowed: commitChatWorkAdmission,
+      revalidateAllowed: async () => {
+        if (!restartSafeRequest) {
+          return commitChatWorkAdmission(null);
+        }
+        const latest = await withCurrentChatSendSession({
+          session,
+          getRuntimeConfig: context.getRuntimeConfig,
+          includeMembership: false,
+          consume: (current) => current,
+        });
+        const [acpMeta] = await readAcpSessionMetaForEntries({
+          cfg: latest.cfg,
+          entries: [{ agentId, sessionKey: latest.canonicalKey, entry: latest.entry }],
+        });
+        return commitChatWorkAdmission(acpMeta ?? null);
+      },
       onInterrupt: (reason) => {
         const stopReason = isAgentRunDirectAbortReason(reason) ? "rpc" : "restart";
         if (!admittedRunAbort) {
@@ -484,25 +533,14 @@ export async function admitChatSend(
     admittedRunAbort?.cleanup();
     gatewayWorkAdmission?.release();
     releaseCapturedOperator();
-    if (err instanceof ExpectedProfileMismatchError) {
-      throw err;
-    }
-    const requestConflict = resolveChatSendRequestConflict(params);
-    if (requestConflict) {
-      respond(false, undefined, requestConflict);
-      return { ok: false as const };
-    }
-    const aborted =
-      context.chatRunState.hasAbortMarker(clientRunId) &&
-      readChatSendDedupeResponse(context.dedupe, clientRunId);
-    if (aborted) {
-      respond(aborted.ok, aborted.payload, aborted.error, { cached: true, runId: clientRunId });
-      return { ok: false as const };
-    }
-    respondChatSendAdmissionError(err, respond);
+    respondChatSendWorkAdmissionFailure(params, err, retryComparison);
     return { ok: false as const };
   }
-  const retainedRequestConflict = resolveChatSendRequestConflict(params);
+  const retainedRequestConflict = resolveChatSendRequestConflict(
+    params,
+    retryComparison,
+    pendingAttemptId,
+  );
   if (retainedRequestConflict) {
     clearPendingChatSendReservation();
     admittedRunAbort?.cleanup();
@@ -605,6 +643,12 @@ export async function admitChatSend(
       releaseCallerAuthority = undefined;
     }
   };
+  let startedWork: (() => Promise<unknown>) | undefined;
+  const startOwnedWork = <T>(work: Promise<T>) => {
+    const observed = observeChatSendWork(work);
+    startedWork = observed;
+    return observed;
+  };
   try {
     releaseCallerAuthority = () =>
       releaseChatSendCallerAuthority({ operator: capturedOperator, request, session });
@@ -624,9 +668,12 @@ export async function admitChatSend(
     }
     // Reserve while the request root is live: detached dispatch retains it until terminal persistence.
     releaseGatewayRootContinuation = retainGatewayRootWorkAdmissionContinuation() ?? (() => {});
-    if (params.onAdmissionOwned && !(await gatewayWorkAdmission.run(params.onAdmissionOwned))) {
-      cleanupPreDispatchAdmission();
-      return { ok: false as const };
+    if (params.onAdmissionOwned) {
+      const admission = startOwnedWork(gatewayWorkAdmission.run(params.onAdmissionOwned));
+      if (!(await admission())) {
+        cleanupPreDispatchAdmission();
+        return { ok: false as const };
+      }
     }
     params.assertCurrent?.();
     try {
@@ -637,6 +684,9 @@ export async function admitChatSend(
       return { ok: false as const };
     }
   } catch (error) {
+    if (startedWork) {
+      await Promise.allSettled([startedWork()]);
+    }
     cleanupPreDispatchAdmission();
     throw error;
   }

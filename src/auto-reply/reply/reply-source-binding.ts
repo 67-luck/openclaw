@@ -1,4 +1,5 @@
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
@@ -11,7 +12,6 @@ import {
 import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { TurnAdoptionLifecycle } from "../get-reply-options.types.js";
 import type { MsgContext } from "../templating.js";
-import { resolveSessionStorePathCore } from "./dispatch-from-config.runtime.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import { resolveQueueSettingsCore } from "./queue/settings.js";
 import type { FollowupRun } from "./queue/types.js";

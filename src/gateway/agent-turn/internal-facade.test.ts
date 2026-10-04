@@ -384,50 +384,58 @@ describe("createInternalAgentTurnFacade", () => {
     );
   });
 
-  it("preserves accepted/final ordering and acceptance metadata without frames", async () => {
-    let sourceCurrent = true;
-    const assertAdmissionCurrent = vi.fn(() => {
-      if (!sourceCurrent) {
-        throw new Error("source closed");
+  it.each(["final", "error"])(
+    "preserves acceptance ordering and the post-acceptance %s",
+    async (completion) => {
+      let sourceCurrent = true;
+      const assertAdmissionCurrent = vi.fn(() => {
+        if (!sourceCurrent) {
+          throw new Error("source closed");
+        }
+      });
+      const accepted = createDeferred();
+      const { promise: finalGate, resolve: emitFinal } = createDeferred();
+      const dispatchError = Object.assign(new Error("turn failed"), { code: "ETURN" });
+      startTurn.mockImplementation(async ({ io, assertAdmissionCurrent: admissionGuard }) => {
+        expect(admissionGuard).toBe(assertAdmissionCurrent);
+        admissionGuard();
+        io.emitAcceptance([true, { runId: "run-1", status: "accepted" }, undefined], {
+          runId: "run-1",
+        });
+        await finalGate;
+        if (completion === "error") {
+          throw dispatchError;
+        }
+        io.emitFinal([true, { runId: "run-1", status: "ok", summary: "done" }, undefined], {
+          runId: "run-1",
+          terminal: true,
+        });
+      });
+      const onAccepted = vi.fn(() => accepted.resolve());
+
+      const result = createFacade().dispatchRaw(
+        { message: "test", idempotencyKey: "run-1" },
+        { expectFinal: true, onAccepted, assertAdmissionCurrent },
+      );
+      await accepted.promise;
+      expect(onAccepted).toHaveBeenCalledWith({ runId: "run-1", status: "accepted" });
+      sourceCurrent = false;
+      const checksAtAcceptance = assertAdmissionCurrent.mock.calls.length;
+      emitFinal();
+
+      if (completion === "error") {
+        await expect(result).rejects.toBe(dispatchError);
+      } else {
+        await expect(result).resolves.toEqual({
+          ok: true,
+          payload: { runId: "run-1", status: "ok", summary: "done" },
+          error: undefined,
+          meta: { runId: "run-1", terminal: true },
+        });
       }
-    });
-    const { promise: finalGate, resolve: emitFinal } = createDeferred();
-    startTurn.mockImplementation(async ({ io, assertAdmissionCurrent: admissionGuard }) => {
-      expect(admissionGuard).toBe(assertAdmissionCurrent);
-      admissionGuard();
-      io.emitAcceptance([true, { runId: "run-1", status: "accepted" }, undefined], {
-        runId: "run-1",
-      });
-      await finalGate;
-      io.emitFinal([true, { runId: "run-1", status: "ok", summary: "done" }, undefined], {
-        runId: "run-1",
-        terminal: true,
-      });
-    });
-    const onAccepted = vi.fn();
-
-    const result = createFacade().dispatchRaw(
-      { message: "test", idempotencyKey: "run-1" },
-      { expectFinal: true, onAccepted, assertAdmissionCurrent },
-    );
-    await vi.waitFor(() =>
-      expect(onAccepted).toHaveBeenCalledWith({
-        runId: "run-1",
-        status: "accepted",
-      }),
-    );
-    sourceCurrent = false;
-    const checksAtAcceptance = assertAdmissionCurrent.mock.calls.length;
-    emitFinal();
-
-    await expect(result).resolves.toEqual({
-      ok: true,
-      payload: { runId: "run-1", status: "ok", summary: "done" },
-      error: undefined,
-      meta: { runId: "run-1", terminal: true },
-    });
-    expect(assertAdmissionCurrent).toHaveBeenCalledTimes(checksAtAcceptance);
-  });
+      expect(assertAdmissionCurrent).toHaveBeenCalledTimes(checksAtAcceptance);
+    },
+  );
 
   it("preserves post-acceptance Error identity", async () => {
     let rejectTurn!: (error: Error) => void;
@@ -603,108 +611,82 @@ describe("createInternalAgentTurnFacade", () => {
     registration.cleanup();
   });
 
-  it("cancels only the accepted run when its opted-in dispatch deadline expires", async () => {
-    vi.useFakeTimers();
-    const context = createContext();
-    const unrelated = registerChatAbortController({
-      runId: "unrelated-run",
-      sessionId: "unrelated-session",
-      sessionKey: "agent:main:unrelated",
-      target: captureSessionTarget({
-        storeScope: "/synthetic/facade.db",
+  it.each([false, true])(
+    "cancels only its accepted run across the dispatch deadline (late acceptance: %s)",
+    async (lateAcceptance) => {
+      vi.useFakeTimers();
+      const context = createContext();
+      const acceptanceGate = createDeferred();
+      const acceptanceReached = createDeferred();
+      const unrelated = registerChatAbortController({
+        runId: "unrelated-run",
+        sessionId: "unrelated-session",
         sessionKey: "agent:main:unrelated",
-      }),
-      timeoutMs: 60_000,
-      kind: "agent",
-    });
-    let accepted: ReturnType<typeof registerChatAbortController> | undefined;
-    startTurn.mockImplementation(async ({ io }) => {
-      const registration = registerChatAbortController({
-        runId: "deadline-run",
-        sessionId: "deadline-session",
-        sessionKey: "agent:main:deadline",
         target: captureSessionTarget({
           storeScope: "/synthetic/facade.db",
-          sessionKey: "agent:main:deadline",
+          sessionKey: "agent:main:unrelated",
         }),
         timeoutMs: 60_000,
         kind: "agent",
       });
-      accepted = registration;
-      io.emitAcceptance([true, { runId: "deadline-run", status: "accepted" }, undefined], {
-        runId: "deadline-run",
+      let accepted: ReturnType<typeof registerChatAbortController> | undefined;
+      startTurn.mockImplementation(async ({ io }) => {
+        if (lateAcceptance) {
+          await acceptanceGate.promise;
+        }
+        const registration = registerChatAbortController({
+          runId: "deadline-run",
+          sessionId: "deadline-session",
+          sessionKey: "agent:main:deadline",
+          target: captureSessionTarget({
+            storeScope: "/synthetic/facade.db",
+            sessionKey: "agent:main:deadline",
+          }),
+          timeoutMs: 60_000,
+          kind: "agent",
+        });
+        accepted = registration;
+        io.emitAcceptance([true, { runId: "deadline-run", status: "accepted" }, undefined], {
+          runId: "deadline-run",
+        });
+        acceptanceReached.resolve();
+        if (!lateAcceptance) {
+          await new Promise<void>((_resolve, reject) => {
+            registration.controller.signal.addEventListener(
+              "abort",
+              () => reject(new Error("deadline run aborted")),
+              { once: true },
+            );
+          });
+        }
       });
-      await new Promise<void>((_resolve, reject) => {
-        registration.controller.signal.addEventListener(
-          "abort",
-          () => reject(new Error("deadline run aborted")),
-          { once: true },
+
+      try {
+        const result = createFacade(context).dispatchRaw(
+          {
+            message: "settle requester",
+            sessionKey: "agent:main:deadline",
+            idempotencyKey: "deadline-run",
+          },
+          { cancelOnDeadline: true, expectFinal: true, timeoutMs: 20 },
         );
-      });
-    });
+        const outcome = expect(result).rejects.toThrow("gateway request timeout for agent");
+        if (!lateAcceptance) {
+          await acceptanceReached.promise;
+        }
+        await vi.advanceTimersByTimeAsync(20);
 
-    try {
-      const result = createFacade(context).dispatchRaw(
-        {
-          message: "settle requester",
-          sessionKey: "agent:main:deadline",
-          idempotencyKey: "deadline-run",
-        },
-        { cancelOnDeadline: true, expectFinal: true, timeoutMs: 20 },
-      );
-      const outcome = expect(result).rejects.toThrow("gateway request timeout for agent");
-      await vi.advanceTimersByTimeAsync(20);
-
-      await outcome;
-      expect(accepted?.controller.signal.aborted).toBe(true);
-      expect(unrelated.controller.signal.aborted).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("cancels a run accepted after its opted-in dispatch deadline", async () => {
-    vi.useFakeTimers();
-    const context = createContext();
-    const { promise: acceptanceGate, resolve: accept } = createDeferred();
-    let accepted: ReturnType<typeof registerChatAbortController> | undefined;
-    startTurn.mockImplementation(async ({ io }) => {
-      await acceptanceGate;
-      accepted = registerChatAbortController({
-        runId: "late-run",
-        sessionId: "late-session",
-        sessionKey: "agent:main:late",
-        target: captureSessionTarget({
-          storeScope: "/synthetic/facade.db",
-          sessionKey: "agent:main:late",
-        }),
-        timeoutMs: 60_000,
-        kind: "agent",
-      });
-      io.emitAcceptance([true, { runId: "late-run", status: "accepted" }, undefined], {
-        runId: "late-run",
-      });
-    });
-
-    try {
-      const result = createFacade(context).dispatchRaw(
-        {
-          message: "settle requester",
-          sessionKey: "agent:main:late",
-          idempotencyKey: "late-run",
-        },
-        { cancelOnDeadline: true, expectFinal: true, timeoutMs: 20 },
-      );
-      const outcome = expect(result).rejects.toThrow("gateway request timeout for agent");
-      await vi.advanceTimersByTimeAsync(20);
-      await outcome;
-
-      accept();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(accepted?.controller.signal.aborted).toBe(true);
-    } finally {
-      accept();
-      vi.useRealTimers();
-    }
-  });
+        await outcome;
+        if (lateAcceptance) {
+          acceptanceGate.resolve();
+          await acceptanceReached.promise;
+        }
+        expect(accepted?.controller.signal.aborted).toBe(true);
+        expect(unrelated.controller.signal.aborted).toBe(false);
+      } finally {
+        acceptanceGate.resolve();
+        vi.useRealTimers();
+      }
+    },
+  );
 });

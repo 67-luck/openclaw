@@ -657,7 +657,7 @@ describe("abortChatRunsForProvider", () => {
       authProviderId: "openrouter",
     });
     const result = abortChatRunsForProvider(ops, {
-      cfg: { agents: { list: [{ id: "main" }, { id: "writer" }] } },
+      cfg: { agents: { entries: { main: {}, writer: {} } } },
       providerId: "openrouter",
       stopReason: "auth-revoked",
     });
@@ -685,7 +685,7 @@ describe("abortChatRunsForProvider", () => {
     rpcSourceTesting.set("run-main", mainEntry);
 
     const result = abortChatRunsForProvider(ops, {
-      cfg: { agents: { list: [{ id: "main" }, { id: "writer" }] } },
+      cfg: { agents: { entries: { main: {}, writer: {} } } },
       providerId: "openrouter",
       agentId: "writer",
       stopReason: "auth-revoked",

@@ -372,7 +372,7 @@ function restrictedOperator(email: string, agentId: string, sandbox?: "required"
     },
   };
   const runtimeConfig: GatewayRequestContext["getRuntimeConfig"] = () => ({
-    agents: { list: [{ id: "main", default: true }] },
+    agents: { entries: { main: {} } },
     gateway: {
       roles: {
         default: "guest",
@@ -897,7 +897,7 @@ describe("session message-cut methods", () => {
         },
       } as GatewayClient;
       const runtimeConfig: GatewayRequestContext["getRuntimeConfig"] = () => ({
-        agents: { list: [{ id: "main", default: true }] },
+        agents: { entries: { main: {} } },
         gateway: {
           roles: {
             default: "guest",

@@ -1035,9 +1035,7 @@ describe("talk realtime gateway relay", () => {
       await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-relay-owner-pin-")),
     );
     setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
-    let runtimeConfig: OpenClawConfig = {
-      agents: { entries: { main: { default: true }, ops: {} } },
-    };
+    let runtimeConfig: OpenClawConfig = createRelayAgentConfig("main");
     try {
       const session = createTalkRealtimeRelaySessionRaw({
         controlSource: "transcript",
@@ -1054,9 +1052,7 @@ describe("talk realtime gateway relay", () => {
         sessionTarget: prepareTalkSessionTarget(runtimeConfig, "main"),
       });
       activeRelaySessions.set(session.relaySessionId, "conn-owner-pin");
-      runtimeConfig = {
-        agents: { entries: { main: {}, ops: { default: true } } },
-      };
+      runtimeConfig = createRelayAgentConfig("ops");
 
       ensureTalkRealtimeRelayVoiceSession({
         relaySessionId: session.relaySessionId,
@@ -1101,10 +1097,7 @@ describe("talk realtime gateway relay", () => {
         providerConfig: {},
         instructions: "brief",
         tools: [],
-        sessionTarget: prepareTalkSessionTarget(
-          { agents: { entries: { main: {}, ops: { default: true } } } },
-          " agent:main:main ",
-        ),
+        sessionTarget: prepareTalkSessionTarget(createRelayAgentConfig("ops"), " agent:main:main "),
       });
       activeRelaySessions.set(session.relaySessionId, "conn-trimmed-owner");
 

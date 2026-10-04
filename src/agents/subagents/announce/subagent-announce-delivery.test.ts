@@ -146,7 +146,13 @@ function deliverAnnouncement(
 }
 
 describe("queued completion handoff", () => {
-  it.each(["source retired", "long execution", "delivery deadline", "private"] as const)(
+  it.each([
+    "source retired",
+    "long execution",
+    "post-start expiry",
+    "delivery deadline",
+    "private",
+  ] as const)(
     "keeps an accepted busy-parent completion pending until execution: %s",
     async (outcome) => {
       vi.useFakeTimers();
@@ -155,6 +161,13 @@ describe("queued completion handoff", () => {
       const executionSettled = createDeferredCore();
       const executionStarted = createDeferredCore();
       const deliveryDeadline = new AbortController();
+      const expiryTimer =
+        outcome === "post-start expiry"
+          ? setTimeout(
+              () => deliveryDeadline.abort(new Error("completion delivery expired")),
+              180_000,
+            )
+          : undefined;
       let sourceAllowed = true;
       let executed = false;
       const dispatchGatewayMethodInProcess: typeof runtimeDispatchGatewayMethodInProcess = async <
@@ -210,6 +223,7 @@ describe("queued completion handoff", () => {
           : {}),
         isSourceSessionEffectsAllowed: () => sourceAllowed,
         signal: deliveryDeadline.signal,
+        onExecutionStarted: () => clearTimeout(expiryTimer),
       }).finally(() => {
         finished = true;
       });
@@ -228,7 +242,7 @@ describe("queued completion handoff", () => {
         }
         sourceAllowed = outcome !== "source retired";
         parentSettled.resolve();
-        if (outcome === "long execution") {
+        if (outcome === "long execution" || outcome === "post-start expiry") {
           await executionStarted.promise;
           await vi.advanceTimersByTimeAsync(120_001);
           expect(finished).toBe(false);
@@ -242,6 +256,7 @@ describe("queued completion handoff", () => {
         );
         expect(executed).toBe(sourceAllowed);
       } finally {
+        clearTimeout(expiryTimer);
         parentSettled.resolve();
         executionSettled.resolve();
         await delivery;
@@ -573,7 +588,7 @@ describe("deliverSubagentAnnouncement active requester steering", () => {
   const sharedStore = "/stores/shared.sqlite";
   const configuredAgents: NonNullable<OpenClawConfig["agents"]> = {
     ownership: "explicit",
-    list: [{ id: "ops" }, { id: "research" }],
+    entries: { ops: {}, research: {} },
   };
   function announce(overrides: Partial<AnnouncementInput> = {}) {
     const requesterSessionKey = overrides.requesterSessionKey ?? "agent:eng:paperclip:issue:123";
@@ -1057,7 +1072,7 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
         session: { scope: "global" },
         agents: {
           ownership: "explicit",
-          list: [{ id: "ops" }, { id: "research" }],
+          entries: { ops: {}, research: {} },
         },
       },
       internalEvents: taskCompletionEvents({ childSessionId: "child-session-id" }),

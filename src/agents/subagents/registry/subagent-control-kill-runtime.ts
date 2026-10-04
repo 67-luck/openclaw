@@ -564,7 +564,7 @@ export async function mutateSubagentRunForKill(
         }
         readFailure = { error };
       }
-      // Runtime loading and admission draining yield. Fence the exact row before
+      // Admission draining yields. Fence the exact row before
       // touching session-owned queues so a successor cannot inherit an older kill.
       if (!isCurrent()) {
         return { killed: false, superseded: true };
@@ -578,16 +578,16 @@ export async function mutateSubagentRunForKill(
       if (!isCurrent()) {
         return { killed: false, superseded: true };
       }
-      const targetStateAfterRuntimeLoad = targetState();
-      if (targetStateAfterRuntimeLoad) {
-        const killedTarget = isKilledTarget(targetStateAfterRuntimeLoad);
+      const targetStateAfterAdmission = targetState();
+      if (targetStateAfterAdmission) {
+        const killedTarget = isKilledTarget(targetStateAfterAdmission);
         const claimedCurrentKill = killClaim !== undefined && killOwnerCurrent();
         if (killedTarget && (!killClaim || claimedCurrentKill)) {
           await markKilledBestEffort();
         }
         return {
           killed: killedTarget && claimedCurrentKill,
-          targetState: targetStateAfterRuntimeLoad,
+          targetState: targetStateAfterAdmission,
           ...(readFailure ? { error: formatErrorMessage(readFailure.error) } : {}),
         };
       }

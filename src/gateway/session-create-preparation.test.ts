@@ -114,9 +114,17 @@ describe("Gateway creation preparation", () => {
     },
   );
 
-  it.each(["canonical", "alias", "sessionId", "embedded"] as const)(
-    "rejects workspace preparation before allocation while %s owns active work",
-    async (identity) => {
+  it.each([
+    ["canonical", undefined],
+    ["alias", undefined],
+    ["sessionId", undefined],
+    ["embedded", undefined],
+    ["canonical", "sessionRoot"],
+    ["canonical", "spawnedCwd"],
+    ["canonical", "execNode"],
+  ] as const)(
+    "rejects active %s work before workspace allocation or direct binding (%s)",
+    async (identity, binding) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const key = "agent:main:main";
         const originalRoot = state.path("original");
@@ -174,7 +182,14 @@ describe("Gateway creation preparation", () => {
           value: { sessionRoot: destination, spawnedCwd: destination },
         }));
         try {
-          expect(await createGatewaySession({ ...common, prepareLifecycle })).toMatchObject({
+          expect(
+            await createGatewaySession({
+              ...common,
+              ...(binding
+                ? { [binding]: binding === "execNode" ? "selected-node" : destination }
+                : { prepareLifecycle }),
+            }),
+          ).toMatchObject({
             ok: false,
             error: { code: "UNAVAILABLE", message: expect.stringContaining("still active") },
           });
@@ -229,7 +244,6 @@ describe("Gateway creation preparation", () => {
       const entered = createDeferredCore();
       const rotate = createDeferredCore();
       const mutation = runSessionMutation({
-
         scope: target.storePath,
         identities: [key, first.entry.sessionId],
         run: async () => {

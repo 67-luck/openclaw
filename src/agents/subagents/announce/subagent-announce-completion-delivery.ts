@@ -60,6 +60,7 @@ export async function runAnnounceAgentCall(params: {
   delegatedToolPolicyHandoff?: SubagentCompletionToolHandoffRegistration;
   expectFinal?: boolean;
   onAccepted?: (payload: unknown) => void;
+  onExecutionStarted?: () => void;
   signal?: AbortSignal;
   timeoutMs?: number;
   isExecutionAllowed: () => boolean;
@@ -140,6 +141,7 @@ export async function runAnnounceAgentCall(params: {
           }
           // Execution can be observed before acceptance on an already-running replay.
           clearTimeout(timer);
+          params.onExecutionStarted?.();
           if (params.typing) {
             stopTyping ??= typingRuntime?.startRecoveryTyping?.({
               ...params.typing,

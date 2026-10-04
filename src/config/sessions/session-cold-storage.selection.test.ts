@@ -82,14 +82,30 @@ function expectHistoryUnchanged() {
 }
 
 it.each([
-  { name: "a newly admitted normalized logical key", protectsHistory: true },
-  { name: "an unrelated newly admitted key", protectsHistory: false },
-])("rechecks $name after worker selection without parent SQLite", async ({ protectsHistory }) => {
-  const ownerStorePath = protectsHistory ? state.statePath("selection.json") : aliasStorePath;
+  { name: "a newly admitted normalized logical key", change: "protected" },
+  { name: "an unrelated newly admitted key", change: "unrelated" },
+  { name: "revoked configuration", change: "configuration" },
+])("rechecks $name after worker selection without parent SQLite", async ({ change }) => {
+  const protectsHistory = change !== "unrelated";
+  const ownerStorePath =
+    change === "configuration"
+      ? fixture.scope.storePath
+      : protectsHistory
+        ? state.statePath("selection.json")
+        : aliasStorePath;
   const delayed = delayPreparation();
   const observer = observeParentSqlite();
+  const config = maintenanceConfig(ownerStorePath);
   const pending = runSessionColdStorageMaintenance({
-    config: maintenanceConfig(ownerStorePath),
+    config,
+    assertCurrent:
+      change === "configuration"
+        ? () => {
+            if (!config.session.maintenance.coldStorage.enabled) {
+              throw new Error("Cold maintenance configuration was revoked");
+            }
+          }
+        : undefined,
   });
   const outcome = pending.catch((error: unknown) => error);
   let admission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
@@ -108,7 +124,11 @@ it.each([
     });
     delayed.release.resolve();
     if (protectsHistory) {
-      await expect(pending).rejects.toThrow("Transcript became active");
+      await expect(pending).rejects.toThrow(
+        change === "configuration"
+          ? "Cold maintenance configuration was revoked"
+          : "Transcript became active",
+      );
       expect(
         delayed.worker.mock.calls.some(([params]) => params.expectedMessageType === "reclaimed"),
       ).toBe(false);
@@ -134,37 +154,6 @@ it.each([
       (await fs.stat(resolveSessionColdArchivePath(ownerStorePath, archive.archive_name))).size,
     ).toBe(archive.archive_bytes);
   }
-});
-
-it("refuses revoked configuration after preparation before dispatching a mutation", async () => {
-  const delayed = delayPreparation();
-  const config = maintenanceConfig(fixture.scope.storePath);
-  const pending = runSessionColdStorageMaintenance({
-    config,
-    assertCurrent: () => {
-      if (!config.session.maintenance.coldStorage.enabled) {
-        throw new Error("Cold maintenance configuration was revoked");
-      }
-    },
-  });
-  const outcome = pending.catch((error: unknown) => error);
-  try {
-    await awaitGateBeforeSettlement(
-      delayed.entered.promise,
-      pending,
-      "Cold selection was not dispatched",
-    );
-    config.session.maintenance.coldStorage.enabled = false;
-    delayed.release.resolve();
-    await expect(pending).rejects.toThrow("Cold maintenance configuration was revoked");
-    expect(
-      delayed.worker.mock.calls.some(([params]) => params.expectedMessageType === "reclaimed"),
-    ).toBe(false);
-  } finally {
-    delayed.release.resolve();
-    await outcome;
-  }
-  expectHistoryUnchanged();
 });
 
 it("propagates selection failure without a mutation or synchronous fallback", async () => {

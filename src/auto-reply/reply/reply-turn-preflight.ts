@@ -14,7 +14,7 @@ type ReplyTurnPreflightParams = Omit<
   | "onCompactionStart"
   | "onSessionIdChanged"
 > &
-  Pick<MemoryFlushParams, "opts" | "resolvedVerboseLevel" | "onVisibleErrorPayloads"> & {
+  Pick<MemoryFlushParams, "opts" | "resolvedVerboseLevel"> & {
     replyOperation: ReplyOperation;
     publishCheckpoint: (entry: SessionEntry | undefined) => void;
     trace?: <T>(phase: string, run: () => Promise<T>) => Promise<T>;

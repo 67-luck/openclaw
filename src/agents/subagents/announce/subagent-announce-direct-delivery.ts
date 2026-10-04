@@ -26,7 +26,8 @@ import {
   hasFailedSubagentNoOutputCompletion,
   hasVisibleCompletionResult,
 } from "../../internal-event-contract.js";
-import type { AgentInternalEvent } from "../../internal-events.js";
+import { buildAgentInternalEventContext, type AgentInternalEvent } from "../../internal-events.js";
+import { RUNTIME_EVENT_USER_PROMPT } from "../../internal-runtime-context.js";
 import type { GatewayToolCallerReceiptAdmission } from "../../tools/gateway-caller-receipt.types.js";
 import { resolveRequesterSessionActivity } from "./subagent-announce-active-wake.js";
 import {
@@ -88,6 +89,7 @@ export type SubagentAnnounceDirectParams = {
   requesterIsSubagent: boolean;
   onDeliveryResult?: (delivery: SubagentAnnounceDeliveryResult) => void | Promise<void>;
   signal?: AbortSignal;
+  onExecutionStarted?: () => void;
   resolveGatewayContext?: import("../../../gateway/server-methods/types.js").GatewayContextResolver;
   controllerInput?: SessionControllerInput;
 };
@@ -112,6 +114,10 @@ export async function sendSubagentAnnounceDirectly(
   const parentOnly = params.completionTarget === "parent";
   const cfg = getSubagentAnnounceRuntimeConfig();
   const announceTimeoutMs = resolveSubagentAnnounceTimeoutMs(cfg);
+  const runtimeContextFragments = buildAgentInternalEventContext(params.internalEvents);
+  const turnMessage = runtimeContextFragments.length
+    ? RUNTIME_EVENT_USER_PROMPT
+    : params.triggerMessage;
   const canonicalRequesterSessionKey = resolveRequesterStoreKey(
     cfg,
     params.targetRequesterSessionKey,
@@ -316,7 +322,7 @@ export async function sendSubagentAnnounceDirectly(
           }
         : {}),
       sessionKey: canonicalRequesterSessionKey,
-      message: params.triggerMessage,
+      message: turnMessage,
       deliver: shouldDeliverAgentFinal,
       bestEffortDeliver: params.bestEffortDeliver,
       internalEvents: params.internalEvents,
@@ -423,8 +429,9 @@ export async function sendSubagentAnnounceDirectly(
                     : undefined,
                 expectFinal: true,
                 signal: params.signal,
-                // Individual private delivery retains its cleanup owner until the
-                // lifecycle deadline; settle batches can observe and replay admission.
+                onExecutionStarted: params.onExecutionStarted,
+                // Individual private delivery uses the lifecycle window for admission;
+                // settle batches can observe and replay admission.
                 timeoutMs: parentOnly && isSubagentCompletion ? undefined : announceTimeoutMs,
                 isExecutionAllowed: isCompletionDeliveryAllowed,
                 isSourceSessionAdmissionAllowed:

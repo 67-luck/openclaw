@@ -59,7 +59,11 @@ import type {
   PreparedPatchTarget,
 } from "./sessions-patch-types.js";
 import { resolveSessionWorkerPlacementPatchError } from "./sessions-shared.js";
-import type { GatewayClient, GatewayRequestContext } from "./types.js";
+import type {
+  GatewayClient,
+  GatewayRequestContext,
+  SessionMutationAuthorization,
+} from "./types.js";
 import { preparePersonalModelSelection } from "./users-model-account-access.js";
 
 type PatchTargetIdentity = sessionUnreadAck.SessionPatchTargetIdentity;
@@ -72,6 +76,7 @@ export async function executeSessionPatchMutations(params: {
   context: GatewayRequestContext;
   diagnostics?: SessionPatchDiagnostics;
   operatorAuthority?: Promise<{ authority: AdmittedRunOperatorAuthority } | undefined>;
+  onCreatedSessionCommitted?: SessionMutationAuthorization["recordCreatedSession"];
   patch: Omit<SessionsPatchParams, keyof PatchTargetIdentity>;
   targets: readonly MutationTarget[];
 }): Promise<MutationCoreResult> {
@@ -303,6 +308,9 @@ export async function executeSessionPatchMutations(params: {
                     ...target.initialStoreKeys,
                   ]);
                   const archiveTransitions = new Map<number, ArchiveTransition>();
+                  const createdSessions: Parameters<
+                    NonNullable<SessionMutationAuthorization["recordCreatedSession"]>
+                  >[0][] = [];
                   const commitGuards = new Set<() => ErrorShape | undefined>();
                   const originalGuards = group.map(({ index }) =>
                     expectDefined(originalCommitGuards[index], "original patch guard"),
@@ -321,6 +329,7 @@ export async function executeSessionPatchMutations(params: {
                     admission: "admitted" | "detached",
                     catalogPreparation?: SessionPatchCatalogResult,
                   ): Promise<GroupMutationOperation> => {
+                    createdSessions.length = 0;
                     const workingStore = Object.fromEntries(
                       entries.flatMap(({ entry, sessionKey }) =>
                         isInternalSessionEffectsKey(sessionKey)
@@ -565,6 +574,15 @@ export async function executeSessionPatchMutations(params: {
                         });
                         if (replacement.replacement) {
                           replacements.push(replacement.replacement);
+                          if (!existingEntry && params.onCreatedSessionCommitted) {
+                            createdSessions.push({
+                              agentId: target.targetAgentId,
+                              sessionKey: primaryKey,
+                              storePath: target.storePath,
+                              sessionId: replacement.outcome.entry.sessionId,
+                              lifecycleRevision: replacement.outcome.entry.lifecycleRevision,
+                            });
+                          }
                         }
                         projectedOutcomes.push(replacement.outcome);
                       } catch (error) {
@@ -581,6 +599,11 @@ export async function executeSessionPatchMutations(params: {
                   };
                   const groupStore = {
                     ...(storage ? { env: storage.env, retainedExecution: storage.execution } : {}),
+                    onLifecycleCommitted: () => {
+                      for (const created of createdSessions) {
+                        params.onCreatedSessionCommitted?.(created);
+                      }
+                    },
                     afterCommitted: patchEffects.createSessionPatchCategoryRegistration(params),
                     assertCommitAllowed,
                     agentId: first.targetAgentId,

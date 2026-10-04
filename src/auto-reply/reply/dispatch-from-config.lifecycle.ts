@@ -4,7 +4,10 @@ import {
   isRestartRecoveryTombstone,
   isSessionWorkStartInvalidatedError,
 } from "../../config/sessions/lifecycle.js";
-import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import {
+  loadSessionEntryReadOnly,
+  patchSessionEntryCore,
+} from "../../config/sessions/session-accessor.js";
 import { isRecoverableTerminalSessionStatus } from "../../config/sessions/terminal-status.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -48,7 +51,6 @@ import {
   resolveDispatchResetAdmission,
   shouldLetSlackRoutedThreadBypassBusyReplyOperation,
 } from "./dispatch-from-config.context.js";
-import { loadSessionStoreEntry } from "./dispatch-from-config.runtime.js";
 import { createReplyTurnLedger } from "./dispatch-from-config.turn-ledger.js";
 import type { DispatchFromConfigParams } from "./dispatch-from-config.types.js";
 import { DispatchSessionRefreshRequiredError } from "./dispatch-session-refresh-error.js";
@@ -132,7 +134,7 @@ async function restoreArchivedDispatchSession(params: {
     identities: [sessionKey, snapshotSessionId],
     run: async () => {
       const scope = { sessionKey, storePath };
-      const currentEntry = loadSessionStoreEntry(scope);
+      const currentEntry = loadSessionEntryReadOnly(scope);
       if (!currentEntry || !canRestore(currentEntry)) {
         return currentEntry;
       }

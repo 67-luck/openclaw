@@ -652,7 +652,7 @@ async function mutateSessionAtMessage(
       if (action !== "fork") {
         clearSessionQueues(lifecycleIdentities);
       } else {
-        recordSessionCreated(cfg, {
+        await recordSessionCreated(cfg, {
           sessionKey: result.key,
           agentId: current.target.agentId,
           entry: result.entry,

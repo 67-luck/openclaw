@@ -170,6 +170,7 @@ type SubagentAnnounceFlowParams = {
   /** Exact source reserved synchronously by the durable registry handoff. */
   controllerInput?: SessionControllerInput;
   signal?: AbortSignal;
+  onExecutionStarted?: () => void;
   onDeliveryResult?: (delivery: SubagentAnnounceDeliveryResult) => void | Promise<void>;
   onBeforeDeleteChildSession?: () => boolean | Promise<boolean>;
   resolveGatewayContext?: import("../../../gateway/server-methods/types.js").GatewayContextResolver;
@@ -619,6 +620,7 @@ async function runSubagentAnnounceFlowBound(
       directIdempotencyKey,
       onDeliveryResult: reportDeliveryResult,
       signal: params.signal,
+      onExecutionStarted: params.onExecutionStarted,
       resolveGatewayContext: params.resolveGatewayContext,
       controllerInput: params.controllerInput,
     });
@@ -648,6 +650,7 @@ async function runSubagentAnnounceFlowBound(
     ) {
       await deleteSubagentSessionForCleanup({
         callGateway: callSubagentLifecycleGateway,
+        gatewayBinding: { resolveGatewayContext: params.resolveGatewayContext },
         prepareCurrent: prepareChildSessionEffects,
         isCurrent: childSessionEffectsAllowed,
         childSessionKey: params.childSessionKey,

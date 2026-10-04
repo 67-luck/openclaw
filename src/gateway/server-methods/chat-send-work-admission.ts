@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { err, ok } from "@openclaw/normalization-core/result";
+import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { hasPendingFollowupQueueWork } from "../../auto-reply/reply/queue/state.js";
 import type { SessionTranscriptTurnMutation } from "../../config/sessions/goals-operations.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
@@ -15,15 +17,159 @@ import {
 } from "../../sessions/session-controller.lifecycle.js";
 import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
 import type { registerChatAbortController } from "../chat-abort.js";
+import { ExpectedProfileMismatchError } from "../expected-profile.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
+import { PENDING_CHAT_SEND_DEDUPE_PREFIX } from "../server-shared.js";
 import { resolveOperatorSessionCreation } from "../session-creation-provenance.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { captureGatewayClientUploadCommitGuard } from "../upload-policy.js";
 import { formatForLog } from "../ws-log.js";
+import { readPreRegisteredRun } from "./chat-abort-authorization.js";
+import {
+  prepareChatSendRetryComparison,
+  resolveChatSendRequestConflict,
+  respondChatSendAdmissionError,
+  respondChatSendRetry,
+} from "./chat-send-pre-admission.js";
+import type { ChatSendPreAdmissionParams } from "./chat-send-pre-admission.types.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
-import type { PreparedChatSendSession } from "./chat-send-session.js";
-import type { GatewayRequestContext, GatewayRequestHandlerOptions } from "./types.js";
+import { readChatSendDedupeResponse } from "./chat-send-reservation.js";
+import type { ChatSendRetryComparison } from "./chat-send-retry-comparison.js";
+import { withCurrentChatSendSession, type PreparedChatSendSession } from "./chat-send-session.js";
+import type {
+  GatewayRequestContext,
+  GatewayRequestHandlerOptions,
+  SessionMutationAuthorization,
+} from "./types.js";
+
+/** Preparation returns facts; the caller consumes current retry ownership before reserving. */
+export function prepareChatSendAdmissionRetry(params: ChatSendPreAdmissionParams) {
+  try {
+    return prepareChatSendRetryComparison(params)?.catch((error: unknown) => ({ error }));
+  } catch (error) {
+    return { error };
+  }
+}
+
+export function consumeChatSendAdmissionRetry(
+  params: ChatSendPreAdmissionParams,
+  prepared: Awaited<ReturnType<typeof prepareChatSendAdmissionRetry>>,
+) {
+  try {
+    if (prepared && "error" in prepared) {
+      throw prepared.error;
+    }
+    const pending = readPreRegisteredRun({
+      key: params.session.pendingChatSendKey,
+      entry: params.context.dedupe.get(params.session.pendingChatSendKey),
+      keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
+    });
+    if (pending?.payload.goalFingerprint) {
+      params.respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "Run ID is reserved by a Goal request; use a new ID.",
+        ),
+      );
+      return false;
+    }
+    return !params.request.goalOperation && respondChatSendRetry(params, prepared)
+      ? false
+      : prepared;
+  } catch (error) {
+    if (error instanceof SessionMutationAuthorizationChangedError) {
+      throw error;
+    }
+    respondChatSendAdmissionError(error, params.respond);
+    return false;
+  }
+}
+
+/** An awaited retry comparison must return to current rows before admission can consume it. */
+export async function withCurrentChatSendRetry(
+  params: ChatSendPreAdmissionParams & {
+    session: PreparedChatSendSession;
+    withPreparedCurrent?: SessionMutationAuthorization["withPreparedCurrent"];
+  },
+  ownPendingAttemptId: string,
+  consume: (
+    session: Parameters<Parameters<typeof withCurrentChatSendSession>[0]["consume"]>[0],
+    comparison: ChatSendRetryComparison | undefined,
+  ) => void,
+) {
+  const withCurrent = <T>(read: (session: Parameters<typeof consume>[0]) => T) =>
+    withCurrentChatSendSession({
+      session: params.session,
+      getRuntimeConfig: params.context.getRuntimeConfig,
+      includeMembership: Boolean(params.withPreparedCurrent),
+      consume: (latest, membership, assertSourceCurrent) => {
+        const consumeCurrent = () => read(latest);
+        if (params.withPreparedCurrent) {
+          return params.withPreparedCurrent(
+            {
+              agentId: latest.agentId,
+              storePath: latest.storePath,
+              sessionKey: latest.canonicalKey,
+              entry: latest.entry,
+              readSource: latest.capturedReadSource,
+              members: membership.get(latest.legacyKey ?? latest.canonicalKey) ?? [],
+            },
+            consumeCurrent,
+            assertSourceCurrent,
+          );
+        }
+        assertSourceCurrent();
+        return consumeCurrent();
+      },
+    });
+  const pending = await withCurrent((session) => {
+    const comparison = prepareChatSendRetryComparison(
+      { ...params, session: { ...params.session, entry: session.entry } },
+      ownPendingAttemptId,
+    );
+    if (comparison) {
+      return observeChatSendWork(comparison);
+    }
+    consume(session, undefined);
+    return undefined;
+  });
+  if (pending) {
+    const comparison = await pending();
+    await withCurrent((session) => consume(session, comparison));
+  }
+}
+
+export function respondChatSendWorkAdmissionFailure(
+  params: ChatSendPreAdmissionParams,
+  error: unknown,
+  comparison?: ChatSendRetryComparison,
+) {
+  if (error instanceof ExpectedProfileMismatchError) {
+    throw error;
+  }
+  const { context, respond, session } = params;
+  const { clientRunId } = session;
+  try {
+    const conflict = resolveChatSendRequestConflict(params, comparison);
+    if (conflict) {
+      respond(false, undefined, conflict);
+      return;
+    }
+  } catch {
+    // Preserve the original refusal when no current comparison evidence is available.
+  }
+  const aborted =
+    context.chatRunState.hasAbortMarker(clientRunId) &&
+    readChatSendDedupeResponse(context.dedupe, clientRunId);
+  if (aborted) {
+    respond(aborted.ok, aborted.payload, aborted.error, { cached: true, runId: clientRunId });
+    return;
+  }
+  respondChatSendAdmissionError(error, respond);
+}
 
 /** New input is checked only after the chat owner has reconciled prior receipts. */
 export function admitChatSendUploads({
@@ -32,14 +178,15 @@ export function admitChatSendUploads({
   context,
   respond,
 }: Pick<GatewayRequestHandlerOptions, "params" | "client" | "context" | "respond">) {
-  const assertClientUploadAllowed = captureGatewayClientUploadCommitGuard({
-    method: "chat.send",
-    requestParams: params,
-    client,
-    context,
-  });
   try {
+    const assertClientUploadAllowed = captureGatewayClientUploadCommitGuard({
+      method: "chat.send",
+      requestParams: params,
+      client,
+      context,
+    });
     assertClientUploadAllowed?.();
+    return { ok: true as const, assertClientUploadAllowed };
   } catch (error) {
     if (!(error instanceof SessionMutationAuthorizationChangedError)) {
       throw error;
@@ -47,7 +194,6 @@ export function admitChatSendUploads({
     respond(false, undefined, error.error);
     return { ok: false as const };
   }
-  return { ok: true as const, assertClientUploadAllowed };
 }
 
 /** Caller and physical target custody end together when admitted work settles. */
@@ -67,6 +213,18 @@ export function releaseChatSendCallerAuthority(params: {
       params.session.releaseSessionTarget();
     }
   }
+}
+
+/** Observe started work before the retained read releases; consuming still rethrows its error. */
+export function observeChatSendWork<T>(work: Promise<T>): () => Promise<T> {
+  const outcome = work.then(ok<T, unknown>, err<T, unknown>);
+  return async () => {
+    const result = await outcome;
+    if (!result.ok) {
+      throw result.error;
+    }
+    return result.value;
+  };
 }
 
 /** Retain the caller before an interrupt can change session state. */

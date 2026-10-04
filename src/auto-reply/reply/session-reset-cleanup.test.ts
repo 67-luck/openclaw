@@ -30,7 +30,7 @@ afterEach(() => {
 describe("clearSessionResetRuntimeState", () => {
   it("disposes prompt projections with the archived session", () => {
     const state = getEmbeddedSessionPromptState("old-session");
-    state.sentUserTurnIds.add("sent-user-turn");
+    state.toolResults.frozen.add("sent-tool-result");
 
     clearSessionResetRuntimeState(["old-session"], {
       agentId: "main",

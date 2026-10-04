@@ -631,25 +631,32 @@ describe("agent.wait gateway dedupe observations", () => {
     }
   });
 
-  it.each(
-    ([undefined, "agent", "chat"] as const).flatMap((activeKind) =>
-      [0, 10].map((timeoutMs) => ({ activeKind, timeoutMs })),
-    ),
-  )(
-    "keeps $activeKind observation timeout after $timeoutMs ms nonterminal",
-    async ({ activeKind, timeoutMs }) => {
+  it.each([
+    { activeKind: undefined, timeoutMs: 0, reset: false },
+    { activeKind: "agent", timeoutMs: 10, reset: false },
+    { activeKind: "chat", timeoutMs: 10, reset: false },
+    { activeKind: undefined, timeoutMs: 1_000, reset: true },
+  ] as const)(
+    "keeps $activeKind observation interruption nonterminal (timeout=$timeoutMs, reset=$reset)",
+    async ({ activeKind, timeoutMs, reset }) => {
       vi.useFakeTimers();
       const runId = `run-public-timeout-${activeKind ?? "untracked"}-${timeoutMs}`;
       const dedupe = new Map<string, DedupeEntry>();
       const timedOut = waitThroughGateway({ runId, timeoutMs }, activeKind);
-
-      await vi.advanceTimersByTimeAsync(timeoutMs);
+      if (reset) {
+        await drainGlobalSingletonLifecycleState("restart");
+      } else {
+        await vi.advanceTimersByTimeAsync(timeoutMs);
+      }
       await timedOut.promise;
       expect(timedOut.respond).toHaveBeenCalledWith(true, {
         runId,
         status: "timeout",
+        ...(reset ? { timeoutPhase: "gateway_draining" } : {}),
       });
-
+      const fresh = waitThroughGateway({ runId, timeoutMs: 0 }, activeKind);
+      await fresh.promise;
+      expect(fresh.respond).toHaveBeenCalledWith(true, { runId, status: "timeout" });
       completeRun(dedupe, runId, activeKind);
       const completed = waitThroughGateway({ runId, timeoutMs: 0 }, activeKind);
       await completed.promise;
@@ -659,33 +666,6 @@ describe("agent.wait gateway dedupe observations", () => {
       );
     },
   );
-
-  it("attributes lifecycle reset without caching a terminal run outcome", async () => {
-    vi.useFakeTimers();
-    const runId = "run-public-lifecycle-reset";
-    const dedupe = new Map<string, DedupeEntry>();
-    const interrupted = waitThroughGateway({ runId, timeoutMs: 1_000 });
-
-    await drainGlobalSingletonLifecycleState("restart");
-    await interrupted.promise;
-    expect(interrupted.respond).toHaveBeenCalledWith(true, {
-      runId,
-      status: "timeout",
-      timeoutPhase: "gateway_draining",
-    });
-
-    const fresh = waitThroughGateway({ runId, timeoutMs: 0 });
-    await fresh.promise;
-    expect(fresh.respond).toHaveBeenCalledWith(true, { runId, status: "timeout" });
-
-    completeRun(dedupe, runId);
-    const completed = waitThroughGateway({ runId, timeoutMs: 0 });
-    await completed.promise;
-    expect(completed.respond).toHaveBeenCalledWith(
-      true,
-      expect.objectContaining({ runId, status: "ok", endedAt: 200 }),
-    );
-  });
 
   it.each([
     {

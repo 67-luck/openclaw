@@ -70,14 +70,20 @@ function startOperation(sessionKey: string, sessionId = "active-session") {
 
 describe("dispatch active command admission", () => {
   it.each([
-    { source: "native", body: "/help", commandName: "help" },
-    { source: "text", body: "/status", commandName: "status" },
-    { source: "native", body: "/status", commandName: "status" },
+    { source: "text", target: false },
+    { source: "native", target: false },
+    { source: "native", target: true },
   ] as const)(
-    "delivers authorized $source $body while its session operation is active",
-    async ({ source, body, commandName }) => {
-      const sessionKey = "agent:main:command-reply-active";
-      const activeOperation = startOperation(sessionKey);
+    "delivers authorized $source /status beside an active operation (separate target: $target)",
+    async ({ source, target }) => {
+      const sessionKey = target
+        ? "agent:main:telegram:group:status-target"
+        : "agent:main:command-reply-active";
+      const sourceSessionKey = target ? "agent:main:telegram:slash:user-auth" : sessionKey;
+      const activeOperation = startOperation(
+        sessionKey,
+        target ? "status-target-active-session" : undefined,
+      );
       onTestFinished(() => activeOperation.complete());
       const waitingForActive = createDeferred<{ status: "waiting_for_active" }>();
       const waitForIdle = controllerWait.waitForSessionRunIdle;
@@ -88,12 +94,19 @@ describe("dispatch active command admission", () => {
         return waitForIdle(key, ...args);
       });
 
-      const acknowledgement = { text: "Command completed." };
-      const replyResolver = vi.fn(async () => markCommandReplyForDelivery(acknowledgement));
+      const acknowledgement = {
+        text: target ? "🧠 Model: mock | ⚙️ Status: ok" : "Command completed.",
+      };
+      const replyResolver = vi.fn(async () =>
+        target ? acknowledgement : markCommandReplyForDelivery(acknowledgement),
+      );
       const dispatcher = createDispatcher();
       const dispatchPromise = dispatchReplyFromConfig({
-        ctx: commandContext(source, body, commandName, {
-          SessionKey: sessionKey,
+        ctx: commandContext(source, "/status", "status", {
+          SessionKey: sourceSessionKey,
+          ...(target
+            ? { Provider: "telegram", Surface: "telegram", CommandTargetSessionKey: sessionKey }
+            : {}),
         }),
         cfg: structuredClone(cfg),
         dispatcher,

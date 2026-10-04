@@ -584,6 +584,8 @@ export const startSubagentAnnounceCleanupFlow = (
             ...announceParams,
             childAgentId: entry.childAgentId,
             signal: deadline.signal,
+            // Delivery expiry bounds admission; the requester owns its execution budget.
+            onExecutionStarted: () => clearTimeout(deadlineTimer),
           }),
         );
       } catch (error) {

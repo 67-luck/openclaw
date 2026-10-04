@@ -367,7 +367,7 @@ export function createDiagnosticEmbeddedRunOwner(params: {
     sessionId: params.sessionId,
     ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
     ...(params.runId ? { runId: params.runId } : {}),
-    workKey: resolveEmbeddedRunWorkKey(params),
+    workKey: params.workKey ?? params.sessionId,
   });
 }
 
@@ -391,7 +391,7 @@ export function markDiagnosticEmbeddedRunStarted(params: {
     clearArgumentChurnActivity(activity, { runId: ownerRunId });
   }
   clearArgumentChurnPolicyWaits(activity);
-  const workKey = resolveEmbeddedRunWorkKey(params);
+  const workKey = params.workKey ?? params.sessionId;
   const existing = activity.activeEmbeddedRuns.get(workKey);
   if (existing && existing.runId !== ownerRunId) {
     embeddedRunIndex.remove(activity, workKey);
@@ -457,7 +457,7 @@ export function markDiagnosticEmbeddedRunEnded(params: {
   if (!activity) {
     return;
   }
-  embeddedRunIndex.remove(activity, resolveEmbeddedRunWorkKey(params));
+  embeddedRunIndex.remove(activity, params.workKey ?? params.sessionId);
   if (params.clearRunActivity !== false) {
     activity.activeTools.clear();
     activity.activeModelCalls.clear();
@@ -468,10 +468,6 @@ export function markDiagnosticEmbeddedRunEnded(params: {
     clearArgumentChurnPolicyWaits(activity);
   }
   touchSessionActivity(activity, "embedded_run:ended"); // Retained retry evidence is inert here.
-}
-
-function resolveEmbeddedRunWorkKey(params: { sessionId: string; workKey?: string }): string {
-  return params.workKey ?? params.sessionId;
 }
 
 export function getDiagnosticSessionActivitySnapshot(
@@ -494,41 +490,31 @@ export function getDiagnosticSessionActivitySnapshot(
     return {};
   }
 
-  let activeBackendLivenessDeadlineAtMs: number | undefined;
-  let activeRetryWaitDeadlineAtMs: number | undefined;
+  const deadlines: Pick<
+    DiagnosticSessionActivitySnapshot,
+    "activeBackendLivenessDeadlineAtMs" | "activeRetryWaitDeadlineAtMs"
+  > = {};
   for (const embeddedRun of activity.activeEmbeddedRuns.values()) {
     const registration = embeddedRun.generation
       ? activeDiagnosticOwners.get(embeddedRun.generation)
       : undefined;
-    const retryWait = registration?.retryWait;
-    if (
-      registration &&
-      retryWait &&
-      resolveCurrentDiagnosticOwner(registration.owner, retryWait.assertCurrent) === registration &&
-      registration.activity === activity &&
-      registration.retryWait === retryWait
-    ) {
-      activeRetryWaitDeadlineAtMs = Math.max(
-        activeRetryWaitDeadlineAtMs ?? retryWait.deadlineAtMs,
-        retryWait.deadlineAtMs,
-      );
+    for (const [kind, field] of [
+      ["retryWait", "activeRetryWaitDeadlineAtMs"],
+      ["backendActivity", "activeBackendLivenessDeadlineAtMs"],
+    ] as const) {
+      const owned = registration?.[kind];
+      if (
+        registration &&
+        owned &&
+        resolveCurrentDiagnosticOwner(registration.owner, owned.assertCurrent) === registration &&
+        registration.activity === activity &&
+        registration[kind] === owned
+      ) {
+        deadlines[field] = Math.max(deadlines[field] ?? owned.deadlineAtMs, owned.deadlineAtMs);
+      }
     }
-    const backendActivity = registration?.backendActivity;
-    if (
-      !registration ||
-      !backendActivity ||
-      resolveCurrentDiagnosticOwner(registration.owner, backendActivity.assertCurrent) !==
-        registration ||
-      registration.activity !== activity ||
-      registration.backendActivity !== backendActivity
-    ) {
-      continue;
-    }
-    activeBackendLivenessDeadlineAtMs = Math.max(
-      activeBackendLivenessDeadlineAtMs ?? backendActivity.deadlineAtMs,
-      backendActivity.deadlineAtMs,
-    );
   }
+  const { activeBackendLivenessDeadlineAtMs, activeRetryWaitDeadlineAtMs } = deadlines;
   return {
     ...buildDiagnosticSessionActivitySnapshot(activity, now),
     ...(activeBackendLivenessDeadlineAtMs !== undefined

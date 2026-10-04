@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { isImplicitAcpWorkspaceCandidate } from "../../agents/agent-scope-config.js";
 import {
@@ -20,7 +19,7 @@ import {
   WorkspaceAliasRepointedError,
   WorkspaceVanishedError,
 } from "../../agents/workspace-state-identity.js";
-import { DEFAULT_AGENT_WORKSPACE_DIR, ensureAgentWorkspace } from "../../agents/workspace.js";
+import { DEFAULT_AGENT_WORKSPACE_DIR } from "../../agents/workspace.js";
 import { resolveChannelModelOverride } from "../../channels/model-overrides.js";
 import { type OpenClawConfig, getRuntimeConfig } from "../../config/config.js";
 import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
@@ -101,6 +100,7 @@ import {
 import { assertReplyPreprocessingActive } from "./reply-preprocessing-abort.js";
 import { prepareReplySourceInput, retireUnadoptedReplySource } from "./reply-source-binding.js";
 import { createReplyTimingTracker, isReplyProfilerEnabled } from "./reply-timing-tracker.js";
+import { prepareReplyWorkspace } from "./reply-workspace.js";
 import { prepareReplySessionDiffBaseline } from "./session-diff-baseline.js";
 import { SessionResetCleanupError } from "./session-reset-cleanup.js";
 import { initSessionState, resolveReplySessionPreprocessingState } from "./session.js";
@@ -111,16 +111,10 @@ import { createTypingController } from "./typing.js";
 
 type ResetCommandAction = "new" | "reset";
 
-const sessionResetModelRuntimeLoader = createLazyImportLoader(
-  () => import("./session-reset-model.runtime.js"),
-);
 const stageSandboxMediaRuntimeLoader = createLazyImportLoader(
   () => import("./stage-sandbox-media.runtime.js"),
 );
 const replyResolverTimingLog = createSubsystemLogger("auto-reply/reply-resolver-timing");
-const commandsCoreRuntimeLoader = createLazyImportLoader(
-  () => import("./commands-core.runtime.js"),
-);
 
 /** Marks a refused command's empty response as an intentional non-reply. */
 function finishCommandTurn(params: {
@@ -379,19 +373,18 @@ export async function getReplyFromConfig(
         })
       : { cfg, agentId, ...(agentSessionKey ? { sessionKey: agentSessionKey } : {}) };
 
-    let workspace: Awaited<ReturnType<typeof ensureAgentWorkspace>>;
+    let workspace: Awaited<ReturnType<typeof prepareReplyWorkspace>>;
     try {
-      workspace = await traceGetReplyPhase("reply.ensure_workspace", async () =>
-        useFastTestBootstrap
-          ? (await fs.mkdir(workspaceDirRaw, { recursive: true }), { dir: workspaceDirRaw })
-          : await ensureAgentWorkspace({
-              dir: workspaceDirRaw,
-              ensureBootstrapFiles: !agentCfg?.skipBootstrap && !isFastTestEnv,
-              skipOptionalBootstrapFiles: agentCfg?.skipOptionalBootstrapFiles,
-              provisioning: await (
-                await import("../../agents/acp-workspace-provisioning.js")
-              ).resolveAcpAgentWorkspaceProvisioningForTurn(acpWorkspaceProvisioningInput),
-            }),
+      workspace = await traceGetReplyPhase("reply.ensure_workspace", () =>
+        prepareReplyWorkspace({
+          dir: workspaceDirRaw,
+          ensureBootstrapFiles: !agentCfg?.skipBootstrap && !isFastTestEnv,
+          skipOptionalBootstrapFiles: agentCfg?.skipOptionalBootstrapFiles,
+          useFastTestBootstrap,
+          provisioningInput: acpWorkspaceProvisioningInput,
+          abortSignal: optsWithSkillFilter?.abortSignal,
+          operatorAuthority: optsWithSkillFilter?.operatorAuthority,
+        }),
       );
     } catch (error) {
       if (
@@ -412,19 +405,47 @@ export async function getReplyFromConfig(
     }
     const workspaceDir = workspace.dir;
 
-    if (
+    const remoteMediaNeedsStaging =
       !isFastTestEnv &&
       !inboundMediaWasAlreadyStaged &&
       normalizeOptionalString(finalized.MediaRemoteHost) &&
-      hasInboundMedia(finalized)
-    ) {
+      hasInboundMedia(finalized);
+    const remoteMediaSessionState = remoteMediaNeedsStaging
+      ? await resolveReplySessionPreprocessingState({ ctx: finalized, cfg })
+      : undefined;
+    if (remoteMediaSessionState) {
+      const entry = remoteMediaSessionState.sessionEntry;
+      const selectedSkills =
+        entry?.skillLibrarySelections ??
+        entry?.skillsSnapshot?.librarySelections ??
+        finalized.SessionCreation?.skillLibrarySelections;
+      // This write precedes session initialization and media understanding. Give
+      // it the same private-skill isolation identity as the admitted run.
+      const stagingSkillsSnapshot = selectedSkills?.length
+        ? (
+            await (
+              await import("../../skills/runtime/session-snapshot.js")
+            ).resolveReusableWorkspaceSkillSnapshot({
+              workspaceDir,
+              executionWorkspaceDir: entry?.worktree?.canonicalWorkspaceDir ?? workspaceDir,
+              config: cfg,
+              agentId,
+              existingSnapshot: entry?.skillsSnapshot,
+              librarySelections: selectedSkills,
+              skillFilter: mergedSkillFilter,
+              skillOverrides: entry?.toolOverrides?.skills,
+            })
+          ).snapshot
+        : undefined;
+      assertReplyPreprocessingActive(optsWithSkillFilter?.abortSignal);
       await traceGetReplyPhase("reply.stage_remote_media_pre_understanding", () =>
         stageRemoteInboundMediaIfNeeded({
           ctx: finalized,
           cfg,
           agentId,
-          sessionKey: agentSessionKey,
+          sessionKey: remoteMediaSessionState.sessionKey,
           workspaceDir,
+          skillsSnapshot: stagingSkillsSnapshot,
           abortSignal: optsWithSkillFilter?.abortSignal,
         }),
       );
@@ -435,9 +456,10 @@ export async function getReplyFromConfig(
     const linkUnderstandingRequested = !isFastTestEnv && hasLinkCandidate(finalized);
     const preprocessingState =
       mediaUnderstandingRequested || linkUnderstandingRequested
-        ? await traceGetReplyPhase("reply.resolve_session_preprocessing_state", () =>
+        ? (remoteMediaSessionState ??
+          (await traceGetReplyPhase("reply.resolve_session_preprocessing_state", () =>
             resolveReplySessionPreprocessingState({ ctx: finalized, cfg }),
-          )
+          )))
         : undefined;
     assertReplyPreprocessingActive(optsWithSkillFilter?.abortSignal);
     const utilityModelSelectionLocked = isModelSelectionLocked(preprocessingState?.sessionEntry);
@@ -637,7 +659,7 @@ export async function getReplyFromConfig(
     }
 
     if (resetTriggered && normalizeOptionalString(bodyStripped)) {
-      const { applyResetModelOverride } = await sessionResetModelRuntimeLoader.load();
+      const { applyResetModelOverride } = await import("./session-reset-model.runtime.js");
       try {
         await applyResetModelOverride({
           cfg,
@@ -853,7 +875,7 @@ export async function getReplyFromConfig(
       if (!resetMatch) {
         return;
       }
-      const { emitResetCommandHooks } = await commandsCoreRuntimeLoader.load();
+      const { emitResetCommandHooks } = await import("./commands-core.runtime.js");
       const action: ResetCommandAction = resetMatch[1]?.toLowerCase() === "reset" ? "reset" : "new";
       await emitResetCommandHooks({
         action,
@@ -1021,12 +1043,37 @@ export async function getReplyFromConfig(
       hasInboundMedia(ctx)
     ) {
       const { stageSandboxMedia } = await stageSandboxMediaRuntimeLoader.load();
+      const stagingSessionEntry =
+        sessionEntryHandle?.getCurrent() ?? sessionStore?.[sessionKey] ?? sessionEntry;
       const stagingWorkspaceDir =
         resolveIngressWorkspaceOverrideForSessionRun({
-          spawnedBy: sessionEntry.spawnedBy,
-          workspaceDir: sessionEntry.spawnedWorkspaceDir,
-          cwd: sessionEntry.spawnedCwd,
+          spawnedBy: stagingSessionEntry.spawnedBy,
+          workspaceDir: stagingSessionEntry.spawnedWorkspaceDir,
+          cwd: stagingSessionEntry.spawnedCwd,
         }) ?? workspaceDir;
+      // Private library selections change the sandbox isolation identity. Resolve
+      // the current selection before staging so the attachment and admitted run
+      // select the same SSH runtime, even when a prior snapshot needs refreshing.
+      const selectedSkills =
+        stagingSessionEntry.skillLibrarySelections ??
+        stagingSessionEntry.skillsSnapshot?.librarySelections;
+      const stagingSkillsSnapshot = selectedSkills?.length
+        ? (
+            await (
+              await import("../../skills/runtime/session-snapshot.js")
+            ).resolveReusableWorkspaceSkillSnapshot({
+              workspaceDir,
+              executionWorkspaceDir:
+                stagingSessionEntry.worktree?.canonicalWorkspaceDir ?? workspaceDir,
+              config: cfg,
+              agentId,
+              existingSnapshot: stagingSessionEntry.skillsSnapshot,
+              librarySelections: selectedSkills,
+              skillFilter: preparedReplyOpts?.skillFilter,
+              skillOverrides: preparedReplyOpts?.skillOverrides,
+            })
+          ).snapshot
+        : undefined;
       const stageResult = await traceGetReplyPhase("reply.stage_media", () =>
         stageSandboxMedia({
           ctx,
@@ -1035,6 +1082,7 @@ export async function getReplyFromConfig(
           agentId,
           sessionKey,
           workspaceDir: stagingWorkspaceDir,
+          skillsSnapshot: stagingSkillsSnapshot,
           abortSignal: optsWithSkillFilter?.abortSignal,
         }),
       );

@@ -14,7 +14,9 @@ import { tryPrepareFreshManagerRuntimeSession } from "../acp/control-plane/manag
 import { getAcpRuntimeBackend } from "../acp/runtime/registry.js";
 import { buildAcpDatabaseSessionKey } from "../acp/runtime/session-meta-keys.js";
 import { writeAcpSessionMetaForMigration } from "../acp/runtime/session-meta.js";
+import { retireSessionMcpRuntime } from "../agents/agent-bundle-mcp-tools.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
+import { clearFinishedSessionsForScopes } from "../agents/bash-process-registry.js";
 import {
   clearBootstrapSnapshot,
   clearBootstrapSnapshotOnSessionBoundary,
@@ -161,11 +163,6 @@ async function ensureSessionRuntimeCleanup(params: {
       : undefined,
     assertCurrent: params.assertCurrent,
   });
-  // Cleanup needs the active-run owner, not the runner and compaction orchestration.
-  const [mcpTools, { clearFinishedSessionsForScopes }] = await Promise.all([
-    import("../agents/agent-bundle-mcp-tools.js"),
-    import("../agents/bash-process-registry.js"),
-  ]);
   const closeTrackedBrowserTabs = async () => {
     assertCurrent();
     const closeKeys = new Set<string>([
@@ -224,7 +221,7 @@ async function ensureSessionRuntimeCleanup(params: {
     }
   };
   const retireMcpRuntime = async (retainAcrossReuse: boolean) => {
-    await mcpTools.retireSessionMcpRuntime({
+    await retireSessionMcpRuntime({
       sessionId,
       reason: "gateway-session-cleanup",
       preserveActiveLeases: true,
@@ -1190,7 +1187,7 @@ export async function performGatewaySessionReset(params: {
             }
             return nextEntry;
           },
-          afterEntryMutation: (mutation) => {
+          afterEntryMutation: async (mutation) => {
             if (resetSkipped) {
               return;
             }
@@ -1289,7 +1286,7 @@ export async function performGatewaySessionReset(params: {
               sessionKey: target.canonicalKey ?? params.key,
             });
             if (createdNewEntry) {
-              recordSessionCreated(cfg, {
+              await recordSessionCreated(cfg, {
                 sessionKey: target.canonicalKey ?? params.key,
                 agentId,
                 entry: mutation.nextEntry,

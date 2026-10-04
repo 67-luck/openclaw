@@ -215,7 +215,7 @@ describe("resolveReplySessionPreprocessingState", () => {
     expect(
       await resolveReplySessionPreprocessingState({
         cfg: {
-          agents: { list: [{ id: "ops", default: true }] },
+          agents: { entries: { ops: {} } },
           session: { store: storePath, mainKey: "work" },
         },
         ctx: finalizeInboundContext({
@@ -395,7 +395,7 @@ describe("initSessionState guarded initialization", () => {
         await expect(
           initSessionState({
             cfg: {
-              agents: { list: [{ id: "main", default: true }, { id: agentId }] },
+              agents: { entries: { main: {}, [agentId]: {} } },
               session: { store: path.join(stateDir, "durable", "{agentId}", "sessions.json") },
             } as OpenClawConfig,
             ctx: {
@@ -983,7 +983,7 @@ describe("initSessionState thread forking", () => {
     });
     sessionForkMocks.forkSessionFromParent.mockResolvedValueOnce(undefined);
     const promptState = getEmbeddedSessionPromptState(threadSessionKey);
-    promptState.sentUserTurnIds.add("retained-turn");
+    promptState.toolResults.frozen.add("retained-tool-result");
     const cancel = vi.fn();
     const activeReply = createReplyOperation({
       sessionKey: threadSessionKey,
@@ -1021,7 +1021,7 @@ describe("initSessionState thread forking", () => {
         mainRestartRecovery: { tombstone: { reason: "old transcript exhausted" } },
       });
       expect(getEmbeddedSessionPromptState(threadSessionKey)).toBe(promptState);
-      expect(promptState.sentUserTurnIds).toContain("retained-turn");
+      expect(promptState.toolResults.frozen).toContain("retained-tool-result");
       expect(getFollowupQueueDepth(threadSessionKey)).toBe(1);
       expect(peekSystemEvents(threadSessionKey)).toEqual(["retained event"]);
       expect(getSessionControllerOperation(threadSessionKey)).toBe(activeReply);

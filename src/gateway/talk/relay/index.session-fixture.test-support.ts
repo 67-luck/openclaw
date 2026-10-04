@@ -21,7 +21,7 @@ export function createRelaySessionFixture(activeRelaySessions: Map<string, strin
       tools = [],
       ...request
     } = params;
-    const cfg = params.cfg ?? { agents: { entries: { main: { default: true } } } };
+    const cfg = params.cfg ?? { agents: { entries: { main: {} } } };
     const capabilities = resolveRealtimeVoiceProviderCapabilities({
       provider: params.provider,
       providerConfig,

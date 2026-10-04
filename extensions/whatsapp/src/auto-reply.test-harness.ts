@@ -132,12 +132,9 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
   isSessionRunActive: vi.fn().mockReturnValue(false),
   isSessionNativeAttemptStreaming: vi.fn().mockReturnValue(false),
   resolveAgentIdentity: (
-    cfg: { agents?: { list?: Array<{ id: string; identity?: unknown }> } },
+    cfg: { agents?: { entries?: Record<string, { identity?: unknown }> } },
     agentId: string,
-  ) =>
-    cfg.agents?.list?.find(
-      (entry) => entry.id.trim().toLowerCase() === agentId.trim().toLowerCase(),
-    )?.identity,
+  ) => cfg.agents?.entries?.[agentId.trim().toLowerCase()]?.identity,
   resolveIdentityNamePrefix: (cfg: { messages?: { responsePrefix?: string } }, _agentId: string) =>
     cfg.messages?.responsePrefix,
   runEmbeddedAgent: vi.fn(),

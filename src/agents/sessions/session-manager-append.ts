@@ -8,6 +8,7 @@ import {
   prepareTranscriptMessageAppend,
   prepareTranscriptMessageAppendForWorker,
 } from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
+import { transcriptEventContextEligibility } from "../../config/sessions/session-transcript-projection-append.js";
 import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { applyAssistantDeliveryDirectives } from "../../config/sessions/transcript-assistant-delivery.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
@@ -33,7 +34,10 @@ import {
   type PersistRecordResult,
   type PersistWorkerRecordResult,
 } from "./session-manager-persistence-entry.js";
-import { isSqliteTranscriptMutationConflict } from "./session-manager-persistence-error.js";
+import {
+  isSqliteTranscriptMutationConflict,
+  SessionManagerActorCommittedError,
+} from "./session-manager-persistence-error.js";
 import { SessionManagerSuffixPersistence } from "./session-manager-suffix-persistence.js";
 import type {
   AppendPersistenceOptions,
@@ -72,6 +76,7 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
       if (
         !admission ||
         (isIncognitoSessionKey(this.persistenceTarget?.sessionKey) &&
+          "db" in admission.database &&
           !(canonical.type === "compaction" && persistCompaction))
       ) {
         // Incognito retains its host-owned store until actor activation; detached views do not write.
@@ -288,6 +293,9 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
     appended: boolean;
     viewWasSuperseded?: true;
   } {
+    if (committed.viewFailure instanceof SessionManagerActorCommittedError) {
+      throw committed.viewFailure;
+    }
     if (this.hasNewerPublishedTranscriptView(committed.committedVersion)) {
       if (
         committed.result?.adoptedMessageId &&
@@ -373,6 +381,28 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
         this.adoptPreparedTranscriptReload(preparedReload);
       } else {
         this.reloadPersistedTranscriptSync();
+      }
+    } else if (
+      this.boundedContextIncomplete &&
+      transcriptEventContextEligibility(canonicalEntry) === 0
+    ) {
+      // Match bounded hydration: SQLite owns display payloads; only the tail's ancestry is live.
+      const parentId =
+        !isSessionTranscriptSideAppendEntry(canonicalEntry) &&
+        canonicalEntry.parentId === this.appendParentId &&
+        this.leafId !== this.appendParentId
+          ? this.leafId
+          : this.resolveCanonicalParentId(canonicalEntry.parentId);
+      if (this.appendParentId && this.appendParentId !== this.leafId && !this.appendMode) {
+        this.opaqueParentsById.delete(this.appendParentId);
+      }
+      this.opaqueParentsById.set(canonicalEntry.id, parentId);
+      this.appendParentId = canonicalEntry.id;
+      if (isSessionTranscriptSideAppendEntry(canonicalEntry)) {
+        this.appendMode = "side";
+      } else {
+        this.leafId = parentId;
+        this.appendMode = undefined;
       }
     } else {
       if (

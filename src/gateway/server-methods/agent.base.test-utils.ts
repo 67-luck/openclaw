@@ -1247,7 +1247,7 @@ describe("gateway agent handler", () => {
   it("uses the freshest alias when checking archive state before migration", async () => {
     const cfg = {
       session: { mainKey: "work" },
-      agents: { list: [{ id: "main", default: true }] },
+      agents: { entries: { main: {} } },
     };
     mocks.loadConfigReturn = cfg;
     mocks.loadSessionEntry.mockReturnValue({

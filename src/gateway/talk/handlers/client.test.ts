@@ -1,12 +1,13 @@
-import { AsyncResource } from "node:async_hooks";
 import fs from "node:fs/promises";
-import { IncomingMessage, ServerResponse } from "node:http";
-import { Socket } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../../../test/helpers/promise.js";
 import {
   loadSessionEntry,
   readSessionTranscriptMessageEvents,
@@ -38,7 +39,6 @@ import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.te
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
 import type { GatewayRequestHandlerOptions } from "../../server-methods/types.js";
-import { runWithGatewayHttpWorkAdmission } from "../../server/http-work-admission.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
 import { cleanupTalkConnection } from "../session-registry.js";
@@ -50,6 +50,7 @@ import {
 } from "../voice-selection.js";
 import { createTalkClient } from "./client-create.js";
 import { readLegacyVoiceBinding } from "./client-legacy-voice-bindings.js";
+import { createTalkClientOfferFixture } from "./client-offer.test-support.js";
 import { talkClientHandlers } from "./client.js";
 
 const voiceMocks = vi.hoisted(() => ({
@@ -84,7 +85,7 @@ const sessionKey = "agent:main:main";
 const sessionId = "voice-transcript-session";
 let tempDir: string;
 let ownedVoiceSessionId: string | undefined;
-const offerResources: AsyncResource[] = [];
+const { completeOffer, disposeResources } = createTalkClientOfferFixture();
 type BrowserRequest = Parameters<
   NonNullable<
     import("../../../plugins/types.js").RealtimeVoiceProviderPlugin["createBrowserSession"]
@@ -193,24 +194,6 @@ async function createBrowserConsult() {
     throw new Error("Expected a Gateway-owned browser consult callback");
   }
   return { ...fixture, consult };
-}
-
-async function completeOffer(run?: (resource: AsyncResource) => Promise<void>) {
-  const socket = new Socket();
-  const res = new ServerResponse(new IncomingMessage(socket));
-  let resource!: AsyncResource;
-  try {
-    await runWithGatewayHttpWorkAdmission(res, async () => {
-      // A socket captures its creator's async context; a retained plain closure does not.
-      resource = new AsyncResource("talk-sideband-test");
-      offerResources.push(resource);
-      await run?.(resource);
-      return true;
-    });
-    return resource;
-  } finally {
-    socket.destroy();
-  }
 }
 
 async function useRealConsultRuntime() {
@@ -493,9 +476,12 @@ describe("talk.client.transcript", () => {
     expect(getSessionControllerWorkCount()).toBe(0);
   });
 
-  it("keeps an accepted consult admitted through offer completion and suspension", async () => {
+  it("keeps an accepted consult admitted through offer completion and suspension", async ({
+    signal,
+  }) => {
     await useRealConsultRuntime();
     const { consult } = await createBrowserConsult();
+    const embeddedEntered = createDeferred();
     const beforeEnqueue = createDeferred();
     const enqueue = voiceMocks.runEmbeddedAgent.getMockImplementation()!;
     voiceMocks.runEmbeddedAgent.mockImplementationOnce(async (params) => {
@@ -507,9 +493,18 @@ describe("talk.client.transcript", () => {
     let suspension: ReturnType<typeof tryBeginGatewaySuspendAdmission> = null;
     try {
       await completeOffer(async (resource) => {
-        work = resource.runInAsyncScope(() => consult({ prompt: "Return the fixture status" }));
-        void work.catch(() => undefined);
-        await vi.waitFor(() => expect(voiceMocks.runEmbeddedAgent).toHaveBeenCalledOnce());
+        work = resource.runInAsyncScope(() =>
+          consult({ prompt: "Return the fixture status", signal }),
+        );
+        await withinTest(
+          awaitGateBeforeSettlement(
+            embeddedEntered.promise,
+            work,
+            "Talk consult settled before entering the embedded run",
+          ),
+          signal,
+        );
+        expect(voiceMocks.runEmbeddedAgent).toHaveBeenCalledOnce();
       });
       expect(getSessionControllerWorkCount()).toBe(1);
       suspension = tryBeginGatewaySuspendAdmission(() => {});

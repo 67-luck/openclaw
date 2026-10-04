@@ -576,17 +576,34 @@ describe("Gateway dispatch run ownership", () => {
       status: "timeout",
       stopReason: "timeout",
     },
+    {
+      name: "silent reply",
+      meta: { terminalReply: { disposition: "silent" as const } },
+      status: "ok",
+      stopReason: undefined,
+    },
+    {
+      name: "empty reply",
+      meta: { terminalReply: { disposition: "empty" as const } },
+      status: "ok",
+      stopReason: undefined,
+    },
   ])(
     "passes canonical $name rather than wire status to the completion owner",
     async ({ meta, status, stopReason }) => {
       const { owner, dispatch } = createFollowupDispatch();
-      mocks.agentCommand.mockResolvedValueOnce({ payloads: [], meta });
+      mocks.agentCommand.mockResolvedValueOnce({
+        payloads: [{ text: "payload is not canonical", mediaUrl: null }],
+        meta,
+      });
       try {
         await dispatch();
-        await expect(owner.take()).resolves.toMatchObject({
-          status,
-          ...(stopReason ? { stopReason } : {}),
-        });
+        const result = await owner.take();
+        expect(result).toMatchObject({ status, ...(stopReason ? { stopReason } : {}) });
+        if (meta.terminalReply) {
+          expect(result?.terminalReply).toEqual(meta.terminalReply);
+          expect(result?.replyText).toBeUndefined();
+        }
       } finally {
         owner.close();
       }

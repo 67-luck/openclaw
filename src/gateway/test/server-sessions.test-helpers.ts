@@ -394,7 +394,12 @@ function createGatewaySessionsTestHarness(startServer: boolean, setup?: GatewayS
     const storeTemplate = path.join(dir, "agents", "{agentId}", "sessions", "sessions.json");
     testState.sessionStorePath = storeTemplate;
     testState.sessionConfig = { scope: "global" };
-    testState.agentsConfig = { list: [{ id: "main", default: true }, { id: "work" }] };
+    testState.agentsConfig = { ownership: "explicit", entries: { main: {}, work: {} } };
+    testState.agentConfig = {
+      ...testState.agentConfig,
+      systemAgent: { agentId: "main" },
+      sessionStore: { agentId: "main" },
+    };
     return {
       dir,
       storeTemplate,
@@ -465,7 +470,11 @@ function createGatewaySessionsTestHarness(startServer: boolean, setup?: GatewayS
       configPath,
       `${JSON.stringify(
         {
-          agents: { list: [{ id: "main", default: true }, { id: "work" }] },
+          agents: {
+            ownership: "explicit",
+            entries: { main: {}, work: {} },
+            defaults: { systemAgent: { agentId: "main" }, sessionStore: { agentId: "main" } },
+          },
           session: { scope: "global", store: storeTemplate },
         },
         null,
@@ -606,6 +615,8 @@ export async function directSessionReq<TPayload = unknown>(
   if (!handler) {
     throw new Error(`missing sessions handler for ${method}`);
   }
+  const contextKey = opts?.context ?? defaultDirectContext;
+  const existingContext = directContexts.get(contextKey);
   const contextFields: GatewayRequestContext = createDirectChatContext({
     broadcastToConnIds: vi.fn(),
     dedupe: new Map(),
@@ -617,8 +628,7 @@ export async function directSessionReq<TPayload = unknown>(
     getRuntimeConfig,
     ...opts?.context,
   });
-  const contextKey = opts?.context ?? defaultDirectContext;
-  const context = directContexts.get(contextKey) ?? createDirectChatContext();
+  const context = existingContext ?? createDirectChatContext();
   Object.assign(context, contextFields);
   directContexts.set(contextKey, context);
   if (
@@ -626,6 +636,8 @@ export async function directSessionReq<TPayload = unknown>(
       "chat.startup",
       "chat.history",
       "sessions.list",
+      "sessions.processes.list",
+      "sessions.processes.stop",
       "sessions.describe",
       "sessions.get",
       "sessions.preview",

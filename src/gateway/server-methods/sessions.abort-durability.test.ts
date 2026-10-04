@@ -226,7 +226,8 @@ it.each([
           return;
         }
         expect(responseRows[0]).toMatchObject({ status: "killed", abortedLastRun: true });
-        closeOpenClawAgentDatabasesForTest();
+        await closeOpenClawAgentDatabasesAsync(state.root);
+        closeOpenClawAgentDatabasesForTest(state.root);
         expect(loadSessionEntry({ ...target, readConsistency: "latest" })).toMatchObject({
           status: "killed",
           abortedLastRun: true,
