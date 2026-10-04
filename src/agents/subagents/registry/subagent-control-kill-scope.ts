@@ -10,6 +10,7 @@ import {
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
+import { getCurrentSessionControllerOwner } from "../../../sessions/session-controller.context.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
@@ -520,7 +521,11 @@ export async function withSubagentKillScope<T>(
   const settleQueued = async (tree: KillTree): Promise<void> => {
     const { entry, session, dispatchHold } = tree;
     const capturedExecution = session && captureSubagentExecution({ entry, session });
-    if (capturedExecution) {
+    const currentOperation = getCurrentSessionControllerOwner();
+    if (
+      capturedExecution &&
+      (!currentOperation || currentOperation !== capturedExecution.execution.input.claim?.operation)
+    ) {
       try {
         await capturedExecution.execution.input.settlement.promise;
       } catch {
