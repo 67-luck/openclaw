@@ -58,7 +58,7 @@ export function browserNavigationPolicyForProfile(
   ctx: BrowserRouteContext,
   profileCtx: ProfileContext,
 ) {
-  return resolveBrowserNavigationPolicy(ctx.state().resolved, profileCtx.profile);
+  return resolveBrowserNavigationPolicy(ctx.state(), profileCtx.profile);
 }
 
 /** Require Playwright support for a route feature, returning a 501 when absent. */

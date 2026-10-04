@@ -283,6 +283,10 @@ browser as an isolation boundary from such services.
 - Sandboxed, workspace-limited, approval-gated, and otherwise restricted agents
   do not receive the default. Neither do remote/node, attach-only, extension, or
   existing-session browsers. A loopback CDP tunnel does not establish locality.
+  A reachable browser without a current OpenClaw-owned process (including after
+  a control-service restart) does not receive the exception. Stop that browser
+  yourself and let OpenClaw launch the managed profile again, or configure an
+  explicit allowlist.
 - The capability stays in the local in-process agent request. It is not forwarded
   over browser HTTP, Gateway RPC, or node transports. Standalone browser commands
   and direct operator control requests retain their configured policy.

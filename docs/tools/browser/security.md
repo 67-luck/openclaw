@@ -46,6 +46,13 @@ commands. Any explicit `browser.ssrfPolicy`, including `{}`, suppresses the
 exception. Use that existing setting to keep loopback blocked or to define your
 own narrow host exceptions. Other private networks and other tools are unchanged.
 
+Automatic previews require a live browser process launched and verified by the current
+OpenClaw control service. A reachable external browser, loopback CDP tunnel, or browser
+left running across a control-service restart does not qualify. Stop that browser
+yourself and let OpenClaw launch the managed profile again, or configure an explicit
+`browser.ssrfPolicy.allowedHostnames` policy. Automatic previews use Playwright-backed
+navigation so invocation and process ownership are rechecked before navigation dispatch.
+
 The default changes at the next run after upgrading; no config migration or
 persistent allowlist is written. Existing explicit policies retain their behavior.
 See [SSRF policy](/tools/browser/configuration) for navigation checks

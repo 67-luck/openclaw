@@ -310,6 +310,32 @@ describe("pw-session createPageViaPlaywright navigation guard", () => {
     expect(f.pageGoto).toHaveBeenCalledTimes(1);
     expect(f.pageClose).not.toHaveBeenCalled();
   });
+  it("aborts an allowed redirect when its scoped authority is revoked", async () => {
+    getChromeWebSocketEndpointSpy.mockResolvedValue({
+      url: "ws://127.0.0.1:18792/devtools/browser/preview-fixture",
+    });
+    const route = createMockRoute();
+    let current = true;
+    f.pageGoto.mockImplementationOnce(async () => {
+      await dispatch();
+      current = false;
+      await dispatch({ url: privateUrl, route });
+      throw new Error("Navigation aborted");
+    });
+    await expect(
+      create({
+        ssrfPolicy: { allowedHostnames: ["127.0.0.1"] },
+        assertNavigationCurrent: () => {
+          if (!current) {
+            throw new Error("preview invocation revoked");
+          }
+        },
+      }),
+    ).rejects.toThrow("preview invocation revoked");
+    expect(route.continue).not.toHaveBeenCalled();
+    expect(route.abort).toHaveBeenCalledOnce();
+    expect(f.pageClose).toHaveBeenCalledOnce();
+  });
   it("propagates unsupported redirect protocols as navigation errors", async () => {
     blockedRedirect({ url: "file:///etc/passwd" });
     await expect(create()).rejects.toBeInstanceOf(InvalidBrowserNavigationUrlError);

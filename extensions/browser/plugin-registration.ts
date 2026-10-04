@@ -102,6 +102,7 @@ function createBrowserToolOptions(ctx: OpenClawPluginToolContext): BrowserToolOp
   const mediaChatType = deriveChatTypeFromSessionKey(ctx.sessionKey);
   return {
     allowLocalLoopback: ctx.browser?.allowLocalLoopback === true,
+    assertInvocationCurrent: ctx.assertInvocationCurrent,
     ...(ctx.browser?.sandboxBridgeUrl ? { sandboxBridgeUrl: ctx.browser.sandboxBridgeUrl } : {}),
     ...(ctx.browser?.allowHostControl !== undefined
       ? { allowHostControl: ctx.browser.allowHostControl }

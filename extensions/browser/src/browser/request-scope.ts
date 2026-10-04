@@ -5,6 +5,7 @@ type BrowserRequestScope = {
   managedOnly?: true;
   /** Host-prepared capability, never accepted from model arguments or remote transports. */
   allowLocalLoopback?: boolean;
+  assertInvocationCurrent?: () => void;
   assertCurrent?: NonNullable<BrowserRequest["assertCurrent"]>;
 };
 const requestScope = new AsyncLocalStorage<{ scope: BrowserRequestScope; active: boolean }>();
@@ -15,6 +16,18 @@ export async function withBrowserRequestScope<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   const entry = { scope, active: true };
+  if (scope.assertInvocationCurrent) {
+    const assertInvocationCurrent = scope.assertInvocationCurrent;
+    entry.scope = {
+      ...scope,
+      assertInvocationCurrent: () => {
+        if (!entry.active) {
+          throw new Error("Browser request has completed");
+        }
+        assertInvocationCurrent();
+      },
+    };
+  }
   try {
     return await requestScope.run(entry, run);
   } finally {

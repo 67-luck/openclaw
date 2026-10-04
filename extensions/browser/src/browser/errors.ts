@@ -63,7 +63,7 @@ export type BrowserErrorPayload = WithBrowserErrorMetadata<{
 export class BrowserNavigationBlockedError extends SsrFBlockedError {
   constructor(hostname: string) {
     super(
-      `Browser navigation blocked for host "${hostname}": browser.ssrfPolicy disallows this hostname or its private/internal/special-use address. Review browser.ssrfPolicy.allowedHostnames and browser.ssrfPolicy.blockedHostnames. Automatic loopback previews require an unrestricted local agent, a local managed browser, and no explicit browser.ssrfPolicy.`,
+      `Browser navigation blocked for host "${hostname}": browser.ssrfPolicy disallows this hostname or its private/internal/special-use address. Review browser.ssrfPolicy.allowedHostnames and browser.ssrfPolicy.blockedHostnames. Automatic loopback previews require an unrestricted local agent, an OpenClaw-owned local browser process, and no explicit browser.ssrfPolicy. Reachable external browsers or CDP tunnels do not qualify; stop the external browser yourself and let OpenClaw launch its managed profile, or configure an explicit allowedHostnames policy.`,
     );
     this.name = "BrowserNavigationBlockedError";
   }

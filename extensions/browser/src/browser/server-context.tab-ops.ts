@@ -28,6 +28,7 @@ import {
   assertBrowserNavigationResultAllowed,
   InvalidBrowserNavigationUrlError,
   requiresInspectableBrowserNavigationRedirectsForUrl,
+  withBrowserNavigationPolicy,
 } from "./navigation-guard.js";
 import { resolveBrowserNavigationPolicy } from "./navigation-policy.js";
 import { getBrowserProfileCapabilities } from "./profile-capabilities.js";
@@ -97,7 +98,7 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
   const cdpHttpBase = normalizeCdpHttpBaseForJsonEndpoints(profile.cdpUrl);
   const capabilities = getBrowserProfileCapabilities(profile);
   const getCdpControlPolicy = () => resolveCdpControlPolicy(profile, state().resolved.ssrfPolicy);
-  const getNavigationPolicy = () => resolveBrowserNavigationPolicy(state().resolved, profile);
+  const getNavigationPolicy = () => resolveBrowserNavigationPolicy(state(), profile);
   const getRemoteCdpActionTimeouts = (): CdpActionTimeouts | undefined => {
     if (profile.cdpIsLoopback && !profile.attachOnly) {
       return undefined;
@@ -320,7 +321,7 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
   const openTab: ProfileTabOps["openTab"] = async (url, opts) => {
     opts?.signal?.throwIfAborted();
     const normalizedLabel = opts?.label === undefined ? undefined : normalizeTabLabel(opts.label);
-    const ssrfPolicyOpts = getNavigationPolicy();
+    let ssrfPolicyOpts = getNavigationPolicy();
     const cdpPolicy = getCdpControlPolicy();
     // Runtime shutdown fences state() before draining this operation's cleanup.
     const cleanupTimeoutMs = state().resolved.remoteCdpTimeoutMs;
@@ -343,7 +344,7 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
     let createdTargetId: string | undefined;
     let closeCreatedPage: (() => Promise<void>) | undefined;
     try {
-      if (capabilities.usesPersistentPlaywright) {
+      if (capabilities.usesPersistentPlaywright || ssrfPolicyOpts.assertNavigationCurrent) {
         const mod = await getPwAiModule({ mode: "strict" });
         if (mod) {
           const page = await mod.createPageViaPlaywright({
@@ -369,11 +370,15 @@ export function createProfileTabOps({ profile, state, runtime }: TabOpsDeps): Pr
             { ...opts, label: normalizedLabel },
           );
         }
+        if (ssrfPolicyOpts.assertNavigationCurrent) {
+          // Raw CDP cannot carry the automatic grant's final-effect authority fence.
+          ssrfPolicyOpts = withBrowserNavigationPolicy(state().resolved.ssrfPolicy, {
+            browserProxyMode: ssrfPolicyOpts.browserProxyMode,
+          });
+        }
       }
 
-      if (
-        requiresInspectableBrowserNavigationRedirectsForUrl(url, getNavigationPolicy().ssrfPolicy)
-      ) {
+      if (requiresInspectableBrowserNavigationRedirectsForUrl(url, ssrfPolicyOpts.ssrfPolicy)) {
         throw new InvalidBrowserNavigationUrlError(
           "Navigation blocked: strict browser SSRF policy requires Playwright-backed redirect-hop inspection",
         );

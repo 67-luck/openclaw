@@ -115,6 +115,7 @@ export async function assertPageNavigationCompletedSafely(
 ): Promise<void> {
   const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, {
     browserProxyMode: opts.browserProxyMode,
+    assertNavigationCurrent: opts.assertNavigationCurrent,
   });
   try {
     await assertBrowserNavigationRedirectChainAllowed({
@@ -190,6 +191,7 @@ export async function withPageNavigationRequestGuard<T>(
 ): Promise<T> {
   const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, {
     browserProxyMode: opts.browserProxyMode,
+    assertNavigationCurrent: opts.assertNavigationCurrent,
   });
   if (!navigationPolicy.ssrfPolicy && !navigationPolicy.browserProxyMode) {
     return await opts.action(opts.page.url());
@@ -292,6 +294,7 @@ export async function withPageNavigationRequestGuard<T>(
   const handleRoute = async (route: Route, request: Request) => {
     if (!classifyBrowserDocumentNavigationRequest(opts.page, request)) {
       try {
+        navigationPolicy.assertNavigationCurrent?.();
         await resumeRouteSafely(route, "fallback");
       } catch (err) {
         recordGuardError(err);
@@ -317,6 +320,7 @@ export async function withPageNavigationRequestGuard<T>(
       return;
     }
     try {
+      navigationPolicy.assertNavigationCurrent?.();
       await resumeRouteSafely(route, "fallback");
     } catch (err) {
       recordGuardError(err);
@@ -355,6 +359,7 @@ export async function withPageNavigationRequestGuard<T>(
       await assertBrowserNavigationResultAllowed({ url: latestUrl, ...navigationPolicy });
       baselineUrl = latestUrl;
     }
+    navigationPolicy.assertNavigationCurrent?.();
     result = await opts.action(baselineUrl);
   } catch (err) {
     actionFailed = true;
@@ -418,6 +423,7 @@ export async function gotoPageWithNavigationGuard(
 ): Promise<Response | null> {
   const navigationPolicy = withBrowserNavigationPolicy(opts.ssrfPolicy, {
     browserProxyMode: opts.browserProxyMode,
+    assertNavigationCurrent: opts.assertNavigationCurrent,
   });
   let blockedError: unknown = null;
 
@@ -427,26 +433,18 @@ export async function gotoPageWithNavigationGuard(
       return;
     }
     const requestKind = classifyBrowserDocumentNavigationRequest(opts.page, request);
-    if (!requestKind) {
-      await resumeRouteSafely(route, "continue");
-      return;
-    }
     try {
-      await assertBrowserNavigationAllowed({
-        url: request.url(),
-        ...navigationPolicy,
-      });
-    } catch (err) {
-      if (isPolicyDenyNavigationError(err)) {
-        if (requestKind === "top-level") {
-          blockedError = err;
-        }
-        await route.abort().catch(() => {});
-        return;
+      if (requestKind) {
+        await assertBrowserNavigationAllowed({ url: request.url(), ...navigationPolicy });
       }
-      throw err;
+      navigationPolicy.assertNavigationCurrent?.();
+      await resumeRouteSafely(route, "continue");
+    } catch (err) {
+      if (!isPolicyDenyNavigationError(err) || requestKind === "top-level") {
+        blockedError = err;
+      }
+      await route.abort().catch(() => {});
     }
-    await resumeRouteSafely(route, "continue");
   };
 
   try {
@@ -466,6 +464,7 @@ export async function gotoPageWithNavigationGuard(
     if (assertion) {
       await assertion;
     }
+    navigationPolicy.assertNavigationCurrent?.();
     response = await opts.page.goto(opts.url, { timeout: opts.timeoutMs });
   } catch (err) {
     navigationFailed = true;
@@ -474,11 +473,13 @@ export async function gotoPageWithNavigationGuard(
 
   const cleanupError = await removePageNavigationRequestGuard(opts.page, handler);
   if (blockedError) {
-    await closeBlockedNavigationTarget({
-      cdpUrl: opts.cdpUrl,
-      page: opts.page,
-      targetId: opts.targetId,
-    });
+    if (isPolicyDenyNavigationError(blockedError)) {
+      await closeBlockedNavigationTarget({
+        cdpUrl: opts.cdpUrl,
+        page: opts.page,
+        targetId: opts.targetId,
+      });
+    }
     throw toErrorObject(blockedError, "Non-Error thrown");
   }
   // A live-page cleanup failure is observable, but the original navigation
