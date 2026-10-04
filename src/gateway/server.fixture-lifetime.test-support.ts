@@ -4,7 +4,12 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { expect, type TestContext } from "vitest";
+import { resolveVitestProcessEnv } from "../../scripts/lib/vitest-process-env.mts";
 import { createVitestResourceOwner } from "../../scripts/lib/vitest-resource-ownership.mts";
+import {
+  createVitestWorkerRun,
+  type VitestWorkerRun,
+} from "../../scripts/lib/vitest-worker-run.mts";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { runVitestShutdownCommand } from "../../test/helpers/vitest-shutdown-command.js";
 import { hasErrnoCode } from "../infra/errno.js";
@@ -16,19 +21,26 @@ export function createGatewayFixtureFork(
   const lifetime = createFixtureLifetime();
   registerCleanup(() => lifetime.cleanup());
   const repoRoot = path.resolve(import.meta.dirname, "../..");
-  let project: Promise<{ root: string; config: string }> | undefined;
-  const prepareProject = () =>
-    (project ??= (async () => {
-      const root = lifetime.createTempDir("gateway-fixture-code-");
-      await fs.symlink(
-        path.join(repoRoot, "node_modules"),
-        path.join(root, "node_modules"),
-        "junction",
-      );
-      const config = path.join(root, "vitest.config.ts");
-      await fs.writeFile(
-        config,
-        `
+  const compilerEnv = resolveVitestProcessEnv({ ...process.env });
+  let project: Promise<{ root: string; config: string; workers: VitestWorkerRun }> | undefined;
+  const prepareProject = (signal: AbortSignal) => {
+    if (project) {
+      return project;
+    }
+    let removePreparationAbort: (() => void) | undefined;
+    project = lifetime
+      .acquire(async (rejectAfterCleanup) => {
+        signal.throwIfAborted();
+        const root = lifetime.createTempDir("gateway-fixture-code-");
+        await fs.symlink(
+          path.join(repoRoot, "node_modules"),
+          path.join(root, "node_modules"),
+          "junction",
+        );
+        const config = path.join(root, "vitest.config.ts");
+        await fs.writeFile(
+          config,
+          `
 import { defineConfig } from "vitest/config";
 import { sharedVitestConfig } from ${JSON.stringify(path.join(repoRoot, "test/vitest/vitest.shared.config.ts"))};
 export default defineConfig({
@@ -48,9 +60,48 @@ export default defineConfig({
   },
 });
 `,
-      );
-      return { root, config };
-    })());
+        );
+        // Case hooks replace selectors; the shared compiler keeps its own inputs through disposal.
+        const home = path.join(root, "compiler-home");
+        const tmp = path.join(root, "compiler-tmp");
+        await Promise.all([fs.mkdir(home), fs.mkdir(tmp)]);
+        signal.throwIfAborted();
+        const workers = createVitestWorkerRun({
+          ...compilerEnv,
+          HOME: home,
+          USERPROFILE: home,
+          OPENCLAW_HOME: home,
+          OPENCLAW_STATE_DIR: path.join(home, ".openclaw"),
+          OPENCLAW_CONFIG_PATH: path.join(home, ".openclaw", "openclaw.json"),
+          TMPDIR: tmp,
+          TMP: tmp,
+          TEMP: tmp,
+        });
+        let disposal: Promise<void> | undefined;
+        const dispose = () => {
+          if (!disposal) {
+            disposal = workers.dispose();
+            void disposal.catch(() => {});
+          }
+          return disposal;
+        };
+        const abortPreparation = () => {
+          void dispose();
+        };
+        signal.addEventListener("abort", abortPreparation, { once: true });
+        removePreparationAbort = () => signal.removeEventListener("abort", abortPreparation);
+        try {
+          signal.throwIfAborted();
+          await workers.prepare();
+          signal.throwIfAborted();
+          return { root, config, workers, cleanup: dispose };
+        } catch (error) {
+          return await rejectAfterCleanup(error, dispose);
+        }
+      })
+      .finally(() => removePreparationAbort?.());
+    return project;
+  };
 
   return function runGatewayFixtureFork(
     context: Pick<TestContext, "signal" | "onTestFinished">,
@@ -66,7 +117,8 @@ export default defineConfig({
       try {
         // Failed child claims stay private; only transformed code is shared across fresh forks.
         createVitestResourceOwner(root);
-        const prepared = await prepareProject();
+        const prepared = await prepareProject(context.signal);
+        context.signal.throwIfAborted();
         const require = createRequire(import.meta.url);
         const vitestPackageDir = path.dirname(require.resolve("vitest/package.json"));
         await fs.symlink(
@@ -81,6 +133,8 @@ export default defineConfig({
         let child: ChildProcess | undefined;
         const output = await runVitestShutdownCommand({
           args: [
+            path.join(repoRoot, "scripts/lib/vitest-worker-bootstrap.mts"),
+            prepared.workers.descriptor.directory,
             path.join(vitestPackageDir, "vitest.mjs"),
             "run",
             "--root",
@@ -99,6 +153,7 @@ export default defineConfig({
           signal: context.signal,
           timeoutMs: 90_000,
           maxBytes,
+          workerRun: prepared.workers,
           env: {
             PATH: process.env.PATH,
             OPENCLAW_VITEST_FS_MODULE_CACHE: process.env.OPENCLAW_VITEST_FS_MODULE_CACHE,
