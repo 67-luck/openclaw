@@ -21,12 +21,14 @@ import {
 } from "./session-controller.mailbox.js";
 import {
   getRpcSourceIdentity,
+  getRpcSourceProjectSessionActive,
   getRpcSourceSignal,
   getRpcSourceStartedAt,
   isRpcSourceActive,
   isRpcSourceQueued,
   listRpcSourceEntriesForSession,
   requestRpcSourceCancellation,
+  setRpcSourceProjectSessionActive,
   type RpcSourceRef,
 } from "./session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "./session-controller.state.js";
@@ -128,6 +130,19 @@ describe("RPC source owner boundary", () => {
     await task;
     await captureSessionControllerSourceSettlement(source.entry.input);
     expect(rpcSourceTesting.has("active-source")).toBe(false);
+  });
+
+  it("gives terminal projection precedence over an attached active operation", async () => {
+    const source = reserve("terminal-precedence");
+    await runSource(source.entry, async () => {
+      setRpcSourceProjectSessionActive(source.entry, true);
+      expect(getRpcSourceProjectSessionActive(source.entry)).toBe(true);
+      expect(isRpcSourceActive(source.entry)).toBe(true);
+      source.entry.adapter.projectSessionTerminalPending = true;
+      expect(getRpcSourceProjectSessionActive(source.entry)).toBe(false);
+      expect(isRpcSourceActive(source.entry)).toBe(false);
+    });
+    source.cleanup();
   });
 
   it("keeps byte-exact spaced protocol IDs distinct during cancellation and duplicate admission", () => {

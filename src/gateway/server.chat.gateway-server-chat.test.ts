@@ -32,6 +32,7 @@ import {
   beginSessionEffect,
   getSessionControllerWorkCount,
 } from "../sessions/session-controller.lifecycle.js";
+import { getRpcSource, isRpcSourceExecuting } from "../sessions/session-controller.rpc-sources.js";
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
 import { drainOpenClawAgentWriteQueuesForTest } from "../state/openclaw-agent-write-admission.test-support.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
@@ -350,6 +351,45 @@ describe("gateway server chat", () => {
       await finalPromise;
       await requestExecution.waitForCompletion("idem-chat-detached-root");
       expect(getActiveGatewayRootWorkCount()).toBe(0);
+    });
+  });
+
+  test("sessions.list projects an accepted chat.send before backend execution starts", async () => {
+    await withMainSessionStore(async () => {
+      const dispatchEntered = createDeferred();
+      const releaseDispatch = createDeferred();
+      dispatchInboundMessageMock.mockImplementationOnce(async () => {
+        dispatchEntered.resolve();
+        await releaseDispatch.promise;
+        return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
+      });
+      const runId = "idem-chat-accepted-session-projection";
+      try {
+        const accepted = await rpcReq(ws, "chat.send", {
+          sessionKey: "main",
+          message: "hold before backend execution",
+          idempotencyKey: runId,
+        });
+        expect(accepted).toMatchObject({ ok: true, payload: { runId, status: "started" } });
+        await dispatchEntered.promise;
+        expect(isRpcSourceExecuting(getRpcSource(runId))).toBe(false);
+
+        const listed = await rpcReq<{ sessions?: unknown[] }>(ws, "sessions.list", {});
+        expect(listed.ok).toBe(true);
+        expect(listed.payload?.sessions).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              key: "agent:main:main",
+              hasActiveRun: true,
+              activeRunIds: [runId],
+              status: "queued",
+            }),
+          ]),
+        );
+      } finally {
+        releaseDispatch.resolve();
+        await waitForAgentRunDrained(runId);
+      }
     });
   });
 

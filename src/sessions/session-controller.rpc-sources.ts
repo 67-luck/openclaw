@@ -219,22 +219,49 @@ export function isRpcSourceActive(ref: RpcSourceRef | undefined): boolean {
   return isRpcSourceExecuting(ref) && getRpcSourceProjectSessionActive(ref) !== false;
 }
 
+/** Presentation only: accepted controller custody remains queued until backend execution starts. */
+export function resolveRpcSourceSessionProgressState(
+  ref: RpcSourceRef | undefined,
+): "queued" | "running" | undefined {
+  if (
+    !ref ||
+    ref.input.phase === "consumed" ||
+    ref.input.retirementRequested ||
+    ref.input.custody.cancellationRetired ||
+    ref.input.abortSignal.aborted ||
+    getRpcSourceProjectSessionActive(ref) === false
+  ) {
+    return undefined;
+  }
+  const claim = ref.input.claim;
+  const operation = claim?.operation;
+  if (
+    claim?.released ||
+    operation?.result ||
+    (operation !== undefined &&
+      (!isCurrentSessionControllerOperation(operation) || operation.abortSignal.aborted))
+  ) {
+    return undefined;
+  }
+  return isRpcSourceExecuting(ref) ? "running" : "queued";
+}
+
 /** Reads the active-session presentation fact from the exact controller attachment. */
 export function getRpcSourceProjectSessionActive(
   ref: RpcSourceRef | undefined,
 ): boolean | undefined {
-  const terminalProjection =
-    ref &&
-    (ref.adapter.projectSessionTerminalPending === true ||
-      ref.adapter.projectSessionTerminalPersisted === true)
-      ? false
-      : undefined;
+  if (
+    ref?.adapter.projectSessionTerminalPending === true ||
+    ref?.adapter.projectSessionTerminalPersisted === true
+  ) {
+    return false;
+  }
   const operation = ref?.input.claim?.operation;
   if (!operation) {
-    return terminalProjection ?? (ref?.input.retirementRequested === true ? false : undefined);
+    return ref?.input.retirementRequested === true ? false : undefined;
   }
   const attachment = getSessionControllerEntryForOperation(operation).attachment;
-  return attachment?.operation === operation ? attachment.projectSessionActive : terminalProjection;
+  return attachment?.operation === operation ? attachment.projectSessionActive : undefined;
 }
 
 /** Updates presentation on the exact operation attachment without creating a second owner. */

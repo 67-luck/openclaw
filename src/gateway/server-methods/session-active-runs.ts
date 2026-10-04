@@ -16,8 +16,8 @@ import { resolveSessionRunProgressState } from "../../sessions/session-controlle
 import {
   getRpcSourceIdentity,
   getRpcSourceProjectSessionActive,
-  isRpcSourceActive,
   listRpcSourceEntries,
+  resolveRpcSourceSessionProgressState,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { resolveReplyRunForCurrentSessionId } from "../../sessions/session-controller.state.js";
@@ -30,6 +30,7 @@ type TrackedActiveSessionRun = {
   sessionId?: string;
   agentId?: string;
   terminalPersistence?: boolean;
+  progress?: "queued" | "running";
 };
 
 type VisibleActiveSessionRunState = {
@@ -52,7 +53,8 @@ function collectTrackedActiveSessionRuns(
       includeTerminalPersistence &&
       getRpcSourceProjectSessionActive(ref) === false &&
       active.projectSessionTerminalPending === true;
-    if ((isRpcSourceActive(ref) || terminalPersistence) && active.controlUiVisible !== false) {
+    const progress = resolveRpcSourceSessionProgressState(ref);
+    if ((progress || terminalPersistence) && active.controlUiVisible !== false) {
       const sessionKey = identity.sessionKey.trim();
       const sessionId = identity.sessionId.trim();
       if (!sessionKey && !sessionId) {
@@ -71,6 +73,7 @@ function collectTrackedActiveSessionRuns(
         ...(sessionKey ? { sessionKey } : {}),
         ...(sessionId ? { sessionId } : {}),
         agentId: identity.agentId ? normalizeAgentId(identity.agentId) : undefined,
+        ...(progress ? { progress } : {}),
         ...(terminalPersistence ? { terminalPersistence: true } : {}),
       });
     }
@@ -270,7 +273,9 @@ export function resolveVisibleActiveSessionRunState(params: {
   // Remote lifecycle/subagent facts remain separately attributed projections.
   const running =
     ((hasLiveSubagent || hasQueuedSubagent) && !subagentCapacityWait) ||
-    matchingTrackedRuns.some((active) => !isAgentRunWaitingForCapacity(active.runId)) ||
+    matchingTrackedRuns.some(
+      (active) => active.progress === "running" && !isAgentRunWaitingForCapacity(active.runId),
+    ) ||
     projectedRunState === "running" ||
     embeddedRunState === "running";
   const active =
@@ -292,6 +297,7 @@ export function resolveVisibleActiveSessionRunState(params: {
     ...(active &&
     !running &&
     (subagentCapacityWait ||
+      matchingTrackedRuns.some((run) => run.progress === "queued") ||
       projectedRunState === "queued" ||
       projectedRunState === "capacity-wait")
       ? { status: "queued" as const }

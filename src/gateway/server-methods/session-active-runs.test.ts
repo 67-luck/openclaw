@@ -91,7 +91,7 @@ function visibleState(
   });
 }
 
-it("projects a source only after its exact controller claim starts", async () => {
+it("projects an accepted source before its exact controller claim starts", async () => {
   const sessionKey = "agent:main:queued";
   const sessionId = "queued-session";
   const runId = "queued-run";
@@ -118,7 +118,7 @@ it("projects a source only after its exact controller claim starts", async () =>
       agentId: "main",
     });
 
-  expect(state()).toEqual({ active: false, runIds: [] });
+  expect(state()).toEqual({ active: true, runIds: [runId], status: "queued" });
   if (!registration.entry) {
     throw new Error("Missing RPC source");
   }
@@ -219,6 +219,7 @@ it("keeps terminal persistence visible only to chat history", async () => {
   ).toEqual({ active: true });
 
   terminalRef.adapter.projectSessionTerminalPending = false;
+  terminalRef.adapter.projectSessionTerminalPersisted = true;
   expect(
     resolveVisibleActiveSessionRunState({ ...params, includeTerminalPersistence: true }),
   ).toEqual({ active: false, runIds: [] });
@@ -452,7 +453,7 @@ it("does not project an aborted embedded handle retained for cleanup as active",
         canonicalKey: sessionKey,
         sessionId,
       }),
-    ).toEqual({ active: false, runIds: [] });
+    ).toEqual({ active: true, runIds: ["new-run"], status: "queued" });
     clearActiveEmbeddedRun(sessionId, handle, sessionKey);
     await successor;
     expect(

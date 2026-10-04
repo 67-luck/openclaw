@@ -4,8 +4,8 @@ import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   getRpcSource,
   getRpcSourceIdentity,
-  isRpcSourceActive,
   listRpcSourceEntries,
+  resolveRpcSourceSessionProgressState,
   type RpcSourceRef,
 } from "../sessions/session-controller.rpc-sources.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
@@ -122,7 +122,7 @@ export function createGatewayConnectionState(params: {
         sessionKey: string;
         sessionId: string;
         agentId?: string;
-        active: boolean;
+        progress: "queued" | "running" | undefined;
         controlUiVisible?: boolean;
       }> = [];
       let projectRun: ReturnType<typeof createVisibleActiveSessionRunProjector> | undefined;
@@ -163,7 +163,7 @@ export function createGatewayConnectionState(params: {
                   identity?.sessionKey !== previous.sessionKey ||
                   identity?.sessionId !== previous.sessionId ||
                   identity?.agentId !== previous.agentId ||
-                  isRpcSourceActive(current) !== previous.active ||
+                  resolveRpcSourceSessionProgressState(current) !== previous.progress ||
                   current?.adapter.controlUiVisible !== previous.controlUiVisible
                 );
               }) ||
@@ -174,8 +174,10 @@ export function createGatewayConnectionState(params: {
                 return {
                   runId,
                   ref,
-                  ...identity,
-                  active: isRpcSourceActive(ref),
+                  sessionKey: identity.sessionKey,
+                  sessionId: identity.sessionId,
+                  agentId: identity.agentId,
+                  progress: resolveRpcSourceSessionProgressState(ref),
                   controlUiVisible: ref.adapter.controlUiVisible,
                 };
               });
