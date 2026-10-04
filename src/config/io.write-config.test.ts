@@ -567,8 +567,8 @@ describe("config io write", () => {
         plugins: { entries: { demo: { enabled: true } } },
       };
 
-      await io.writeConfigFile(staleConfig);
-      await io.writeConfigFile(staleConfig);
+      await io.writeConfigFile(staleConfig, { allowConfigSizeDrop: true });
+      await io.writeConfigFile(staleConfig, { allowConfigSizeDrop: true });
       io.loadConfig();
       expect(warn).toHaveBeenCalledTimes(1);
 
@@ -576,6 +576,7 @@ describe("config io write", () => {
         io.writeConfigFile(
           {},
           {
+            allowConfigSizeDrop: true,
             preCommitRuntimePreflight: async () => {
               throw new Error("blocked");
             },
@@ -585,12 +586,15 @@ describe("config io write", () => {
       io.loadConfig();
       expect(warn).toHaveBeenCalledTimes(1);
 
-      await io.writeConfigFile(staleConfig, { skipPluginValidation: true });
+      await io.writeConfigFile(staleConfig, {
+        allowConfigSizeDrop: true,
+        skipPluginValidation: true,
+      });
       io.loadConfig();
       expect(warn).toHaveBeenCalledTimes(1);
 
       await io.writeConfigFile({}, { allowConfigSizeDrop: true });
-      await io.writeConfigFile(staleConfig);
+      await io.writeConfigFile(staleConfig, { allowConfigSizeDrop: true });
       expect(warn).toHaveBeenCalledTimes(2);
     },
   );
