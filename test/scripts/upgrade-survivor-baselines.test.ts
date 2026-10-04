@@ -397,7 +397,9 @@ console.log(JSON.stringify(process.argv[4] === "dist-tags"
       versions: ["2026.6.34", "2026.8.33", "2026.9.2", "2026.9.3"],
       expected: ["2026.9.2", "2026.6.34"],
     },
-  );
+  ])("resolves $name", ({ expected, ...fixture }) => {
+    expect(resolveFixture(fixture)).toEqual(expected.map((version) => `openclaw@${version}`));
+  });
 
   it("omits the unpublished candidate version from expanded supported lines", () => {
     withJsonFixture("tags.json", { latest: "2026.9.3" }, (tagsFile) => {

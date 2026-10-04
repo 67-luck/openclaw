@@ -326,7 +326,7 @@ describe("release candidate checklist", () => {
       launch: "fresh" as const,
       distTag,
       routingError: "Extended-stable correction suffixes are invalid",
-    },
+    })),
     ...(["saved-full", "mismatch"] as const).map<QualificationCase>((launch) => ({
       tag: "v2026.9.33",
       pin: "2026.9.33",
