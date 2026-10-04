@@ -12,7 +12,6 @@ import {
 import { diagnosticLogger } from "../../logging/diagnostic-runtime.js";
 import { enqueueCommandInLane, setCommandLaneConcurrency } from "../../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
-
 import {
   beginReplyMessageInjectionTarget,
   finalizeReplyMessageInjectionAttempt,
@@ -32,7 +31,6 @@ import {
   isSessionRunActiveForKey,
   captureCurrentReplyMessageInjectionTarget,
   captureCurrentSessionRunInterruptTarget,
-  waitForSessionRunIdle,
 } from "../../sessions/session-controller.js";
 import { isReplyRunEvidenceStale } from "../../sessions/session-controller.state.js";
 import { captureSessionTarget } from "../../sessions/session-controller.target.js";
@@ -282,55 +280,45 @@ describe("reply run registry", () => {
     releaseCompletion();
     await expect(settlement).resolves.toBe(true);
   });
+  it("keeps late delivery custody after finalization cleanup expires", async () => {
+    await withFakeReplyTimers(async () => {
+      const operation = createTestReplyOperation();
+      const delivery = createDeferred();
+      const settled = vi.fn();
+      void operation.ownerSettlement.then(settled);
+      operation.setPhase("running");
+      operation.freezeAbort();
+      try {
+        await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS);
+        expect(operation.watchdog.snapshot().recovery?.status).toBe("blocked");
+        expect(getSessionControllerOperation(operation.key)).toBe(operation);
+        expect(() => createTestReplyOperation({ sessionId: "too-early" })).toThrow();
+        expect(settled).not.toHaveBeenCalled();
+        const ownerWait = waitForReplyOperationOwnerSettlement(operation, 100);
+        await vi.advanceTimersByTimeAsync(100);
+        await expect(ownerWait).resolves.toBe(false);
+        expect(settled).not.toHaveBeenCalled();
 
-
-  it.each(["finalization", "terminal"] as const)(
-    "keeps late delivery custody after %s cleanup expires",
-    async (phase) => {
-      await withFakeReplyTimers(async () => {
-        const operation = createTestReplyOperation();
-        const delivery = createDeferred();
-        const settled = vi.fn();
-        void operation.ownerSettlement.then(settled);
-        operation.setPhase("running");
-        operation.freezeAbort();
-        try {
-          if (phase === "terminal") {
-            operation.fail("run_failed");
-          }
-          await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS);
-          expect(operation.watchdog.snapshot().recovery?.status).toBe("blocked");
-          expect(getSessionControllerOperation(operation.key)).toBe(operation);
-          expect(() => createTestReplyOperation({ sessionId: "too-early" })).toThrow();
-          expect(settled).not.toHaveBeenCalled();
-          const ownerWait = waitForReplyOperationOwnerSettlement(operation, 100);
-          await vi.advanceTimersByTimeAsync(100);
-          await expect(ownerWait).resolves.toBe(false);
-          expect(settled).not.toHaveBeenCalled();
-
-          // Completion clears the slot, but raw delivery still fences its successor.
-          operation.completeWithAfterClearBarrier(delivery.promise);
-          expect(() => createTestReplyOperation({ sessionId: "successor" })).toThrow();
-          operation.complete();
-          await Promise.resolve();
-          expect(settled).not.toHaveBeenCalled();
-          expect(getSessionControllerOperation(operation.key)).toBeUndefined();
-          expect(operation.result).toMatchObject(
-            phase === "terminal" ? { kind: "failed", code: "run_failed" } : { kind: "completed" },
-          );
-          delivery.resolve();
-          await operation.ownerSettlement;
-          const successor = createTestReplyOperation({ sessionId: "successor" });
-          successor.complete();
-        } finally {
-          delivery.resolve();
-          operation.completeWithAfterClearBarrier(delivery.promise);
-          await operation.ownerSettlement;
-        }
-        expect(settled).toHaveBeenCalledOnce();
-      });
-    },
-  );
+        // Completion clears the slot, but raw delivery still fences its successor.
+        operation.completeWithAfterClearBarrier(delivery.promise);
+        expect(() => createTestReplyOperation({ sessionId: "successor" })).toThrow();
+        operation.complete();
+        await Promise.resolve();
+        expect(settled).not.toHaveBeenCalled();
+        expect(getSessionControllerOperation(operation.key)).toBeUndefined();
+        expect(operation.result).toEqual({ kind: "completed" });
+        delivery.resolve();
+        await operation.ownerSettlement;
+        const successor = createTestReplyOperation({ sessionId: "successor" });
+        successor.complete();
+      } finally {
+        delivery.resolve();
+        operation.completeWithAfterClearBarrier(delivery.promise);
+        await operation.ownerSettlement;
+      }
+      expect(settled).toHaveBeenCalledOnce();
+    });
+  });
 
   it("interrupts only the captured operation when its abort admits a same-key successor", async () => {
     const operation = createTestReplyOperation({ sessionId: "session-interrupt-captured" });
@@ -415,7 +403,7 @@ describe("reply run registry", () => {
   );
 
   it.each(["pending", "throws", "throws undefined", "pre-backend"] as const)(
-    "retains exact stale custody until producer completion when cancellation is %s",
+    "retires exact stale custody at the cleanup deadline when cancellation is %s",
     async (cancellation) => {
       const operation = createTestReplyOperation({ sessionId: "session-cancel-pending" });
       operation.setPhase("running");
@@ -451,18 +439,16 @@ describe("reply run registry", () => {
       runAfterReplyOperationClear(operation, lateAfterClear);
       await expect(
         operation.watchdog.tick(deadline + SESSION_WATCHDOG_CLEANUP_MS),
-      ).resolves.toMatchObject({ action: "blocked" });
-      expect(getSessionControllerOperation(operation.key)).toBe(operation);
-      expect(afterClear).not.toHaveBeenCalled();
-      expect(lateAfterClear).not.toHaveBeenCalled();
-      expect(ownerSettled).not.toHaveBeenCalled();
-      expect(() => createTestReplyOperation({ sessionId: "too-early" })).toThrow();
-      operation.complete();
-      await operation.ownerSettlement;
+      ).resolves.toMatchObject({ action: "expire_cleanup" });
+      expect(getSessionControllerOperation(operation.key)).toBeUndefined();
       expect(afterClear).toHaveBeenCalledExactlyOnceWith("session-cancel-pending");
       expect(lateAfterClear).toHaveBeenCalledExactlyOnceWith("session-cancel-pending");
+      await operation.ownerSettlement;
       expect(ownerSettled).toHaveBeenCalledOnce();
-      expect(getSessionControllerOperation(operation.key)).toBeUndefined();
+      const successor = createTestReplyOperation({ sessionId: "successor" });
+      operation.complete();
+      expect(getSessionControllerOperation(operation.key)).toBe(successor);
+      successor.complete();
     },
   );
 
@@ -761,9 +747,9 @@ describe("reply run registry", () => {
       expect(afterClear).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS);
-      expect(operation.watchdog.snapshot().recovery?.status).toBe("blocked");
-      expect(getSessionControllerOperation(operation.key)).toBe(operation);
-      expect(afterClear).not.toHaveBeenCalled();
+      expect(operation.watchdog.snapshot().recovery?.status).toBe("settled");
+      expect(getSessionControllerOperation(operation.key)).toBeUndefined();
+      expect(afterClear).toHaveBeenCalledOnce();
       expect(cancel).toHaveBeenCalledTimes(2);
       expect(cancel).toHaveBeenLastCalledWith("superseded");
       operation.complete();
@@ -772,7 +758,7 @@ describe("reply run registry", () => {
     });
   });
 
-  it("keeps a running aborted operation blocked until its producer returns", async () => {
+  it("admits a visible successor after an aborted producer misses its cleanup deadline", async () => {
     await withFakeReplyTimers(async () => {
       const cancel = vi.fn();
       const operation = createTestReplyOperation({
@@ -787,31 +773,32 @@ describe("reply run registry", () => {
       operation.setPhase("running");
       const afterClear = vi.fn();
       runAfterReplyOperationClear(operation, afterClear);
-      const waitPromise = waitForSessionRunIdle("agent:main:hung-abort");
-
       operation.abortByUser();
-
-      await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS - 1);
-      expect(getSessionControllerOperation("agent:main:hung-abort")).toBe(operation);
-      expect(afterClear).not.toHaveBeenCalled();
-
-      await vi.advanceTimersByTimeAsync(1);
-
-      expect(getSessionControllerOperation("agent:main:hung-abort")).toBe(operation);
-      expect(operation.watchdog.snapshot().recovery?.status).toBe("blocked");
-      expect(afterClear).not.toHaveBeenCalled();
-      operation.complete();
-      expect(getSessionControllerOperation("agent:main:hung-abort")).toBeUndefined();
-      await expect(waitPromise).resolves.toBe(true);
-      expect(afterClear).toHaveBeenCalledTimes(1);
-      const next = await admitReplyTurn({
+      let next: Awaited<ReturnType<typeof admitReplyTurn>> | undefined;
+      void admitReplyTurn({
         sessionKey: "agent:main:hung-abort",
         sessionId: "session-after-hung-abort",
         kind: "visible",
         resetTriggered: false,
+      }).then((result) => {
+        next = result;
       });
-      expect(next.status).toBe("owned");
-      if (next.status === "owned") {
+
+      await vi.advanceTimersByTimeAsync(SESSION_WATCHDOG_CLEANUP_MS - 1);
+      expect(getSessionControllerOperation("agent:main:hung-abort")).toBe(operation);
+      expect(afterClear).not.toHaveBeenCalled();
+      expect(next).toBeUndefined();
+
+      await vi.advanceTimersByTimeAsync(1);
+
+      expect(next?.status).toBe("owned");
+      expect(getSessionControllerOperation("agent:main:hung-abort")).toBe(
+        next?.status === "owned" ? next.operation : undefined,
+      );
+      expect(afterClear).toHaveBeenCalledTimes(1);
+      operation.complete();
+      if (next?.status === "owned") {
+        expect(getSessionControllerOperation("agent:main:hung-abort")).toBe(next.operation);
         next.operation.complete();
       }
     });

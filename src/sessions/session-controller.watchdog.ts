@@ -115,6 +115,7 @@ export function createSessionControllerWatchdog(params: {
   let warningAt: number | undefined;
   let blockedWarning = false;
   let recovery: SessionWatchdogSnapshot["recovery"];
+  let recoveryAction: "stop" | "expire_cleanup" | undefined;
   let pendingTick:
     | { decision: SessionWatchdogDecision; resolve: (decision: SessionWatchdogDecision) => void }
     | undefined;
@@ -236,6 +237,19 @@ export function createSessionControllerWatchdog(params: {
   };
   const decide = (at = now()) => decideSessionWatchdog(snapshot(at), at);
   const tick = async (at = now()): Promise<SessionWatchdogDecision> => {
+    const cleanupDeadlineAtMs = snapshot(at).cleanupDeadlineAtMs;
+    const phase = params.readPhase();
+    if (
+      recovery?.status === "blocked" &&
+      recoveryAction === "stop" &&
+      (phase === "finishing" || phase === "terminal") &&
+      cleanupDeadlineAtMs !== undefined &&
+      at >= cleanupDeadlineAtMs
+    ) {
+      recovery = undefined;
+      recoveryAction = undefined;
+      blockedWarning = false;
+    }
     const decision = decide(at);
     if (decision.action === "warn" || decision.action === "blocked") {
       if (warningAt !== semanticAt || (decision.action === "blocked" && !blockedWarning)) {
@@ -265,6 +279,7 @@ export function createSessionControllerWatchdog(params: {
     }
     // Install before invoking an effect: cancellation can synchronously reenter tick.
     recovery = { status: "pending", startedAtMs: at };
+    recoveryAction = decision.action;
     const deadlineResult = new Promise<SessionWatchdogDecision>((resolve) => {
       pendingTick = { decision, resolve };
     });
@@ -326,6 +341,7 @@ export function createSessionControllerWatchdog(params: {
       }
       pendingTick = undefined;
       closed = true;
+      recoveryAction = undefined;
       started = false;
       if (timer) {
         clearTimeout(timer);

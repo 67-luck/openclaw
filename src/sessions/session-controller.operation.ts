@@ -270,6 +270,13 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
         failures.push(error);
       }
     }
+    if (cleanup && state.result && owner.active === operation) {
+      // The cleanup deadline is the terminal producer's final opportunity to
+      // release its own slot. Clear only this exact operation; a late complete()
+      // remains idempotent and cannot clear a successor installed afterward.
+      clearState();
+      settleOwner();
+    }
     if (failures.length) {
       throw new AggregateError(failures, "Watchdog cleanup remains blocked");
     }

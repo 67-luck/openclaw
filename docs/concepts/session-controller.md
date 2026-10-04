@@ -227,10 +227,11 @@ not perpetually renew a stuck run's progress clock.
 A bounded recovery claim assumes the scheduler and clock can run. The watchdog
 requests Stop for stalled execution through the captured cancellation kernel.
 Frozen finalization instead has a distinct cleanup transition that preserves
-the committed outcome. Cleanup failure is reported as blocked; it does not
-release an unresolved writer or admit a successor. The watchdog closes only
-after raw owner settlement. No in-process statechart can guarantee recovery
-from a blocked process by itself.
+the committed outcome. Once a cancelled producer has a terminal outcome, its
+cleanup deadline retires only that exact operation's slot; its closed authority
+and exact-operation checks fence late callbacks from a successor. Cleanup work
+that itself never returns remains blocked. No in-process statechart can guarantee
+recovery from a blocked process by itself.
 
 The in-memory stage introduces no new replay or storage contract. Qualifying
 Gateway user inputs already have durable custody before acknowledgment; after
