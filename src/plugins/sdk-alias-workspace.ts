@@ -92,6 +92,7 @@ export const WORKSPACE_PACKAGE_EXPORT_DIRS = [
   "normalization-core",
   "acp-core",
   "llm-core",
+  "worker-runtime",
 ];
 export const WORKSPACE_PACKAGE_ALIAS_NAMES = new Set([
   ...WORKSPACE_PACKAGE_ALIAS_SUBPATHS.map(([name]) => `@openclaw/${name}`),
@@ -103,4 +104,5 @@ export const ROOT_PACKAGED_WORKSPACE_PACKAGE_DIRS = new Set([
   "normalization-core",
   "retry",
   "terminal-core",
+  "worker-runtime",
 ]);

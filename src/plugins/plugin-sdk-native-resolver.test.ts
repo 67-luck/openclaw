@@ -590,6 +590,9 @@ describe("installOpenClawPluginSdkNativeResolver", () => {
         ["ai", "internal/google-model-family.ts"],
         ["ai", "internal/retry-after.ts"],
         ["acp-core", "runtime/types.ts"],
+        ["worker-runtime", "index.ts"],
+        ["worker-runtime", "worker.ts"],
+        ["worker-runtime", "lifecycle.ts"],
         ["llm-core", "index.ts"],
         ["llm-core", "model-contracts/anthropic.ts"],
       ] as const
@@ -605,6 +608,7 @@ describe("installOpenClawPluginSdkNativeResolver", () => {
     ]);
     writeInternalCorePackageExports(root, "media-core", ["attachment-classify", "mime"]);
     writeInternalCorePackageExports(root, "acp-core", ["runtime/types"]);
+    writeInternalCorePackageExports(root, "worker-runtime", ["", "worker", "lifecycle"]);
     const externalPluginEntry = writeExternalPluginEntry(path.join(root, "external-plugin"));
     const coreSourceParent = path.join(root, "src", "config", "plugin-web-search-config.ts");
     fs.mkdirSync(path.dirname(coreSourceParent), { recursive: true });

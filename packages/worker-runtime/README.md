@@ -25,6 +25,11 @@ lifecycle types uses `/lifecycle`. Keep those entrypoints independent of the hos
 scheduler and OpenClaw's application state. Package source depends on its host
 contracts rather than importing `src/infra` or database owners.
 
+Source-mode SDK loaders and tests resolve these declared exports through the
+host's workspace aliases. Packaged OpenClaw carries their built entries under
+`dist/worker-runtime` and bundles its runtime imports; consumers do not install
+this private package separately.
+
 ## Host adapter
 
 `WorkerTaskHost` supplies process-specific capabilities before a pool admits
