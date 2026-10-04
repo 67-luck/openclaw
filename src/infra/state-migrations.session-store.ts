@@ -5,10 +5,12 @@ import { isWithinDir } from "@openclaw/fs-safe/path";
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { listAgentEntries, toAgentEntriesRecord } from "../agents/agent-scope-config.js";
-import { normalizePersistedSessionEntryShape } from "../commands/doctor/shared/session-entry-shape.js";
+import {
+  normalizeLegacySessionEntryShape,
+  type LegacySessionEntry,
+} from "../commands/doctor/shared/session-entry-shape.js";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { resolveStateDir } from "../config/paths.js";
-import type { SessionEntry } from "../config/sessions.js";
 import { canonicalizeMainSessionAlias } from "../config/sessions/main-session.js";
 import { resolveAgentsDirFromSessionStorePath } from "../config/sessions/paths.js";
 import { resolvePersistedSessionStoreOwner } from "../config/sessions/session-store-owner.js";
@@ -203,9 +205,9 @@ function canonicalizeSessionKeyForAgent(
 export function normalizeSessionEntry(
   entry: SessionEntryLike,
   sessionKey?: string,
-): SessionEntry | null {
+): LegacySessionEntry | null {
   assertSupportedSessionStoreEntry(entry);
-  const shaped = normalizePersistedSessionEntryShape(entry, { sessionKey });
+  const shaped = normalizeLegacySessionEntryShape(entry, { sessionKey });
   if (!shaped) {
     return null;
   }
@@ -599,7 +601,7 @@ export async function migrateOrphanedSessionKeys(params: {
     if (totalLegacy === 0) {
       continue;
     }
-    const normalized = Object.create(null) as Record<string, SessionEntry>;
+    const normalized = Object.create(null) as Record<string, LegacySessionEntry>;
     for (const [key, entry] of Object.entries(working)) {
       const ne = normalizeSessionEntry(entry, key);
       if (ne) {
@@ -791,7 +793,7 @@ export async function migrateLegacyAcpSessionMetadata(params: {
       target,
       env,
     });
-    const normalized = Object.create(null) as Record<string, SessionEntry>;
+    const normalized = Object.create(null) as Record<string, LegacySessionEntry>;
     let migrated = 0;
     let consumed = 0;
     let preserved = 0;
@@ -964,7 +966,7 @@ export function mergeSessionStoreAliasPlans(
 
 export async function saveSessionStoreStrict(
   storePath: string,
-  store: Record<string, SessionEntry>,
+  store: Record<string, LegacySessionEntry>,
 ): Promise<void> {
   await saveLegacySessionStore(storePath, store, {
     skipMaintenance: true,

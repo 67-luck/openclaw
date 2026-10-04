@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readAcpSessionMetaForEntry } from "../acp/runtime/session-meta-readonly.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { pluginDoctorContractRegistryLoaderState } from "../plugins/doctor-contract-registry-loader-state.js";
 import {
@@ -26,11 +27,14 @@ import {
   planLegacyStateMigrationsReadOnly,
   runLegacyStateMigrations,
 } from "./state-migrations.doctor.js";
+import { parseSessionStoreJson5 } from "./state-migrations.fs.js";
 import { createLegacyDatabaseFixture } from "./state-migrations.media-persistence.test-support.js";
+import { throwIfDoctorStateMigrationRefused } from "./state-migrations.messages.js";
 import {
   readLegacyMigrationReceipt,
   resolveLegacyMigrationSourceKey,
 } from "./state-migrations.receipts.js";
+import { createLegacyAcpSessionEntry } from "./state-migrations.session-store.test-support.js";
 import {
   resetAutoMigrateLegacyStateDirForTest,
   resolveLegacyProfileWorkspaceMigrationPaths,
@@ -123,6 +127,101 @@ afterEach(async () => {
 });
 
 describe("legacy state migration caller execution", () => {
+  it.each(["canonical", "legacy alias"] as const)(
+    "preserves checkpoint ingress through Doctor preflight with %s ACP keys",
+    async (keyShape) => {
+      const fixture = await makeFixture();
+      const cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
+      fs.writeFileSync(fixture.configPath, JSON.stringify(cfg));
+      const sessionsDir = path.join(fixture.stateDir, "agents", "main", "sessions");
+      const storePath = path.join(sessionsDir, "sessions.json");
+      fs.mkdirSync(sessionsDir, { recursive: true });
+      const acpKey = "agent:main:main";
+      const rows = [
+        {
+          sourceKey: "agent:main:replay",
+          canonicalKey: "agent:main:replay",
+          entry: { sessionId: "replay-current", updatedAt: 20 },
+        },
+        {
+          sourceKey: keyShape === "canonical" ? acpKey : "main",
+          canonicalKey: acpKey,
+          entry: createLegacyAcpSessionEntry("acp-current", 20, "main", "checkpoint-runtime", 20),
+        },
+      ].map((row) => {
+        const sessionFile = path.join(sessionsDir, `${row.entry.sessionId}.jsonl`);
+        const transcriptPath = path.join(sessionsDir, `${row.entry.sessionId}-before.jsonl`);
+        const compactionCheckpoints = [
+          {
+            sessionId: row.entry.sessionId,
+            preCompaction: {
+              sessionId: `${row.entry.sessionId}-before`,
+              sessionFile: transcriptPath,
+            },
+            postCompaction: { sessionId: row.entry.sessionId, sessionFile, entryId: "compact" },
+            tokensBefore: 90,
+            tokensAfter: 40,
+          },
+        ];
+        const transcriptBytes = `${JSON.stringify({ type: "session", id: row.entry.sessionId, version: 3 })}\n`;
+        const previousTranscriptBytes = `${JSON.stringify({ type: "session", id: `${row.entry.sessionId}-before`, version: 3 })}\n`;
+        fs.writeFileSync(sessionFile, transcriptBytes);
+        fs.writeFileSync(transcriptPath, previousTranscriptBytes);
+        return {
+          ...row,
+          entry: { ...row.entry, sessionFile, transcriptPath, compactionCheckpoints },
+          transcriptBytes,
+          previousTranscriptBytes,
+        };
+      });
+      fs.writeFileSync(
+        storePath,
+        JSON.stringify(Object.fromEntries(rows.map((row) => [row.sourceKey, row.entry]))),
+      );
+
+      const result = await autoMigrateLegacyState({
+        cfg,
+        doctorOnlyStateMigrations: true,
+        env: fixture.env,
+        homedir: () => fixture.homeDir,
+        legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
+      });
+
+      expect(() => throwIfDoctorStateMigrationRefused(result.stepReceipts)).not.toThrow();
+      expect(
+        result.stepReceipts.find((receipt) => receipt.id === "acp-session-metadata"),
+      ).toMatchObject({
+        outcome: "completed",
+      });
+      const after = parseSessionStoreJson5(fs.readFileSync(storePath, "utf8"));
+      expect(after.ok).toBe(true);
+      expect(Object.keys(after.store).toSorted()).toEqual(
+        rows.map((row) => row.canonicalKey).toSorted(),
+      );
+      for (const row of rows) {
+        expect(after.store[row.canonicalKey]).toMatchObject({
+          sessionId: row.entry.sessionId,
+          updatedAt: row.entry.updatedAt,
+          sessionFile: row.entry.sessionFile,
+          transcriptPath: row.entry.transcriptPath,
+          compactionCheckpoints: row.entry.compactionCheckpoints,
+        });
+        expect(after.store[row.canonicalKey]).not.toHaveProperty("acp");
+        expect(after.store[row.canonicalKey]).not.toHaveProperty("retainedHistoryReferences");
+        expect(fs.readFileSync(row.entry.sessionFile, "utf8")).toBe(row.transcriptBytes);
+        expect(fs.readFileSync(row.entry.transcriptPath, "utf8")).toBe(row.previousTranscriptBytes);
+      }
+      expect(
+        readAcpSessionMetaForEntry({
+          sessionKey: acpKey,
+          entry: { sessionId: "acp-current", lifecycleRevision: undefined },
+          agentId: "main",
+          env: fixture.env,
+        }),
+      ).toMatchObject({ runtimeSessionName: "checkpoint-runtime" });
+    },
+  );
+
   it.each(["automatic", "doctor", "direct", "detected-directory", "detected-config"] as const)(
     "refuses retired OAuth sidecars before %s schema preparation on every attempt",
     async (mode) => {

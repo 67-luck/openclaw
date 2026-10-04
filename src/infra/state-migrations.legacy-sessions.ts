@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveInstallAgentDir } from "../agents/install-agent-dir.js";
-import type { SessionEntry } from "../config/sessions.js";
+import type { LegacySessionEntry } from "../commands/doctor/shared/session-entry-shape.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readExistingAgentSchemaMeta } from "../state/openclaw-agent-db-schema-helpers.js";
 import { readDeferredPluginMigrations } from "./deferred-plugin-migrations.js";
@@ -120,10 +120,10 @@ export function inspectLegacyAgentDir(
 }
 
 function normalizeTargetSessionStore(target: Record<string, SessionEntryLike>): {
-  store: Record<string, SessionEntry>;
+  store: Record<string, LegacySessionEntry>;
   rejectedProtectedKeyCount: number;
 } {
-  const store = Object.create(null) as Record<string, SessionEntry>;
+  const store = Object.create(null) as Record<string, LegacySessionEntry>;
   let rejectedProtectedKeyCount = 0;
   for (const [key, entry] of Object.entries(target)) {
     const normalizedEntry = normalizeSessionEntry(entry, key);

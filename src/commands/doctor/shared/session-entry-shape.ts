@@ -16,6 +16,12 @@ import {
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
 
+export type LegacySessionEntry = SessionEntry & {
+  compactionCheckpoints?: unknown;
+  sessionFile?: unknown;
+  transcriptPath?: unknown;
+};
+
 function normalizeOptionalTimestamp(value: unknown): number | undefined {
   return value === undefined ? undefined : (asNonNegativeFiniteNumber(value) ?? 0);
 }
@@ -108,6 +114,29 @@ function normalizeTranscriptSessionId(value: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** File-era repairs retain importer inputs until transcript metrics and custody are migrated. */
+export function normalizeLegacySessionEntryShape(
+  value: unknown,
+  options: { sessionKey?: string } = {},
+): LegacySessionEntry | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const { compactionCheckpoints: _checkpoints, ...canonicalInput } = value;
+  const entry = normalizePersistedSessionEntryShape(canonicalInput, options);
+  if (!entry) {
+    return undefined;
+  }
+  return {
+    ...entry,
+    ...(Object.hasOwn(value, "compactionCheckpoints")
+      ? { compactionCheckpoints: value.compactionCheckpoints }
+      : {}),
+    ...(Object.hasOwn(value, "sessionFile") ? { sessionFile: value.sessionFile } : {}),
+    ...(Object.hasOwn(value, "transcriptPath") ? { transcriptPath: value.transcriptPath } : {}),
+  };
 }
 
 /** Doctor and file import normalize persisted identities before publishing canonical rows. */

@@ -5,7 +5,8 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
   migrateLegacySessionEntryState,
-  normalizePersistedSessionEntryShape,
+  normalizeLegacySessionEntryShape,
+  type LegacySessionEntry,
 } from "../commands/doctor/shared/session-entry-shape.js";
 import { normalizeRestartRecoveryEntryFields } from "../config/sessions/restart-recovery-state.js";
 import { hasLegacySessionProviderState } from "../config/sessions/session-entry-state-format.js";
@@ -163,11 +164,11 @@ function normalizeLegacyPluginState(
   return next;
 }
 
-function normalizeLegacySessionStore(store: Record<string, SessionEntry>): void {
+function normalizeLegacySessionStore(store: Record<string, LegacySessionEntry>): void {
   for (const [key, entry] of Object.entries(store)) {
     assertSupportedSessionStoreEntry(entry);
     const modelSelectionLocked = isRecord(entry) && entry.modelSelectionLocked === true;
-    const shaped = normalizePersistedSessionEntryShape(entry, { sessionKey: key });
+    const shaped = normalizeLegacySessionEntryShape(entry, { sessionKey: key });
     if (!shaped) {
       if (modelSelectionLocked) {
         throw new Error(`Invalid model-selection-locked session entry: ${key}`);
@@ -199,10 +200,10 @@ function normalizeLegacySessionStore(store: Record<string, SessionEntry>): void 
   }
 }
 
-export function loadLegacySessionStore(storePath: string): Record<string, SessionEntry> {
+export function loadLegacySessionStore(storePath: string): Record<string, LegacySessionEntry> {
   const { store } = readSessionStoreJson5(storePath);
   hydrateSessionStoreSkillPromptRefs({ storePath, store });
-  const sessionStore = store as Record<string, SessionEntry>;
+  const sessionStore = store as Record<string, LegacySessionEntry>;
   normalizeLegacySessionStore(sessionStore);
   return sessionStore;
 }
@@ -265,7 +266,7 @@ async function archiveRemovedSessionTranscripts(params: {
 
 async function persistLegacySessionStore(
   storePath: string,
-  store: Record<string, SessionEntry>,
+  store: Record<string, LegacySessionEntry>,
 ): Promise<void> {
   const persisted = projectSessionStoreForPersistence({
     storePath,
@@ -288,7 +289,7 @@ async function persistLegacySessionStore(
 
 async function writeLegacySessionStoreUnlocked(
   storePath: string,
-  store: Record<string, SessionEntry>,
+  store: Record<string, LegacySessionEntry>,
   lockedEntriesBefore: ReadonlyMap<string, SessionEntry>,
   options: LegacySessionStoreSaveOptions,
 ): Promise<void> {
@@ -315,7 +316,7 @@ async function writeLegacySessionStoreUnlocked(
 
 export async function saveLegacySessionStore(
   storePath: string,
-  store: Record<string, SessionEntry>,
+  store: Record<string, LegacySessionEntry>,
   options: LegacySessionStoreSaveOptions = {},
 ): Promise<void> {
   await runExclusiveSessionStoreWrite(storePath, async () => {
@@ -331,7 +332,7 @@ export async function saveLegacySessionStore(
 
 export async function updateLegacySessionStore<T>(
   storePath: string,
-  mutator: (store: Record<string, SessionEntry>) => Promise<T> | T,
+  mutator: (store: Record<string, LegacySessionEntry>) => Promise<T> | T,
   options: LegacySessionStoreSaveOptions = {},
 ): Promise<T> {
   return await runExclusiveSessionStoreWrite(storePath, async () => {
