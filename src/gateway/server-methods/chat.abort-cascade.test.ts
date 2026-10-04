@@ -10,10 +10,8 @@ import { getSubagentRunByChildSessionKey } from "../../agents/subagents/registry
 import { enqueueSwarmRun, releaseSwarmRun } from "../../agents/subagents/swarm/swarm-scheduler.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import * as gatewayWorkAdmission from "../../process/gateway-work-admission.js";
 import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
-
 import { createWorkerInferenceCancellationService } from "../worker-environments/inference-control.test-helpers.js";
 import { handleChatAbortRequestWithLifecycle } from "./chat-abort-handler.js";
 import * as transcriptInject from "./chat-transcript-inject.js";
@@ -67,7 +65,6 @@ describe("descendant cascade ownership", () => {
     let current = true;
     const parent = createActiveRun(sessionKey, { agentId: "main", owner: { connId: "owner" } });
     parent.input.abortSignal.addEventListener("abort", () => {
-
       current = false;
     });
     const context = createChatAbortContext({ sources: new Map([["parent", parent]]) });
@@ -124,16 +121,18 @@ describe("descendant cascade ownership", () => {
     const sessionKey = kind.includes("worker") ? "global" : "agent:main:main";
     const cfg: OpenClawConfig = sessionKey === "global" ? { session: { scope: "global" } } : {};
     const childKey = "agent:main:subagent:cascade-ownership";
-    await writeSession(sessionKey, "main-session");
+    const storePath = await writeSession(sessionKey, "main-session");
     await writeSession(childKey, "cascade-queued");
     const canCascade = ["owned", "orphan", "represented worker", "late descendant"].includes(kind);
     const hasOwnedActive = kind !== "orphan" && !kind.startsWith("all foreign");
     const mine = createActiveRun(sessionKey, {
+      storeScope: storePath,
       sessionId: "main-session",
       agentId: "main",
       owner: { connId: "conn-owner", deviceId: "dev-owner" },
     });
     const foreign = createActiveRun(sessionKey, {
+      storeScope: storePath,
       queued: kind === "mixed queued",
       sessionId: "main-session",
       agentId: "main",

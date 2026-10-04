@@ -41,11 +41,6 @@ export type RpcSourceAdapter = SessionControllerSourceAdapter & {
   abortDiagnosticReason?: ChatAbortDiagnosticReason;
   /** Latest argument-free validation diagnostic for operator-initiated aborts. */
   toolErrorSummary?: string;
-  /**
-   * False for backend/internal agent runs that may share a session key but must
-   * not be projected into operator chat surfaces.
-   */
-  controlUiVisible?: boolean;
   /** True after the terminal session-store update has completed. */
   projectSessionTerminalPersisted?: boolean;
   /** A terminal lifecycle event was observed and is awaiting persistence. */
@@ -56,8 +51,6 @@ export type RpcSourceAdapter = SessionControllerSourceAdapter & {
   projectSessionTerminalPersistence?: Promise<void>;
   /** Which Gateway RPC owns this protocol projection. */
   kind?: "chat-send" | "agent";
-  /** Side questions stay independent from main-turn TUI session stops. */
-  turnKind?: "main" | "btw";
 };
 
 /** Byte-exact protocol correlation; scheduling and cancellation belong to input. */

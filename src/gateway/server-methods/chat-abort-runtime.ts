@@ -6,16 +6,26 @@ import {
   type ErrorShape,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { killSubagentRunAdmin } from "../../agents/subagents/registry/subagent-control-kill.js";
+import { ensureSubagentControllerOwnsRun } from "../../agents/subagents/registry/subagent-control-scope.js";
+import {
+  getCurrentSubagentRunOwner,
+  subagentRuns,
+} from "../../agents/subagents/registry/subagent-registry-memory.js";
 import {
   getLatestLiveSubagentRunByChildSessionKey,
   isSubagentRunQueued,
 } from "../../agents/subagents/registry/subagent-registry-read.js";
+import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { inputMatchesSessionId } from "../../sessions/session-controller.lifecycle-projections.js";
 import type { SessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { captureSessionControllerSourceSettlement } from "../../sessions/session-controller.mailbox.js";
 import {
   getRpcSource,
   getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  getRpcSourceProjectSessionActive,
+  getSessionControllerSourceIdentity,
+  listRpcSourceEntries,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import {
@@ -36,13 +46,16 @@ import {
   captureChatRunAbortPresentation,
   type ChatAbortOps,
 } from "../chat-abort.js";
+import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { errorShapeFromError } from "../error-shape.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
+import { resolveSessionStoreKey } from "../session-utils.js";
 import {
   getWorkerInferenceSessionControl,
   type WorkerInferenceCancellation,
 } from "../worker-environments/inference-control-internal.js";
 import {
+  canRequesterAbortChatRun,
   resolveAuthorizedRunsForSessionKeys,
   resolveAuthorizedQueuedTurnsForSession,
   type ChatAbortRequester,
@@ -78,6 +91,67 @@ export function abortQueuedCollectorSession(
   if (!entry || !isSubagentRunQueued(entry) || (params.runId && entry.runId !== params.runId)) {
     return undefined;
   }
+  const cfg = params.session?.ok
+    ? params.session.value.cfg
+    : (params.context.getRuntimeConfig() ?? {});
+  // The queued child does not grant cancellation authority. Capture its live
+  // parent source and carry that exact requester claim through the awaited kill.
+  const parentRunId = entry.requesterTurnRunId;
+  const parentSource = parentRunId ? getRpcSource(parentRunId) : undefined;
+  const parentKey = entry.controllerSessionKey?.trim() || entry.requesterSessionKey;
+  const controller = {
+    controllerSessionKey: parentKey,
+    controllerAgentId: resolveChatRunOwnerAgentId({
+      sessionKey: parentKey,
+      defaultAgentId: entry.requesterAgentId,
+    }),
+  };
+  const assertCurrent = () => {
+    params.assertCurrent?.();
+    // Registry generation and controller scope protect the child reservation;
+    // the source checks below independently protect its parent requester.
+    const current = getCurrentSubagentRunOwner(subagentRuns, entry);
+    if (!current || (current.execution.status === "queued" && !isSubagentRunQueued(current))) {
+      throw new Error("Queued collector reservation changed; retry Stop.");
+    }
+    const ownershipError = ensureSubagentControllerOwnsRun({ cfg, controller, entry: current });
+    if (ownershipError) {
+      throw new Error(ownershipError);
+    }
+    if (params.requester.isAdmin) {
+      return;
+    }
+    const parentIdentity = parentSource && getRpcSourceIdentity(parentSource);
+    const parentLifecycleGeneration = parentSource && getRpcSourceLifecycleGeneration(parentSource);
+    if (
+      !parentRunId ||
+      !parentSource ||
+      !parentIdentity ||
+      getRpcSource(parentRunId) !== parentSource ||
+      parentSource.input.phase === "consumed" ||
+      parentSource.input.retirementRequested ||
+      parentSource.input.custody.cancellationRetired ||
+      parentSource.input.abortSignal.aborted ||
+      !parentLifecycleGeneration ||
+      !isAgentEventLifecycleGenerationCurrent(parentLifecycleGeneration) ||
+      getRpcSourceProjectSessionActive(parentSource) === false ||
+      resolveSessionStoreKey({
+        cfg,
+        sessionKey: parentIdentity.sessionKey,
+        storeAgentId: controller.controllerAgentId,
+      }) !== parentKey ||
+      resolveChatRunOwnerAgentId(parentIdentity) !== controller.controllerAgentId ||
+      !canRequesterAbortChatRun(
+        { ...parentIdentity, requester: parentSource.adapter.requester },
+        params.requester,
+        { requireOwnerMatch: true },
+      )
+    ) {
+      throw new Error(
+        "Unauthorized queued collector Stop; use its active parent requester connection or an administrator.",
+      );
+    }
+  };
   return (async () => {
     let plan: ReturnType<typeof prepareChatSessionAbort> | undefined;
     let blocked: ErrorShape | undefined;
@@ -90,7 +164,7 @@ export function abortQueuedCollectorSession(
     };
     let failure: { error: unknown } | undefined;
     try {
-      params.assertCurrent?.();
+      assertCurrent();
       const projection = getSessionRowProjection(params.context);
       if (projection) {
         do {
@@ -109,9 +183,7 @@ export function abortQueuedCollectorSession(
       });
       await killSubagentRunAdmin(
         {
-          cfg: params.session?.ok
-            ? params.session.value.cfg
-            : (params.context.getRuntimeConfig() ?? {}),
+          cfg,
           sessionKey: params.sessionKey,
           agentId: params.agentId,
           expectedRunId: entry.runId,
@@ -158,7 +230,7 @@ export function abortQueuedCollectorSession(
           },
         },
         {
-          assertCurrent: () => params.assertCurrent?.(),
+          assertCurrent,
           requiredSessionId: params.requiredSessionId,
           preparePublication: publication,
           beforeSessionKill: () => {
@@ -345,6 +417,9 @@ export function prepareChatSessionAbort(
   const controllerStop = params.controllerTargets
     ? captureSessionControllerStop({ targets: params.controllerTargets })
     : undefined;
+  const rpcSourceByInput = new Map(
+    listRpcSourceEntries().map(([runId, entry]) => [entry.input, { runId, entry }] as const),
+  );
   const stopCapture = captureSessionControllerStop({
     inputs: [...targetByInput.keys(), ...(controllerStop?.inputs ?? [])],
     operations: controllerStop?.operations,
@@ -401,7 +476,41 @@ export function prepareChatSessionAbort(
       if (!target) {
         if (controllerStop?.inputs.includes(input)) {
           params.assertCurrent?.();
-          return inputMatchesSessionId(input, params.requiredSessionId) && cancel();
+          if (!inputMatchesSessionId(input, params.requiredSessionId)) {
+            return false;
+          }
+          const source = rpcSourceByInput.get(input);
+          if (source) {
+            const identity = getRpcSourceIdentity(source.entry);
+            const adapter = source.entry.adapter;
+            if (
+              getRpcSource(source.runId) !== source.entry ||
+              (params.includeProtectedRuns !== true &&
+                (adapter.controlUiVisible === false ||
+                  (params.preserveSideRuns && adapter.turnKind === "btw"))) ||
+              !canRequesterAbortChatRun(
+                { ...identity, requester: adapter.requester },
+                params.requester,
+              )
+            ) {
+              return false;
+            }
+          } else {
+            const identity = getSessionControllerSourceIdentity(input);
+            const adapter = input.sourceAdapter;
+            if (
+              (params.includeProtectedRuns !== true &&
+                (adapter?.controlUiVisible === false ||
+                  (params.preserveSideRuns && adapter?.turnKind === "btw"))) ||
+              !canRequesterAbortChatRun(
+                { ...identity, requester: adapter?.requester },
+                params.requester,
+              )
+            ) {
+              return false;
+            }
+          }
+          return cancel();
         }
         return false;
       }

@@ -521,6 +521,26 @@ describe("queued collector session projection", () => {
     expect(launchedRunIds).toEqual([]);
   });
 
+  it("requires the original parent requester to stop an exact queued child", async () => {
+    const { entry } = await createQueuedReservation();
+    const respond = vi.fn();
+    await abortCollector({
+      params: { key: entry.childSessionKey, runId: entry.runId, agentId: "main" },
+      client: operatorClient("other-requester"),
+      context: requestContext(),
+      respond,
+    });
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "INVALID_REQUEST" }),
+    );
+    expect(isSubagentRunQueued(entry)).toBe(true);
+    expect(entry.collectorCompletion).toBeUndefined();
+    expect(launchedRunIds).toEqual([]);
+  });
+
   it("publishes queued Stop before its kill result allows replacement", async () => {
     const { entry, registration } = await createQueuedReservation();
     const context = requestContext();
@@ -629,7 +649,7 @@ describe("queued collector session projection", () => {
           expect(error).toBeUndefined();
         } else {
           expect(result).toBeUndefined();
-          expect(error).toMatchObject({ code: "UNAVAILABLE" });
+          expect(error).toMatchObject({ code: "INVALID_REQUEST" });
         }
         const replacement = subagentRuns.get(entry.runId);
         expect(replacement).not.toBe(entry);
@@ -812,7 +832,7 @@ describe("queued collector session projection", () => {
           await handleChatSend(options);
         }
         const stopped = !foreign && !exact;
-        const collectorStopped = stopped && (scenario === "owned" || scenario === "parent-retired");
+        const collectorStopped = stopped && scenario === "owned";
         expect.soft(respond.mock.calls[0]?.[0]).toBe(collectorStopped);
         if (foreignAdmission) {
           expect(foreignAdmission.activeRunAbort.controller.signal.aborted).toBe(false);

@@ -121,6 +121,10 @@ export type SessionControllerSourceAdapter = {
   readonly authority?: { assertCurrent(): void; signal?: AbortSignal };
   readonly signal?: AbortSignal;
   readonly requester?: Readonly<{ deviceId?: string; connectionId?: string; clientId?: string }>;
+  /** False for internal work that ordinary operator chat surfaces must preserve. */
+  readonly controlUiVisible?: boolean;
+  /** Side questions stay independent from main-turn session stops. */
+  readonly turnKind?: "main" | "btw";
   cancel?(reason?: unknown): void;
   onSettled?(): void | Promise<void>;
 };
