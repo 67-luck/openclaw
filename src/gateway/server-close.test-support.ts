@@ -35,9 +35,10 @@ export function createTestChatRunState() {
 }
 
 export function createGatewayCloseTestDepsFactory(mocks: GatewayCloseFixtureMocks) {
+  const resolveGatewayContext = () => undefined;
   return (overrides: Partial<GatewayCloseParams> = {}): GatewayCloseParams => {
     return {
-      resolveGatewayContext: () => undefined,
+      resolveGatewayContext,
       closePluginRegistry: async (onRetirement) => {
         let retirement: ReturnType<GatewayCloseParams["pluginMetadata"]["close"]> | undefined;
         const retire = () =>

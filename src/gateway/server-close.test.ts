@@ -178,6 +178,14 @@ function firstMockCall<T extends readonly unknown[]>(mock: { mock: { calls: read
 }
 
 const createGatewayCloseTestDeps = createGatewayCloseTestDepsFactory(mocks);
+const resolveTestGatewayContext = createGatewayCloseTestDeps().resolveGatewayContext;
+function createGatewayOwnedRpcSourceForTest(
+  ...params: Parameters<typeof createRpcSourceForTest>
+): ReturnType<typeof createRpcSourceForTest> {
+  return withPluginRuntimeGatewayContextResolver(resolveTestGatewayContext, () =>
+    createRpcSourceForTest(...params),
+  );
+}
 
 describe("createGatewayCloseHandler", () => {
   it("joins model work before inventory retirement and shared teardown", async () => {
@@ -1807,10 +1815,13 @@ describe("createGatewayCloseHandler", () => {
       },
     };
     rpcSourceTesting.reset([
-      ["run-1", createRpcSourceForTest({}, { sessionId: "run-1", sessionKey: "session-1" })],
+      [
+        "run-1",
+        createGatewayOwnedRpcSourceForTest({}, { sessionId: "run-1", sessionKey: "session-1" }),
+      ],
       [
         "agent-run-1",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           { kind: "agent" as const },
           { sessionId: "agent-run-1", sessionKey: "session-1" },
         ),
@@ -1922,7 +1933,7 @@ describe("createGatewayCloseHandler", () => {
       drainTimeoutMs: 100,
     });
     await graceEntered.promise;
-    const late = createRpcSourceForTest(
+    const late = createGatewayOwnedRpcSourceForTest(
       {
         lifecycleGeneration: getAgentEventLifecycleGeneration(),
       },
@@ -1993,11 +2004,56 @@ describe("createGatewayCloseHandler", () => {
     }
   });
 
+  it("stops and recovers only RPC sources owned by the closing Gateway", async () => {
+    const ownGateway = () => undefined;
+    const otherGateway = () => undefined;
+    const create = (resolver: typeof ownGateway, runId: string) =>
+      withPluginRuntimeGatewayContextResolver(resolver, () =>
+        createRpcSourceForTest(
+          { lifecycleGeneration: getAgentEventLifecycleGeneration() },
+          {
+            runId,
+            sessionId: `${runId}-session`,
+            sessionKey: `agent:main:${runId}`,
+          },
+        ),
+      );
+    const own = create(ownGateway, "closing-gateway-run");
+    const other = create(otherGateway, "foreign-gateway-run");
+    const releaseOwn = await claimRpcSourceForTest(own);
+    const releaseOther = await claimRpcSourceForTest(other);
+    rpcSourceTesting.reset([
+      ["closing-gateway-run", own],
+      ["foreign-gateway-run", other],
+    ]);
+    const markMainSessionsAbortedForRestart = vi.fn<MarkMainSessionsAbortedForRestart>();
+    try {
+      await createGatewayCloseHandler(
+        createGatewayCloseTestDeps({
+          resolveGatewayContext: ownGateway,
+          markMainSessionsAbortedForRestart,
+        }),
+      )({ reason: "gateway restarting", restartExpectedMs: 123, drainTimeoutMs: 0 });
+
+      expect(own.input.abortSignal.aborted).toBe(true);
+      expect(other.input.abortSignal.aborted).toBe(false);
+      expect(markMainSessionsAbortedForRestart).toHaveBeenCalledWith(
+        expect.objectContaining({
+          activeRuns: [expect.objectContaining({ runId: "closing-gateway-run" })],
+        }),
+      );
+    } finally {
+      releaseOwn();
+      releaseOther();
+      await Promise.all([own.input.settlement.promise, other.input.settlement.promise]);
+    }
+  });
+
   it("aborts queued turns before restart shutdown continues", async () => {
     rpcSourceTesting.reset([
       [
         "queued-1",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           {},
           { phase: "waiting", sessionId: "session-1", sessionKey: "session-1" },
         ),
@@ -2032,7 +2088,10 @@ describe("createGatewayCloseHandler", () => {
 
   it("cancels remaining runs after ordinary shutdown grace without restart recovery", async () => {
     rpcSourceTesting.reset([
-      ["run-1", createRpcSourceForTest({}, { sessionId: "run-1", sessionKey: "session-1" })],
+      [
+        "run-1",
+        createGatewayOwnedRpcSourceForTest({}, { sessionId: "run-1", sessionKey: "session-1" }),
+      ],
     ]);
     const controller = rpcSourceTesting.get("run-1")!;
     await claimRpcSourceForTest(controller);
@@ -2062,7 +2121,10 @@ describe("createGatewayCloseHandler", () => {
 
   it("aborts active runs immediately when restart drain budget is exhausted", async () => {
     rpcSourceTesting.reset([
-      ["run-1", createRpcSourceForTest({}, { sessionId: "run-1", sessionKey: "session-1" })],
+      [
+        "run-1",
+        createGatewayOwnedRpcSourceForTest({}, { sessionId: "run-1", sessionKey: "session-1" }),
+      ],
     ]);
     const controller = rpcSourceTesting.get("run-1")!;
     await claimRpcSourceForTest(controller);
@@ -2090,7 +2152,7 @@ describe("createGatewayCloseHandler", () => {
     rpcSourceTesting.reset([
       [
         "run-finalizing",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           { projectSessionActive: false },
           { sessionId: "run-finalizing", sessionKey: "session-finalizing" },
         ),
@@ -2117,14 +2179,14 @@ describe("createGatewayCloseHandler", () => {
     rpcSourceTesting.reset([
       [
         "run-1",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           { lifecycleGeneration: getAgentEventLifecycleGeneration() },
           { sessionId: "session-id-1", sessionKey: "agent:main:main" },
         ),
       ],
       [
         "agent-run-1",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           { lifecycleGeneration: getAgentEventLifecycleGeneration(), kind: "agent" as const },
           {
             sessionId: "session-id-2",
@@ -2134,7 +2196,7 @@ describe("createGatewayCloseHandler", () => {
       ],
       [
         "completed-run",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           {
             lifecycleGeneration: getAgentEventLifecycleGeneration(),
             projectSessionActive: false,
@@ -2148,14 +2210,14 @@ describe("createGatewayCloseHandler", () => {
       ],
       [
         "stale-run",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           { lifecycleGeneration: getAgentEventLifecycleGeneration() },
           { sessionId: "stale-session-id", sessionKey: "agent:main:stale" },
         ),
       ],
       [
         "hidden-run",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           {
             lifecycleGeneration: getAgentEventLifecycleGeneration(),
             controlUiVisible: false,
@@ -2267,7 +2329,7 @@ describe("createGatewayCloseHandler", () => {
     rpcSourceTesting.reset([
       [
         "post-terminal-run",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           {
             lifecycleGeneration: getAgentEventLifecycleGeneration(),
             projectSessionActive: false,
@@ -2326,7 +2388,7 @@ describe("createGatewayCloseHandler", () => {
     rpcSourceTesting.reset([
       [
         "completed-run",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           {
             lifecycleGeneration: getAgentEventLifecycleGeneration(),
             projectSessionActive: false,
@@ -2384,7 +2446,7 @@ describe("createGatewayCloseHandler", () => {
     rpcSourceTesting.reset([
       [
         "completed-run",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           {
             lifecycleGeneration: getAgentEventLifecycleGeneration(),
             projectSessionActive: false,
@@ -2437,7 +2499,7 @@ describe("createGatewayCloseHandler", () => {
     rpcSourceTesting.reset([
       [
         "persisting-run",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           {
             lifecycleGeneration: getAgentEventLifecycleGeneration(),
             projectSessionActive: false,
@@ -2480,7 +2542,7 @@ describe("createGatewayCloseHandler", () => {
     rpcSourceTesting.reset([
       [
         "active-run",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           { lifecycleGeneration: getAgentEventLifecycleGeneration() },
           { sessionId: "active-session-id", sessionKey: "agent:main:active" },
         ),
@@ -2565,7 +2627,7 @@ describe("createGatewayCloseHandler", () => {
     rpcSourceTesting.reset([
       [
         "run-1",
-        createRpcSourceForTest(
+        createGatewayOwnedRpcSourceForTest(
           { lifecycleGeneration: getAgentEventLifecycleGeneration() },
           { sessionId: "session-id-1", sessionKey: "agent:main:main" },
         ),

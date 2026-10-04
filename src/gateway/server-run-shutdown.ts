@@ -29,10 +29,14 @@ const RESTART_REPLY_DRAIN_POLL_MS = 100;
 const RESTART_TERMINAL_PERSISTENCE_WAIT_TIMEOUT_MS = 1_000;
 const RESTART_MARKER_SLOW_WARNING_MS = 1_000;
 
-function getRestartReplyDrainCounts(params: { getPendingReplyCount: () => number }) {
+function getRestartReplyDrainCounts(params: {
+  getPendingReplyCount: () => number;
+  resolveGatewayContext: GatewayContextResolver;
+}) {
   const pendingReplyCount = params.getPendingReplyCount();
-  const activeRuns = listRestartDrainRuns().length;
-  const queuedTurns = listRpcSourceEntries().filter(([, entry]) => isRpcSourceQueued(entry)).length;
+  const entries = listGatewayRpcSourceEntries(params.resolveGatewayContext);
+  const activeRuns = listRestartDrainRuns(entries).length;
+  const queuedTurns = entries.filter(([, entry]) => isRpcSourceQueued(entry)).length;
   return {
     pendingReplies:
       Number.isFinite(pendingReplyCount) && pendingReplyCount > 0
@@ -43,6 +47,14 @@ function getRestartReplyDrainCounts(params: { getPendingReplyCount: () => number
   };
 }
 
+function listGatewayRpcSourceEntries(
+  resolveGatewayContext: GatewayContextResolver,
+): Array<[string, RpcSourceRef]> {
+  return listRpcSourceEntries().filter(([, entry]) =>
+    hasGatewayContextOwner(entry.input, resolveGatewayContext),
+  );
+}
+
 function listUnabortedRuns(
   entries: Iterable<readonly [string, RpcSourceRef]> = listRpcSourceEntries(),
 ): Array<[string, RpcSourceRef]> {
@@ -51,8 +63,10 @@ function listUnabortedRuns(
   );
 }
 
-function listRestartDrainRuns(): Array<[string, RpcSourceRef]> {
-  return listUnabortedRuns().filter(
+function listRestartDrainRuns(
+  entries: Iterable<readonly [string, RpcSourceRef]> = listRpcSourceEntries(),
+): Array<[string, RpcSourceRef]> {
+  return listUnabortedRuns(entries).filter(
     ([, entry]) => entry.input.phase !== "consumed" && !isRpcSourceQueued(entry),
   );
 }
@@ -112,6 +126,7 @@ export type GatewayRunShutdownParams = {
 
 async function waitForRestartReplyDrain(params: {
   getPendingReplyCount: () => number;
+  resolveGatewayContext: GatewayContextResolver;
   timeoutMs: number;
 }): Promise<{
   drained: boolean;
@@ -311,6 +326,7 @@ export async function prepareGatewayRunShutdown(
       }
       drainResult = await waitForRestartReplyDrain({
         getPendingReplyCount: params.getPendingReplyCount,
+        resolveGatewayContext: params.resolveGatewayContext,
         timeoutMs,
       });
       if (!drainResult.drained) {
@@ -322,7 +338,7 @@ export async function prepareGatewayRunShutdown(
     }
   }
   // Preparation accepted during grace belongs to this cancellation boundary.
-  const capturedSources = new Map(listRpcSourceEntries());
+  const capturedSources = new Map(listGatewayRpcSourceEntries(params.resolveGatewayContext));
   const capturedRecoveryCandidates = new Map(params.restartRecoveryCandidates);
   const sourceByInput = new Map(
     [...capturedSources].map(([runId, entry]) => [
