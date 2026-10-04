@@ -16,6 +16,7 @@ import {
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { withInstallationTarget } from "../infra/installation-target-context.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
+import { startSessionControllerInterruption } from "../sessions/session-controller.lifecycle.js";
 import { createUserTurnTranscriptRecorder } from "../sessions/user-turn-transcript.js";
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db.js";
@@ -3745,6 +3746,59 @@ describe("agentCommand – LiveSessionModelSwitchError retry", () => {
           }),
         }),
       );
+    },
+  );
+
+  it.each([
+    ["Stop", () => new Error("QA stopped the run")],
+    ["restart", createAgentRunRestartAbortError],
+  ] as const)(
+    "preserves the controller %s reason through command interruption",
+    async (_source, createReason) => {
+      setupAcpSession();
+      const entered = createDeferred();
+      let commandSignal: AbortSignal | undefined;
+      state.acpRunTurnMock.mockImplementation(async (params: unknown) => {
+        const signal = expectDefined(
+          (params as { signal?: AbortSignal }).signal,
+          "agent command abort signal",
+        );
+        commandSignal = signal;
+        entered.resolve();
+        signal.throwIfAborted();
+        return await new Promise((_, reject) => {
+          signal.addEventListener(
+            "abort",
+            () =>
+              reject(
+                signal.reason instanceof Error
+                  ? signal.reason
+                  : new Error("Agent command aborted without an Error reason"),
+              ),
+            { once: true },
+          );
+        });
+      });
+      const reason = createReason();
+      const command = agentCommand({
+        message: "hello",
+        sessionKey: "agent:main:main",
+        sessionEffects: "internal",
+      });
+      const rejection = command.catch((error: unknown) => error);
+      await entered.promise;
+      const interruption = startSessionControllerInterruption({
+        scope: "agent:default",
+        identities: ["agent:main:main", "session-1"],
+        reason,
+      });
+
+      try {
+        expect(commandSignal?.reason).toBe(reason);
+        expect(await rejection).toBe(reason);
+      } finally {
+        await Promise.allSettled([command, interruption.released]);
+      }
     },
   );
 
