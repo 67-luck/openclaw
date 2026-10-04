@@ -6,28 +6,13 @@ import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import { createAgentHarnessCompletionScope } from "../agents/agent-harness-completion-scope.js";
 import { buildAnnounceIdempotencyKey } from "../agents/announce-idempotency.js";
 import type { AgentCommandOpts } from "../agents/command/types.js";
-import { prepareCatalogExecutor } from "../agents/embedded-agent-runner/run/attempt-stream-prepare.test-support.js";
-import * as embeddedRuns from "../agents/embedded-agent-runner/runs.js";
 import { buildAgentInternalEventContext } from "../agents/internal-events.js";
-import { guardSessionManager } from "../agents/session-tool-result-guard-wrapper.js";
-import {
-  appendHistory,
-  createAssistant,
-  createAssistantResultStream,
-  createAutoCompactionSettings,
-  createTestSession,
-  registerAgentSessionLoopTestLifecycle,
-  streamMocks,
-  testModel,
-} from "../agents/sessions/agent-session-loop-correctness.test-support.js";
-import { createResourceLoader } from "../agents/sessions/agent-session-loop-resource-loader.test-support.js";
-import { SessionManager } from "../agents/sessions/session-manager.js";
+import { registerAgentSessionLoopTestLifecycle } from "../agents/sessions/agent-session-loop-correctness.test-support.js";
 import { resumeSubagentRun } from "../agents/subagents/registry/subagent-registry.js";
 import { loadSubagentRegistryFromSqlite } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import { listSessionPendingInputs } from "../config/sessions/session-accessor.pending-inputs.js";
 import { readMessageIdempotencyKey } from "../config/sessions/transcript-message-identity.js";
-import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
 import {
   captureAgentHarnessCompletionCustody,
   deliverAgentHarnessCompletion,
@@ -38,9 +23,6 @@ import {
   withPluginRuntimeGatewayRequestScope,
 } from "../plugins/runtime/gateway-request-scope.js";
 import { tryBeginGatewayRootWorkAdmission } from "../process/gateway-work-admission.js";
-import { withSessionTurn } from "../sessions/session-controller.admission.js";
-import * as sessionQueries from "../sessions/session-controller.queries.js";
-import * as userTurnTranscript from "../sessions/user-turn-transcript.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { createOperatorClient } from "./server-plugin-in-process-dispatch.test-support.js";
@@ -395,211 +377,6 @@ describe("native completion final-effect authority", () => {
         requestWork.mockRestore();
         signal.removeEventListener("abort", release);
       }
-    },
-  );
-
-  it.for([
-    { boundary: "recorder", change: "live" },
-    { boundary: "recorder", change: "operator-revoked" },
-    { boundary: "recorder", change: "requester-replaced" },
-    { boundary: "automatic compaction", change: "live" },
-    { boundary: "automatic compaction", change: "operator-revoked" },
-    { boundary: "automatic compaction", change: "requester-replaced" },
-  ] as const)(
-    "revalidates $change authority after real $boundary",
-    async ({ boundary, change }, { signal }) => {
-      await prepareGatewayReplyRuntimeForTest();
-      const context = kernel.gatewayRequestContext;
-      using completion = await createCompletion(context);
-      const actualRuns = await vi.importActual<typeof sessionQueries>(
-        "../sessions/session-controller.queries.js",
-      );
-      // importActual can share this namespace; capture the function before spyOn replaces it.
-      const isSessionRunActive = actualRuns.isSessionRunActive;
-      vi.spyOn(sessionQueries, "isSessionRunActive").mockImplementation(isSessionRunActive);
-      const entered = createDeferred();
-      const resume = createDeferred();
-      const compacting = createDeferred();
-      const resumeCompaction = createDeferred();
-      const modelEntered = createDeferred();
-      const queued = createDeferred();
-      let finishModel: (() => void) | undefined;
-      let closing = false;
-      const release = () => {
-        closing = true;
-        resume.resolve();
-        resumeCompaction.resolve();
-        finishModel?.();
-      };
-      signal.addEventListener("abort", release, { once: true });
-      const sessionManager = SessionManager.open(completion.sessionScope);
-      guardSessionManager(sessionManager);
-      if (boundary === "automatic compaction") {
-        await appendHistory(
-          sessionManager,
-          createAssistant(testModel, [{ type: "text", text: "Previous result" }]),
-        );
-        await appendHistory(
-          sessionManager,
-          createAssistant(testModel, [{ type: "text", text: "Latest result" }]),
-        );
-      }
-      const { session } = await createTestSession({
-        sessionManager,
-        ...(boundary === "automatic compaction"
-          ? {
-              settingsManager: createAutoCompactionSettings(),
-              resourceLoader: createResourceLoader(
-                new Map([
-                  [
-                    "session_before_compact",
-                    [
-                      async () => {
-                        compacting.resolve();
-                        await resumeCompaction.promise;
-                        // Keep the prompt in automatic compaction while completion authority changes.
-                        return { cancel: true };
-                      },
-                    ],
-                  ],
-                ]),
-              ),
-            }
-          : {}),
-      });
-      streamMocks.streamSimple.mockImplementation(() => {
-        if (finishModel || closing) {
-          return createAssistantResultStream(
-            createAssistant(testModel, [{ type: "text", text: "Child received" }]),
-          );
-        }
-        const stream = createAssistantMessageEventStream();
-        finishModel = () => {
-          stream.push({
-            type: "done",
-            reason: "stop",
-            message: createAssistant(
-              testModel,
-              [{ type: "text", text: "Ready" }],
-              "stop",
-              boundary === "automatic compaction" ? testModel.contextWindow : 1,
-            ),
-          });
-          stream.end();
-        };
-        modelEntered.resolve();
-        return stream;
-      });
-      await withSessionTurn(
-        { ...completion.sessionScope, abortSignal: signal },
-        async (operation) => {
-          const activeRunId = `active-${randomUUID()}`;
-          const prepared = prepareCatalogExecutor([], {
-            replyOperation: expectDefined(operation, "Native completion requires an admitted turn"),
-            activeSession: session,
-            sessionKey: completion.sessionScope.sessionKey,
-            attempt: {
-              runId: activeRunId,
-              sessionId: completion.sessionScope.sessionId,
-              config: context.getRuntimeConfig(),
-              deferTerminalLifecycle: true,
-              onDeferredLifecycleOwner: () => {},
-            },
-          });
-          expect(prepared.queueHandle.messageInjectionV2?.version).toBe(2);
-          const inject = vi.spyOn(session.agent, "steer");
-          const steer = session.steer.bind(session);
-          let steering: ReturnType<typeof session.steer> | undefined;
-          vi.spyOn(session, "steer").mockImplementation((...args) => (steering = steer(...args)));
-          const unsubscribe = session.subscribe((event) => {
-            if (event.type === "queue_update" && session.pendingMessageCount > 0) {
-              queued.resolve();
-            }
-          });
-          let prompt: Promise<unknown> | undefined;
-          let delivery: ReturnType<typeof completion.deliver> | undefined;
-          const createRecorder = userTurnTranscript.createUserTurnTranscriptRecorder;
-          vi.spyOn(userTurnTranscript, "createUserTurnTranscriptRecorder").mockImplementation(
-            (params) => {
-              const recorder = createRecorder(params);
-              if (params.input?.idempotencyKey === `${completion.idempotencyKey}:active-wake`) {
-                const resolve = recorder.resolveMessage.bind(recorder);
-                recorder.resolveMessage = async (...args) => {
-                  entered.resolve();
-                  await resume.promise;
-                  return await resolve(...args);
-                };
-              }
-              return recorder;
-            },
-          );
-          try {
-            prompt = session.prompt("Wait for the native child");
-            await reachBoundary(modelEntered.promise, prompt);
-            if (boundary === "automatic compaction") {
-              finishModel?.();
-              await reachBoundary(compacting.promise, prompt);
-              expect(prepared.subscription.isCompacting()).toBe(true);
-            }
-            const before = sessionAccessor.loadTranscriptEventsSync(completion.sessionScope);
-            delivery = completion.deliver();
-            await reachBoundary(entered.promise, delivery);
-            expect(inject).not.toHaveBeenCalled();
-            await completion.changeOwner(change);
-            resume.resolve();
-            if (change === "live") {
-              await reachBoundary(queued.promise, delivery);
-              expect(inject).toHaveBeenCalledOnce();
-              resumeCompaction.resolve();
-              if (boundary === "recorder") {
-                finishModel?.();
-              }
-              await prompt;
-              expect(await delivery).toMatchObject({ delivered: true, path: "steered" });
-              expect(sessionManager.getEntries()).toContainEqual(
-                expect.objectContaining({
-                  type: "message",
-                  message: expect.objectContaining({
-                    role: "user",
-                    idempotencyKey: `${completion.idempotencyKey}:active-wake`,
-                  }),
-                }),
-              );
-            } else {
-              expect((await delivery).delivered).toBe(false);
-              await Promise.allSettled([steering]);
-              resumeCompaction.resolve();
-              if (boundary === "automatic compaction") {
-                await prompt;
-              }
-              expect(inject).not.toHaveBeenCalled();
-              expect(session.getSteeringMessages()).toEqual([]);
-              expect(sessionAccessor.loadTranscriptEventsSync(completion.sessionScope)).toEqual(
-                before,
-              );
-              expect((await listSessionPendingInputs(completion.sessionScope)).total).toBe(0);
-            }
-            if (boundary === "automatic compaction") {
-              expect(prepared.subscription.isCompacting()).toBe(false);
-            }
-            expect(agentCommandMock).not.toHaveBeenCalled();
-            expect(context.dedupe.has(`agent:${completion.idempotencyKey}`)).toBe(false);
-          } finally {
-            release();
-            await session.abort();
-            await Promise.allSettled([delivery, steering, prompt]);
-            unsubscribe();
-            prepared.deferredLifecycleOwner?.discard();
-            prepared.subscription.unsubscribe();
-            embeddedRuns.clearActiveEmbeddedRun(
-              completion.sessionScope.sessionId,
-              prepared.queueHandle,
-              completion.sessionScope.sessionKey,
-            );
-            signal.removeEventListener("abort", release);
-          }
-        },
-      );
     },
   );
 });

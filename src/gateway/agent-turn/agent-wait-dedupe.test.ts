@@ -19,6 +19,7 @@ import { createGatewayRequestContext } from "../server-request-context.js";
 import { makeContextParams } from "../server-request-context.test-support.js";
 import type { DedupeEntry } from "../server-shared.js";
 import { roleClient, rolePolicyConfig } from "../session-sharing.test-utils.js";
+import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { replayAgentTurnIfCached } from "./agent-dedupe.js";
 import { setGatewayDedupeEntry, waitForAgentJob } from "./agent-job.js";
 import { createAgentTurnService } from "./agent-turn-service.js";
@@ -100,13 +101,14 @@ describe("agent.wait gateway dedupe observations", () => {
     const spaced = " exact-rpc-id ";
     const dedupe = new Map<string, DedupeEntry>();
     completeRun(dedupe, plain);
-    const source = createTestRpcSource(
+    const source = createRpcSourceForTest(
+      { kind: "agent" },
       {
+        runId: spaced,
         sessionKey: "agent:main:exact-rpc",
         sessionId: "exact-session",
-        kind: "agent",
+        phase: "waiting",
       },
-      spaced,
     );
     rpcSourceTesting.reset([[spaced, source]]);
     const service = createAgentTurnService({
@@ -342,7 +344,7 @@ describe("agent.wait gateway dedupe observations", () => {
       );
       const runId = "queued-visible-wait";
       rpcSourceTesting.clear();
-      const source = createTestRpcSource({ ...session }, runId);
+      const source = createRpcSourceForTest({}, { ...session, runId, phase: "waiting" });
       const controller = testRpcSourceController(source);
       const handler = expectDefined(agentHandlers["agent.wait"], "registered wait handler");
       const context = createGatewayRequestContext(makeContextParams());
@@ -547,7 +549,7 @@ describe("agent.wait gateway dedupe observations", () => {
       sessionId: "queued-session",
       agentId: "main",
     };
-    const source = createTestRpcSource(queued, runId);
+    const source = createRpcSourceForTest({}, { ...queued, runId, phase: "waiting" });
     const controller = testRpcSourceController(source);
     try {
       rpcSourceTesting.set(runId, source);

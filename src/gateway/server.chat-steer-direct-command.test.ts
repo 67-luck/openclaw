@@ -7,6 +7,7 @@ import type { RawData } from "ws";
 import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import { readAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import { getEmbeddedRunAttachment } from "../agents/embedded-agent-runner/run-state.js";
+import { createAttemptNestedToolActivityState } from "../agents/embedded-agent-runner/run/attempt-nested-tool-activity.js";
 import { prepareEmbeddedAttemptStream } from "../agents/embedded-agent-runner/run/attempt-stream-prepare.js";
 import type {
   EmbeddedRunAttemptParams,

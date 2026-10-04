@@ -253,7 +253,8 @@ export function startGatewayEventSubscriptions(params: {
         entry.adapter.projectSessionTerminalPersistence = undefined;
         entry.adapter.projectSessionTerminalPersisted = persisted;
         markChatAbortTerminalPersistenceError(entry, error);
-        if (getRpcSource(candidateRunId) !== entry) {
+        const current = getRpcSource(candidateRunId);
+        if (current && current !== entry) {
           return;
         }
         if (persisted) {
@@ -272,7 +273,7 @@ export function startGatewayEventSubscriptions(params: {
             observedAt,
           });
         }
-        if (entry.input.retirementRequested) {
+        if (current === entry && entry.input.retirementRequested) {
           retireRpcSource(candidateRunId, entry);
         }
       };

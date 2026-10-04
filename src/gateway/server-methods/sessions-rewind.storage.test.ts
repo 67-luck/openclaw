@@ -45,6 +45,7 @@ import { createRuntimeAgent } from "../../plugins/runtime/runtime-agent.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import * as storeWriterQueue from "../../shared/store-writer-queue.js";
 import {
   closeOpenClawAgentDatabaseByPathAsync,
   openOpenClawAgentDatabase,
@@ -477,7 +478,6 @@ async function revokeWithPublicLifecyclePredecessor(
   const entered = createDeferredCore();
   const release = createDeferredCore();
   const heldLifecycle = runSessionMutation({
-
     scope: storePath,
     identities: [scope.sessionId],
     run: async () => {

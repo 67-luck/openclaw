@@ -18,12 +18,13 @@ import {
   beginSessionEffect,
   captureSessionTarget,
 } from "../../../sessions/session-controller.lifecycle.js";
-import { resolveSessionAgentId } from "../../agent-scope.js";
+import { AgentSelectionRequiredError, resolveSessionAgentId } from "../../agent-scope.js";
 import { createEmbeddedRunHandle } from "../../embedded-agent-runner/runs.test-support.js";
 import { isSubagentRegistryWriteCommand } from "../../subagent-test-fixtures.test-helpers.js";
 import type { AgentToolGatewayRequestCaller } from "../../tools/in-process-gateway.js";
 import { createSessionsSendTool } from "../../tools/sessions-send-tool.js";
 import { createSubagentsTool } from "../../tools/subagents-tool.js";
+import { captureSubagentCompletionReply } from "../announce/subagent-announce-output.js";
 import {
   clearActiveEmbeddedRun,
   setActiveEmbeddedRun,

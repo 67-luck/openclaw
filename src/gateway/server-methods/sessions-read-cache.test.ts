@@ -45,6 +45,7 @@ import { invalidateOperatorRolePolicy } from "../operator-role-policy.js";
 import { persistGatewaySessionLifecycleEvent } from "../session-lifecycle-state.js";
 import { observeSessionRowBackfill } from "../session-row-backfill.test-support.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
+import type { GatewaySessionRow } from "../session-utils.types.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import type { WorkerSessionPlacementRecord } from "../worker-environments/placement-store.js";
 import { createActiveRpcSourceForTest } from "./rpc-source-fixtures.test-support.js";

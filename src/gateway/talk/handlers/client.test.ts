@@ -232,9 +232,7 @@ describe("talk.client.transcript", () => {
   afterEach(async () => {
     const remainingRootWork = getActiveGatewayRootWorkCount();
     resetGatewayWorkAdmission();
-    for (const resource of offerResources.splice(0)) {
-      resource.emitDestroy();
-    }
+    disposeResources();
     if (ownedVoiceSessionId) {
       await closeTalkClientGatewayControlSession({
         voiceSessionId: ownedVoiceSessionId,
@@ -486,6 +484,7 @@ describe("talk.client.transcript", () => {
     const enqueue = voiceMocks.runEmbeddedAgent.getMockImplementation()!;
     voiceMocks.runEmbeddedAgent.mockImplementationOnce(async (params) => {
       expect(getSessionControllerWorkCount()).toBe(1);
+      embeddedEntered.resolve();
       await beforeEnqueue.promise;
       return await enqueue(params);
     });

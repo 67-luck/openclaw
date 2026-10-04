@@ -115,13 +115,17 @@ it.each([
       pending,
       "Cold selection was not dispatched",
     );
-    admission = await beginSessionEffect({
-      scope: ownerStorePath,
-      identities: [
-        protectsHistory ? fixture.scope.sessionKey.toUpperCase() : "agent:main:unrelated-work",
-      ],
-      assertAllowed: () => {},
-    });
+    if (change === "configuration") {
+      config.session.maintenance.coldStorage.enabled = false;
+    } else {
+      admission = await beginSessionEffect({
+        scope: ownerStorePath,
+        identities: [
+          protectsHistory ? fixture.scope.sessionKey.toUpperCase() : "agent:main:unrelated-work",
+        ],
+        assertAllowed: () => {},
+      });
+    }
     delayed.release.resolve();
     if (protectsHistory) {
       await expect(pending).rejects.toThrow(

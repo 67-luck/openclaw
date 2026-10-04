@@ -200,7 +200,6 @@ describe("gateway chat-state maintenance", () => {
         rpcSourceTesting.set(runId, source);
       }
       const release = () => {
-        deps.chatAbortControllers.delete(runId);
         releaseAgentRunContext(runId, claim);
         if (source) {
           retireSessionControllerInput(source.input);

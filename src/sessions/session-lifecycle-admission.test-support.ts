@@ -5,6 +5,8 @@ import type { RpcSourceIdentity, RpcSourceRef } from "./session-controller.rpc-s
 import {
   rpcSourceByRunId,
   rpcSourceRemovalByRef,
+  sessionControllerEntriesByAlias,
+  sessionControllerEntriesByStore,
   sessionControllers,
 } from "./session-controller.storage.js";
 
@@ -103,6 +105,8 @@ export function setRpcSourceIdentityForTest(
 export function resetSessionControllerStateForTest(): void {
   rpcSourceByRunId.clear();
   sessionControllers.clear();
+  sessionControllerEntriesByAlias.clear();
+  sessionControllerEntriesByStore.clear();
 }
 
 /** Test-only access to controller-owned protocol correlation. */

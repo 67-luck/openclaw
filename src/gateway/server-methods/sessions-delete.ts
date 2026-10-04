@@ -34,11 +34,6 @@ import { removeSessionWorktree } from "../../sessions/session-worktree-lifecycle
 import { resolvePluginSessionOwnershipError } from "../session-plugin-ownership.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
 import { invalidSessionRequest } from "../session-request-error.js";
-import {
-  cleanupSessionBeforeMutation,
-  emitGatewaySessionEndPluginHook,
-  emitSessionUnboundLifecycleEvent,
-} from "../session-reset-service.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "../session-utils-store-worker.js";
 import { loadGatewaySessionEntryReadOnly, loadSessionEntry } from "../session-utils.js";
 import { prepareSessionWorkerPlacementRetirement } from "../worker-environments/session-placement-lifecycle.js";
@@ -50,6 +45,7 @@ import {
 } from "./sessions-lifecycle-drain.js";
 import {
   loadAccessorSessionEntryForGatewayTarget,
+  loadSessionsRuntimeModule,
   isAgentMainSessionKey,
   requireSessionKey,
 } from "./sessions-shared.js";
@@ -157,6 +153,12 @@ export async function deleteGatewaySession({
   if (initialError) {
     return { ok: false, error: initialError };
   }
+  // Capture the target before lazy loading can yield to a same-key successor.
+  const {
+    cleanupSessionBeforeMutation,
+    emitGatewaySessionEndPluginHook,
+    emitSessionUnboundLifecycleEvent,
+  } = await loadSessionsRuntimeModule();
   const assertCurrent = () => {
     assertCallerCurrent?.();
     sessionMutationAuthorization?.assertCurrent();
@@ -213,6 +215,9 @@ export async function deleteGatewaySession({
         });
       } catch (error) {
         assertCurrent();
+        if (error instanceof SessionMutationPreemptTimeoutError) {
+          throw error;
+        }
         if (error instanceof SessionDeletionError) {
           throw error;
         }

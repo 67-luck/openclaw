@@ -547,7 +547,7 @@ describe("abortChatRunById", () => {
   ]) {
     it(testCase.name, async () => {
       const ops = createOps({ runId: testCase.runId, entry: await testCase.createEntry() });
-      ops.getRuntimeConfig = () => ({ agents: { list: [{ id: "main", default: true }] } });
+      ops.getRuntimeConfig = () => ({ agents: { entries: { main: {} } } });
 
       const result = testCase.abort(ops, { runId: testCase.runId, sessionKey: "global" });
 

@@ -185,15 +185,14 @@ export function resolveChatSendRequestConflict(
   ) {
     return conflict(true);
   }
-  const retryEntries =
+  const ownPendingAttempt =
     ownPendingAttemptId !== undefined &&
     readPreRegisteredRun({
       key: session.pendingChatSendKey,
       entry: entries[1],
       keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
-    })?.payload.attemptId === ownPendingAttemptId
-      ? entries.slice(0, 1)
-      : entries;
+    })?.payload.attemptId === ownPendingAttemptId;
+  const retryEntries = ownPendingAttempt ? entries.slice(0, 1) : entries;
   if (
     !comparison &&
     retryEntries.some((entry) => entry?.requestIdentity === request.requestIdentity)
@@ -205,7 +204,7 @@ export function resolveChatSendRequestConflict(
     sameDurableSource ||
     hasRestartRecoveryTerminalRun(session.entry, session.clientRunId) ||
     context.chatRunState.hasAbortMarker(session.clientRunId) ||
-    hasRpcSource(session.clientRunId);
+    (!ownPendingAttempt && hasRpcSource(session.clientRunId));
   if (!knownRetry) {
     return undefined;
   }

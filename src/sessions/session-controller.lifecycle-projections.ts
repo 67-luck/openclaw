@@ -17,6 +17,7 @@ import {
   sessionControllers,
   type SessionControllerEntry,
 } from "./session-controller.state.js";
+import * as controllerStorage from "./session-controller.storage.js";
 import {
   sessionTargetOwnersMatch,
   targetFrom,
@@ -125,9 +126,9 @@ export function* allEffects() {
     yield* entry.lifecycle?.effects ?? [];
   }
 }
-function* allMutations() {
+function* allMutations(entries: Iterable<SessionControllerEntry> = sessionControllers.values()) {
   const seen = new Set<Mutation>();
-  for (const entry of sessionControllers.values()) {
+  for (const entry of entries) {
     for (const mutation of entry.lifecycle?.mutations ?? []) {
       if (!seen.has(mutation)) {
         seen.add(mutation);
@@ -138,9 +139,13 @@ function* allMutations() {
 }
 export function collectSessionControllerTargets(
   owners?: ReadonlySet<object>,
+  storeScope?: string,
 ): Map<string, Set<string>> {
   const result = new Map<string, Set<string>>();
-  for (const entry of sessionControllers.values()) {
+  const entries = storeScope
+    ? (controllerStorage.sessionControllerEntriesByStore.get(storeScope) ?? [])
+    : sessionControllers.values();
+  for (const entry of entries) {
     const effects = [...(entry.lifecycle?.effects ?? [])].filter(
       (effect) =>
         (effect.phase === "acquired" || effect.phase === "writer") &&
@@ -247,13 +252,18 @@ export function hasOnlySessionMutationKindActive(
   return mutations.length > 0 && mutations.every((mutation) => mutation.kind === kind);
 }
 export function collectSessionMutationIdentities(scope: string): string[] {
+  const normalizedScope = scope.trim();
   return [
     ...new Set(
-      [...allMutations()]
+      [
+        ...allMutations(
+          controllerStorage.sessionControllerEntriesByStore.get(normalizedScope) ?? [],
+        ),
+      ]
         .filter((mutation) => mutation.phase === "active")
         .flatMap((mutation) =>
           mutation.targets
-            .filter((target) => target.storeScope === scope.trim())
+            .filter((target) => target.storeScope === normalizedScope)
             .flatMap((target) => target.aliases),
         ),
     ),

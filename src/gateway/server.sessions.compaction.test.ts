@@ -27,6 +27,10 @@ import {
   beginSessionEffect,
   isSessionControllerWorkActive,
 } from "../sessions/session-controller.lifecycle.js";
+import {
+  getSessionStateVersion,
+  listSessionStateEventsSince,
+} from "../sessions/session-state-events.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
 import {
   seedSessionEntry,

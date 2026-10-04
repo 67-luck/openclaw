@@ -46,6 +46,7 @@ import {
   prepareReplyRunKeyUpdate,
   registerFollowupAdmissionBarrier,
   getSessionControllerEntry,
+  addSessionControllerEntryAlias,
   controllerEntryByOperation,
   resolveReplyOperationAgentId,
   runAfterReplyOperationClear,
@@ -438,7 +439,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       recordActivity();
       currentSessionId = normalizedNextSessionId;
       ownedSessionIds.add(currentSessionId);
-      owner.aliases.add(currentSessionId);
+      addSessionControllerEntryAlias(owner, currentSessionId);
       if (owner.target) {
         bindSessionControllerTarget(
           operation,
@@ -489,7 +490,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       currentSessionKey = update.sessionKey;
       owner = nextOwner;
       owner.active = operation;
-      owner.aliases.add(currentSessionId);
+      addSessionControllerEntryAlias(owner, currentSessionId);
       controllerEntryByOperation.set(operation, owner);
       if (mailboxClaim) {
         mailboxClaim.operation = operation;
@@ -692,7 +693,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       : getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext,
   );
   owner.active = operation;
-  owner.aliases.add(sessionId);
+  addSessionControllerEntryAlias(owner, sessionId);
   controllerEntryByOperation.set(operation, owner);
   retainSessionControllerOperation(operation);
   if (owner.target) {

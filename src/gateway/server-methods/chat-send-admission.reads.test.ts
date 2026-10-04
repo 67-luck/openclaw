@@ -17,7 +17,8 @@ import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { setGatewayPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-snapshot.js";
 import { retainGatewayPluginMetadata } from "../../plugins/plugin-metadata-lifecycle.js";
 import { resolvePluginMetadataSnapshotAsync } from "../../plugins/plugin-metadata-snapshot.js";
-import * as sessionLifecycle from "../../sessions/session-lifecycle-admission.js";
+import * as sessionControllerLifecycle from "../../sessions/session-controller.lifecycle.js";
+import { getRpcSource } from "../../sessions/session-controller.rpc-sources.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
@@ -333,7 +334,7 @@ it("releases rejected upload reservations so corrected input can reuse its key",
           await expect(admission).resolves.toMatchObject({ ok: false });
         }
         expect(context.dedupe.has(session.pendingChatSendKey)).toBe(false);
-        expect(context.chatAbortControllers.size).toBe(0);
+        expect(getRpcSource(runId)).toBeUndefined();
       } finally {
         session.releaseSessionTarget();
       }
@@ -425,11 +426,11 @@ it.each(["known-source", "new-terminal", "new-receipt"] as const)(
         content: "Hello",
         __openclaw: { humanMentions: [{ profileId: "bob", start: 0, end: 5 }] },
       });
-      const begin = sessionLifecycle.beginSessionWorkAdmission;
+      const begin = sessionControllerLifecycle.beginSessionEffect;
       const publication =
         source === "new-receipt"
           ? vi
-              .spyOn(sessionLifecycle, "beginSessionWorkAdmission")
+              .spyOn(sessionControllerLifecycle, "beginSessionEffect")
               .mockImplementation(async (params) => {
                 const lease = await begin(params);
                 context.dedupe.delete(pendingChatSendDedupeKey(runId));
@@ -467,15 +468,15 @@ it.each(["known-source", "new-terminal", "new-receipt"] as const)(
                 },
           ),
         );
-        expect(context.chatAbortControllers.size).toBe(0);
+        expect(getRpcSource(runId)).toBeUndefined();
         expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(false);
         expect(context.dedupe.size).toBe(source === "new-receipt" ? 1 : 0);
         expect(
-          sessionLifecycle.getSessionWorkAdmissionRelease({
-            scope: session.storePath,
-            identities: [sessionKey, session.entry?.sessionId],
-          }),
-        ).toBeUndefined();
+          sessionControllerLifecycle.isSessionControllerWorkActive(session.storePath, [
+            sessionKey,
+            session.entry?.sessionId,
+          ]),
+        ).toBe(false);
       } finally {
         publication?.mockRestore();
         comparison.mockRestore();
@@ -571,15 +572,15 @@ it.each([
       }
       expect((await pending).ok).toBe(false);
       expect(respond).toHaveBeenCalledOnce();
-      expect(context.chatAbortControllers.size).toBe(0);
+      expect(getRpcSource(runId)).toBeUndefined();
       expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(false);
       expect(sessionAccessor.loadSessionEntry(scope)).toEqual(initialEntry);
       expect(
-        sessionLifecycle.getSessionWorkAdmissionRelease({
-          scope: session.storePath,
-          identities: [sessionKey, entry.sessionId],
-        }),
-      ).toBeUndefined();
+        sessionControllerLifecycle.isSessionControllerWorkActive(session.storePath, [
+          sessionKey,
+          entry.sessionId,
+        ]),
+      ).toBe(false);
       if (change === "unavailable reader") {
         expect(respond.mock.calls[0]?.[2]?.message).toContain(
           "Worker placement admission reader is unavailable",

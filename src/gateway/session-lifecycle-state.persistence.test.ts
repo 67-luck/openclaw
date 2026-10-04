@@ -34,7 +34,10 @@ import {
   captureSessionTarget,
 } from "../sessions/session-controller.lifecycle.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
-import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../state/openclaw-agent-db.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
@@ -424,7 +427,7 @@ it.each(["success", "failed-write"])(
       admission.release();
       await interruption.released;
       expect(chatRunState.runs.get(runId)?.abortMarker).toBeUndefined();
-      expect(rpcSourceTesting.get(runId)).toBe(registration.entry);
+      expect(rpcSourceTesting.get(runId)).toBeUndefined();
       expect(registration.entry?.adapter.projectSessionTerminalPersistence).toBeInstanceOf(Promise);
       expect(
         resolveVisibleActiveSessionRunState({
@@ -435,7 +438,7 @@ it.each(["success", "failed-write"])(
         }),
       ).toEqual({ active: false, runIds: [] });
       expect(await readHistory()).toMatchObject({
-        sessionInfo: { status: "running", hasActiveRun: true },
+        sessionInfo: { status: "running", hasActiveRun: false },
       });
 
       if (outcome === "failed-write") {

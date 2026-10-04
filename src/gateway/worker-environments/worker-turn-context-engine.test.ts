@@ -193,7 +193,6 @@ describe("worker context engine", () => {
           {
             ...input,
             config,
-            pluginGeneration: runtime.pluginGeneration,
             contextTokenBudget: 32_768,
             toolsAllow: ["read"],
             userTurnTranscriptRecorder: recorder,

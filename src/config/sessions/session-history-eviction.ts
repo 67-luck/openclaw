@@ -159,7 +159,9 @@ export function collectAdmissionProtectedSessionIds(params: {
 }): Set<string> {
   return collectSessionAdmissionReferences({
     database: params.database,
-    admissionIdentities: [...(collectSessionControllerTargets().get(params.storePath) ?? [])],
+    admissionIdentities: [
+      ...(collectSessionControllerTargets(undefined, params.storePath).get(params.storePath) ?? []),
+    ],
   });
 }
 
@@ -170,7 +172,9 @@ async function readHistoricalSessionIds(params: {
   storePath: string;
 }): Promise<string[]> {
   const input = {
-    admissionIdentities: [...(collectSessionControllerTargets().get(params.storePath) ?? [])],
+    admissionIdentities: [
+      ...(collectSessionControllerTargets(undefined, params.storePath).get(params.storePath) ?? []),
+    ],
     preserveRecentMs: params.preserveRecentMs,
   };
   if (

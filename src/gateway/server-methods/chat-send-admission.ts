@@ -138,6 +138,15 @@ export async function admitChatSend(
       entry: context.dedupe.get(pendingChatSendKey),
       keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
     });
+  const clearPendingChatSendReservation = () => {
+    const pending = readPendingReservation();
+    if (
+      pending?.runId === clientRunId &&
+      normalizeOptionalString(pending.payload.attemptId) === pendingAttemptId
+    ) {
+      context.dedupe.delete(pendingChatSendKey);
+    }
+  };
   const preparedGoalRetry = request.goalOperation
     ? await prepareGoalChatSendRetry(params)
     : undefined;
@@ -188,21 +197,15 @@ export async function admitChatSend(
       },
     });
     return { retryComparison, uploadAdmission };
+  }).catch((error: unknown) => {
+    clearPendingChatSendReservation();
+    throw error;
   });
   if (!reserved) {
     return { ok: false as const };
   }
   let retryComparison = reserved.retryComparison;
   const uploadAdmission = reserved.uploadAdmission;
-  const clearPendingChatSendReservation = () => {
-    const pending = readPendingReservation();
-    if (
-      pending?.runId === clientRunId &&
-      normalizeOptionalString(pending.payload.attemptId) === pendingAttemptId
-    ) {
-      context.dedupe.delete(pendingChatSendKey);
-    }
-  };
   let admittedSessionId = backingSessionId ?? clientRunId;
   let expectedActiveReplyOperation: ReplyOperation | undefined;
   let gatewayWorkAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
@@ -450,6 +453,7 @@ export async function admitChatSend(
   let capturedOperator: Awaited<ReturnType<typeof prepareChatSendInterruptAdmission>>["operator"];
   let releaseCapturedOperator = () => {};
   let interruptedActiveRun: boolean;
+  let retainedRequestConflict: ReturnType<typeof resolveChatSendRequestConflict>;
   try {
     const preparedInterrupt = await prepareChatSendInterruptAdmission({
       operator: { ...params, runId: clientRunId },
@@ -528,6 +532,9 @@ export async function admitChatSend(
     }
     admittedRunAbort.controller.signal.throwIfAborted();
     params.assertCurrent?.();
+    retainedRequestConflict = await consumeChatSendCurrent(params, () =>
+      resolveChatSendRequestConflict(params, retryComparison, pendingAttemptId),
+    );
   } catch (err) {
     clearPendingChatSendReservation();
     admittedRunAbort?.cleanup();
@@ -536,11 +543,6 @@ export async function admitChatSend(
     respondChatSendWorkAdmissionFailure(params, err, retryComparison);
     return { ok: false as const };
   }
-  const retainedRequestConflict = resolveChatSendRequestConflict(
-    params,
-    retryComparison,
-    pendingAttemptId,
-  );
   if (retainedRequestConflict) {
     clearPendingChatSendReservation();
     admittedRunAbort?.cleanup();
@@ -666,16 +668,23 @@ export async function admitChatSend(
       respondChatSendAdmissionError(error, respond);
       return { ok: false as const };
     }
-    // Reserve while the request root is live: detached dispatch retains it until terminal persistence.
-    releaseGatewayRootContinuation = retainGatewayRootWorkAdmissionContinuation() ?? (() => {});
-    if (params.onAdmissionOwned) {
-      const admission = startOwnedWork(gatewayWorkAdmission.run(params.onAdmissionOwned));
-      if (!(await admission())) {
+    const pending = await consumeChatSendCurrent(params, () => {
+      activeRunAbort.controller.signal.throwIfAborted();
+      // Reserve while the request root is live: detached dispatch retains it until terminal persistence.
+      releaseGatewayRootContinuation = retainGatewayRootWorkAdmissionContinuation() ?? (() => {});
+      return {
+        admission: params.onAdmissionOwned
+          ? startOwnedWork(gatewayWorkAdmission.run(params.onAdmissionOwned))
+          : undefined,
+      };
+    });
+    if (pending.admission) {
+      if (!(await pending.admission())) {
         cleanupPreDispatchAdmission();
         return { ok: false as const };
       }
+      await consumeChatSendCurrent(params, () => true);
     }
-    params.assertCurrent?.();
     try {
       assertSessionTargetCurrent();
     } catch (error) {

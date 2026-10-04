@@ -188,11 +188,9 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
       });
     },
     async executeTurn(claim, inputTurn, runLocal, onAdmitted, assertRunCurrent) {
-      let current = options.placements.get(claim.sessionId);
-      if (!current && inputTurn.modelRun === true && !claim.sessionKey?.trim()) {
-        return await runLocal();
-      }
-      if (!inputTurn.replyOperation) {
+      const sessionlessModelRun = inputTurn.modelRun === true && !claim.sessionKey?.trim();
+      let current = sessionlessModelRun ? undefined : options.placements.get(claim.sessionId);
+      if (!inputTurn.replyOperation && !sessionlessModelRun) {
         // Resolve the existing placement contract before admission. A blank key
         // is not a sessionless turn, and omitted identity is inherited only once.
         const identity = resolvePlacementIdentity(claim, current);
@@ -226,7 +224,6 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
           },
         );
       }
-      const restartSignal = getGatewayRestartDrainSignal();
       const runLocalTurn = () =>
         executeLocalTurn({
           claim,
@@ -249,6 +246,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
       if (!current && inputTurn.modelRun === true && !claim.sessionKey?.trim()) {
         return await runLocal();
       }
+      const restartSignal = getGatewayRestartDrainSignal();
       if (!current || current.state === "local") {
         return await runLocalTurn();
       }

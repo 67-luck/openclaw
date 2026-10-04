@@ -9,6 +9,8 @@ import type {
 } from "./session-controller.state.types.js";
 const controllerState = resolveGlobalSingleton(Symbol.for("openclaw.sessionControllers"), () => ({
   controllers: new Map<string, SessionControllerEntry>(),
+  entriesByAlias: new Map<string, Set<SessionControllerEntry>>(),
+  entriesByStore: new Map<string, Set<SessionControllerEntry>>(),
   rpcSourceByRunId: new Map<string, RpcSourceRef>(),
   rpcSourceRemovalByRef: new WeakMap<RpcSourceRef, () => void>(),
   entryByOperation: new WeakMap<ReplyOperation, SessionControllerEntry>(),
@@ -25,6 +27,8 @@ const controllerState = resolveGlobalSingleton(Symbol.for("openclaw.sessionContr
   >(),
 }));
 export const sessionControllers = controllerState.controllers;
+export const sessionControllerEntriesByAlias = controllerState.entriesByAlias;
+export const sessionControllerEntriesByStore = controllerState.entriesByStore;
 export const rpcSourceByRunId = controllerState.rpcSourceByRunId;
 export const rpcSourceRemovalByRef = controllerState.rpcSourceRemovalByRef;
 export const controllerEntryByOperation = controllerState.entryByOperation;

@@ -564,15 +564,24 @@ export function expectActiveRunCleanup(
       agentId: requesterAgentId,
     }),
   );
-  expectSessionQueueCleanup(expectedQueueKeys);
+  expectSessionQueueCleanup(expectedQueueKeys, requesterSessionKey, requesterAgentId);
   expect(embeddedRunMock.abortCalls).toEqual([]);
   expect(embeddedRunMock.waitCalls).toEqual([]);
 }
 
-function expectSessionQueueCleanup(expectedQueueKeys: string[]) {
+function expectSessionQueueCleanup(
+  expectedQueueKeys: string[],
+  requesterSessionKey: string,
+  requesterAgentId: string,
+) {
   expect(sessionCleanupMocks.clearSessionQueues).toHaveBeenCalledTimes(1);
   expect(sessionCleanupMocks.clearSessionQueues).toHaveBeenCalledWith(
     expect.arrayContaining(expectedQueueKeys),
+    expect.objectContaining({
+      agentId: requesterAgentId,
+      aliases: expect.arrayContaining(expectedQueueKeys),
+      sessionKey: requesterSessionKey,
+    }),
   );
 }
 

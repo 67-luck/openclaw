@@ -1,13 +1,19 @@
 // Proves dispatcher root-work accounting and fail-closed suspension behavior.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { validateGatewaySuspendStatusResult } from "../../packages/gateway-protocol/src/index.js";
 import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
+import { createGatewayHostLifecycle } from "../cli/gateway-cli/host-lifecycle.js";
 import {
+  consumeGatewaySuspendHandoff,
+  getGatewaySuspendStatus,
+  markGatewaySuspendExiting,
   resetGatewaySuspendCoordinatorForLifecycleRestart,
   resumeGatewaySuspend,
 } from "../infra/gateway-suspend-coordinator.js";
 import {
   beginGatewayRestartSignalAdmission,
+  beginGatewayRootWorkAdmissionWhenOpen,
   captureGatewayRootWorkAdmissionContinuationScope,
   getActiveGatewayRootWorkCount,
   markGatewayRestartDraining,
@@ -20,6 +26,7 @@ import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-s
 import { getAsyncWorkSignal, trackAsyncWork } from "../shared/async-work-scope.js";
 import { createPluginGatewayMethodDescriptor } from "./methods/descriptor.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
+import { getGatewayProcessInstanceId } from "./process-instance.js";
 import { runWithGatewayRequestEnvelope, type handleGatewayRequest } from "./server-methods.js";
 import { dispatchSuspensionRequest as dispatch } from "./server-methods.suspension-admission.test-support.js";
 import {
@@ -556,6 +563,7 @@ describe("gateway request suspension admission", () => {
           projectSessionTerminalPending: true,
         },
         {
+          phase: "consumed",
           retirementRequested: true,
           sessionId: "session-persisting",
           sessionKey: "agent:main:session-persisting",
@@ -620,6 +628,7 @@ describe("gateway request suspension admission", () => {
               projectSessionTerminalPending: true,
             },
             {
+              phase: "consumed",
               retirementRequested: true,
               sessionId: "session-pending",
               sessionKey: "agent:main:session-pending",

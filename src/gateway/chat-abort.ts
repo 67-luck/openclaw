@@ -256,14 +256,15 @@ export function registerChatAbortController(params: {
     }
     const persistence = adapter.projectSessionTerminalPersistence;
     if (persistence) {
-      void persistence.then(
-        () => {
-          if (adapter.projectSessionTerminalPersistence === persistence) {
-            adapter.projectSessionTerminalPending = false;
-            adapter.projectSessionTerminalPersistence = undefined;
-          }
-        },
-        () => {},
+      const settlePersistence = () => {
+        if (adapter.projectSessionTerminalPersistence === persistence) {
+          adapter.projectSessionTerminalPending = false;
+          adapter.projectSessionTerminalPersistence = undefined;
+        }
+      };
+      trackSessionControllerSourceWork(
+        input,
+        persistence.then(settlePersistence, settlePersistence),
       );
     }
     retireRpcSource(params.runId, entry);

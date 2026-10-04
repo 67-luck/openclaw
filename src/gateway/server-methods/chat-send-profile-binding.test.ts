@@ -22,11 +22,22 @@ import { removeSessionMember as removeSessionMemberSync } from "../../config/ses
 import { historyLane } from "../../config/sessions/session-transcript-worker-resources.js";
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
+import {
+  getActiveGatewayRootWorkCount,
+  tryBeginGatewayRootWorkAdmission,
+} from "../../process/gateway-work-admission.js";
 import {
   beginReplyMessageInjectionTarget,
   captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
+import {
+  captureSessionControllerSettlement,
+  getSessionControllerWorkCount,
+} from "../../sessions/session-controller.lifecycle.js";
+import { getRpcSource } from "../../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
+import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import { linkEmail } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { captureGatewayDeviceRevocation } from "../device-revocation.js";
@@ -206,7 +217,7 @@ describe("native profile-bound input admission", () => {
             }),
           );
           expect(fixture.context.dedupe.size).toBe(0);
-          expect(fixture.context.chatAbortControllers.size).toBe(0);
+          expect(getRpcSource(fixture.params.idempotencyKey)).toBeUndefined();
           expect(await listSessionPendingInputs(fixture.scope)).toEqual({ items: [], total: 0 });
           expect(loadTranscriptEventsSync(fixture.scope)).toEqual(fixture.activeTranscript);
           expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
@@ -277,7 +288,7 @@ describe("native profile-bound input admission", () => {
         });
         if (revokeInCallback) {
           await expect(admitting).rejects.toThrow("caller revoked during admission");
-          expect(fixture.context.chatAbortControllers.size).toBe(0);
+          expect(getRpcSource(fixture.params.idempotencyKey)).toBeUndefined();
         } else {
           const admitted = await admitting;
           expect(admitted.ok).toBe(true);
@@ -293,6 +304,7 @@ describe("native profile-bound input admission", () => {
   );
   it("clears a pending reservation when its retained reader is revoked after publication", async () => {
     const fixture = await createBrowserFollowupFixture();
+    const workBefore = getSessionControllerWorkCount();
     const sessions: Array<ReturnType<typeof qualifyChatSendSession>> = [];
     const prepare = async () => {
       const request = normalizeChatSendRequest({ params: fixture.params, client: fixture.client });
@@ -352,13 +364,8 @@ describe("native profile-bound input admission", () => {
       expect(reservedIdentity).toBe(first.request.requestIdentity);
       await closing;
       expect(fixture.context.dedupe.has(pendingKey)).toBe(false);
-      expect(fixture.context.chatAbortControllers.size).toBe(0);
-      expect(
-        getSessionWorkAdmissionRelease({
-          scope: fixture.scope.storePath,
-          identities: [fixture.scope.sessionKey, fixture.scope.sessionId],
-        }),
-      ).toBeUndefined();
+      expect(getRpcSource(fixture.params.idempotencyKey)).toBeUndefined();
+      expect(getSessionControllerWorkCount()).toBe(workBefore);
 
       fixture.params.message = "Corrected input after the failed reservation.";
       const retry = await prepare();
@@ -474,20 +481,19 @@ describe("native profile-bound input admission", () => {
         (error: unknown) => error,
       );
       expect(readerFailure).toBeInstanceOf(Error);
-      const released = getSessionWorkAdmissionRelease({
+      expect(getActiveGatewayRootWorkCount()).toBe(rootsBefore + 1);
+      expect(caller.isCurrent()).toBe(true);
+      expect(getRpcSource(fixture.params.idempotencyKey)).toBeDefined();
+      finishCallback.resolve();
+      expect(await outcome).toEqual({ error: readerFailure });
+      fixture.activeRun?.complete();
+      await captureSessionControllerSettlement({
         scope: fixture.scope.storePath,
         identities: [fixture.scope.sessionKey, fixture.scope.sessionId],
       });
-      expect(released).toBeDefined();
-      expect(getActiveGatewayRootWorkCount()).toBe(rootsBefore + 1);
-      expect(caller.isCurrent()).toBe(true);
-      expect(fixture.context.chatAbortControllers.size).toBe(1);
-      finishCallback.resolve();
-      expect(await outcome).toEqual({ error: readerFailure });
-      await released;
       expect(getActiveGatewayRootWorkCount()).toBe(rootsBefore);
       expect(caller.isCurrent()).toBe(false);
-      expect(fixture.context.chatAbortControllers.size).toBe(0);
+      expect(getRpcSource(fixture.params.idempotencyKey)).toBeUndefined();
       expect(onAdmissionOwned).toHaveBeenCalledOnce();
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
@@ -559,7 +565,7 @@ describe("native profile-bound input admission", () => {
         }),
       ).resolves.toEqual({ ok: false });
       expect(fixture.context.dedupe.size).toBe(0);
-      expect(fixture.context.chatAbortControllers.size).toBe(0);
+      expect(getRpcSource(fixture.params.idempotencyKey)).toBeUndefined();
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
       expect(respond).toHaveBeenCalledWith(false, undefined, expect.anything());
     } finally {

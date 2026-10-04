@@ -290,7 +290,9 @@ async function deleteSqliteSessionEntryLifecycleLocked(
             deleteParams,
             archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
             admissionIdentities: [
-              ...(collectSessionControllerTargets().get(params.storePath) ?? []),
+              ...(collectSessionControllerTargets(undefined, params.storePath).get(
+                params.storePath,
+              ) ?? []),
             ],
             allowLockedEntryRemoval,
             expectedPluginOwnerId,
@@ -375,7 +377,9 @@ async function deleteSqliteSessionEntryLifecycleLocked(
                   archiveDirectory: prepared.archiveDirectory,
                   archiveTranscript: params.archiveTranscript,
                   admissionIdentities: [
-                    ...(collectSessionControllerTargets().get(params.storePath) ?? []),
+                    ...(collectSessionControllerTargets(undefined, params.storePath).get(
+                      params.storePath,
+                    ) ?? []),
                   ],
                 },
               },
@@ -405,7 +409,9 @@ async function deleteSqliteSessionEntryLifecycleLocked(
                     validation: generationValidation,
                     sessionId,
                     admissionIdentities: [
-                      ...(collectSessionControllerTargets().get(params.storePath) ?? []),
+                      ...(collectSessionControllerTargets(undefined, params.storePath).get(
+                        params.storePath,
+                      ) ?? []),
                     ],
                   },
                 },

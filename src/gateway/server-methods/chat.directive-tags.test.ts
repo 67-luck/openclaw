@@ -645,12 +645,31 @@ async function createTranscriptFixture(
   return dir;
 }
 
-async function createSqliteTranscriptFixture(prefix: string) {
+async function createSqliteTranscriptFixture(
+  prefix: string,
+  options: {
+    fixtureStore?: "fixed";
+    owner?: Pick<SessionAccessScope, "agentId" | "sessionKey">;
+  } = {},
+) {
+  const owner = options.owner ?? { agentId: "main", sessionKey: "main" };
   const { dir } = createFixturePaths(prefix);
-  await replaceSessionEntry(sessionEntryScope(), {
-    sessionId: mockState.sessionId,
-    updatedAt: 1,
-  });
+  if (options.fixtureStore) {
+    const store = path.join(dir, "session.sqlite");
+    mockState.config = {
+      ...mockState.config,
+      session: { ...(mockState.config.session as OpenClawConfig["session"]), store },
+    };
+    mockState.storePath = store;
+    suiteResources.openDatabase(owner.agentId ?? "main", store);
+  }
+  await replaceSessionEntry(
+    { ...owner, storePath: mockState.storePath },
+    {
+      sessionId: mockState.sessionId,
+      updatedAt: 1,
+    },
+  );
   return dir;
 }
 
@@ -665,8 +684,9 @@ async function withTranscriptFixtureState(
 async function withSqliteTranscriptFixtureState(
   prefix: string,
   run: (fixtureDir: string) => Promise<void>,
+  options?: Parameters<typeof createSqliteTranscriptFixture>[1],
 ): Promise<void> {
-  const fixtureDir = await createSqliteTranscriptFixture(prefix);
+  const fixtureDir = await createSqliteTranscriptFixture(prefix, options);
   await withEnvAsync({ OPENCLAW_STATE_DIR: suiteFixtureRoot }, async () => await run(fixtureDir));
 }
 
@@ -1218,12 +1238,15 @@ afterEach(async () => {
     for (const release of globalToolEventRunReleases.splice(0)) {
       release();
     }
+    await suiteResources.settleFixtures();
     // ACKs and terminal errors can precede detached transcript cleanup.
     await waitForAssertion(() => expect(getSessionControllerWorkCount()).toBe(0));
   } finally {
+    await suiteResources.closeCaseDatabases();
     rpcSourceTesting.clear();
     replyRunRegistryTesting.resetReplyRunRegistry();
     mockState.reset();
+    mockState.storePath = suiteDatabasePath;
     bindingMocks.resolveByConversation.mockReset();
   }
 
@@ -2421,38 +2444,65 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
   });
 
   it("returns the rendered history branch leaf in session info", async () => {
-    await withSqliteTranscriptFixtureState("openclaw-chat-history-active-leaf-", async () => {
-      mockState.config = { session: { store: mockState.storePath } };
-      await appendTranscriptMessage(transcriptScope(), {
-        eventId: "history-active-leaf",
-        message: { role: "user", content: "render this branch" },
-        now: 1,
-        parentId: null,
-      });
-      const respond = vi.fn();
-      const context = createChatContext();
-      const cfg = context.getRuntimeConfig();
-      context.getRuntimeConfig = () => cfg;
-      await initializeSessionReadContext(context);
+    const historyAgentId = "history-fixture";
+    const historySessionKey = `agent:${historyAgentId}:main`;
+    await withSqliteTranscriptFixtureState(
+      "openclaw-chat-history-active-leaf-",
+      async () => {
+        mockState.config = {
+          agents: {
+            ownership: "explicit",
+            defaults: {
+              systemAgent: { agentId: historyAgentId },
+              sessionStore: { agentId: historyAgentId },
+            },
+            entries: { [historyAgentId]: {} },
+          },
+          session: { store: mockState.storePath },
+        };
+        await appendTranscriptMessage(
+          {
+            agentId: historyAgentId,
+            sessionId: mockState.sessionId,
+            sessionKey: historySessionKey,
+            storePath: mockState.storePath,
+          },
+          {
+            eventId: "history-active-leaf",
+            message: { role: "user", content: "render this branch" },
+            now: 1,
+            parentId: null,
+          },
+        );
+        const respond = vi.fn();
+        const context = createChatContext();
+        const cfg = context.getRuntimeConfig();
+        context.getRuntimeConfig = () => cfg;
+        await initializeSessionReadContext(context);
 
-      await expectDefined(
-        chatHandlers["chat.history"],
-        'chatHandlers["chat.history"] test invariant',
-      )({
-        params: { sessionKey: "main" },
-        respond: respond as never,
-        req: {} as never,
-        client: null,
-        isWebchatConnect: () => false,
-        context,
-      });
+        await expectDefined(
+          chatHandlers["chat.history"],
+          'chatHandlers["chat.history"] test invariant',
+        )({
+          params: { sessionKey: historySessionKey },
+          respond: respond as never,
+          req: {} as never,
+          client: null,
+          isWebchatConnect: () => false,
+          context,
+        });
 
-      const result = lastRespondCall(respond);
-      expect(result?.[0], JSON.stringify(result?.[2])).toBe(true);
-      expect(result?.[1]).toMatchObject({
-        sessionInfo: { activeLeafEntryId: "history-active-leaf" },
-      });
-    });
+        const result = lastRespondCall(respond);
+        expect(result?.[0], JSON.stringify(result?.[2])).toBe(true);
+        expect(result?.[1]).toMatchObject({
+          sessionInfo: { activeLeafEntryId: "history-active-leaf" },
+        });
+      },
+      {
+        fixtureStore: "fixed",
+        owner: { agentId: historyAgentId, sessionKey: historySessionKey },
+      },
+    );
   });
 
   it("does not register tool-event recipients without tool-events capability", async () => {

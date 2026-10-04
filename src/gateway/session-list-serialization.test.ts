@@ -7,7 +7,6 @@ import { SESSION_TOTAL_TOKENS_VERSION } from "../config/sessions/types.js";
 import { claimAgentRunContext, releaseAgentRunContext } from "../infra/agent-run-registry.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { registerChatAbortController } from "./chat-abort.js";
 import { serializeGatewayFrame } from "./serialized-json.js";
 import { listSessions, requestContext } from "./server-methods/sessions-read-cache.test-support.js";
 import { withCurrentSessionListRows } from "./session-list-read-result.js";
@@ -15,6 +14,7 @@ import { beginSessionPermissionChange } from "./session-permission-change.js";
 import { retainSessionListForegroundWork } from "./session-projection-work.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
 import { roleClient, rolePolicyConfig } from "./session-sharing.test-utils.js";
+import { claimRpcSourceForTest, createRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -100,14 +100,16 @@ it("reuses list row encodings across clients and refreshes compact, published, a
       snapshotAt: start + 103,
     });
     clock.mockReturnValue(start + 104);
-    const run = registerChatAbortController({
-      chatAbortControllers: context.chatAbortControllers,
-      runId: "serialization-run",
-      sessionId: entry.sessionId,
-      sessionKey: scope.sessionKey,
-      agentId: scope.agentId,
-      timeoutMs: 60_000,
-    });
+    const run = createRpcSourceForTest(
+      {},
+      {
+        runId: "serialization-run",
+        sessionId: entry.sessionId,
+        sessionKey: scope.sessionKey,
+        agentId: scope.agentId,
+      },
+    );
+    const releaseRun = await claimRpcSourceForTest(run);
     try {
       expect((await read(0)).sessions[0]).toMatchObject({
         hasActiveRun: true,
@@ -115,7 +117,7 @@ it("reuses list row encodings across clients and refreshes compact, published, a
         snapshotAt: start + 104,
       });
     } finally {
-      run.cleanup();
+      releaseRun();
     }
     clock.mockReturnValue(start + 105);
     expect.soft((await read(1)).sessions[0]).toMatchObject({

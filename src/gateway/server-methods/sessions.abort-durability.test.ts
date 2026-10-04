@@ -16,7 +16,10 @@ import {
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import type { SubsystemLogger } from "../../logging/subsystem.js";
 import { captureSessionTarget } from "../../sessions/session-controller.target.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../../state/openclaw-agent-db.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../chat-abort.js";

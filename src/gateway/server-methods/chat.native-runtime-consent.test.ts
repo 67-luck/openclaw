@@ -12,6 +12,11 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { listSessionEntries, upsertSessionEntry } from "../../plugin-sdk/session-store-runtime.js";
 import { readVisibleSessionTranscriptMessageEntries } from "../../plugin-sdk/session-transcript-runtime.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  openOpenClawAgentDatabase,
+} from "../../state/openclaw-agent-db.js";
+import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
@@ -368,7 +373,7 @@ it.runIf(process.platform !== "win32")(
         expect(rejection).toEqual(expect.any(Error));
         expect(String(rejection)).toContain("Captured session database changed before read");
         expect(respond).not.toHaveBeenCalled();
-        expect(context.chatAbortControllers.size).toBe(0);
+        expect(rpcSourceTesting.size).toBe(0);
       } finally {
         release.resolve();
         await outcome;

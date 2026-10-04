@@ -59,7 +59,12 @@ export function findSessionControllerEntries(
     return [exact];
   }
   const aliases = target?.aliases ?? [normalizedKey];
-  const matches = [...controllerStorage.sessionControllers.values()].filter(
+  const candidates = new Set(
+    aliases.flatMap((alias) => [
+      ...(controllerStorage.sessionControllerEntriesByAlias.get(alias) ?? []),
+    ]),
+  );
+  const matches = [...candidates].filter(
     (entry) =>
       (!target || !entry.target || sessionTargetOwnersMatch(entry.target, target)) &&
       aliases.some((alias) => entry.aliases.has(alias)),
@@ -111,9 +116,14 @@ export function bindSessionControllerEntryTarget(
     }
   }
   entry.target = target;
+  const storeEntries =
+    controllerStorage.sessionControllerEntriesByStore.get(target.storeScope) ?? new Set();
+  storeEntries.add(entry);
+  controllerStorage.sessionControllerEntriesByStore.set(target.storeScope, storeEntries);
   refreshSessionControllerEntryAliases(entry);
 }
 export function refreshSessionControllerEntryAliases(entry: SessionControllerEntry): void {
+  const previousAliases = entry.aliases;
   entry.aliases = new Set(entry.logicalAliases);
   if (entry.target?.incarnation) {
     entry.aliases.add(entry.target.incarnation);
@@ -133,6 +143,29 @@ export function refreshSessionControllerEntryAliases(entry: SessionControllerEnt
       entry.aliases.add(id);
     }
   }
+  for (const alias of previousAliases) {
+    const entries = controllerStorage.sessionControllerEntriesByAlias.get(alias);
+    entries?.delete(entry);
+    if (entries?.size === 0) {
+      controllerStorage.sessionControllerEntriesByAlias.delete(alias);
+    }
+  }
+  if (controllerStorage.sessionControllers.get(entry.id) !== entry) {
+    return;
+  }
+  for (const alias of entry.aliases) {
+    const entries = controllerStorage.sessionControllerEntriesByAlias.get(alias) ?? new Set();
+    entries.add(entry);
+    controllerStorage.sessionControllerEntriesByAlias.set(alias, entries);
+  }
+}
+
+/** Adds a learned incarnation to the exact alias index. */
+export function addSessionControllerEntryAlias(entry: SessionControllerEntry, alias: string): void {
+  entry.aliases.add(alias);
+  const entries = controllerStorage.sessionControllerEntriesByAlias.get(alias) ?? new Set();
+  entries.add(entry);
+  controllerStorage.sessionControllerEntriesByAlias.set(alias, entries);
 }
 export function getSessionControllerEntry(
   key: string,
@@ -164,6 +197,7 @@ export function getSessionControllerEntry(
       observations: new Set(),
     };
     controllerStorage.sessionControllers.set(entry.id, entry);
+    addSessionControllerEntryAlias(entry, canonicalKey);
   }
   if (target) {
     bindSessionControllerEntryTarget(entry, target);
@@ -190,6 +224,22 @@ export function pruneSessionControllerEntry(entry: SessionControllerEntry): void
     !entry.lifecycle &&
     controllerStorage.sessionControllers.get(entry.id) === entry
   ) {
+    for (const alias of entry.aliases) {
+      const entries = controllerStorage.sessionControllerEntriesByAlias.get(alias);
+      entries?.delete(entry);
+      if (entries?.size === 0) {
+        controllerStorage.sessionControllerEntriesByAlias.delete(alias);
+      }
+    }
+    if (entry.target) {
+      const entries = controllerStorage.sessionControllerEntriesByStore.get(
+        entry.target.storeScope,
+      );
+      entries?.delete(entry);
+      if (entries?.size === 0) {
+        controllerStorage.sessionControllerEntriesByStore.delete(entry.target.storeScope);
+      }
+    }
     controllerStorage.sessionControllers.delete(entry.id);
   }
 }
@@ -201,10 +251,6 @@ export function getSessionControllerOperation(
   const normalizedKey = normalizeOptionalString(key);
   if (!normalizedKey) {
     return undefined;
-  }
-  const exact = !target ? controllerStorage.sessionControllers.get(normalizedKey) : undefined;
-  if (exact && exact.id !== exact.key) {
-    return exact.active;
   }
   const operations = findSessionControllerEntries(normalizedKey, target).flatMap((entry) =>
     entry.active ? [entry.active] : [],

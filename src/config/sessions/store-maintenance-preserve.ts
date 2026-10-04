@@ -62,7 +62,7 @@ export function collectActiveSessionWorkAdmissionKeys(params: {
   store: Record<string, SessionEntry>;
 }): Set<string> | undefined {
   const keys = collectSessionWorkAdmissionKeysFromSnapshot(params.store, [
-    ...(collectSessionControllerTargets().get(params.storePath) ?? []),
+    ...(collectSessionControllerTargets(undefined, params.storePath).get(params.storePath) ?? []),
   ]);
   return keys.size > 0 ? keys : undefined;
 }
@@ -73,7 +73,9 @@ export function captureSessionMaintenancePreservation(
 ): SessionMaintenancePreservationSnapshot {
   return {
     providerKeys: [...(collectSessionMaintenancePreserveKeys() ?? [])].toSorted(),
-    workIdentities: [...(collectSessionControllerTargets().get(storePath) ?? [])].toSorted(),
+    workIdentities: [
+      ...(collectSessionControllerTargets(undefined, storePath).get(storePath) ?? []),
+    ].toSorted(),
     lifecycleIdentities: collectSessionMutationIdentities(storePath),
   };
 }
@@ -138,7 +140,9 @@ export async function prepareSessionMaintenancePreservation(storePath: string): 
         assertProvidersCurrent();
         return {
           providerKeys: [...keys].toSorted(),
-          workIdentities: [...(collectSessionControllerTargets().get(storePath) ?? [])].toSorted(),
+          workIdentities: [
+            ...(collectSessionControllerTargets(undefined, storePath).get(storePath) ?? []),
+          ].toSorted(),
           lifecycleIdentities: collectSessionMutationIdentities(storePath),
         };
       },

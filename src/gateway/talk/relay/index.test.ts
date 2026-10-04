@@ -57,7 +57,11 @@ import {
   submitTalkRealtimeRelayToolResult,
 } from "./index.js";
 import { createRelaySessionFixture } from "./index.session-fixture.test-support.js";
-import { createIdleRelayProvider, makeRelayTransport } from "./index.test-support.js";
+import {
+  createIdleRelayProvider,
+  createRelayAgentConfig,
+  makeRelayTransport,
+} from "./index.test-support.js";
 import { resolveTalkRealtimeRelayPresentation } from "./issues.js";
 import { closeRelaySession } from "./operations.js";
 import { usePersistentRelayTestState } from "./session-state.test-support.js";

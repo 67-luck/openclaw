@@ -260,7 +260,9 @@ async function archiveSessionColdBatch(options: ColdBatchOptions): Promise<ColdB
     const input: SessionColdPreparationWorkerData["input"] = {
       databaseOptions: workerDatabaseOptions(options.databaseOptions),
       admissionIdentities: [
-        ...(collectSessionControllerTargets().get(options.ownerStorePath) ?? []),
+        ...(collectSessionControllerTargets(undefined, options.ownerStorePath).get(
+          options.ownerStorePath,
+        ) ?? []),
       ],
       cooledSessionIds: [...cooled],
       beforeMs: options.beforeMs,
@@ -321,7 +323,10 @@ async function archiveSessionColdBatch(options: ColdBatchOptions): Promise<ColdB
             },
             () => {
               assertCurrent();
-              const admissions = collectSessionControllerTargets().get(options.ownerStorePath);
+              const admissions = collectSessionControllerTargets(
+                undefined,
+                options.ownerStorePath,
+              ).get(options.ownerStorePath);
               if (
                 [...(admissions ?? [])].some((identity) =>
                   batch.protectionKeys.includes(normalizeStoreSessionKey(identity)),
