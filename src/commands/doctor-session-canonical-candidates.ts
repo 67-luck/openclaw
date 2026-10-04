@@ -101,7 +101,7 @@ function collectCanonicalSessionCandidateFacts(
       preserveQualifiedAddress: !repairLegacyMainHead,
     });
   };
-  const inventory = inventories.flatMap(({ target, inventory }) =>
+  const facts = inventories.flatMap(({ target, inventory }) =>
     inventory.facts.map((inventoryFact) => {
       const { canonicalOwnerSessionKey, sessionKey } = inventoryFact;
       const storedKey = resolveStoredKey(target.agentId, sessionKey);
@@ -117,8 +117,8 @@ function collectCanonicalSessionCandidateFacts(
       };
     }),
   );
-  const canonicalKeysByStoredKey = applyCanonicalOwnerEvidence(inventory);
-  return inventory.map(
+  const canonicalKeysByStoredKey = applyCanonicalOwnerEvidence(facts);
+  return facts.map(
     ({ canonicalKey, canonicalOwnerSessionKey, inventoryFact, sessionKey, target }) => {
       const canonicalAgentId =
         canonicalKey === "global" || canonicalKey === "unknown"

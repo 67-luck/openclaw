@@ -468,8 +468,8 @@ export async function repairCanonicalSessionKeys(params: {
   const archivedTranscriptDirectories = new Set<string>();
   let repairBatches = 0;
   let repairedGroups = 0;
-  const inventory = collectCanonicalSessionRepairs({ cfg: params.cfg, env }, stores);
-  let repairGroups = inventory.groups;
+  const repairs = collectCanonicalSessionRepairs({ cfg: params.cfg, env }, stores);
+  let repairGroups = repairs.groups;
   const mutationTargets = [...stores];
   if (params.apply) {
     for (const group of repairGroups) {
@@ -502,7 +502,7 @@ export async function repairCanonicalSessionKeys(params: {
   }
   const pendingPaths = new Set([
     ...repairGroups.flatMap((group) => group.candidates.map((candidate) => candidate.sqlitePath)),
-    ...inventory.inventories
+    ...repairs.inventories
       .filter(({ inventory }) => inventory.pendingAdmission)
       .map(({ target }) => target.sqlitePath),
   ]);
@@ -514,7 +514,7 @@ export async function repairCanonicalSessionKeys(params: {
     });
   }
   const identities = params.apply
-    ? inventory.inventories.map(({ target, inventory }) => ({
+    ? repairs.inventories.map(({ target, inventory }) => ({
         target,
         identity: readDatabasePathIdentitySync(target.sqlitePath),
         pendingAdmission: inventory.pendingAdmission,
@@ -530,7 +530,7 @@ export async function repairCanonicalSessionKeys(params: {
   if (params.apply && pendingPaths.size > 0) {
     assertCurrent();
     const inventoriesByPath = new Map(
-      inventory.inventories.map(({ target, inventory }) => [
+      repairs.inventories.map(({ target, inventory }) => [
         fs.realpathSync(target.sqlitePath),
         inventory,
       ]),
@@ -573,10 +573,10 @@ export async function repairCanonicalSessionKeys(params: {
       // Cached handles still need the admission owner's pending validity repair.
       const database = pendingAdmission
         ? runOpenClawAgentWriteTransaction(
-            (database) => {
+            (admittedDatabase) => {
               assertCurrent();
-              ensureSessionEntryValidityProjection(database.db);
-              return database;
+              ensureSessionEntryValidityProjection(admittedDatabase.db);
+              return admittedDatabase;
             },
             options,
             {

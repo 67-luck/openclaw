@@ -760,6 +760,7 @@ const reviewedOperations = new Map([
         tier: "T3",
         operations: [
           "listCanonicalSessionRepairFacts",
+          "readCanonicalSessionRepairInventory",
           "loadCanonicalSessionRepairEntries",
           "scanDoctorSessionEntriesStrict",
           "scanDoctorSessionEntriesTolerant",
