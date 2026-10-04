@@ -76,7 +76,11 @@ export async function runReplyQuestionInput(
   const state = resolveReplyOperationRunState(opts);
   const injection =
     followupRun.controllerInput && !followupRun.controllerInput.claim
-      ? beginSessionControllerSourceInjection(followupRun.controllerInput)
+      ? beginSessionControllerSourceInjection(followupRun.controllerInput, {
+          // A negative question probe can still continue into ordinary steering.
+          // Keep this source's FIFO barrier until that final injection decision.
+          keepOrderOnDecline: true,
+        })
       : undefined;
   let consumed = false;
   try {

@@ -90,10 +90,15 @@ describe("controller mailbox scheduling", () => {
     const run = source("must not execute");
     bindSessionControllerSource(input, run);
     const dispatch = vi.fn(async () => {});
-    enqueueFollowupRun(key, run, { mode: "followup", debounceMs: 0 }, "none", dispatch);
-    const injection = beginSessionControllerSourceInjection(input);
+    const injection = reserveSteerCandidate(
+      key,
+      run,
+      { mode: "followup", debounceMs: 0 },
+      dispatch,
+    );
+    expect(injection).toBeDefined();
     revoked = true;
-    await expect(injection.admit()).rejects.toThrow("source authority revoked");
+    await expect(injection?.admit()).rejects.toThrow("source authority revoked");
     await captureSessionControllerSourceSettlement(input);
     expect(dispatch).not.toHaveBeenCalled();
     expect(findSessionControllerEntry(key)).toBeUndefined();
@@ -240,6 +245,17 @@ function earlySource(adapter?: Parameters<typeof reserveSessionControllerSource>
 }
 
 describe("early source injection custody", () => {
+  it("lets a steer inject behind an older source committed to a later turn", async () => {
+    const settings = { mode: "steer" as const, debounceMs: 0 };
+    const older = source("queued for the next turn");
+    const newer = source("steer the current turn");
+    expect(enqueueFollowupRun(key, older, settings, "none", async () => {}, false)).toBe(true);
+    const steer = reserveSteerCandidate(key, newer, settings, async () => {});
+    expect(steer).toBeDefined();
+    await expect(steer?.admit()).resolves.toBe("steer");
+    steer?.fallback();
+  });
+
   it("keeps injection FIFO when an older reservation is still preparing", async () => {
     const first = earlySource();
     const second = earlySource();

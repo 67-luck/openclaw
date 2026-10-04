@@ -130,8 +130,8 @@ export function registerSteeringReceiptCases({
     const inject = controllerMailbox.beginSessionControllerSourceInjection;
     const injection = vi
       .spyOn(controllerMailbox, "beginSessionControllerSourceInjection")
-      .mockImplementation((input) => {
-        const receipt = inject(input);
+      .mockImplementation((input, options) => {
+        const receipt = inject(input, options);
         if (input.source?.messageId === "second-parked-input") {
           expect(input.phase).toBe("injecting");
           secondParked.resolve();

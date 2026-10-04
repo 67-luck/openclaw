@@ -45,12 +45,14 @@ export function settleSessionControllerSourceInjectionOrder(
   input: SessionControllerInput,
   consumed: boolean,
 ): void {
+  input.injectionAttempted = true;
   input.injectionOrder.settle(consumed);
 }
 
 /** Retains an early source through the exact native outcome, not just its ACK. */
 export function beginSessionControllerSourceInjection(
   input: SessionControllerInput,
+  options: { keepOrderOnDecline?: boolean } = {},
 ): SessionControllerSourceInjection {
   if (
     (input.phase !== "preparing" && input.phase !== "waiting") ||
@@ -97,7 +99,16 @@ export function beginSessionControllerSourceInjection(
     input.injection = undefined;
     input.phase = phase;
     pending.settle(mustConsume);
-    settleSessionControllerSourceInjectionOrder(input, mustConsume);
+    if (
+      mustConsume ||
+      !options.keepOrderOnDecline ||
+      input.retirementRequested ||
+      input.abortSignal.aborted
+    ) {
+      settleSessionControllerSourceInjectionOrder(input, mustConsume);
+    } else {
+      input.injectionAttempted = undefined;
+    }
     if (mustConsume || input.retirementRequested || input.abortSignal.aborted) {
       retireSessionControllerInput(input);
     } else {

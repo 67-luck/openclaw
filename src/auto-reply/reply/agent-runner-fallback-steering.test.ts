@@ -14,6 +14,7 @@ import { runReplyAgent } from "./agent-runner-run.js";
 import { createPersonalToolScreenDispatcher } from "./personal-tool-turn.test-support.js";
 import { createQueueTestRun } from "./queue.test-helpers.js";
 import { clearSessionQueues } from "./queue/cleanup.js";
+import { enqueueFollowupRun } from "./queue/enqueue.js";
 import {
   REPLY_OPERATION_RUN_STATE,
   type ReplyOperationRunState,
@@ -26,6 +27,7 @@ afterEach(() => vi.restoreAllMocks());
 describe("ordinary steering into automatic model fallback", () => {
   it.each([
     "automatic",
+    "queued-followup",
     "cross-profile",
     "cross-profile-pending",
     "policy-fallback",
@@ -200,7 +202,26 @@ describe("ordinary steering into automatic model fallback", () => {
       }
       const resultState: ReplyOperationRunState = {};
       const shouldSteer =
-        scenario === "automatic" || scenario === "policy-fallback" || crossProfile;
+        scenario === "automatic" ||
+        scenario === "queued-followup" ||
+        scenario === "policy-fallback" ||
+        crossProfile;
+      if (scenario === "queued-followup") {
+        const older = createQueueTestRun({ prompt: "run on the next turn", messageId: "older" });
+        older.run.agentId = run.run.agentId;
+        older.run.sessionId = run.run.sessionId;
+        older.run.config = run.run.config;
+        expect(
+          enqueueFollowupRun(
+            key,
+            older,
+            { mode: "followup", debounceMs: 0 },
+            "none",
+            undefined,
+            false,
+          ),
+        ).toBe(true);
+      }
       if (crossProfile) {
         run.operatorAuthority = operator("bob");
         Object.assign(run.run, {

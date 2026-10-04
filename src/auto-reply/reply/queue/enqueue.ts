@@ -4,6 +4,7 @@ import { racePromiseWithAbortSignal } from "../../../infra/abort-signal.js";
 import { logMessageQueuedWithBacklogPolicy } from "../../../logging/diagnostic-runtime.js";
 import { channelRouteDedupeKey } from "../../../plugin-sdk/channel-route.js";
 import { defaultRuntime } from "../../../runtime.js";
+import { settleSessionControllerSourceInjectionOrder } from "../../../sessions/session-controller.mailbox-source.js";
 import {
   beginSessionControllerSourceInjection,
   submitSessionControllerInput,
@@ -187,6 +188,9 @@ export function enqueueFollowupRun(
       restartIfIdle,
       front: options.steerCandidate === true && options.position === "front",
     });
+    if (!options.steerCandidate) {
+      settleSessionControllerSourceInjectionOrder(input, false);
+    }
     return true;
   }
   // drop:new rejects this source without mutating the existing queue. Do not
@@ -213,6 +217,7 @@ export function enqueueFollowupRun(
     restartIfIdle,
     front: options.position === "front",
   });
+  settleSessionControllerSourceInjectionOrder(input, false);
   return true;
 }
 
