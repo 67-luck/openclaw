@@ -157,6 +157,7 @@ export function registerRpcSource(runId: string, ref: RpcSourceRef, onRemoved?: 
     throw new Error(`RPC source already registered for run ${runId}`);
   }
   rpcSourceByRunId.set(runId, ref);
+  ref.input.custody.rpcAccepted = true;
   if (onRemoved) {
     rpcSourceRemovalByRef.set(ref, onRemoved);
   }
@@ -235,6 +236,9 @@ export function resolveRpcSourceSessionProgressState(
   }
   const claim = ref.input.claim;
   const operation = claim?.operation;
+  if (ref.input.custody.rpcAccepted !== true && claim === undefined) {
+    return undefined;
+  }
   if (
     claim?.released ||
     operation?.result ||

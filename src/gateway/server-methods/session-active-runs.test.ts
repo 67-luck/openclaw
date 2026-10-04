@@ -438,7 +438,7 @@ it("does not project an aborted embedded handle retained for cleanup as active",
     expect(isSessionRunActive(sessionId)).toBe(true);
     expect(visibleState(sessionKey, { sessionId })).toEqual({ active: false, runIds: [] });
 
-    const source = createRpcSourceForTest({}, { sessionId, sessionKey });
+    const source = createRpcSourceForTest({}, { sessionId, sessionKey, accepted: true });
     rpcSourceTesting.reset([["new-run", source]]);
     let admitted = false;
     const successor = claimRpcSourceForTest(source).then((release) => {

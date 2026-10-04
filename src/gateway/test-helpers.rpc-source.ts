@@ -28,6 +28,7 @@ export function createRpcSourceForTest(
     storeScope?: string;
     phase?: "preparing" | "waiting" | "consumed";
     retirementRequested?: boolean;
+    accepted?: boolean;
   } & Partial<RpcSourceIdentity> = {},
 ): RpcSourceRef {
   const { projectSessionActive, ...adapterMetadata } = metadata;
@@ -50,6 +51,7 @@ export function createRpcSourceForTest(
     sourceSessionId: identity.sessionId,
     policy: { mode: "followup" },
   });
+  input.custody.rpcAccepted = options.accepted === true ? true : undefined;
   input.retirementRequested = options.retirementRequested === true;
   if (options.phase === "waiting") {
     const run = createQueueTestRun({ prompt: "queued RPC fixture" });

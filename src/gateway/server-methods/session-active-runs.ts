@@ -170,6 +170,7 @@ export function resolveVisibleActiveSessionRunState(params: {
   agentId?: string;
   defaultAgentId?: string;
   trackedActiveRuns?: readonly TrackedActiveSessionRun[];
+  trackedRpcSourceRefs?: readonly RpcSourceRef[];
   projectedAgentRunIndex?: ProjectedAgentRunIndex;
   includeTerminalPersistence?: boolean;
 }): VisibleActiveSessionRunState {
@@ -259,7 +260,7 @@ export function resolveVisibleActiveSessionRunState(params: {
   // liveness vote. Include hidden/queued refs in representation, not visibility.
   const representedLocally =
     localOperations.length > 0 &&
-    listRpcSourceEntries().some(([, ref]) => {
+    (params.trackedRpcSourceRefs ?? listRpcSourceEntries().map(([, ref]) => ref)).some((ref) => {
       const operation = ref.input.claim?.operation;
       return operation !== undefined && localOperations.includes(operation);
     });
@@ -310,9 +311,10 @@ export function createVisibleActiveSessionRunProjector(
   projectedAgentRunIndex = buildProjectedAgentRunIndex(),
   captured?: Iterable<readonly [string, RpcSourceRef]>,
 ) {
+  const registrations = [...(captured ?? listRpcSourceEntries())];
   const byKey = new Map<string, TrackedActiveSessionRun[]>();
   const byId = new Map<string, TrackedActiveSessionRun[]>();
-  for (const run of collectTrackedActiveSessionRuns(false, undefined, captured)) {
+  for (const run of collectTrackedActiveSessionRuns(false, undefined, registrations)) {
     for (const [index, key] of [
       [byKey, run.sessionKey],
       [byId, run.sessionId],
@@ -333,6 +335,7 @@ export function createVisibleActiveSessionRunProjector(
     resolveVisibleActiveSessionRunState({
       ...params,
       projectedAgentRunIndex,
+      trackedRpcSourceRefs: registrations.map(([, ref]) => ref),
       trackedActiveRuns: [
         ...new Set([
           ...(byKey.get(params.canonicalKey) ?? []),

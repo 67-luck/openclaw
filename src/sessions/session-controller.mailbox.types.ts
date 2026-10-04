@@ -20,6 +20,8 @@ export type SessionControllerSourceCustody = {
   disposeSource?: () => void;
   /** One in-process Gateway registration may adopt a pre-reserved source. */
   rpcAdopted?: boolean;
+  /** The Gateway accepted this source into its protocol run registry. */
+  rpcAccepted?: boolean;
 };
 
 export type SessionControllerInput = {

@@ -233,6 +233,9 @@ function broadcastSessionsChanged(
               includeSession: true,
               agentId: eventAgentId,
               activeRunState,
+              // A send publication is the producer's current running fact; a queued
+              // source must not downgrade it using an older preparation phase.
+              status: payload.reason === "send" ? "running" : undefined,
             }),
             ...(context.workerSessionPlacementService
               ? {

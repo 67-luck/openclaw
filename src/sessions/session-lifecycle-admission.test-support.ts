@@ -101,6 +101,15 @@ export function setRpcSourceIdentityForTest(
   }
 }
 
+/** Updates an unclaimed fixture's terminal presentation. */
+export function setRpcSourceTerminalProjectionForTest(
+  source: RpcSourceRef,
+  terminal: boolean,
+): void {
+  source.adapter.projectSessionTerminalPending = terminal;
+  source.adapter.projectSessionTerminalPersisted = false;
+}
+
 /** Drops test-owned controller singletons after their operations have been completed. */
 export function resetSessionControllerStateForTest(): void {
   rpcSourceByRunId.clear();
