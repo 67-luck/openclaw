@@ -26,11 +26,15 @@ vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
   spawn,
 }));
-vi.mock("../process/exec.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../process/exec.js")>()),
-  runCommandWithTimeout: vi.fn(),
-  runExec: vi.fn(),
-}));
+vi.mock("../process/exec.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../process/exec.js")>();
+  return {
+    ...actual,
+    runCommandWithTimeout: vi.fn(),
+    runExec: vi.fn(),
+    runUtf8CommandWithTimeout: vi.fn(actual.runUtf8CommandWithTimeout),
+  };
+});
 vi.mock("../runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../runtime.js")>()),
   defaultRuntime: runtimeCapture,
@@ -194,8 +198,9 @@ const { createTempHomeEnv } = await import("../test-utils/temp-home.js");
 const existingHostUri = nodeSqlite.resolveExistingSqliteFileUri;
 const immutableHostUri = nodeSqlite.resolveImmutableSqliteFileUri;
 export const { updateGitCheckout } = await import("../infra/update-runner-git.js");
-const { runExec, runCommandWithTimeout } = await import("../process/exec.js");
-export { runExec };
+const { runExec, runCommandWithTimeout, runUtf8CommandWithTimeout } =
+  await import("../process/exec.js");
+export { runExec, runUtf8CommandWithTimeout };
 export const { defaultRuntime, ExitError } = await import("../runtime.js");
 export const { readConfigFileSnapshot, replaceConfigFile, mutateConfigFileWithRetry } =
   await import("../config/config.js");
@@ -480,8 +485,26 @@ export function installDeferredCompletionFixture() {
     const entrypoint = path.join(process.cwd(), "dist", "index.js");
     pathExists.mockImplementation(async (candidate: string) => candidate === entrypoint);
     // Child completion may invoke only Doctor and config validation.
+    const runCompletionProcess = vi.mocked(runUtf8CommandWithTimeout).getMockImplementation();
+    if (!runCompletionProcess) {
+      throw new Error("Missing completion process transport");
+    }
+    vi.mocked(runUtf8CommandWithTimeout).mockImplementation(async (argv, options) => {
+      if (argv[2] === "doctor") {
+        return {
+          code: 0,
+          signal: null,
+          killed: false,
+          termination: "exit",
+          cleanup: "normal",
+          stdout: "",
+          stderr: "",
+        };
+      }
+      return runCompletionProcess(argv, options);
+    });
     vi.mocked(runExec).mockImplementation(async (file, args) => {
-      if (file === process.execPath && (args[1] === "doctor" || args[1] === "config")) {
+      if (file === process.execPath && args[1] === "config") {
         return { stdout: "", stderr: "" };
       }
       throw new Error(`Unexpected completion process: ${file}`);

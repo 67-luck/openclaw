@@ -2,6 +2,10 @@ import { expect } from "vitest";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import type { deliverQueuedSessionDelivery } from "./server-restart-sentinel.js";
 
+type LoadedSessionEntryBase = ReturnType<typeof import("./session-utils.js").loadSessionEntry>;
+export type RestartSentinelSessionFixture = Omit<LoadedSessionEntryBase, "agentId"> &
+  Partial<Pick<LoadedSessionEntryBase, "agentId">>;
+
 export async function appendRestartSentinelTranscriptReceipt(
   params: Parameters<
     typeof import("../config/sessions/transcript.js").appendAssistantMessageToSessionTranscript

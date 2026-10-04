@@ -53,7 +53,7 @@ import {
   resolveUpdateInstallIdentity,
   resolveUpdateInstallKind,
   runCommandWithTimeout,
-  runExec,
+  runUtf8CommandWithTimeout,
   updateCommand,
   updateGitCheckout,
 } from "./update-cli-modules.test-support.js";
@@ -81,9 +81,10 @@ export function createUpdateCliFixture() {
   );
   const checkoutRoot = path.join(fixtureRoot, "checkout");
   fsSync.mkdirSync(checkoutRoot);
-  for (const directory of [".git", "src", "extensions"]) {
+  for (const directory of [".git", "src", "extensions", "dist"]) {
     fsSync.mkdirSync(path.join(checkoutRoot, directory));
   }
+  fsSync.writeFileSync(path.join(checkoutRoot, "dist", "index.js"), "export {};\n", "utf8");
   fsSync.writeFileSync(
     path.join(checkoutRoot, "package.json"),
     JSON.stringify({ name: "openclaw", version: VERSION }),
@@ -334,7 +335,8 @@ export function createUpdateCliFixture() {
     return { root, entrypoints };
   };
 
-  const FRESH_POST_UPDATE_ENTRYPOINT = "/tmp/openclaw-updated-entry.mjs";
+  const FRESH_POST_UPDATE_ENTRYPOINT = path.join(fixtureRoot, "openclaw-updated-entry.mjs");
+  fsSync.writeFileSync(FRESH_POST_UPDATE_ENTRYPOINT, "export {};\n", "utf8");
 
   const mockCurrentProcessFreshDoctor = createCurrentProcessFreshDoctorFixture(
     resolveGatewayInstallEntrypoint,
@@ -346,12 +348,13 @@ export function createUpdateCliFixture() {
     workspaceSuggestions?: boolean;
   }) => {
     const calls = vi
-      .mocked(runExec)
+      .mocked(runUtf8CommandWithTimeout)
       .mock.calls.filter(
-        ([, args]) => args[0] === FRESH_POST_UPDATE_ENTRYPOINT && args[1] === "doctor",
+        ([argv]) => argv[1] === FRESH_POST_UPDATE_ENTRYPOINT && argv[2] === "doctor",
       );
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.[1]).toEqual([
+    expect(calls[0]?.[0]).toEqual([
+      expect.any(String),
       FRESH_POST_UPDATE_ENTRYPOINT,
       "doctor",
       "--repair",

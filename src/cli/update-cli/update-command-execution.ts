@@ -36,6 +36,7 @@ import {
   inspectUpdateDatabaseContexts,
   revalidateUpdateDatabaseContexts,
 } from "./update-command-database-context.js";
+import { preparePackageDoctorContext } from "./update-command-doctor-context.js";
 import { createUpdateCommandExecutionGuards } from "./update-command-execution-guards.js";
 import type { MutableUpdateExecutionParams } from "./update-command-execution.types.js";
 import {
@@ -59,7 +60,6 @@ import { observeOriginalManagedServiceRuntime } from "./update-command-original-
 import { createPackageUpdateActivationOptions } from "./update-command-package-activation.js";
 import {
   runPackageInstallUpdate,
-  preparePackageDoctorContext,
   type PackageInstallUpdateParams,
 } from "./update-command-package.js";
 import {
@@ -170,7 +170,7 @@ export async function executeMutableUpdate(
   let databaseCapture: Awaited<ReturnType<typeof captureUpdateDatabases>> | undefined;
   const onTransaction = async (transaction: PackageUpdateTransaction) => {
     packageTransaction = transaction;
-    if (params.updateInstallKind === "package" && originalRun) {
+    if (originalRun) {
       databaseCapture = await captureUpdateDatabases({
         transaction,
         execution: params,
@@ -636,9 +636,7 @@ export async function executeMutableUpdate(
             gitContextPrepared = true;
           }
         },
-        onTransaction: (transaction) => {
-          packageTransaction = transaction;
-        },
+        onTransaction,
         // Foreign inspection metadata cannot authorize backup or Doctor writes.
         getManagedServiceEnv: () => ownedManagedUpdateContext?.env,
         getSnapshotSource: async () => {
@@ -687,6 +685,7 @@ export async function executeMutableUpdate(
       runId: originalRun.runId,
       env: ownedManagedUpdateContext?.env ?? originalRun.env,
       assertCurrent: () => assertExecutionCurrent("restore"),
+      assertRollbackSafe: packageTransaction?.assertRollbackSafe,
       progress: params.progress,
     });
   }

@@ -43,7 +43,7 @@ import {
   type UpdateConfigSnapshot,
 } from "./update-command-config-snapshot.js";
 import { restoreFailedUpdateDatabases } from "./update-command-database-backup.js";
-import { readPackageUpdateIdentity } from "./update-command-package.js";
+import { readPackageUpdateIdentity } from "./update-command-package-identity.js";
 import { UpdateCommandPendingRecoveryFailure } from "./update-command-result.js";
 import type {
   UpdateServiceDefinitionRecovery,
@@ -345,6 +345,7 @@ export async function rollbackFailedUpdate(params: {
           runId: run.runId,
           env,
           assertCurrent,
+          assertRollbackSafe: packageTransaction.assertRollbackSafe,
         });
       } catch (cause) {
         // A partial restore must not reopen the ledger through ordinary failure reporting.

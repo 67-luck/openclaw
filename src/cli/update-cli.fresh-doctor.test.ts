@@ -31,6 +31,7 @@ import {
   resolveOpenClawPackageRoot,
   resolveUpdateInstallKind,
   runExec,
+  runUtf8CommandWithTimeout,
   runPostCorePluginConvergenceSpy,
   updateCommand,
   updateGitCheckout,
@@ -58,6 +59,39 @@ describe("update-cli", () => {
     primeNpmChannelTag,
     setupUpdatedRootRefresh,
   } = createUpdateCliFixture();
+
+  const mockFreshDoctorFailure = (params: { stdout?: string; stderr: string }) => {
+    const runCommand = vi.mocked(runUtf8CommandWithTimeout).getMockImplementation();
+    if (!runCommand) {
+      throw new Error("Missing fresh Doctor command fixture");
+    }
+    vi.mocked(runUtf8CommandWithTimeout).mockImplementation(async (argv, options) => {
+      if (argv[2] === "doctor") {
+        return {
+          code: 1,
+          signal: null,
+          killed: false,
+          termination: "exit",
+          cleanup: "normal",
+          stdout: params.stdout ?? "",
+          stderr: params.stderr,
+        };
+      }
+      const result = await runCommand(argv, options);
+      if (argv.at(-1) !== "--doctor") {
+        return result;
+      }
+      return {
+        ...result,
+        code: 1,
+        signal: null,
+        killed: false,
+        termination: "exit",
+        stdout: params.stdout ?? "",
+        stderr: params.stderr,
+      };
+    });
+  };
 
   it("respawns into the updated git root before requested channel persistence", async () => {
     const { entrypoints } = setupUpdatedRootRefresh({
@@ -242,9 +276,8 @@ describe("update-cli", () => {
     vi.mocked(updateGitCheckout).mockResolvedValue(
       runtimeRecovery.currentGitCoreFixture(process.cwd(), VERSION).outcome,
     );
-    vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
-      "/tmp/openclaw-updated-entry.mjs",
-    );
+    const updatedEntrypoint = "/tmp/openclaw-updated-entry.mjs";
+    vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(updatedEntrypoint);
     mockNpmPluginOutcomes([], true);
     let strictValidationEnv: string | undefined;
     vi.mocked(readConfigFileSnapshot).mockImplementation(async (options) => {
@@ -263,7 +296,7 @@ describe("update-cli", () => {
     expectDelegatedPluginDoctorInput(doctorCalls[0]?.[1].input);
     expect(runExec).toHaveBeenCalledExactlyOnceWith(
       expect.any(String),
-      [FRESH_POST_UPDATE_ENTRYPOINT, "config", "validate", "--json"],
+      [updatedEntrypoint, "config", "validate", "--json"],
       expect.objectContaining({ env: { OPENCLAW_UPDATE_IN_PROGRESS: "0" } }),
     );
     expect(strictValidationEnv).toBe("0");
@@ -298,12 +331,10 @@ describe("update-cli", () => {
     vi.mocked(resolveGatewayInstallEntrypoint).mockResolvedValueOnce(
       "/tmp/openclaw-updated-entry.mjs",
     );
-    vi.mocked(runExec).mockRejectedValueOnce(
-      Object.assign(new Error("Command failed: " + "long-argv-prefix ".repeat(100)), {
-        stderr: "doctor process failed: optional plugin repair unavailable",
-        stdout: "doctor diagnostic output",
-      }),
-    );
+    mockFreshDoctorFailure({
+      stderr: "doctor process failed: optional plugin repair unavailable",
+      stdout: "doctor diagnostic output",
+    });
     const result = await completeChangedPostCorePluginUpdate();
 
     expect(result.pluginUpdate).toMatchObject({
@@ -312,7 +343,6 @@ describe("update-cli", () => {
     });
     expect(result.pluginUpdate.warnings?.at(-1)?.message).toContain("doctor process failed");
     expect(result.pluginUpdate.warnings?.at(-1)?.message).toContain("doctor diagnostic output");
-    expect(result.pluginUpdate.warnings?.at(-1)?.message).not.toContain("long-argv-prefix");
   });
 
   it("keeps an invalid config authoritative after a fresh plugin doctor failure", async () => {
@@ -320,9 +350,8 @@ describe("update-cli", () => {
       "/tmp/openclaw-updated-entry.mjs",
     );
     const issues = [{ path: "channels.signal.httpUrl", message: "legacy Signal transport field" }];
-    vi.mocked(runExec)
-      .mockRejectedValueOnce(new Error("doctor process failed"))
-      .mockRejectedValueOnce(createConfigValidationFailure(issues));
+    mockFreshDoctorFailure({ stderr: "doctor process failed" });
+    vi.mocked(runExec).mockRejectedValueOnce(createConfigValidationFailure(issues));
     vi.mocked(readConfigFileSnapshot).mockResolvedValueOnce(
       configSnapshot(baseConfig, {
         valid: false,

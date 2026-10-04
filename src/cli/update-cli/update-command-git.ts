@@ -61,11 +61,8 @@ import {
   resolveGlobalManager,
   runUpdateStep,
 } from "./shared.js";
-import {
-  prepareGitPackageExposure,
-  readPackageUpdateIdentity,
-  runPackageUpdateDoctor,
-} from "./update-command-package.js";
+import { readPackageUpdateIdentity } from "./update-command-package-identity.js";
+import { prepareGitPackageExposure, runPackageUpdateDoctor } from "./update-command-package.js";
 import { gatewayServiceCommandUsesRoot } from "./update-command-service-plan.js";
 
 export async function retireStandaloneGitWrapper(params: {
@@ -409,7 +406,7 @@ export async function updateGitInstall(params: {
   beforeGitMutation: UpdateRunnerOptions["beforeGitMutation"];
   validateCandidate: UpdateRunnerOptions["validateCandidate"];
   assertCurrent?: () => void;
-  onTransaction?: (transaction: PackageUpdateTransaction) => void;
+  onTransaction?: (transaction: PackageUpdateTransaction) => void | Promise<void>;
   onConfigSnapshot?: Parameters<typeof runPackageUpdateDoctor>[0]["onConfigSnapshot"];
   getDoctorContext?: Parameters<typeof runPackageUpdateDoctor>[0]["getDoctorContext"];
   getManagedServiceEnv: () => NodeJS.ProcessEnv | undefined;

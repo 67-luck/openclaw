@@ -42,6 +42,10 @@ import type { UpdateServiceDefinitionRecovery } from "./update-command-service-c
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import { GatewayServiceUpdateOwnershipError } from "./update-command-service-plan.js";
 import {
+  admitMigratedGatewayRecovery as admit,
+  refuseUnsettledDoctorRecovery,
+} from "./update-command-service-recovery.js";
+import {
   maybeRestartService,
   maybeRestartServiceAfterFailedMutableUpdate,
   maybeStopManagedServiceBeforeMutableUpdate,
@@ -163,7 +167,10 @@ export async function finishUpdate(
       params.rollbackBlockedReason = "state-migrated-no-rollback";
     }
     let result = initialResult;
-    let recoverService = initialRecoverService;
+    if (refuseUnsettledDoctorRecovery(result, result.root ?? params.root, assertCurrent)) {
+      return { result, recoverService: false };
+    }
+    let recoverService = initialRecoverService && !params.rollbackBlockedReason;
     if (
       result.status === "error" &&
       (params.packageTransaction ||
@@ -216,7 +223,6 @@ export async function finishUpdate(
     }
     if (result.status === "error" && params.rollbackBlockedReason) {
       result = { ...result, reason: params.rollbackBlockedReason };
-      recoverService = false;
     } else if (
       result.status === "error" &&
       params.result.status === "ok" &&
@@ -235,6 +241,7 @@ export async function finishUpdate(
         { env: params.opts.run.env },
       );
     }
+    recoverService ||= !gatewayStartAttempted && (await admit(params, result, assertCurrent));
     if (isUpdateGatewayReadinessPending(result)) {
       triageAllowed = false;
       return { result, recoverService: false };
@@ -274,7 +281,7 @@ export async function finishUpdate(
           if (currentServiceStop()?.windowsTaskAutoStartRecovery) {
             onGatewayStartAttempted();
           }
-          await resumePostUpdateWindowsAutoStart(params, finalResult, currentServiceStop());
+          await resumePostUpdateWindowsAutoStart(params, finalResult, currentServiceStop);
         }
       } catch (cause) {
         restoreFailure = { cause };
@@ -393,8 +400,6 @@ export async function finishUpdate(
       throw new UpdateCommandFailure(reportedResult, 1, detail, { cause: cleanupFailure });
     }
     if (restoreFailure) {
-      // Persist the unsafe outcome before unwinding. Keep both failures for
-      // recovery diagnostics, with the failed compensation as the primary cause.
       const priorDetail = [result.reason, params.failure?.detail].filter(Boolean).join(": ");
       const detail =
         `${priorDetail ? `${priorDetail}; ` : ""}Windows Scheduled Task autostart recovery failed: ` +
@@ -413,17 +418,11 @@ export async function finishUpdate(
     }
     return reportedResult;
   };
-  const restoreWindowsAutoStart = async (result: UpdateRunResult) => {
-    try {
-      if (currentServiceStop()?.windowsTaskAutoStartRecovery) {
-        onGatewayStartAttempted();
-      }
-      await resumePostUpdateWindowsAutoStart(params, result, currentServiceStop());
-    } catch (cause) {
-      // The attempted restore already failed; reporting must not attempt it again.
-      await reportResult(result, false, { cause });
-    }
-  };
+  const restoreWindowsAutoStart = (result: UpdateRunResult) =>
+    resumePostUpdateWindowsAutoStart(params, result, currentServiceStop, {
+      beforeAttempt: onGatewayStartAttempted,
+      onFailure: (cause) => reportResult(result, false, { cause }),
+    });
 
   const runPostUpdate = async (): Promise<UpdateRunResult> => {
     try {

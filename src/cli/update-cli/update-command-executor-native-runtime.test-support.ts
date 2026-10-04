@@ -2,6 +2,16 @@
 const currentModuleUrl = import.meta.url;
 
 export const updateExecutorNativeEntrypoints = {
+  gatewayLock: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/gateway-lock",
+    distWorkerPath: "infra/gateway-lock.js",
+  },
+  databaseGenerations: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/update-database-generations",
+    distWorkerPath: "infra/update-database-generations.js",
+  },
   signalExitBarrier: {
     currentModuleUrl,
     sourceWorkerName: "../signal-exit-barrier",
@@ -46,6 +56,16 @@ export const updateExecutorNativeEntrypoints = {
     currentModuleUrl,
     sourceWorkerName: "../../infra/update-doctor-result",
     distWorkerPath: "infra/update-doctor-result.js",
+  },
+  doctorCustody: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/update-doctor-process-custody",
+    distWorkerPath: "infra/update-doctor-process-custody.js",
+  },
+  processSpawn: {
+    currentModuleUrl,
+    sourceWorkerName: "../../process/exec-spawn",
+    distWorkerPath: "process/exec-spawn.js",
   },
   processExec: {
     currentModuleUrl,
