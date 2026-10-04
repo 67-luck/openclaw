@@ -972,8 +972,9 @@ describe("handleSendChat session ownership", () => {
   );
 
   it.each([true, false])(
-    "retains later text and attachments behind an initial turn (connected: %s)",
+    "queues later text and attachments behind an initial turn (connected: %s)",
     async (connected) => {
+      let pending = true;
       const attachment = createStagedAttachment("held-att");
       const host = makeChatHost({
         connected,
@@ -981,19 +982,35 @@ describe("handleSendChat session ownership", () => {
         chatAttachments: [attachment],
         lastError: "Earlier request failed",
         chatError: "Earlier request failed",
-        requestHandlers: { "chat.send": { status: "started" } },
-        hasPendingInitialTurn: () => true,
+        requestHandlers: {
+          "chat.history": {
+            messages: [],
+            sessionInfo: { key: "agent:main", status: "done", hasActiveRun: false },
+          },
+          "chat.send": { status: "started" },
+        },
+        hasPendingInitialTurn: () => pending,
+        chatFollowUpMode: connected ? "steer" : "interrupt",
       });
       await handleSendChat(host);
-      expect(host.chatMessage).toBe("keep this later draft");
-      expect(host.chatAttachments).toEqual([attachment]);
-      expect(getChatAttachmentDataUrl(attachment)).toBe(attachmentDataUrl);
-      expect(host.chatQueue).toEqual([]);
+      expect(host.chatMessage).toBe("");
+      expect(host.chatAttachments).toEqual([]);
+      expect(host.chatQueue).toMatchObject([{ text: "keep this later draft", sendAttempts: 0 }]);
+      expect(host.chatQueue[0]).not.toHaveProperty("queueMode");
+      const queuedId = host.chatQueue[0]!.sendRunId;
       expect(host.request).not.toHaveBeenCalledWith("chat.send", expect.anything(), {
         timeoutMs: 30_000,
       });
-      expect(host.chatError).toBe("Earlier request failed");
-      expect(host.lastError).toBe("Earlier request failed");
+      host.chatMessage = "next unfinished draft";
+      host.connected = true;
+      pending = false;
+      await resumeStoredChatOutboxes(host);
+      expect(findChatSendPayload(host)).toMatchObject({
+        message: "keep this later draft",
+        idempotencyKey: queuedId,
+        attachments: [expect.objectContaining({ fileName: "brief.pdf" })],
+      });
+      expect(host.chatMessage).toBe("next unfinished draft");
     },
   );
 
