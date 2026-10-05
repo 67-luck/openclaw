@@ -42,7 +42,7 @@ it.each([false, true])(
               grantDatabasePath = previous;
             }
           }, attachment);
-          const bind = owned.bindDatabaseAuthority;
+          const bind = owned.bindDatabaseAuthority.bind(owned);
           owned.bindDatabaseAuthority = (authority) => {
             databasePath = authority.databasePath;
             bind(authority);
