@@ -593,6 +593,7 @@ async function handleChatSendWithOptions(
     // user transcript (which references the media) on every path, so a
     // post-ACK cleanupAdmittedRun must not race that persist with a discard.
     assertInputAdmissionCurrent();
+    admission.markInputAccepted();
     admission.setDiscardAbandonedPreparedMedia(undefined);
     respond(true, ackPayload, undefined, { runId: clientRunId });
     context.recordClientActivity?.(client);

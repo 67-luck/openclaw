@@ -760,6 +760,19 @@ export async function admitChatSend(
     ...progressCardRefreshRunProjection(request.systemInputProvenance),
   });
 
+  const markInputAccepted = () => {
+    const accepted = context.dedupe.get(`chat:${clientRunId}`);
+    if (
+      accepted?.ok !== true ||
+      accepted.requestIdentity !== requestIdentity ||
+      accepted.payload !== undefined ||
+      accepted.error !== undefined
+    ) {
+      throw new Error("Chat input acceptance marker changed before acknowledgment");
+    }
+    accepted.effectAccepted = true;
+  };
+
   return {
     ok: true as const,
     value: {
@@ -781,6 +794,7 @@ export async function admitChatSend(
       finishAbortedChatSend,
       gatewayWorkAdmission,
       lifecycleGeneration,
+      markInputAccepted,
       interruptedActiveRun,
       messageInjectionTarget,
       originatingRoute,

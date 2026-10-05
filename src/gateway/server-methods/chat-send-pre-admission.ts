@@ -279,6 +279,7 @@ export function respondChatSendRetry(
   const accepted = context.dedupe.get(`chat:${clientRunId}`);
   if (
     accepted?.ok === true &&
+    accepted.effectAccepted === true &&
     accepted.requestIdentity === params.request.requestIdentity &&
     accepted.payload === undefined &&
     accepted.error === undefined
