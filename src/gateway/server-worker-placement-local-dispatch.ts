@@ -2,10 +2,12 @@ import { clearSessionQueues } from "../auto-reply/reply/queue/cleanup.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
 import {
+  captureSessionTarget,
   interruptSessionControllerEffects,
   runSessionMutation,
   SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
 } from "../sessions/session-controller.lifecycle.js";
+import { captureSessionControllerStop } from "../sessions/session-controller.stop.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import {
   loadWorkerPlacementSessionRuntimeModule,
@@ -50,6 +52,13 @@ export function createGatewayWorkerPlacementLocalDispatchBarrier(params: {
       exactRead: true,
     });
     const lifecycleIdentities = [sessionKey, target.canonicalKey, ...target.storeKeys, sessionId];
+    const controllerTarget = captureSessionTarget({
+      storeScope: target.storePath,
+      sessionKey: target.canonicalKey,
+      aliases: lifecycleIdentities,
+      agentId,
+      incarnation: sessionId,
+    });
     let placement: Awaited<ReturnType<typeof startDispatch>> | undefined;
     return await runSessionMutation({
       scope: target.storePath,
@@ -94,8 +103,12 @@ export function createGatewayWorkerPlacementLocalDispatchBarrier(params: {
         }
         assertCurrent(getRuntimeConfig());
         authorize?.();
+        const queuedInputs = captureSessionControllerStop({
+          targets: [controllerTarget],
+          includeActive: false,
+        }).queuedInputs;
         placement = await startDispatch();
-        clearSessionQueues(lifecycleIdentities);
+        clearSessionQueues(lifecycleIdentities, controllerTarget, queuedInputs);
         params.revokeSessionAuthority({
           sessionId,
           sessionKeys: lifecycleIdentities,

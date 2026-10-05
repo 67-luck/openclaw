@@ -11,7 +11,8 @@ vi.mock("./worker-environments/workspace-sync-preflight.js", () => ({
 
 import { getRuntimeConfig } from "../config/config.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
-import { beginSessionEffect } from "../sessions/session-controller.lifecycle.js";
+import { withSessionTurn } from "../sessions/session-controller.admission.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabases } from "../state/openclaw-agent-db.js";
 import { createGatewayWorkerPlacementRuntime } from "./server-worker-placement-startup.js";
@@ -119,11 +120,11 @@ describe("worker automatic resume", () => {
         signal?.throwIfAborted();
       });
       const controller = new AbortController();
-      const admission = await beginSessionEffect({
-        scope: target.storePath,
-        identities: [REQUEST.sessionKey, REQUEST.sessionId],
-        assertAllowed: () => controller.signal.throwIfAborted(),
-        onInterrupt: (reason) => controller.abort(reason),
+      const controllerTarget = captureSessionTarget({
+        storeScope: target.storePath,
+        sessionKey: REQUEST.sessionKey,
+        agentId: REQUEST.agentId,
+        incarnation: REQUEST.sessionId,
       });
 
       let current = true;
@@ -137,8 +138,14 @@ describe("worker automatic resume", () => {
         });
         return { payloads: [{ text: "The resumed workspace is ready." }], meta: { durationMs: 1 } };
       });
-      const pending = admission
-        .run(() =>
+      const pending = withSessionTurn(
+        {
+          sessionKey: REQUEST.sessionKey,
+          sessionId: REQUEST.sessionId,
+          target: controllerTarget,
+          signal: controller.signal,
+        },
+        () =>
           runtime.admissionProvider.executeTurn(
             { ...REQUEST, runId },
             {
@@ -160,8 +167,7 @@ describe("worker automatic resume", () => {
               }
             },
           ),
-        )
-        .catch((error: unknown) => error);
+      ).catch((error: unknown) => error);
       try {
         const signal = await Promise.race([
           setupEntered.promise,
@@ -207,7 +213,6 @@ describe("worker automatic resume", () => {
       } finally {
         releaseSetup.resolve();
         await pending;
-        admission.release();
         closeOpenClawAgentDatabases(root);
       }
     },

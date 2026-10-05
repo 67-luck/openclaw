@@ -231,13 +231,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
       expect(loadSessionEntry(target)?.status).toBe("running");
       const late = await admit("during-terminal-write");
       expect(late.ok).toBe(false);
-      expect(
-        (
-          context.dedupe.get("chat:during-terminal-write")?.payload as
-            | { summary?: string }
-            | undefined
-        )?.summary,
-      ).toBe("aborted");
+      expect(context.dedupe.get("chat:during-terminal-write")).toBeUndefined();
       if (outcome === "setup-failed-write") {
         expect(owned.restartSafeAdmission).toBeUndefined();
         await handleChatSendSetupError({
@@ -248,11 +242,11 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
           session: { agentId: "main", clientRunId: runId, sessionKey: target.sessionKey },
           terminalizeRestartSafeAdmission: vi.fn(async () => false),
         });
-        expect(rpcSourceTesting.get(runId)).toBe(owned.activeRunAbort.entry);
+        expect(rpcSourceTesting.has(runId)).toBe(false);
         expect(reclaimEffectStarted).toBe(false);
       }
       if (outcome !== "success") {
-        const rejected = expect(reclaim).rejects.toThrow("Session cancellation did not persist");
+        const rejected = expect(reclaim).rejects.toThrow("terminal store unavailable");
         terminalWrite.reject(new Error("terminal store unavailable"));
         releaseWriter.resolve();
         await heldWriter;

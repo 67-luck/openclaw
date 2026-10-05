@@ -730,7 +730,7 @@ describe("worker placement startup recovery authority", () => {
     try {
       expect(controller.signal.aborted).toBe(true);
       await setImmediate();
-      expect(admission.isActive()).toBe(true);
+      expect(admission.isActive()).toBe(false);
       expect(events).toEqual(["recovery:/gateway/workspace"]);
       expect(admissionReleased).not.toHaveBeenCalled();
     } finally {

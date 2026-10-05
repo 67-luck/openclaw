@@ -22,6 +22,7 @@ import {
   admitWorkerStopChat,
   createWorkerStopChatContext,
 } from "./server-worker-placement.test-harness.js";
+import { claimRpcSourceForTest } from "./test-helpers.rpc-source.js";
 import { coordinateWorkerPlacementDispatch } from "./worker-environments/placement-dispatch-coordinator.js";
 import { REQUEST } from "./worker-environments/placement-dispatch-test-fixtures.js";
 import { createHarness } from "./worker-environments/placement-dispatch-test-harness.js";
@@ -251,12 +252,19 @@ async function scenario(
   const oldRunId = name + "-before-stop-complete";
   const running = blockedInspection ? await admit(name + "-running").promise : undefined;
   const activeController = rpcSourceTesting.get(name + "-running");
+  let releaseRunningClaim: (() => void) | undefined;
+  if (running?.ok && activeController) {
+    releaseRunningClaim = await claimRpcSourceForTest(activeController);
+    expect(running.value.activeRunAbort.markExecutionStarted()).toBe(true);
+  }
   if (pendingMove) {
     context.chatRunState.getOrCreate(name + "-running").buffer = "partial before queued Move Stop";
   }
   let cancellationRecovery: Promise<void> | undefined;
   if (running?.ok) {
     running.value.activeRunAbort.controller.signal.addEventListener("abort", () => {
+      releaseRunningClaim?.();
+      releaseRunningClaim = undefined;
       if (cancellationNeedsRecovery) {
         // Real worker failure completion joins placement recovery before releasing admission.
         cancellationRecovery = coordinated.reconcileActive().finally(() => {
@@ -388,7 +396,6 @@ async function scenario(
     // A preceding lifecycle owner holds ingress pending while Stop joins that
     // same owner. This fixes ordering without timer delays or editing ingress.
     await runSessionMutation({
-
       scope: storePath,
       identities: [REQUEST.sessionKey, REQUEST.sessionId],
       run: async () => {
@@ -465,6 +472,7 @@ async function scenario(
   };
   context.chatRunState.clear();
   if (running?.ok) {
+    releaseRunningClaim?.();
     running.value.cleanupAdmittedRun();
     clearAgentRunContext(name + "-running", running.value.lifecycleGeneration);
   }
@@ -678,9 +686,12 @@ it.each(["missing", "local"] as const)(
     if (!controller) {
       throw new Error("Active local chat fixture has no controller");
     }
+    const releaseControllerClaim = await claimRpcSourceForTest(controller);
+    expect(admitted.value.activeRunAbort.markExecutionStarted()).toBe(true);
     context.chatRunState.getOrCreate(runId).buffer = "partial before queued dispatch Stop";
     const aborted = createDeferred();
     controller.input.abortSignal.addEventListener("abort", () => {
+      releaseControllerClaim();
       admitted.value.cleanupAdmittedRun();
       aborted.resolve();
     });
@@ -722,6 +733,7 @@ it.each(["missing", "local"] as const)(
       cancellationLoad.resolve();
       release.resolve();
       await Promise.all([sweep, dispatch, stopping]);
+      releaseControllerClaim();
       admitted.value.cleanupAdmittedRun();
       clearAgentRunContext(runId, admitted.value.lifecycleGeneration);
     }

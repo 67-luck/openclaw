@@ -6,7 +6,7 @@ import {
 import { createGatewayWorkerPlacementReclaimBarriers } from "./server-worker-placement-reclaim.js";
 
 it.each(["active", "failed"] as const)(
-  "a %s reclaim whose canonical cancellation rejects still retires old pending work",
+  "a %s reclaim whose canonical cancellation rejects preserves its mutation-owned effect",
   async (state) => {
     const scope = `/fixture/cancel-failure-${state}.sqlite`;
     const sessionKey = "agent:main:cancel-failure";
@@ -61,7 +61,6 @@ it.each(["active", "failed"] as const)(
     let pending!: Promise<{ admitted: boolean; error?: unknown }>;
     try {
       await runSessionMutation({
-
         scope,
         identities: [sessionKey, sessionId],
         run: async () => {
@@ -88,11 +87,12 @@ it.each(["active", "failed"] as const)(
       expect(cancel).toHaveBeenCalledOnce();
       expect(begin).not.toHaveBeenCalled();
       expect(reclaim).not.toHaveBeenCalled();
-      // Failed Stop never begins teardown; acquired runs retain canonical abort ordering.
+      // Failed Stop never begins teardown; work admitted by the surrounding mutation
+      // remains subordinate to that mutation instead of becoming a competing owner.
       expect(acquiredInterrupted).not.toHaveBeenCalled();
-      expect(await pending).toEqual({ admitted: false, error: expect.any(Error) });
-      expect(interrupted).toHaveBeenCalledOnce();
-      expect(validated).not.toHaveBeenCalled();
+      expect(await pending).toEqual({ admitted: true });
+      expect(interrupted).not.toHaveBeenCalled();
+      expect(validated).toHaveBeenCalledTimes(2);
       const fresh = await beginSessionEffect({
         scope,
         identities: [sessionKey, sessionId],
