@@ -55,12 +55,27 @@ export function captureReplyMessageInjectionTarget(
     attachment?.operation === operation && "toolAuthority" in attachment
       ? attachment.toolAuthority?.project
       : operation.projectToolAuthorityFingerprint;
+  const assertToolAuthorityActive =
+    attachment?.operation === operation && "toolAuthority" in attachment
+      ? attachment.toolAuthority?.assertActive
+      : undefined;
   const sourceTurnId = entry.sourceTurnId;
   return {
     [replyMessageInjectionTargetOwner]: {
       acceptParticipant: (overlay) => operation.personalToolParticipants?.accept(overlay),
       projectToolAuthorityFingerprint: (overlay) => projectToolAuthorityFingerprint?.(overlay),
-      resolve: (params) => resolveReplyMessageInjectionRejection({ ...params, operation }),
+      resolve: (params) =>
+        resolveReplyMessageInjectionRejection({
+          ...params,
+          assertCurrent:
+            params.assertCurrent || assertToolAuthorityActive
+              ? () => {
+                  params.assertCurrent?.();
+                  assertToolAuthorityActive?.();
+                }
+              : undefined,
+          operation,
+        }),
       recordAccepted: (options) => {
         operation.watchdog.progress("source_arrival");
         operation.markSteeredInputAccepted({ inboundAudio: options?.inboundAudio === true });
