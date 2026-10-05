@@ -4,7 +4,10 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
-import { loadGatewayWorkerEnvironmentStartupState } from "./server-worker-environment-startup.js";
+import {
+  loadGatewayWorkerEnvironmentStartupState,
+  type GatewayWorkerEnvironmentStartupState,
+} from "./server-worker-environment-startup.js";
 import { loadSessionEntry } from "./session-utils.js";
 import { embeddedRunMock, writeSessionStore } from "./test-helpers.js";
 import {
@@ -31,10 +34,24 @@ import type {
 import { resolveSessionWorkerPlacementMutationError } from "./worker-environments/session-placement-lifecycle.js";
 
 const { createSessionStoreDir, seedActiveMainSession } = setupGatewaySessionsHandlerTestHarness();
+const workerEnvironmentStartupStates: GatewayWorkerEnvironmentStartupState[] = [];
+
+// Track each worker environment owner so database teardown cannot retire it underneath the test.
+async function loadTrackedWorkerEnvironmentStartupState() {
+  const startup = await loadGatewayWorkerEnvironmentStartupState();
+  workerEnvironmentStartupStates.push(startup);
+  return startup;
+}
 
 afterEach(async () => {
-  await disposeSessionReadContexts();
-  await closeStateDatabaseForTest();
+  try {
+    for (const startup of workerEnvironmentStartupStates.splice(0).toReversed()) {
+      await startup.store.close();
+    }
+  } finally {
+    await disposeSessionReadContexts();
+    await closeStateDatabaseForTest();
+  }
 });
 
 function placementRecord(
@@ -319,7 +336,7 @@ test.each([
       [placementKey]: sessionStoreEntry(sessionId),
     },
   });
-  const { placementStore } = await loadGatewayWorkerEnvironmentStartupState();
+  const { placementStore } = await loadTrackedWorkerEnvironmentStartupState();
   const events: string[] = [];
   const cleanupAdmission = await beginClaimedTurn({
     events,
@@ -387,7 +404,7 @@ test("sessions.delete retains failed placement when worker cleanup is unavailabl
   expect(deleted.ok).toBe(false);
   expect(deleted.error?.message).toContain("cloud worker reclaim is unavailable");
   expect(loadSessionEntry(sessionKey).entry?.sessionId).toBe(sessionId);
-  expect(embeddedRunMock.abortCalls).toEqual([sessionId]);
+  expect(embeddedRunMock.abortCalls).toEqual([]);
   expect(placementService.retireSessionPlacement).not.toHaveBeenCalled();
 });
 
@@ -499,7 +516,7 @@ test.each([
       });
     }
     const storePath = loadSessionEntry(testCase.sessionKey).storePath;
-    const { placementStore } = await loadGatewayWorkerEnvironmentStartupState();
+    const { placementStore } = await loadTrackedWorkerEnvironmentStartupState();
     const events: string[] = [];
     const cleanupAdmission = await beginClaimedTurn({
       events,
@@ -544,7 +561,7 @@ test("sessions.reset rechecks lifecycle ownership after draining before placemen
   const sessionId = "sess-revoked-during-reset-drain";
   await writeSessionStore({ entries: { [sessionKey]: sessionStoreEntry(sessionId) } });
   const storePath = loadSessionEntry(sessionKey).storePath;
-  const { placementStore } = await loadGatewayWorkerEnvironmentStartupState();
+  const { placementStore } = await loadTrackedWorkerEnvironmentStartupState();
   const events: string[] = [];
   let lifecycleCurrent = true;
   const cleanupAdmission = await beginClaimedTurn({
@@ -744,8 +761,7 @@ test.each(["generation", "claim"] as const)(
       sessionKey,
       storePath,
     });
-    embeddedRunMock.activeIds.add(sessionId);
-    const { placementStore } = await loadGatewayWorkerEnvironmentStartupState();
+    const { placementStore } = await loadTrackedWorkerEnvironmentStartupState();
     const initialClaim = await placementStore.claimTurn({
       sessionId,
       agentId: "main",
@@ -780,6 +796,7 @@ test.each(["generation", "claim"] as const)(
       { context: { workerSessionPlacementService: placementStore } },
     );
     await expect(deletion).rejects.toThrow("changed before retirement");
+    expect(bundleMcpRuntimeMocks.disposeSessionMcpRuntime).toHaveBeenCalledOnce();
     expect(loadSessionEntry(sessionKey).entry?.sessionId).toBe(sessionId);
     expect(await loadSeededTranscriptEvents({ sessionId, sessionKey, storePath })).toEqual(
       transcriptBefore,
@@ -795,7 +812,7 @@ test.each(["worker-turn", "remote-exec"] as const)(
     await writeSessionStore({
       entries: { [REQUEST.sessionKey]: sessionStoreEntry(REQUEST.sessionId) },
     });
-    const { placementStore } = await loadGatewayWorkerEnvironmentStartupState();
+    const { placementStore } = await loadTrackedWorkerEnvironmentStartupState();
     const release = vi.fn();
     const harness = createHarness(openOpenClawStateDatabase(), placementStore, {
       reconcileChanged: false,
@@ -862,7 +879,7 @@ test.each(["worker-turn", "remote-exec"] as const)(
     await writeSessionStore({
       entries: { [REQUEST.sessionKey]: sessionStoreEntry(REQUEST.sessionId) },
     });
-    const { placementStore } = await loadGatewayWorkerEnvironmentStartupState();
+    const { placementStore } = await loadTrackedWorkerEnvironmentStartupState();
     const harness = createHarness(openOpenClawStateDatabase(), placementStore, {
       reconcileCommitsManifest: false,
       reconcileCommitsManifestOnApply: true,
@@ -905,7 +922,7 @@ test("sessions.delete retains reclaimed placement when runtime cleanup fails bef
   await writeSessionStore({
     entries: { [REQUEST.sessionKey]: sessionStoreEntry(REQUEST.sessionId) },
   });
-  const { placementStore } = await loadGatewayWorkerEnvironmentStartupState();
+  const { placementStore } = await loadTrackedWorkerEnvironmentStartupState();
   const harness = createHarness(openOpenClawStateDatabase(), placementStore, {
     reconcileChanged: false,
     reconcileCommitsManifest: false,

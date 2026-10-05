@@ -364,7 +364,8 @@ function createGatewaySessionsTestHarness(startServer: boolean, setup?: GatewayS
     Object.values(acpManagerMocks).forEach((mock) => mock.mockClear());
     browserSessionTabMocks.closeTrackedBrowserTabsForSessions.mockClear();
     browserSessionTabMocks.closeTrackedBrowserTabsForSessions.mockResolvedValue(0);
-    bundleMcpRuntimeMocks.disposeSessionMcpRuntime.mockClear();
+    // Unconsumed one-shot callbacks can retain the previous case's database admission.
+    bundleMcpRuntimeMocks.disposeSessionMcpRuntime.mockReset();
     bundleMcpRuntimeMocks.disposeSessionMcpRuntime.mockResolvedValue(undefined);
     bundleMcpRuntimeMocks.retireSessionMcpRuntime.mockReset();
     bundleMcpRuntimeMocks.retireSessionMcpRuntime.mockImplementation(async ({ sessionId }) => {
