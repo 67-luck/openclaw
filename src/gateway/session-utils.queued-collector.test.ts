@@ -453,7 +453,8 @@ describe("queued collector session projection", () => {
       { sessionId: "parent-session", updatedAt: Date.now() },
     );
     const afterStaleGrace = Date.now() + 3 * 60 * 60_000;
-    const projection = expectDefined(getSessionRowProjection(requestContext()), "queued row owner");
+    const context = requestContext();
+    const projection = expectDefined(getSessionRowProjection(context), "queued row owner");
     const read = async (key: string) => {
       await projection.ensureMaterialized();
       return projection.snapshot({ key, agentId: "main" }, { now: afterStaleGrace }).row;
@@ -478,7 +479,7 @@ describe("queued collector session projection", () => {
     expect(isSubagentRunQueued(replacement)).toBe(false);
     expect((await exactChild())?.hasActiveSubagentRun).toBe(false);
     expect((await exactParent())?.hasActiveSubagentRun).not.toBe(true);
-    expect((await listChildren(requestContext())).sessions[0]?.hasActiveRun).toBe(false);
+    expect((await listChildren(context)).sessions[0]?.hasActiveRun).toBe(false);
 
     const hold = holdQueuedSwarmRun(entry.runId);
     try {
@@ -498,7 +499,7 @@ describe("queued collector session projection", () => {
       expect(isSubagentRunQueued(current)).toBe(false);
       expect((await exactChild())?.hasActiveSubagentRun).toBe(false);
       expect((await exactParent())?.hasActiveSubagentRun).not.toBe(true);
-      expect((await listChildren(requestContext())).sessions[0]?.hasActiveRun).toBe(false);
+      expect((await listChildren(context)).sessions[0]?.hasActiveRun).toBe(false);
     } finally {
       await hold?.release();
     }
