@@ -16161,8 +16161,8 @@ wait_for_run plugin-clawhub-new.yml 123 "${expectedSha}" || status=$?
     ]);
     expectTextToIncludeAll(releaseCi, [
       "The all-group parent prepares core and selected plugin npm tarballs itself",
-      "A standalone npm or plugin npm preflight is diagnostic-only",
-      "cannot replace the manifest-bound evidence",
+      "A standalone npm or plugin npm",
+      "preflight is diagnostic-only and cannot replace the manifest-bound evidence",
     ]);
     expectTextToIncludeAll(ciDocs, [
       'VALIDATION_SHA="<full-commit-sha>"',

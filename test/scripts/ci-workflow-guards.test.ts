@@ -3245,7 +3245,7 @@ require("node:fs").writeFileSync("scheduler-restart", process.env.OPENCLAW_UPGRA
         expect(result.status, result.stderr).toBe(0);
         expect(readFileSync(receipt, "utf8")).toBe(fixture.expected);
         expect(readFileSync(path.join(root, "scheduler-scenario"), "utf8")).toBe(
-          fixture.frozen ? "base" : "legacy-operator-state",
+          fixture.scenario ?? "legacy-operator-state",
         );
         expect(readFileSync(path.join(root, "scheduler-restart"), "utf8")).toBe("auto-auth");
       } else {
