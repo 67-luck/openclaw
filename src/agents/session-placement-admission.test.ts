@@ -658,6 +658,11 @@ describe("local turn placement admission", () => {
           await running;
         }
         expect(retained).toBeDefined();
+        if (ending === "cancelled-without-successor") {
+          expect(() => retained?.()).not.toThrow();
+          release.resolve();
+          await running.catch(() => {});
+        }
         let thrownError: unknown;
         try {
           retained?.();
