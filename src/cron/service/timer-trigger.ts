@@ -1,7 +1,7 @@
 import { asDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { resolveCronDeliveryPlan } from "../delivery-plan.js";
 import { type CronRetryOn, resolveCronExecutionRetryHint } from "../retry-hint.js";
-import { createCronStreamSourceIdentity } from "../stream-schedule.js";
+import { createCronSourceIdentity } from "../source-schedule.js";
 import type {
   CronJob,
   CronDeliveryTrace,
@@ -109,7 +109,7 @@ export function applyTriggerRunResult(
     result.status === "ok"
   ) {
     if (job.schedule.kind === "stream") {
-      job.state.streamSourceIdentity = createCronStreamSourceIdentity();
+      job.state.streamSourceIdentity = createCronSourceIdentity();
     }
     job.enabled = false;
     job.state.nextRunAtMs = undefined;

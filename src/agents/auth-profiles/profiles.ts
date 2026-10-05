@@ -7,6 +7,7 @@ import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
+import { replaceAuthProfileAuthorization } from "./authorization-lifetime.js";
 import { loadCandidateAuthProfileStore } from "./candidate-stores.js";
 import { normalizeAuthProfileCredential } from "./credential-normalize.js";
 import { withOAuthProfileLocks, type OAuthProfileLockKey } from "./oauth-profile-lock.js";
@@ -167,7 +168,7 @@ export function upsertAuthProfile(params: {
 }): void {
   const credential = normalizeAuthProfileCredential(params.credential);
   const store = ensureAuthProfileStoreForLocalUpdate(params.agentDir);
-  store.profiles[params.profileId] = credential;
+  store.profiles[params.profileId] = replaceAuthProfileAuthorization(credential);
   saveAuthProfileStore(store, params.agentDir, {
     filterExternalAuthProfiles: false,
     sharedStoreWrite: true,

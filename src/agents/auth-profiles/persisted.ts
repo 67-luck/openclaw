@@ -10,6 +10,7 @@ import { uniqueStrings } from "@openclaw/normalization-core/string-normalization
 import { coerceSecretRef } from "../../config/types.secrets.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import { asBoolean } from "../../utils/boolean.js";
+import { copyAuthProfileAuthorizationInheritance } from "./authorization-lifetime.js";
 import { AUTH_STORE_VERSION, authProfilesLog } from "./constants.js";
 import { oauthCredentialMetadataSchema } from "./credential-schema.js";
 import { hasUsableOAuthCredential } from "./credential-state.js";
@@ -21,6 +22,7 @@ import {
   normalizeAuthEmailToken,
   normalizeAuthIdentityToken,
 } from "./oauth-shared.js";
+import { serializeAuthProfileCredential } from "./persisted-credential.js";
 import {
   getRuntimeExternalCliProfileIds,
   removePersonalAuthProfileReferences,
@@ -791,19 +793,10 @@ export function buildPersistedAuthProfileSecretsStore(
       if (shouldPersistProfile && !shouldPersistProfile({ profileId, credential })) {
         return [];
       }
-      if (credential.type === "api_key" && credential.keyRef && credential.key !== undefined) {
-        const sanitized = { ...credential } as Record<string, unknown>;
-        delete sanitized.key;
-        return [[profileId, sanitized]];
-      }
-      if (credential.type === "token" && credential.tokenRef && credential.token !== undefined) {
-        const sanitized = { ...credential } as Record<string, unknown>;
-        delete sanitized.token;
-        return [[profileId, sanitized]];
-      }
-      return [[profileId, credential]];
+      return [[profileId, serializeAuthProfileCredential(credential)]];
     }),
   ) as AuthProfileSecretsStore["profiles"];
+  copyAuthProfileAuthorizationInheritance(store.profiles, profiles);
 
   return {
     version: AUTH_STORE_VERSION,

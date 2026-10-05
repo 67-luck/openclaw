@@ -580,6 +580,7 @@ enum class GatewayMethod(
   ToolsCatalog("tools.catalog"),
   ToolsEffective("tools.effective"),
   ToolsInvoke("tools.invoke"),
+  McpEventsList("mcp.events.list"),
   McpAppView("mcp.app.view"),
   McpAppListTools("mcp.app.listTools"),
   McpAppListResources("mcp.app.listResources"),

@@ -2,12 +2,19 @@ import type { DatabaseSync } from "node:sqlite";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { deferSqlitePostCommitPublication } from "../infra/sqlite-post-commit.js";
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
-import { requestSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
+import {
+  deferSqliteWorkerCommitReceipt,
+  requestSqliteWorkerOperationAdmission,
+} from "../infra/sqlite-worker-operation-admission.js";
 import { getSqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import type { OpenClawStateDatabase } from "../state/openclaw-state-db-contract.js";
 import { ensureMcpOAuthPendingSchema } from "../state/openclaw-state-db-schema-additive.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { assertOpenClawStateLeaseWorkerOwnedInTransaction } from "../state/openclaw-state-lease-worker.js";
+import {
+  projectMcpOAuthAuthorization,
+  type McpOAuthAuthorizationReceipt,
+} from "./mcp-oauth-authorization-facts.js";
 import {
   readMcpOAuthStoreInDatabase,
   replaceMcpOAuthStoreInDatabase,
@@ -111,6 +118,11 @@ function executeMcpOAuthWriteInTransaction(
       command.input.mutation,
     );
     replaceMcpOAuthStoreInDatabase(database, storeKey, result.store, assertOwned);
+    deferSqliteWorkerCommitReceipt(database, {
+      kind: "mcp-oauth-authorization",
+      storeKey,
+      authorization: projectMcpOAuthAuthorization(result.store),
+    } satisfies McpOAuthAuthorizationReceipt);
     return result;
   }
   assertOwned();
@@ -166,6 +178,11 @@ function executeMcpOAuthWriteInTransaction(
         assertOwned,
       );
       deletePending();
+      deferSqliteWorkerCommitReceipt(database, {
+        kind: "mcp-oauth-authorization",
+        storeKey,
+        authorization: { authorizationId: null },
+      } satisfies McpOAuthAuthorizationReceipt);
       return undefined;
   }
   void (command satisfies never);

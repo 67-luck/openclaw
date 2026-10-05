@@ -3,14 +3,15 @@ import type { OpenClawStateWorkerContext } from "../../state/openclaw-state-work
 import type { CronActiveJobMarker } from "../active-jobs.js";
 import { resolveCronCompletionStatus } from "../completion-status.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
+import { cronEventPayload, type CronEventAdmission } from "../event-source.js";
 import { createCronRunDiagnosticsFromError } from "../run-diagnostics.js";
+import { cronSourceIdentity, ownsCronSource } from "../source-schedule.js";
 import type { CronRunHistorySource } from "../store/run-history.js";
 import {
   finishCronRunReceiptInDatabase,
   releaseLocalCronRunReceiptOwnership,
 } from "../store/run-receipt-store.js";
 import type { CronRunReceiptHandle } from "../store/run-receipt.types.js";
-import { ownsStreamSource } from "../stream-schedule.js";
 import type {
   CronFailureNotificationDetail,
   CronJob,
@@ -81,6 +82,8 @@ export type OnExitRunOptions = {
 };
 
 export type ManualRunOptions = {
+  event?: CronEventAdmission;
+  onEventTransferred?: (receipt: CronRunReceiptHandle) => void;
   onExit?: OnExitRunOptions;
   runId?: string;
   /** Revalidates the caller before preflight effects and durable reservation. */
@@ -158,7 +161,7 @@ function admitsStreamSourceRun(
     streamScheduleKey !== undefined &&
     streamSourceIdentity !== undefined &&
     isJobEnabled(job) &&
-    ownsStreamSource(job, streamScheduleKey, streamSourceIdentity)
+    ownsCronSource(job, streamScheduleKey, streamSourceIdentity)
   );
 }
 
@@ -272,10 +275,17 @@ async function inspectManualRunPreflight(
   if (state.stopped) {
     return { ok: true, ran: false, reason: "stopped" };
   }
-  const job = opts?.onExit
-    ? state.store?.jobs.find((entry) => entry.id === id)
-    : findJobOrThrow(state, id);
+  const job =
+    opts?.onExit || opts?.event
+      ? state.store?.jobs.find((entry) => entry.id === id)
+      : findJobOrThrow(state, id);
   if (!job || (opts?.onExit && !matchesOnExitSchedule(job, opts.onExit.schedule))) {
+    return { ok: true, ran: false, reason: "not-due" };
+  }
+  if (
+    opts?.event &&
+    (job.schedule.kind !== "event" || cronSourceIdentity(job) !== opts.event.input.sourceIdentity)
+  ) {
     return { ok: true, ran: false, reason: "not-due" };
   }
   if (opts?.onExit && (!isJobEnabled(job) || job.state.autoDisabled)) {
@@ -365,6 +375,7 @@ export async function prepareManualRun(
         ...(isImmediateCronRunMode(mode) ? { scheduleMode: "preserve" as const } : {}),
         manualRun: {
           runId: opts?.runId,
+          event: opts?.event,
           commitGuard: opts?.commitGuard,
           terminalTracker: internalTracker,
           scheduleOwnershipAtMs: opts?.scheduleOwnershipAtMs,
@@ -434,6 +445,8 @@ export async function prepareManualRun(
       ran: true,
       jobId: reservedJob.id,
       runId: opts?.runId,
+      event: opts?.event,
+      onEventTransferred: opts?.onEventTransferred,
       terminalTracker: opts?.terminalTracker,
       owningCronLaneTaskMarker: opts?.owningCronLaneTaskMarker,
       commitGuard: opts?.commitGuard,
@@ -487,6 +500,14 @@ export async function activatePreparedManualRun(
       await releasePreparedManualReservationWithRetry(state, prepared);
       return { ok: true, ran: false, reason: "not-due" } as const;
     }
+    if (
+      prepared.event &&
+      (job.schedule.kind !== "event" ||
+        cronSourceIdentity(job) !== prepared.event.input.sourceIdentity)
+    ) {
+      await releasePreparedManualReservationWithRetry(state, prepared);
+      return { ok: true, ran: false, reason: "not-due" };
+    }
     if (prepared.onExit && !matchesOnExitSchedule(job, prepared.onExit.schedule)) {
       await releasePreparedManualReservationWithRetry(state, prepared);
       return { ok: true, ran: false, reason: "not-due" };
@@ -529,6 +550,8 @@ export async function activatePreparedManualRun(
       reservationIdentity: prepared.reservationIdentity,
       commitGuard: prepared.commitGuard ?? prepared.onExit?.commitGuard,
       onExitSchedule: prepared.onExit?.schedule,
+      event: prepared.event,
+      onEventTransferred: prepared.onEventTransferred,
       onUnavailableRollbackError: async () => {
         await releasePreparedManualReservationWithRetry(state, prepared);
       },
@@ -542,7 +565,9 @@ export async function activatePreparedManualRun(
     }
     prepared.onExit?.commitGuard();
     const { job: activatedJob, startedAt } = activation;
-    const payload = prepared.onExit?.payload?.(structuredClone(activatedJob)) ?? prepared.payload;
+    const payload = prepared.event
+      ? cronEventPayload(activatedJob, prepared.event.input)
+      : (prepared.onExit?.payload?.(structuredClone(activatedJob)) ?? prepared.payload);
     emit(state, {
       jobId: activatedJob.id,
       action: "started",

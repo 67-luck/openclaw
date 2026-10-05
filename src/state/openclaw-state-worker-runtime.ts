@@ -1,4 +1,5 @@
 import { executeAcpSessionMutationInWorker } from "../acp/runtime/session-meta-write.worker.js";
+import { enrollAuthProfileAuthorizationInDatabase } from "../agents/auth-profiles/authorization-enrollment.js";
 import {
   readAuthProfileRows,
   SHARED_AUTH_STORE_STATE_KEY,
@@ -231,6 +232,18 @@ export function executeSharedStateCommand(
   }
   if (command.type === "audit.writer.process" || command.type === "audit.writer.prune") {
     return executeAuditWriterCommand(command, stateOptions(), open);
+  }
+  if (command.type === "authProfiles.enrollAuthorization") {
+    const database = open();
+    return runOpenClawStateWriteTransaction(
+      ({ db }) => {
+        requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
+        const result = enrollAuthProfileAuthorizationInDatabase(db, "shared-state", command.input);
+        requestSqliteWorkerOperationAdmission({ stage: "commit", facts: undefined });
+        return result;
+      },
+      { ...stateOptions(), database },
+    );
   }
   if (
     command.type === "authProfiles.read" ||

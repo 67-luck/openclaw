@@ -45,6 +45,7 @@ export type CronRuntimeMutationContracts = {
     };
     outcome: {
       reservations: Array<{ job: CronJob; runReceipt: CronRunReceiptHandle }>;
+      eventInvalidated?: boolean;
       replacedReceipts: CronRunReceiptHandle[];
     };
   };

@@ -3,6 +3,10 @@ import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js
 import { toErrorObject } from "../../infra/errors.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import {
+  continueAuthProfileAuthorization,
+  continueAuthProfileAuthorizationInheritance,
+} from "./authorization-lifetime.js";
+import {
   listCandidateAuthProfileStores,
   loadCandidateAuthProfileStore,
   updateCandidateAuthProfileStore,
@@ -187,7 +191,9 @@ export async function fenceOAuthRefreshPeers(params: {
           if (!isExactOAuthCredential(current?.type === "oauth" ? current : undefined, original)) {
             return false;
           }
-          currentStore.profiles[params.profileId] = { ...params.fence };
+          currentStore.profiles[params.profileId] = continueAuthProfileAuthorization(original, {
+            ...params.fence,
+          });
           claimed = true;
           return true;
         },
@@ -271,7 +277,9 @@ export function rollbackOAuthRefreshPeerClaims(params: {
           ) {
             return false;
           }
-          store.profiles[params.profileId] = { ...claim.original! };
+          store.profiles[params.profileId] = continueAuthProfileAuthorization(params.fence, {
+            ...claim.original!,
+          });
           restored = true;
           return true;
         },
@@ -354,6 +362,11 @@ export function settleOAuthRefreshPeerClaims(params: {
               (!hasOAuthIdentity(claim.original) &&
                 isExactOAuthCredential(inherited, params.replacement)));
           if (canInherit) {
+            continueAuthProfileAuthorizationInheritance(
+              store.profiles,
+              params.profileId,
+              params.fence,
+            );
             delete store.profiles[params.profileId];
           } else {
             store.profiles[params.profileId] = createFailedOAuthRefreshFence(params.fence);

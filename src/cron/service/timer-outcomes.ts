@@ -709,7 +709,7 @@ export function applyOutcomeToAuthoritativeJob(
   applyTriggerRunResult(job, result, { scheduleOwnership, triggerOwnership });
   applyScriptRunResult(job, result, { triggerOwnership });
   if (opts.request) {
-    if (job.schedule.kind === "stream") {
+    if (job.schedule.kind === "stream" || job.schedule.kind === "event") {
       job.state.nextRunAtMs = undefined;
     }
   } else {

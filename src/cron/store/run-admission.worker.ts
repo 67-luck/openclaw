@@ -9,6 +9,7 @@ import { resolveCronJobConfigRevision } from "../config-revision.js";
 import { recomputeJobNextRunAtMs } from "../service/jobs-scheduling.js";
 import { retainManualOneShotOccurrence } from "../service/one-shot-schedule.js";
 import type { CronJobPolicyContext } from "../service/state.js";
+import { readCronEventClaimInDatabase, transferCronEventInDatabase } from "./event-ingress.js";
 import {
   deleteCronJobRowInDatabase,
   deleteStaleCronJobFamilyRows,
@@ -96,6 +97,10 @@ export function reserveCronRunsInWorker(
             const job = jobs.get(jobId);
             const row = rows.get(jobId);
             const planned = proposals.get(jobId)!;
+            if (input.event && (!job || !readCronEventClaimInDatabase(db, job, input.event))) {
+              outcome.eventInvalidated = true;
+              continue;
+            }
             if (
               !job ||
               !row ||
@@ -183,7 +188,13 @@ export function activateCronRunInWorker(
         (current?.schedule.kind === "on-exit" &&
           current.schedule.command === input.onExitSchedule.command &&
           current.schedule.cwd === input.onExitSchedule.cwd);
-      if (current && row && current.state.queuedAtMs === preparation.markerAtMs && matchesExit) {
+      if (
+        current &&
+        row &&
+        current.state.queuedAtMs === preparation.markerAtMs &&
+        matchesExit &&
+        (!input.event || readCronEventClaimInDatabase(db, current, input.event))
+      ) {
         try {
           const receipt = activateCronRunReceiptInDatabase({
             database: db,
@@ -192,6 +203,9 @@ export function activateCronRunInWorker(
             resolveAgentId: (job) =>
               resolveCronJobEffectiveAgentId(job, preparation.defaultAgentId),
           });
+          if (input.event) {
+            transferCronEventInDatabase(db, current, input.event, receipt, input.startedAtMs);
+          }
           outcome.activation = {
             job: current,
             receipt,

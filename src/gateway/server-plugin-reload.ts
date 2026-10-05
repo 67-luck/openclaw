@@ -369,6 +369,7 @@ export async function reloadGatewayPlugins(
         workspaceDir: pluginWorkspaceDir,
         broadcastPluginEvent,
         getCronService: kernel.getCronService,
+        scheduler: runtime.scheduler,
         previous: previousServices,
         onHandle: (handle) => {
           candidateServices = handle;
@@ -580,6 +581,7 @@ export async function reloadGatewayPlugins(
                   workspaceDir: pluginWorkspaceDir,
                   broadcastPluginEvent,
                   getCronService: kernel.getCronService,
+                  scheduler: runtime.scheduler,
                   previous: kernel.pluginRuntimeGeneration.currentServices(),
                   onHandle: (handle) => {
                     recoveredServices = handle;

@@ -10,6 +10,7 @@ import {
 import { markTrustedOtelDiagnosticListener } from "../infra/diagnostic-otel-listener-provenance.js";
 import { registerDiagnosticTracePropagationBridge } from "../infra/diagnostic-trace-propagation.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import {
   recordDiagnosticExporterHealth,
   type DiagnosticExporterHealthUpdate,
@@ -28,13 +29,16 @@ import { getPluginInstance, runPluginCleanup } from "./plugin-instance-scope.js"
 import type { PluginInstanceConsumer } from "./plugin-instance.types.js";
 import { resolvePluginReturnPromise } from "./plugin-return-value.js";
 import { getPluginRecordRegistry } from "./registry-lifecycle.js";
-import { getPluginRegistryRuntime } from "./registry-runtime-binding.js";
 import type { PluginServiceRegistration } from "./registry-types.js";
 import type { PluginRegistry } from "./registry.js";
-import { getGatewayContextResolver } from "./runtime/gateway-request-scope.js";
-import { createPluginServiceCronGetter, type PluginServiceCronHost } from "./service-cron.js";
+import { createPluginServiceAutomationCapabilities } from "./service-automation-capabilities.js";
+import type { PluginServiceCronHost } from "./service-cron.js";
 import { createPluginServiceHealthReporter } from "./service-health.js";
 import { createPluginServiceNodeInvoker } from "./service-nodes.js";
+import {
+  stopPluginServiceScheduledWork,
+  type createPluginServiceScheduler,
+} from "./service-scheduler.js";
 import { encodeStartupTraceSegment } from "./startup-trace-segment.js";
 import type { OpenClawPluginServiceContext } from "./types.js";
 
@@ -107,6 +111,7 @@ type OwnedPluginService = {
   cleanupReporting?: Promise<unknown>;
   stopRequested: boolean;
   stopNodeInvocations?: () => void;
+  scheduler?: ReturnType<typeof createPluginServiceScheduler>;
   health: NonNullable<OpenClawPluginServiceContext["serviceHealth"]>;
   lease: PluginRuntimeCapabilityLease;
 };
@@ -127,6 +132,7 @@ type StartPluginServicesParams = {
   startupTrace?: NonNullable<OpenClawPluginServiceContext["startupTrace"]>;
   broadcastPluginEvent?: GatewayPluginEventBroadcastFn;
   getCronService?: () => PluginServiceCronHost | null | undefined;
+  scheduler?: GatewayScheduler;
   oneShotStopTimeouts?: { eventDrainMs: number; serviceStopMs: number };
   previous?: PluginServicesHandle | null;
 } & (
@@ -194,6 +200,7 @@ async function startPreparedPluginServices({
   startupTrace,
   broadcastPluginEvent,
   getCronService,
+  scheduler,
   oneShotStopTimeouts,
   throwOnStartError,
   owner,
@@ -244,6 +251,7 @@ async function startPreparedPluginServices({
   ) => {
     entry.stopRequested = true;
     entry.stopNodeInvocations?.();
+    entry.scheduler?.beginClose();
     const recordFailure = (error: unknown) => {
       if (!failures) {
         return;
@@ -278,7 +286,11 @@ async function startPreparedPluginServices({
         const stopRegistry = record
           ? getPluginRecordRegistry(entry.registry, record)
           : entry.registry;
-        return withPluginHttpRouteRegistry(stopRegistry, () => entry.stop?.(), entry.lease);
+        return withPluginHttpRouteRegistry(
+          stopRegistry,
+          () => stopPluginServiceScheduledWork(entry.stop, entry.scheduler),
+          entry.lease,
+        );
       };
       const cleanup = () => {
         if (!entry.stopping) {
@@ -451,6 +463,7 @@ async function startPreparedPluginServices({
       for (const entry of selected) {
         entry.stopRequested = true;
         entry.stopNodeInvocations?.();
+        entry.scheduler?.beginClose();
       }
       const strict = options?.strict === true;
       const deadline = strict ? options.deadlineAtMs : undefined;
@@ -490,15 +503,15 @@ async function startPreparedPluginServices({
     });
     const { health, revoke } = createPluginServiceHealthReporter(entry);
     lease.retain(revoke);
-    const runtime = getPluginRegistryRuntime(registry);
-    const getCron = getCronService
-      ? createPluginServiceCronGetter({
-          getCron: getCronService,
-          lease,
-          isStopping: () => ownedService.owner.closed || ownedService.stopRequested,
-          resolveGatewayContext: runtime ? getGatewayContextResolver(runtime) : undefined,
-        })
-      : undefined;
+    const { serviceScheduler, getCron, mcpEvents } = createPluginServiceAutomationCapabilities({
+      registry,
+      pluginId: entry.pluginId,
+      serviceId: id,
+      lease,
+      scheduler,
+      getCronService,
+      isStopping: () => ownedService.owner.closed || ownedService.stopRequested,
+    });
     const nodeInvoker = record
       ? createPluginServiceNodeInvoker({
           registry,
@@ -562,7 +575,9 @@ async function startPreparedPluginServices({
         debug: (msg) => log.debug(msg),
       },
       serviceHealth: health,
+      ...(serviceScheduler ? { scheduler: serviceScheduler.capability } : {}),
       ...(getCron ? { getCron } : {}),
+      ...(mcpEvents ? { mcpEvents } : {}),
       ...(nodeInvoker
         ? { invokeNode: nodeInvoker.invoke, openNodeDuplex: nodeInvoker.openDuplex }
         : {}),
@@ -596,6 +611,7 @@ async function startPreparedPluginServices({
       registry,
       stopRequested: false,
       stopNodeInvocations: nodeInvoker?.stop,
+      scheduler: serviceScheduler,
       diagnosticsExporter: serviceContext.internalDiagnostics !== undefined,
       stop: service.stop
         ? () =>

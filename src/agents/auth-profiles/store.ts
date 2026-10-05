@@ -15,6 +15,7 @@ import { deferSqlitePostCommitPublication } from "../../infra/sqlite-post-commit
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import { readUserModelAuthProfile } from "../../state/user-model-accounts.js";
 import { isRecord, resolveUserPath } from "../../utils.js";
+import { copyAuthProfileAuthorizationInheritance } from "./authorization-lifetime.js";
 import { cloneAuthProfileStore } from "./clone.js";
 import { AUTH_STORE_VERSION, authProfilesLog } from "./constants.js";
 import {
@@ -67,6 +68,7 @@ import {
   type LoadAuthProfileStoreOptions,
 } from "./runtime-read.js";
 import {
+  withCredentialSources,
   captureRuntimeAuthProfileLegacyCandidates,
   pruneAuthProfileStoreReferences,
   preserveResolvedSecretBackedCredentials,
@@ -119,26 +121,7 @@ import {
 import { loadPersistedAuthProfileState } from "./state.js";
 import { prepareAuthProfileStoreMutation } from "./store-mutation.js";
 import { createAuthProfileStoreReadRuntime } from "./store-read.js";
-import type {
-  AuthProfileCredentialSource,
-  AuthProfileStore,
-  RuntimeAuthProfileStore,
-} from "./types.js";
-
-function withCredentialSources(
-  store: AuthProfileStore,
-  databasePath: string,
-): RuntimeAuthProfileStore {
-  return {
-    ...store,
-    runtimeCredentialSources: Object.fromEntries(
-      Object.entries(store.profiles).map(([profileId, credential]) => [
-        profileId,
-        { databasePath, provider: credential.provider },
-      ]),
-    ),
-  };
-}
+import type { AuthProfileCredentialSource, AuthProfileStore } from "./types.js";
 
 type SaveAuthProfileStoreOptions = {
   filterExternalAuthProfiles?: boolean;
@@ -200,7 +183,7 @@ export function applyScopedAuthReadThrough(store: AuthProfileStore): AuthProfile
   );
 }
 
-function isEnvOnlyAuthProfileRuntime(): boolean {
+export function isEnvOnlyAuthProfileRuntime(): boolean {
   return authProfileRuntimeMode.getStore()?.kind === "env-only";
 }
 
@@ -1072,6 +1055,7 @@ export function createAuthProfileStoreRuntime(
         }),
       ),
     );
+    copyAuthProfileAuthorizationInheritance(params.store.profiles, localStore.profiles);
     const keptProfileIds = new Set(Object.keys(localStore.profiles));
     const keptOrderProfileIds = new Set(keptProfileIds);
     for (const profileId of normalizeUniqueStringEntries(params.options?.preserveStateProfileIds)) {

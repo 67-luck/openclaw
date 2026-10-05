@@ -6,6 +6,7 @@ import {
 } from "../../infra/sqlite-transaction.js";
 import type { SqliteWorkerBackend } from "../../infra/sqlite-worker-contract.js";
 import { encodeOpenClawStateWorkerError } from "../../state/openclaw-state-worker-error.js";
+import { enrollAuthProfileAuthorizationInDatabase } from "./authorization-enrollment.js";
 import { reportCommittedInlineAuthFailure } from "./constants.js";
 import {
   recordInlineAuthFailureInDatabase,
@@ -25,6 +26,25 @@ export function bindSqliteWorkerBackend(
 ): SqliteWorkerBackend<InlineAuthFailureOperations> {
   return {
     execute(command) {
+      if (command.type === "authProfiles.enrollAuthorization") {
+        return runSqliteImmediateTransactionSync(
+          context.database,
+          () => {
+            context.admit("transaction");
+            return enrollAuthProfileAuthorizationInDatabase(
+              context.database,
+              "agent",
+              command.input,
+            );
+          },
+          {
+            withCommit(commit) {
+              context.admit("commit");
+              commit();
+            },
+          },
+        );
+      }
       if (command.type === "authProfiles.inlineSnapshot") {
         return runSqliteDeferredTransactionSync(context.database, () => ({
           store: inspectAuthProfileJsonCell(context.database, "store", "agent"),

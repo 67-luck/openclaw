@@ -1,5 +1,6 @@
 import type { ZodIssue } from "zod";
 import type { AcpSessionWriteOperations } from "../acp/runtime/session-meta-write.types.js";
+import type { AuthProfileAuthorizationOperations } from "../agents/auth-profiles/authorization-enrollment.js";
 import type { AuthProfileRowRead, UserModelAuthProfile } from "../agents/auth-profiles/types.js";
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
 import type { McpOAuthReadOperations } from "../agents/mcp-oauth-store.kernel.js";
@@ -233,6 +234,7 @@ export type OpenClawStateWorkerOperations = UpdateRunReconciliationOperations &
       output: ReturnType<typeof deviceAuth.clearOriginDeviceTokenInDatabase>;
     };
 
+    "authProfiles.enrollAuthorization": AuthProfileAuthorizationOperations["authProfiles.enrollAuthorization"];
     "authProfiles.read": { input: { artifactPreserving: boolean }; output: AuthProfileRowRead };
     "authProfiles.sharedOwnership": { input: { artifactPreserving: boolean }; output: unknown };
     "authProfiles.personal": {

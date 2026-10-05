@@ -291,6 +291,12 @@ export function createLazyGatewayCronState(params: LazyGatewayCronParams): Gatew
     async run(id, mode, opts) {
       return await (await load()).state.cron.run(id, mode, opts);
     },
+    async readEventSources(source) {
+      return await (await load()).state.cron.readEventSources(source);
+    },
+    async runEvent(id, opts) {
+      return await (await load()).state.cron.runEvent(id, opts);
+    },
     async enqueueRun(id, mode, opts) {
       return await (await load()).state.cron.enqueueRun(id, mode, opts);
     },

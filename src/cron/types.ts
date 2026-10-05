@@ -394,6 +394,7 @@ type CronJobStateInput = Partial<
     | "autoDisabled"
     | "scheduleActivatedAtMs"
     | "streamSourceIdentity"
+    | "sourceIdentity"
     | "runningReceiptId"
     | "runningScheduleChangeId"
   >
