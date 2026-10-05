@@ -6,17 +6,20 @@ import {
   markDiagnosticEmbeddedRunStarted,
   closeDiagnosticEmbeddedRunOwner,
 } from "../../../logging/diagnostic-run-activity.js";
+import { createReplyOperation } from "../../../sessions/session-controller.js";
 import { isSessionRunActive } from "../../../sessions/session-controller.queries.js";
+import { assertSessionControllerOperation } from "../../../sessions/session-controller.state.js";
 import {
   isAgentRunRestartAbortReason,
   isAgentRunSupersededAbortReason,
   resolveAgentRunErrorLifecycleFields,
 } from "../../run-termination.js";
-import { abortEmbeddedAgentRun, type EmbeddedAgentQueueHandle } from "../runs.js";
 import {
-  clearTestEmbeddedRun as clearActiveEmbeddedRun,
-  registerTestEmbeddedRun as setActiveEmbeddedRun,
-} from "../runs.test-support.js";
+  abortEmbeddedAgentRun,
+  clearActiveEmbeddedRun,
+  setActiveEmbeddedRun,
+  type EmbeddedAgentQueueHandle,
+} from "../runs.js";
 import {
   createDeferredEmbeddedRunLifecycleManager,
   createEmbeddedAttemptDeferredLifecycleOwner,
@@ -105,7 +108,8 @@ describe("deferred logical-turn lifecycle", () => {
   it("publishes CLI cancellation authority before releasing the embedded attempt", async () => {
     const embeddedHandle = runHandle("logical-run");
     handles.push(embeddedHandle);
-    setActiveEmbeddedRun(sessionId, embeddedHandle, sessionKey);
+    const operation = createReplyOperation({ sessionId, sessionKey, resetTriggered: false });
+    setActiveEmbeddedRun(sessionId, embeddedHandle, sessionKey, undefined, undefined, operation);
     const clearEmbedded = vi.fn(() =>
       clearActiveEmbeddedRun(sessionId, embeddedHandle, sessionKey),
     );
@@ -113,6 +117,7 @@ describe("deferred logical-turn lifecycle", () => {
       runId: "logical-run",
       sessionId,
       sessionKey,
+      replyOperation: operation,
     });
     manager.adopt({
       beginRetryWait: () => undefined,
@@ -127,6 +132,7 @@ describe("deferred logical-turn lifecycle", () => {
     expect(abortEmbeddedAgentRun(sessionId)).toBe(true);
     expect(manager.signal.aborted).toBe(true);
     await manager.complete();
+    operation.complete();
     expect(isSessionRunActive(sessionId)).toBe(false);
     expect(resolveReplyOperationAbortReason(undefined, manager.signal.reason)).toBe("user");
   });
@@ -170,7 +176,13 @@ describe("deferred logical-turn lifecycle", () => {
     "releases a retry wait when its owner loses authority through %s",
     async (reason) => {
       const ref = { runId: "waiting-run", sessionId, sessionKey };
-      const diagnosticOwner = createDiagnosticEmbeddedRunOwner(ref);
+      const operation = createReplyOperation({ ...ref, resetTriggered: false });
+      const diagnosticOwner = createDiagnosticEmbeddedRunOwner({
+        ...ref,
+        watchdogAttempt: operation.watchdog.attachAttempt({
+          assertCurrent: () => assertSessionControllerOperation(operation),
+        }),
+      });
       markDiagnosticEmbeddedRunStarted({ ...ref, owner: diagnosticOwner });
       let current = true;
       const onRetryWaitCompleted = vi.fn();
@@ -216,13 +228,20 @@ describe("deferred logical-turn lifecycle", () => {
         expect(onRetryWaitCompleted).not.toHaveBeenCalled();
         release?.();
         await manager.complete();
+        operation.complete();
       }
     },
   );
 
-  it("does not let a completed wait release its owner's next wait", async () => {
+  it("does not let a completed wait release its owner's next wait or renew its horizon", async () => {
     const ref = { runId: "reused-wait-owner", sessionId, sessionKey };
-    const diagnosticOwner = createDiagnosticEmbeddedRunOwner(ref);
+    const operation = createReplyOperation({ ...ref, resetTriggered: false });
+    const diagnosticOwner = createDiagnosticEmbeddedRunOwner({
+      ...ref,
+      watchdogAttempt: operation.watchdog.attachAttempt({
+        assertCurrent: () => assertSessionControllerOperation(operation),
+      }),
+    });
     markDiagnosticEmbeddedRunStarted({ ...ref, owner: diagnosticOwner });
     const manager = createDeferredEmbeddedRunLifecycleManager(ref);
     manager.adopt(
@@ -236,17 +255,19 @@ describe("deferred logical-turn lifecycle", () => {
       }),
     );
     try {
-      const releaseFirst = manager.beginRetryWait(Date.now() + 660_000);
+      const firstDeadline = Date.now() + 660_000;
+      const releaseFirst = manager.beginRetryWait(firstDeadline);
       const nextDeadline = Date.now() + 900_000;
       const releaseNext = manager.beginRetryWait(nextDeadline);
       releaseFirst?.();
       expect(getDiagnosticSessionActivitySnapshot(ref).activeRetryWaitDeadlineAtMs).toBe(
-        nextDeadline,
+        firstDeadline,
       );
       releaseNext?.();
       expect(getDiagnosticSessionActivitySnapshot(ref).activeRetryWaitDeadlineAtMs).toBeUndefined();
     } finally {
       await manager.complete();
+      operation.complete();
     }
   });
 });
