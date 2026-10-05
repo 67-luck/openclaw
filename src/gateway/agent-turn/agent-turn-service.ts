@@ -163,13 +163,12 @@ export function createAgentTurnService(
     let earlyRunAbort: ReturnType<typeof registerChatAbortController> | undefined;
     const assertRequestCurrent = () => {
       assertAdmissionCurrent?.();
+      earlyRunAbort?.controller.signal.throwIfAborted();
       dedupeLifecycle.assertReservationCurrent();
       assertInputCommitAllowed?.();
       if (earlyRunAbort?.entry && !isRpcSourceRegistered(earlyRunAbort.entry)) {
-        earlyRunAbort.controller.signal.throwIfAborted();
         throw new Error("Agent request no longer owns its RPC source");
       }
-      earlyRunAbort?.controller.signal.throwIfAborted();
     };
     let agentId = routing.agentId;
     let requestedSessionKey = routing.requestedSessionKey;
