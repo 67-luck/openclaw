@@ -252,6 +252,7 @@ export async function executeWorkerTurn(
   });
   const { browser, computer, preparedComputer } = desktop;
   const {
+    capabilityProfile,
     policy: toolPolicy,
     exec,
     execUnavailable,
