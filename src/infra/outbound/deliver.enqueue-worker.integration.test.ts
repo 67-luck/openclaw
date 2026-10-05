@@ -253,12 +253,24 @@ if (!isMainThread) {
           onDeliveryIntent: queued,
           ...(failure === "serialization" ? { identity } : {}),
         });
-        expect(admissionFailure).toMatchObject({
-          message:
-            failure === "serialization"
-              ? "known JSON preparation failure"
-              : "synthetic enqueue transaction rejected",
-        });
+        expect(admissionFailure).toMatchObject(
+          failure === "serialization"
+            ? { message: "known JSON preparation failure" }
+            : {
+                name: "OutboundDeliveryError",
+                stage: "queue",
+                queueCustody: "released",
+                sentBeforeError: false,
+                results: [],
+                payloadOutcomes: [],
+                cause: {
+                  name: "PlatformMessageNotDispatchedError",
+                  code: "OPENCLAW_PLATFORM_MESSAGE_NOT_DISPATCHED",
+                  retryable: true,
+                  cause: { message: "synthetic enqueue transaction rejected" },
+                },
+              },
+        );
         expect(reply.attempts()).toBe(attempts);
         expect(send).toHaveBeenCalledOnce();
         expect(queued).not.toHaveBeenCalled();

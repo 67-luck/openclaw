@@ -32,7 +32,10 @@ import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { mergeSessionEntry } from "../config/sessions/types.js";
 import { writeCronJobScratch } from "../cron/scratch-store.js";
 import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
-import { isDeliveryRecoveryOwnedRetry } from "./delivery-recovery.shared.js";
+import {
+  isDeliveryRecoveryOwnedRetry,
+  resolveDeliveryNotSentRetryability,
+} from "./delivery-recovery.shared.js";
 import { formatErrorMessage } from "./errors.js";
 import { classifyHeartbeatAgentOutcome } from "./heartbeat-delivery-normalization.js";
 import { isExecCompletionSystemEvent } from "./heartbeat-events-filter.js";
@@ -58,6 +61,7 @@ import {
   requestHeartbeat,
   type HeartbeatRunResult,
 } from "./heartbeat-wake.js";
+import { isOutboundDeliveryError } from "./outbound/deliver-types.js";
 import { resolveAgentOutboundIdentity } from "./outbound/identity.js";
 import { buildOutboundSessionContext } from "./outbound/session-context.js";
 import { resolveSystemEventQueueKey } from "./system-event-ownership.js";
@@ -641,7 +645,14 @@ export async function deliverHeartbeatDispatch(
     };
   } catch (error) {
     policy.deliveryError = formatErrorMessage(error);
-    policy.execEffectSettled = isDeliveryRecoveryOwnedRetry(error);
+    // Published custody can also end in a confirmed permanent rejection. Retire
+    // that occurrence, but not an unpublished rollback or an ambiguous send.
+    policy.execEffectSettled =
+      isDeliveryRecoveryOwnedRetry(error) ||
+      (publishedIntent &&
+        isOutboundDeliveryError(error) &&
+        error.queueCustody === "released" &&
+        resolveDeliveryNotSentRetryability(error) === false);
     // The queue owner marks uncertain publication as held even before its intent
     // callback. Only an unowned attempt that never reached dispatch may regenerate.
     policy.retryUnqueuedDelivery =

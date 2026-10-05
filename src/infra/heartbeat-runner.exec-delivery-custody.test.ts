@@ -16,6 +16,7 @@ import { loadPendingDeliveries } from "./outbound/delivery-queue.test-helpers.js
 import {
   enqueueSystemEvent,
   peekDeliverableSystemEventEntries,
+  peekSystemEventEntries,
   resetSystemEventsForTest,
 } from "./system-events.js";
 
@@ -281,6 +282,16 @@ it("continues a deferred route after permanent rejection without replaying the r
       expect(replySpy.mock.calls[1]?.[0].Body).toContain("DEFERRED");
       expect(replySpy.mock.calls[1]?.[0].Body).not.toContain("REJECTED");
       expect(await loadPendingDeliveries()).toHaveLength(0);
+      expect(peekSystemEventEntries(sessionKey)).toEqual([]);
+      for (let index = 0; index < 20; index++) {
+        expect(
+          enqueueSystemEvent(`Ordinary notification ${index}`, {
+            sessionKey,
+            contextKey: `notice:capacity-${index}`,
+          }),
+        ).toBe(true);
+      }
+      expect(peekSystemEventEntries(sessionKey)).toHaveLength(20);
     } finally {
       setHeartbeatWakeHandler(null);
     }
