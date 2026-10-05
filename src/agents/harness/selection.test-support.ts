@@ -18,6 +18,7 @@ export function createHarnessAttemptParams(
 ): EmbeddedRunAttemptParams {
   return {
     admittedRunContext,
+    agentId: "main",
     prompt: "hello",
     sessionId: "session-1",
     runId: admittedRunContext.operationalRunInstance.runId,

@@ -1277,7 +1277,7 @@ describe("runAgentHarnessAttempt", () => {
       };
       params.sessionId = `session-${index}`;
       params.agentHarnessRuntimeOverride = "codex";
-      params.agentId = testCase.agentId;
+      params.agentId = testCase.agentId ?? "main";
       params.sessionKey = testCase.sessionKey;
       params.toolsAllow = ["openclaw"];
       params.systemAgentTool = { surface: "cli", proposalRef: {}, directiveRef: {} };
@@ -1767,7 +1767,7 @@ describe("runAgentHarnessAttempt", () => {
       const params = {
         ...createAttemptParams(testCase.config),
         conversationToolPolicy: testCase.conversationToolPolicy,
-        agentId: testCase.agentId,
+        agentId: testCase.agentId ?? "main",
         sessionKey: testCase.sessionKey,
         swarmCollector: testCase.swarmCollector,
       };
