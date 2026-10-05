@@ -11,7 +11,6 @@ import {
   formatMissingOperatorReadScopeMessage,
   isMissingOperatorReadScopeError,
 } from "../../lib/gateway-errors.ts";
-import { isUsageIncomplete } from "../../lib/incomplete-usage-retry.ts";
 import type { SessionUsageQuery } from "../../lib/sessions/usage.ts";
 import {
   GatewayPageController,
@@ -203,10 +202,7 @@ class UsagePage extends OpenClawLightDomElement {
       () => this.context?.agentSelection,
       (selection) => this.observeAgentScope(selection),
     )
-    .watch(
-      () => this.context?.agents,
-      (agents, notify) => agents.subscribe(notify),
-    );
+    .watchStore(() => this.context?.agents);
 
   override willUpdate(changed: PropertyValues<this>) {
     if (changed.has("routeData")) {
@@ -313,7 +309,7 @@ class UsagePage extends OpenClawLightDomElement {
     if (snapshot.state === "settled") {
       const result = snapshot.result;
       this.providerUsageUnavailable = !result.ok;
-      this.providerUsageIncomplete = !result.ok || isUsageIncomplete(result.value);
+      this.providerUsageIncomplete = !result.ok || result.value.refreshing === true;
       if (result.ok && !this.providerUsageIncomplete) {
         this.providerUsageSummary = result.value;
       }

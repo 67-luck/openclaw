@@ -79,15 +79,19 @@ export class CronEventEditorController {
     const agentId =
       form.agentId.trim() || this.host.context().agentSelection.state.selectedId || "main";
     const serverName = form.eventServer;
+    const editingJob = cron.cronEditingJob;
+    const sourceIdentity = editingJob?.state.sourceIdentity;
+    const jobRevision = editingJob?.configRevision;
+    const jobEnabled = editingJob?.enabled;
     const key =
       active && this.available
         ? JSON.stringify([
             agentId,
             serverName,
-            cron.cronEditingJob?.id,
-            cron.cronEditingJob?.updatedAtMs,
-            cron.cronEditingJob?.state.sourceIdentity,
-            cron.cronEditingJob?.enabled,
+            editingJob?.id,
+            jobRevision,
+            sourceIdentity,
+            jobEnabled,
           ])
         : "";
     if (!force && key === this.scopeKey) {
@@ -105,9 +109,22 @@ export class CronEventEditorController {
       client: connection.client,
       agentId,
       serverName,
-      jobId: cron.cronEditingJob?.id,
-      sourceIdentity: cron.cronEditingJob?.state.sourceIdentity,
+      jobId: editingJob?.id,
+      sourceIdentity,
       isCurrent: () =>
+        // Scope hydration can change the selected agent without replacing CronState.
+        // Recheck live editor fields before publishing, not only after the next render.
+        (cron.cronForm.agentId.trim() ||
+          this.host.context().agentSelection.state.selectedId ||
+          "main") === agentId &&
+        cron.cronEditingJob?.id === editingJob?.id &&
+        cron.cronEditingJob?.configRevision === jobRevision &&
+        cron.cronEditingJob?.enabled === jobEnabled &&
+        cron.cronEditingJob?.state.sourceIdentity === sourceIdentity &&
+        cron.cronForm.eventServer === serverName &&
+        cron.cronForm.scheduleKind === "event" &&
+        cron.cronForm.eventSource === "mcp-events" &&
+        (cron.cronCreateOpen || Boolean(cron.cronEditingJob)) &&
         this.host.isConnected() &&
         this.host.currentCronState() === cron &&
         this.scopeKey === key &&

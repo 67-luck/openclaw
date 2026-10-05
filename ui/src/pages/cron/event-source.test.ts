@@ -71,6 +71,9 @@ describe("Automation event source", () => {
 
   it("validates JSON and the selected event schema before allowing a save", () => {
     expect(validateCronEventSelection(form, source)).toEqual({});
+    expect(
+      validateCronForm({ ...form, payloadKind: "systemEvent", sessionTarget: "main" }),
+    ).toHaveProperty("payloadText", "cron.events.agentTurnRequired");
     expect(validateCronEventSelection({ ...form, eventArguments: "{}" }, source)).toHaveProperty(
       "eventArguments",
       "cron.events.eventArgumentsSchema",
@@ -156,7 +159,11 @@ describe("Automation event source", () => {
       form,
       editingJob: job,
       onFormChange,
-      fieldErrors: { eventArguments: "cron.events.eventArgumentsSchema" },
+      fieldErrors: {
+        eventServer: "cron.events.eventServerRequired",
+        eventName: "cron.events.eventNameRequired",
+        eventArguments: "cron.events.eventArgumentsSchema",
+      },
       eventSource: {
         ...source,
         subscriptions: [
@@ -179,5 +186,9 @@ describe("Automation event source", () => {
     expect(container.textContent).toContain("Replay gap:");
     expect(container.querySelector("#cron-cron-expr")).toBeNull();
     expect(container.querySelector('[data-test-id="cron-submit-run"]')).toBeNull();
+    expect(container.textContent).not.toContain("Delete after run");
+    for (const field of ["eventServer", "eventName"]) {
+      expect(container.querySelector(`#cron-error-${field}`)).not.toBeNull();
+    }
   });
 });

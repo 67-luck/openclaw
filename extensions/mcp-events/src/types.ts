@@ -10,7 +10,10 @@ export type EventCron = Required<Pick<ServiceCron, "readEventSources" | "runEven
 export type McpEventsDependencies = {
   runtime: McpEventsRuntime;
   config: McpEventsConfig;
-  scheduler: NonNullable<OpenClawPluginServiceContext["scheduler"]>;
+  scheduler: Pick<
+    NonNullable<OpenClawPluginServiceContext["scheduler"]>,
+    "signal" | "now" | "schedule"
+  >;
   cron: EventCron;
   prepareSource: NonNullable<OpenClawPluginServiceContext["mcpEvents"]>["prepareSource"];
   logger: OpenClawPluginServiceContext["logger"];

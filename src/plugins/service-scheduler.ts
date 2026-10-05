@@ -1,77 +1,75 @@
-import { createScheduledGatewayRunner } from "../gateway/scheduled-run-gateway-context.js";
-import type { GatewayContextResolver } from "../gateway/server-methods/types.js";
+import { randomUUID } from "node:crypto";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
-import { runWithGatewayIndependentRootWorkAdmission } from "../process/gateway-work-admission.js";
-import type { PluginRuntimeCapabilityLease } from "./capability-lease.js";
-import type { OpenClawPluginServiceContext } from "./plugin-registration.types.js";
+import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
+import { withPluginServiceScheduler } from "./service-scheduler-binding.js";
+import type { PluginServiceSchedulerV1 } from "./service-scheduler.types.js";
 
-/** A plugin reports deadlines; the existing Gateway scheduler owns every wake. */
-export function createPluginServiceScheduler(params: {
-  scheduler: GatewayScheduler;
-  pluginId: string;
-  serviceId: string;
-  lease: PluginRuntimeCapabilityLease;
-  isStopping: () => boolean;
-  resolveGatewayContext?: GatewayContextResolver;
-}) {
-  const scope = params.scheduler.scope();
-  params.lease.retain(() => scope.beginClose());
-  const runScheduled = createScheduledGatewayRunner(params.resolveGatewayContext);
-  const assertActive = () => {
-    params.lease.assertActive("scheduled service work");
-    scope.signal.throwIfAborted();
-    if (params.isStopping()) {
-      throw new Error("Plugin service scheduler is stopping");
-    }
-  };
-  const capability: NonNullable<OpenClawPluginServiceContext["scheduler"]> = {
-    signal: scope.signal,
-    // Cleanup may still timestamp accepted ingress settlement after scheduling closes.
-    // Reading the clock grants no authority to schedule or execute another callback.
-    now: scope.now,
-    schedule: ({ id, atMs, mode, run }) => {
-      assertActive();
-      if (!id.trim()) {
-        throw new Error("Plugin service deadline requires an id");
+export type PluginServiceSchedulerOwner = {
+  scheduler: PluginServiceSchedulerV1;
+  close: () => Promise<void> | undefined;
+};
+
+export function createPluginServiceScheduler(
+  scheduler: GatewayScheduler,
+  runOwned?: (run: () => void | Promise<unknown>) => void | Promise<unknown>,
+): PluginServiceSchedulerOwner {
+  const createScope = (parent?: Set<PluginServiceSchedulerOwner>): PluginServiceSchedulerOwner => {
+    const owner = scheduler.scope();
+    const prefix = `plugin-service:${randomUUID()}:`;
+    const children = new Set<PluginServiceSchedulerOwner>();
+    let stopping: Promise<void> | undefined;
+    const assertOpen = () => {
+      if (owner.signal.aborted) {
+        throw new Error("Plugin service scheduler is closed");
       }
-      const key = JSON.stringify(["plugin-service", params.pluginId, params.serviceId, id]);
-      return scope.schedule({
-        id: key,
-        atMs,
-        mode,
-        run: () =>
-          runScheduled(() =>
-            runWithGatewayIndependentRootWorkAdmission(
-              async () => {
-                assertActive();
-                return await run();
-              },
-              "plugin-service:deadline",
-              scope.signal,
-            ),
-          ),
-      });
-    },
-  };
-  return { capability, beginClose: scope.beginClose, stop: scope.stop };
-}
-
-/** Service cleanup and already admitted deadlines must both settle before retirement. */
-export function stopPluginServiceScheduledWork(
-  stop: (() => unknown) | undefined,
-  scheduler: Pick<ReturnType<typeof createPluginServiceScheduler>, "stop"> | undefined,
-): unknown {
-  if (!scheduler) {
-    return stop?.();
-  }
-  return Promise.allSettled([Promise.resolve().then(() => stop?.()), scheduler.stop()]).then(
-    (results) => {
-      const errors = results.flatMap((result) =>
-        result.status === "rejected" ? [result.reason] : [],
+    };
+    const beginClose = () => {
+      owner.beginClose();
+      for (const child of children) {
+        child.scheduler.beginClose();
+      }
+    };
+    const close = (): Promise<void> | undefined => {
+      const pending = [owner.close(), ...Array.from(children, (child) => child.close())].filter(
+        (completion) => completion !== undefined,
       );
-      if (errors.length) {
-        throw new AggregateError(errors, "Plugin service cleanup failed");
+      if (pending.length === 0) {
+        parent?.delete(control);
+        return undefined;
       }
-    },
-  );
+      stopping ??= Promise.all(pending)
+        .then(() => undefined)
+        .finally(() => parent?.delete(control));
+      return stopping;
+    };
+    const scope: PluginServiceSchedulerV1 = {
+      version: 1,
+      signal: owner.signal,
+      now: owner.now,
+      schedule: (params) => {
+        assertOpen();
+        const schedule = () =>
+          owner.schedule({
+            ...params,
+            id: `${prefix}${params.id}`,
+            run: () =>
+              withPluginServiceScheduler(scope, () =>
+                runOwned ? runOwned(params.run) : params.run(),
+              ),
+          });
+        return runOwned ? runInDetachedAsyncContext(schedule) : schedule();
+      },
+      scope: () => {
+        assertOpen();
+        const child = createScope(children);
+        children.add(child);
+        return child.scheduler;
+      },
+      beginClose,
+      stop: () => (stopping ??= Promise.resolve(close())),
+    };
+    const control: PluginServiceSchedulerOwner = { scheduler: scope, close };
+    return control;
+  };
+  return createScope();
 }

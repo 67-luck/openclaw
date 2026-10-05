@@ -1,6 +1,7 @@
 import { html, nothing } from "lit";
 import { ifDefined } from "lit/directives/if-defined.js";
 import { t } from "../../i18n/index.ts";
+import { formatUiExternalText } from "../../lib/format-error.ts";
 import { formatMs } from "../../lib/format.ts";
 import {
   errorIdForField,
@@ -27,6 +28,7 @@ export function renderEventSourceFields(props: CronProps) {
     ${renderCronSelectField(props, "eventServer", {
       label: t("cron.events.server"),
       help: t("cron.events.serverHelp"),
+      errorKey: "eventServer",
       options: [
         { value: "", label: t("cron.events.chooseServer") },
         ...serverOptions.map((value) => ({ value, label: value })),
@@ -42,6 +44,7 @@ export function renderEventSourceFields(props: CronProps) {
       errorId: errorIdForField("eventName"),
       control: renderCronSelect(props, "eventName", {
         label: t("cron.events.name"),
+        errorKey: "eventName",
         disabled: source.loading || !props.form.eventServer,
         options: [
           { value: "", label: t("cron.events.chooseEvent") },
@@ -104,7 +107,7 @@ export function renderEventSourceFields(props: CronProps) {
               ${!props.editingJob.enabled ? t("cron.events.paused") : source.loading ? t("cron.events.loading") : !source.subscriptions.length ? t("cron.events.pending") : nothing}
               ${(props.editingJob.enabled ? source.subscriptions : []).map(
                 (subscription) => html`<span>${subscription.status}</span>
-                  ${subscription.lastError ? html`<span class="cron-error-banner">${subscription.lastError}</span>` : nothing}
+                  ${subscription.lastError ? html`<span class="cron-error-banner">${formatUiExternalText(subscription.lastError)}</span>` : nothing}
                   ${subscription.truncated ? html`<span class="cron-error-banner">${t("cron.events.gap")}</span>` : nothing}
                   ${subscription.nextAttemptAt ? html`<span>${t("cron.events.retryAt", { at: formatMs(subscription.nextAttemptAt) })}</span>` : nothing} `,
               )}

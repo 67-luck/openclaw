@@ -70,9 +70,8 @@ class MeetingCaptureSettings extends OpenClawLightDomElement {
       this.connectionAuth = hello?.auth;
     },
   });
-  private readonly subscriptions = new SubscriptionsController(this).watch(
+  private readonly subscriptions = new SubscriptionsController(this).watchStore(
     () => this.context?.runtimeConfig,
-    (config, notify) => config.subscribe(notify),
   );
 
   private get client() {
@@ -258,7 +257,7 @@ class MeetingCaptureSettings extends OpenClawLightDomElement {
     } else {
       sources[this.editing] = source;
     }
-    this.context.runtimeConfig.patchForm(["transcripts", "autoStart"], [...sources]);
+    this.context.runtimeConfig.patchForm(["transcripts", "autoStart"], sources);
     this.editSource(null);
   }
 

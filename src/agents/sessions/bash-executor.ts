@@ -1,14 +1,6 @@
-/**
- * Bash command execution with streaming support and cancellation.
- */
-
 import { createStreamingBinaryOutputSanitizer } from "../shell-utils.js";
 import type { BashOperations } from "./tools/bash-operations.js";
 import { OutputAccumulator } from "./tools/output-accumulator.js";
-
-// ============================================================================
-// Types
-// ============================================================================
 
 export interface BashExecutorOptions {
   /** Callback for streaming output chunks (already sanitized) */
@@ -30,10 +22,6 @@ export interface BashResult {
   fullOutputPath?: string;
 }
 
-// ============================================================================
-// Implementation
-// ============================================================================
-
 /**
  * Execute a bash command using custom BashOperations.
  * Used for remote execution (SSH, containers, etc.).
@@ -45,7 +33,6 @@ export async function executeBashWithOperations(
   options?: BashExecutorOptions,
 ): Promise<BashResult> {
   const output = new OutputAccumulator({
-    tempFilePrefix: "openclaw-bash",
     createTextTransform: () => {
       const sanitizeOutput = createStreamingBinaryOutputSanitizer();
       return (text) => sanitizeOutput(text).replace(/\r/g, "");
@@ -59,7 +46,7 @@ export async function executeBashWithOperations(
 
   const finalizeOutput = async () => {
     const finalText = output.finish();
-    const snapshot = output.snapshot({ persistIfTruncated: true });
+    const snapshot = output.snapshot();
     try {
       if (finalText) {
         options?.onChunk?.(finalText);

@@ -14,7 +14,7 @@ import {
 } from "../infra/sqlite-readonly-worker.js";
 import { getSpawnBroker, runWithSpawnBroker } from "../process/spawn-broker/context.js";
 import { useSpawnBrokerTestFixture } from "../process/spawn-broker/host.test-support.js";
-import { runInDetachedAsyncContext } from "../shared/async-work-scope.js";
+import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import type { GatewayCronServiceContract } from "./server-cron-contract.js";
 import type { GatewayCronState } from "./server-cron.js";
@@ -531,6 +531,7 @@ function createCronService(): GatewayCronServiceContract {
     enqueueRun: vi.fn(async () => ({ ok: true, ran: false, reason: "invalid-spec" }) as never),
     readEventSources: vi.fn<GatewayCronServiceContract["readEventSources"]>(async () => []),
     runEvent: vi.fn<GatewayCronServiceContract["runEvent"]>(async () => ({ kind: "invalidated" })),
+    waitForManualRun: vi.fn(async () => true),
     getJob: vi.fn(() => undefined),
     readJob: vi.fn(async () => undefined),
     readScratch: vi.fn(async () => ({ currentRevision: 0 })),

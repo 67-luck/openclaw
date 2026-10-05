@@ -32,9 +32,12 @@ vi.mock("../agents/agent-tools.policy.js", () => ({
 }));
 vi.mock("../agents/sender-tool-policy.js", () => ({ resolveSenderToolPolicy: () => undefined }));
 vi.mock("./bundle-mcp.js", () => ({
-  loadEnabledBundleMcpConfig: () => ({
+  loadEnabledBundleMcpConfig: (): ReturnType<
+    typeof import("./bundle-mcp.js").loadEnabledBundleMcpConfig
+  > => ({
     config: { mcpServers: {} },
     diagnostics: [],
+    pluginIdsByServer: {},
     prepareDataDirsByServer: {},
   }),
 }));

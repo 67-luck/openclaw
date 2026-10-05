@@ -14,6 +14,7 @@ import {
   setCronSourceIdentity,
 } from "../source-schedule.js";
 import { resolveCronStaggerMs } from "../stagger.js";
+import { hasCanonicalCronDeliveryMode } from "../store/delivery-codec.js";
 import { CRON_STUCK_RUN_MS } from "../store/run-receipt-store.js";
 import type { CronScheduleMaintenanceOptions } from "../store/runtime-worker.types.js";
 import { resolveCronStreamBatching } from "../stream-schedule.js";
@@ -26,6 +27,9 @@ import {
 } from "./one-shot-schedule.js";
 import type { CronJobPolicyContext, CronServiceState, DeferredCronNotifications } from "./state.js";
 import { hasPendingCronTriggerInterval } from "./trigger-interval.js";
+
+/** Skip reason recorded when a main-session heartbeat run is disabled. */
+export const HEARTBEAT_SKIP_DISABLED = "disabled";
 
 const STAGGER_OFFSET_CACHE_MAX = 4096;
 const staggerOffsetCache = new Map<string, number>();
@@ -83,6 +87,27 @@ function isFiniteTimestamp(value: unknown): value is number {
 /** Returns whether a stored next-run timestamp is finite and schedulable. */
 export function hasScheduledNextRunAtMs(value: unknown): value is number {
   return isFiniteTimestamp(value) && value > 0;
+}
+
+/** Rejects outcome-generated schedule timestamps before they can persist or arm a timer. */
+export function resolveNextRunAtMsOrDisable(params: {
+  state: CronJobPolicyContext;
+  job: CronJob;
+  candidate: unknown;
+  deferredNotifications: DeferredCronNotifications;
+}): number | undefined {
+  const nextRunAtMs = asDateTimestampMs(params.candidate);
+  if (nextRunAtMs !== undefined && nextRunAtMs > 0) {
+    return nextRunAtMs;
+  }
+  autoDisableCronJob({
+    job: params.job,
+    reason: "schedule-errors",
+    atMs: params.state.deps.nowMs(),
+    consecutiveErrors: 1,
+    deferredNotifications: params.deferredNotifications,
+  });
+  return undefined;
 }
 
 /** Resolves the newest persisted cron run status while older state is still readable. */
@@ -441,22 +466,6 @@ function normalizeJobTickState(params: {
     changed = true;
   }
 
-  if (job.schedule.kind === "every" && !hasInvalidExplicitEveryAnchor(job.schedule)) {
-    const normalizedAnchorMs = resolveEveryAnchorMs({
-      schedule: job.schedule,
-      fallbackAnchorMs: isFiniteTimestamp(job.createdAtMs) ? job.createdAtMs : nowMs,
-    });
-    if (job.schedule.anchorMs !== normalizedAnchorMs) {
-      job.schedule = {
-        ...job.schedule,
-        anchorMs: normalizedAnchorMs,
-      };
-      job.state.pacedNextRunAtMs = undefined;
-      job.state.forcePreservedNextRunAtMs = undefined;
-      changed = true;
-    }
-  }
-
   // Event schedules cannot retain a timed slot, including one preserved by a force run.
   if (!isJobEnabled(job) || !isTimeScheduledJob(job)) {
     for (const key of TIME_SCHEDULE_STATE_FIELDS) {
@@ -716,7 +725,12 @@ export function summarizeCronJobSchedule(state: CronServiceState) {
     if (rawEnabled) {
       enabledCount += 1;
     }
-    if ((rawEnabled ?? true) && isTimeScheduledJob(job) && hasNextRun) {
+    if (
+      (rawEnabled ?? true) &&
+      hasCanonicalCronDeliveryMode(job.delivery) &&
+      isTimeScheduledJob(job) &&
+      hasNextRun
+    ) {
       nextWake = nextWake === undefined ? nextRun : Math.min(nextWake, nextRun);
     }
   }
@@ -733,29 +747,10 @@ export function nextWakeAtMs(state: CronServiceState) {
 }
 
 /** Applies one canonical server-authored authority envelope to a tool-bearing job. */
-export function hasActiveCronRun(job: Pick<CronJob, "id" | "state">) {
+export function hasActiveCronRun(job: Pick<CronJob, "id" | "state">, activeInProcess?: boolean) {
   return (
     typeof job.state.queuedAtMs === "number" ||
     typeof job.state.runningAtMs === "number" ||
-    isCronJobActive(job.id)
-  );
-}
-
-/** Returns whether a cron job should execute at `nowMs`, honoring force mode and active runs. */
-export function isJobDue(job: CronJob, nowMs: number, opts: { forced: boolean }) {
-  if (!job.state) {
-    job.state = {};
-  }
-  if (hasActiveCronRun(job)) {
-    return false;
-  }
-  if (opts.forced) {
-    return true;
-  }
-  return (
-    isJobEnabled(job) &&
-    isTimeScheduledJob(job) &&
-    hasScheduledNextRunAtMs(job.state.nextRunAtMs) &&
-    nowMs >= job.state.nextRunAtMs
+    (activeInProcess ?? isCronJobActive(job.id))
   );
 }

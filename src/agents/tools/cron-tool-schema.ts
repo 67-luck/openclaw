@@ -328,10 +328,11 @@ function createCronFailureAlertSchema(): TSchema {
           { additionalProperties: true },
         ),
         Type.Literal(false),
+        Type.Null(),
       ],
       {
         description:
-          "Failure alert policy/route override. Route-backed jobs default to after=2 for execution failures and cooldownMs=3600000 for all failure alerts; false disables execution/delivery alerts but not the auto-disable safety notice.",
+          "Failure alert policy/route override; null clears. Route-backed jobs default to after=2 for execution failures and cooldownMs=3600000 for all failure alerts; false disables execution/delivery alerts but not the auto-disable safety notice.",
       },
     ),
   );
@@ -436,6 +437,9 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
         description:
           'Run mode for action="run": omitted defaults to "due"; use "force" to trigger now.',
       }),
+      runId: Type.Optional(
+        Type.String({ description: 'Run id from action="run" to read with action="runs"' }),
+      ),
       contextMessages: Type.Optional(
         Type.Integer({ minimum: 0, maximum: REMINDER_CONTEXT_MESSAGES_MAX }),
       ),
@@ -464,10 +468,10 @@ export function createCronToolSchema(options?: CronToolSchemaOptions): TSchema {
       "includeDisabled",
       "jobId",
       "id",
-      ...(managementOnly ? [] : ["in"]),
+      ...(managementOnly ? [] : ["in", "runId"]),
     ]);
   }
   return managementOnly
-    ? Type.Omit(schema, ["in", "text", "mode", "contextMessages", "sessionKey"])
+    ? Type.Omit(schema, ["in", "text", "mode", "contextMessages", "sessionKey", "runId"])
     : schema;
 }

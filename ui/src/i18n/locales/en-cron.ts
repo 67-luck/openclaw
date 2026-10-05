@@ -33,6 +33,8 @@ const enCron = {
       paused: "Paused — events do not start runs.",
       gap: "Replay gap: the server could not replay every event. Some events may be missing.",
       retryAt: "Next attempt: {at}",
+      agentTurnRequired:
+        "Event automations require an assistant task with an isolated or existing session.",
       eventServerRequired: "Choose an MCP server.",
       eventNameRequired: "Choose an event from the current catalog.",
       eventArgumentsInvalid: "Enter a valid JSON object for subscription arguments.",

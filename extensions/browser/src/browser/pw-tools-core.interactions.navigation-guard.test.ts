@@ -9,7 +9,8 @@ import {
 } from "./pw-tools-core.test-harness.js";
 
 installPwToolsCoreTestHooks();
-const mod = await import("./pw-tools-core.interactions.js");
+const mod = await import("./pw-tools-core.interactions.actions.js");
+const { executeActViaPlaywright } = await import("./pw-tools-core.interactions.execution.js");
 const session = getPwToolsCoreSessionMocks();
 const complete = session.assertPageNavigationCompletedSafely;
 const checkFrame = getPwToolsCoreNavigationGuardMocks().assertBrowserNavigationResultAllowed;
@@ -59,24 +60,24 @@ async function settle<T>(run: () => Promise<T>): Promise<T> {
     return outcome.value;
   });
 }
-function navigationPage(initialUrl = localPageUrl, mainFrame?: object) {
+function navigationPage(initialUrl = localPageUrl, mainFrame: object = {}) {
   let url = initialUrl;
-  const listeners = new Set<(frame?: object) => void>();
+  const listeners = new Set<(frame: object) => void>();
   const page = {
-    ...(mainFrame ? { mainFrame: vi.fn(() => mainFrame) } : {}),
-    on: vi.fn((event: string, listener: (frame?: object) => void) => {
+    mainFrame: vi.fn(() => mainFrame),
+    on: vi.fn((event: string, listener: (frame: object) => void) => {
       if (event === "framenavigated") {
         listeners.add(listener);
       }
     }),
-    off: vi.fn((event: string, listener: (frame?: object) => void) => {
+    off: vi.fn((event: string, listener: (frame: object) => void) => {
       if (event === "framenavigated") {
         listeners.delete(listener);
       }
     }),
     url: vi.fn(() => url),
   };
-  const emit = (frame?: object) => {
+  const emit = (frame: object = mainFrame) => {
     for (const listener of listeners) {
       listener(frame);
     }
@@ -347,7 +348,7 @@ describe("pw-tools-core interaction navigation guard", () => {
     const dispose = captureDownloads(drain);
     install(page, { click: vi.fn(async () => {}) });
     const result = await settle(() =>
-      mod.executeActViaPlaywright({ ...strict(), action: { kind: "click", ref: "1" } }),
+      executeActViaPlaywright({ ...strict(), action: { kind: "click", ref: "1" } }),
     );
     expect(result.downloads).toEqual([
       {
@@ -372,7 +373,7 @@ describe("pw-tools-core interaction navigation guard", () => {
     session.wasBrowserNavigationSourcePreservedAfterPolicyDenial
       .mockReturnValueOnce(true)
       .mockReturnValueOnce(true);
-    await expect(mod.executeActViaPlaywright({ ...strict(), action: hoverAction })).rejects.toBe(
+    await expect(executeActViaPlaywright({ ...strict(), action: hoverAction })).rejects.toBe(
       blocked,
     );
     expect(session.quarantineBlockedNavigationTarget).not.toHaveBeenCalled();
@@ -393,7 +394,7 @@ describe("pw-tools-core interaction navigation guard", () => {
         }),
       },
     );
-    const task = mod.executeActViaPlaywright({
+    const task = executeActViaPlaywright({
       ...strict(),
       action: hoverAction,
       signal: ctrl.signal,
@@ -419,7 +420,7 @@ describe("pw-tools-core interaction navigation guard", () => {
     const dispose = captureDownloads(drain);
     install(page);
     await expect(
-      mod.executeActViaPlaywright({
+      executeActViaPlaywright({
         ...strict(),
         action: { kind: "wait", fn: "() => false" },
         evaluateEnabled: true,
@@ -450,7 +451,7 @@ describe("pw-tools-core interaction navigation guard", () => {
       throw blocked;
     });
     await expect(
-      settle(() => mod.executeActViaPlaywright({ ...strict(), action: hoverAction })),
+      settle(() => executeActViaPlaywright({ ...strict(), action: hoverAction })),
     ).rejects.toBe(blocked);
     expect(complete).toHaveBeenCalledTimes(2);
     expectQuarantine(page);
@@ -465,7 +466,7 @@ describe("pw-tools-core interaction navigation guard", () => {
     install(page, { hover });
     session.withPageNavigationRequestGuard.mockRejectedValueOnce(blocked);
     await expect(
-      mod.executeActViaPlaywright({
+      executeActViaPlaywright({
         ...strict(),
         action: { kind: "batch", stopOnError: false, actions: [hoverAction, hoverAction] },
       }),
@@ -487,7 +488,7 @@ describe("pw-tools-core interaction navigation guard", () => {
     );
     install(page, { click: vi.fn(async () => {}) });
     await expect(
-      mod.executeActViaPlaywright({ ...target, action: { kind: "click", ref: "1" } }),
+      executeActViaPlaywright({ ...target, action: { kind: "click", ref: "1" } }),
     ).rejects.toBe(blocked);
     expectQuarantine(page);
     expect(dispose).toHaveBeenCalledOnce();

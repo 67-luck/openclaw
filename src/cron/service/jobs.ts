@@ -12,6 +12,10 @@ import type { CronScheduledToolPolicy } from "../scheduled-tool-policy.js";
 import { normalizeCronScriptPayload } from "../script-payload.js";
 import { createCronSourceIdentity } from "../source-schedule.js";
 import { normalizeCronStaggerMs, resolveDefaultCronStaggerMs } from "../stagger.js";
+import {
+  assertCanonicalCronDeliveryMode,
+  hasCanonicalCronDeliveryMode,
+} from "../store/delivery-codec.js";
 import { applyDefaultCronToolsAllow, cronJobUsesToolRuntime } from "../tools-allow.js";
 import type {
   CronDelivery,
@@ -304,6 +308,9 @@ export function applyJobPatch(
     toolsAllowExecTarget?: CronToolsAllowExecTarget;
   } & DeliveryValidationOptions,
 ) {
+  if (!hasCanonicalCronDeliveryMode(job.delivery)) {
+    assertCanonicalCronDeliveryMode(patch.delivery ?? job.delivery);
+  }
   const previouslyUsedToolRuntime = cronJobUsesToolRuntime(job);
   const explicitlyClearsToolsAllow = patch.payload?.toolsAllow === null;
   const previousScheduleKind = job.schedule.kind;
@@ -384,7 +391,7 @@ export function applyJobPatch(
     toolsAllowExecTarget: opts?.toolsAllowExecTarget,
   });
   if (patch.delivery) {
-    const implicitMode = resolveCronDeliveryPlan(job).mode;
+    const implicitMode = patch.delivery.mode ?? resolveCronDeliveryPlan(job).mode;
     job.delivery = mergeCronDelivery(job.delivery, patch.delivery, implicitMode);
   }
   if ("failureAlert" in patch) {
@@ -470,6 +477,9 @@ export function applyDeclarativeJobSpec(
     toolsAllowExecTarget?: CronToolsAllowExecTarget;
   } & DeliveryValidationOptions,
 ) {
+  if (!hasCanonicalCronDeliveryMode(job.delivery)) {
+    assertCanonicalCronDeliveryMode(input.delivery ?? job.delivery);
+  }
   const previouslyUsedToolRuntime = cronJobUsesToolRuntime(job);
   const explicitlyDeclaresToolsAllow = input.payload.toolsAllow !== undefined;
   const previousToolsAllow = job.payload.toolsAllow;
@@ -562,7 +572,7 @@ function mergeCronDelivery(
 ): CronDelivery | undefined {
   const hasCompletionDestinationPatch = "completionDestination" in patch;
   const next: CronDelivery = {
-    mode: existing?.mode ?? implicitMode,
+    mode: existing ? existing.mode : implicitMode,
     channel: existing?.channel,
     to: existing?.to,
     threadId: existing?.threadId,
@@ -574,7 +584,7 @@ function mergeCronDelivery(
 
   if (typeof patch.mode === "string") {
     const previousMode = next.mode;
-    next.mode = (patch.mode as string) === "deliver" ? "announce" : patch.mode;
+    next.mode = patch.mode;
     if (previousMode !== next.mode && (previousMode === "webhook" || next.mode === "webhook")) {
       // `to` has different meaning for channel targets and webhook URLs; clear
       // it when crossing that boundary so stale destinations do not leak.

@@ -5,7 +5,8 @@
 import crypto from "node:crypto";
 import { filterStringRecord, isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { resolveOpenClawMcpTransportAlias } from "../config/mcp-config-normalize.js";
+import { raceWithTimeout } from "@openclaw/retry";
+import { resolveConfiguredMcpTransport } from "../config/mcp-config-normalize.js";
 import { logWarn } from "../logger.js";
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
@@ -63,6 +64,10 @@ function retainResolverObservation(
         await raceWithTimeout(
           Promise.resolve(authority.revalidate()),
           MCP_CONNECTION_RESOLVER_TIMEOUT_MS,
+          () => {
+            throw new McpResolverTimeoutError();
+          },
+          { ref: false },
         );
         assertCurrent();
       } catch (error) {
@@ -132,25 +137,6 @@ class McpResolverTimeoutError extends Error {
     super("mcp connection resolver timed out");
     this.name = "McpResolverTimeoutError";
   }
-}
-
-function raceWithTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new McpResolverTimeoutError());
-    }, timeoutMs);
-    timer.unref?.();
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error: unknown) => {
-        clearTimeout(timer);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      },
-    );
-  });
 }
 
 /** Returns registered connection resolvers keyed by server name (deterministic order). */
@@ -295,7 +281,14 @@ export async function resolveRequesterScopedMcpConnections(params: {
       try {
         const resolving = Promise.resolve(entry.resolve(ctx));
         try {
-          result = await raceWithTimeout(resolving, timeoutMs);
+          result = await raceWithTimeout(
+            resolving,
+            timeoutMs,
+            () => {
+              throw new McpResolverTimeoutError();
+            },
+            { ref: false },
+          );
         } catch (error) {
           // A timed-out resolver may still create an observation; its eventual result owns cleanup.
           if (error instanceof McpResolverTimeoutError) {
@@ -382,14 +375,8 @@ export function applyMcpConnectionOverride(
   } else {
     delete base.headers;
   }
-  // Resolve effective transport with the same alias mapping as config canonicalize
-  // BEFORE stripping `type`, so SSE-only servers keep sse (including case variants).
-  const fromTransport =
-    typeof base.transport === "string"
-      ? resolveOpenClawMcpTransportAlias(base.transport)
-      : undefined;
-  const fromType = resolveOpenClawMcpTransportAlias(base.type);
-  base.transport = fromTransport ?? fromType ?? "streamable-http";
+  const transport = resolveConfiguredMcpTransport(base);
+  base.transport = !transport || transport === "stdio" ? "streamable-http" : transport;
   // Resolver-supplied headers are the auth surface; strip static OAuth so the
   // transport layer does not drop Authorization from overrides.
   delete base.auth;

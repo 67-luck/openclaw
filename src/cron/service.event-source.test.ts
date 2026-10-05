@@ -1,6 +1,8 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
 import { createChannelIngressQueue } from "../channels/message/ingress-queue.js";
-import { enqueueCommandInLane } from "../process/command-queue.js";
+import { enqueueCommandInLane, setCommandLaneConcurrency } from "../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../process/command-queue.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
@@ -92,8 +94,12 @@ describe("event automation durable admission", () => {
     const started = createDeferredCore();
     const finish = createDeferredCore();
     const calls: Parameters<CronServiceDeps["runIsolatedAgentJob"]>[0][] = [];
+    const schedulerScope = new AsyncLocalStorage<boolean>();
+    const executionScopes: Array<boolean | undefined> = [];
     const f = await fixture({
+      runSchedulerOwned: (run) => schedulerScope.run(true, run),
       runIsolatedAgentJob: async (params) => {
+        executionScopes.push(schedulerScope.getStore());
         calls.push(params);
         started.resolve();
         await finish.promise;
@@ -107,6 +113,7 @@ describe("event automation durable admission", () => {
       const receipt = await run;
       expect(receipt.kind).toBe("transferred");
       await started.promise;
+      expect(executionScopes).toEqual([true]);
       expect(calls[0]?.message).toContain("Summarize the received change.");
       expect(calls[0]?.message).toContain("EXTERNAL_UNTRUSTED_CONTENT");
       expect(calls[0]?.message).toContain("original event");
@@ -129,7 +136,7 @@ describe("event automation durable admission", () => {
         kind: "pending",
         reason: "busy",
       });
-      expect(await f.queue.listClaims()).toHaveLength(1);
+      expect(await f.queue.listClaims()).toMatchObject([{ attempts: 0 }]);
       finish.resolve();
       await enqueueCommandInLane("cron", async () => {});
       expect(
@@ -206,6 +213,14 @@ describe("event automation durable admission", () => {
         "cron.triggers.enabled: false",
       );
       cronConfig.triggers.enabled = true;
+      f.cron.stop();
+      await f.cron.waitForIdle();
+      expect(await f.cron.runEvent(f.job.id, options)).toEqual({
+        kind: "pending",
+        reason: "stopped",
+      });
+      expect(await f.queue.listClaims()).toMatchObject([{ attempts: 0 }]);
+      await f.cron.start();
       const equivalent = await f.cron.update(f.job.id, {
         schedule: {
           kind: "event",
@@ -294,6 +309,71 @@ describe("event automation durable admission", () => {
     } finally {
       await enqueueCommandInLane("cron", async () => {});
       f.cron.stop();
+    }
+  });
+
+  it("rejects a replaced ingress claim after reservation without consuming its successor", async () => {
+    const f = await fixture();
+    const reserved = createDeferredCore();
+    const blocked = createDeferredCore();
+    const release = createDeferredCore();
+    setCommandLaneConcurrency("cron", 1);
+    const blocker = enqueueCommandInLane("cron", async () => {
+      blocked.resolve();
+      await release.promise;
+    });
+    let pending: ReturnType<CronService["runEvent"]> | undefined;
+    try {
+      await blocked.promise;
+      const { options } = await f.claim("replaced-claim");
+      pending = f.cron.runEvent(f.job.id, {
+        ...options,
+        commitGuard() {
+          if (f.cron.getJob(f.job.id)?.state.queuedAtMs !== undefined) {
+            reserved.resolve();
+          }
+        },
+      });
+      await awaitGateBeforeSettlement(
+        reserved.promise,
+        pending,
+        "event admission settled before its reservation",
+      );
+      expect(
+        await f.queue.release(
+          { id: options.claim.id, claim: { token: options.claim.token } },
+          { recordAttempt: false },
+        ),
+      ).toBe(true);
+      const successor = await f.queue.claim(options.claim.id);
+      if (!successor) {
+        throw new Error("missing successor claim");
+      }
+      release.resolve();
+      await blocker;
+      expect(await pending).toEqual({ kind: "invalidated" });
+      expect(f.runIsolatedAgentJob).not.toHaveBeenCalled();
+      expect(await f.queue.listClaims()).toMatchObject([
+        {
+          attempts: 0,
+          claim: { token: successor.claim.token },
+        },
+      ]);
+      expect((await f.cron.readJob(f.job.id))?.state.queuedAtMs).toBeUndefined();
+      expect(
+        await f.cron.runEvent(f.job.id, {
+          ...options,
+          claim: { ...options.claim, token: successor.claim.token },
+        }),
+      ).toMatchObject({ kind: "transferred" });
+      await enqueueCommandInLane("cron", async () => {});
+      expect(f.runIsolatedAgentJob).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve();
+      await Promise.allSettled([blocker, pending]);
+      await enqueueCommandInLane("cron", async () => {});
+      f.cron.stop();
+      await f.cron.waitForIdle();
     }
   });
 

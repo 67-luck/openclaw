@@ -1,6 +1,6 @@
 import {
   definePluginEntry,
-  type OpenClawPluginServiceContext,
+  type OpenClawPluginServiceContextV2,
 } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveMcpEventsConfig } from "./src/config.js";
 import { createCallbackHandler } from "./src/http.js";
@@ -8,7 +8,7 @@ import { CALLBACK_PREFIX, MCP_EVENTS_PROFILE, record } from "./src/protocol.js";
 import { McpEventsService } from "./src/service.js";
 import type { EventCron } from "./src/types.js";
 
-function currentCron(context: OpenClawPluginServiceContext): EventCron {
+function currentCron(context: OpenClawPluginServiceContextV2): EventCron {
   const cron = context.getCron?.();
   if (!cron?.readEventSources || !cron.runEvent) {
     throw new Error("MCP Events requires Gateway event-driven automation admission");
@@ -100,12 +100,13 @@ export default definePluginEntry({
     );
     api.registerService({
       id: "mcp-events",
+      apiVersion: 2,
       reload: { configPrefixes: ["plugins.entries.mcp-events", "mcp"] },
-      async start(context) {
+      async start(context: OpenClawPluginServiceContextV2) {
         const config = resolveMcpEventsConfig(
           context.config.plugins?.entries?.["mcp-events"]?.config,
         );
-        if (!context.scheduler || !context.mcpEvents?.prepareSource) {
+        if (!context.mcpEvents?.prepareSource) {
           throw new Error(
             "MCP Events requires the Gateway's source authority and scheduler capabilities",
           );

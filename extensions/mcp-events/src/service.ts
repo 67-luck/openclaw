@@ -1,6 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
 import { validateJsonSchemaValue } from "openclaw/plugin-sdk/json-schema-runtime";
-import { generateSecureUuid } from "openclaw/plugin-sdk/secure-random-runtime";
 import { preflightCallbackOrigin, resolveMcpEventSourceOptions } from "./config.js";
 import { McpEventsIngress } from "./ingress.js";
 import {
@@ -363,7 +363,7 @@ export class McpEventsService {
       }
       this.assertService();
       source.assertCurrent();
-      const bindingId = generateSecureUuid();
+      const bindingId = randomUUID();
       const facts: SubscriptionBinding = {
         version: 1,
         bindingId,

@@ -42,13 +42,19 @@ const invalid = (message) => {
   throw new RpcError(-32602, message);
 };
 const isObject = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
-const canonical = (value) => JSON.stringify(value, Object.keys(value).sort());
+const canonical = (value) => JSON.stringify(value, Object.keys(value).toSorted());
 const cursor = (sequence) => "fixture:" + sequence;
 function parseCursor(value, head) {
-  if (value === undefined || value === null) return head;
-  if (typeof value !== "string" || !/^fixture:[0-9]+$/.test(value)) invalid("Unknown cursor");
+  if (value === undefined || value === null) {
+    return head;
+  }
+  if (typeof value !== "string" || !/^fixture:[0-9]+$/.test(value)) {
+    invalid("Unknown cursor");
+  }
   const sequence = Number(value.slice(8));
-  if (!Number.isSafeInteger(sequence) || sequence > head) invalid("Cursor is ahead of history");
+  if (!Number.isSafeInteger(sequence) || sequence > head) {
+    invalid("Cursor is ahead of history");
+  }
   return sequence;
 }
 function requireFields(value, fields) {
@@ -56,12 +62,17 @@ function requireFields(value, fields) {
     !isObject(value) ||
     Object.keys(value).some((key) => !fields.includes(key)) ||
     fields.some((key) => typeof value[key] !== "string" || !value[key].length)
-  )
+  ) {
     invalid("Invalid arguments or payload");
+  }
 }
 function category(error) {
-  if (error?.name === "AbortError" || error?.name === "TimeoutError") return "timeout";
-  if (/CERT|TLS|SSL|SELF_SIGNED/.test(error?.code ?? "")) return "tls_error";
+  if (error?.name === "AbortError" || error?.name === "TimeoutError") {
+    return "timeout";
+  }
+  if (/CERT|TLS|SSL|SELF_SIGNED/.test(error?.code ?? "")) {
+    return "tls_error";
+  }
   return "connection_refused";
 }
 function json(response, status, value) {
@@ -73,7 +84,9 @@ async function bodyJson(request) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) throw new RpcError(-32600, "Request exceeds 256 KiB");
+    if (size > MAX_BODY_BYTES) {
+      throw new RpcError(-32600, "Request exceeds 256 KiB");
+    }
     chunks.push(chunk);
   }
   try {
@@ -91,22 +104,28 @@ async function listen(server, port, host) {
     });
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("Expected TCP listener");
+  if (!address || typeof address === "string") {
+    throw new Error("Expected TCP listener");
+  }
   return address.port;
 }
 
 // This is an external MCP server, not OpenClaw state. The caller explicitly owns
 // this private artifact and must give each running fixture a distinct stateFile.
 export async function startMcpEventsTestServer(options) {
-  if (!options.stateFile || !options.token || !options.controlToken)
+  if (!options.stateFile || !options.token || !options.controlToken) {
     throw new Error("stateFile, token, controlToken are required");
-  if (options.token === options.controlToken) throw new Error("MCP and control tokens must differ");
+  }
+  if (options.token === options.controlToken) {
+    throw new Error("MCP and control tokens must differ");
+  }
   const maxTtlMs = options.maxTtlMs ?? 86_400_000;
   if (!Number.isSafeInteger(maxTtlMs) || maxTtlMs < 100 || maxTtlMs > 86_400_000) {
     throw new Error("maxTtlMs must be an integer from 100 to 86400000");
   }
-  if (Boolean(options.loopbackOrigin) !== Boolean(options.ca))
+  if (Boolean(options.loopbackOrigin) !== Boolean(options.ca)) {
     throw new Error("Loopback callback origin and CA must be supplied together");
+  }
   if (options.loopbackOrigin) {
     const allowed = callbackUrl(options.loopbackOrigin);
     if (
@@ -121,7 +140,9 @@ export async function startMcpEventsTestServer(options) {
   try {
     state = JSON.parse(readFileSync(stateFile, "utf8"));
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
     state = {
       version: 1,
       sequence: 0,
@@ -136,8 +157,9 @@ export async function startMcpEventsTestServer(options) {
     !isObject(state.subscriptions) ||
     !isObject(state.pending) ||
     !Array.isArray(state.events)
-  )
+  ) {
     throw new Error("Invalid fixture state");
+  }
   const save = () => {
     mkdirSync(dirname(stateFile), { recursive: true, mode: 0o700 });
     const temporary = stateFile + ".tmp";
@@ -166,21 +188,28 @@ export async function startMcpEventsTestServer(options) {
       event.data.text.includes(subscription.arguments.text_contains));
   const record = (entry) => {
     reports.push(entry);
-    if (reports.length > 500) reports.shift();
+    if (reports.length > 500) {
+      reports.shift();
+    }
   };
   const outbound = { loopbackOrigin: options.loopbackOrigin, ca: options.ca };
 
   async function deliver(subscription, event, probe = {}) {
-    if (!authorized(subscription)) return { eventId: event.eventId, skipped: "inactive" };
+    if (!authorized(subscription)) {
+      return { eventId: event.eventId, skipped: "inactive" };
+    }
     const serialized = JSON.stringify(event);
-    if (Buffer.byteLength(serialized) > MAX_BODY_BYTES && !probe.oversizeProbe)
+    if (Buffer.byteLength(serialized) > MAX_BODY_BYTES && !probe.oversizeProbe) {
       throw new Error("Event payload exceeds 256 KiB");
+    }
     const attempts = [];
     const controller = new AbortController();
     controllers.add(controller);
     try {
       for (let attempt = 0; attempt < (probe.singleAttempt ? 1 : 3); attempt++) {
-        if (!authorized(subscription)) break;
+        if (!authorized(subscription)) {
+          break;
+        }
         let response;
         try {
           response = await postCallback(subscription, serialized, event.eventId, {
@@ -212,9 +241,12 @@ export async function startMcpEventsTestServer(options) {
           (response.status >= 300 &&
             response.status < 500 &&
             ![408, 425, 429].includes(response.status))
-        )
+        ) {
           break;
-        if (attempt === 2 || probe.singleAttempt) break;
+        }
+        if (attempt === 2 || probe.singleAttempt) {
+          break;
+        }
         const retryAfter = response.retryAfter;
         const requestedDelay =
           retryAfter === undefined
@@ -223,13 +255,17 @@ export async function startMcpEventsTestServer(options) {
               ? Number(retryAfter) * 1000
               : Date.parse(retryAfter) - Date.now();
         // Do not violate Retry-After to fit the bounded fixture retry window.
-        if (requestedDelay > 30_000) break;
+        if (requestedDelay > 30_000) {
+          break;
+        }
         await delay(Math.max(250 * 2 ** attempt, requestedDelay || 0), undefined, {
           signal: controller.signal,
         });
       }
     } catch (error) {
-      if (!closing) throw error;
+      if (!closing) {
+        throw error;
+      }
     } finally {
       controllers.delete(controller);
     }
@@ -237,7 +273,9 @@ export async function startMcpEventsTestServer(options) {
   }
   function enqueue(subscription, event) {
     const key = subscription.id + ":" + event.eventId;
-    if (queued.has(key)) return queued.get(key);
+    if (queued.has(key)) {
+      return queued.get(key);
+    }
     state.pending[key] = { subscriptionId: subscription.id, event };
     save();
     const tail = (tails.get(subscription.id) ?? Promise.resolve()).then(async () => {
@@ -258,8 +296,9 @@ export async function startMcpEventsTestServer(options) {
     return tail;
   }
   function identity(params) {
-    if (!eventNames.includes(params.name))
+    if (!eventNames.includes(params.name)) {
       throw new RpcError(-32011, "NotFound", { kind: "event" });
+    }
     const args = params.arguments;
     if (
       !isObject(args) ||
@@ -268,10 +307,12 @@ export async function startMcpEventsTestServer(options) {
       Object.keys(args).some((key) => !["document_id", "text_contains"].includes(key)) ||
       (args.text_contains !== undefined &&
         (typeof args.text_contains !== "string" || !args.text_contains))
-    )
+    ) {
       invalid("Invalid subscription arguments");
-    if (params.delivery?.mode !== "webhook")
+    }
+    if (params.delivery?.mode !== "webhook") {
       throw new RpcError(-32014, "Unsupported", { feature: "deliveryMode" });
+    }
     try {
       callbackUrl(params.delivery.url);
     } catch {
@@ -300,8 +341,9 @@ export async function startMcpEventsTestServer(options) {
   }
   async function subscribe(params) {
     const key = identity(params);
-    if (state.revokedDocuments.includes(key.arguments.document_id))
+    if (state.revokedDocuments.includes(key.arguments.document_id)) {
       throw new RpcError(-32012, "Forbidden");
+    }
     try {
       signingKey(params.delivery.secret);
     } catch (error) {
@@ -311,8 +353,9 @@ export async function startMcpEventsTestServer(options) {
       params.ttlMs !== undefined &&
       params.ttlMs !== null &&
       (!Number.isSafeInteger(params.ttlMs) || params.ttlMs < 0)
-    )
+    ) {
       invalid("ttlMs must be a nonnegative integer or null");
+    }
     const requestedPosition = parseCursor(params.cursor, state.sequence);
     const existing = state.subscriptions[key.id];
     const wasLive = existing && authorized(existing) && positions.has(key.id);
@@ -372,8 +415,9 @@ export async function startMcpEventsTestServer(options) {
       verified.set(verificationKey, Date.now() + 60_000);
     }
     // Challenge is awaited before publishing the durable record or replying.
-    if (closing || state.revokedDocuments.includes(key.arguments.document_id))
+    if (closing || state.revokedDocuments.includes(key.arguments.document_id)) {
       throw new RpcError(-32012, "Forbidden");
+    }
     const subscription = existing ? Object.assign(existing, candidate) : candidate;
     state.subscriptions[key.id] = subscription;
     save();
@@ -402,10 +446,11 @@ export async function startMcpEventsTestServer(options) {
     return {
       result,
       afterResponse: () => {
-        for (const entry of replay)
+        for (const entry of replay) {
           void enqueue(subscription, entry.event).catch((error) =>
             record({ error: error.message }),
           );
+        }
       },
     };
   }
@@ -420,8 +465,9 @@ export async function startMcpEventsTestServer(options) {
           },
         };
       case "events/list": {
-        if (params.cursor !== undefined && params.cursor !== "events:1")
+        if (params.cursor !== undefined && params.cursor !== "events:1") {
           invalid("Unknown catalog cursor");
+        }
         const index = params.cursor === "events:1" ? 1 : 0;
         return {
           result: {
@@ -436,8 +482,11 @@ export async function startMcpEventsTestServer(options) {
         const { id } = identity(params);
         delete state.subscriptions[id];
         positions.delete(id);
-        for (const [key, item] of Object.entries(state.pending))
-          if (item.subscriptionId === id) delete state.pending[key];
+        for (const [key, item] of Object.entries(state.pending)) {
+          if (item.subscriptionId === id) {
+            delete state.pending[key];
+          }
+        }
         save();
         return { result: {} };
       }
@@ -464,18 +513,24 @@ export async function startMcpEventsTestServer(options) {
       case "emit":
       case "burst": {
         const count = params.action === "burst" ? (params.count ?? 10) : 1;
-        if (!Number.isInteger(count) || count < 1 || count > 100) invalid("count must be 1–100");
+        if (!Number.isInteger(count) || count < 1 || count > 100) {
+          invalid("count must be 1–100");
+        }
         const name = params.name ?? "comment.created";
-        if (!eventNames.includes(name)) invalid("Unknown event");
+        if (!eventNames.includes(name)) {
+          invalid("Unknown event");
+        }
         requireFields(params.data, ["document_id", "comment_id", "text", "url"]);
         const events = [];
         for (let i = 0; i < count; i++) {
           const sequence = state.sequence + 1;
           const eventId = params.eventId && count === 1 ? params.eventId : "evt_" + randomUUID();
-          if (typeof eventId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(eventId))
+          if (typeof eventId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(eventId)) {
             invalid("Invalid eventId");
-          if (state.events.some((entry) => entry.event.eventId === eventId))
+          }
+          if (state.events.some((entry) => entry.event.eventId === eventId)) {
             invalid("Use retry for an existing eventId");
+          }
           const event = {
             eventId,
             name,
@@ -483,8 +538,9 @@ export async function startMcpEventsTestServer(options) {
             data: params.data,
             cursor: cursor(sequence),
           };
-          if (Buffer.byteLength(JSON.stringify(event)) > MAX_BODY_BYTES)
+          if (Buffer.byteLength(JSON.stringify(event)) > MAX_BODY_BYTES) {
             invalid("Event payload exceeds 256 KiB");
+          }
           state.sequence = sequence;
           state.events.push({ sequence, event });
           events.push(event);
@@ -492,10 +548,13 @@ export async function startMcpEventsTestServer(options) {
         state.events = state.events.slice(-1000);
         save();
         const pending = [];
-        for (const event of events)
+        for (const event of events) {
           for (const subscription of Object.values(state.subscriptions)) {
-            if (matches(subscription, event)) pending.push(enqueue(subscription, event));
+            if (matches(subscription, event)) {
+              pending.push(enqueue(subscription, event));
+            }
           }
+        }
         return { events, deliveries: await Promise.all(pending) };
       }
       case "retry":
@@ -503,10 +562,13 @@ export async function startMcpEventsTestServer(options) {
       case "oversize": {
         const subscription = state.subscriptions[params.subscriptionId];
         const entry = state.events.find((item) => item.event.eventId === params.eventId);
-        if (!subscription || !entry || !matches(subscription, entry.event))
+        if (!subscription || !entry || !matches(subscription, entry.event)) {
           invalid("Matching subscriptionId and eventId required");
+        }
         const event = structuredClone(entry.event);
-        if (params.action === "oversize") event.data.text = "x".repeat(MAX_BODY_BYTES);
+        if (params.action === "oversize") {
+          event.data.text = "x".repeat(MAX_BODY_BYTES);
+        }
         return await deliver(subscription, event, {
           invalidSignature: params.action === "invalid-signature",
           oversizeProbe: params.action === "oversize",
@@ -514,20 +576,26 @@ export async function startMcpEventsTestServer(options) {
         });
       }
       case "drain":
-        await Promise.all([...tails.values()]);
+        await Promise.all(tails.values());
         return { reports };
       case "expire": {
         const sub = state.subscriptions[params.subscriptionId];
-        if (!sub) invalid("Unknown subscriptionId");
+        if (!sub) {
+          invalid("Unknown subscriptionId");
+        }
         sub.refreshBefore = new Date(0).toISOString();
         save();
         return {};
       }
       case "revoke":
       case "grant": {
-        if (typeof params.documentId !== "string") invalid("documentId required");
+        if (typeof params.documentId !== "string") {
+          invalid("documentId required");
+        }
         state.revokedDocuments = state.revokedDocuments.filter((id) => id !== params.documentId);
-        if (params.action === "revoke") state.revokedDocuments.push(params.documentId);
+        if (params.action === "revoke") {
+          state.revokedDocuments.push(params.documentId);
+        }
         save();
         return {};
       }
@@ -538,17 +606,19 @@ export async function startMcpEventsTestServer(options) {
         return {};
       }
       default:
-        invalid("Unknown control action");
+        throw new RpcError(-32602, "Unknown control action");
     }
   }
   // Serialize lifecycle mutations through the challenge await; control deliveries
   // remain independent so real subscribe/ingress races can be exercised.
   let rpcTail = Promise.resolve();
   const handler = async (request, response) => {
-    if (!constantTimeEqual(request.headers.authorization ?? "", "Bearer " + options.token))
+    if (!constantTimeEqual(request.headers.authorization ?? "", "Bearer " + options.token)) {
       return json(response, 401, { error: "Unauthorized" });
-    if (request.method !== "POST" || !["/mcp", "/mcp-sse"].includes(request.url))
+    }
+    if (request.method !== "POST" || !["/mcp", "/mcp-sse"].includes(request.url)) {
       return json(response, 404, { error: "Not found" });
+    }
     let id = null;
     try {
       const message = await bodyJson(request);
@@ -557,8 +627,9 @@ export async function startMcpEventsTestServer(options) {
         message.jsonrpc !== "2.0" ||
         typeof message.method !== "string" ||
         !isObject(message.params)
-      )
+      ) {
         throw new RpcError(-32600, "Invalid JSON-RPC request");
+      }
       const meta = message.params._meta;
       if (
         request.headers["mcp-protocol-version"] !== PROTOCOL_VERSION ||
@@ -573,7 +644,9 @@ export async function startMcpEventsTestServer(options) {
         transport: request.url === "/mcp-sse" ? "sse" : "json",
         protocolVersion: PROTOCOL_VERSION,
       });
-      if (requests.length > 100) requests.shift();
+      if (requests.length > 100) {
+        requests.shift();
+      }
       const pending = rpcTail.then(() => rpc(message.method, message.params));
       rpcTail = pending.catch(() => {});
       const { result, afterResponse } = await pending;
@@ -584,7 +657,9 @@ export async function startMcpEventsTestServer(options) {
           "cache-control": "no-cache",
         });
         response.end("event: message\ndata: " + JSON.stringify(envelope) + "\n\n");
-      } else json(response, 200, envelope);
+      } else {
+        json(response, 200, envelope);
+      }
       afterResponse?.();
     } catch (error) {
       json(response, 200, {
@@ -599,14 +674,17 @@ export async function startMcpEventsTestServer(options) {
     }
   };
   const host = options.host ?? "127.0.0.1";
-  if (!["127.0.0.1", "::1", "localhost"].includes(host) && !options.tls)
+  if (!["127.0.0.1", "::1", "localhost"].includes(host) && !options.tls) {
     throw new Error("Non-loopback MCP listener requires TLS");
+  }
   const mcp = options.tls ? https.createServer(options.tls, handler) : http.createServer(handler);
   const controls = http.createServer(async (request, response) => {
-    if (!constantTimeEqual(request.headers.authorization ?? "", "Bearer " + options.controlToken))
+    if (!constantTimeEqual(request.headers.authorization ?? "", "Bearer " + options.controlToken)) {
       return json(response, 401, { error: "Unauthorized" });
-    if (request.method !== "POST" || request.url !== "/control")
+    }
+    if (request.method !== "POST" || request.url !== "/control") {
       return json(response, 404, { error: "Not found" });
+    }
     try {
       json(response, 200, await control(await bodyJson(request)));
     } catch (error) {
@@ -626,8 +704,9 @@ export async function startMcpEventsTestServer(options) {
   }
   for (const item of Object.values(state.pending)) {
     const subscription = state.subscriptions[item.subscriptionId];
-    if (subscription)
+    if (subscription) {
       void enqueue(subscription, item.event).catch((error) => record({ error: error.message }));
+    }
   }
   return {
     mcpUrl:
@@ -640,12 +719,18 @@ export async function startMcpEventsTestServer(options) {
     controlUrl: "http://127.0.0.1:" + controlPort + "/control",
     async close() {
       closing = true;
-      for (const controller of controllers) controller.abort();
+      for (const controller of controllers) {
+        controller.abort();
+      }
       mcp.closeAllConnections();
       controls.closeAllConnections();
       await Promise.all([
-        new Promise((done) => mcp.close(done)),
-        new Promise((done) => controls.close(done)),
+        new Promise((done) => {
+          mcp.close(done);
+        }),
+        new Promise((done) => {
+          controls.close(done);
+        }),
         rpcTail,
         ...tails.values(),
       ]);

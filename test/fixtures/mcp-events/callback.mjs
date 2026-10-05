@@ -22,15 +22,17 @@ for (const [address, prefix] of [
   ["203.0.113.0", 24],
   ["224.0.0.0", 4],
   ["240.0.0.0", 4],
-])
+]) {
   blocked.addSubnet(address, prefix, "ipv4");
+}
 for (const [address, prefix] of [
   ["2001::", 23],
   ["2001:db8::", 32],
   ["2002::", 16],
   ["3fff::", 20],
-])
+]) {
   blocked.addSubnet(address, prefix, "ipv6");
+}
 const globalV6 = new BlockList();
 globalV6.addSubnet("2000::", 3, "ipv6");
 
@@ -111,10 +113,13 @@ export async function postCallback(subscription, body, eventId, options = {}) {
       ({ address }) =>
         !(fixtureLoopback && (address === "127.0.0.1" || address === "::1")) && !isPublic(address),
     )
-  )
+  ) {
     throw new Error("Callback resolves to a non-public address");
+  }
   const pinned = addresses[0];
-  if (options.isActive && !options.isActive()) throw new Error("Subscription is no longer active");
+  if (options.isActive && !options.isActive()) {
+    throw new Error("Subscription is no longer active");
+  }
   return await new Promise((resolve, reject) => {
     const request = https.request(
       url,
@@ -124,8 +129,11 @@ export async function postCallback(subscription, body, eventId, options = {}) {
         ca: fixtureLoopback ? options.ca : undefined,
         headers: webhookHeaders(subscription, eventId, body, options),
         lookup: (_hostname, lookupOptions, done) => {
-          if (lookupOptions.all) done(null, [pinned]);
-          else done(null, pinned.address, pinned.family);
+          if (lookupOptions.all) {
+            done(null, [pinned]);
+          } else {
+            done(null, pinned.address, pinned.family);
+          }
         },
         signal: options.signal
           ? AbortSignal.any([options.signal, AbortSignal.timeout(10_000)])
@@ -136,8 +144,11 @@ export async function postCallback(subscription, body, eventId, options = {}) {
         let size = 0;
         response.on("data", (chunk) => {
           size += chunk.length;
-          if (size > 16 * 1024) response.destroy(new Error("Callback response exceeds 16 KiB"));
-          else chunks.push(chunk);
+          if (size > 16 * 1024) {
+            response.destroy(new Error("Callback response exceeds 16 KiB"));
+          } else {
+            chunks.push(chunk);
+          }
         });
         response.on("error", reject);
         response.on("end", () =>

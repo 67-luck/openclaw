@@ -5,12 +5,12 @@ import {
 } from "../infra/sqlite-worker-store.js";
 import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
 import type { OpenClawStateAsyncLeaseContext } from "../state/openclaw-state-lease-context.js";
-import type { OpenClawStateLeaseIdentity } from "../state/openclaw-state-lease-store.js";
+import { runWithOpenClawStateLeaseWorker } from "../state/openclaw-state-lease-worker-operation.js";
 import {
   withOpenClawStateLeaseWorkerAdmission,
   type OpenClawStateLeaseWorkerAuthority,
 } from "../state/openclaw-state-lease-worker-owner.js";
-import { runWithOpenClawStateLeaseWorker } from "../state/openclaw-state-lease-worker-storage.js";
+import type { OpenClawStateLeaseIdentity } from "../state/openclaw-state-lease.types.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerOperations } from "../state/openclaw-state-worker-contract.js";

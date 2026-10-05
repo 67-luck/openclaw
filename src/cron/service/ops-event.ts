@@ -69,12 +69,14 @@ export async function runEvent(
   }
   const event: CronEventAdmission = { input: JSON.parse(json), claim: { ...opts.claim } };
   const runId = cronEventRunId(event);
+  const generation = state.lifecycleGeneration;
   const transferred: { receiptId?: string } = {};
   const paused = new Error("automation event source is paused");
   const invalidated = new Error("automation event source is no longer current");
   const commitGuard = () => {
     if (
       state.stopped ||
+      state.lifecycleGeneration !== generation ||
       !state.deps.cronEnabled ||
       state.schedulingPaused ||
       state.deps.cronConfig?.triggers?.enabled === false
@@ -94,19 +96,26 @@ export async function runEvent(
     opts.commitGuard();
   };
   try {
-    const result = await enqueueRun(state, id, "if-enabled", {
-      event,
-      runId,
-      commitGuard,
-      onEventTransferred: (receipt) => {
-        transferred.receiptId = receipt.receiptId;
-      },
-    });
+    const execute = () =>
+      enqueueRun(state, id, "if-enabled", {
+        event,
+        runId,
+        commitGuard,
+        onEventTransferred: (receipt) => {
+          transferred.receiptId = receipt.receiptId;
+        },
+      });
+    const result = await (state.deps.runSchedulerOwned
+      ? state.deps.runSchedulerOwned(execute)
+      : execute());
     if (transferred.receiptId) {
       return { kind: "transferred", receiptId: transferred.receiptId, runId };
     }
     if (result.ok && "reason" in result && result.reason === "already-running") {
       return { kind: "pending", reason: "busy" };
+    }
+    if (result.ok && "reason" in result && result.reason === "stopped") {
+      return { kind: "pending", reason: "stopped" };
     }
     return { kind: "invalidated" };
   } catch (error) {
@@ -115,7 +124,10 @@ export async function runEvent(
       return { kind: "transferred", receiptId: transferred.receiptId, runId };
     }
     if (error === paused) {
-      return { kind: "pending", reason: state.stopped ? "stopped" : "paused" };
+      return {
+        kind: "pending",
+        reason: state.stopped || state.lifecycleGeneration !== generation ? "stopped" : "paused",
+      };
     }
     if (error === invalidated || error instanceof CronEventClaimInvalidatedError) {
       return { kind: "invalidated" };

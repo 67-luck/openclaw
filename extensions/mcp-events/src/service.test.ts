@@ -7,8 +7,8 @@ import { createChannelIngressDrain } from "openclaw/plugin-sdk/channel-outbound"
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type {
   OpenClawPluginHttpRouteHandler,
-  OpenClawPluginService,
-  OpenClawPluginServiceContext,
+  OpenClawPluginServiceV2,
+  OpenClawPluginServiceContextV2,
 } from "openclaw/plugin-sdk/plugin-entry";
 import type {
   OpenAsyncKeyedStoreOptions,
@@ -19,7 +19,10 @@ import {
   createPluginStateKeyedStoreForTests,
   closeOpenClawStateDatabaseForTest,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
-import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import {
+  createTestPluginApi,
+  createTestPluginServiceScheduler,
+} from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { resolvePinnedHostnameWithPolicy } from "openclaw/plugin-sdk/ssrf-runtime";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -189,10 +192,12 @@ describe("MCP Events callback and subscription lifecycle", () => {
         signal: new AbortController().signal,
         now: () => now,
         schedule: ({ id, mode, ...job }) => {
-          if (mode === "earliest") {
-            job.atMs = Math.min(job.atMs, schedules.get(id)?.atMs ?? Infinity);
-          }
-          schedules.set(id, job);
+          const requestedAtMs = "atMs" in job ? job.atMs : now + job.delayMs;
+          const atMs =
+            mode === "earliest"
+              ? Math.min(requestedAtMs, schedules.get(id)?.atMs ?? Infinity)
+              : requestedAtMs;
+          schedules.set(id, { atMs, run: job.run });
           return {
             cancel: () => {
               schedules.delete(id);
@@ -323,12 +328,15 @@ describe("MCP Events callback and subscription lifecycle", () => {
 
   it("registers a ready callback and reacts to Cron replacement/removal through its real hooks", async () => {
     current = undefined;
-    let registered: OpenClawPluginService | undefined;
+    let registered: OpenClawPluginServiceV2 | undefined;
     const hooks = vi.fn();
     const api = createTestPluginApi({
       id: "mcp-events",
       pluginConfig: deps.config,
       registerService: (service) => {
+        if (service.apiVersion !== 2) {
+          throw new Error("MCP Events requires versioned service scheduling");
+        }
         registered = service;
       },
       registerHttpRoute: (route) => {
@@ -349,11 +357,12 @@ describe("MCP Events callback and subscription lifecycle", () => {
       remove: async () => ({}),
       removeStaleJobFamily: async () => 0,
     };
-    const context: OpenClawPluginServiceContext = {
+    const scheduler = createTestPluginServiceScheduler();
+    const context: OpenClawPluginServiceContextV2 = {
       config: { plugins: { entries: { "mcp-events": { enabled: true, config: deps.config } } } },
       stateDir: directory,
       logger: deps.logger,
-      scheduler: deps.scheduler,
+      scheduler: { ...scheduler, now: deps.scheduler.now, schedule: deps.scheduler.schedule },
       getCron: () => cron,
       mcpEvents: {
         prepareSource: deps.prepareSource,
@@ -385,6 +394,7 @@ describe("MCP Events callback and subscription lifecycle", () => {
       expect(unsubscribed).toHaveLength(1);
     } finally {
       await registered.stop?.(context);
+      await scheduler.stop();
     }
   });
 

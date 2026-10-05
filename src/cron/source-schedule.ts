@@ -68,7 +68,7 @@ export function reconcileCronSourceIdentity(previous: CronJob, next: CronJob): v
   const identity = cronSourceIdentity(previous);
   const changed =
     cronSourceScheduleKey(previous.schedule) !== key ||
-    previous.enabled !== next.enabled ||
-    previous.state.autoDisabled !== next.state.autoDisabled;
+    (previous.enabled ?? true) !== (next.enabled ?? true) ||
+    Boolean(previous.state.autoDisabled) !== Boolean(next.state.autoDisabled);
   setCronSourceIdentity(next, changed || !identity ? createCronSourceIdentity() : identity);
 }

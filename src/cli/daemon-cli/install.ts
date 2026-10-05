@@ -1,7 +1,7 @@
-// Gateway service installer: writes config defaults, resolves credentials, and installs service definitions.
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { z } from "zod";
 import { SUPPORTED_NODE_VERSIONS } from "../../../node-version.mjs";
 import { resolveNodeStartupTlsEnvironment } from "../../bootstrap/node-startup-env.js";
 import { buildGatewayInstallPlan } from "../../commands/daemon-install-helpers.js";
@@ -61,9 +61,14 @@ import { defaultRuntime } from "../../runtime.js";
 import { createLazyPromise } from "../../shared/lazy-promise.js";
 import { formatCliCommand } from "../command-format.js";
 import { formatInvalidConfigPort, formatInvalidPortOption } from "../error-format.js";
+import { resolveRestoreServiceCli } from "./install-restore-cli.js";
 import { buildDaemonServiceSnapshot, installDaemonServiceAndEmit } from "./response.js";
 import { createDaemonInstallActionContext, resolveDaemonInstallBlockMessage } from "./shared.js";
 import type { DaemonInstallOptions } from "./types.js";
+
+const expectedRuntimePinSchema = z
+  .object({ revision: z.string(), definition: z.string().nullable() })
+  .strict();
 
 function resolveGatewayInstallBindMode(cfg: OpenClawConfig): GatewayBindMode {
   return cfg.gateway?.bind ?? defaultGatewayBindMode(cfg.gateway?.tailscale?.mode ?? "off");
@@ -89,13 +94,14 @@ function formatNoAuthNonLoopbackInstallBlock(params: {
       ? `gateway.bind=tailnet currently resolves to ${params.bindHost} but can later resolve to a Tailnet interface`
       : `gateway.bind=${params.bind} resolves to ${params.bindHost}`;
   const hints: string[] = [`${bindReason}, but gateway.auth.mode=none disables Gateway auth.`];
-  if (normalizeOptionalString(auth.token)) {
+  const configuredSecret = normalizeOptionalString(auth.token)
+    ? "token"
+    : normalizeOptionalString(auth.password)
+      ? "password"
+      : undefined;
+  if (configuredSecret) {
     hints.push(
-      `This config already has gateway.auth.token; run ${formatCliCommand("openclaw config set gateway.auth.mode token")} and then rerun ${formatCliCommand("openclaw gateway install --force")}.`,
-    );
-  } else if (normalizeOptionalString(auth.password)) {
-    hints.push(
-      `This config already has gateway.auth.password; run ${formatCliCommand("openclaw config set gateway.auth.mode password")} and then rerun ${formatCliCommand("openclaw gateway install --force")}.`,
+      `This config already has gateway.auth.${configuredSecret}; run ${formatCliCommand(`openclaw config set gateway.auth.mode ${configuredSecret}`)} and then rerun ${formatCliCommand("openclaw gateway install --force")}.`,
     );
   } else {
     hints.push(
@@ -213,6 +219,44 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
     fail(`Runtime pin inspection failed: ${String(error)}`);
     return;
   }
+  if (opts.expectedRuntimePin !== undefined) {
+    let expected;
+    try {
+      expected = expectedRuntimePinSchema.parse(JSON.parse(opts.expectedRuntimePin));
+    } catch {
+      fail("Invalid expected runtime pin snapshot.");
+      return;
+    }
+    if (
+      expected.revision !== pinSnapshot.revision ||
+      expected.definition !== (pinSnapshot.definition ?? null)
+    ) {
+      fail(
+        "Gateway service or runtime pin changed before installation. The newer selection was preserved; inspect it before retrying.",
+      );
+      return;
+    }
+  }
+  let restoreServiceCli: Parameters<typeof buildGatewayInstallPlan>[0]["serviceCli"];
+  let restoredRuntimePath: string | undefined;
+  if (opts.restoreServiceCli !== undefined) {
+    try {
+      ({ serviceCli: restoreServiceCli, runtimePath: restoredRuntimePath } =
+        await resolveRestoreServiceCli(opts.restoreServiceCli, opts, installEnv));
+    } catch (error) {
+      fail(error instanceof Error ? error.message : String(error));
+      return;
+    }
+  }
+  if (opts.expectedRuntimePin !== undefined) {
+    // This interop path defers startup preparation until custody and recovery inputs are valid.
+    const { ensureConfigReady } = await import("../program/config-guard.js");
+    await ensureConfigReady({
+      runtime: defaultRuntime,
+      commandPath: ["gateway", "install"],
+      suppressDoctorStdout: json,
+    });
+  }
   let pinnedRuntimePath = opts.runtimePath ?? (opts.runtime ? undefined : pinSnapshot.pin?.path);
   const effectiveServiceEnv = mergeGatewayServiceEnv(process.env, existingServiceCommand);
   const assertWritable = async () => {
@@ -293,7 +337,7 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
         installEnv,
       );
     }
-    runtimePath = wrapperPath ? undefined : pinnedRuntimePath;
+    runtimePath = wrapperPath ? undefined : (pinnedRuntimePath ?? restoredRuntimePath);
   } catch (error) {
     fail(
       `Invalid runtime pin: ${String(error)}; reinstall with an explicit --runtime or --runtime-path to replace the saved runtime pin.`,
@@ -379,6 +423,7 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
       runtimePath,
       pinnedRuntimePath,
       wrapperPath,
+      serviceCli: restoreServiceCli,
       existingCommand: existingServiceCommand,
       existingEnvironment: existingServiceEnv,
       existingEnvironmentValueSources: existingManagedCommand?.environmentValueSources,
@@ -470,6 +515,15 @@ export async function runDaemonInstall(opts: DaemonInstallOptions) {
       runtimePinUpdate: {
         expected: pinSnapshot,
         pin: pinnedRuntimePath ? { runtime, path: pinnedRuntimePath } : undefined,
+        ...(opts.expectedRuntimePin !== undefined
+          ? {
+              requireDefinitionMatch: true as const,
+              // Recovery replaces a failed service; definition and pin custody still fence changes.
+              ...(!restoreServiceCli && pinSnapshot.definition !== undefined
+                ? { requireRunning: true as const }
+                : {}),
+            }
+          : {}),
       },
       env: installEnv,
       stdout,

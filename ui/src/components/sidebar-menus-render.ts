@@ -52,6 +52,10 @@ import {
 } from "./sidebar-attention-dismissals.ts";
 import type { SidebarMenusController } from "./sidebar-menus-controller.ts";
 
+export { focusActiveAgentMenuItem } from "./app-sidebar-agent-menu.ts";
+export { renderSidebarPluginNavigationMenuForController } from "./app-sidebar-plugin-navigation-menu.ts";
+export { renderSidebarPeopleFilterMenuForController } from "./app-sidebar-people-filter-menu.ts";
+
 export function renderSidebarCustomizeMenuForController(controller: SidebarMenusController) {
   const { host } = controller;
   const position = controller.customizeMenuPosition;
@@ -78,7 +82,7 @@ export function renderSidebarCustomizeMenuForController(controller: SidebarMenus
       if (controller.customizeMenuPosition !== position) {
         return;
       }
-      controller.closeCustomizeMenu({ restoreFocus });
+      controller.closePositionedMenu("customize", { restoreFocus });
     },
     onToggleRoute: (routeId) =>
       toggleEntry(serializeSidebarEntry({ type: "route", route: routeId })),
@@ -90,7 +94,7 @@ export function renderSidebarCustomizeMenuForController(controller: SidebarMenus
         .reconciledSidebarZone()
         .sidebarEntries.filter((entry) => entry.startsWith("session:"));
       host.onUpdateSidebarEntries?.([...DEFAULT_SIDEBAR_ENTRIES, ...sessions]);
-      controller.closeCustomizeMenu({ restoreFocus: true });
+      controller.closePositionedMenu("customize", { restoreFocus: true });
     },
   });
 }
@@ -106,8 +110,8 @@ export function renderSidebarAgentMenuForController(controller: SidebarMenusCont
   return renderSidebarAgentMenu({
     position,
     basePath: host.basePath,
-    activeId,
-    activeName: normalizeAgentLabel(agent ?? { id: activeId }, identity),
+    activeId: agent ? activeId : "",
+    activeName: agent ? normalizeAgentLabel(agent, identity) : "",
     agents,
     identities,
     pinnedAgentIds: host.pinnedAgentIds,
@@ -129,7 +133,13 @@ export function renderSidebarAgentMenuForController(controller: SidebarMenusCont
     onPointerEnter: () => controller.handleAgentMenuPointerEnter(),
     onPointerLeave: () => controller.handleAgentMenuPointerLeave(),
     onAfterShow: () => controller.restoreFocusAfterAgentMenuHoverOpen(),
-    onSwitchAgent: (agentId) => host.switchChipAgent(agentId),
+    onSwitchAgent: (agentId) => {
+      if (host.sidebarAgentsMode === "roster") {
+        host.sidebarAgentsMode = "chip";
+        patchSettings({ sidebarAgentsMode: "chip" });
+      }
+      host.switchChipAgent(agentId);
+    },
     onAskCapabilities: (agentId) => host.askAgentCapabilities(agentId),
     onTabAway: () => trigger?.focus(),
     onClose: (restoreFocus) => {
@@ -191,7 +201,7 @@ export function renderSidebarIdentityMenuForController(controller: SidebarMenusC
       if (controller.identityMenuPosition !== position) {
         return;
       }
-      controller.closeIdentityMenu({ restoreFocus });
+      controller.closePositionedMenu("identity", { restoreFocus });
     },
     onNavigate: (routeId, options) => host.onNavigate?.(routeId, options),
     onPairMobile: () => host.onPairMobile?.(),
@@ -271,6 +281,7 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
           unread: batchRows ? allUnread : session.unread,
           hiddenFromInvolvingMe: session.hiddenFromInvolvingMe,
           archived: allArchived,
+          snoozedUntil: session.snoozedUntil ?? null,
           archiving: rows.some((row) => context?.sessions.archiveVisibility(row.key) === "pending"),
           category: batchRows ? sharedCategory : (session.category ?? null),
           icon: batchRows ? null : (session.icon ?? null),
@@ -291,6 +302,7 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
         .splitAllowed=${canSplitSessionView()}
         .forkDisabled=${host.sessionData.sessionsLoading || session.modelSelectionLocked}
         .forkFromLastCompleted=${session.gatewayHasActiveRun ?? session.hasActiveRun}
+        .snoozeAllowed=${true}
         .archiveAllowed=${archiveAllowed}
         .deleteAllowed=${deleteAllowed}
         .cloudWorkerStopAllowed=${cloudWorkerStopAllowed}
@@ -398,6 +410,16 @@ export function renderSidebarSessionMenuForController(controller: SidebarMenusCo
               break;
             case "new-group":
               void host.sessionOrganizer.createSessionGroup([session]);
+              break;
+            case "snooze":
+              void host.sessionOrganizer.snoozeSessionWithUndo(session, action.snoozedUntil);
+              break;
+            case "wake":
+              void host.sessionOrganizer.patchSession(
+                session,
+                { snoozedUntil: null },
+                { sessionScope: true },
+              );
               break;
             case "toggle-archived":
               if (session.archived) {
@@ -573,7 +595,7 @@ export function renderSidebarSessionSortMenuForController(controller: SidebarMen
       host.setSessionsEmptyGroupsMode(mode);
     },
     onOpenSessionSources: () => {
-      controller.closeSessionSortMenu();
+      controller.closePositionedMenu("sessionSort");
       host.onNavigate?.(sessionSources.routeId, {
         search: sessionSources.search,
         hash: sessionSources.hash,
@@ -583,7 +605,7 @@ export function renderSidebarSessionSortMenuForController(controller: SidebarMen
       if (controller.sessionSortMenuPosition !== position) {
         return;
       }
-      controller.closeSessionSortMenu({ restoreFocus });
+      controller.closePositionedMenu("sessionSort", { restoreFocus });
     },
   });
 }
@@ -607,24 +629,24 @@ export function renderSidebarCatalogViewMenuForController(controller: SidebarMen
     onViewChange: (view) => controller.setFilterMenuView(view),
     onGroupingChange: (grouping) => {
       host.setCatalogProjectGrouping(grouping);
-      controller.closeCatalogViewMenu({ restoreFocus: true });
+      controller.closePositionedMenu("catalogView", { restoreFocus: true });
     },
     onHide: () => {
       if (controller.catalogViewMenuPosition !== position) {
         return;
       }
       host.hideSessionCatalog(position.catalogId);
-      controller.closeCatalogViewMenu();
+      controller.closePositionedMenu("catalogView");
     },
     onOwnerFilterChange: (ownerId, involvingMe = false) => {
       host.setSessionOwnerFilter(ownerId, involvingMe);
-      controller.closeCatalogViewMenu({ restoreFocus: true });
+      controller.closePositionedMenu("catalogView", { restoreFocus: true });
     },
     onClose: (restoreFocus) => {
       if (controller.catalogViewMenuPosition !== position) {
         return;
       }
-      controller.closeCatalogViewMenu({ restoreFocus });
+      controller.closePositionedMenu("catalogView", { restoreFocus });
     },
   });
 }
@@ -647,10 +669,10 @@ export function renderSidebarMoreMenuForController(controller: SidebarMenusContr
       if (controller.moreMenuPosition !== position) {
         return;
       }
-      controller.closeMoreMenu({ restoreFocus });
+      controller.closePositionedMenu("more", { restoreFocus });
     },
     onNavigateRoute: (routeId) => {
-      controller.closeMoreMenu({ restoreFocus: true });
+      controller.closePositionedMenu("more", { restoreFocus: true });
       host.onNavigate?.(routeId);
     },
     onPreloadRoute: (routeId, event) => controller.preloadRoute(routeId, event),
