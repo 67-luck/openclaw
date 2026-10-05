@@ -29,9 +29,13 @@ vi.mock("./doctor-post-upgrade.js", () => ({
   runPostUpgradeProbes: mocks.runPostUpgradeProbes,
 }));
 
-vi.mock("../flows/doctor-health.js", () => ({
-  runDoctorHealthFlow: mocks.runDoctorHealthFlow,
-}));
+vi.mock("../flows/doctor-health.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../flows/doctor-health.js")>();
+  return {
+    ...actual,
+    runDoctorHealthFlow: mocks.runDoctorHealthFlow,
+  };
+});
 
 vi.mock("./doctor-session-sqlite.js", () => ({
   runDoctorSessionSqlite: mocks.runDoctorSessionSqlite,

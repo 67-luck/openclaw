@@ -9,9 +9,13 @@ const mocks = vi.hoisted(() => ({
   runDoctorHealthRepairs: vi.fn(),
 }));
 
-vi.mock("./doctor-repair-flow.js", () => ({
-  runDoctorHealthRepairs: mocks.runDoctorHealthRepairs,
-}));
+vi.mock("./doctor-repair-flow.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./doctor-repair-flow.js")>();
+  return {
+    ...actual,
+    runDoctorHealthRepairs: mocks.runDoctorHealthRepairs,
+  };
+});
 
 describe("Doctor health contribution repair evidence", () => {
   beforeEach(() => {

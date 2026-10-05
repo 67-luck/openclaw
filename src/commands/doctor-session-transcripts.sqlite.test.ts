@@ -47,9 +47,13 @@ vi.mock("./doctor-session-delivery-state.js", async (importOriginal) => {
   };
 });
 
-vi.mock("./doctor-session-exec-policy.js", () => ({
-  repairLegacySessionExecPolicy,
-}));
+vi.mock("./doctor-session-exec-policy.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./doctor-session-exec-policy.js")>();
+  return {
+    ...actual,
+    repairLegacySessionExecPolicy,
+  };
+});
 
 vi.mock("./doctor-session-canonical-keys.js", () => ({
   repairCanonicalSessionKeys,
