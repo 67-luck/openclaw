@@ -107,7 +107,7 @@ export async function executeMutableUpdate(
     assertBoundChildCurrent,
     onStateHandoff,
     admitExecutor,
-  } = createUpdateCommandExecutionGuards(opts, params.root);
+  } = params.executionGuards ?? createUpdateCommandExecutionGuards(opts, params.root);
   let retentionInstallTarget = params.packageInstallTarget;
   const prepareMutableUpdate = async (env?: NodeJS.ProcessEnv, activationTimeoutMs?: number) => {
     assertExecutionCurrent();

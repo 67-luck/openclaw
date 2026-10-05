@@ -509,8 +509,10 @@ async function runResolvedUpdate(
     inspectActivatedUpdateState,
     restoreFailedUpdateDatabases,
     createUpdateCommandFinalizationFence,
+    createUpdateCommandExecutionGuards,
   } = await import("./update-execution.runtime.js");
 
+  const executionGuards = createUpdateCommandExecutionGuards(opts, root);
   const progress = createUpdateRunProgress(run, presentation.progress);
   let preUpdatePluginInstallRecords: Awaited<ReturnType<typeof prepareMutableUpdateRuntime>> = {};
   let mutableUpdatePrepared = false;
@@ -580,6 +582,7 @@ async function runResolvedUpdate(
     managedServiceRoot,
     invocationCwd,
     recoveryState,
+    executionGuards,
     prepareMutableUpdate,
     onActivation: () => {
       presentation.suspend();

@@ -5,6 +5,7 @@ import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import type { createUpdateProgress } from "./progress.js";
 import type { UpdateCommandOptions } from "./shared.js";
+import type { createUpdateCommandExecutionGuards } from "./update-command-execution-guards.js";
 import type { StagedPackageInstallUpdate } from "./update-command-package.js";
 import type { ManagedServiceRootRedirect } from "./update-command-service-context-types.js";
 import type { UpdateCommandRecoveryState } from "./update-command-service.js";
@@ -37,6 +38,7 @@ export type MutableUpdateExecutionParams = {
   invocationCwd?: string;
   legacyConfigPlan?: LegacyConfigUpdatePlan;
   recoveryState: UpdateCommandRecoveryState;
+  executionGuards?: ReturnType<typeof createUpdateCommandExecutionGuards>;
   prepareMutableUpdate: (
     env: NodeJS.ProcessEnv | undefined,
     activationTimeoutMs: number | undefined,
