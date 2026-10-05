@@ -11,6 +11,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/tools/sessions-tool.test.ts",
   "src/agents/embedded-agent-runner/compaction-successor.test.ts",
   "src/agents/embedded-agent-runner/run.harness-auth-failover.test.ts",
+  "src/agents/embedded-agent-runner/run.plugin-runtime-refresh.integration.test.ts",
+  "src/agents/embedded-agent-runner/run.terminal-timeout-delivery.integration.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-execution-phase.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-native-provider-authority.test.ts",
   "src/agents/embedded-agent-runner/run/lane-controller.writer-claim.test.ts",
