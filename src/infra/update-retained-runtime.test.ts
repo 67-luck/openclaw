@@ -9,6 +9,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { flushLogger, setLoggerOverride } from "../logging/logger.js";
 import { loggingState } from "../logging/state.js";
+import {
+  privatePackageActivationIdentity,
+  resolvePackageActivationAnchor,
+  resolvePackageActivationControl,
+} from "./package-update-activation-paths.js";
 import { captureRuntimeWorkerSource } from "./runtime-worker-generation.js";
 import { resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
 import { openSqliteWorkerStore, type SqliteWorkerStore } from "./sqlite-worker-store.js";
@@ -145,11 +150,14 @@ export function createSqliteWorkerBackend(_input, { databasePath }) {
 
 async function fixture(
   base: string,
-  layout: "npm" | "pnpm" | "pnpm-workspace" | "git" | "git-linked",
+  layout: "npm" | "npm-global" | "pnpm" | "pnpm-workspace" | "git" | "git-linked",
 ) {
-  const root = layout.startsWith("pnpm")
-    ? path.join(base, "global/node_modules/.pnpm/openclaw@1/node_modules/openclaw")
-    : path.join(base, "openclaw");
+  const root =
+    layout === "npm-global"
+      ? path.join(base, "global/node_modules/openclaw")
+      : layout.startsWith("pnpm")
+        ? path.join(base, "global/node_modules/.pnpm/openclaw@1/node_modules/openclaw")
+        : path.join(base, "openclaw");
   await mkdir(path.join(root, "dist/state"), { recursive: true });
   await writeFile(
     path.join(root, "package.json"),
@@ -166,7 +174,9 @@ async function fixture(
       ? path.join(root, "packages/fixture")
       : layout === "pnpm"
         ? path.join(base, "global/node_modules/.pnpm/fixture@1/node_modules/fixture")
-        : path.join(root, "node_modules/fixture");
+        : layout === "npm-global"
+          ? path.join(base, "global/node_modules/fixture")
+          : path.join(root, "node_modules/fixture");
   await mkdir(dependency, { recursive: true });
   await writeFile(
     path.join(dependency, "package.json"),
@@ -207,6 +217,29 @@ async function fixture(
   await writeFile(path.join(root, ".git/private"), "unrelated checkout data");
   return root;
 }
+
+it("keeps npm-global activation control out of the retained runtime", async () => {
+  const base = tempDirs.make("openclaw-retained-global-control-");
+  const root = await fixture(base, "npm-global");
+  const globalRoot = path.dirname(root);
+  const anchor = resolvePackageActivationAnchor(root);
+  const control = resolvePackageActivationControl(anchor);
+  const journal = path.join(control, "operation.sqlite");
+  await mkdir(control, { mode: 0o700 });
+  await writeFile(journal, "mutable control", { mode: 0o600 });
+
+  const moduleUrl = pathToFileURL(path.join(root, "dist/updater.mjs")).href;
+  await withRetainedUpdateRuntime(moduleUrl, async (retain) => {
+    await retain({
+      mutationRoots: [root],
+      installTarget: { manager: "npm", command: "npm", globalRoot, packageRoot: root },
+      timeoutMs: 30_000,
+      assertCurrent() {},
+    });
+    expect((await stat(journal)).nlink).toBe(1);
+    expect(() => privatePackageActivationIdentity(journal, false)).not.toThrow();
+  });
+});
 
 it.each([".git", "extensions/retired", "extensions/linked-residue"])(
   "refuses unrelated host files reached through a hoist link to %s",
