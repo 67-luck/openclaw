@@ -204,7 +204,11 @@ async function createRecoveryFixture(state: OpenClawTestState, options: FixtureO
       expect(writerFence).toBeUndefined();
     } else {
       expect(writerFence?.expectedWriterRunId).toBe(runId);
-      runParams.sessionTarget = { ...target, ...writerFence };
+      runParams.sessionTarget = {
+        ...target,
+        expectedLifecycleRevision: writerFence?.expectedLifecycleRevision,
+        expectedWriterRunId: writerFence?.expectedWriterRunId,
+      };
     }
     const sessionPromptState = await createEmbeddedRunSessionPromptState({
       runParams,
@@ -222,7 +226,14 @@ async function createRecoveryFixture(state: OpenClawTestState, options: FixtureO
     };
     const openWriter = async () =>
       memoryManager ??
-      (await SessionManager.openAsync({ ...target, ...writerFence }, state.workspaceDir));
+      (await SessionManager.openAsync(
+        {
+          ...target,
+          expectedLifecycleRevision: writerFence?.expectedLifecycleRevision,
+          expectedWriterRunId: writerFence?.expectedWriterRunId,
+        },
+        state.workspaceDir,
+      ));
     const commitCompaction = async () => {
       await (
         await openWriter()
