@@ -50,6 +50,7 @@ describe("developer source observation", () => {
     const rereadStarted = createDeferredCore();
     const releaseReread = createDeferredCore();
     let holdReread = true;
+    let beforePackageRead: (() => Promise<void>) | undefined;
     const targetReady = createDeferredCore<observation.WatchSubscription>();
     let invalidate: observation.WatchOptions["onInvalidate"];
     const original = observation.watch;
@@ -61,6 +62,9 @@ describe("developer source observation", () => {
           holdReread = false;
           rereadStarted.resolve();
           await releaseReread.promise;
+        }
+        if (path.resolve(authority.rootReal, relative) === path.join(cwd, "package.json")) {
+          await beforePackageRead?.();
         }
         return await open(relative, settings);
       });
@@ -152,12 +156,33 @@ describe("developer source observation", () => {
     onChange.mockClear();
     changed = createDeferredCore<string | undefined>();
     reads.length = 0;
-    await fs.writeFile(path.join(cwd, "package.json"), "{}");
-    invalidate!({ reason: "overflow" });
-    await repository.reconcile();
-    expect(onChange).not.toHaveBeenCalled();
-    await fs.writeFile(path.join(cwd, "package.json"), '{"private":true}');
-    invalidate!({ reason: "overflow" });
+    const unchangedRead = createDeferredCore();
+    const releaseUnchangedRead = createDeferredCore();
+    const nextRead = createDeferredCore();
+    const releaseNextRead = createDeferredCore();
+    beforePackageRead = async () => {
+      beforePackageRead = async () => {
+        nextRead.resolve();
+        await releaseNextRead.promise;
+      };
+      unchangedRead.resolve();
+      await releaseUnchangedRead.promise;
+    };
+    try {
+      invalidate!({ reason: "overflow" });
+      await unchangedRead.promise;
+      await repository.reconcile();
+      invalidate!({ reason: "overflow" });
+      releaseUnchangedRead.resolve();
+      // The next source pass starts only after the unchanged pass has published.
+      await nextRead.promise;
+      expect(onChange).not.toHaveBeenCalled();
+      await fs.writeFile(path.join(cwd, "package.json"), '{"private":true}');
+    } finally {
+      beforePackageRead = undefined;
+      releaseUnchangedRead.resolve();
+      releaseNextRead.resolve();
+    }
     await changed.promise;
     expect(onChange).toHaveBeenCalledExactlyOnceWith(path.join(cwd, "package.json"));
     expect(reads).toContain(path.join(cwd, "package.json"));
