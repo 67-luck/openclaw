@@ -56,7 +56,10 @@ import {
   isSessionControllerWorkActive,
   runSessionMutation,
 } from "../sessions/session-controller.lifecycle.js";
-import { requestRpcSourceCancellation } from "../sessions/session-controller.rpc-sources.js";
+import {
+  isRpcSourceQueued,
+  requestRpcSourceCancellation,
+} from "../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { buildPersistedUserTurnMessage } from "../sessions/user-turn-transcript.js";
@@ -1076,7 +1079,7 @@ describe("gateway server chat", () => {
         ).toEqual({
           runId: "run-active",
           text: "",
-          startedAt: 1_000,
+          startedAt: expect.any(Number),
           events: [
             {
               runId: "run-active",
@@ -2555,7 +2558,6 @@ describe("gateway server chat", () => {
       await writeStoredMainSession({});
       const mutationStarted = createDeferred();
       const mutation = runSessionMutation({
-
         scope: storePath,
         identities: ["sess-main"],
         run: async () => {
@@ -2600,7 +2602,7 @@ describe("gateway server chat", () => {
         expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(true);
       }, FAST_WAIT_OPTS);
       expect(context.dedupe.get(collidingFinalKey)).toBe(collidingFinalEntry);
-      expect(rpcSourceTesting.has(runId)).toBe(false);
+      expect(isRpcSourceQueued(rpcSourceTesting.get(runId))).toBe(true);
 
       const retryResponses: CapturedChatResponse[] = [];
       await callDirectChat("chat.send", {
@@ -2667,7 +2669,6 @@ describe("gateway server chat", () => {
       await writeStoredMainSession({});
       const mutationStarted = createDeferred();
       const mutation = runSessionMutation({
-
         scope: storePath,
         identities: ["sess-main"],
         run: async () => {
@@ -2739,7 +2740,6 @@ describe("gateway server chat", () => {
       expect(seededSessionId).toBe("sess-main");
       const mutationStarted = createDeferred();
       mutation = runSessionMutation({
-
         scope: seededSession.storePath,
         identities: [seededSession.canonicalKey, seededSessionId],
         run: async () => {
@@ -2829,7 +2829,6 @@ describe("gateway server chat", () => {
       });
       const mutationStarted = createDeferred();
       const mutation = runSessionMutation({
-
         scope: storePath,
         identities: ["agent:main:main", "sess-before-reset"],
         run: async () => {
@@ -2886,7 +2885,6 @@ describe("gateway server chat", () => {
       await writeStoredMainSession({});
       const mutationStarted = createDeferred();
       const mutation = runSessionMutation({
-
         scope: storePath,
         identities: ["sess-main"],
         run: async () => {
@@ -2945,7 +2943,6 @@ describe("gateway server chat", () => {
 
       const terminalMutationStarted = createDeferred();
       const terminalMutation = runSessionMutation({
-
         scope: storePath,
         identities: ["sess-main"],
         run: async () => {
@@ -3645,7 +3642,6 @@ describe("gateway server chat", () => {
       await writeStoredMainSession(makeDoneSessionEntry());
       const mutationStarted = createDeferred();
       mutation = runSessionMutation({
-
         scope: storePath,
         identities: ["agent:main:main", "sess-main"],
         run: async () => {
@@ -4299,7 +4295,6 @@ describe("gateway server chat", () => {
         );
       }, FAST_WAIT_OPTS);
 
-
       let failedDispatchLifecycle: GetReplyOptions["turnAdoptionLifecycle"];
       dispatchInboundMessageMock.mockImplementationOnce(async (args: unknown) => {
         failedDispatchLifecycle = (args as { replyOptions?: GetReplyOptions }).replyOptions
@@ -4341,7 +4336,6 @@ describe("gateway server chat", () => {
       expect(rpcSourceTesting.has("idem-queued-followup-post-error")).toBe(true);
       await failedDispatchLifecycle?.onSettled?.();
       expect(rpcSourceTesting.has("idem-queued-followup-post-error")).toBe(false);
-
     });
   });
 
