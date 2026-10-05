@@ -241,6 +241,9 @@ export async function prepareAgentContentPhase(params: {
       media = parsed.media;
       offloadedRefs = parsed.offloadedRefs;
     } catch (err) {
+      // A retired request owns its terminal response even when media parsing
+      // fails while the captured input is being cancelled.
+      params.assertAdmissionCurrent?.();
       if (err instanceof AgentRequestReservationEndedError) {
         throw err;
       }
