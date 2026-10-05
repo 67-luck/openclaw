@@ -707,9 +707,7 @@ describe("agentCommand embedded maintenance", () => {
         deliver: true,
         abortSignal: abortController.signal,
       }),
-    ).rejects.toThrow(
-      restart ? "agent run aborted for restart" : "Agent run belongs to a stale gateway lifecycle",
-    );
+    ).rejects.toThrow("agent run aborted for restart");
 
     expect(state.deliverAgentCommandResultMock).not.toHaveBeenCalled();
     expect(findStoredSessionEntry(sessionKey)).toMatchObject({
