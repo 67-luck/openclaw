@@ -86,7 +86,7 @@ async function agentCommandInternal(
   watchSkills = false,
 ) {
   let maintenanceRequest: SessionMaintenanceRequest | undefined;
-  const result = await withSessionTurn(
+  return await withSessionTurn(
     {
       sessionKey: prepared.sessionKey,
       sessionId: prepared.sessionId,
@@ -109,11 +109,11 @@ async function agentCommandInternal(
         },
       );
     },
-  );
-  if (maintenanceRequest) {
-    scheduleSessionMaintenance(maintenanceRequest);
-  }
-  return result;
+  ).finally(() => {
+    if (maintenanceRequest) {
+      scheduleSessionMaintenance(maintenanceRequest);
+    }
+  });
 }
 
 async function agentCommandInternalOwned(
@@ -576,6 +576,9 @@ async function agentCommandInternalOwned(
       return finalized.deliveryResult;
     });
   } finally {
+    if (maintenanceRequest) {
+      retainMaintenanceRequest?.(maintenanceRequest);
+    }
     await finishAgentCommandCleanup({
       prepared,
       sessionEntry,
@@ -591,9 +594,6 @@ async function agentCommandInternalOwned(
       cleanupInternalModelRunTargets,
       releaseForeground,
     });
-    if (maintenanceRequest) {
-      retainMaintenanceRequest?.(maintenanceRequest);
-    }
   }
 }
 
