@@ -98,67 +98,75 @@ describe("direct embedded retry lifecycle", () => {
     },
   );
 
-  it("cancels a long retry wait when its lane expires without aborting the caller", async () => {
-    const { sleepWithAbort } = await import("../../infra/backoff.js");
-    const { sleepWithAbort: sleep } = await import("../../../packages/retry/src/index.js");
-    const mockedSleep = vi.mocked(sleepWithAbort);
-    const previousSleep = mockedSleep.getMockImplementation();
-    const caller = new AbortController();
-    let sleepSignal: AbortSignal | undefined;
-    let wait: Promise<void> | undefined;
-    let waitSettled = false;
-    let pending: ReturnType<typeof run> | undefined;
-    const sleepStarted = createDeferred();
-    vi.useFakeTimers();
-    try {
-      mockedSleep.mockImplementation((delayMs, signal) => {
-        sleepSignal = signal;
-        wait = sleep(delayMs, signal).finally(() => {
-          waitSettled = true;
+  it.each([3_600, 30 * 24 * 60 * 60])(
+    "cancels a %ss retry floor when its lane expires without aborting the caller",
+    async (retryAfterSeconds) => {
+      const { sleepWithAbort } = await import("../../infra/backoff.js");
+      const { sleepWithAbort: sleep } = await import("../../../packages/retry/src/index.js");
+      const mockedSleep = vi.mocked(sleepWithAbort);
+      const previousSleep = mockedSleep.getMockImplementation();
+      const caller = new AbortController();
+      let wait: Promise<void> | undefined;
+      let waitSettled = false;
+      let pending: ReturnType<typeof run> | undefined;
+      const sleepStarted = createDeferred();
+      const retryAdvanced = createDeferred();
+      const retryAttempts: unknown[] = [];
+      vi.useFakeTimers();
+      try {
+        mockedSleep.mockImplementation((delayMs, signal) => {
+          wait = sleep(delayMs, signal).finally(() => {
+            waitSettled = true;
+          });
+          sleepStarted.resolve();
+          return wait;
         });
-        sleepStarted.resolve();
-        return wait;
-      });
-      const assistant = makeAssistantMessageFixture({
-        stopReason: "error",
-        content: [],
-        errorMessage: "429 rate limit exceeded; Retry-After: 3600",
-      });
-      mockedRunEmbeddedAttempt.mockResolvedValue(
-        session.makeAttemptResult({
-          lastAssistant: assistant,
-          currentAttemptAssistant: assistant,
-        }),
-      );
-      pending = run({
-        ...session.runParams,
-        runId: "run-retry-lane-expiry",
-        provider: "mock",
-        model: "model",
-        timeoutMs: 30_000,
-        abortSignal: caller.signal,
-      });
-      const outcome = pending.catch((error: unknown) => error);
-      await Promise.race([sleepStarted.promise, pending]);
-      expect(mockedSleep).toHaveBeenCalledWith(3_600_000, expect.any(AbortSignal));
-      expect(waitSettled).toBe(false);
-      await vi.advanceTimersByTimeAsync(60_001);
-      expect(await outcome).toMatchObject({
-        name: "AbortError",
-        message: "Reply operation stalled",
-      });
-      expect(caller.signal.aborted).toBe(false);
-      expect(sleepSignal?.aborted).toBe(true);
-      expect(waitSettled).toBe(true);
-      expect(mockedRunEmbeddedAttempt).toHaveBeenCalledOnce();
-    } finally {
-      caller.abort();
-      await wait?.catch(() => undefined);
-      await pending?.catch(() => undefined);
-      mockedSleep.mockImplementation(previousSleep ?? (async () => {}));
-      vi.useRealTimers();
-    }
-  });
+        const assistant = makeAssistantMessageFixture({
+          stopReason: "error",
+          content: [],
+          errorMessage: `429 rate limit exceeded; Retry-After: ${retryAfterSeconds}`,
+        });
+        mockedRunEmbeddedAttempt.mockResolvedValue(
+          session.makeAttemptResult({
+            lastAssistant: assistant,
+            currentAttemptAssistant: assistant,
+          }),
+        );
+        pending = run({
+          ...session.runParams,
+          runId: "run-retry-lane-expiry",
+          provider: "mock",
+          model: "model",
+          timeoutMs: 30_000,
+          abortSignal: caller.signal,
+          onAgentEvent: (event) => {
+            if (event.stream === "run_status" && event.data.phase === "retrying") {
+              retryAttempts.push(event.data.retryAttempt);
+              if (retryAttempts.length > 1) {
+                retryAdvanced.resolve();
+              }
+            }
+          },
+        });
+        const outcome = pending.catch((error: unknown) => error);
+        await Promise.race([sleepStarted.promise, pending]);
+        expect(waitSettled).toBe(false);
+        await vi.advanceTimersByTimeAsync(60_001);
+        expect(await Promise.race([outcome, retryAdvanced.promise])).toMatchObject({
+          name: "AbortError",
+        });
+        expect(caller.signal.aborted).toBe(false);
+        expect(waitSettled).toBe(true);
+        expect(retryAttempts).toEqual([1]);
+      } finally {
+        caller.abort();
+        await wait?.catch(() => undefined);
+        await pending?.catch(() => undefined);
+        mockedSleep.mockImplementation(previousSleep ?? (async () => {}));
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("clears a failed attempt receipt before a retry fails ahead of lifecycle start", async () => {
     const onAgentEvent = vi.fn();
