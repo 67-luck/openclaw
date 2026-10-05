@@ -6,7 +6,7 @@ import type { GitHubPresentationHost } from "./presentation-host.js";
 
 type CronJob = Static<typeof CronJobSchema>;
 type CiAutomationOption = "autoFix" | "autoMerge" | "autoArchive";
-export type ChatCiAutomationProps = {
+type ChatCiAutomationProps = {
   options: Record<CiAutomationOption, boolean>;
   jobs?: Partial<Record<CiAutomationOption, CronJob>>;
   basePath?: string;
