@@ -2,6 +2,7 @@ import { clearSessionQueues } from "../auto-reply/reply/queue/cleanup.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
 import {
+  captureSessionTarget,
   interruptSessionControllerEffects,
   runSessionMutation,
   SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
@@ -45,6 +46,13 @@ export function createGatewayWorkerPlacementMoveBarrier(params: {
       exactRead: true,
     });
     const lifecycleIdentities = [sessionKey, target.canonicalKey, ...target.storeKeys, sessionId];
+    const controllerTarget = captureSessionTarget({
+      storeScope: target.storePath,
+      sessionKey: target.canonicalKey,
+      aliases: lifecycleIdentities,
+      agentId,
+      incarnation: sessionId,
+    });
     let begun: Awaited<ReturnType<typeof begin>> | undefined;
     return await runSessionMutation({
       scope: target.storePath,
@@ -70,7 +78,7 @@ export function createGatewayWorkerPlacementMoveBarrier(params: {
             authorize?.();
           }
         });
-        clearSessionQueues(lifecycleIdentities);
+        clearSessionQueues(lifecycleIdentities, controllerTarget);
         params.revokeSessionAuthority({ sessionId, sessionKeys: lifecycleIdentities });
         if (sourceDisposition === "abandon") {
           // Explicit abandonment revokes the old owner locally; its unreachable

@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { createQueueTestRun } from "../auto-reply/reply/queue.test-helpers.js";
+import { enqueueFollowupRun } from "../auto-reply/reply/queue/enqueue.js";
+import { clearFollowupQueue, getExistingFollowupQueue } from "../auto-reply/reply/queue/state.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { getWorkerPlacementStartupMocks } from "./server-worker-placement-startup.test-harness.js";
 
@@ -124,14 +127,34 @@ describe("worker placement move destination", () => {
           workspace: { kind: "local", path: "/gateway/research" },
         });
         const effects: string[] = [];
+        const mainStorePath = "/tmp/openclaw-worker-placement-main.sqlite";
         const mainAdmission = await beginSessionEffect({
-          scope: "/tmp/openclaw-worker-placement-main.sqlite",
+          scope: mainStorePath,
           identities: [sessionKey, "main-global"],
           assertAllowed: () => {},
           onInterrupt: () => {
             effects.push("main interrupt");
           },
         });
+        const mainFollowup = createQueueTestRun({ prompt: "keep main follow-up" });
+        mainFollowup.run = {
+          ...mainFollowup.run,
+          agentId: "main",
+          sessionId: "main-global",
+          config: { session: { store: mainStorePath } },
+        };
+        enqueueFollowupRun(
+          sessionKey,
+          mainFollowup,
+          { mode: "collect", debounceMs: 0, cap: 20, dropPolicy: "summarize" },
+          "none",
+          undefined,
+          false,
+        );
+        const mainQueue = getExistingFollowupQueue(
+          sessionKey,
+          mainFollowup.controllerInput!.target,
+        );
         let releaseAdmission = () => {};
         const admission = await beginSessionEffect({
           scope: target.storePath,
@@ -194,7 +217,11 @@ describe("worker placement move destination", () => {
           ]);
           expect(mainAdmission.isActive()).toBe(true);
           expect(admission.isActive()).toBe(false);
+          expect(mainQueue?.items.map((item) => item.prompt)).toEqual(["keep main follow-up"]);
         } finally {
+          if (mainQueue) {
+            clearFollowupQueue(sessionKey, mainQueue);
+          }
           admission.release();
           mainAdmission.release();
         }
