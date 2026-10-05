@@ -218,7 +218,15 @@ export async function reconcileDurableSubagentKillIntent(params: {
           (!capture.inputs.length && !capture.operations.length && killIntent.sessionId && active
             ? runtime.abortEmbeddedAgentRun(killIntent.sessionId, target)
             : false);
-        await Promise.all(capture.queuedInputs.map((input) => input.settlement.promise));
+        const queuedInputsSettled = await waitForSessionControllerSettlement(
+          Promise.all(capture.queuedInputs.map((input) => input.settlement.promise)).then(
+            () => undefined,
+          ),
+          SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+        );
+        if (!queuedInputsSettled) {
+          throw new Error("Durable subagent kill queued input cleanup exceeded its drain deadline");
+        }
         if (!ownsSessionIncarnation()) {
           return await completeKill(true);
         }

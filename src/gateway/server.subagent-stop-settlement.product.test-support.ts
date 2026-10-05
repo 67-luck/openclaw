@@ -35,13 +35,14 @@ export const completedEmbeddedRun: EmbeddedAgentRunResult = {
 };
 
 const proxyUser = "subagent-stop-administrator@example.test";
-const proxyHeaders = {
+export const subagentStopProxyHeaders = {
   "x-forwarded-for": "203.0.113.81",
   "x-forwarded-proto": "https",
   "x-forwarded-user": proxyUser,
 };
 
-function buildConfig(
+/** Builds the isolated HTTPS Gateway configuration shared by public subagent Stop proofs. */
+export function buildSubagentStopConfig(
   workspace: string,
   tls: { certPath: string; keyPath: string },
 ): OpenClawConfig {
@@ -152,7 +153,8 @@ async function spawnChild(params: EmbeddedRunParams) {
   return result.details as SpawnReceipt;
 }
 
-function postKill(port: number, sessionKey: string) {
+/** Sends the administrator HTTPS request used by the public subagent Stop endpoint. */
+export function postSubagentKill(port: number, sessionKey: string) {
   return new Promise<KillResponse>((resolve, reject) => {
     const outgoing = request(
       {
@@ -161,7 +163,10 @@ function postKill(port: number, sessionKey: string) {
         path: `/sessions/${encodeURIComponent(sessionKey)}/kill`,
         method: "POST",
         rejectUnauthorized: false,
-        headers: { ...proxyHeaders, "x-openclaw-scopes": "operator.admin" },
+        headers: {
+          ...subagentStopProxyHeaders,
+          "x-openclaw-scopes": "operator.admin",
+        },
       },
       (response) => {
         const chunks: Buffer[] = [];
@@ -186,7 +191,7 @@ export async function createNaturalSubagentStopHarness(params: {
 }) {
   const state = await createOpenClawTestState({ label: params.label });
   setUserProfileRole(ensureProfileForEmail(proxyUser).id, "administrator");
-  const cfg = buildConfig(state.workspaceDir, {
+  const cfg = buildSubagentStopConfig(state.workspaceDir, {
     certPath: await state.writeText("tls/cert.pem", TEST_TLS_CERT_PEM),
     keyPath: await state.writeText("tls/key.pem", TEST_TLS_KEY_PEM),
   });
@@ -209,7 +214,7 @@ export async function createNaturalSubagentStopHarness(params: {
         cfg,
         configPath: state.configPath,
         auth: cfg.gateway?.auth,
-        edgeAuthHeaders: proxyHeaders,
+        edgeAuthHeaders: subagentStopProxyHeaders,
         secure: true,
         tlsFingerprint: new X509Certificate(TEST_TLS_CERT_PEM).fingerprint256,
         clientName: GATEWAY_CLIENT_NAMES.CONTROL_UI,
@@ -238,7 +243,10 @@ export async function createNaturalSubagentStopHarness(params: {
       return await spawned.promise;
     },
     stop(sessionKey: string) {
-      return postKill(expectDefined(gateway, "started natural subagent Gateway").port, sessionKey);
+      return postSubagentKill(
+        expectDefined(gateway, "started natural subagent Gateway").port,
+        sessionKey,
+      );
     },
     disconnect: () => gateway && disconnectGatewayClient(gateway.client),
     close: () => gateway?.server.close({ reason: `${params.label} complete` }),

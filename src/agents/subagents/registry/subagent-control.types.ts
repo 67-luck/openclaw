@@ -23,6 +23,17 @@ type SubagentTerminalState = {
 export type SubagentKillTargetState =
   | { state: "finalizing" }
   | { state: "terminal"; task: SubagentTerminalState };
+
+/** Recorded mutation outcome shared by kill admission and durable settlement. */
+export type SubagentKillMutationResult = {
+  killed: boolean;
+  superseded?: boolean;
+  declined?: true;
+  targetState?: SubagentKillTargetState;
+  error?: string;
+  completedCleanupError?: string;
+};
+
 export type SubagentAdminKillResult =
   | { found: false; killed: false }
   | {
