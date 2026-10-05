@@ -1632,12 +1632,10 @@ src/auto-reply/reply/get-reply-fast-path.ts	1
 src/auto-reply/reply/get-reply-run-execute.ts	3
 src/auto-reply/reply/inbound-context.ts	8
 src/auto-reply/reply/mentions.ts	1
-src/auto-reply/reply/queue/drain.ts	1
 src/auto-reply/reply/queue/enqueue.ts	1
 src/auto-reply/reply/queue/settings.ts	1
 src/auto-reply/reply/reply-config-runtime-mode.ts	2
 src/auto-reply/reply/reply-operation-run-state.ts	1
-src/auto-reply/reply/reply-run-registry.registry.ts	1
 src/auto-reply/reply/reply-threading.ts	2
 src/auto-reply/reply/reply-timing-tracker.ts	2
 src/auto-reply/reply/restart-recovery-claim.ts	2
@@ -2375,7 +2373,6 @@ src/llm/utils/oauth/openai-chatgpt.ts	2
 src/logging/config.ts	2
 src/logging/console.ts	4
 src/logging/diagnostic-run-activity.ts	1
-src/logging/diagnostic-session-recovery-coordinator.ts	1
 src/logging/diagnostic-stability-bundle.ts	3
 src/logging/diagnostic-stability.ts	2
 src/logging/diagnostic-support-redaction.ts	1
@@ -2660,7 +2657,6 @@ src/security/installed-plugin-dirs.ts	1
 src/security/safe-regex.ts	1
 src/sessions/input-provenance.ts	3
 src/sessions/session-key-utils.ts	1
-src/sessions/session-lifecycle-admission.ts	1
 src/sessions/session-upstream-monitor.ts	2
 src/sessions/user-turn-transcript-runtime-context.ts	2
 src/sessions/user-turn-transcript.ts	4
