@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { installSessionPlacementAdmissionProvider } from "../../agents/session-placement-admission.js";
+import type { SessionPlacementTurnParams } from "../../agents/session-placement-admission.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { SpawnResult } from "../../process/exec.js";
@@ -189,6 +190,7 @@ describe("worker turn launcher claim admission", () => {
     ).rejects.toThrow("already has an active turn claim");
     expect(waitForRelease).not.toHaveBeenCalled();
 
+    const replacementTurn: SessionPlacementTurnParams = turn("next-run");
     const replacement = provider.executeTurn(
       {
         sessionId: SESSION_ID,
@@ -196,12 +198,15 @@ describe("worker turn launcher claim admission", () => {
         agentId: "main",
         runId: "next-run",
       },
-      turn("next-run"),
+      replacementTurn,
       async () => ({ meta: { durationMs: 1 } }),
     );
     void replacement.catch(() => undefined);
     await vi.waitFor(() => expect(waitForRelease).toHaveBeenCalledOnce());
-    expect(waitForRelease).toHaveBeenCalledWith(SESSION_ID, {});
+    expect(replacementTurn.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(waitForRelease).toHaveBeenCalledWith(SESSION_ID, {
+      signal: replacementTurn.abortSignal,
+    });
     expect(placements.get(SESSION_ID)?.turnClaim?.runId).toBe(priorClaim.runId);
 
     await placements.updateWorkspaceBaseManifest({ claim: priorClaim, manifestRef: MANIFEST_REF });
@@ -323,6 +328,7 @@ describe("worker turn launcher claim admission", () => {
       placements,
     });
 
+    const replacementTurn: SessionPlacementTurnParams = turn("next-remote-run");
     const replacement = provider.executeTurn(
       {
         sessionId: SESSION_ID,
@@ -330,12 +336,15 @@ describe("worker turn launcher claim admission", () => {
         agentId: "main",
         runId: "next-remote-run",
       },
-      turn("next-remote-run"),
+      replacementTurn,
       async () => ({ meta: { durationMs: 1 } }),
     );
     void replacement.catch(() => undefined);
     await vi.waitFor(() => expect(waitForRelease).toHaveBeenCalledOnce());
-    expect(waitForRelease).toHaveBeenCalledWith(SESSION_ID, {});
+    expect(replacementTurn.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(waitForRelease).toHaveBeenCalledWith(SESSION_ID, {
+      signal: replacementTurn.abortSignal,
+    });
     expect(placements.get(SESSION_ID)?.turnClaim?.runId).toBe(priorClaim.runId);
 
     await placements.updateWorkspaceBaseManifest({ claim: priorClaim, manifestRef: MANIFEST_REF });
@@ -408,6 +417,7 @@ describe("worker turn launcher claim admission", () => {
     await seedActivePlacement();
     const cancelled = new AbortController();
     const cancellationStarted = createDeferred();
+    const transportCancelled = createDeferred();
     const finishCancellation = createDeferred();
     let launchCount = 0;
     const stopTunnel = vi.fn(async () => {});
@@ -416,6 +426,9 @@ describe("worker turn launcher claim admission", () => {
       request.onDispatchReady?.();
       launchCount += 1;
       if (launchCount === 1) {
+        request.signal?.addEventListener("abort", () => transportCancelled.resolve(), {
+          once: true,
+        });
         cancellationStarted.resolve();
         await finishCancellation.promise;
         return {
@@ -467,28 +480,24 @@ describe("worker turn launcher claim admission", () => {
 
     try {
       await cancellationStarted.promise;
-      await expect(
-        provider.executeTurn(runClaim(firstRunId), turn(firstRunId), async () => ({
-          meta: { durationMs: 1 },
-        })),
-      ).rejects.toThrow("already has an active turn claim");
-      await expect(
-        provider.executeTurn(
-          runClaim("run-live-collision"),
-          turn("run-live-collision"),
-          async () => ({ meta: { durationMs: 1 } }),
-        ),
-      ).rejects.toThrow("already has an active turn claim");
-      const waitForRelease = vi.spyOn(placements, "waitForTurnClaimRelease");
-      cancelled.abort(new Error("operator stopped the previous turn"));
+      // The session controller queues a follow-up while the current producer owns custody.
       replacement = provider.executeTurn(
         runClaim("run-after-cancellation"),
         turn("run-after-cancellation"),
         async () => ({ meta: { durationMs: 1 } }),
       );
-      void replacement.catch(() => undefined);
-
-      await vi.waitFor(() => expect(waitForRelease).toHaveBeenCalledOnce());
+      cancelled.abort(new Error("operator stopped the previous turn"));
+      await transportCancelled.promise;
+      let replacementSettled = false;
+      void replacement.then(
+        () => {
+          replacementSettled = true;
+        },
+        () => {
+          replacementSettled = true;
+        },
+      );
+      expect(replacementSettled).toBe(false);
       expect(placements.get(SESSION_ID)?.turnClaim?.runId).toBe(firstRunId);
       expect(launchTurn).toHaveBeenCalledOnce();
 
@@ -596,6 +605,8 @@ describe("worker turn launcher claim admission", () => {
     try {
       await withWorkerCompactionAdoption("run-overlap", async (adopt, workerTurn) => {
         const controller = new AbortController();
+        const queuedController = new AbortController();
+        const queuedTurn = turn("run-overlap");
         const runLocal = vi.fn(async () => ({ meta: { durationMs: 1 } }));
         const first = provider.executeTurn(
           claim,
@@ -619,10 +630,19 @@ describe("worker turn launcher claim admission", () => {
           expect(placements.validateTurnClaim(launchRequest.turnClaim)).toBe(true);
           expect(launchRequest.signal?.aborted).toBe(false);
           expect(runLocal).not.toHaveBeenCalled();
-          await expect(provider.executeTurn(claim, turn("run-overlap"), runLocal)).rejects.toThrow(
-            "already has an active turn claim",
+          const queued = provider.executeTurn(
+            claim,
+            { ...queuedTurn, abortSignal: queuedController.signal },
+            runLocal,
           );
+          void queued.catch(() => undefined);
+          // A second caller waits in the session mailbox; cancelling that caller
+          // must not cancel or replace the already dispatched worker's exact claim.
+          queuedController.abort(new Error("Queued duplicate cancelled"));
+          await expect(queued).rejects.toThrow("Queued duplicate cancelled");
           expect(launchTurn).toHaveBeenCalledOnce();
+          expect(launchRequest.signal?.aborted).toBe(false);
+          expect(placements.validateTurnClaim(launchRequest.turnClaim)).toBe(true);
 
           const completed = await openSessionManager();
           const leafId = await completed.appendMessageAsync(
@@ -683,6 +703,8 @@ describe("worker turn launcher claim admission", () => {
           expect(placements.get(SESSION_ID)).toMatchObject({ state: "draining", turnClaim: null });
         } finally {
           controller.abort();
+          queuedController.abort();
+          queuedTurn.preparedRunAdmission.close();
           commandFinished.resolve({
             stdout: "",
             stderr: "fixture closed",

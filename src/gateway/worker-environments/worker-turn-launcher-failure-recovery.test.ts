@@ -4,11 +4,10 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WORKER_PROVIDER_REPLAY_MAX_DATA_BYTES } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
-import { installSessionPlacementAdmissionProvider } from "../../agents/session-placement-admission.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
-import { recoverStuckDiagnosticSession } from "../../logging/diagnostic-stuck-session-recovery.runtime.js";
 import type { SpawnResult } from "../../process/exec.js";
-import { createReplyOperation } from "../../sessions/session-controller.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
 import { WORKER_PROVIDER_REPLAY_LOCAL_RETRY_MESSAGE } from "../../worker/transcript-message.js";
 import { sessionByKeyReadHandlers } from "../server-methods/sessions-read-by-key.js";
 import { requestContext } from "../server-methods/sessions-read-cache.test-support.js";
@@ -49,12 +48,13 @@ describe("worker turn launcher failure recovery", () => {
   beforeEach(setupWorkerTurnLauncherTest);
   afterEach(cleanupWorkerTurnLauncherTest);
 
-  it("terminalizes a journal-settled dead worker without waiting for blocked teardown", async () => {
+  it("reports a stalled terminal worker while retaining unfenced teardown custody", async () => {
     await seedActivePlacement();
     const launchStarted = createDeferred();
     const finishLaunch = createDeferred();
     const teardownStarted = createDeferred();
     const finishTeardown = createDeferred();
+    const interrupted = createDeferred();
     const environment = {
       ...attachedEnvironment(),
       nodeDeviceId: "node-worker",
@@ -67,10 +67,6 @@ describe("worker turn launcher failure recovery", () => {
       acknowledgeCredentialDelivery: async () => true,
       startTunnel: async () =>
         createWorkerTurnTunnel({
-          quiesceWorkspace: vi.fn(),
-          syncWorkspace: vi.fn(),
-          reconcileWorkspace: vi.fn(),
-          stop: vi.fn(),
           launchTurn: async (request) => {
             request.onDispatchReady?.();
             launchStarted.resolve();
@@ -84,6 +80,7 @@ describe("worker turn launcher failure recovery", () => {
               termination: "exit",
             };
           },
+          reconcileWorkspace: vi.fn(),
         }),
       stopTunnel: async () => {
         teardownStarted.resolve();
@@ -92,68 +89,87 @@ describe("worker turn launcher failure recovery", () => {
       destroy: vi.fn(async () => environment),
     };
     const provider = createWorkerSessionTurnPlacementProvider({ environments, placements });
-    const uninstall = installSessionPlacementAdmissionProvider(provider);
-    const operation = createReplyOperation({
+    const workerTurn = turn("run-dead-worker");
+    const admission = {
       sessionId: SESSION_ID,
       sessionKey: SESSION_KEY,
-      resetTriggered: false,
-    });
-    operation.setPhase("waiting_for_deferred_maintenance");
-    const clock = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
-    const attempt = provider
-      .executeTurn(
-        {
-          sessionId: SESSION_ID,
-          sessionKey: SESSION_KEY,
-          agentId: "main",
-          runId: "run-dead-worker",
-        },
-        turn("run-dead-worker"),
+      agentId: "main",
+      storePath: sessionTarget.storePath,
+    };
+    let operation: ReplyOperation | undefined;
+    let ownerSettled = false;
+    let attemptSettled = false;
+    const attempt = withSessionTurn(admission, async (admitted, signal) => {
+      if (!admitted) {
+        throw new Error("Expected the worker's admitted controller operation");
+      }
+      operation = admitted;
+      signal.addEventListener("abort", () => interrupted.resolve(), { once: true });
+      void admitted.ownerSettlement.then(() => {
+        ownerSettled = true;
+      });
+      return await provider.executeTurn(
+        { ...admission, runId: "run-dead-worker" },
+        { ...workerTurn, replyOperation: admitted, abortSignal: signal },
         async () => ({ meta: { durationMs: 1 } }),
-      )
-      .then(
-        () => undefined,
-        (error: unknown) => error,
       );
-    const recover = () =>
-      recoverStuckDiagnosticSession({
-        sessionId: SESSION_ID,
-        sessionKey: SESSION_KEY,
-        ageMs: 180_000,
-      });
+    }).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    void attempt.then(() => {
+      attemptSettled = true;
+    });
+    let successor: Promise<void> | undefined;
+    let recovery: ReturnType<ReplyOperation["watchdog"]["tick"]> | undefined;
+    let successorStarted = false;
     try {
-      await launchStarted.promise;
-      await expect(recover()).resolves.toMatchObject({ status: "skipped", action: "observe_only" });
+      await awaitGateBeforeSettlement(launchStarted.promise, attempt, "Worker did not dispatch");
       finishLaunch.resolve();
-      await teardownStarted.promise;
+      await awaitGateBeforeSettlement(teardownStarted.promise, attempt, "Worker did not tear down");
+      if (!operation) {
+        throw new Error("Worker operation was not captured");
+      }
       expect(placements.get(SESSION_ID)).toMatchObject({ state: "draining", turnClaim: null });
-      await expect(recover()).resolves.toMatchObject({ status: "skipped", action: "observe_only" });
-      clock.mockReturnValue(1_030_000);
-      await expect(recover()).resolves.toMatchObject({
-        status: "failed",
-        action: "fail_worker_turn",
-        reason: "terminal_worker",
+      expect(operation.result).toBeNull();
+      expect(environments.destroy).not.toHaveBeenCalled();
+
+      // The exact watchdog may report terminal failure, but this unfenced raw
+      // teardown still owns the slot. A queued successor must not execute yet.
+      recovery = operation.watchdog.tick(operation.watchdog.snapshot().semanticDeadlineAtMs);
+      await awaitGateBeforeSettlement(interrupted.promise, attempt, "Watchdog did not interrupt");
+      expect(operation.result).toMatchObject({ kind: "failed" });
+      expect(operation.abortSignal.aborted).toBe(true);
+      successor = withSessionTurn(admission, async () => {
+        successorStarted = true;
       });
-      expect(await attempt).toMatchObject({
+      void successor.catch(() => undefined);
+      expect(ownerSettled).toBe(false);
+      expect(attemptSettled).toBe(false);
+      expect(successorStarted).toBe(false);
+      expect(environments.destroy).not.toHaveBeenCalled();
+
+      // Actual cleanup settlement, not the watchdog's terminal report, releases
+      // custody and permits the queued producer to acquire the same session.
+      finishTeardown.reject(new Error("late tunnel cleanup rejection"));
+      await expect(attempt).resolves.toMatchObject({
         message:
           "Cloud worker process failed before completing the turn: worker admission deadline exceeded",
       });
+      await successor;
+      await recovery;
+      expect(ownerSettled).toBe(true);
+      expect(successorStarted).toBe(true);
       expect(placements.get(SESSION_ID)).toMatchObject({
         state: "failed",
         turnClaim: null,
         terminalReason: expect.stringContaining("worker admission deadline exceeded"),
       });
-      expect(environments.destroy).not.toHaveBeenCalled();
-      finishTeardown.reject(new Error("late tunnel cleanup rejection"));
-      await Promise.resolve();
-      expect(environments.destroy).not.toHaveBeenCalled();
     } finally {
       finishLaunch.resolve();
       finishTeardown.resolve();
-      await attempt;
-      clock.mockRestore();
-      operation.complete();
-      uninstall();
+      await Promise.allSettled([attempt, successor, recovery]);
+      workerTurn.preparedRunAdmission.close();
     }
   });
 
@@ -636,7 +652,12 @@ describe("worker turn launcher failure recovery", () => {
     const retained = `${redactedPrefix}${padding}`;
     const emoji = String.fromCodePoint(0x1f600);
     const stderr = `${diagnosis}DISCORD_BOT_TOKEN=${secret} ${padding}${emoji}tail`;
-    const stopTunnel = vi.fn(async () => {});
+    const teardownEntered = createDeferred();
+    const releaseTeardown = createDeferred();
+    const stopTunnel = vi.fn(async () => {
+      teardownEntered.resolve();
+      await releaseTeardown.promise;
+    });
     const destroy = vi.fn(async () => attachedEnvironment());
     const environments: WorkerTurnEnvironmentService = {
       get: vi.fn(() => attachedEnvironment()),
@@ -668,21 +689,41 @@ describe("worker turn launcher failure recovery", () => {
     };
     const provider = createWorkerSessionTurnPlacementProvider({ environments, placements });
     const failurePrefix = "Cloud worker process failed before completing the turn: ";
+    const execution = provider.executeTurn(
+      {
+        sessionId: SESSION_ID,
+        sessionKey: SESSION_KEY,
+        agentId: "main",
+        runId: "run-process-failed",
+      },
+      turn("run-process-failed"),
+      async () => ({ meta: { durationMs: 1 } }),
+    );
+    let callerReturned = false;
+    const outcome = execution.then(
+      () => {
+        callerReturned = true;
+        return undefined;
+      },
+      (error: unknown) => {
+        callerReturned = true;
+        return error;
+      },
+    );
     let failure: unknown;
-
     try {
-      await provider.executeTurn(
-        {
-          sessionId: SESSION_ID,
-          sessionKey: SESSION_KEY,
-          agentId: "main",
-          runId: "run-process-failed",
-        },
-        turn("run-process-failed"),
-        async () => ({ meta: { durationMs: 1 } }),
+      await awaitGateBeforeSettlement(
+        teardownEntered.promise,
+        execution,
+        "Worker failure returned before cleanup acquired custody",
       );
-    } catch (error) {
-      failure = error;
+      expect(callerReturned).toBe(false);
+      expect(placements.get(SESSION_ID)).toMatchObject({ state: "draining", turnClaim: null });
+      releaseTeardown.resolve();
+      failure = await outcome;
+    } finally {
+      releaseTeardown.resolve();
+      await outcome;
     }
 
     expect(failure).toBeInstanceOf(Error);

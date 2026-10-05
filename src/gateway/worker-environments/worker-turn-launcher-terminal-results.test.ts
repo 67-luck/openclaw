@@ -22,7 +22,8 @@ import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-messa
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { claimAgentRunContext, releaseAgentRunContext } from "../../infra/agent-run-registry.js";
 import type { SpawnResult } from "../../process/exec.js";
-import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
@@ -490,7 +491,7 @@ describe("worker turn launcher terminal results", () => {
     const claimWaitCleanup = new AbortController();
     const transferEntered = createDeferredCore();
     const failTransfer = createDeferredCore();
-    const claimWaitEntered = createDeferredCore();
+    const stopStarted = createDeferredCore();
     const targetedAdmission = createDeferredCore();
     const destroy = vi.fn(async () => attachedEnvironment());
     const tunnelFailure = new NodeWorkerWorkspaceTransferError(
@@ -508,12 +509,7 @@ describe("worker turn launcher terminal results", () => {
       sessionId: SESSION_ID,
       sessionKey: SESSION_KEY,
     }));
-    const waitForClaim = placements.waitForTurnClaimRelease;
-    vi.spyOn(placements, "waitForTurnClaimRelease").mockImplementation((sessionId, options) => {
-      const pending = waitForClaim(sessionId, { ...options, signal: claimWaitCleanup.signal });
-      claimWaitEntered.resolve();
-      return pending;
-    });
+    abortWorkerTurnClaimWaitOnSignal(claimWaitCleanup.signal);
     const entry = { sessionId: SESSION_ID, updatedAt: 1 };
     const barriers = createGatewayWorkerPlacementReclaimBarriers({
       placements,
@@ -531,6 +527,7 @@ describe("worker turn launcher terminal results", () => {
       cancelSessionWork: async ({ assertCurrent }) => {
         assertCurrent();
         stopController.abort(new Error("Stop requested"));
+        stopStarted.resolve();
       },
       revokeSessionAuthority: () => {},
     });
@@ -602,7 +599,7 @@ describe("worker turn launcher terminal results", () => {
       .reclaim({ sessionId: SESSION_ID, sessionKey: SESSION_KEY, agentId: "main" })
       .catch((error: unknown) => error);
     try {
-      await claimWaitEntered.promise;
+      await stopStarted.promise;
       expect(placements.get(SESSION_ID)?.turnClaim).not.toBeNull();
       failTransfer.resolve();
       await targetedAdmission.promise;
@@ -655,7 +652,6 @@ describe("worker turn launcher terminal results", () => {
     const barrierEntered = createDeferredCore();
     const startBarrier = createDeferredCore();
     const interrupted = createDeferredCore();
-    const turnAbort = new AbortController();
     const targetedAdmission = createDeferredCore();
     const recoverySettled = createDeferredCore();
     const workspaceOperations = createWorkerWorkspaceOperationCoordinator();
@@ -760,30 +756,27 @@ describe("worker turn launcher terminal results", () => {
     });
 
     const workerTurn = turn("run-reconcile-tunnel-loss");
-    const admission = await beginSessionEffect({
-      scope: sessionTarget.storePath,
-      identities: [SESSION_KEY, SESSION_ID],
-      assertAllowed: () => {},
-      onInterrupt: (reason) => {
-        turnAbort.abort(reason);
-        interrupted.resolve();
-      },
-    });
-    const running = admission
-      .run(() =>
-        provider.executeTurn(
+    let admittedOperation: ReplyOperation | undefined;
+    const running = withSessionTurn(
+      { sessionKey: SESSION_KEY, sessionId: SESSION_ID, storePath: sessionTarget.storePath },
+      async (operation, signal) => {
+        if (!operation) {
+          throw new Error("Expected the worker's admitted controller operation");
+        }
+        admittedOperation = operation;
+        signal.addEventListener("abort", () => interrupted.resolve(), { once: true });
+        return await provider.executeTurn(
           {
             sessionId: SESSION_ID,
             sessionKey: SESSION_KEY,
             agentId: "main",
             runId: "run-reconcile-tunnel-loss",
           },
-          { ...workerTurn, abortSignal: turnAbort.signal },
+          { ...workerTurn, replyOperation: operation, abortSignal: signal },
           async () => ({ meta: { durationMs: 1 } }),
-        ),
-      )
-      .finally(() => admission.release())
-      .catch((error: unknown) => error);
+        );
+      },
+    ).catch((error: unknown) => error);
     await transferEntered.promise;
     expect(placements.get(SESSION_ID)?.state).toBe("draining");
     expect(await placements.listPendingWorkspaceResultsAsync()).toHaveLength(1);
@@ -792,7 +785,7 @@ describe("worker turn launcher terminal results", () => {
       await barrierEntered.promise;
       failTransfer.resolve();
       await targetedAdmission.promise;
-      expect(admission.isActive()).toBe(true);
+      expect(admittedOperation?.abortSignal.aborted).toBe(false);
       expect(recoveryEntered).not.toHaveBeenCalled();
       expect(placements.get(SESSION_ID)?.turnClaim).not.toBeNull();
       startBarrier.resolve();
@@ -802,7 +795,7 @@ describe("worker turn launcher terminal results", () => {
           throw new Error("Move ended before interrupting its admitted turn");
         }),
       ]);
-      expect(turnAbort.signal.aborted).toBe(true);
+      expect(admittedOperation?.abortSignal.aborted).toBe(true);
       // Independent admission settles after targeted recovery could enter this session.
       await dispatch.forceDestroyEnvironment("unrelated");
       expect(recoveryEntered).toHaveBeenCalledOnce();
@@ -822,7 +815,6 @@ describe("worker turn launcher terminal results", () => {
     } finally {
       failTransfer.resolve();
       startBarrier.resolve();
-      admission.release();
       // Failure cleanup aborts only the waiter; recovery remains the sole claim-release owner.
       claimWaitCleanup.abort();
       await Promise.all([running, moving]);

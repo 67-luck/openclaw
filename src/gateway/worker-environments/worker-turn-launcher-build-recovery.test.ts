@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import {
-  abortEmbeddedAgentRun,
-  isEmbeddedAgentRunHandleActive,
-} from "../../agents/embedded-agent-runner/runs.js";
+import { abortEmbeddedAgentRun } from "../../agents/embedded-agent-runner/runs.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import {
@@ -15,7 +12,8 @@ import {
   markGatewayRestartDraining,
   resetGatewayWorkAdmission,
 } from "../../process/gateway-work-admission.js";
-import { createReplyOperation } from "../../sessions/session-controller.js";
+import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { STALE_WORKER_BUILD_REASON, StaleWorkerBuildError } from "./admission.js";
 import { createWorkerPlacementDispatchService } from "./placement-dispatch.js";
@@ -78,7 +76,7 @@ async function createBuildRecoveryHarness(
     withoutRecorder?: boolean;
     afterReconcile?: () => void | Promise<void>;
     waitForAdmissionNode?: WorkerTurnLauncherOptions["waitForAdmissionNode"];
-    replyOperation?: ReturnType<typeof createReplyOperation>;
+    replyOperation?: ReplyOperation;
     duringRetryPreparation?: () => void;
   } = {},
 ) {
@@ -541,35 +539,32 @@ describe("worker turn launcher build recovery", () => {
   it.each(["backend", "reply"] as const)(
     "accepts Stop through the %s owner between refresh and retry preparation",
     async (cancellation) => {
-      const operation = createReplyOperation({
-        sessionId: SESSION_ID,
-        sessionKey: SESSION_KEY,
-        resetTriggered: false,
-      });
-      operation.setPhase("running");
-      const duringRetryPreparation = vi.fn(() => {
-        // The retry now owns cancellation before resolving its workspace.
-        expect(isEmbeddedAgentRunHandleActive(SESSION_ID)).toBe(true);
-        expect(
-          cancellation === "reply" ? operation.abortByUser() : abortEmbeddedAgentRun(SESSION_ID),
-        ).toBe(true);
-      });
-      const harness = await createBuildRecoveryHarness({
-        rejection: "pending refresh",
-        refreshInPlace: true,
-        replyOperation: operation,
-        duringRetryPreparation,
-      });
-      try {
-        await expect(harness.execute(operation.abortSignal)).rejects.toThrow();
-        expect(duringRetryPreparation).toHaveBeenCalledOnce();
-        // Backend cancellation closes its effective turn signal, not the upstream reply signal.
-        expect(operation.abortSignal.aborted).toBe(cancellation === "reply");
-        expect(harness.launchTurn).not.toHaveBeenCalled();
-        expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
-      } finally {
-        operation.complete();
-      }
+      await withSessionTurn(
+        { sessionKey: SESSION_KEY, sessionId: SESSION_ID, storePath: sessionTarget.storePath },
+        async (operation) => {
+          if (!operation) {
+            throw new Error("Expected an admitted controller operation");
+          }
+          const duringRetryPreparation = vi.fn(() => {
+            expect(
+              cancellation === "reply"
+                ? operation.abortByUser()
+                : abortEmbeddedAgentRun(SESSION_ID),
+            ).toBe(true);
+          });
+          const harness = await createBuildRecoveryHarness({
+            rejection: "pending refresh",
+            refreshInPlace: true,
+            replyOperation: operation,
+            duringRetryPreparation,
+          });
+          await expect(harness.execute(operation.abortSignal)).rejects.toThrow();
+          expect(duringRetryPreparation).toHaveBeenCalledOnce();
+          expect(operation.abortSignal.aborted).toBe(true);
+          expect(harness.launchTurn).not.toHaveBeenCalled();
+          expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
+        },
+      );
     },
   );
 

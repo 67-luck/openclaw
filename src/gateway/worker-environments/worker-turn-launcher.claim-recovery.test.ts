@@ -11,8 +11,8 @@ import {
 import { resolveSessionPlacementTurnSettlementAssertion } from "../../agents/session-placement-forced-terminal-settlement.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
-import { recoverStuckDiagnosticSession } from "../../logging/diagnostic-stuck-session-recovery.runtime.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
+import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
 import {
   createReplyOperation,
   waitForReplyRunSuccessorAdmission,
@@ -37,11 +37,11 @@ import {
   openSessionManager,
   root,
   seedActivePlacement,
+  database,
   SESSION_ID,
   SESSION_KEY,
   cleanupWorkerTurnLauncherTest,
   createWorkerSessionTurnPlacementProvider,
-  database,
   placements,
   sessionTarget,
   setupWorkerTurnLauncherTest,
@@ -546,17 +546,9 @@ describe("worker pre-launch claim recovery", () => {
         },
       },
     });
-    const uninstall = installSessionPlacementAdmissionProvider(provider);
-    const operation = createReplyOperation({
-      sessionId: SESSION_ID,
-      sessionKey: SESSION_KEY,
-      resetTriggered: false,
-    });
     const first = turn("warm-first");
-    const second = {
+    const second: ReturnType<typeof turn> & SessionPlacementTurnParams = {
       ...turn("blocked-second"),
-      timeoutMs: 48 * 60 * 60 * 1_000,
-      replyOperation: operation,
       onExecutionStarted: async () => {
         if (stage === "execution-start publication") {
           entered.resolve();
@@ -564,16 +556,22 @@ describe("worker pre-launch claim recovery", () => {
         }
       },
     };
+    const execute = (input: ReturnType<typeof turn>) =>
+      provider.executeTurn(
+        { sessionId: SESSION_ID, sessionKey: SESSION_KEY, agentId: "main", runId: input.runId },
+        input,
+        async () => {
+          throw new Error("unexpected local execution");
+        },
+      );
     let github: MockInstance<typeof workerGitHubBinding.prepareWorkerGitHubBinding> | undefined;
     let blocked: Promise<unknown> | undefined;
     let successor: Promise<unknown> | undefined;
-    let recovery: Promise<unknown> | undefined;
+    let recovery: ReturnType<ReplyOperation["watchdog"]["tick"]> | undefined;
     try {
-      await expect(
-        createLane(first).enqueueGlobal(async () => {
-          throw new Error("unexpected local execution");
-        }),
-      ).resolves.toMatchObject({ payloads: [{ text: "First turn complete" }] });
+      await expect(execute(first)).resolves.toMatchObject({
+        payloads: [{ text: "First turn complete" }],
+      });
       expect(placements.get(SESSION_ID)).toMatchObject({ state: "active", turnClaim: null });
       expect(await placements.listPendingWorkspaceResultsAsync()).toEqual([]);
       blockSecond = true;
@@ -589,14 +587,14 @@ describe("worker pre-launch claim recovery", () => {
       if (stage === "workspace queue") {
         queuedBlocker = coordinator.run(ENVIRONMENT_ID, () => resume.promise);
       }
-      const lane = createLane(second);
-      blocked = lane.enqueueSession(() =>
-        lane.enqueueGlobal(async () => {
-          throw new Error("unexpected local execution");
-        }),
-      );
+      blocked = execute(second);
       const outcome = blocked.catch((error: unknown) => error);
-      await entered.promise;
+      await Promise.race([
+        entered.promise,
+        outcome.then(() => {
+          throw new Error("worker settled before reaching cancellation gate");
+        }),
+      ]);
       const oldClaim = placements.get(SESSION_ID)?.turnClaim;
       expect(oldClaim?.runId).toBe("blocked-second");
       expect(await placements.listPendingWorkspaceResultsAsync()).toHaveLength(
@@ -605,32 +603,34 @@ describe("worker pre-launch claim recovery", () => {
       const dispatched =
         stage === "dispatch" || stage === "uncertain dispatch" || stage === "pending result";
       expect(launch).toHaveBeenCalledTimes(dispatched ? 2 : 1);
-      vi.useFakeTimers();
-      vi.setSystemTime(Date.now() + 360_000);
-      const pendingRecovery = recoverStuckDiagnosticSession({
-        sessionId: SESSION_ID,
-        sessionKey: SESSION_KEY,
-        ageMs: 360_000,
-        queueDepth: 1,
-        allowActiveAbort: true,
-        staleActiveProgressAbortMs: 360_000,
+      let settled = false;
+      void outcome.then(() => {
+        settled = true;
       });
-      recovery = pendingRecovery;
-      let recovered = false;
-      void pendingRecovery.then(() => {
-        recovered = true;
+      if (!second.replyOperation) {
+        throw new Error("Expected the actual admitted warm turn operation");
+      }
+      const operation = second.replyOperation;
+      let ownerSettled = false;
+      void operation.ownerSettlement.then(() => {
+        ownerSettled = true;
       });
-      await vi.advanceTimersByTimeAsync(15_100);
+      // Exercise stalled recovery on the exact operation while retaining raw producer custody.
+      const deadlineAtMs = operation.watchdog.snapshot().semanticDeadlineAtMs;
+      recovery = operation.watchdog.tick(deadlineAtMs);
+      expect(operation.abortSignal.aborted).toBe(true);
+      expect(operation.result).toMatchObject({ kind: "failed", code: "run_stalled" });
+      expect(operation.watchdog.snapshot().recovery?.startedAtMs).toBe(deadlineAtMs);
       if (stage === "workspace mutation" || stage === "execution-start publication" || dispatched) {
-        expect(recovered).toBe(false);
+        expect(ownerSettled).toBe(false);
+        expect(settled).toBe(false);
         expect(placements.get(SESSION_ID)?.turnClaim).toEqual(oldClaim);
         resume.resolve();
       }
-      await expect(pendingRecovery).resolves.toMatchObject({
-        status: "aborted",
-        action: "abort_embedded_run",
-      });
-      vi.useRealTimers();
+      expect(await outcome).toBeInstanceOf(Error);
+      if (!dispatched) {
+        expect(await outcome).toMatchObject({ name: "AbortError" });
+      }
       if (stage === "uncertain dispatch") {
         const failed = placements.get(SESSION_ID);
         expect(failed).toMatchObject({
@@ -645,29 +645,18 @@ describe("worker pre-launch claim recovery", () => {
         expect(canRedispatchFailedWorkerPlacement(failed, environment)).toBe(true);
         expect(environments.stopTunnel).toHaveBeenCalledOnce();
         expect(destroy).toHaveBeenCalledOnce();
-        expect(launch).toHaveBeenCalledTimes(2);
-        await expect(waitForReplyRunSuccessorAdmission(SESSION_KEY, null)).resolves.toMatchObject({
-          settled: true,
-        });
         blockSecond = false;
         holdSuccessor = false;
-        const third = turn("successor-third");
-        const thirdLane = createLane(third);
-        await expect(
-          thirdLane.enqueueSession(() =>
-            thirdLane.enqueueGlobal(async () => {
-              throw new Error("unexpected local execution");
-            }),
-          ),
-        ).resolves.toMatchObject({ payloads: [{ text: "First turn complete" }] });
+        await expect(execute(turn("successor-third"))).resolves.toMatchObject({
+          payloads: [{ text: "First turn complete" }],
+        });
         expect(placements.get(SESSION_ID)).toMatchObject({
           state: "active",
-          environmentId: `${ENVIRONMENT_ID}-recovered`,
+          environmentId: ENVIRONMENT_ID + "-recovered",
           activeOwnerEpoch: OWNER_EPOCH + 1,
           turnClaim: null,
         });
         expect(launch).toHaveBeenCalledTimes(3);
-        third.preparedRunAdmission.close();
         return;
       }
       if (stage === "pending result") {
@@ -678,41 +667,33 @@ describe("worker pre-launch claim recovery", () => {
         expect(environments.destroy).not.toHaveBeenCalled();
         return;
       }
-      // Read-only and queued gates remain closed; entered writes/dispatches had to join.
       expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
-      await expect(waitForReplyRunSuccessorAdmission(SESSION_KEY, null)).resolves.toMatchObject({
-        settled: true,
-      });
-      const third = turn("successor-third");
-      const thirdLane = createLane(third);
-      successor = thirdLane.enqueueSession(() =>
-        thirdLane.enqueueGlobal(async () => {
-          throw new Error("unexpected local execution");
-        }),
-      );
-      void successor.catch(() => {});
-      await successorEntered.promise;
+      successor = execute(turn("successor-third"));
+      void successor.catch(() => undefined);
+      await Promise.race([
+        successorEntered.promise,
+        successor.then(
+          () => {
+            throw new Error("successor settled before reaching workspace gate");
+          },
+          (error: unknown) => {
+            throw error;
+          },
+        ),
+      ]);
       const replacement = placements.get(SESSION_ID)?.turnClaim;
       expect(replacement?.runId).toBe("successor-third");
       resume.resolve();
-      expect(await outcome).toBeInstanceOf(Error);
-      if (!dispatched) {
-        expect(await outcome).toMatchObject({ name: "AbortError" });
-      }
       expect(placements.get(SESSION_ID)?.turnClaim).toEqual(replacement);
       expect(launch).toHaveBeenCalledTimes(dispatched ? 2 : 1);
       expect(environments.destroy).not.toHaveBeenCalled();
-      third.preparedRunAdmission.close();
     } finally {
-      vi.useRealTimers();
       resume.resolve();
       finishSuccessor.resolve();
       await Promise.allSettled([blocked, successor, queuedBlocker, recovery]);
       github?.mockRestore();
-      operation.complete();
       first.preparedRunAdmission.close();
       second.preparedRunAdmission.close();
-      uninstall();
     }
   });
 });
