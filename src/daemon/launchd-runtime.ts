@@ -1,9 +1,12 @@
 /** launchctl state parsing, inspection, and bootstrap primitives. */
 import fs from "node:fs/promises";
+import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import {
   parseStrictInteger,
   parseStrictPositiveInteger,
 } from "@openclaw/normalization-core/number-coercion";
+import { isStringRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { parseTcpPort, parseTcpPortFromArgs } from "../infra/tcp-port.js";
 import { hasCommandProcessCleanupError } from "../process/exec-result.js";
@@ -20,7 +23,9 @@ import {
 import { resolveLaunchAgentLabel } from "./launchd-label.js";
 import {
   LAUNCH_AGENT_EXIT_TIMEOUT_SECONDS,
+  decodeLaunchdPlistMetadata,
   readLaunchAgentProgramArgumentsFromFile,
+  resolveLaunchAgentProgramArguments,
 } from "./launchd-plist.js";
 import {
   resolveLaunchAgentPlistPath,
@@ -43,6 +48,64 @@ import type {
   GatewayServiceEnvArgs,
   GatewayServiceReadOptions,
 } from "./service-types.js";
+
+type CorrespondingLaunchAgentObservation = {
+  readonly target: string;
+  readonly sourcePath: string;
+  readonly program: string;
+  readonly programArguments: readonly string[];
+  readonly workingDirectory?: string;
+  readonly environment: Readonly<Record<string, string>>;
+};
+
+/** Preserve the loaded-definition check used by a beta updater after package replacement. */
+export async function readCorrespondingLaunchAgentCommand(
+  env: GatewayServiceEnv,
+  observation: CorrespondingLaunchAgentObservation,
+  timeoutMs: number,
+): Promise<GatewayServiceCommandConfig | null> {
+  const label = resolveLaunchAgentLabel(env);
+  const plistPath = resolveLaunchAgentPlistPath(env);
+  if (
+    observation.target !== `${resolveLaunchAgentGuiDomain()}/${label}` ||
+    path.resolve(observation.sourcePath) !== path.resolve(plistPath)
+  ) {
+    return null;
+  }
+  const plist = await decodeLaunchdPlistMetadata(await fs.readFile(plistPath), timeoutMs);
+  const args = plist?.ProgramArguments;
+  const environment = plist?.EnvironmentVariables ?? {};
+  if (
+    !Array.isArray(args) ||
+    !args.every((arg): arg is string => typeof arg === "string") ||
+    !isStringRecord(environment) ||
+    (plist?.Program ?? args[0]) !== observation.program
+  ) {
+    return null;
+  }
+  const loadedEnvironment = { ...observation.environment };
+  if (
+    !Object.hasOwn(environment, "XPC_SERVICE_NAME") &&
+    loadedEnvironment.XPC_SERVICE_NAME === label
+  ) {
+    delete loadedEnvironment.XPC_SERVICE_NAME;
+  }
+  if (!Object.hasOwn(environment, "OSLogRateLimit")) {
+    delete loadedEnvironment.OSLogRateLimit;
+  }
+  if (
+    !isDeepStrictEqual(args, observation.programArguments) ||
+    (plist?.WorkingDirectory || undefined) !== observation.workingDirectory ||
+    !isDeepStrictEqual(environment, loadedEnvironment)
+  ) {
+    return null;
+  }
+  return resolveLaunchAgentProgramArguments(plist, plistPath, {
+    ...resolveLaunchAgentEnvironmentReadOptions(env, label),
+    requireEffective: true,
+    timeoutMs,
+  });
+}
 
 export async function readLaunchAgentProgramArguments(
   env: GatewayServiceEnv,
