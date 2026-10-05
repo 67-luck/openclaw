@@ -200,7 +200,7 @@ export function conversationIdentityFromMsgContext(params: {
   normalizeInternalTurnContext(params.ctx);
   const route = deriveSessionOrigin(params.ctx);
   const explicitDeliveryContext = normalizeDeliveryContext(params.deliveryContext);
-  const routeDeliveryContext = normalizeDeliveryContext({
+  const deliveryContext = mergeDeliveryContext(explicitDeliveryContext, {
     channel: route?.provider,
     to: route?.to,
     accountId: route?.accountId,
@@ -211,9 +211,8 @@ export function conversationIdentityFromMsgContext(params: {
   const pairedDeliveryContext =
     explicitDeliveryContext ??
     (params.ctx.InternalTurnSource && params.ctx.OriginatingChannel && params.ctx.OriginatingTo
-      ? routeDeliveryContext
+      ? deliveryContext
       : undefined);
-  const deliveryContext = mergeDeliveryContext(pairedDeliveryContext, routeDeliveryContext);
   const groupResolution = params.groupResolution ?? resolveGroupSessionKey(params.ctx);
   const routeContext = conversationRouteContextFromMsgContext(params.ctx);
   const kind = groupResolution?.chatType ?? normalizeKind(params.ctx.ChatType);
