@@ -310,6 +310,274 @@ suite.define(() => {
     });
   });
 
+  it("keeps a post-steer Reply control focused and anchored through history pagination", async () => {
+    const runId = "paginated-review-run";
+    const answerText = "The post-steer mobile review is complete.";
+    const paginatedSessionKey = "agent:main:dashboard:paginated-reply";
+    const message = (
+      seq: number,
+      fields: Record<string, unknown>,
+      metadata: Record<string, unknown> = {},
+    ) => ({
+      ...fields,
+      timestamp: 1_800_000_000_000 + seq,
+      __openclaw: { id: `pagination-${seq}`, seq, ...metadata },
+    });
+    const recent = [
+      message(
+        1001,
+        { role: "user", content: "Focus on the mobile controls." },
+        {
+          ...self,
+          steerTargetRunId: runId,
+        },
+      ),
+      message(
+        1002,
+        { role: "assistant", content: answerText, phase: "final_answer", stopReason: "stop" },
+        { runId },
+      ),
+      ...Array.from({ length: 22 }, (_, index) =>
+        message(1003 + index, {
+          role: index % 2 ? "assistant" : "user",
+          content: `Later entry ${index + 1}. ${"Independent conversation detail. ".repeat(8)}`,
+        }),
+      ),
+    ];
+    const older = [
+      ...Array.from({ length: 18 }, (_, index) =>
+        message(980 + index, {
+          role: index % 2 ? "assistant" : "user",
+          content: `Older entry ${index + 1}.`,
+        }),
+      ),
+      message(
+        998,
+        { role: "user", content: "Review the release controls." },
+        { ...peer, idempotencyKey: `${runId}:user` },
+      ),
+      message(
+        999,
+        { role: "assistant", content: "The desktop controls look consistent." },
+        { runId },
+      ),
+      message(
+        1000,
+        {
+          role: "toolResult",
+          toolName: "exec",
+          toolCallId: "earlier-review-check",
+          content: "The desktop checks passed.",
+        },
+        { runId },
+      ),
+    ];
+    const loadedCount = recent.length + older.length;
+    await suite.withPage(
+      { viewport: { width: 1440, height: 900 }, locale: "en-US" },
+      async ({ page }) => {
+        const gateway = await installMockGateway(page, {
+          sessionKey: paginatedSessionKey,
+          sessions: [{ key: paginatedSessionKey, sessionId: "paginated-reply-session" }],
+          methodResponses: {
+            "chat.startup": {
+              messages: recent,
+              hasMore: true,
+              nextOffset: recent.length,
+              totalMessages: loadedCount,
+              sessionId: "paginated-reply-session",
+            },
+            "chat.history": {
+              messages: older,
+              hasMore: false,
+              nextOffset: loadedCount,
+              totalMessages: loadedCount,
+              sessionId: "paginated-reply-session",
+            },
+          },
+        });
+        await page.goto(controlUiSessionUrl(suite.server.baseUrl, paginatedSessionKey));
+        const thread = page.locator(".chat-pane-cache__pane--active .chat-thread");
+        await thread.getByText(/^Later entry 22\./).waitFor();
+        const historyRequests = await gateway.deferNext("chat.history");
+        await thread.hover();
+        await page.mouse.wheel(0, -1_000_000);
+        const request = await gateway.waitForRequest("chat.history", { after: historyRequests });
+        expect(request.params).toMatchObject({
+          sessionKey: paginatedSessionKey,
+          offset: recent.length,
+        });
+        // Hold the real pagination response, not a terminal reload. Upward scrolling
+        // already requests the page; clicking Show earlier here would race that request.
+        const answer = thread.locator(".chat-group.assistant", {
+          has: page.getByText(answerText, { exact: true }),
+        });
+        const reply = answer.getByRole("button", { name: "Reply to message", exact: true });
+        await reply.focus();
+        const held = await reply.elementHandle();
+        expect(held).not.toBeNull();
+        const before = await reply.boundingBox();
+        expect(before).not.toBeNull();
+        expect(await held!.evaluate((element) => document.activeElement === element)).toBe(true);
+        const offset = await thread.evaluate((element) => element.scrollTop);
+        const artifactRoot = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim();
+        const artifactDir = artifactRoot
+          ? createControlUiE2eArtifactDir("reply-pagination", artifactRoot)
+          : undefined;
+        if (artifactDir) {
+          await page.screenshot({
+            path: `${artifactDir}/before-prepend.png`,
+            animations: "disabled",
+          });
+        }
+        await gateway.resolveDeferred("chat.history");
+        // An increased native extent and a removed page boundary prove that the
+        // fetched page committed; a history-state assignment alone is insufficient.
+        await expect
+          .poll(() => thread.evaluate((element) => element.scrollTop))
+          .toBeGreaterThan(offset + 100);
+        await thread
+          .getByRole("button", { name: "Loading earlier…", exact: true })
+          .waitFor({ state: "detached" });
+        await expect
+          .poll(() =>
+            held!.evaluate((element) => ({
+              connected: element.isConnected,
+              focused: document.activeElement === element,
+            })),
+          )
+          .toEqual({ connected: true, focused: true });
+        expect(await reply.evaluate((element, prior) => element === prior, held)).toBe(true);
+        const after = await reply.boundingBox();
+        expect(after).not.toBeNull();
+        expect(Math.abs(after!.y - before!.y)).toBeLessThanOrEqual(2);
+        expect(
+          await answer.getByRole("button", { name: "Replying to Alice Chen", exact: true }).count(),
+        ).toBe(1);
+        if (artifactDir) {
+          await page.screenshot({
+            path: `${artifactDir}/after-prepend.png`,
+            animations: "disabled",
+          });
+        }
+        await reply.press("Enter");
+        const preview = page
+          .locator(".chat-reply-preview")
+          .filter({ has: page.getByRole("button", { name: "Cancel reply" }) });
+        await expect
+          .poll(() => preview.locator(".chat-reply-preview__text").textContent())
+          .toBe(answerText);
+        expect(await gateway.getRequests("chat.history")).toHaveLength(historyRequests + 1);
+      },
+    );
+  });
+
+  it("reveals native tool output in its own mixed-run frame with keyboard toggles", async () => {
+    const mixedSessionKey = "agent:main:dashboard:mixed-tool-output";
+    const runId = "mixed-live-review";
+    const output = "The native read confirms the mobile release controls.";
+    const messages = [
+      {
+        role: "user",
+        content: "Review the release controls.",
+        __openclaw: { id: "mixed-prompt", idempotencyKey: `${runId}:user`, ...peer },
+      },
+      ...Array.from({ length: 8 }, (_, index) => ({
+        role: "toolResult",
+        toolName: "exec",
+        toolCallId: `independent-${index}`,
+        content: `Independent check ${index} finished.`,
+        __openclaw: { id: `mixed-work-${index}`, runId: `background-run-${index}` },
+      })),
+      {
+        role: "toolResult",
+        toolName: "exec",
+        toolCallId: "current-run-check",
+        content: "The current review is in progress.",
+        __openclaw: { id: "current-work", runId },
+      },
+    ].map((message, index) =>
+      Object.assign(message, {
+        timestamp: 1_800_000_000_000 + index,
+        __openclaw: Object.assign({}, message["__openclaw"], { seq: index + 1 }),
+      }),
+    );
+    await suite.withPage(
+      { viewport: { width: 1440, height: 900 }, locale: "en-US" },
+      async ({ page }) => {
+        const gateway = await installMockGateway(page, {
+          sessionKey: mixedSessionKey,
+          historyMessages: messages,
+          inFlightRun: { runId, text: "Checking the mobile release controls." },
+          sessionInfo: { key: mixedSessionKey, activeRunIds: [runId], hasActiveRun: true },
+        });
+        await page.goto(controlUiSessionUrl(suite.server.baseUrl, mixedSessionKey));
+        const frame = page.locator(".chat-group.assistant", {
+          has: page.getByText("Checking the mobile release controls.", { exact: true }),
+        });
+        await frame.waitFor();
+        await gateway.emitGatewayEvent("agent", {
+          sessionKey: mixedSessionKey,
+          runId,
+          seq: 1,
+          ts: 1_800_000_001_000,
+          stream: "tool",
+          data: {
+            phase: "start",
+            name: "read",
+            toolCallId: "native-release-read",
+            args: { path: "RELEASE.md" },
+          },
+        });
+        const activity = frame.locator(".chat-activity-group__summary");
+        await activity.waitFor();
+        expect(await activity.count()).toBe(1);
+        await activity.focus();
+        await activity.press("Enter");
+        const row = frame.locator(".chat-tool-row--file", { hasText: "RELEASE.md" });
+        await expect.poll(() => row.getAttribute("class")).toContain("chat-tool-row--running");
+        await gateway.emitGatewayEvent("agent", {
+          sessionKey: mixedSessionKey,
+          runId,
+          seq: 2,
+          ts: 1_800_000_001_001,
+          stream: "tool",
+          data: {
+            phase: "result",
+            name: "read",
+            toolCallId: "native-release-read",
+            result: { content: [{ type: "text", text: output }] },
+          },
+        });
+        await expect.poll(() => row.getAttribute("class")).not.toContain("chat-tool-row--running");
+        // File rows contain a separate workspace link. Use the actual disclosure
+        // button instead of a center-pointer click on the file or an outer group.
+        const toggle = row.locator("button.chat-tool-row__toggle");
+        expect(await toggle.getAttribute("aria-expanded")).toBe("false");
+        await toggle.focus();
+        await toggle.press("Enter");
+        await frame.getByText(output, { exact: true }).waitFor();
+        expect(await toggle.getAttribute("aria-expanded")).toBe("true");
+        expect(await frame.getByText(/Independent check \d+ finished\./).count()).toBe(0);
+        expect(await frame.locator(".chat-tool-msg-summary").count()).toBe(2);
+        const artifactRoot = process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim();
+        if (artifactRoot) {
+          const artifactDir = createControlUiE2eArtifactDir("mixed-native-tool", artifactRoot);
+          await page.screenshot({
+            path: `${artifactDir}/native-tool-output.png`,
+            animations: "disabled",
+          });
+        }
+        await toggle.press("Enter");
+        await frame.getByText(output, { exact: true }).waitFor({ state: "hidden" });
+        expect(await toggle.getAttribute("aria-expanded")).toBe("false");
+        await toggle.press("Enter");
+        await frame.getByText(output, { exact: true }).waitFor();
+        expect(await toggle.evaluate((element) => document.activeElement === element)).toBe(true);
+      },
+    );
+  });
+
   it.each(viewports)(
     "keeps participant actions owned by their message at $width px",
     async ({ width, height, touch, theme }) => {

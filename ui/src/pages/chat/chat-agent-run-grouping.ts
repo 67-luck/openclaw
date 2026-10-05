@@ -54,6 +54,9 @@ export function chatItemGroups(item: AgentRunFrameInput | AgentRunFrameRenderIte
 }
 
 function itemRunId(item: AgentRunFramePart): string | undefined {
+  if (item.kind === "group") {
+    return item.runId;
+  }
   if (item.kind === "work-group") {
     // Matching execution IDs cannot erase a forwarded presentation boundary.
     if (item.groups.some(hasForwardedSource)) {
@@ -69,15 +72,18 @@ function itemRunId(item: AgentRunFramePart): string | undefined {
 }
 
 function itemFailsFrame(item: AgentRunFramePart): boolean {
-  return chatItemGroups(item).some((group) =>
+  const fails = (group: MessageGroup) =>
     group.messages.some(
       ({ message }) =>
         assistantMessageIsInterrupted(message) || asRecord(message)?.stopReason === "error",
-    ),
-  );
+    );
+  return item.kind === "group" ? fails(item) : chatItemGroups(item).some(fails);
 }
 
 function itemIsActive(item: AgentRunFramePart): boolean {
+  if (item.kind === "group") {
+    return item.isStreaming;
+  }
   if (item.kind === "stream-run") {
     return item.parts.some(
       (part) => part.kind === "reading-indicator" || (part.kind === "stream" && part.isStreaming),
@@ -106,12 +112,20 @@ function frameSegmentId(
   parts: AgentRunFramePart[],
   hardBoundaryId: string | undefined,
 ): string | undefined {
-  return (
-    hardBoundaryId ??
-    parts
-      .flatMap((part) => (part.kind === "stream-run" ? part.parts : []))
-      .find((part) => part.kind === "stream" && part.key.includes(":after:"))?.key
-  );
+  if (hardBoundaryId !== undefined) {
+    return hardBoundaryId;
+  }
+  for (const part of parts) {
+    if (part.kind === "stream-run") {
+      const segment = part.parts.find(
+        (streamPart) => streamPart.kind === "stream" && streamPart.key.includes(":after:"),
+      );
+      if (segment) {
+        return segment.key;
+      }
+    }
+  }
+  return undefined;
 }
 
 function messageCanOwnCompletedFrame(message: unknown, explicitOnly: boolean): boolean {
@@ -135,6 +149,10 @@ function messageCanOwnCompletedFrame(message: unknown, explicitOnly: boolean): b
 function completedFrameActionOwner(
   parts: AgentRunFramePart[],
 ): MessageGroup["messages"][number] | null {
+  const only = parts.length === 1 ? parts[0] : undefined;
+  if (only?.kind === "group" && only.role !== "assistant") {
+    return null;
+  }
   const messages = parts
     .flatMap(chatItemGroups)
     .flatMap((group) => (group.role === "assistant" ? group.messages : []));
@@ -237,7 +255,7 @@ export function coalesceAgentRunFrames(
       segmentId = boundaryId ? undefined : item.key;
       continue;
     }
-    const boundaryGroup = chatItemGroups(item)[0];
+    const boundaryGroup = item.kind === "group" ? item : chatItemGroups(item)[0];
     if (boundaryGroup && chatItemStartsDisplayTurn(boundaryGroup)) {
       flush();
       presentationBoundaryKey = boundaryGroup.key;

@@ -234,6 +234,82 @@ describe("chat transcript message controls", () => {
     }
   });
 
+  it("keeps opened tool evidence and focus across a confirmed steer of the active run", () => {
+    const message = (
+      id: string,
+      role: string,
+      content: string,
+      timestamp: number,
+      metadata = {},
+    ) => ({
+      role,
+      content,
+      timestamp,
+      __openclaw: { id, runId: "run", ...metadata },
+    });
+    const messages = [
+      message("prompt", "user", "Check the evidence", 1_000),
+      message("narration", "assistant", "I am checking the evidence", 1_001),
+      {
+        ...message("evidence", "toolResult", "OPEN-EVIDENCE-READING", 1_002),
+        toolName: "read",
+        toolCallId: "evidence",
+      },
+    ];
+    const transcript = createTestTranscript();
+    const container = document.body.appendChild(document.createElement("div"));
+    let steered = false;
+    let activeRunId = "run";
+    const update = () => {
+      render(
+        renderChatThread(
+          {
+            ...threadProps("active-steer", "agent:main:dashboard:active-steer", messages),
+            runId: activeRunId,
+            runActive: true,
+            runWorking: true,
+            showToolCalls: true,
+            streamStartedAt: steered ? 1_005 : 1_003,
+            stream: steered ? "Continuing the same execution" : null,
+            onRequestUpdate: update,
+          },
+          transcript,
+        ),
+        container,
+      );
+      transcript.hostUpdated();
+    };
+    try {
+      transcript.hostConnected();
+      update();
+      const toggle = requireElement(container, ".chat-tool-msg-summary");
+      toggle.click();
+      toggle.focus();
+      expect(container.textContent).toContain("OPEN-EVIDENCE-READING");
+      steered = true;
+      messages.push(
+        message("steer", "user", "Check the other file too", 1_004, {
+          runId: "steer-send",
+          steerTargetRunId: "run",
+        }),
+      );
+      update();
+      expect(toggle.isConnected).toBe(true);
+      expect(document.activeElement).toBe(toggle);
+      expect(toggle.getAttribute("aria-expanded")).toBe("true");
+      expect(container.textContent).toContain("OPEN-EVIDENCE-READING");
+      expect(container.textContent).toContain("Continuing the same execution");
+      // A different execution must not keep the now-settled run expanded.
+      activeRunId = "unrelated-run";
+      update();
+      expect(toggle.isConnected).toBe(false);
+      expect(container.querySelector(".chat-work-group")).not.toBeNull();
+    } finally {
+      transcript.hostDisconnected();
+      container.remove();
+    }
+  });
+
   it.each(["indexed", "keyed"] as const)(
     "keeps a settled %s stream replyable while search separates its following tool row",
     async (kind) => {

@@ -74,7 +74,10 @@ function replyStateForRun(
   const promptRunId = userTurnRunId(prompt);
   // Only output without execution facts may use legacy transcript context.
   // A known execution needs a matching prompt or confirmed steer.
-  return runId && promptRunId !== runId && persistedSteerTargetRunId(prompt) !== runId ? {} : state;
+  // Keep chronological context for explicit replies, even without a recipient.
+  return runId && promptRunId !== runId && persistedSteerTargetRunId(prompt) !== runId
+    ? { turnSource: state.turnSource }
+    : state;
 }
 
 /**
