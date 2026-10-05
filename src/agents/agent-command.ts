@@ -85,7 +85,8 @@ async function agentCommandInternal(
   deps?: CliDeps,
   watchSkills = false,
 ) {
-  return await withSessionTurn(
+  let maintenanceRequest: SessionMaintenanceRequest | undefined;
+  const result = await withSessionTurn(
     {
       sessionKey: prepared.sessionKey,
       sessionId: prepared.sessionId,
@@ -103,9 +104,16 @@ async function agentCommandInternal(
         runtime,
         deps,
         watchSkills,
+        (request) => {
+          maintenanceRequest = request;
+        },
       );
     },
   );
+  if (maintenanceRequest) {
+    scheduleSessionMaintenance(maintenanceRequest);
+  }
+  return result;
 }
 
 async function agentCommandInternalOwned(
@@ -115,6 +123,7 @@ async function agentCommandInternalOwned(
   runtime: RuntimeEnv = defaultRuntime,
   deps?: CliDeps,
   watchSkills = false,
+  retainMaintenanceRequest?: (request: SessionMaintenanceRequest) => void,
 ) {
   const resolvedDeps = await resolveAgentCommandDeps(deps);
   const isRawModelRun = initialOpts.modelRun === true || initialOpts.promptMode === "none";
@@ -583,7 +592,7 @@ async function agentCommandInternalOwned(
       releaseForeground,
     });
     if (maintenanceRequest) {
-      scheduleSessionMaintenance(maintenanceRequest);
+      retainMaintenanceRequest?.(maintenanceRequest);
     }
   }
 }
