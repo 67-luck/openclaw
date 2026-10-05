@@ -212,8 +212,9 @@ export async function forceAbandonWorkerEnvironment(
       });
     }
     if (current?.state === "draining") {
+      // Worker tools can be reauthorized during preparation; local claims cannot admit them.
       // The native transaction validates this same capture after entered work drains.
-      if (claim) {
+      if (claim?.owner.kind === "worker") {
         await placements.closeWorkerTurnToolState(claim);
       }
       current = await placements.startReconcile({
