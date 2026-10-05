@@ -567,6 +567,7 @@ export async function admitChatSend(
   clearPendingChatSendReservation();
   const activeRunAbort = admittedRunAbort;
   if (reservationSuperseded) {
+    admittedRunAbort.cleanup();
     gatewayWorkAdmission.release();
     capturedOperator.release();
     const supersedingCached =
