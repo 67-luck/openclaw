@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { getSessionControllerOperation } from "../../sessions/session-controller.js";
 import type { FollowupExecutionResult } from "./followup-turn-execution.js";
 import { enqueueFollowupRun, type FollowupRun } from "./queue.js";
+import type { FollowupRunnerParams } from "./reply-agent-turn-preparation.js";
 import type { TypingController } from "./typing.js";
 
 const state = vi.hoisted(() => ({
@@ -118,6 +120,51 @@ beforeEach(() => {
   state.deliver.mockResolvedValue({ kind: "completed", payloads: [] });
 });
 
+// Exercises policy refresh through the same queue and admission owners as a drained follow-up.
+async function runPolicyRefreshScenario(params: {
+  sessionKey: string;
+  refreshedPolicy: "allow" | "deny";
+}): Promise<void> {
+  activeKeys.add(params.sessionKey);
+  const sessionEntry: InternalSessionEntry = {
+    sessionId: `${params.sessionKey}-session`,
+    updatedAt: Date.now(),
+    sendPolicy: "allow",
+  };
+  const queued = createQueuedRun(params.sessionKey);
+  queued.run.sessionId = sessionEntry.sessionId;
+  queued.run.config = { agents: { defaults: { compaction: { notifyUser: true } } } };
+  queued.turnAdoptionLifecycle = {
+    onAdopted: async () => {
+      sessionEntry.sendPolicy = params.refreshedPolicy;
+    },
+  };
+  const defaults: FollowupRunnerParams = {
+    typing: createTypingController(),
+    typingMode: "never",
+    defaultModel: "anthropic/claude",
+    sessionEntry,
+    sessionStore: { [params.sessionKey]: sessionEntry },
+  };
+  const completed = createDeferred();
+  const runner = createFollowupRunner(defaults);
+  expect(
+    enqueueFollowupRun(
+      params.sessionKey,
+      queued,
+      { mode: "followup", debounceMs: 0 },
+      "none",
+      async (run) => {
+        await runner(run);
+        completed.resolve();
+      },
+    ),
+  ).toBe(true);
+
+  await completed.promise;
+  expect(getSessionControllerOperation(params.sessionKey)).toBeUndefined();
+}
+
 describe("createFollowupRunner admission ownership", () => {
   it("releases the admitted operation when source adoption fails", async () => {
     const sessionKey = "agent:main:followup-adoption-failure";
@@ -160,5 +207,32 @@ describe("createFollowupRunner admission ownership", () => {
     await completed.promise;
     expect(state.execute).toHaveBeenCalledOnce();
     expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
+  });
+
+  it("suppresses a deferred compaction notice after adoption refreshes policy to deny", async () => {
+    state.preflight.mockImplementation(async (params) => {
+      const notify = params.onCompactionNotice;
+      expect(notify).toBeTypeOf("function");
+      if (!notify) {
+        throw new Error("compaction notice hook was not installed");
+      }
+      await notify("end", "Context compacted");
+      return params.sessionEntry;
+    });
+
+    await runPolicyRefreshScenario({
+      sessionKey: "agent:main:followup-policy-control",
+      refreshedPolicy: "allow",
+    });
+    expect(state.deliver.mock.calls.filter(([params]) => params.kind === "block")).toHaveLength(1);
+
+    state.deliver.mockClear();
+    state.execute.mockClear();
+    await runPolicyRefreshScenario({
+      sessionKey: "agent:main:followup-policy-refresh",
+      refreshedPolicy: "deny",
+    });
+    expect(state.deliver.mock.calls.filter(([params]) => params.kind === "block")).toHaveLength(0);
+    expect(state.execute).toHaveBeenCalledOnce();
   });
 });

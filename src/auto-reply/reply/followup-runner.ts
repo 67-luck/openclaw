@@ -233,8 +233,10 @@ export function createFollowupRunner(
         }
       }
       turn.sendPolicy = resolveQueuedTurnSendPolicy(turn);
-      for (const payload of terminalCompactionNotices) {
-        await deliverCompactionNotice(payload, "end", turn);
+      if (turn.sendPolicy === "allow") {
+        for (const payload of terminalCompactionNotices) {
+          await deliverCompactionNotice(payload, "end", turn);
+        }
       }
       admittedTurn = turn;
       admittedRunId = turn.runId;
