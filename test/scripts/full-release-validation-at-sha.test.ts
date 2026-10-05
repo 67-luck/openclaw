@@ -1,11 +1,9 @@
-import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -2123,34 +2121,7 @@ describe("full-release-validation-at-sha", () => {
     const fixture = createDispatchFixture();
     try {
       const missingSha = "f".repeat(40);
-      const result = spawnSync(
-        testNodeExecPath,
-        [
-          SCRIPT_PATH,
-          "--sha",
-          missingSha,
-          "--target-ref",
-          fixture.releaseRef,
-          "--workflow-sha",
-          fixture.workflowSha,
-        ],
-        {
-          cwd: fixture.checkout,
-          encoding: "utf8",
-          env: {
-            ...process.env,
-            MOCK_GH_CALLS: fixture.ghCallsPath,
-            MOCK_GIT_CALLS: fixture.gitCallsPath,
-            MOCK_ORIGIN: fixture.origin,
-            MOCK_PATH_GH_CALLS: fixture.pathGhCallsPath,
-            MOCK_REAL_PATH: process.env.PATH,
-            MOCK_WORKFLOW_SHA: fixture.workflowSha,
-            GH_TOKEN: "fixture-token",
-            OPENCLAW_GH_BIN: fixture.selectedGhPath,
-            PATH: `${join(fixture.checkout, "..", "bin")}:${process.env.PATH}`,
-          },
-        },
-      );
+      const result = fixture.run(["--sha", missingSha]);
       expect(result.status).toBe(1);
       const failedReasons = result.stderr
         .trim()

@@ -1,4 +1,4 @@
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
 import {
   copyFileSync,
   cpSync,
@@ -70,7 +70,7 @@ function commit(root: string, excluded: string[] = []) {
   return { root, sha: git("rev-parse", "HEAD"), git };
 }
 
-function expectRejected(result: ReturnType<typeof spawnSync>, error?: string) {
+function expectRejected(result: SpawnSyncReturns<string>, error?: string) {
   expect(result.status, result.stderr).toBe(1);
   if (error) {
     expect(result.stderr).toContain(error);

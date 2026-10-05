@@ -3222,9 +3222,9 @@ require("node:fs").writeFileSync("scheduler-restart", process.env.OPENCLAW_UPGRA
                 ? String(
                     evaluateWorkflowExpression(inheritedScenario, {
                       eventName: "workflow_dispatch",
+                      frozenTarget: fixture.frozen ?? false,
                       repository: "openclaw/openclaw",
                       runAttempt: 1,
-                      preflightOutputs: { frozen_target: String(fixture.frozen ?? false) },
                     }),
                   )
                 : "",
