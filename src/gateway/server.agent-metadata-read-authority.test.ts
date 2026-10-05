@@ -157,6 +157,7 @@ describe("agent RPC metadata-read authority", () => {
           expect.soft((await listSessionPendingInputs(f.scope)).total).toBe(0);
           expect.soft(execution.observer).not.toHaveBeenCalled();
           expect.soft(agentCommandMock).not.toHaveBeenCalled();
+          await f.drain();
           expect.soft(rpcSourceTesting.has(f.runId)).toBe(false);
           expect.soft(f.context.dedupe.get(`agent:${f.runId}`)).toBe(retained);
           const response = {
