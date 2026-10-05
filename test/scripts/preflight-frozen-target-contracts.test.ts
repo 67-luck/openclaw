@@ -547,7 +547,11 @@ describe("frozen admission upgrade Docker aliases", () => {
     const result = f.run({ docker: { lanes: requestedLanes } });
     expect(result.status, result.stderr).toBe(0);
     const record = JSON.parse(result.stdout);
-    expect(record.docker).toEqual({ lanes: requestedLanes, omitted: [], status: "ADMITTED" });
+    expect(record.docker).toEqual({
+      lanes: requestedLanes.toSorted(),
+      omitted: [],
+      status: "ADMITTED",
+    });
     expect(record.selection.consumers).toEqual(lane === "plugins-offline" ? ["plugins"] : []);
     expect(record.contracts.map((contract: { consumer: string }) => contract.consumer)).toEqual(
       record.selection.consumers,
