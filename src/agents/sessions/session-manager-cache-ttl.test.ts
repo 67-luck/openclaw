@@ -4,6 +4,7 @@ import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import {
+  loadTranscriptEvents,
   replaceTranscriptEventsSync,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
@@ -22,8 +23,16 @@ import {
   restoreCacheTtlToolResultProjections,
   truncateOversizedToolResultsInMessages,
 } from "../embedded-agent-runner/tool-result-truncation.js";
+import { rewriteTranscriptEntriesInSessionManager } from "../embedded-agent-runner/transcript-rewrite.js";
 import type { AgentMessage } from "../runtime/index.js";
+import {
+  createTestSession,
+  registerAgentSessionLoopTestLifecycle,
+} from "./agent-session-loop-correctness.test-support.js";
+import { sessionManagerPrepareHistoryRead } from "./session-manager-history.js";
 import { SessionManager } from "./session-manager.js";
+
+registerAgentSessionLoopTestLifecycle();
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
@@ -151,7 +160,7 @@ function projectionEntries(fixture: Awaited<ReturnType<typeof seedProjection>>) 
 }
 
 it.each(["events", "bytes"] as const)(
-  "preserves projected text and pre-cutoff ambiguity beyond the bounded %s window",
+  "preserves projected text and pre-cutoff ambiguity through bounded %s append eviction",
   async (cutoff) => {
     const fixture = await seedProjection(`projection-cutoff-${cutoff}`);
     const bounded = await SessionManager.openBoundedAsync(fixture.scope, {
@@ -169,6 +178,12 @@ it.each(["events", "bytes"] as const)(
     );
     expect(replay(bounded)).toEqual([fixture.expected]);
     expect(bounded.getBranch()).toHaveLength(2);
+
+    await bounded.appendMessageAsync(makeUserMessage("continue after cutoff", 3));
+    expect(bounded.getEntry(fixture.retainedId)).toBeUndefined();
+    expect(serializeCacheTtlToolResultProjections(restore(bounded))).toEqual(
+      serializeCacheTtlToolResultProjections(fixture.state),
+    );
   },
 );
 
@@ -262,9 +277,15 @@ it.each(["delta", "checkpoint"] as const)(
       expect(serializeCacheTtlToolResultProjections(restore(manager))).toEqual(laterState);
 
       await manager.branchAsync(compaction.id);
-      expect(manager.getBranch().map((entry) => entry.id)).toEqual([compaction.id]);
+      expect(manager.getLeafId()).toBe(compaction.id);
       expect(serializeCacheTtlToolResultProjections(restore(manager))).toEqual(checkpoint.data);
-      expect(manager.buildSessionContext().messages).toHaveLength(1);
+      const messages = manager.buildSessionContext().messages;
+      expect(messages.map((message) => message.role)).toEqual(
+        manager === bounded ? ["compactionSummary", "toolResult"] : ["compactionSummary"],
+      );
+      if (manager === bounded) {
+        expect(messages[1]).toEqual(tool("older-two"));
+      }
 
       await manager.branchAsync(delta.id);
       expect(serializeCacheTtlToolResultProjections(restore(manager))).toEqual(laterState);
@@ -301,7 +322,7 @@ it.each([
     afterReset: false,
     reordered: true,
   },
-] as const)("preserves projection metadata across a hidden $name anchor", async (testCase) => {
+] as const)("preserves projection metadata across a $name anchor", async (testCase) => {
   const fixture = await seedProjection(`projection-hidden-${testCase.kind}`, testCase.afterReset);
   const { checkpoint, retained, delta } = projectionEntries(fixture);
   const hidden = {
@@ -338,15 +359,34 @@ it.each([
         delta,
       ];
   expect(replaceTranscriptEventsSync(fixture.scope, entries)).toBe(true);
+  const persisted = await loadTranscriptEvents(fixture.scope);
   const options = { cwd: fixture.dir, maxEvents: 3, maxBytes: 64_000 };
   const bounded = await SessionManager.openBoundedAsync(fixture.scope, options);
   const detached = await SessionManager.openDetachedBoundedAsync(fixture.scope, options);
+  if (testCase.kind === "label") {
+    expect(bounded.getEntry(fixture.olderId)).toMatchObject({
+      type: "message",
+      message: makeUserMessage("read files", 1),
+    });
+  }
   for (const manager of [bounded, detached]) {
-    expect(manager.getEntry(hidden.id)).toBeUndefined();
+    if (testCase.kind === "label") {
+      // The target precedes the label physically, even when reset excludes it from model history.
+      expect(manager.getEntry(hidden.id)).toMatchObject({
+        type: "label",
+        targetId: fixture.olderId,
+        label: "earlier message",
+      });
+      expect(manager.getLabel(fixture.olderId)).toBe("earlier message");
+    } else {
+      expect(manager.getEntry(hidden.id)).toBeUndefined();
+    }
     expect(manager.getEntry(checkpoint.id)).toBeUndefined();
+    expect(manager.buildSessionContext().messages).toEqual([tool("retained")]);
     expect(replay(manager)).toEqual([fixture.expected]);
   }
   expect(detached.getSessionTarget()).toBeUndefined();
+  expect(await loadTranscriptEvents(fixture.scope)).toEqual(persisted);
 });
 
 it.each([
@@ -392,9 +432,10 @@ it.each([
         throw new Error("Missing fixture reset boundary");
       }
       if (action === "refused summary" && boundary) {
-        expect(manager.getEntry(fixture.olderId)).toBeUndefined();
+        expect(manager.getLabel(fixture.olderId)).toBe("earlier message");
+        expect(manager.getEntry(fixture.checkpointId)).toBeUndefined();
         await expect(
-          manager.branchWithSummaryAsync(fixture.olderId, "unavailable branch"),
+          manager.branchWithSummaryAsync(fixture.checkpointId, "unavailable branch"),
         ).rejects.toThrow("not found");
         expect(serializeCacheTtlToolResultProjections(restore(manager))).toEqual(expected);
         return;
@@ -416,14 +457,19 @@ it.each([
   },
 );
 
-it.each(["delta", "checkpoint", "no marker"] as const)(
-  "preserves earlier detached branches with a retained %s suffix",
-  async (suffix) => {
-    const fixture = await seedProjection(`projection-earlier-branch-${suffix}`);
+it.each(
+  (["delta", "checkpoint", "no marker"] as const).flatMap((suffix) =>
+    (["navigate", "fork current", "fork earlier"] as const).map((action) => ({ suffix, action })),
+  ),
+)(
+  "preserves detached $suffix projection dependencies through $action",
+  async ({ suffix, action }) => {
+    const fixture = await seedProjection(`projection-earlier-branch-${suffix}-${action}`);
     const checkpoint = fixture.source.getEntry(fixture.checkpointId);
     if (checkpoint?.type !== "custom") {
       throw new Error("Missing fixture checkpoint");
     }
+    const laterState = serializeCacheTtlToolResultProjections(fixture.state);
     const branch = fixture.source
       .getBranch()
       .filter((entry) => suffix === "delta" || entry.id !== fixture.deltaId);
@@ -432,58 +478,139 @@ it.each(["delta", "checkpoint", "no marker"] as const)(
         ...checkpoint,
         id: "latest-checkpoint",
         parentId: suffix === "delta" ? fixture.deltaId : fixture.retainedId,
-        data: serializeCacheTtlToolResultProjections(fixture.state),
+        data: laterState,
       });
     }
-    expect(
-      replaceTranscriptEventsSync(fixture.scope, [fixture.source.getHeader(), ...branch]),
-    ).toBe(true);
+    const stored = [fixture.source.getHeader(), ...branch];
+    expect(replaceTranscriptEventsSync(fixture.scope, stored)).toBe(true);
     const detached = await SessionManager.openDetachedBoundedAsync(fixture.scope, {
       cwd: fixture.dir,
       maxEvents: suffix === "delta" ? 3 : suffix === "checkpoint" ? 2 : 1,
       maxBytes: 64_000,
     });
-    await detached.branchAsync(suffix === "delta" ? fixture.deltaId : fixture.retainedId);
-    expect(serializeCacheTtlToolResultProjections(restore(detached))).toEqual(
-      suffix === "delta" ? serializeCacheTtlToolResultProjections(fixture.state) : checkpoint.data,
+    expect(detached.getEntry(fixture.checkpointId)).toBeUndefined();
+    const originalProjection = serializeCacheTtlToolResultProjections(restore(detached));
+    const originalMessages = detached.buildSessionContext().messages;
+    const earlier = suffix === "delta" ? fixture.deltaId : fixture.retainedId;
+    if (action === "navigate") {
+      await detached.branchAsync(earlier);
+      expect(serializeCacheTtlToolResultProjections(restore(detached))).toEqual(
+        suffix === "delta" ? laterState : checkpoint.data,
+      );
+      return;
+    }
+    // A detached rewrite view retains the original as an independent observable owner.
+    const fork = (await detached.prepareTranscriptRewriteAsync()).sessionManager;
+    const selected = action === "fork current" ? fork.getLeafId() : earlier;
+    if (!selected) throw new Error("Missing fork fixture selection");
+    expect(await fork.createBranchedSession(selected)).toBeUndefined();
+    expect(fork.getSessionTarget()).toBeUndefined();
+    expect(fork.getSessionId()).not.toBe(detached.getSessionId());
+    expect(fork.getEntry(fixture.checkpointId)).toBeUndefined();
+    expect(serializeCacheTtlToolResultProjections(restore(fork))).toEqual(
+      action === "fork current"
+        ? originalProjection
+        : suffix === "delta"
+          ? laterState
+          : checkpoint.data,
     );
+    if (action === "fork current") {
+      const current = fork.getLeafId();
+      if (!current) throw new Error("Missing repeated fork selection");
+      await fork.createBranchedSession(current);
+      expect(serializeCacheTtlToolResultProjections(restore(fork))).toEqual(originalProjection);
+    }
+    // A later retained checkpoint must not hide loss of the earlier omitted dependency.
+    await fork.branchAsync(fixture.retainedId);
+    expect(serializeCacheTtlToolResultProjections(restore(fork))).toEqual(checkpoint.data);
+    expect(serializeCacheTtlToolResultProjections(restore(detached))).toEqual(originalProjection);
+    expect(detached.buildSessionContext().messages).toEqual(originalMessages);
+    expect(SessionManager.open(fixture.scope, fixture.dir).getPersistedEntries()).toEqual(stored);
   },
 );
 
-it("preserves projection dependencies when a rewrite replaces the bounded anchor", async () => {
-  const fixture = await seedProjection("projection-rewritten-anchor");
-  const bounded = await SessionManager.openBoundedAsync(fixture.scope, {
-    cwd: fixture.dir,
-    maxEvents: 2,
-    maxBytes: 64_000,
-  });
-  const rewrite = await bounded.prepareTranscriptRewriteAsync();
-  const branch = rewrite.sessionManager.getBranch();
-  await rewrite.sessionManager.resetLeafAsync();
-  const rewrittenIds = new Map<string, string>();
-  for (const entry of branch) {
-    if (entry.type === "message") {
-      if (entry.message.role !== "toolResult") {
-        throw new Error("Unexpected non-tool message in projection rewrite fixture");
+it.each(["persistent legacy", "detached runtime"] as const)(
+  "preserves projection dependencies when a %s rewrite replaces the bounded anchor",
+  async (mode) => {
+    const fixture = await seedProjection(`projection-rewritten-anchor-${mode}`);
+    const options = { cwd: fixture.dir, maxEvents: 2, maxBytes: 64_000 };
+    const bounded =
+      mode === "persistent legacy"
+        ? await SessionManager.openBoundedAsync(fixture.scope, options)
+        : await SessionManager.openDetachedBoundedAsync(fixture.scope, options);
+    if (mode === "detached runtime") {
+      await expect(
+        rewriteTranscriptEntriesInSessionManager({
+          sessionManager: bounded,
+          replacements: [
+            {
+              entryId: fixture.retainedId,
+              message: { ...tool("retained"), isError: true },
+            },
+          ],
+        }),
+      ).resolves.toMatchObject({ changed: true, rewrittenEntries: 1 });
+    } else {
+      const rewrite = await bounded.prepareTranscriptRewriteAsync();
+      const branch = rewrite.sessionManager.getBranch();
+      await rewrite.sessionManager.resetLeafAsync();
+      const rewrittenIds = new Map<string, string>();
+      for (const entry of branch) {
+        if (entry.type === "message") {
+          if (entry.message.role !== "toolResult") {
+            throw new Error("Unexpected non-tool message in projection rewrite fixture");
+          }
+          const replacementId = await rewrite.sessionManager.appendMessageAsync(entry.message);
+          if (!replacementId) {
+            throw new Error("Missing rewritten fixture message");
+          }
+          rewrittenIds.set(entry.id, replacementId);
+        } else if (entry.type === "custom") {
+          rewrittenIds.set(
+            entry.id,
+            await rewrite.sessionManager.appendCustomEntryAsync(entry.customType, entry.data),
+          );
+        }
       }
-      const replacementId = await rewrite.sessionManager.appendMessageAsync(entry.message);
-      if (!replacementId) {
-        throw new Error("Missing rewritten fixture message");
-      }
-      rewrittenIds.set(entry.id, replacementId);
-    } else if (entry.type === "custom") {
-      rewrittenIds.set(
-        entry.id,
-        await rewrite.sessionManager.appendCustomEntryAsync(entry.customType, entry.data),
-      );
+      await rewrite.commit(rewrittenIds);
     }
-  }
-  await rewrite.commit(rewrittenIds);
-  expect(bounded.getBranch()[0]?.id).not.toBe(fixture.retainedId);
-  expect(replay(bounded)).toEqual([fixture.expected]);
-  await bounded.branchAsync(fixture.deltaId);
-  expect(replay(bounded)).toEqual([fixture.expected]);
-});
+    expect(bounded.getBranch()[0]?.id).not.toBe(fixture.retainedId);
+    expect(replay(bounded)).toEqual([
+      mode === "detached runtime" ? { ...fixture.expected, isError: true } : fixture.expected,
+    ]);
+    await bounded.branchAsync(fixture.deltaId);
+    expect(replay(bounded)).toEqual([fixture.expected]);
+    if (mode === "persistent legacy") {
+      const { session } = await createTestSession({ sessionManager: bounded });
+      expect(session.messages).toEqual([tool("retained")]);
+      await bounded.appendThinkingLevelChange("high");
+      await bounded.appendModelChange("test-provider", "test-model");
+      const oversized = {
+        ...tool("oversized continuation"),
+        toolCallId: "new-call",
+        content: [{ type: "text" as const, text: "x".repeat(70_000) }],
+      };
+      await bounded.appendMessageAsync(oversized);
+      expect(bounded.getEntry(fixture.retainedId)).toBeUndefined();
+      expect(bounded.getEntry(fixture.olderId)).toBeDefined();
+      expect(bounded.buildSessionContext()).toMatchObject({
+        messages: [oversized],
+        thinkingLevel: "high",
+        model: { provider: "test-provider", modelId: "test-model" },
+      });
+      expect((await bounded[sessionManagerPrepareHistoryRead]().readContext()).messages).toEqual([
+        tool("retained"),
+        oversized,
+      ]);
+      bounded.branch(fixture.olderId);
+      expect(bounded.buildSessionContext().messages).toEqual([makeUserMessage("read files", 1)]);
+      bounded.resetLeaf();
+      const newRoot = makeUserMessage("new selected root", 4);
+      await bounded.appendMessageAsync(newRoot);
+      expect(bounded.buildSessionContext().messages).toEqual([newRoot]);
+    }
+  },
+);
 
 it("recovers projection dependencies without retaining intervening cache touches", async () => {
   const fixture = await seedProjection("projection-many-touches", false, 40);
@@ -671,7 +798,7 @@ it("resolves checkpoint ancestry by active position when imported rows have forw
   expect(bounded.getBranch()).toHaveLength(2);
 });
 
-it("preserves a retained checkpoint through a forward label with an omitted target", async () => {
+it("preserves a retained checkpoint through forward parents and an admitted label", async () => {
   const fixture = await seedProjection("projection-forward-label");
   const { checkpoint, retained, delta } = projectionEntries(fixture);
   const label = {
@@ -699,8 +826,10 @@ it("preserves a retained checkpoint through a forward label with an omitted targ
       delta,
     ]),
   ).toBe(true);
+  const persisted = await loadTranscriptEvents(fixture.scope);
   const expected = serializeCacheTtlToolResultProjections(fixture.state);
   const full = await SessionManager.openAsync(fixture.scope, fixture.dir);
+  expect(full.getLabel(fixture.olderId)).toBe("older message");
   expect(
     full
       .getBranch()
@@ -713,24 +842,36 @@ it("preserves a retained checkpoint through a forward label with an omitted targ
   const options = { cwd: fixture.dir, maxEvents: 4, maxBytes: 64_000 };
   const bounded = await SessionManager.openBoundedAsync(fixture.scope, options);
   const detached = await SessionManager.openDetachedBoundedAsync(fixture.scope, options);
-  expect(bounded.getEntry(fixture.olderId)).toBeUndefined();
-  expect(bounded.getEntry(label.id)).toBeUndefined();
+  expect(bounded.getEntry(fixture.olderId)).toMatchObject({
+    type: "message",
+    message: makeUserMessage("read files", 1),
+  });
   expect(bounded.getEntry(checkpoint.id)).toBeDefined();
   for (const manager of [bounded, detached]) {
+    // Only the ancestry is forward-linked; the label's target was stored before the label.
+    expect(manager.getEntry(label.id)).toMatchObject({
+      targetId: fixture.olderId,
+      label: "older message",
+    });
+    expect(manager.getLabel(fixture.olderId)).toBe("older message");
+    expect(manager.buildSessionContext().messages).toEqual([tool("retained")]);
     expect(serializeCacheTtlToolResultProjections(restore(manager))).toEqual(expected);
     expect(replay(manager)).toEqual([fixture.expected]);
   }
+  expect(await loadTranscriptEvents(fixture.scope)).toEqual(persisted);
 });
 
 it.each([
-  { firstType: "message", lastType: "reset" },
-  { firstType: "reset", lastType: "custom" },
-  { firstType: "message", lastType: "custom" },
+  { firstType: "message", lastType: "reset", overDepth: false },
+  { firstType: "reset", lastType: "custom", overDepth: false },
+  { firstType: "message", lastType: "custom", overDepth: false },
+  { firstType: "message", lastType: "reset", overDepth: true },
+  { firstType: "message", lastType: "custom", overDepth: true },
 ] as const)(
-  "restores legacy duplicate kinds $firstType → $lastType",
-  async ({ firstType, lastType }) => {
+  "restores legacy duplicate kinds $firstType → $lastType (over-depth=$overDepth)",
+  async ({ firstType, lastType, overDepth }) => {
     const { dir, scope } = await createSessionScope(
-      `projection-duplicate-${firstType}-${lastType}`,
+      `projection-duplicate-${firstType}-${lastType}-${overDepth}`,
     );
     const snapshot = (key: string) => ({
       prunedToolResults: [{ key, mode: "soft" }],
@@ -745,7 +886,9 @@ it.each([
       customType: "openclaw.cache-ttl",
       reason: "new",
       data: snapshot("tool:after:1"),
-      details: marker + "x".repeat(4_096),
+      details: overDepth
+        ? { marker, value: JSON.parse("[".repeat(1_100) + "0" + "]".repeat(1_100)) }
+        : marker + "x".repeat(4_096),
     };
     await seedUnindexedTranscriptForTest({
       ...scope,

@@ -103,7 +103,11 @@ beforeEach(async () => {
   );
 });
 
-async function createFixture(operation: "summary" | "endpoint", globalAlias = false) {
+async function createFixture(
+  operation: "summary" | "endpoint",
+  globalAlias = false,
+  oversizedResult = false,
+) {
   const target = {
     agentId: globalAlias ? "marketing" : "main",
     sessionId: "compaction-session",
@@ -129,6 +133,27 @@ async function createFixture(operation: "summary" | "endpoint", globalAlias = fa
     sessionManager.appendMessage({ role: "user", content, timestamp: 1 });
     sessionManager.appendMessage(
       createAssistant(model, [{ type: "text", text: `Recorded: ${content}` }]),
+    );
+  }
+  if (oversizedResult) {
+    sessionManager.appendMessage(
+      createAssistant(
+        model,
+        [{ type: "toolCall", id: "call_retained_tool", name: "read", arguments: {} }],
+        "toolUse",
+      ),
+    );
+    sessionManager.appendMessage({
+      role: "toolResult",
+      toolCallId: "call_retained_tool",
+      toolName: "read",
+      content: [{ type: "text", text: "retained tool output" }],
+      details: { bytes: "x".repeat(5 * 1024 * 1024) },
+      isError: false,
+      timestamp: 2,
+    });
+    sessionManager.appendMessage(
+      createAssistant(model, [{ type: "text", text: "retained answer" }]),
     );
   }
   sessionManager.flushPendingPersistence();
@@ -197,12 +222,22 @@ async function createFixture(operation: "summary" | "endpoint", globalAlias = fa
 
 describe("direct compactor through the context-engine delegate", () => {
   it.each([
-    { operation: "summary", partial: true, threadId: 0 },
-    { operation: "endpoint", partial: false, threadId: 0 },
+    { operation: "summary", partial: true, threadId: 0, oversizedResult: false },
+    { operation: "endpoint", partial: false, threadId: 0, oversizedResult: false },
+    { operation: "endpoint", partial: false, threadId: 0, oversizedResult: true },
   ] as const)(
-    "returns durable $operation identity (partial=$partial, thread=$threadId)",
-    async ({ operation, partial, threadId }) => {
-      const fixture = await createFixture(operation, partial);
+    "returns durable $operation identity (oversized=$oversizedResult, partial=$partial, thread=$threadId)",
+    async ({ operation, partial, threadId, oversizedResult }) => {
+      const fixture = await createFixture(operation, partial, oversizedResult);
+      if (oversizedResult) {
+        const actual =
+          await vi.importActual<typeof import("./replay-history.js")>("./replay-history.js");
+        const history = await import("./replay-history.js");
+        vi.mocked(history.sanitizeSessionHistory).mockImplementationOnce(
+          actual.sanitizeSessionHistory,
+        );
+        vi.mocked(history.validateReplayTurns).mockImplementationOnce(actual.validateReplayTurns);
+      }
       const { target } = fixture;
       const sessionTarget = {
         ...(partial ? { agentId: target.agentId, storePath: target.storePath } : target),
@@ -277,6 +312,34 @@ describe("direct compactor through the context-engine delegate", () => {
           providerReplay: { data: "opaque-fixture", compactedWindow: { state: "ready" } },
         });
         expect(requestPreparedCompaction).toHaveBeenCalledOnce();
+        if (oversizedResult) {
+          const retainedResults = fixture.originalMessages.filter(
+            (message) => message.role === "toolResult",
+          );
+          expect(retainedResults).toHaveLength(1);
+          expect(
+            reopened
+              .getEntries()
+              .flatMap((entry) =>
+                entry.type === "message" && entry.message.role === "toolResult"
+                  ? [entry.message]
+                  : [],
+              ),
+          ).toEqual(retainedResults);
+          const providerResults = requestPreparedCompaction.mock.calls[0]?.[2].messages.filter(
+            (message) => message.role === "toolResult",
+          );
+          expect(providerResults).toEqual([
+            {
+              role: "toolResult",
+              toolCallId: "call_retained_tool",
+              toolName: "read",
+              content: [{ type: "text", text: "retained tool output" }],
+              isError: false,
+              timestamp: 2,
+            },
+          ]);
+        }
         expect(fixture.stream).not.toHaveBeenCalled();
       }
       expect(fixture.recordUsage).toHaveBeenCalled();

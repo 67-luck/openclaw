@@ -1,13 +1,17 @@
 import { buildSessionContext as buildCoreSessionContext } from "../../../packages/agent-core/src/harness/session/session.js";
+import { selectResidentSessionHistoryContext } from "../../config/sessions/session-history-context.js";
+import { prepareSessionTranscriptHydration } from "../../config/sessions/session-transcript-hydration.js";
 import { sameSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
 import type { ImageContent, TextContent } from "../../llm/types.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { recordModelFallbackStop } from "../model-fallback-stop.js";
-import type { SessionTreeEntry as CoreSessionTreeEntry } from "../runtime/index.js";
 import { SessionManagerAppend } from "./session-manager-append.js";
+import { sessionManagerPrepareHistoryRead } from "./session-manager-history.js";
 import { generateSessionEntryId } from "./session-manager-id.js";
 import { prepareSessionManagerSync } from "./session-manager-incognito-scope.js";
+import { sessionManagerNavigate } from "./session-manager-navigation.js";
+import type { PersistWorkerRecordResult } from "./session-manager-persistence-entry.js";
 import { SessionManagerActorCommittedError } from "./session-manager-persistence-error.js";
 import type {
   BranchSummaryEntry,
@@ -198,35 +202,58 @@ export class SessionManagerEntries extends SessionManagerAppend {
     const captured = { ...params };
     return await withSessionManagerWrite(this, async (admission) => {
       this.assertTranscriptWriteActive();
-      this.validateLeafControl(captured);
-      if (
-        !admission ||
-        (isIncognitoSessionKey(this.persistenceTarget?.sessionKey) && "db" in admission.database)
-      ) {
+      if (!admission) {
         return this.appendLeafControlSync(captured);
       }
-      const previousLeafId = this.leafId;
-      this.leafId = captured.targetId;
       const entry = this.createLeafControl(
         this.appendParentId,
         captured.appendParentId,
         captured.appendMode,
+        captured.targetId,
       );
-      this.leafId = previousLeafId;
+      const history =
+        this.boundedContextLimits && !this.persistenceHeaderPending
+          ? this[sessionManagerPrepareHistoryRead]()
+          : undefined;
+      const selected = history
+        ? await history.readSelectedContext(captured.targetId, this.boundedContextLimits!, {
+            preserveContextStart: true,
+            pendingLeafControl: entry,
+          })
+        : undefined;
+      if (!selected) {
+        this.validateLeafControl(captured);
+      }
+      admission.assertCurrent();
+      history?.assertCurrent();
+      const navigation = selected?.leafControlNavigation ?? captured;
       const target = this.getSessionTarget();
       const assertNavigation = this.captureTranscriptNavigationAssertion();
-      // This control selects the loaded tree; retrying could hide a newer user turn.
-      const committed = await this.persistWorkerRecord(
-        entry,
-        undefined,
-        admission,
-        undefined,
-        undefined,
-        this.transcriptMutationAt,
-        false,
-        assertNavigation,
-      );
+      const incognitoOwner =
+        target && isIncognitoSessionKey(target.sessionKey) && "db" in admission.database
+          ? prepareSessionTranscriptHydration(target)
+          : undefined;
+      const publication = this.captureTranscriptPublication();
+      // The prepared selection belongs to one revision; retrying could hide a newer user turn.
+      const committed: PersistWorkerRecordResult = incognitoOwner
+        ? (() => {
+            publication.beginAdoption();
+            this.persistRecord(entry);
+            return { result: undefined, committedVersion: this.transcriptVersion! };
+          })()
+        : await this.persistWorkerRecord(
+            entry,
+            undefined,
+            admission,
+            undefined,
+            undefined,
+            this.transcriptMutationAt,
+            false,
+            assertNavigation,
+          );
       try {
+        admission.assertCurrent();
+        incognitoOwner?.assertCurrent();
         if (!sameSessionTranscriptTargetBinding(target, this.getSessionTarget())) {
           throw new SessionTranscriptWriterClaimReboundError();
         }
@@ -234,24 +261,61 @@ export class SessionManagerEntries extends SessionManagerAppend {
         if (committed.viewFailure instanceof SessionManagerActorCommittedError) {
           throw committed.viewFailure;
         }
-        if (!this.hasNewerPublishedTranscriptView(committed.committedVersion)) {
+        if (incognitoOwner || !this.hasNewerPublishedTranscriptView(committed.committedVersion)) {
+          if (!incognitoOwner) {
+            history?.assertCurrent();
+          }
           if (committed.viewFailure) {
             throw committed.viewFailure;
           }
+          publication.beginAdoption();
           this.transcriptVersion = committed.committedVersion;
           this.transcriptMutationAt = committed.committedVersion.updatedAt;
           if (committed.reload) {
+            // A reconciled commit owns its new selection; the earlier preview is no longer valid.
             this.adoptPreparedTranscriptReload(committed.reload);
           } else {
-            this.rememberLeafControl(entry);
-            this.leafId = captured.targetId;
-            this.appendParentId = captured.appendParentId;
-            this.appendMode = captured.appendMode;
-            this.pendingDeliberateAppend = false;
+            if (selected?.kind === "bounded") {
+              this.adoptPreparedTranscriptReload({
+                kind: "bounded",
+                snapshot: {
+                  ...selected.snapshot,
+                  version: committed.committedVersion,
+                  transcriptMutationAt: committed.committedVersion.updatedAt,
+                },
+              });
+            } else {
+              this.contextStartEntryId = undefined;
+            }
+            this.rememberLeafControl(entry, navigation.targetId);
             this.cacheTtlProjectionPrefixes = this.cacheTtlProjectionPrefixes?.filter(
               (prefix) => prefix.anchorIds.length > 0,
             );
+            this.leafId = this.resolveOpaqueLeafTargetId(navigation.targetId);
+            this.rawLeafId = navigation.targetId;
+            this.appendParentId = navigation.appendParentId;
+            this.appendMode = navigation.appendMode;
+            if (
+              navigation.appendParentId &&
+              !this.byId.has(navigation.appendParentId) &&
+              !this.opaqueParentsById.has(navigation.appendParentId)
+            ) {
+              this.opaqueParentsById.set(navigation.appendParentId, this.leafId);
+            }
           }
+          this.pendingDeliberateAppend = false;
+          let selectedContext: ReadonlySet<SessionEntry> | undefined = new Set(
+            this.residentContextEntries,
+          );
+          if (!selected && !committed.reload) {
+            const window = this.selectCurrentResidentContext(
+              this.boundedContextLimits,
+              this.getHeader(),
+            );
+            this.contextStartEntryId = window?.contextStartEntryId;
+            selectedContext = window?.entries;
+          }
+          this.enforceResidentBudget(selectedContext);
         }
         return entry;
       } catch (cause) {
@@ -260,7 +324,11 @@ export class SessionManagerEntries extends SessionManagerAppend {
           { cause },
         );
         recordModelFallbackStop(error);
-        this.invalidateTranscriptView(error);
+        if (committed.viewFailure instanceof SessionManagerActorCommittedError) {
+          this.invalidateTranscriptView(error);
+        } else {
+          publication.invalidate(error);
+        }
         throw error;
       }
     });
@@ -299,23 +367,31 @@ export class SessionManagerEntries extends SessionManagerAppend {
     appendMode?: "side";
   }): SessionLeafControl {
     this.validateLeafControl(params);
-    const previousLeafId = this.leafId;
-    this.leafId = params.targetId;
+    const selectionChanged =
+      params.targetId !== this.rawLeafId || params.appendParentId !== this.appendParentId;
     const entry = this.createLeafControl(
       this.appendParentId,
       params.appendParentId,
       params.appendMode,
+      params.targetId,
     );
-    this.leafId = previousLeafId;
     this.persistRecord(entry);
     this.rememberLeafControl(entry);
     this.leafId = params.targetId;
+    this.rawLeafId = params.targetId;
     this.appendParentId = params.appendParentId;
     this.appendMode = params.appendMode;
     this.pendingDeliberateAppend = false;
-    this.cacheTtlProjectionPrefixes = this.cacheTtlProjectionPrefixes?.filter(
-      (prefix) => prefix.anchorIds.length > 0,
-    );
+    const window = selectionChanged
+      ? this.selectCurrentResidentContext(this.boundedContextLimits, this.getHeader())
+      : undefined;
+    if (selectionChanged) {
+      this.cacheTtlProjectionPrefixes = this.cacheTtlProjectionPrefixes?.filter(
+        (prefix) => prefix.anchorIds.length > 0,
+      );
+      this.contextStartEntryId = window?.contextStartEntryId;
+    }
+    this.enforceResidentBudget(window?.entries ?? new Set(this.residentContextEntries));
     return entry;
   }
 
@@ -346,7 +422,11 @@ export class SessionManagerEntries extends SessionManagerAppend {
   }
 
   buildSessionContext(): SessionContext {
-    return buildCoreSessionContext(this.getBranch() as CoreSessionTreeEntry[]) as SessionContext;
+    const branch = this.getBranch();
+    return buildCoreSessionContext(
+      branch,
+      selectResidentSessionHistoryContext(branch, this.residentContextEntries, this.byId),
+    );
   }
 
   /** Omitted projection metadata follows its retained branch anchors, outside model history. */
@@ -364,11 +444,42 @@ export class SessionManagerEntries extends SessionManagerAppend {
   }
 
   async branchAsync(branchFromId: string): Promise<void> {
-    await withSessionManagerWrite(this, async () => {
-      if (!this.byId.has(branchFromId)) {
-        await this.ensureCompletePersistedHistoryAsync();
+    await this[sessionManagerNavigate](branchFromId);
+  }
+
+  [sessionManagerNavigate](branchFromId: string | null): Promise<{
+    assertCurrent: () => void;
+    restoreIfCurrent: () => void;
+  }> {
+    return withSessionManagerWrite(this, async (admission) => {
+      const previousView = this.captureTranscriptView();
+      if (branchFromId === null) {
+        this.resetLeaf();
+      } else if (this.persistenceTarget && this.boundedContextLimits) {
+        const history = this[sessionManagerPrepareHistoryRead]();
+        const selected = await history.readSelectedContext(branchFromId, this.boundedContextLimits);
+        admission?.assertCurrent();
+        history.assertCurrent();
+        this.adoptPreparedTranscriptReload(selected);
+        this.recordTranscriptNavigationChange();
+        this.pendingDeliberateAppend = true;
+      } else {
+        this.branchSync(branchFromId);
       }
-      this.branchSync(branchFromId);
+      const completed = this[sessionManagerPrepareHistoryRead]();
+      return {
+        assertCurrent: completed.assertNavigationCurrent,
+        restoreIfCurrent: () => {
+          try {
+            completed.assertCurrent();
+          } catch {
+            // A newer selection or revoked owner cannot restore this operation's old view.
+            return;
+          }
+          Object.assign(this, previousView);
+          this.recordTranscriptNavigationChange();
+        },
+      };
     });
   }
 
@@ -380,6 +491,8 @@ export class SessionManagerEntries extends SessionManagerAppend {
 
   protected branchSync(branchFromId: string): void {
     this.assertTranscriptViewAvailable();
+    const selectedRawLeafId = this.rawLeafId;
+    const appendParentId = this.appendParentId;
     if (!this.byId.has(branchFromId)) {
       this.ensureCompletePersistedHistory();
     }
@@ -387,24 +500,41 @@ export class SessionManagerEntries extends SessionManagerAppend {
     if (branchTargetId === undefined) {
       throw new Error(`Entry ${branchFromId} not found`);
     }
-    this.recordTranscriptNavigationChange();
+    const selectionChanged =
+      branchTargetId !== selectedRawLeafId ||
+      branchTargetId !== appendParentId ||
+      (this.boundedContextLimits !== undefined && this.residentContextEntries === undefined);
+    this.recordTranscriptNavigationChange(selectionChanged);
     this.leafId = branchTargetId;
+    this.rawLeafId = branchTargetId;
     this.appendParentId = branchTargetId;
     this.appendMode = undefined;
     this.pendingDeliberateAppend = true;
+    const window = selectionChanged
+      ? this.selectCurrentResidentContext(this.boundedContextLimits, this.getHeader())
+      : undefined;
+    if (selectionChanged) {
+      this.contextStartEntryId = window?.contextStartEntryId;
+    }
+    this.enforceResidentBudget(window?.entries ?? new Set(this.residentContextEntries));
   }
 
   resetLeaf(): void {
     this.assertTranscriptViewAvailable();
     this.recordTranscriptNavigationChange();
     this.leafId = null;
+    this.rawLeafId = null;
     this.appendParentId = null;
     this.appendMode = undefined;
     this.pendingDeliberateAppend = true;
+    this.contextStartEntryId = this.selectCurrentResidentContext(
+      this.boundedContextLimits,
+      this.getHeader(),
+    )?.contextStartEntryId;
   }
 
   async resetLeafAsync(): Promise<void> {
-    await withSessionManagerWrite(this, () => this.resetLeaf());
+    await this[sessionManagerNavigate](null);
   }
 
   async branchWithSummaryAsync(
@@ -413,12 +543,23 @@ export class SessionManagerEntries extends SessionManagerAppend {
     details?: unknown,
     fromHook?: boolean,
   ): Promise<string> {
+    const assertNavigation = this.captureTranscriptNavigationAssertion();
     return await withSessionManagerWrite(this, async () => {
-      if (branchFromId !== null && !this.byId.has(branchFromId)) {
-        await this.ensureCompletePersistedHistoryAsync();
-      }
+      assertNavigation();
+      const history =
+        this.persistenceTarget && this.boundedContextLimits && branchFromId !== null
+          ? this[sessionManagerPrepareHistoryRead]()
+          : undefined;
+      const selected = history
+        ? await history.readSelectedContext(branchFromId, this.boundedContextLimits!)
+        : undefined;
+      history?.assertCurrent();
       const branchTargetId =
-        branchFromId === null ? null : this.resolveBranchTargetId(branchFromId);
+        branchFromId === null
+          ? null
+          : selected?.kind === "bounded"
+            ? selected.snapshot.activeLeafEntryId
+            : this.resolveBranchTargetId(branchFromId);
       if (branchTargetId === undefined) {
         throw new Error(`Entry ${branchFromId} not found`);
       }
@@ -439,6 +580,17 @@ export class SessionManagerEntries extends SessionManagerAppend {
         },
         true,
       );
+      try {
+        assertNavigation();
+      } catch (cause) {
+        const error = new Error(
+          "Session branch summary committed, but its context could not be adopted; do not replay the append",
+          { cause },
+        );
+        error.name = "SessionEntryCommittedError";
+        recordModelFallbackStop(error);
+        throw error;
+      }
       return entry.id;
     });
   }

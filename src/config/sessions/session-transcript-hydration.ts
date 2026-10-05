@@ -29,6 +29,7 @@ import {
   resolveSessionTranscriptReadFence,
   runWithSessionTranscriptReadFence,
 } from "./session-transcript-read-fence.js";
+import { readSessionTranscriptResidentContext } from "./session-transcript-resident-context.worker.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import type {
   PreparedSessionTranscriptHydration,
@@ -43,7 +44,7 @@ export function prepareIncognitoSessionTranscriptHydration(params: {
   actor: IncognitoSessionActor;
   authority: IncognitoSessionAuthority;
   target: IncognitoHistoryTarget;
-  limits?: { maxBytes: number; maxEvents: number };
+  limits?: Parameters<typeof prepareSessionTranscriptHydration>[1];
   signal?: AbortSignal;
 }): ReturnType<typeof prepareSessionTranscriptHydration> {
   const { actor, authority, signal } = params;
@@ -99,12 +100,16 @@ export function prepareIncognitoSessionTranscriptHydration(params: {
 /** Capture identity before queueing; a missing file remains the creation owner's responsibility. */
 export function prepareSessionTranscriptHydration(
   source: SessionTranscriptRuntimeTarget & { env?: NodeJS.ProcessEnv },
-  limits?: { maxBytes: number; maxEvents: number },
+  limits?: { maxBytes: number; maxEvents: number; retainContextUsageEvidence?: boolean },
   signal?: AbortSignal,
 ) {
   const target = captureSessionTranscriptTargetBinding(source);
   const contextLimits = limits
-    ? { maxBytes: limits.maxBytes, maxEvents: limits.maxEvents }
+    ? {
+        maxBytes: limits.maxBytes,
+        maxEvents: limits.maxEvents,
+        retainContextUsageEvidence: limits.retainContextUsageEvidence,
+      }
     : undefined;
   const receipt = resolveSessionTranscriptReadFence(target);
   const admission = receipt ? { ...receipt } : undefined;
@@ -115,7 +120,9 @@ export function prepareSessionTranscriptHydration(
   const incognitoOwner = incognitoOptions
     ? getOpenClawAgentDatabaseIfOpen(incognitoOptions)
     : undefined;
+  let historyOwner: Pick<SessionHistoryWorkerDatabase, "generation" | "assertCurrent"> | undefined;
   const assertCurrent = () => {
+    historyOwner?.assertCurrent();
     if (incognitoOptions && getOpenClawAgentDatabaseIfOpen(incognitoOptions) !== incognitoOwner) {
       throw new Error("Session transcript incognito database owner is no longer current");
     }
@@ -126,11 +133,15 @@ export function prepareSessionTranscriptHydration(
       owner: SessionHistoryWorkerDatabase,
       resolvedScope: ResolvedTranscriptReadScope,
     ) => Promise<T>,
+    pinOwner = false,
   ): Promise<T> => {
     signal?.throwIfAborted();
     // Incognito SQLite belongs to this process; never substitute another memory database.
     if (incognitoOptions) {
-      return runWithSessionTranscriptReadFence(admission, readInProcess);
+      assertCurrent();
+      const result = runWithSessionTranscriptReadFence(admission, readInProcess);
+      assertCurrent();
+      return result;
     }
     const resolvedScope = await prepareSqliteTranscriptReadScope(target, signal);
     signal?.throwIfAborted();
@@ -139,6 +150,13 @@ export function prepareSessionTranscriptHydration(
     assertAgentDatabaseTerminalOpenAllowed(databasePath);
     try {
       const result = await withSessionHistoryWorkerDatabase(options, async (owner) => {
+        if (pinOwner) {
+          historyOwner?.assertCurrent();
+          if (historyOwner && historyOwner.generation !== owner.generation) {
+            throw new Error("Session history database owner is no longer current");
+          }
+          historyOwner ??= owner;
+        }
         try {
           return await readInWorker(owner, resolvedScope);
         } finally {
@@ -154,16 +172,22 @@ export function prepareSessionTranscriptHydration(
   };
   const read = (): Promise<PreparedSessionTranscriptHydration> =>
     readInOwner<PreparedSessionTranscriptHydration>(
-      () =>
-        contextLimits
-          ? {
-              kind: "bounded",
-              snapshot: readSessionTranscriptBoundedActiveContextCore(target, {
-                ...contextLimits,
-                readOnly: true,
-              }),
-            }
-          : { kind: "full", snapshot: loadTranscriptReadSnapshotSync(target, { readOnly: true }) },
+      () => {
+        if (!contextLimits) {
+          return {
+            kind: "full",
+            snapshot: loadTranscriptReadSnapshotSync(target, { readOnly: true }),
+          };
+        }
+        const { retainContextUsageEvidence, ...readLimits } = contextLimits;
+        const readContext = retainContextUsageEvidence
+          ? readSessionTranscriptResidentContext
+          : readSessionTranscriptBoundedActiveContextCore;
+        return {
+          kind: "bounded",
+          snapshot: readContext(target, { ...readLimits, readOnly: true }),
+        };
+      },
       (owner, resolvedScope) =>
         owner.readTranscript({ target, resolvedScope, limits: contextLimits, admission }, signal),
     );
@@ -184,7 +208,6 @@ export function prepareSessionTranscriptHydration(
   const readMaintenance = (request: SessionTranscriptMaintenanceRead) =>
     readInOwner(
       () => {
-        assertCurrent();
         if (!incognitoOwner) {
           throw new Error("Session transcript is unavailable for maintenance planning");
         }
@@ -194,6 +217,7 @@ export function prepareSessionTranscriptHydration(
       },
       (owner, resolvedScope) =>
         owner.readMaintenance({ target, resolvedScope, admission, request }, signal),
+      request.operation === "history-page",
     );
   const readRecentActiveEvents = (maxEvents: number) =>
     readInOwner(

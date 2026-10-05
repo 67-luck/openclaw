@@ -8,12 +8,14 @@ import {
   upsertSessionEntryCore,
   type SessionTranscriptRuntimeTarget,
 } from "../../config/sessions/session-accessor.js";
+import { waitForSessionTranscriptProjection } from "../../config/sessions/session-transcript-reconcile.js";
 import { transcriptEventJsonSql } from "../../config/sessions/transcript-payload.js";
 import { getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { resolveZstdCodec } from "../../infra/zstd-codec.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
+import { sessionManagerPrepareHistoryRead } from "./session-manager-history.js";
 import { SessionManager } from "./session-manager.js";
 
 async function withHistory(
@@ -354,10 +356,11 @@ it.each(["compaction", "reset"])(
           ? source.appendCompaction("preserve this complete summary", "opaque-keep", 100)
           : source.appendResetBoundary("new", "opaque-keep");
       const currentId = source.appendMessage(makeUserMessage("current history", 3));
+      await waitForSessionTranscriptProjection(scope);
       const full = source.buildSessionContext().messages;
       const expected =
         boundaryKind === "compaction" ? [full[0], ...full.slice(-3)] : full.slice(-3);
-      await verifyRead(() => {
+      await verifyRead(async () => {
         const selected = SessionManager.openModelContext(scope, {
           limits: { maxBytes: 16_384, maxEvents: 4 },
         });
@@ -374,8 +377,232 @@ it.each(["compaction", "reset"])(
         for (const [index, entry] of branch.entries()) {
           expect(entry.parentId).toBe(index === 0 ? null : branch[index - 1]!.id);
         }
+        const bounded = await SessionManager.openBoundedAsync(scope, {
+          maxBytes: 16_384,
+          maxEvents: 4,
+        });
+        const history = bounded[sessionManagerPrepareHistoryRead]();
+        const acquired = await history.readBranch({ maxEvents: 2 });
+        expect(acquired.map((entry) => entry.id)).toEqual([
+          callId,
+          resultId,
+          boundaryId,
+          currentId,
+        ]);
+        expect(acquired.find((entry) => entry.id === boundaryId)).toMatchObject({
+          firstKeptEntryId: callId,
+        });
+        expect((await history.readContext()).messages).toEqual(expected);
       });
     });
+  },
+);
+
+it.each(["compaction", "reset"])(
+  "keeps older user pins connected outside model context across an injected %s boundary",
+  async (boundaryKind) => {
+    await withHistory(
+      `context-injected-pin-${boundaryKind}`,
+      async ({ scope, source, verifyRead }) => {
+        const user = makeUserMessage("retained user", 1);
+        const userId = source.appendMessage(user);
+        const omitted = makeAgentAssistantMessage({
+          content: [{ type: "text", text: "omitted response" }],
+        });
+        const omittedId = source.appendMessage(omitted);
+        const boundaryId =
+          boundaryKind === "compaction"
+            ? source.appendCompaction("retained summary", userId, 100)
+            : source.appendResetBoundary("new", userId);
+        const latest = makeAgentAssistantMessage({
+          content: [{ type: "text", text: "latest response" }],
+        });
+        const latestId = source.appendMessage(latest);
+        const fullContext = source.buildSessionContext().messages;
+        expect(fullContext).toMatchObject([
+          ...(boundaryKind === "compaction"
+            ? [{ role: "compactionSummary", summary: "retained summary" }]
+            : []),
+          user,
+          omitted,
+          latest,
+        ]);
+        const summary = boundaryKind === "compaction" ? fullContext.slice(0, 1) : [];
+        await waitForSessionTranscriptProjection(scope);
+        const manager = await SessionManager.openBoundedAsync(scope, {
+          maxBytes: 4096,
+          maxEvents: 1,
+        });
+        await verifyRead(async () => {
+          await manager.reloadPersistedTranscriptAsync();
+          expect(manager.getEntry(omittedId)).toBeUndefined();
+          expect(manager.getEntries().map((entry) => entry.id)).toEqual([
+            userId,
+            boundaryId,
+            latestId,
+          ]);
+          expect(manager.getBranch().map((entry) => entry.id)).toEqual([
+            userId,
+            boundaryId,
+            latestId,
+          ]);
+          expect(manager.getEntry(boundaryId)).toMatchObject({
+            parentId: userId,
+            firstKeptEntryId: userId,
+          });
+          // Reload pins the current user for inspection after selecting the one-entry model window.
+          expect(manager.getEntry(userId)).toMatchObject({ message: user });
+          expect(manager.buildSessionContext().messages).toEqual([...summary, latest]);
+          const context = await manager[sessionManagerPrepareHistoryRead]().readContext();
+          expect(context.messages).toEqual([...summary, latest]);
+        });
+        const appended = makeAgentAssistantMessage({
+          content: [{ type: "text", text: "after reload" }],
+        });
+        const { entryId: appendedId } =
+          await manager.appendMessageWithTranscriptAnchorAsync(appended);
+        expect(manager.getEntry(userId)).toMatchObject({ message: user });
+        expect(manager.getBranch().map((entry) => entry.id)).toEqual([
+          userId,
+          boundaryId,
+          appendedId,
+        ]);
+        expect(manager.getEntry(latestId)).toBeUndefined();
+        expect(manager.buildSessionContext().messages).toEqual([...summary, appended]);
+        const nextContext = await manager[sessionManagerPrepareHistoryRead]().readContext();
+        expect(nextContext.messages).toEqual([...summary, latest, appended]);
+        const stored = await SessionManager.openAsync(scope);
+        expect(stored.getEntries().map((entry) => entry.id)).toEqual([
+          userId,
+          omittedId,
+          boundaryId,
+          latestId,
+          appendedId,
+        ]);
+        expect(stored.getEntry(boundaryId)).toMatchObject({
+          parentId: omittedId,
+          firstKeptEntryId: userId,
+        });
+        expect(stored.buildSessionContext().messages).toEqual([...fullContext, appended]);
+      },
+    );
+  },
+);
+
+it.each(["compaction", "reset"])(
+  "remaps an evicted %s keep anchor along the active branch",
+  async (boundaryKind) => {
+    await withHistory(`context-evicted-cut-${boundaryKind}`, async ({ scope }) => {
+      const manager = await SessionManager.openBoundedAsync(scope, {
+        maxBytes: 4096,
+        maxEvents: 3,
+      });
+      const { entryId: oldId } = await manager.appendMessageWithTranscriptAnchorAsync(
+        makeUserMessage("old keep anchor", 1),
+      );
+      const inactiveId = await manager.appendCustomEntryAsync("inactive-branch", {
+        retained: true,
+      });
+      await manager.branchAsync(oldId);
+      const { entryId: retainedId } = await manager.appendMessageWithTranscriptAnchorAsync(
+        makeUserMessage("retained active user", 2),
+      );
+      const boundaryId =
+        boundaryKind === "compaction"
+          ? await manager.appendCompactionAsync("retained summary", oldId, 100)
+          : await manager.appendResetBoundaryAsync("new", oldId);
+      expect(manager.getEntry(oldId)).toBeDefined();
+      expect(manager.getEntry(inactiveId)).toBeDefined();
+      expect(manager.getBranch().some((entry) => entry.id === inactiveId)).toBe(false);
+      await manager.appendMessageAsync(
+        makeAgentAssistantMessage({
+          content: [{ type: "text", text: "after boundary" }],
+        }),
+      );
+      expect(manager.getEntry(oldId)).toBeUndefined();
+      expect(manager.getEntry(inactiveId)).toBeDefined();
+      expect(manager.getEntry(boundaryId)).toMatchObject({ firstKeptEntryId: retainedId });
+      expect(manager.buildSessionContext().messages).toMatchObject([
+        ...(boundaryKind === "compaction"
+          ? [{ role: "compactionSummary", summary: "retained summary" }]
+          : []),
+        { role: "user", content: "retained active user" },
+        { role: "assistant", content: [{ type: "text", text: "after boundary" }] },
+      ]);
+      const stored = await SessionManager.openAsync(scope);
+      expect(stored.getEntry(boundaryId)).toMatchObject({ firstKeptEntryId: oldId });
+    });
+  },
+);
+
+it.each(["metadata", "excluded message"])(
+  "preserves retained messages when context selection removes the %s cut",
+  async (anchorKind) => {
+    await withHistory(`context-filtered-cut-${anchorKind}`, async ({ source, verifyRead }) => {
+      source.appendMessage(makeUserMessage("obsolete", 0));
+      const excluded = { ...makeUserMessage("display only", 1), excludeFromContext: true };
+      const firstKept =
+        anchorKind === "metadata"
+          ? source.appendCustomEntry("retention-anchor", { value: "metadata only" })
+          : source.appendMessage(excluded);
+      const retained = makeUserMessage("retained request", 2);
+      const retainedId = source.appendMessage(retained);
+      const boundaryId = source.appendCompaction("retained summary", firstKept, 100);
+      const current = makeUserMessage("current request", 3);
+      const currentId = source.appendMessage(current);
+      const detached = SessionManager.fromEntries(source.getPersistedEntries());
+      await verifyRead(async () => {
+        for (const manager of [source, detached]) {
+          const history = manager[sessionManagerPrepareHistoryRead]();
+          const acquired = await history.readBranch({ maxEvents: 1 });
+          expect(acquired.map((entry) => entry.id)).toEqual([retainedId, boundaryId, currentId]);
+          expect(acquired.find((entry) => entry.id === boundaryId)).toMatchObject({
+            firstKeptEntryId: retainedId,
+          });
+          expect((await history.readContext()).messages).toEqual([
+            expect.objectContaining({ role: "compactionSummary", summary: "retained summary" }),
+            retained,
+            current,
+          ]);
+          expect(manager.getEntry(boundaryId)).toMatchObject({ firstKeptEntryId: firstKept });
+        }
+      });
+    });
+  },
+);
+
+it.each(["compaction", "reset"])(
+  "preserves a %s-only context when the newest message exceeds the raw window",
+  async (boundaryKind) => {
+    await withHistory(
+      `context-boundary-only-${boundaryKind}`,
+      async ({ scope, source, verifyRead }) => {
+        const firstKept = source.appendMessage(makeUserMessage("earlier request", 0));
+        const boundaryId =
+          boundaryKind === "compaction"
+            ? source.appendCompaction("preserved summary", firstKept, 100)
+            : source.appendResetBoundary("new", firstKept);
+        source.appendMessage(makeUserMessage("oversized tail: " + "x".repeat(32_768), 1));
+        await verifyRead(async () => {
+          const bounded = await SessionManager.openBoundedAsync(scope, {
+            maxBytes: 4096,
+            maxEvents: 8,
+          });
+          expect(bounded.getBranch().map((entry) => entry.id)).toEqual([boundaryId]);
+          const context = await bounded[sessionManagerPrepareHistoryRead]().readContext();
+          expect(context.messages).toEqual(
+            boundaryKind === "compaction"
+              ? [
+                  expect.objectContaining({
+                    role: "compactionSummary",
+                    summary: "preserved summary",
+                  }),
+                ]
+              : [],
+          );
+        });
+      },
+    );
   },
 );
 

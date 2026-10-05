@@ -1,7 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { serialize } from "node:v8";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { readSessionTranscriptBoundedActiveContextCore } from "../../config/sessions/session-accessor.sqlite-active-context.js";
 import { persistCompactionBoundaryWithSessionEntryInWorker } from "../../config/sessions/session-accessor.sqlite-compaction.js";
 import type {
   SessionTranscriptWriteScope,
@@ -36,13 +35,16 @@ import {
   parseOpaqueLeafEntry,
 } from "../../config/sessions/session-entry-codec.js";
 import type {
+  SessionMaintenanceOperations,
   SessionMetadataOperations,
   SessionMetadataWorkerOperations,
   SessionMetadataMessageControl,
 } from "../../config/sessions/session-manager-write-contract.js";
 import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
 import { readSessionPendingInputAuthorityFacts } from "../../config/sessions/session-pending-input-authority.kernel.js";
+import { reconcileSessionTranscriptIndexInTransaction } from "../../config/sessions/session-transcript-index.js";
 import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
+import { readSessionTranscriptResidentContext } from "../../config/sessions/session-transcript-resident-context.worker.js";
 import { prepareTranscriptPayloadForReuse } from "../../config/sessions/transcript-payload.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
 import { assertTransactionUsable } from "../../infra/sqlite-transaction.js";
@@ -61,6 +63,7 @@ import {
 import type { AgentDatabaseAdmissionRestriction } from "../../state/openclaw-agent-execution-domain.js";
 import { encodeOpenClawStateWorkerError } from "../../state/openclaw-state-worker-error.js";
 import { executeSessionMaintenance } from "./session-manager-maintenance.worker.js";
+import { readCommittedTranscriptRewrite } from "./session-manager-rewrite.worker.js";
 import type {
   SessionEntry,
   SessionHeader,
@@ -200,7 +203,7 @@ function readCommittedMetadataView(
     if (limits) {
       return {
         kind: "bounded",
-        snapshot: readSessionTranscriptBoundedActiveContextCore(scope, {
+        snapshot: readSessionTranscriptResidentContext(scope, {
           ...limits,
           ...(admission !== undefined ? { ignoreReadFence: true } : {}),
         }),
@@ -282,7 +285,28 @@ export function bindSqliteWorkerBackend(
       return { ok: true, value: executeSessionMaintenance(command, scope, context) };
     }
     if (command.type === "session.transcript.replaceSuffix") {
-      return { ok: true, value: executeSessionMaintenance(command, scope, context) };
+      const value: SessionMaintenanceOperations["session.transcript.replaceSuffix"]["output"] =
+        executeSessionMaintenance(command, scope, context);
+      if (value.replaced && command.input.limits) {
+        try {
+          value.reload = {
+            ok: true,
+            value: readCommittedTranscriptRewrite(
+              scope,
+              command.input.limits,
+              command.input.retainedEntryIds,
+              command.input.retainedCustomDataIds,
+            ),
+          };
+          serialize(value);
+        } catch (error) {
+          value.reload = {
+            ok: false,
+            error: encodeOpenClawStateWorkerError(error, { includeOrdinary: true }),
+          };
+        }
+      }
+      return { ok: true, value };
     }
     if (command.type === "session.transcript.rewrite") {
       const result = runWithMetadataMessageAdmission(context, command.input, (admit) =>
@@ -292,6 +316,35 @@ export function bindSqliteWorkerBackend(
         ok: true,
         value: { ...result.value, pendingInputReceipt: result.pendingInputReceipt },
       };
+    }
+    if (command.type === "session.transcript.rewriteMessages") {
+      const committed = runWithMetadataMessageAdmission(context, command.input, (admit) =>
+        executeSessionMaintenance(command, scope, { ...context, admit }),
+      );
+      const value: SessionMaintenanceOperations["session.transcript.rewriteMessages"]["output"] = {
+        ...committed.value,
+        pendingInputReceipt: committed.pendingInputReceipt,
+      };
+      if (value.result.changed) {
+        try {
+          value.reload = {
+            ok: true,
+            value: readCommittedTranscriptRewrite(
+              scope,
+              command.input.limits,
+              value.retained.retainedEntryIds,
+              value.retained.retainedCustomDataIds,
+            ),
+          };
+          serialize(value);
+        } catch (error) {
+          value.reload = {
+            ok: false,
+            error: encodeOpenClawStateWorkerError(error, { includeOrdinary: true }),
+          };
+        }
+      }
+      return { ok: true, value };
     }
     if (command.type === "session.transcript.appendMessage") {
       const message: unknown = JSON.parse(command.input.messageJson);
@@ -372,11 +425,12 @@ export function bindSqliteWorkerBackend(
       context,
       messageControl,
       (admit, beforeFreshMessageCommit) =>
-        runOpenClawAgentWriteTransaction<
-          SessionMetadataWorkerOperations[
+        runOpenClawAgentWriteTransaction<{
+          outcome: SessionMetadataWorkerOperations[
             | "session.metadata.initialize"
-            | "session.metadata.append"]["output"]
-        >(
+            | "session.metadata.append"]["output"];
+          reloadView?: SessionMetadataOperations["session.metadata.append"]["input"]["view"];
+        }>(
           (database) => {
             if (database.db !== context.database) {
               throw new Error("Session metadata lost its borrowed canonical connection");
@@ -391,7 +445,7 @@ export function bindSqliteWorkerBackend(
                 command.input.initialWriterRunId,
               );
               admit("commit");
-              return { ok: true, value: initialized };
+              return { outcome: { ok: true, value: initialized } };
             }
             let projectionNeedsReconcile = false;
             const projection = {
@@ -426,8 +480,40 @@ export function bindSqliteWorkerBackend(
                     eventJson:
                       typeof command.input.event === "string" ? command.input.event : undefined,
                   });
+            let reloadView: typeof command.input.view;
+            if (
+              event.type !== "session" &&
+              command.input.view &&
+              snapshot.ok &&
+              snapshot.value.result
+            ) {
+              const committed = snapshot.value;
+              const receipt = snapshot.value.result;
+              const adoptedMessage = "messageId" in receipt && receipt.messageId !== event.id;
+              const version = command.input.view.loadedVersion;
+              const effectiveParentId =
+                "effectiveParentId" in receipt ? receipt.effectiveParentId : undefined;
+              if (
+                (receipt.appended || adoptedMessage) &&
+                (adoptedMessage ||
+                  (version &&
+                    (committed.before.generation !== version.generation ||
+                      committed.before.rawSeq !== version.rawSeq)) ||
+                  (effectiveParentId !== undefined && effectiveParentId !== event.parentId))
+              ) {
+                reloadView = command.input.view;
+                if (reloadView.limits) {
+                  // A branch append must publish its projection before reading its bounded receipt.
+                  reconcileSessionTranscriptIndexInTransaction(database.db, scope.sessionId);
+                  projectionNeedsReconcile = false;
+                }
+              }
+            }
             admit("commit");
-            return { ok: true, value: { snapshot, projectionNeedsReconcile } };
+            return {
+              outcome: { ok: true, value: { snapshot, projectionNeedsReconcile } },
+              reloadView,
+            };
           },
           options,
           {
@@ -440,7 +526,7 @@ export function bindSqliteWorkerBackend(
           },
         ),
     );
-    const outcome = result.value;
+    const { outcome, reloadView } = result.value;
     if (outcome.ok && "snapshot" in outcome.value && outcome.value.snapshot.ok) {
       const receipt = outcome.value.snapshot.value.result;
       if (receipt && "message" in receipt && receipt.message === prepared?.persistedMessage) {
@@ -451,49 +537,20 @@ export function bindSqliteWorkerBackend(
     if (result.pendingInputReceipt && outcome.ok && "snapshot" in outcome.value) {
       outcome.value.pendingInputReceipt = result.pendingInputReceipt;
     }
-    if (
-      command.type === "session.metadata.append" &&
-      event &&
-      event.type !== "session" &&
-      command.input.view &&
-      outcome.ok &&
-      "snapshot" in outcome.value &&
-      outcome.value.snapshot.ok
-    ) {
-      const { view } = command.input;
-      const committed = outcome.value.snapshot.value;
-      if (!committed.result) {
-        return outcome;
-      }
-      const adoptedMessage =
-        "messageId" in committed.result && committed.result.messageId !== event.id;
-      if (!committed.result.appended && !adoptedMessage) {
-        return outcome;
-      }
-      const version = view.loadedVersion;
-      const effectiveParentId =
-        "effectiveParentId" in committed.result ? committed.result.effectiveParentId : undefined;
-      if (
-        adoptedMessage ||
-        (version &&
-          (committed.before.generation !== version.generation ||
-            committed.before.rawSeq !== version.rawSeq)) ||
-        (effectiveParentId !== undefined && effectiveParentId !== event.parentId)
-      ) {
-        try {
-          outcome.value.reload = {
-            ok: true,
-            value: readCommittedMetadataView(scope, view.limits, view.admission),
-          };
-          // Detect view serialization failure while the small committed receipt is still retained.
-          serialize(outcome);
-        } catch (error) {
-          // This transaction already committed. Preserve its receipt across read failure.
-          outcome.value.reload = {
-            ok: false,
-            error: encodeOpenClawStateWorkerError(error, { includeOrdinary: true }),
-          };
-        }
+    if (reloadView && outcome.ok && "snapshot" in outcome.value) {
+      try {
+        outcome.value.reload = {
+          ok: true,
+          value: readCommittedMetadataView(scope, reloadView.limits, reloadView.admission),
+        };
+        // Detect view serialization failure while the small committed receipt is still retained.
+        serialize(outcome);
+      } catch (error) {
+        // This transaction already committed. Preserve its receipt across read failure.
+        outcome.value.reload = {
+          ok: false,
+          error: encodeOpenClawStateWorkerError(error, { includeOrdinary: true }),
+        };
       }
     }
     return outcome;

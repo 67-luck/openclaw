@@ -3,6 +3,7 @@ import type {
   SessionEntry,
   SessionEntryBase,
 } from "../../agents/sessions/session-manager-types.js";
+import type { SessionTranscriptParentIds } from "./session-accessor.sqlite-contract.js";
 import {
   isIndexedSessionEntry,
   parseOpaqueLeafEntry,
@@ -10,6 +11,7 @@ import {
 } from "./session-entry-codec.js";
 import {
   isSessionTranscriptSideAppendEntry,
+  visitSessionTranscriptTreePathNodes,
   type SessionTranscriptTreeNode,
 } from "./transcript-tree.js";
 
@@ -22,6 +24,19 @@ export type SessionNavigationEntry = Pick<SessionEntryBase, "id" | "parentId"> &
   );
 
 type SessionParentEntry = Pick<SessionEntryBase, "id" | "parentId">;
+
+export type SessionLabelAdmission = Readonly<{ targetId: string; rawSeq: number | null }>;
+
+/** An admitted record can outlive its target payload; a matching ID cannot admit another row. */
+export function isSessionLabelTargetAdmitted(
+  entry: SessionNavigationEntry,
+  knownIds: Pick<ReadonlySet<string>, "has">,
+  admission?: SessionLabelAdmission,
+): boolean {
+  return (
+    entry.type !== "label" || knownIds.has(entry.targetId) || admission?.targetId === entry.targetId
+  );
+}
 
 /** Physical replay traversal stops on unknown rows; budget exhaustion retains the current ID. */
 export function* walkSessionCurrentTurn(
@@ -40,10 +55,10 @@ export function* walkSessionCurrentTurn(
   return parentId;
 }
 
-function resolveSessionCanonicalParentId(
+export function resolveSessionCanonicalParentId(
   parentId: string | null,
-  byId: ReadonlyMap<string, SessionParentEntry>,
-  opaqueParentsById: ReadonlyMap<string, string | null>,
+  byId: Pick<ReadonlyMap<string, SessionParentEntry>, "has">,
+  opaqueParentsById: Pick<ReadonlyMap<string, string | null>, "get">,
 ): string | null {
   let seen: Set<string> | undefined;
   let currentId = parentId;
@@ -55,6 +70,84 @@ function resolveSessionCanonicalParentId(
     currentId = opaqueParentsById.get(currentId) ?? null;
   }
   return currentId;
+}
+
+export type SessionTranscriptNavigationFacts = {
+  parents: SessionTranscriptParentIds;
+  transcriptSeq: number;
+  retainedParentId: string | null;
+};
+
+/** Memoize complete paths within one worker snapshot, including retained inactive metadata. */
+export function createSessionTranscriptNavigationFacts(
+  byId: Pick<ReadonlyMap<string, SessionTranscriptTreeNode<unknown>>, "get">,
+  retainedIds: ReadonlySet<string>,
+  assertNavigation?: (node: SessionTranscriptTreeNode<unknown>) => void,
+): (id: string) => SessionTranscriptNavigationFacts | undefined {
+  const facts = new Map<string, SessionTranscriptNavigationFacts | null>();
+  return (id) => {
+    const source = byId.get(id);
+    if (source) {
+      assertNavigation?.(source);
+    }
+    if (facts.has(id)) {
+      return facts.get(id) ?? undefined;
+    }
+    if (!isIndexedSessionEntry(source?.entry)) {
+      return undefined;
+    }
+    const pending: SessionTranscriptTreeNode<unknown>[] = [];
+    let transcriptSeq = 0;
+    let canonicalParentId: string | null = null;
+    let retainedParentId: string | null = null;
+    let complete = true;
+    const valid = visitSessionTranscriptTreePathNodes(
+      {
+        get(currentId) {
+          const node = byId.get(currentId);
+          if (node) {
+            assertNavigation?.(node);
+          }
+          const anchor = facts.get(currentId);
+          if (anchor === null) {
+            complete = false;
+            return undefined;
+          }
+          if (anchor) {
+            transcriptSeq = anchor.transcriptSeq;
+            canonicalParentId = currentId;
+            retainedParentId = retainedIds.has(currentId) ? currentId : anchor.retainedParentId;
+            return undefined;
+          }
+          return node;
+        },
+      },
+      id,
+      new Set(),
+      (node) => pending.push(node),
+    );
+    for (const node of pending.reverse()) {
+      const entry = node.entry;
+      if (!isIndexedSessionEntry(entry)) {
+        continue;
+      }
+      if (!valid || !complete) {
+        facts.set(node.id, null);
+        continue;
+      }
+      transcriptSeq += entry.type === "message" || entry.type === "compaction" ? 1 : 0;
+      facts.set(node.id, {
+        parents: { rawParentId: node.parentId, canonicalParentId },
+        transcriptSeq,
+        retainedParentId,
+      });
+      canonicalParentId = node.id;
+      if (retainedIds.has(node.id)) {
+        retainedParentId = node.id;
+      }
+    }
+    return facts.get(id) ?? undefined;
+  };
 }
 
 /** Opaque keep markers retain the same canonical ancestry as session replay. */
@@ -159,7 +252,10 @@ export class SessionEntryNavigation<T extends SessionNavigationEntry> {
   protected invalidLeafControlIds = new Set<string>();
   protected labelsById = new Map<string, string>();
   protected labelTimestampsById = new Map<string, T["timestamp"]>();
+  protected admittedLabelRecords = new Map<T, SessionLabelAdmission>();
   protected leafId: string | null = null;
+  // Raw selection survives omitted payloads independently of the side-append cursor.
+  protected rawLeafId: string | null = null;
   protected appendParentId: string | null = null;
   protected appendMode: "side" | undefined;
   private latestResetId: string | undefined;
@@ -172,7 +268,9 @@ export class SessionEntryNavigation<T extends SessionNavigationEntry> {
     this.invalidLeafControlIds.clear();
     this.labelsById.clear();
     this.labelTimestampsById.clear();
+    this.admittedLabelRecords = new Map();
     this.leafId = null;
+    this.rawLeafId = null;
     this.appendParentId = null;
     this.appendMode = undefined;
     this.latestResetId = undefined;
@@ -183,6 +281,23 @@ export class SessionEntryNavigation<T extends SessionNavigationEntry> {
     // These are scan-local facts; retained managers only need the finished maps.
     this.latestResetId = undefined;
     this.resetDescendantIds.clear();
+  }
+
+  protected adoptSelectedTranscriptPath(
+    selectedLeafEntryId: string | null,
+    appendParentId: string | null,
+    parents: Iterable<readonly [string, string | null]>,
+  ): void {
+    // Selected payloads omit navigation controls. Use their resolved ancestry,
+    // not the side-append parent guesses made while indexing those payloads.
+    this.logicalParentsById.clear();
+    for (const [id, parentId] of parents) {
+      this.logicalParentsById.set(id, this.resolveCanonicalParentId(parentId));
+    }
+    this.appendParentId = appendParentId;
+    this.leafId = this.resolveOpaqueLeafTargetId(selectedLeafEntryId);
+    this.rawLeafId = selectedLeafEntryId;
+    this.appendMode = undefined;
   }
 
   protected resolveOpaqueLeafTargetId(targetId: string | null): string | null {
@@ -220,7 +335,7 @@ export class SessionEntryNavigation<T extends SessionNavigationEntry> {
       leafId,
       appendParentId:
         leafEntry.appendParentId === undefined
-          ? leafId
+          ? this.resolveOpaqueAppendParentId(leafEntry.targetId)
           : this.resolveOpaqueAppendParentId(leafEntry.appendParentId),
       ...(leafEntry.appendMode ? { appendMode: leafEntry.appendMode } : {}),
     };
@@ -253,6 +368,9 @@ export class SessionEntryNavigation<T extends SessionNavigationEntry> {
         this.resetDescendantIds.add(leafEntry.id);
       }
       this.leafId = effectiveLeafState.leafId;
+      if (!crossesResetBoundary) {
+        this.rawLeafId = leafEntry.targetId;
+      }
       this.appendParentId = effectiveLeafState.appendParentId;
       this.appendMode = effectiveLeafState.appendMode;
       return;
@@ -274,8 +392,9 @@ export class SessionEntryNavigation<T extends SessionNavigationEntry> {
   protected appendCanonicalNavigationEntry(
     entry: T,
     hasParentId = Object.hasOwn(entry, "parentId"),
+    labelAdmission?: SessionLabelAdmission,
   ): void {
-    if (entry.type === "label" && !this.byId.has(entry.targetId)) {
+    if (!isSessionLabelTargetAdmitted(entry, this.byId, labelAdmission)) {
       this.opaqueParentsById.set(entry.id, entry.parentId);
       return;
     }
@@ -290,7 +409,7 @@ export class SessionEntryNavigation<T extends SessionNavigationEntry> {
         entry.parentId === this.appendParentId &&
         this.leafId !== this.appendParentId)
     ) {
-      this.logicalParentsById.set(entry.id, this.leafId);
+      this.logicalParentsById.set(entry.id, this.rawLeafId);
     }
     this.byId.set(entry.id, entry);
     if (entry.type === "reset") {
@@ -314,9 +433,14 @@ export class SessionEntryNavigation<T extends SessionNavigationEntry> {
       this.appendMode = "side";
     } else {
       this.leafId = entry.id;
+      this.rawLeafId = entry.id;
       this.appendMode = undefined;
     }
     if (entry.type === "label") {
+      this.admittedLabelRecords.set(entry, {
+        targetId: entry.targetId,
+        rawSeq: labelAdmission?.targetId === entry.targetId ? labelAdmission.rawSeq : null,
+      });
       if (entry.label) {
         this.labelsById.set(entry.targetId, entry.label);
         this.labelTimestampsById.set(entry.targetId, entry.timestamp);
@@ -332,9 +456,11 @@ export class SessionEntryNavigation<T extends SessionNavigationEntry> {
   }
 
   protected resolveEntryParentId(entry: T): string | null {
-    return this.logicalParentsById.has(entry.id)
-      ? (this.logicalParentsById.get(entry.id) ?? null)
-      : this.resolveCanonicalParentId(entry.parentId);
+    return this.resolveCanonicalParentId(
+      this.logicalParentsById.has(entry.id)
+        ? (this.logicalParentsById.get(entry.id) ?? null)
+        : entry.parentId,
+    );
   }
 
   protected normalizeEntryParent(entry: T): T {

@@ -14,9 +14,11 @@ import {
   type CurrentTranscriptProjection,
 } from "./session-accessor.sqlite-projection-read.js";
 import { isIndexedSessionEntry } from "./session-entry-codec.js";
+import { projectTranscriptNavigationFields } from "./transcript-navigation-fields.js";
 import {
   transcriptEventJsonSql,
   transcriptEventModelNavigationSql,
+  transcriptEventNavigationSql,
   transcriptEventResetNavigationSql,
 } from "./transcript-payload.js";
 
@@ -27,18 +29,17 @@ export function readCacheTtlProjectionPrefix(
     | { activePosition: number; id: string; entry: Record<string, unknown>; beforeRawSeq?: number }
     | undefined,
 ): CacheTtlProjectionPrefix | undefined {
-  // Every retained branch can end at the anchor, before any later checkpoint.
-  if (
-    !anchor ||
-    (isIndexedSessionEntry(anchor.entry) &&
-      (anchor.entry.type === "reset" || readCacheTtlCheckpoint([anchor.entry])))
-  ) {
+  if (!anchor) {
     return undefined;
   }
+  const nativeNavigation =
+    /* kysely-allow-raw: legacy over-depth JSON belongs to the existing JavaScript parser. */
+    sql<number>`json_valid(${transcriptEventNavigationSql("event")})`;
   const lastNavigationValue = (key: "type" | "customType") =>
-    /* kysely-allow-raw: legacy duplicate members follow JSON.parse's last-key semantics. */
-    sql`(SELECT value FROM json_each(${transcriptEventResetNavigationSql("event")})
-      WHERE key = ${key} ORDER BY id DESC LIMIT 1)`;
+    /* kysely-allow-raw: native duplicate members follow JSON.parse; exceptional rows never enter json_each. */
+    sql`CASE WHEN ${nativeNavigation} THEN
+      (SELECT value FROM json_each(${transcriptEventResetNavigationSql("event")})
+      WHERE key = ${key} ORDER BY id DESC LIMIT 1) ELSE NULL END`;
   const entryType =
     /* kysely-allow-raw: exact-row identities carry the parsed kind; legacy rows retain native navigation. */
     sql`coalesce(identity.event_type, ${lastNavigationValue("type")})`;
@@ -59,6 +60,8 @@ export function readCacheTtlProjectionPrefix(
       .select((eb) =>
         eb
           .case()
+          .when(nativeNavigation, "=", 0)
+          .then(transcriptEventJsonSql(projection.database.db, "event"))
           .when(entryType, "=", "reset")
           // Preserve the classified kind when legacy JSON starts with another duplicate type.
           .then(transcriptEventModelNavigationSql("event", sql.lit("reset")))
@@ -78,6 +81,9 @@ export function readCacheTtlProjectionPrefix(
           .case()
           .when("identity.event_type", "not in", ["custom", "reset"])
           .then(false)
+          // Unknown exceptional legacy rows need their parser; ordinary bodies stay in SQLite.
+          .when(nativeNavigation, "=", 0)
+          .then(true)
           .else(
             eb.or([
               eb(entryType, "=", "reset"),
@@ -91,16 +97,50 @@ export function readCacheTtlProjectionPrefix(
       )
       .orderBy("active.active_position", "desc"),
   );
+  return collectCacheTtlProjectionPrefix(
+    anchor,
+    (function* () {
+      for (const row of rows) {
+        yield JSON.parse(row.event_json);
+      }
+    })(),
+  );
+}
+
+/** Consume newest-first dependencies from the caller's selected branch and read snapshot. */
+export function collectCacheTtlProjectionPrefix(
+  anchor: { id: string; entry: unknown },
+  entries: Iterable<unknown>,
+): CacheTtlProjectionPrefix | undefined {
+  // Every retained branch can end at the anchor, before any later checkpoint.
+  if (
+    isIndexedSessionEntry(anchor.entry) &&
+    (anchor.entry.type === "reset" || readCacheTtlCheckpoint([anchor.entry]))
+  ) {
+    return undefined;
+  }
   const prefix: Record<string, unknown>[] = [];
-  for (const row of rows) {
-    const entry = asOptionalRecord(JSON.parse(row.event_json));
+  for (const value of entries) {
+    const entry = asOptionalRecord(value);
     if (
       !isIndexedSessionEntry(entry) ||
-      (entry.type !== "reset" && (entry.type !== "custom" || isCacheTtlTouch(entry.data)))
+      (entry.type !== "reset" &&
+        (entry.type !== "custom" ||
+          entry.customType !== "openclaw.cache-ttl" ||
+          isCacheTtlTouch(entry.data)))
     ) {
       continue;
     }
-    prefix.push(entry);
+    prefix.push(
+      entry.type === "reset"
+        ? {
+            ...projectTranscriptNavigationFields(entry),
+            reason: entry.reason,
+            firstKeptEntryId: entry.firstKeptEntryId,
+            timestamp: entry.timestamp,
+          }
+        : entry,
+    );
     if (entry.type === "reset" || readCacheTtlCheckpoint([entry])) {
       break;
     }
@@ -112,25 +152,28 @@ export function readCacheTtlProjectionPrefix(
 export function bindCacheTtlProjectionPrefixes(
   bounded: Pick<
     SessionTranscriptBoundedActiveContext,
-    "cacheTtlProjectionPrefixes" | "activeLeafEntryId" | "parents" | "opaqueParents"
+    "cacheTtlProjectionPrefixes" | "selectedLeafEntryId" | "parents" | "opaqueParents"
   >,
   view: {
     getBranch(): readonly { id: string }[];
     getEntry(id: string): { id: string } | undefined;
   },
+  retainUnanchored = false,
 ): SessionTranscriptBoundedActiveContext["cacheTtlProjectionPrefixes"] {
   const prefixes = bounded.cacheTtlProjectionPrefixes;
   if (!prefixes?.length) {
     return prefixes;
   }
   const visible = new Set(view.getBranch().map((entry) => entry.id));
-  const parents = new Map([...bounded.opaqueParents, ...bounded.parents]);
   return prefixes.flatMap((prefix) => {
+    if (prefix.anchorIds.length === 0) {
+      return retainUnanchored ? [prefix] : [];
+    }
     if (prefix.anchorIds.some((id) => view.getEntry(id) !== undefined)) {
       return [prefix];
     }
     const seen = new Set<string>();
-    let id = bounded.activeLeafEntryId;
+    let id = bounded.selectedLeafEntryId;
     let anchorId: string | undefined;
     while (id && !seen.has(id)) {
       if (visible.has(id)) {
@@ -140,7 +183,8 @@ export function bindCacheTtlProjectionPrefixes(
         return [{ ...prefix, anchorIds: anchorId ? [anchorId] : [] }];
       }
       seen.add(id);
-      id = parents.get(id) ?? null;
+      const parent = bounded.parents.get(id);
+      id = parent ? parent.rawParentId : (bounded.opaqueParents.get(id) ?? null);
     }
     return [];
   });

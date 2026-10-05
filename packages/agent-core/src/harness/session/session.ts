@@ -145,7 +145,10 @@ export function* iterateSessionContextMessages<T extends SessionTreeEntry>(
 }
 
 /** Build model context from an ordered session branch and its latest state markers. */
-export function buildSessionContext(pathEntries: SessionTreeEntry[]): SessionContext {
+export function buildSessionContext(
+  pathEntries: SessionTreeEntry[],
+  messageEntries: readonly SessionTreeEntry[] = pathEntries,
+): SessionContext {
   let thinkingLevel = "off";
   let model: { provider: string; modelId: string } | null = null;
   for (const entry of pathEntries) {
@@ -157,5 +160,9 @@ export function buildSessionContext(pathEntries: SessionTreeEntry[]): SessionCon
       model = { provider: entry.message.provider, modelId: entry.message.model };
     }
   }
-  return { messages: Array.from(iterateSessionContextMessages(pathEntries)), thinkingLevel, model };
+  return {
+    messages: Array.from(iterateSessionContextMessages(messageEntries)),
+    thinkingLevel,
+    model,
+  };
 }

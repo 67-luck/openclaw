@@ -1,6 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
 import { ensureSessionEntrySync } from "../../config/sessions/session-accessor.js";
-import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import { publishCommittedSessionIdentity } from "../../config/sessions/session-accessor.sqlite-identity.js";
 import { requireTranscriptEventAppendSnapshot } from "../../config/sessions/session-accessor.sqlite-transcript-append-result.js";
 import {
@@ -39,7 +38,10 @@ import {
   getSessionCompactionPersistenceAsync,
 } from "./session-compaction-persistence.js";
 import { isIndexedSessionEntry, parseOpaqueLeafEntry } from "./session-manager-codec.js";
-import { SessionManagerCore } from "./session-manager-core.js";
+import {
+  prepareSessionManagerHistoryRead,
+  sessionManagerPrepareHistoryRead,
+} from "./session-manager-history.js";
 import { prepareSessionManagerSync } from "./session-manager-incognito-scope.js";
 import {
   adoptCommittedMessagePayload,
@@ -55,31 +57,27 @@ import {
   SessionEntryCommittedError,
   receiveSessionManagerCommit,
 } from "./session-manager-persistence-error.js";
+import {
+  sessionManagerCaptureView,
+  SessionManagerPublication,
+} from "./session-manager-publication.js";
 import type { SessionEntry, SessionHeader, SessionLeafControl } from "./session-manager-types.js";
 import {
   withSessionManagerWrite,
   type SessionManagerWriteAdmission,
 } from "./session-manager-write-admission.js";
 
-export class SessionManagerPersistence extends SessionManagerCore {
+export class SessionManagerPersistence extends SessionManagerPublication {
   #initialWriter: InitialSessionTranscriptWriter | undefined;
-  #navigationEpoch = 0;
 
-  protected recordTranscriptNavigationChange(): void {
-    this.#navigationEpoch++;
-    this.cacheTtlProjectionPrefixes = this.cacheTtlProjectionPrefixes?.filter(
-      (prefix) => prefix.anchorIds.length > 0,
+  [sessionManagerPrepareHistoryRead](signal?: AbortSignal) {
+    return prepareSessionManagerHistoryRead(
+      this,
+      this.captureTranscriptView.bind(this),
+      this.assertTranscriptWriteActive.bind(this),
+      this[sessionManagerCaptureView](),
+      signal,
     );
-  }
-
-  /** Local branch selections revoke pending writes; committed view adoption does not. */
-  protected captureTranscriptNavigationAssertion(): () => void {
-    const epoch = this.#navigationEpoch;
-    return () => {
-      if (this.#navigationEpoch !== epoch) {
-        throw new Error("Session transcript navigation changed before publication");
-      }
-    };
   }
 
   protected retainTranscriptWriter(): void {
@@ -111,16 +109,6 @@ export class SessionManagerPersistence extends SessionManagerCore {
         expectedLifecycleRevision: undefined,
         expectedWriterRunId: initialWriter.writerRunId,
       },
-    );
-  }
-
-  protected hasNewerPublishedTranscriptView(version: SessionTranscriptContextVersion): boolean {
-    this.assertTranscriptViewAvailable();
-    // Appends and rewrites strictly advance this owner-held watermark, including maintenance.
-    return (
-      this.transcriptMutationAt != null &&
-      version.updatedAt !== null &&
-      this.transcriptMutationAt >= version.updatedAt
     );
   }
 
@@ -177,6 +165,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
       if (this.persistenceHeaderPending) {
         throw new Error("Compaction boundary validation failed");
       }
+      const publication = this.captureTranscriptPublication();
       const committed = await withSessionTranscriptWriteAssertion(identity, assertCurrent, () =>
         persistCompaction({
           scope: identity,
@@ -194,6 +183,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
       });
       try {
         assertCurrent();
+        publication.beginAdoption();
         if (initialWriter?.committedFence) {
           Object.assign(target, initialWriter.committedFence);
         }
@@ -204,7 +194,7 @@ export class SessionManagerPersistence extends SessionManagerCore {
           committed.after,
           cause,
         );
-        this.invalidateTranscriptView(error);
+        publication.invalidate(error);
         throw error;
       }
       return {

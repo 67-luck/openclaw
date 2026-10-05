@@ -33,7 +33,10 @@ export function replaceTranscriptSuffixEventsSync(
   nextEvents: readonly TranscriptEvent[],
   prefixLength = 0,
   expectedMutationAt?: number | null,
-  captureVersionInTransaction?: (version: SessionTranscriptContextVersion) => void,
+  captureVersionInTransaction?: (
+    version: SessionTranscriptContextVersion,
+    rewritten: { firstIndex: number; firstSeq: number },
+  ) => void,
   eventsStartAtPersistedPrefix = false,
   retainedCustomDataIds: readonly string[] = [],
   admit?: (stage: "transaction" | "commit") => void,
@@ -73,7 +76,11 @@ export function replaceTranscriptSuffixEventsSync(
         !stageSqliteTransactionState(database.db, {
           stage: () => {},
           rollback: () => {},
-          commit: () => captureVersionInTransaction(committedVersion),
+          commit: () =>
+            captureVersionInTransaction(committedVersion, {
+              firstIndex: nextEvents.length - (plan.next.length - plan.prefixLength),
+              firstSeq: plan.startSeq,
+            }),
         })
       ) {
         throw new Error("Transcript suffix replacement requires committed transaction state");

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAttemptNestedToolActivityState } from "./attempt-nested-tool-activity.js";
 
 const mocks = vi.hoisted(() => ({
@@ -30,9 +30,26 @@ vi.mock("./attempt-stream-settle.js", () => ({
 }));
 
 import { makeUserMessage } from "../../../../test/helpers/user-message.js";
+import { loadTranscriptEvents } from "../../../config/sessions/session-transcript-events.js";
+import type { ToolResultMessage } from "../../../llm/types.js";
 import { createSubscribedSessionHarness } from "../../embedded-agent-subscribe.e2e-harness.js";
-import { SessionManager } from "../../sessions/index.js";
+import { isRecordedModelFallbackStop } from "../../model-fallback-stop.js";
+import {
+  createTestSession,
+  registerAgentSessionLoopTestLifecycle,
+  streamMocks,
+} from "../../sessions/agent-session-loop-correctness.test-support.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
+import { SessionManager } from "../../sessions/session-manager.js";
+import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
+import { repairRejectedThinkingReplayInSessionManager } from "../thinking-replay-repair.js";
+import { useTranscriptRewriteFixtures } from "../transcript-rewrite.test-support.js";
 import { runEmbeddedAttemptSettledPhase } from "./attempt-settle.js";
+import * as transcriptHelpers from "./attempt-transcript-helpers.js";
+
+registerAgentSessionLoopTestLifecycle();
+
+const { createPersistedRewriteTarget } = useTranscriptRewriteFixtures(afterEach);
 
 type SettledInput = Parameters<typeof runEmbeddedAttemptSettledPhase>[0];
 type SettleMockInput = {
@@ -54,7 +71,7 @@ type FixtureOverrides = {
 
 function createFixture(overrides: FixtureOverrides = {}) {
   const order: string[] = [];
-  const repairedMessages = [{ role: "user", content: "repaired" }];
+  const repairedMessages = [makeUserMessage("repaired", 0)];
   const activeSession =
     overrides.activeSession ??
     ({
@@ -62,13 +79,10 @@ function createFixture(overrides: FixtureOverrides = {}) {
       getActiveToolNames: vi.fn(() => ["read"]),
       sessionId: "active-session",
     } as never);
-  const sessionManager =
-    overrides.sessionManager ??
-    ({
-      appendLeafControlAsync: vi.fn(async () => undefined),
-      buildSessionContext: () => ({ messages: repairedMessages }),
-      getEntry: vi.fn(),
-    } as never);
+  const sessionManager = overrides.sessionManager ?? SessionManager.inMemory();
+  if (!overrides.sessionManager) {
+    sessionManager.appendMessage(repairedMessages[0]!);
+  }
   const waitForPendingEvents =
     overrides.waitForPendingEvents ??
     vi.fn(async (options?: { includePartialReplies?: boolean }) => {
@@ -256,6 +270,224 @@ beforeEach(() => {
 });
 
 describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
+  it.each([
+    { recovery: "rewind", phase: "context", change: "navigation" },
+    { recovery: "rewind", phase: "context", change: "messages" },
+    { recovery: "rewind", phase: "context", change: "read" },
+    { recovery: "rewind", phase: "receipt", change: "navigation" },
+    { recovery: "rewind", phase: "receipt", change: "messages" },
+    { recovery: "rewind", phase: "receipt", change: "push" },
+    { recovery: "rewind", phase: "settlement", change: "navigation" },
+    { recovery: "rewind", phase: "settlement", change: "messages" },
+    { recovery: "rewind", phase: "settlement", change: "push" },
+    { recovery: "replay", phase: "context", change: "navigation" },
+    { recovery: "replay", phase: "context", change: "messages" },
+    { recovery: "replay", phase: "context", change: "unchanged" },
+  ] as const)(
+    "publishes or fences committed $recovery with $change during $phase",
+    async ({ recovery, phase, change }) => {
+      const oversized = change === "unchanged";
+      const persisted =
+        oversized || change === "read"
+          ? await createPersistedRewriteTarget(`recovery-${recovery}-${change}`)
+          : undefined;
+      const sessionManager = persisted
+        ? await SessionManager.openBoundedAsync(persisted.target, { maxBytes: 4096, maxEvents: 2 })
+        : SessionManager.inMemory();
+      const { session: activeSession } = await createTestSession({ sessionManager });
+      const promptId = sessionManager.appendMessage(makeUserMessage("original request", 1));
+      const rejectedId = sessionManager.appendMessage(
+        makeAgentAssistantMessage({
+          content: [
+            {
+              type: "thinking",
+              thinking: "rejected thinking",
+              thinkingSignature: "rejected-signature",
+            },
+            { type: "text", text: "answer" },
+            ...(oversized
+              ? [{ type: "toolCall" as const, id: "replay-call", name: "read", arguments: {} }]
+              : []),
+          ],
+          stopReason: oversized ? "toolUse" : "stop",
+        }),
+      );
+      const oversizedResult = oversized
+        ? ({
+            role: "toolResult",
+            toolCallId: "replay-call",
+            toolName: "read",
+            content: [{ type: "text", text: "x".repeat(5 * 1024 * 1024) }],
+            isError: false,
+            timestamp: 2,
+          } satisfies ToolResultMessage)
+        : undefined;
+      if (oversizedResult) {
+        const toolId = sessionManager.appendMessage(oversizedResult);
+        sessionManager.appendMessage(
+          makeAgentAssistantMessage({
+            content: [{ type: "text", text: "complete" }],
+            timestamp: 3,
+          }),
+        );
+        expect(sessionManager.getEntry(toolId)).toBeUndefined();
+      }
+      const originalMessages = (
+        persisted ? await SessionManager.openAsync(persisted.target) : sessionManager
+      ).buildSessionContext().messages;
+      const replay =
+        recovery === "replay"
+          ? await repairRejectedThinkingReplayInSessionManager({ sessionManager })
+          : undefined;
+      if (replay) {
+        expect(replay.repaired).toBe(true);
+      }
+      const repairedMessages = persisted
+        ? (await SessionManager.openAsync(persisted.target)).buildSessionContext().messages
+        : undefined;
+      const repairedRows = persisted ? await loadTranscriptEvents(persisted.target) : undefined;
+      activeSession.agent.state.messages = originalMessages;
+      const ownedMessages = activeSession.agent.state.messages;
+      const fixture = createFixture({
+        activeSession,
+        sessionManager,
+        repairedRejectedProviderReplay: replay?.repaired ?? false,
+        getBeforeAgentFinalizeRevisionEntryId: () =>
+          recovery === "rewind" ? rejectedId : undefined,
+      });
+      const newerMessages = [makeUserMessage("newer selected context", 3)];
+      let replacementMessages: typeof originalMessages | undefined;
+      const replaceSelection = () => {
+        if (change === "navigation") {
+          sessionManager.resetLeaf();
+        }
+        if (change === "push") {
+          ownedMessages.push(...newerMessages);
+        } else {
+          activeSession.agent.state.messages = newerMessages;
+          replacementMessages = activeSession.agent.state.messages;
+        }
+      };
+      const rewind = transcriptHelpers.rewindRejectedFinalizationEntry;
+      let committedLeafId: string | null | undefined;
+      const receipt = vi
+        .spyOn(transcriptHelpers, "rewindRejectedFinalizationEntry")
+        .mockImplementation(async (...args) => {
+          const assertCurrent = await rewind(...args);
+          committedLeafId = sessionManager.getLeafId();
+          if (phase === "receipt") {
+            queueMicrotask(replaceSelection);
+          }
+          return assertCurrent;
+        });
+      if (phase === "settlement") {
+        const settle = mocks.settleStream.getMockImplementation();
+        if (!settle) {
+          throw new Error("Missing stream settlement fixture");
+        }
+        mocks.settleStream.mockImplementationOnce(async (...args) => {
+          const result = await settle(...args);
+          queueMicrotask(replaceSelection);
+          return result;
+        });
+      }
+      const readFailure = new Error("recovered context acquisition failed");
+      let committedContext: typeof originalMessages | undefined;
+      const prepare = sessionManager[sessionManagerPrepareHistoryRead].bind(sessionManager);
+      const intercepted = vi
+        .spyOn(sessionManager, sessionManagerPrepareHistoryRead)
+        .mockImplementation((signal) => {
+          const history = prepare(signal);
+          return {
+            ...history,
+            readContext: async (...args) => {
+              const context = await history.readContext(...args);
+              committedContext = context.messages;
+              if (change === "read") {
+                throw readFailure;
+              }
+              if (phase === "context" && change !== "unchanged") {
+                queueMicrotask(replaceSelection);
+              }
+              return context;
+            },
+          };
+        });
+      let failure: unknown;
+      try {
+        await runEmbeddedAttemptSettledPhase(fixture.input);
+      } catch (error) {
+        failure = error;
+      } finally {
+        intercepted.mockRestore();
+        receipt.mockRestore();
+      }
+      if (persisted && oversized) {
+        expect(failure).toBeUndefined();
+        expect(activeSession.agent.state.messages).toEqual(repairedMessages);
+        expect(
+          activeSession.agent.state.messages.filter((message) => message.role === "toolResult"),
+        ).toEqual([oversizedResult]);
+        expect(await loadTranscriptEvents(persisted.target)).toEqual(repairedRows);
+        expect(
+          sessionManager.getEntries().filter((entry) => entry.type === "message"),
+        ).toHaveLength(2);
+        expect(mocks.settleStream).toHaveBeenCalledOnce();
+        expect(mocks.completeAfterTurn).toHaveBeenCalledOnce();
+        return;
+      }
+      assert(failure instanceof Error);
+      expect(isRecordedModelFallbackStop(failure)).toBe(true);
+      expect(failure).toMatchObject({
+        cause: {
+          message: expect.stringContaining(
+            change === "read"
+              ? readFailure.message
+              : change === "navigation"
+                ? "navigation changed"
+                : "Active session messages changed",
+          ),
+        },
+      });
+      expect(activeSession.agent.state.messages).toBe(
+        change === "push" || change === "read" ? ownedMessages : replacementMessages,
+      );
+      if (change !== "read") {
+        expect(activeSession.agent.state.messages.at(-1)).toBe(newerMessages[0]);
+      }
+      if (change === "push" || change === "read") {
+        expect(() => activeSession.messages).toThrow(failure);
+        await expect(activeSession.prompt("must not reuse rejected history")).rejects.toBe(failure);
+        expect(streamMocks.streamSimple).not.toHaveBeenCalled();
+        activeSession.agent.state.messages = sessionManager.buildSessionContext().messages;
+        const replacement = activeSession.agent.state.messages;
+        expect(activeSession.messages).toBe(replacement);
+      } else {
+        expect(activeSession.messages).toBe(replacementMessages);
+      }
+      if (persisted) {
+        expect(failure.cause).toBe(readFailure);
+        expect(
+          (await SessionManager.openAsync(persisted.target)).buildSessionContext().messages,
+        ).toEqual([originalMessages[0]]);
+      }
+      if (phase === "context") {
+        expect(committedContext).toHaveLength(recovery === "rewind" ? 1 : 2);
+        expect(JSON.stringify(committedContext)).not.toContain("rejected thinking");
+      }
+      if (recovery === "rewind") {
+        expect(committedLeafId).toBe(promptId);
+      }
+      if (change === "navigation") {
+        expect(sessionManager.getLeafId()).toBeNull();
+      }
+      expect(mocks.settleStream).toHaveBeenCalledTimes(
+        recovery === "rewind" && phase !== "receipt" ? 1 : 0,
+      );
+      expect(mocks.completeAfterTurn).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not settle a provider failure before partial presentation finishes", async () => {
     let resolvePartial: (() => void) | undefined;
     const onPartialReply = vi.fn(
@@ -431,7 +663,7 @@ describe("runEmbeddedAttemptSettledPhase stream finalization", () => {
       sessionFileUsed: "initial.jsonl",
     });
 
-    expect(fixture.activeSession.agent.state.messages).toBe(fixture.repairedMessages);
+    expect(fixture.activeSession.agent.state.messages).toEqual(fixture.repairedMessages);
     expect(fixture.order).toEqual(["pending-events", "settle", "settled-published", "after-turn"]);
     expect(mocks.settleStream).toHaveBeenCalledWith(
       expect.objectContaining({

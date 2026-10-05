@@ -64,15 +64,19 @@ export async function readSessionTranscriptHydrationRequest(
       resolvedScope: request.resolvedScope,
     });
   }
-  const { readSessionTranscriptBoundedActiveContextCore } =
-    await import("./session-accessor.sqlite-active-context.js");
   const { streamSessionTranscriptHydration } =
     await import("./session-transcript-hydration.worker.js");
   if (request.limits) {
+    const { retainContextUsageEvidence, ...limits } = request.limits;
+    const readContext = retainContextUsageEvidence
+      ? (await import("./session-transcript-resident-context.worker.js"))
+          .readSessionTranscriptResidentContext
+      : (await import("./session-accessor.sqlite-active-context.js"))
+          .readSessionTranscriptBoundedActiveContextCore;
     return {
       kind: "bounded" as const,
-      snapshot: readSessionTranscriptBoundedActiveContextCore(request.target, {
-        ...request.limits,
+      snapshot: readContext(request.target, {
+        ...limits,
         readOnly: true,
         resolvedScope: request.resolvedScope,
       }),

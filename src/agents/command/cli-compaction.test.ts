@@ -247,8 +247,7 @@ describe("runCliTurnCompactionLifecycle", () => {
         },
       }),
       deps: {
-        openSessionManager: async () =>
-          ({ getBranch: () => [], buildSessionContext: () => ({ messages: [] }) }) as never,
+        openSessionManager: async () => SessionManager.inMemory(tmpDir),
       },
     });
     const runLifecycle = (

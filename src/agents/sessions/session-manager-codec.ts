@@ -11,6 +11,7 @@ import type {
   FileEntry,
   SessionContext,
   SessionEntry,
+  SessionTreeNode,
 } from "./session-manager-types.js";
 
 export {
@@ -172,6 +173,43 @@ export function buildSessionContext(
   }
   path.reverse();
   return buildCoreSessionContext(path as CoreSessionTreeEntry[]) as SessionContext;
+}
+
+/** Entries carry canonical parents prepared by the navigation owner. */
+export function buildSessionTree(
+  entries: readonly SessionEntry[],
+  labels: ReadonlyMap<string, string>,
+  labelTimestamps: ReadonlyMap<string, string | undefined>,
+): SessionTreeNode[] {
+  const nodeMap = new Map<string, SessionTreeNode>();
+  const roots: SessionTreeNode[] = [];
+  for (const entry of entries) {
+    nodeMap.set(entry.id, {
+      entry,
+      children: [],
+      label: labels.get(entry.id),
+      labelTimestamp: labelTimestamps.get(entry.id),
+    });
+  }
+  for (const entry of entries) {
+    const node = nodeMap.get(entry.id)!;
+    const parent = entry.parentId !== null ? nodeMap.get(entry.parentId) : undefined;
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  }
+  const stack = [...roots];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    node.children.sort(
+      (left, right) =>
+        new Date(left.entry.timestamp).getTime() - new Date(right.entry.timestamp).getTime(),
+    );
+    stack.push(...node.children);
+  }
+  return roots;
 }
 
 export function parseSessionEntries(content: string): FileEntry[] {

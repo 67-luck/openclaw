@@ -1,3 +1,4 @@
+import type { DatabaseSync } from "node:sqlite";
 import type { AgentMessage } from "../../../packages/agent-core/src/types.js";
 import type { SessionTranscriptContextVersion } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import {
@@ -12,6 +13,7 @@ import type {
   SessionTranscriptContextSnapshot,
 } from "../../config/sessions/session-history-read.types.js";
 import type { IncognitoContextReadResult } from "../../config/sessions/session-incognito-history-contract.js";
+import type { SessionMaintenanceOperations } from "../../config/sessions/session-manager-write-contract.js";
 import { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session-transcript-anchor-read.js";
 import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-transcript-context-read.js";
 import {
@@ -39,11 +41,15 @@ import {
   captureSessionManagerIncognitoAdmissionAssertion,
   captureSessionManagerIncognitoBinding,
 } from "./session-manager-incognito-scope.js";
+import type {
+  SessionManagerBoundedContextLimits,
+  SessionManagerPersistenceTarget,
+} from "./session-manager-view-types.js";
 
 /** SessionManager planning uses the same actor as its subsequent metadata command. */
 export function prepareSessionManagerHydration(
   source: SessionTranscriptRuntimeTarget,
-  limits?: { maxBytes: number; maxEvents: number },
+  limits?: Parameters<typeof prepareSessionTranscriptHydration>[1],
   signal?: AbortSignal,
   manager?: object,
   retarget = false,
@@ -333,4 +339,40 @@ export async function readSessionManagerContextAsync<T>(
       signal,
     );
   });
+}
+
+/** Native incognito keeps its database while sharing the worker's suffix mutation owner. */
+export async function prepareNativeSessionSuffixOperations(params: {
+  target: SessionManagerPersistenceTarget;
+  database: DatabaseSync;
+  limits: SessionManagerBoundedContextLimits;
+  retainedEntryIds: readonly string[];
+  assertCurrent: () => void;
+}) {
+  const [{ executeSessionMaintenance }, { readCommittedTranscriptRewrite }] = await Promise.all([
+    import("./session-manager-maintenance.worker.js"),
+    import("./session-manager-rewrite.worker.js"),
+  ]);
+  params.assertCurrent();
+  return {
+    replace: (
+      args: SessionMaintenanceOperations["session.transcript.replaceSuffix"]["input"]["args"],
+      publishSuffixCommit: (version: SessionTranscriptContextVersion) => void,
+    ) =>
+      executeSessionMaintenance(
+        {
+          type: "session.transcript.replaceSuffix",
+          input: { scope: params.target, args, limits: params.limits },
+        },
+        params.target,
+        { database: params.database, admit: params.assertCurrent, publishSuffixCommit },
+      ).replaced,
+    reload: (retainedCustomDataIds: readonly string[]) =>
+      readCommittedTranscriptRewrite(
+        params.target,
+        params.limits,
+        params.retainedEntryIds,
+        retainedCustomDataIds,
+      ),
+  };
 }

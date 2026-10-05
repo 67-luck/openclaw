@@ -36,10 +36,12 @@ import {
   agentSessionAutomaticCompaction,
   agentSessionSetContextReplacementHook,
 } from "../sessions/agent-session-compaction.js";
+import { prepareSessionMessagePublication } from "../sessions/agent-session-publication.js";
 import { type AgentSession, estimateTokens, SessionManager } from "../sessions/index.js";
 import { getModelRegistryRuntime } from "../sessions/model-registry-runtime.js";
 import { DefaultResourceLoader } from "../sessions/resource-loader.js";
 import { createAgentSession } from "../sessions/sdk.js";
+import { sessionManagerPrepareHistoryRead } from "../sessions/session-manager-history.js";
 import { setSessionModelUsageSink } from "../sessions/session-model-usage.js";
 import { normalizeUsage, type UsageLike } from "../usage.js";
 import { isSummaryTimeoutFailure, resolveCompactionFailure } from "./compact-reasons.js";
@@ -434,12 +436,19 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
         const compactStartedAt = Date.now();
         // Setup completed: give the first provider request a full safety window.
         params.compactionTimeoutReset?.();
+        const activeSession = session;
         let serverTokensAfter: number | undefined;
-        const recordServerCompaction = (tokensBefore: number) => {
+        const recordServerCompaction = async (tokensBefore: number) => {
           // Endpoint output_tokens omits retained inputs; observe the actual
-          // replacement window synchronously with its accepted rewrite.
+          // replacement window before accounting for the accepted rewrite.
+          const publication = prepareSessionMessagePublication(() => activeSession.agent.state);
+          const history = sessionManager[sessionManagerPrepareHistoryRead](params.abortSignal);
+          const context = await history.readContext();
+          assertActive();
+          history.assertCurrent();
+          publication.assertCurrent();
           serverTokensAfter = estimateLlmBoundaryTokenPressure({
-            messages: sessionManager.buildSessionContext().messages,
+            messages: context.messages,
             systemPrompt: systemPromptText,
             prompt: "",
             replay: {
@@ -477,7 +486,6 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
                 signal: params.abortSignal,
               },
             });
-        const activeSession = session;
         let clientResult: Awaited<ReturnType<typeof activeSession.compact>> | undefined;
         let summaryTimedOut = false;
         // A timeout after generation is persistence; recovery would discard a real summary.

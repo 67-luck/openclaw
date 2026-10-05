@@ -14,19 +14,27 @@ import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.
 import { applyLoggingConfig, resetLogger } from "../../logging/logger.js";
 import { registerSecretValueForRedaction } from "../../logging/secret-redaction-registry.js";
 import { resetSecretRedactionRegistryForTest } from "../../logging/secret-redaction-registry.test-support.js";
+import {
+  onInternalSessionTranscriptUpdate,
+  type InternalSessionTranscriptUpdate,
+} from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import type { IncognitoAgentDatabaseExecution } from "../../state/openclaw-agent-execution-incognito.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { isRecordedModelFallbackStop } from "../model-fallback-stop.js";
+import { guardSessionManager } from "../session-tool-result-guard-wrapper.js";
 import { installSessionToolResultGuard } from "../session-tool-result-guard.js";
+import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
 import { withSessionCompactionPersistenceAsync } from "./session-compaction-persistence.js";
 import {
   sessionManagerReadInitialContext,
   sessionManagerPrepareCurrentTurnReplay,
 } from "./session-manager-current-turn.js";
+import { sessionManagerPrepareHistoryRead } from "./session-manager-history.js";
 import { readSessionManagerModelContextAsync } from "./session-manager-incognito.js";
 import { SessionTranscriptMessageCommittedError } from "./session-manager-message-error.js";
+import { sessionManagerRewriteTranscript } from "./session-manager-rewrite.js";
 import {
   appendSessionTranscriptNote,
   withSessionManagerWrite,
@@ -90,6 +98,9 @@ it("keeps manager reads and writes on the original actor outside its opening sco
     expect((await bounded[sessionManagerReadInitialContext]()).messages).toMatchObject([
       { role: "user", content: "retained owner" },
     ]);
+    expect(
+      (await bounded[sessionManagerPrepareHistoryRead]().readContext()).messages,
+    ).toMatchObject([{ role: "user", content: "retained owner" }]);
     const admission = new AbortController();
     await withIncognitoSessionActor(
       actor,
@@ -425,7 +436,15 @@ it("persists messages, metadata, suffixes, rewrites and branches on the actor wi
       assert(replacement);
       await rewrite.commit(new Map([[first.entryId, replacement]]));
       expect(manager.getLeafId()).toBe(replacement);
-      const branchedId = await manager.createBranchedSession(replacement);
+      expect(
+        await manager[sessionManagerRewriteTranscript]({
+          replacements: [{ entryId: replacement, message: makeUserMessage("repaired", 4) }],
+        }),
+      ).toMatchObject({ changed: true, rewrittenEntries: 1 });
+      const repaired = manager.getLeafId();
+      assert(repaired);
+      expect(manager.getEntry(repaired)).toMatchObject({ message: { content: "repaired" } });
+      const branchedId = await manager.createBranchedSession(repaired);
       expect(branchedId).toBe(manager.getSessionId());
       const currentTarget = manager.getSessionTarget();
       assert(currentTarget);
@@ -440,7 +459,7 @@ it("persists messages, metadata, suffixes, rewrites and branches on the actor wi
               maxBytes: 1024,
             },
           }),
-        () => manager.appendCompactionAsync("summary", replacement, 100),
+        () => manager.appendCompactionAsync("summary", repaired, 100),
       );
       expect(
         (await actor.sessions.read(authority, { sessionKey: target.sessionKey })).entry
@@ -453,6 +472,48 @@ it("persists messages, metadata, suffixes, rewrites and branches on the actor wi
     expect(prepare).not.toHaveBeenCalled();
     expect(exec).not.toHaveBeenCalled();
   } finally {
+    prepare.mockRestore();
+    exec.mockRestore();
+  }
+});
+
+it("retains current-turn anchors and ordinals through bounded actor reloads without caller SQL", async () => {
+  const target = await create("bounded-reload");
+  const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
+  const exec = vi.spyOn(DatabaseSync.prototype, "exec");
+  const updates: InternalSessionTranscriptUpdate[] = [];
+  const stop = onInternalSessionTranscriptUpdate((update) => updates.push(update));
+  try {
+    await withIncognitoSessionActor(actor, async () => {
+      const manager = await SessionManager.openAsync(target, undefined, {
+        maxBytes: 4096,
+        maxEvents: 1,
+      });
+      const user = await manager.appendMessageAsync(makeUserMessage("retained user", 1));
+      const assistant = await manager.appendMessageAsync(
+        makeAgentAssistantMessage({ content: [{ type: "text", text: "retained response" }] }),
+      );
+      assert(user && assistant);
+      await manager.appendCustomEntryAsync("after-context", { retained: true });
+
+      await manager.reloadPersistedTranscriptAsync();
+
+      expect(manager.getEntry(user)).toMatchObject({ message: { content: "retained user" } });
+      expect(manager.getEntry(assistant)).toMatchObject({
+        message: { content: [{ type: "text", text: "retained response" }] },
+      });
+      const next = await guardSessionManager(manager).appendMessageAsync(
+        makeAgentAssistantMessage({ content: [{ type: "text", text: "continued response" }] }),
+      );
+      assert(next);
+      expect(updates.filter((update) => update.messageId === next)).toMatchObject([
+        { messageId: next, messageSeq: 3 },
+      ]);
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(exec).not.toHaveBeenCalled();
+  } finally {
+    stop();
     prepare.mockRestore();
     exec.mockRestore();
   }

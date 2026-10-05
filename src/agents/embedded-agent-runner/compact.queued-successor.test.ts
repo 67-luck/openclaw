@@ -114,25 +114,45 @@ async function withPersistentTranscriptFixture(
     entryId: string;
     request: Parameters<TranscriptRewrite>[0];
     transcriptBefore: unknown[];
-    hooks: { beforeBranchRead?: () => void };
+    hooks: { afterWorkerAcquisition?: () => void };
   }) => Promise<void>,
 ) {
   const { SessionManager } = await import("../sessions/index.js");
+  const metadataRuntime = await import("../sessions/session-manager-metadata-runtime.js");
   const openAsync = vi.spyOn(SessionManager, "openAsync");
   const originalOpenAsync = openAsync.getMockImplementation();
   if (!originalOpenAsync) {
     throw new Error("expected the queued fixture's session-manager bridge");
   }
-  const hooks: { beforeBranchRead?: () => void } = {};
-  openAsync.mockImplementation(async (...args) => {
-    const manager = await PersistentSessionManager.openAsync(...args);
-    const getBranch = manager.getBranch.bind(manager);
-    vi.spyOn(manager, "getBranch").mockImplementation((...branchArgs) => {
-      hooks.beforeBranchRead?.();
-      return getBranch(...branchArgs);
-    });
-    return manager;
-  });
+  const hooks: { afterWorkerAcquisition?: () => void } = {};
+  openAsync.mockImplementation((...args) => PersistentSessionManager.openAsync(...args));
+  const withWorker = metadataRuntime.withSessionMetadataWorker;
+  const observeWorker: typeof withWorker = (
+    options,
+    database,
+    assertCurrent,
+    operation,
+    controls,
+  ) =>
+    withWorker(
+      options,
+      database,
+      assertCurrent,
+      (worker) =>
+        operation({
+          execute: (command, commandOptions) => {
+            if (command.type === "session.transcript.rewriteMessages") {
+              // The real worker acquisition awaited; dispatch must still reject the replaced owner.
+              hooks.afterWorkerAcquisition?.();
+            }
+            return worker.execute(command, commandOptions);
+          },
+        }),
+      controls,
+    );
+  const workerSpy = vi
+    .spyOn(metadataRuntime, "withSessionMetadataWorker")
+    .mockImplementation(observeWorker);
   try {
     const manager = PersistentSessionManager.open(target(), workspaceDir);
     const entryId = manager.appendMessage({
@@ -149,6 +169,7 @@ async function withPersistentTranscriptFixture(
       hooks,
     });
   } finally {
+    workerSpy.mockRestore();
     openAsync.mockImplementation(originalOpenAsync);
   }
 }
@@ -762,14 +783,16 @@ describe("queued compaction successor ownership", () => {
 
   it.each([
     { replacementPoint: "before rewrite", capturedWriter: "writer" },
-    { replacementPoint: "during branch read", capturedWriter: undefined },
+    { replacementPoint: "after worker acquisition", capturedWriter: undefined },
   ] as const)(
     "fences a queued maintenance writer replacement after acceptance: $replacementPoint (captured=$capturedWriter)",
     async ({ replacementPoint, capturedWriter }) => {
       const capturedEntry = { ...owner, updatedAt: 1, activeWriterRunId: capturedWriter };
       replaceSessionEntrySync(target(), capturedEntry);
       await withPersistentTranscriptFixture(async ({ request, transcriptBefore, hooks }) => {
-        const observed: { rewriteRejected?: boolean } = {};
+        const observed: { rewriteRejected?: boolean; takeoverFired: boolean } = {
+          takeoverFired: false,
+        };
         contextEngineCompactMock.mockResolvedValueOnce(completed(sessionId));
         maintain.mockImplementationOnce(async ({ runtimeContext }) => {
           const rewrite = runtimeContext?.rewriteTranscriptEntries;
@@ -782,12 +805,13 @@ describe("queued compaction successor ownership", () => {
               updatedAt: 2,
               activeWriterRunId: "replacement-writer",
             });
+            observed.takeoverFired = true;
           };
           if (replacementPoint === "before rewrite") {
             replaceWriter();
           } else {
-            hooks.beforeBranchRead = () => {
-              hooks.beforeBranchRead = undefined;
+            hooks.afterWorkerAcquisition = () => {
+              hooks.afterWorkerAcquisition = undefined;
               replaceWriter();
             };
           }
@@ -815,6 +839,7 @@ describe("queued compaction successor ownership", () => {
           },
         ).catch(() => undefined);
 
+        expect(observed.takeoverFired).toBe(true);
         expect(observed.rewriteRejected).toBe(true);
         expect(loadSessionEntry(target())).toMatchObject({
           ...owner,

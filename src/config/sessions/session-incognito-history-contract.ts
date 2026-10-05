@@ -110,7 +110,10 @@ type Reads = {
     output: { kind: "session-pending-input-receipts"; receipts: SessionPendingInputReceipt[] };
   };
   hydrate: {
-    input: { limits?: { maxBytes: number; maxEvents: number }; maxEventBytes?: number };
+    input: {
+      limits?: { maxBytes: number; maxEvents: number; retainContextUsageEvidence?: boolean };
+      maxEventBytes?: number;
+    };
     output: PreparedSessionTranscriptHydration;
   };
   "current-turn-entry": {

@@ -22,11 +22,11 @@ import {
   markLastProviderPromptContextRejected,
 } from "../provider-prompt-state.js";
 import { retainEmbeddedSessionPromptState } from "../session-prompt-state.js";
+import { truncateOversizedToolResultsInSessionManager } from "../tool-result-recovery.js";
 import {
   resolveLiveToolResultMaxChars,
   restoreCacheTtlToolResultProjections,
   sessionLikelyHasOversizedToolResults,
-  truncateOversizedToolResultsInSessionManager,
 } from "../tool-result-truncation.js";
 import { isCurrentAttemptReplaySafe } from "./attempt-terminal-evidence.js";
 import {

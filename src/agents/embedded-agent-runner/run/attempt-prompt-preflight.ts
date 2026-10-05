@@ -4,13 +4,13 @@ import type { AgentRunAttemptFailureSource } from "../../agent-run-terminal-outc
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import type { AgentMessage } from "../../runtime/index.js";
+import { committedSessionPublicationError } from "../../sessions/agent-session-publication.js";
 import type { SessionManager } from "../../sessions/index.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
 import { log } from "../logger.js";
 import type { ToolResultPromptProjectionState } from "../session-prompt-state.js";
-import {
-  resolveLiveToolResultMaxChars,
-  truncateOversizedToolResultsInSessionManager,
-} from "../tool-result-truncation.js";
+import { truncateOversizedToolResultsInSessionManager } from "../tool-result-recovery.js";
+import { resolveLiveToolResultMaxChars } from "../tool-result-truncation.js";
 import { normalizeMessagesForLlmBoundary } from "./attempt-llm-boundary.js";
 import type { MidTurnPrecheckRequest } from "./midturn-precheck.js";
 import {
@@ -88,6 +88,7 @@ export async function handleEmbeddedAttemptMidTurnPrecheck(input: {
     const toolResultMaxChars = resolveLiveToolResultMaxChars({
       contextWindowTokens: contextTokenBudget,
     });
+    const recoveryHistory = input.sessionManager[sessionManagerPrepareHistoryRead]();
     const truncationResult = await truncateOversizedToolResultsInSessionManager({
       sessionManager: input.sessionManager,
       projectionState: input.toolResultPromptProjectionState,
@@ -103,9 +104,18 @@ export async function handleEmbeddedAttemptMidTurnPrecheck(input: {
       truncationResult.reason === "no oversized or aggregate tool results"
     ) {
       if (truncationResult.truncated) {
-        input.replaceSessionMessages(
-          sanitizeCompactionReplayMessages(input.sessionManager.buildSessionContext().messages),
-        );
+        try {
+          recoveryHistory.assertNavigationCurrent();
+          const history = input.sessionManager[sessionManagerPrepareHistoryRead]();
+          const context = await history.readContext();
+          history.assertCurrent();
+          input.replaceSessionMessages(sanitizeCompactionReplayMessages(context.messages));
+        } catch (cause) {
+          throw committedSessionPublicationError(
+            "Tool-result truncation committed, but context publication failed; do not replay the rewrite",
+            cause,
+          );
+        }
       }
       // The mid-turn estimate sees the in-memory prompt view, while persisted
       // recovery may already have capped the same tool results. Retry without

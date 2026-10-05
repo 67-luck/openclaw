@@ -142,10 +142,9 @@ function normalizeLegacySplitTurnSummary(summary: string | undefined): string | 
  * reach behind the last reset/compaction boundary.
  */
 function collectPreparationRangeMessages(
-  sessionManager: ExtensionContext["sessionManager"],
+  entries: CoreSessionTreeEntry[],
   firstKeptEntryId: string,
 ): AgentMessage[] {
-  const entries = readSessionBranch(sessionManager);
   const firstKeptIndex = entries.findIndex((entry) => entry.id === firstKeptEntryId);
   if (firstKeptIndex < 0) {
     return [];
@@ -158,16 +157,6 @@ function collectPreparationRangeMessages(
         index < firstKeptIndex || entry.type === "compaction" || entry.type === "reset",
     ),
   ).filter((message) => message.role !== "compactionSummary");
-}
-
-function readSessionBranch(
-  sessionManager: ExtensionContext["sessionManager"],
-): CoreSessionTreeEntry[] {
-  try {
-    return sessionManager.getBranch() as CoreSessionTreeEntry[];
-  } catch {
-    return [];
-  }
 }
 
 function projectBranchEntries(entries: CoreSessionTreeEntry[]): AgentMessage[] {
@@ -854,7 +843,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
       // range it covers: summarize that boundary-scoped range instead. It is
       // never the raw branch, which re-read every reset and prior compaction.
       const rangeMessages = stripRuntimeContextCustomMessages(
-        collectPreparationRangeMessages(ctx.sessionManager, preparation.firstKeptEntryId),
+        collectPreparationRangeMessages(event.branchEntries, preparation.firstKeptEntryId),
       );
       if (containsRealConversation(rangeMessages)) {
         log.info(
@@ -873,7 +862,7 @@ export default function compactionSafeguardExtension(api: ExtensionAPI): void {
         stripRuntimeContextCustomMessages(
           // Project the current boundary; raw branch history would re-summarize
           // messages hidden by earlier resets and compactions.
-          projectBranchEntries(readSessionBranch(ctx.sessionManager)),
+          projectBranchEntries(event.branchEntries),
         ),
       );
     setCompactionSafeguardCancellation(ctx.sessionManager, undefined);

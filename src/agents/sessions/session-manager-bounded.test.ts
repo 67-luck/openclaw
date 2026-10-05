@@ -8,6 +8,7 @@ import {
   appendTranscriptMessage,
   appendTranscriptMessageSync,
   loadTranscriptEvents,
+  persistSessionTranscriptTurn,
   readSessionTranscriptVisibleMessageDeltaCore,
   readSessionTranscriptWatermark,
   readTranscriptRawDelta,
@@ -30,6 +31,8 @@ import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
+import { resolveEmbeddedSessionContextLimits } from "../embedded-agent-runner/run/session-context-limits.js";
+import { parseOpaqueLeafEntry } from "./session-manager-codec.js";
 import { SessionManager } from "./session-manager.js";
 
 const { uuidQueue } = vi.hoisted(() => ({ uuidQueue: [] as string[] }));
@@ -90,6 +93,42 @@ afterEach(() => {
   uuidQueue.length = 0;
 });
 
+it("keeps a 128k resident window bounded across 1,000 committed appends", async () => {
+  const { dir, scope } = await createSessionScope("bounded-append-window");
+  const content = "synthetic transcript payload ".repeat(150);
+  await persistSessionTranscriptTurn(scope, {
+    cwd: dir,
+    expectedSessionId: scope.sessionId,
+    messages: Array.from({ length: 300 }, (_, index) => ({
+      eventId: `seed-${index}`,
+      parentId: index ? `seed-${index - 1}` : null,
+      message: makeUserMessage(content, index),
+    })),
+    touchSessionEntry: false,
+    updateMode: "none",
+  });
+  const limits = resolveEmbeddedSessionContextLimits(128_000);
+  const manager = await SessionManager.openAsync(scope, dir, limits);
+  const openedCount = manager.getEntries().length;
+  let lastId: string | undefined;
+  for (let index = 0; index < 1_000; index++) {
+    lastId = await manager.appendMessageAsync(makeUserMessage(content, 300 + index));
+  }
+  const resident = manager.getEntries();
+  // Newly generated IDs are longer than the seed IDs; one row covers boundary rounding.
+  expect(resident.length).toBeLessThanOrEqual(openedCount + 1);
+  const residentBytes = [manager.getHeader(), ...resident].reduce(
+    (total, entry) => total + Buffer.byteLength(JSON.stringify(entry)) + 1,
+    0,
+  );
+  expect(residentBytes).toBeLessThanOrEqual(limits.maxBytes);
+  expect(manager.getLeafId()).toBe(lastId);
+  expect(manager.getEntry("seed-299")).toBeUndefined();
+  const persisted = await loadTranscriptEvents(scope);
+  expect(persisted).toHaveLength(1_301);
+  expect(persisted).toEqual(expect.arrayContaining([expect.objectContaining({ id: "seed-299" })]));
+});
+
 it("keeps generated entry ids unique outside a bounded transcript tail", async () => {
   const { dir, scope } = await createSessionScope("bounded-id-session");
   await appendTranscriptMessage(scope, {
@@ -127,7 +166,7 @@ it("keeps generated entry ids unique outside a bounded transcript tail", async (
   );
 });
 
-it("retries a stale bounded append without parsing transcript rows outside the bounded context", async () => {
+it("retries a stale bounded append while preserving opaque excluded transcript rows", async () => {
   const { dir, scope } = await createSessionScope("bounded-stale-append");
   await appendTranscriptMessage(scope, {
     cwd: dir,
@@ -173,6 +212,9 @@ it("retries a stale bounded append without parsing transcript rows outside the b
       .prepare("SELECT event_json FROM transcript_events WHERE session_id = ? AND seq = 1")
       .get(scope.sessionId),
   ).toEqual({ event_json: "{excluded-row-is-not-json" });
+  await expect(
+    SessionManager.openBoundedAsync(scope, { maxBytes: 4096, maxEvents: 10 }),
+  ).rejects.toThrow(/JSON/);
 });
 
 it("accepts a prepared assistant whose parent is the admitted user", async () => {
@@ -443,6 +485,14 @@ it.each(["sync", "async"])(
       expect(manager.getAppendParentId()).toBe(appended.entryId);
       expect(manager.getBranch().map((entry) => entry.id)).toEqual([user.entryId]);
     }
+    await waitForSessionTranscriptIndexReconcile({
+      agentId: scope.agentId,
+      path: resolveSessionTranscriptDatabasePath(scope),
+    });
+    await manager.reloadPersistedTranscriptAsync();
+    for (const id of displayIds) {
+      expect(manager.getEntry(id)).toBeUndefined();
+    }
     const answer = await manager.appendMessageWithTranscriptAnchorAsync(
       buildAssistantMessage("reply"),
     );
@@ -592,7 +642,7 @@ it("retains the forward cut after consecutive excluded first-kept entries", asyn
   ]);
 });
 
-it("preserves the durable leaf when bounded cleanup removes the whole selected window", async () => {
+it("preserves the durable leaf after awaited cleanup of the whole window", async () => {
   const { dir, scope } = await createSessionScope("whole-window-session");
   const seed = SessionManager.open(scope, dir);
   const durableId = seed.appendMessage({ role: "user", content: "durable", timestamp: 1 });
@@ -603,7 +653,7 @@ it("preserves the durable leaf when bounded cleanup removes the whole selected w
   });
 
   const bounded = SessionManager.openBounded(scope, { cwd: dir, maxBytes: 4096, maxEvents: 1 });
-  expect(bounded.removeTrailingEntries((entry) => entry.id === removableId)).toBe(1);
+  expect(await bounded.removeTrailingEntriesAsync((entry) => entry.id === removableId)).toBe(1);
   const reopened = SessionManager.open(scope, dir);
   expect(reopened.getAppendParentId()).toBe(durableId);
   expect(reopened.buildSessionContext().messages).toMatchObject([{ content: "durable" }]);
@@ -627,6 +677,7 @@ it("bounds runtime hydration while preserving older durable transcript rows on r
   for (const content of ["oldest", "middle", "latest"]) {
     await appendTranscriptMessage(scope, { cwd: dir, message: { role: "user", content } });
   }
+  const originalEntries = await loadTranscriptEvents(scope);
 
   const manager = SessionManager.openBounded(scope, {
     cwd: dir,
@@ -647,11 +698,11 @@ it("bounds runtime hydration while preserving older durable transcript rows on r
         entry.message.content === "latest",
     ),
   ).toBe(1);
-  await expect(loadTranscriptEvents(scope)).resolves.toMatchObject([
-    { type: "session" },
-    { message: { content: "oldest" } },
-    { message: { content: "middle" } },
-  ]);
+  const persisted = await loadTranscriptEvents(scope);
+  expect(persisted.slice(0, -1)).toEqual(originalEntries.slice(0, -1));
+  const control = parseOpaqueLeafEntry(persisted.at(-1));
+  expect(control?.targetId).toBe(manager.getLeafId());
+  expect(control?.appendParentId).toBeUndefined();
 });
 
 it("rejects bounded cleanup across opaque hydration-boundary rows", async () => {
@@ -688,7 +739,7 @@ it("rejects bounded cleanup across opaque hydration-boundary rows", async () => 
   ).toThrow("Bounded transcript cleanup cannot cross the hydrated removal window");
 });
 
-it("ignores inactive matching rows before the bounded active cleanup window", async () => {
+it("ignores inactive matches before the awaited cleanup window", async () => {
   const { dir, scope } = await createSessionScope("bounded-inactive-boundary");
   const root = await appendTranscriptMessage(scope, {
     cwd: dir,
@@ -714,13 +765,13 @@ it("ignores inactive matching rows before the bounded active cleanup window", as
     maxBytes: 4096,
     maxEvents: 1,
   });
-  expect(manager.removeTrailingEntries((entry) => entry.id === activeId)).toBe(1);
+  expect(await manager.removeTrailingEntriesAsync((entry) => entry.id === activeId)).toBe(1);
   expect(SessionManager.open(scope, dir).buildSessionContext().messages).toMatchObject([
     { content: "retained" },
   ]);
 });
 
-it("keeps the original hydration boundary after a partial bounded trim", async () => {
+it("keeps the hydration boundary across partial and awaited bounded trims", async () => {
   const { dir, scope } = await createSessionScope("bounded-partial-trim");
   for (let index = 0; index < 12; index += 1) {
     await appendTranscriptMessage(scope, {
@@ -731,7 +782,7 @@ it("keeps the original hydration boundary after a partial bounded trim", async (
   }
   const manager = SessionManager.open(scope, dir, { maxBytes: 1024 * 1024, maxEvents: 8 });
   expect(manager.removeTrailingEntries((entry) => entry.id === "event-11")).toBe(1);
-  expect(manager.removeTrailingEntries((entry) => entry.id !== "event-3")).toBe(7);
+  expect(await manager.removeTrailingEntriesAsync((entry) => entry.id !== "event-3")).toBe(7);
   expect(
     (await loadTranscriptEvents(scope))
       .map((entry) => (entry as { id?: string }).id)
@@ -739,7 +790,7 @@ it("keeps the original hydration boundary after a partial bounded trim", async (
   ).toEqual(["event-0", "event-1", "event-2", "event-3"]);
 });
 
-it("keeps an all-preserved bounded window as a no-op", async () => {
+it("keeps an all-preserved bounded window as an awaited no-op", async () => {
   const { dir, scope } = await createSessionScope("bounded-preserved-noop");
   expect(
     replaceTranscriptEventsSync(scope, [
@@ -767,7 +818,7 @@ it("keeps an all-preserved bounded window as a no-op", async () => {
   });
 
   expect(
-    manager.removeTrailingEntries(() => true, {
+    await manager.removeTrailingEntriesAsync(() => true, {
       preserveTrailing: (entry) => entry.type === "custom",
     }),
   ).toBe(0);

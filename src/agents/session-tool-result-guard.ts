@@ -1,6 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { publishTranscriptUpdate } from "../config/sessions/session-accessor.js";
 import type { TranscriptEntryAnchor } from "../config/sessions/transcript-entry-anchor.js";
+import { sameSessionTranscriptTargetBinding } from "../config/sessions/transcript-target-binding.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type {
   PluginHookBeforeMessageWriteEvent,
@@ -41,6 +42,7 @@ import type {
   CompactionAppendPersistenceAsync,
 } from "./sessions/session-compaction-persistence.js";
 import { prepareSessionManagerSync } from "./sessions/session-manager-incognito-scope.js";
+import { sessionManagerResolveTranscriptSeq } from "./sessions/session-manager-transcript-seq.js";
 import { withSessionManagerWrite } from "./sessions/session-manager-write-admission.js";
 import {
   extractToolCallsFromAssistant,
@@ -216,7 +218,6 @@ export function installSessionToolResultGuard(
   const toolResultTransformerMayMutate = opts?.transformToolResultForPersistence !== undefined;
   const redactionConfig = opts?.config?.logging;
   const maxToolResultChars = resolveMaxToolResultChars(opts);
-  const transcriptSeqByEntryId = new Map<string, number>();
   let transcriptRunId = opts?.runId;
   let assistantErrorTranscript = opts?.assistantErrorTranscript;
   let suppressNextUserMessagePersistence = opts?.suppressNextUserMessagePersistence === true;
@@ -331,6 +332,9 @@ export function installSessionToolResultGuard(
     copyCodeModeSourceAppend(message, runOwnedMessage, sourceAppend);
     const parentEntryId = sessionManager.getLeafId();
     const originalTarget = sessionManager.getSessionTarget();
+    const preparedParentSeq = originalTarget
+      ? sessionManager[sessionManagerResolveTranscriptSeq](parentEntryId)
+      : undefined;
     const {
       entryId,
       anchor,
@@ -347,17 +351,23 @@ export function installSessionToolResultGuard(
           storePath: anchor.storePath,
         }
       : originalTarget;
-    if (viewWasSuperseded) {
-      transcriptSeqByEntryId.clear();
-    }
     const persistedEntry = sessionManager.getEntry(entryId);
+    const persistedParentId = persistedEntry ? persistedEntry.parentId : parentEntryId;
     const messageSeq =
       appended && sessionTarget && (!viewWasSuperseded || persistedEntry)
         ? resolveAppendedMessageSeq({
             sessionManager,
             entryId,
-            parentEntryId: persistedEntry ? persistedEntry.parentId : parentEntryId,
-            seqByEntryId: transcriptSeqByEntryId,
+            parentEntryId: persistedParentId,
+            preparedParentSeq:
+              !viewWasSuperseded &&
+              sameSessionTranscriptTargetBinding(
+                originalTarget,
+                sessionManager.getSessionTarget(),
+              ) &&
+              (anchor ? anchor.effectiveParentId : persistedParentId) === parentEntryId
+                ? preparedParentSeq
+                : undefined,
           })
         : undefined;
     // Destructive tool-side state commits only after this exact result is durable.

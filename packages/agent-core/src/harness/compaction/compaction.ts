@@ -236,21 +236,19 @@ function getAssistantUsage(msg: AgentMessage): Usage | undefined {
     : undefined;
 }
 
-function isUnavailableContextBarrier(message: AgentMessage): boolean {
-  if (message.role !== "assistant") {
-    return false;
-  }
-  const usage = "usage" in message ? message.usage : undefined;
+export function isUnavailableContextBarrier(message: {
+  role: string;
+  api?: string;
+  usage?: Usage;
+}): boolean {
+  const usage = message.role === "assistant" ? message.usage : undefined;
   if (!usage) {
     return false;
   }
-  if (message.api === "cli" && usage.contextUsage === undefined) {
-    return true;
-  }
-  if (usage.contextUsage?.state !== "unavailable") {
-    return false;
-  }
-  return calculateContextTokens(usage) === 0;
+  return (
+    (message.api === "cli" && usage.contextUsage === undefined) ||
+    (usage.contextUsage?.state === "unavailable" && calculateContextTokens(usage) === 0)
+  );
 }
 
 /** Return usage from the last valid assistant message in session entries. */

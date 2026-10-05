@@ -1,13 +1,18 @@
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { sanitizeCompactionReplayMessages } from "../compaction-replay.js";
-import {
-  collectEntriesForBranchSummaryFromBranches,
-  generateBranchSummary,
-} from "../runtime/index.js";
+import { isRecordedModelFallbackStop } from "../model-fallback-stop.js";
+import { generateBranchSummary } from "../runtime/index.js";
 import { AgentSessionExecution } from "./agent-session-execution.js";
+import {
+  committedSessionPublicationError,
+  prepareSessionMessagePublication,
+} from "./agent-session-publication.js";
 import { extractTextContent } from "./agent-session-utils.js";
 import { createCompactionRuntime } from "./compaction/runtime.js";
 import type { ExtensionRunner, TreePreparation } from "./extensions/index.js";
+import { sessionManagerPrepareHistoryRead } from "./session-manager-history.js";
+import { sessionManagerNavigate } from "./session-manager-navigation.js";
+import { sessionManagerCaptureView } from "./session-manager-publication.js";
 import { withSessionManagerWrite } from "./session-manager-write-admission.js";
 import type { BranchSummaryEntry } from "./session-manager.js";
 import { recordSessionModelUsage } from "./session-model-usage.js";
@@ -48,38 +53,31 @@ export abstract class AgentSessionTree extends AgentSessionExecution {
       throw new Error("No model available for summarization");
     }
 
-    const targetEntry = this.sessionManager.getEntry(targetId);
-    if (!targetEntry) {
-      throw new Error(`Entry ${targetId} not found`);
-    }
-
-    const { entries: entriesToSummarize, commonAncestorId } = oldLeafId
-      ? collectEntriesForBranchSummaryFromBranches(
-          this.sessionManager.getBranch(oldLeafId),
-          this.sessionManager.getBranch(targetId),
-        )
-      : { entries: [], commonAncestorId: null };
-
-    // Prepare event data - mutable so extensions can override
-    let customInstructions = options.customInstructions;
-    let replaceInstructions = options.replaceInstructions;
-    let label = options.label;
-
-    const preparation: TreePreparation = {
-      targetId,
-      oldLeafId,
-      commonAncestorId,
-      entriesToSummarize,
-      userWantsSummary: options.summarize ?? false,
-      customInstructions,
-      replaceInstructions,
-      label,
-    };
-
     const abortController = new AbortController();
     this.branchSummaryAbortController = abortController;
-
     try {
+      const publication = prepareSessionMessagePublication(() => this.agent.state);
+      const initialView = this.sessionManager[sessionManagerCaptureView]();
+      const history = this.sessionManager[sessionManagerPrepareHistoryRead](abortController.signal);
+      const { targetEntry, entriesToSummarize, commonAncestorId } =
+        await history.readNavigation(targetId);
+
+      // Prepare event data - mutable so extensions can override
+      let customInstructions = options.customInstructions;
+      let replaceInstructions = options.replaceInstructions;
+      let label = options.label;
+
+      const preparation: TreePreparation = {
+        targetId,
+        oldLeafId,
+        commonAncestorId,
+        entriesToSummarize,
+        userWantsSummary: options.summarize ?? false,
+        customInstructions,
+        replaceInstructions,
+        label,
+      };
+
       let extensionSummary: { summary: string; details?: unknown } | undefined;
       let fromExtension = false;
 
@@ -168,31 +166,70 @@ export abstract class AgentSessionTree extends AgentSessionExecution {
         ) {
           return { cancelled: true, aborted: true } as const;
         }
+        history.assertCurrent();
+        publication.assertCurrent();
         // Summary and labels belong to the navigation target, not the old branch.
         // Publish the selected context only after its persistence has settled.
         const mutate = async () => {
           let summaryEntry: BranchSummaryEntry | undefined;
-          if (summaryText) {
-            const summaryId = await this.sessionManager.branchWithSummaryAsync(
-              newLeafId,
-              summaryText,
-              summaryDetails,
-              fromExtension,
-            );
-            summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
-            if (label) {
-              await this.sessionManager.appendLabelChangeAsync(summaryId, label);
+          let committed = false;
+          let assertNavigation = history.assertNavigationCurrent;
+          let assertNavigationUnchanged = initialView.assertNavigationCurrent;
+          let restoreNavigation: (() => void) | undefined;
+          try {
+            if (summaryText) {
+              const summaryId = await this.sessionManager.branchWithSummaryAsync(
+                newLeafId,
+                summaryText,
+                summaryDetails,
+                fromExtension,
+              );
+              committed = true;
+              assertNavigationUnchanged();
+              assertNavigation();
+              summaryEntry = this.sessionManager.getEntry(summaryId) as BranchSummaryEntry;
+              if (label) {
+                await this.sessionManager.appendLabelChangeAsync(summaryId, label);
+                assertNavigationUnchanged();
+                assertNavigation();
+              }
+            } else {
+              const selected = await this.sessionManager[sessionManagerNavigate](newLeafId);
+              assertNavigation = selected.assertCurrent;
+              restoreNavigation = selected.restoreIfCurrent;
+              assertNavigation();
+              assertNavigationUnchanged =
+                this.sessionManager[sessionManagerCaptureView]().assertNavigationCurrent;
             }
-          } else if (newLeafId === null) {
-            await this.sessionManager.resetLeafAsync();
-          } else {
-            await this.sessionManager.branchAsync(newLeafId);
+            if (label && !summaryText) {
+              await this.sessionManager.appendLabelChangeAsync(targetId, label);
+              committed = true;
+              assertNavigationUnchanged();
+              assertNavigation();
+            }
+            const committedHistory = this.sessionManager[sessionManagerPrepareHistoryRead](
+              abortController.signal,
+            );
+            const sessionContext = await committedHistory.readContext();
+            committedHistory.assertCurrent();
+            assertNavigation();
+            if (this.branchSummaryAbortController !== abortController) {
+              throw new Error("Session tree navigation changed before context publication");
+            }
+            publication.publish(sanitizeCompactionReplayMessages(sessionContext.messages));
+          } catch (cause) {
+            const appendCommitted = isRecordedModelFallbackStop(cause);
+            if (!committed && !appendCommitted) {
+              restoreNavigation?.();
+              throw cause;
+            }
+            const error = committedSessionPublicationError(
+              "Session tree navigation committed, but context publication failed; do not replay the navigation. Reopen the session before continuing.",
+              cause,
+            );
+            publication.invalidateIfCurrent(error);
+            throw error;
           }
-          if (label && !summaryText) {
-            await this.sessionManager.appendLabelChangeAsync(targetId, label);
-          }
-          const sessionContext = this.sessionManager.buildSessionContext();
-          this.agent.state.messages = sanitizeCompactionReplayMessages(sessionContext.messages);
           return { cancelled: false, summaryEntry } as const;
         };
         const target = this.sessionManager.getSessionTarget();
@@ -204,6 +241,7 @@ export abstract class AgentSessionTree extends AgentSessionExecution {
                 if (this.branchSummaryAbortController !== abortController) {
                   throw new Error("Session tree navigation changed before transcript commit");
                 }
+                publication.assertCurrent();
               },
               mutate,
             )

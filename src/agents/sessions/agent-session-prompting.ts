@@ -19,6 +19,7 @@ import {
 import type { AgentMessage } from "../runtime/index.js";
 import { stripFrontmatter } from "../utils/frontmatter.js";
 import { AgentSessionBase } from "./agent-session-base.js";
+import { assertSessionMessageViewAvailable } from "./agent-session-publication.js";
 import type { PromptOptions } from "./agent-session-types.js";
 import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth-guidance.js";
 import {
@@ -29,7 +30,10 @@ import {
 import type { CustomMessage } from "./messages.js";
 import { expandPromptTemplate } from "./prompt-templates.js";
 import type { ResourceLoader } from "./resource-loader.js";
-import { withSessionManagerWrite } from "./session-manager-write-admission.js";
+import {
+  withSessionManagerWrite,
+  withSessionManagerWriteAssertion,
+} from "./session-manager-write-admission.js";
 import { setSteeringMessageIdentity } from "./steering-message-identity.js";
 
 type PostAgentRunAction = "continue" | "settled" | "handoff";
@@ -129,6 +133,7 @@ export abstract class AgentSessionPrompting extends AgentSessionBase {
   private async runPreparedAgentLoop(run: () => Promise<void>): Promise<void> {
     const prepare = this.promptPreparation;
     if (!prepare) {
+      assertSessionMessageViewAvailable(this.agent.state);
       return run();
     }
     const admit = await prepare();
@@ -144,6 +149,7 @@ export abstract class AgentSessionPrompting extends AgentSessionBase {
       commit?.();
       assertCurrent();
       // Start under admission custody, but settle outside its reader and writer FIFO.
+      assertSessionMessageViewAvailable(this.agent.state);
       running = run().then(
         (value) => ({ status: "fulfilled", value }),
         (reason: unknown) => ({ status: "rejected", reason }),
@@ -169,6 +175,7 @@ export abstract class AgentSessionPrompting extends AgentSessionBase {
   }
 
   private async handlePostAgentRun(): Promise<PostAgentRunAction> {
+    assertSessionMessageViewAvailable(this.agent.state);
     const msg = this.lastAssistantMessage;
     this.lastAssistantMessage = undefined;
     const endedForTurnHandoff = this.lastRunEndedForTurnHandoff;
@@ -272,6 +279,7 @@ export abstract class AgentSessionPrompting extends AgentSessionBase {
       }
 
       const expandedText = expandPromptTemplates ? this.expandPrompt(currentText) : currentText;
+      assertSessionMessageViewAvailable(this.agent.state);
 
       if (this.isStreaming || this.logicalPromptActive) {
         if (!options?.streamingBehavior) {
@@ -338,6 +346,7 @@ export abstract class AgentSessionPrompting extends AgentSessionBase {
       }
 
       // Re-read after compaction: indices and queued context may have changed.
+      assertSessionMessageViewAvailable(this.agent.state);
       const { persistedUserIndex, replayPersistedCarrier, pendingContextMessages } =
         resolvePendingRuntimeContextReplay({
           messages: this.agent.state.messages,
@@ -605,15 +614,21 @@ export abstract class AgentSessionPrompting extends AgentSessionBase {
   }
 
   private async persistCustomMessage(message: CustomMessage): Promise<void> {
-    await withSessionManagerWrite(this.sessionManager, async () => {
-      await this.sessionManager.appendCustomMessageEntryAsync(
-        message.customType,
-        message.content,
-        message.display,
-        message.details,
-      );
-      this.agent.state.messages.push(message);
-    });
+    await withSessionManagerWriteAssertion(
+      this.sessionManager,
+      () => assertSessionMessageViewAvailable(this.agent.state),
+      () =>
+        withSessionManagerWrite(this.sessionManager, async () => {
+          await this.sessionManager.appendCustomMessageEntryAsync(
+            message.customType,
+            message.content,
+            message.display,
+            message.details,
+          );
+          assertSessionMessageViewAvailable(this.agent.state);
+          this.agent.state.messages.push(message);
+        }),
+    );
     this.emit({ type: "message_start", message });
     this.emit({ type: "message_end", message });
   }

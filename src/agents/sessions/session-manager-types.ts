@@ -5,6 +5,7 @@ import type {
 import type { AgentMessage } from "../../../packages/agent-core/src/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ImageContent, TextContent } from "../../llm/types.js";
+import type { SessionManager } from "./session-manager.js";
 
 export interface SessionHeader {
   type: "session";
@@ -142,3 +143,21 @@ export type PreservedOpaqueFileEntry = {
 };
 
 export type SessionLeafControl = Extract<SessionTreeEntry, { type: "leaf" }>;
+
+export type ReadonlySessionManager = Pick<
+  SessionManager,
+  | "getCwd"
+  | "getSessionId"
+  | "getSessionTarget"
+  | "getLeafId"
+  | "getAppendParentId"
+  | "getAppendMode"
+  | "getLeafEntry"
+  | "getEntry"
+  | "getLabel"
+  | "getBranch"
+  | "getHeader"
+  | "getEntries"
+  | "getTree"
+  | "getSessionName"
+>;

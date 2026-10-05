@@ -384,7 +384,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     let endpointSystemPrompt: string | undefined;
     attemptServerEndpointCompactionMock.mockImplementationOnce(async (input) => {
       endpointSystemPrompt = input.context.systemPrompt;
-      input.onCompactionCommitted?.(1_000);
+      await input.onCompactionCommitted?.(1_000);
       return {
         item: { type: "compaction", encrypted_content: "opaque" },
         usage: { input_tokens: 1_000, output_tokens: 200 },
@@ -424,7 +424,7 @@ describe("compactEmbeddedAgentSessionDirect hooks", () => {
     getHistoryLimitFromSessionKeyMock.mockImplementationOnce(history.getHistoryLimitFromSessionKey);
     limitHistoryTurnsMock.mockImplementationOnce(history.limitHistoryTurns);
     attemptServerEndpointCompactionMock.mockImplementationOnce(async (input) => {
-      input.onCompactionCommitted?.(1_000);
+      await input.onCompactionCommitted?.(1_000);
       return {
         item: { type: "compaction", encrypted_content: "opaque" },
         usage: { input_tokens: 1_000, output_tokens: 200 },

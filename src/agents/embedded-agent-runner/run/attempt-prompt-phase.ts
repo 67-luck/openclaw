@@ -6,6 +6,7 @@ import {
   type AgentRunAttemptFailureSource,
 } from "../../agent-run-terminal-outcome.js";
 import { resolvePendingRuntimeContextReplay } from "../../internal-runtime-context.js";
+import { prepareSessionMessagePublication } from "../../sessions/agent-session-publication.js";
 import {
   createCompactionRequestBudget,
   type CompactionRequestBudget,
@@ -132,6 +133,7 @@ export async function runEmbeddedAttemptPromptPhase(
     leasedSteering = undefined;
   };
   const handleMidTurnPrecheckRequest = async (request: MidTurnPrecheckRequest) => {
+    const publication = prepareSessionMessagePublication(() => activeSession.agent.state);
     const outcome = await handleEmbeddedAttemptMidTurnPrecheck({
       attempt,
       request,
@@ -139,9 +141,7 @@ export async function runEmbeddedAttemptPromptPhase(
       sessionManager,
       toolResultPromptProjectionState,
       prePromptMessageCount: sessionRuntimeState.prePromptMessageCount,
-      replaceSessionMessages: (messages) => {
-        activeSession.agent.state.messages = messages;
-      },
+      replaceSessionMessages: publication.publish,
     });
     promptState.preflightRecovery = outcome.preflightRecovery;
     if (outcome.promptError) {

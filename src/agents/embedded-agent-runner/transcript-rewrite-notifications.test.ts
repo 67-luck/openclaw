@@ -26,7 +26,7 @@ import {
   repairRejectedCompactionReplayInSessionManager,
   repairRejectedThinkingReplayInSessionManager,
 } from "./thinking-replay-repair.js";
-import { truncateOversizedToolResultsInSessionManager } from "./tool-result-truncation.js";
+import { truncateOversizedToolResultsInSessionManager } from "./tool-result-recovery.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {

@@ -1,11 +1,14 @@
 import { captureOpenAIResponsesCompaction } from "@openclaw/ai/transports";
 import type { Model } from "@openclaw/llm-core";
 import { describe, expect, it, vi } from "vitest";
+import { isRecordedModelFallbackStop } from "../../model-fallback-stop.js";
 import { testing } from "../../openai-transport-stream.test-support.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { SessionManager } from "../../sessions/index.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
 import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
 import { createToolResultPromptProjectionState } from "../session-prompt-state.js";
+import * as toolResultRecovery from "../tool-result-recovery.js";
 import {
   handleEmbeddedAttemptMidTurnPrecheck,
   prepareEmbeddedAttemptPromptPreflight,
@@ -309,6 +312,71 @@ describe("attempt prompt preflight", () => {
       sessionManager.buildSessionContext().messages,
     );
   });
+
+  it.each(["recovery-return", "context-read-return"] as const)(
+    "marks committed mid-turn truncation nonretryable when prompt publication loses navigation at %s",
+    async (boundary) => {
+      const sessionManager = createSessionManagerWithMessage(
+        makeToolResultMessage("large tool output ".repeat(5_000)),
+      );
+      const originalEntryId = sessionManager.getLeafId();
+      const replaceSessionMessages = vi.fn();
+      const truncate = toolResultRecovery.truncateOversizedToolResultsInSessionManager;
+      let restoreHistory: (() => void) | undefined;
+      const recovery = vi
+        .spyOn(toolResultRecovery, "truncateOversizedToolResultsInSessionManager")
+        .mockImplementation(async (params) => {
+          const result = await truncate(params);
+          if (boundary === "recovery-return") {
+            sessionManager.resetLeaf();
+            return result;
+          }
+          const prepare = sessionManager[sessionManagerPrepareHistoryRead].bind(sessionManager);
+          const publication = vi
+            .spyOn(sessionManager, sessionManagerPrepareHistoryRead)
+            .mockImplementation((signal) => {
+              const history = prepare(signal);
+              return {
+                ...history,
+                readContext: async () => {
+                  const context = await history.readContext();
+                  queueMicrotask(() => sessionManager.resetLeaf());
+                  return context;
+                },
+              };
+            });
+          restoreHistory = () => publication.mockRestore();
+          return result;
+        });
+      let failure: unknown;
+      try {
+        await handleEmbeddedAttemptMidTurnPrecheck({
+          toolResultPromptProjectionState: createToolResultPromptProjectionState(),
+          attempt: { ...attempt, contextTokenBudget: 100 },
+          request: { ...request, route: "truncate_tool_results_only" },
+          sessionAgentId: "test",
+          sessionManager,
+          prePromptMessageCount: 4,
+          replaceSessionMessages,
+        });
+      } catch (error) {
+        failure = error;
+      } finally {
+        restoreHistory?.();
+        recovery.mockRestore();
+      }
+      expect(isRecordedModelFallbackStop(failure)).toBe(true);
+      expect(failure).toMatchObject({
+        cause: { message: "Session transcript navigation changed before publication" },
+      });
+      expect(replaceSessionMessages).not.toHaveBeenCalled();
+      expect(sessionManager.getLeafId()).toBeNull();
+      const rewritten = sessionManager.getEntries().findLast((entry) => entry.type === "message");
+      expect(rewritten?.id).not.toBe(originalEntryId);
+      expect(JSON.stringify(rewritten)).toContain("truncated");
+      expect(JSON.stringify(rewritten).length).toBeLessThan(4096);
+    },
+  );
 
   it("records heuristic pressure without short-circuiting the provider attempt", async () => {
     const result = await prepareEmbeddedAttemptPromptPreflight({

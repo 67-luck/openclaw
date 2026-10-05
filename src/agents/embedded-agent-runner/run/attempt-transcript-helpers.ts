@@ -13,54 +13,111 @@ import { isTranscriptOnlyOpenClawAssistantMessage } from "../../../shared/transc
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
-import { log } from "../logger.js";
+import {
+  committedSessionPublicationError,
+  prepareSessionMessagePublication,
+} from "../../sessions/agent-session-publication.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
+import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { canContinueFromMessage, trimToContinuableTail } from "./compaction-timeout.js";
 import { isMidTurnPrecheckAssistantError } from "./midturn-precheck.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
 type AttemptSessionManager = ReturnType<typeof guardSessionManager>;
 
-export async function removeTrailingMidTurnPrecheckAssistantError(params: {
+type TranscriptCleanupParams = {
   activeSession: { agent: { state: { messages: AgentMessage[] } } };
   sessionManager: AttemptSessionManager;
-}): Promise<void> {
-  const messages = params.activeSession.agent.state.messages;
-  const removedActiveError = isMidTurnPrecheckAssistantError(messages.at(-1));
+};
+
+function prepareCleanupPublication(params: TranscriptCleanupParams) {
+  const history = params.sessionManager[sessionManagerPrepareHistoryRead]();
+  const publication = prepareSessionMessagePublication(() => params.activeSession.agent.state);
+  return {
+    messages: params.activeSession.agent.state.messages,
+    publish: publication.publish,
+    assertCurrent(removedEntries: number) {
+      if (removedEntries > 0) {
+        history.assertNavigationCurrent();
+      } else {
+        history.assertCurrent();
+      }
+      publication.assertCurrent();
+    },
+    throwFailure(cause: unknown, removedEntries: number): never {
+      if (removedEntries === 0) {
+        throw cause;
+      }
+      const error = committedSessionPublicationError(
+        "Transcript cleanup committed, but context publication failed; do not replay the cleanup",
+        cause,
+      );
+      error.name = "SessionSuffixCommittedError";
+      publication.invalidateIfCurrent(error);
+      throw error;
+    },
+  };
+}
+
+export async function rewindRejectedFinalizationEntry(
+  sessionManager: AttemptSessionManager,
+  rejectedEntryId: string,
+): Promise<() => void> {
+  return await withSessionManagerWrite(sessionManager, async () => {
+    const history = sessionManager[sessionManagerPrepareHistoryRead]();
+    const rejectedEntry = await history.readEntryNavigation(rejectedEntryId);
+    if (rejectedEntry?.type !== "message" || rejectedEntry.messageRole !== "assistant") {
+      throw new Error(
+        `before_agent_finalize persisted assistant entry is missing or invalid ` +
+          `(entry=${rejectedEntryId})`,
+      );
+    }
+    history.assertCurrent();
+    // The resident parent can skip evicted results; only canonical ancestry may select the retry.
+    await sessionManager.appendLeafControlAsync({
+      targetId: rejectedEntry.canonicalParentId,
+      appendParentId: rejectedEntry.canonicalParentId,
+    });
+    try {
+      history.assertNavigationCurrent();
+      return history.assertNavigationCurrent;
+    } catch (cause) {
+      throw committedSessionPublicationError(
+        "Finalization rewind committed, but navigation publication failed; do not replay the rewind",
+        cause,
+      );
+    }
+  });
+}
+
+export async function removeTrailingMidTurnPrecheckAssistantError(
+  params: TranscriptCleanupParams,
+): Promise<void> {
+  const publication = prepareCleanupPublication(params);
   const preserveTrailing = (entry: ReturnType<AttemptSessionManager["getEntries"]>[number]) =>
     entry.type === "custom" ||
     entry.type === "label" ||
     entry.type === "session_info" ||
     (entry.type === "message" && isTranscriptOnlyOpenClawAssistantMessage(entry.message));
-  const persistedTail = params.sessionManager
-    .getEntries()
-    .findLast((entry) => !preserveTrailing(entry));
   // New guarded writes omit the signal. Retain cleanup for an already-persisted legacy error.
-  const hasPersistedError =
-    persistedTail?.type === "message" && isMidTurnPrecheckAssistantError(persistedTail.message);
-  const removedPersistedError =
-    hasPersistedError &&
-    (await params.sessionManager.removeTrailingEntriesAsync(
-      (entry) => entry.type === "message" && isMidTurnPrecheckAssistantError(entry.message),
-      {
-        preserveTrailing,
-      },
-    )) > 0;
-  if (removedActiveError) {
-    params.activeSession.agent.state.messages = messages.slice(0, -1);
-  }
-  if (hasPersistedError && removedActiveError && !removedPersistedError) {
-    log.warn(
-      "[context-overflow-midturn-precheck] removed synthetic assistant error from active session but could not locate matching persisted SessionManager entry",
-    );
+  const removedEntries = await params.sessionManager.removeTrailingEntriesAsync(
+    (entry) => entry.type === "message" && isMidTurnPrecheckAssistantError(entry.message),
+    { preserveTrailing },
+  );
+  try {
+    publication.assertCurrent(removedEntries);
+    if (isMidTurnPrecheckAssistantError(publication.messages.at(-1))) {
+      publication.publish(publication.messages.slice(0, -1));
+    }
+  } catch (cause) {
+    publication.throwFailure(cause, removedEntries);
   }
 }
 
-export async function normalizeCompactionRecoveryTranscriptTail(params: {
-  activeSession: { agent: { state: { messages: AgentMessage[] } } };
-  sessionManager: AttemptSessionManager;
-}): Promise<number> {
-  const messages = params.activeSession.agent.state.messages;
-  const continuableMessages = trimToContinuableTail(messages) ?? [];
+export async function normalizeCompactionRecoveryTranscriptTail(
+  params: TranscriptCleanupParams,
+): Promise<number> {
+  const publication = prepareCleanupPublication(params);
 
   // This is the single recovery owner for compaction exits that hand control
   // back to a continuation. AgentCore rejects assistant tails before providers run.
@@ -74,12 +131,24 @@ export async function normalizeCompactionRecoveryTranscriptTail(params: {
         (entry.type === "message" && isTranscriptOnlyOpenClawAssistantMessage(entry.message)),
     },
   );
-  params.activeSession.agent.state.messages =
-    removedEntries > 0
-      ? sanitizeCompactionReplayMessages(params.sessionManager.buildSessionContext().messages)
-      : continuableMessages.length === messages.length
-        ? messages
-        : continuableMessages;
+  try {
+    publication.assertCurrent(removedEntries);
+    if (removedEntries > 0) {
+      const history = params.sessionManager[sessionManagerPrepareHistoryRead]();
+      const context = await history.readContext();
+      history.assertCurrent();
+      publication.assertCurrent(removedEntries);
+      publication.publish(sanitizeCompactionReplayMessages(context.messages));
+    } else {
+      const { messages } = publication;
+      const continuableMessages = trimToContinuableTail(messages) ?? [];
+      publication.publish(
+        continuableMessages.length === messages.length ? messages : continuableMessages,
+      );
+    }
+  } catch (cause) {
+    publication.throwFailure(cause, removedEntries);
+  }
   return removedEntries;
 }
 

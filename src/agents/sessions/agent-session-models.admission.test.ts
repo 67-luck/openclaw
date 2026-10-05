@@ -660,6 +660,76 @@ describe("model transitions after SQLite write admission", () => {
     },
   );
 
+  it.each([
+    { navigation: "reset", kind: "model" },
+    { navigation: "branch", kind: "thinking" },
+  ] as const)(
+    "preserves a synchronous $navigation after a worker $kind metadata commit",
+    async ({ navigation, kind }) => {
+      const { session, sessionManager, settingsManager, target } = await createModelSession();
+      await session.setModel(nextModel);
+      const first = { role: "user" as const, content: "selected branch", timestamp: 1 };
+      const firstId = sessionManager.appendMessage(first);
+      sessionManager.appendMessage({ role: "user", content: "other branch", timestamp: 2 });
+      const before = await loadTranscriptEvents(target);
+      const withWorker = metadataRuntime.withSessionMetadataWorker;
+      const interception = vi
+        .spyOn(metadataRuntime, "withSessionMetadataWorker")
+        .mockImplementation(async (...args) => {
+          const receipt = await withWorker(...args);
+          if (navigation === "reset") {
+            sessionManager.resetLeaf();
+          } else {
+            sessionManager.branch(firstId);
+          }
+          return receipt;
+        });
+      let failure: unknown;
+      try {
+        await (kind === "model" ? session.setModel(lastModel) : session.setThinkingLevel("low"));
+      } catch (error) {
+        failure = error;
+      } finally {
+        interception.mockRestore();
+      }
+      const metadata =
+        kind === "model"
+          ? { type: "model_change", modelId: lastModel.id }
+          : { type: "thinking_level_change", thinkingLevel: "low" };
+      expect(failure).toBeInstanceOf(SessionMetadataCommittedError);
+      expect(failure).toMatchObject({
+        committedEntry: metadata,
+        committedTarget: target,
+        cause: { message: "Session transcript navigation changed before publication" },
+      });
+      expect(hasModelFallbackStop(failure)).toBe(true);
+      const committed = await loadTranscriptEvents(target);
+      expect(committed.slice(0, before.length)).toEqual(before);
+      expect(committed.slice(before.length)).toMatchObject([metadata]);
+      const selectedId = navigation === "reset" ? null : firstId;
+      expect(sessionManager.getLeafId()).toBe(selectedId);
+      expect(sessionManager.getAppendParentId()).toBe(selectedId);
+      expect(sessionManager.buildSessionContext().messages).toEqual(
+        navigation === "reset" ? [] : [first],
+      );
+      expect(session.model?.id).toBe(kind === "model" ? lastModel.id : nextModel.id);
+      expect(settingsManager.getDefaultModel()).toBe(session.model?.id);
+      expect(session.thinkingLevel).toBe(kind === "thinking" ? "low" : "medium");
+      expect(settingsManager.getDefaultThinkingLevel()).toBe(session.thinkingLevel);
+      const next = { role: "user" as const, content: "after metadata refusal", timestamp: 3 };
+      const nextId = await sessionManager.appendMessageAsync(next);
+      expect(sessionManager.getLeafId()).toBe(nextId);
+      expect(sessionManager.buildSessionContext().messages).toEqual(
+        navigation === "reset" ? [next] : [first, next],
+      );
+      const after = await loadTranscriptEvents(target);
+      expect(after.slice(0, committed.length)).toEqual(committed);
+      expect(after.slice(committed.length)).toMatchObject([
+        { id: nextId, type: "message", parentId: selectedId, message: next },
+      ]);
+    },
+  );
+
   it("retains committed thinking metadata when the stale transcript view cannot be decoded", async () => {
     const root = tempDirs.make("openclaw-model-admission-corruption-");
     const { session, sessionManager, settingsManager, options, target } = await createModelSession(

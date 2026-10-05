@@ -6,6 +6,8 @@ import {
 } from "../../harness/before-agent-run.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import type { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
+import { prepareSessionMessagePublication } from "../../sessions/agent-session-publication.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { log } from "../logger.js";
 import { sessionMessagesContainIdempotencyKey } from "./pre-persisted-user-turn.js";
@@ -63,18 +65,22 @@ export async function runEmbeddedAttemptBeforeAgentRun(input: {
     )
   ) {
     try {
+      const publication = prepareSessionMessagePublication(() => input.activeSession.agent.state);
+      const beforeAppend = input.sessionManager[sessionManagerPrepareHistoryRead]();
       await input.withOwnedTranscriptWrite(() =>
         withSessionManagerWrite(input.sessionManager, async () => {
           await input.sessionManager.appendMessageAsync(redactedUserMessage);
           input.sessionManager.flushPendingPersistence();
         }),
       );
-      input.activeSession.agent.state.messages = sanitizeCompactionReplayMessages(
-        input.sessionManager.buildSessionContext().messages,
-      );
+      beforeAppend.assertNavigationCurrent();
+      const history = input.sessionManager[sessionManagerPrepareHistoryRead]();
+      const context = await history.readContext();
+      history.assertCurrent();
+      publication.publish(sanitizeCompactionReplayMessages(context.messages));
     } catch (err) {
       log.warn(
-        `before_agent_run block: failed to persist redacted user message: ${
+        `before_agent_run block: failed to finalize redacted user transcript: ${
           err instanceof Error ? err.message : String(err)
         }`,
       );

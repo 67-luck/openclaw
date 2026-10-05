@@ -13,9 +13,13 @@ import {
   appendTranscriptMessage,
   appendTranscriptMessageSync,
   loadSessionEntry,
+  loadTranscriptEvents,
   listSessionPendingInputs,
+  persistCompactionBoundaryWithSessionEntryAsync,
   persistCompactionBoundaryWithSessionEntrySync,
+  replaceTranscriptEvents,
 } from "../config/sessions/session-accessor.js";
+import { waitForSessionTranscriptProjection } from "../config/sessions/session-transcript-reconcile.js";
 import { applyAssistantDeliveryDirectives } from "../config/sessions/transcript-assistant-delivery.js";
 import { withOwnedSessionTranscriptWrites } from "../config/sessions/transcript-write-context.js";
 import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
@@ -39,7 +43,9 @@ import {
 } from "../state/openclaw-agent-db.js";
 import { createAssistantErrorTranscript } from "./assistant-error-transcript.js";
 import { normalizeAssistantReplayContent } from "./embedded-agent-runner/replay-history.js";
+import { rewriteTranscriptEntriesInSessionManager } from "./embedded-agent-runner/transcript-rewrite.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "./harness/hook-helpers.js";
+import { isRecordedModelFallbackStop } from "./model-fallback-stop.js";
 import { guardSessionManager } from "./session-tool-result-guard-wrapper.js";
 import { installSessionToolResultGuard } from "./session-tool-result-guard.js";
 import { persistAgentSessionMessage } from "./sessions/agent-session-transcript.js";
@@ -127,9 +133,55 @@ afterEach(async () => {
 });
 
 describe("guardSessionManager transcript updates", () => {
+  it.each([false, true])(
+    "keeps the committed ordinal after a same-parent prefix change (excluded: %s)",
+    async (excludeFromContext) => {
+      const { sessionManager: source, target } = await openPersistedSessionManager();
+      source.appendMessage(makeUserMessage("original prompt", 1));
+      const parentId = source.appendMessage(assistantText("original response"));
+      const stale = await SessionManager.openBoundedAsync(target, {
+        maxBytes: 16_384,
+        maxEvents: 3,
+      });
+      const guarded = guardSessionManager(stale);
+      const [first, last] = source.getBranch();
+      const header = source.getHeader();
+      assert(first && last && header, "fixture must have a complete original branch");
+      await replaceTranscriptEvents(target, [
+        header,
+        {
+          type: "message",
+          id: "inserted-prefix",
+          parentId: null,
+          timestamp: new Date(0).toISOString(),
+          message: makeUserMessage("earlier prompt", 0),
+        },
+        { ...first, parentId: "inserted-prefix" },
+        last,
+      ]);
+      expect(stale.getLeafId()).toBe(parentId);
+      const updates = collectUpdates();
+      const appendedId = await guarded.appendMessageAsync({
+        ...assistantText("after prefix change"),
+        ...(excludeFromContext ? { excludeFromContext: true as const } : {}),
+      });
+      assert(appendedId, "append must commit through the stale manager");
+      if (excludeFromContext) {
+        expect(stale.getEntry(appendedId)).toBeUndefined();
+        expect(stale.getLeafId()).toBe(parentId);
+      } else {
+        expect(stale.getEntry(appendedId)?.parentId).toBe(parentId);
+      }
+      expect(updates.map(({ messageSeq }) => messageSeq)).toEqual([4]);
+      await guarded.appendMessageAsync(assistantText("next response"));
+      expect(updates.map(({ messageSeq }) => messageSeq)).toEqual([4, 5]);
+    },
+  );
+
   it("preserves prepared source and redaction when a concurrent append forces a retry", async () => {
     const { root, sessionManager: manager, target } = await openPersistedSessionManager();
     const baseId = manager.appendMessage(makeUserMessage("Compute a value", 1));
+    const updates = collectUpdates();
     installSessionToolResultGuard(manager, {
       config: { logging: { redactPatterns: [String.raw`/opaque\(([^)]+)\)/g`] } },
     });
@@ -176,6 +228,7 @@ describe("guardSessionManager transcript updates", () => {
     expect(entries.at(-1)).toMatchObject({
       message: { content: [{ type: "text", text: "opaque(abcdef…qrst)" }, toolCall] },
     });
+    expect(updates.find((update) => update.messageId === entryId)?.messageSeq).toBe(3);
   });
 
   it("persists compaction item identity under each current run across reload", async () => {
@@ -210,6 +263,62 @@ describe("guardSessionManager transcript updates", () => {
       },
     ]);
     expect(loadSessionEntry(target)?.compactionCount).toBe(2);
+  });
+
+  it("preserves a synchronous reset after custom async compaction commits", async () => {
+    const { sessionManager, target } = await openPersistedSessionManager();
+    const keptId = sessionManager.appendMessage(makeUserMessage("before compaction", 1));
+    let committed:
+      | Awaited<ReturnType<typeof persistCompactionBoundaryWithSessionEntryAsync>>
+      | undefined;
+    const guarded = guardSessionManager(sessionManager, {
+      runId: "custom-compaction",
+      withCompactionPersistenceAsync: async (prepared) => {
+        const receipt = await persistCompactionBoundaryWithSessionEntryAsync(target, {
+          prepared,
+          transcriptByteCompactionLatch: {
+            activeBytes: 2048,
+            sessionId: target.sessionId,
+            maxBytes: 1024,
+          },
+        });
+        committed = receipt;
+        sessionManager.resetLeaf();
+        return receipt;
+      },
+    });
+
+    const failure: unknown = await guarded
+      .appendCompactionAsync("summary", keptId, 100)
+      .catch((error: unknown) => error);
+
+    assert(committed, "compaction must commit before the reset");
+    expect(failure).toMatchObject({
+      name: "SessionEntryCommittedError",
+      committedEntryId: committed.result.id,
+      committedTarget: expect.objectContaining(target),
+      committedVersion: committed.after,
+      cause: { message: "Session transcript navigation changed before publication" },
+    });
+    expect(isRecordedModelFallbackStop(failure)).toBe(true);
+    expect((await loadTranscriptEvents(target)).at(-1)).toMatchObject({
+      id: committed.result.id,
+      type: "compaction",
+      __openclaw: { runId: "custom-compaction" },
+    });
+    expect(sessionManager.getLeafId()).toBeNull();
+    expect(sessionManager.buildSessionContext().messages).toEqual([]);
+
+    const continued = makeUserMessage("after compaction refusal", 2);
+    const continuedId = await guarded.appendMessageAsync(continued);
+    expect(sessionManager.getLeafId()).toBe(continuedId);
+    expect(sessionManager.buildSessionContext().messages).toEqual([continued]);
+    expect(
+      (await loadTranscriptEvents(target)).filter(
+        (entry) => asNullableRecord(entry)?.type === "compaction",
+      ),
+    ).toHaveLength(1);
+    expect(loadSessionEntry(target)?.compactionCount).toBe(1);
   });
 
   it.each(["physical", "alias"])(
@@ -470,11 +579,10 @@ describe("guardSessionManager transcript updates", () => {
     expect(updates[0]?.messageId).not.toBe("");
   });
 
-  it("caches real tool result sequence before final assistant messages", async () => {
+  it("counts tool results in final assistant message ordinals", async () => {
     const updates = collectUpdates();
     const { sessionManager: sm, target } = await openPersistedSessionManager();
     sm.appendMessage(makeUserMessage("existing prompt", 1));
-    const spy = vi.spyOn(sm, "getBranch");
     const guarded = guardSessionManager(sm, {
       agentId: target.agentId,
       sessionKey: target.sessionKey,
@@ -504,7 +612,6 @@ describe("guardSessionManager transcript updates", () => {
       { role: "toolResult", runId: "run-owning-final" },
       { role: "assistant", runId: "run-owning-final" },
     ]);
-    expect(spy).toHaveBeenCalledTimes(1);
     expect(updates.map(({ messageSeq }) => messageSeq)).toEqual([2, 4]);
     expect(
       updates.map(
@@ -512,7 +619,6 @@ describe("guardSessionManager transcript updates", () => {
       ),
     ).toEqual(["run-owning-final", "run-owning-final"]);
     expect(updates.map(({ runId }) => runId)).toEqual([undefined, "run-owning-final"]);
-    spy.mockRestore();
   });
 
   it("refreshes run ownership and delivery preparation across reused managers", async () => {
@@ -549,6 +655,192 @@ describe("guardSessionManager transcript updates", () => {
       { messageId: expect.any(String), messageSeq: 3, runId: undefined },
     ]);
   });
+
+  it.each(["sync", "async"])(
+    "preserves message ordinals after a bounded rewrite replaces every cached entry in %s mode",
+    async (mode) => {
+      const { target } = await openPersistedSessionManager();
+      const manager = await SessionManager.openBoundedAsync(target, {
+        maxBytes: 16_384,
+        maxEvents: 3,
+      });
+      const guarded = guardSessionManager(manager, {
+        agentId: target.agentId,
+        sessionKey: target.sessionKey,
+      });
+      const originalIds: string[] = [];
+      for (let index = 1; index <= 5; index++) {
+        originalIds.push(guarded.appendMessage(makeUserMessage(`request ${index}`, index)));
+      }
+      expect(manager.getEntry(originalIds[0]!)).toBeUndefined();
+      await expect(
+        rewriteTranscriptEntriesInSessionManager({
+          sessionManager: manager,
+          replacements: [
+            { entryId: originalIds[0]!, message: makeUserMessage("repaired request", 1) },
+          ],
+        }),
+      ).resolves.toMatchObject({ changed: true });
+      expect(manager.getBranch().some((entry) => originalIds.includes(entry.id))).toBe(false);
+      const updates = collectUpdates();
+      const append = () =>
+        mode === "async"
+          ? guarded.appendMessageAsync(assistantText("after rewrite"))
+          : guarded.appendMessage(assistantText("after rewrite"));
+      const appendedId = await append();
+      expect(updates.map(({ messageSeq }) => messageSeq)).toEqual([6]);
+      expect(
+        await (mode === "async"
+          ? guarded.removeTrailingEntriesAsync((entry) => entry.id === appendedId)
+          : guarded.removeTrailingEntries((entry) => entry.id === appendedId)),
+      ).toBe(1);
+      await append();
+      expect(updates.map(({ messageSeq }) => messageSeq)).toEqual([6, 6]);
+      const fork = manager
+        .getBranch()
+        .find(
+          (entry) =>
+            entry.type === "message" &&
+            entry.message.role === "user" &&
+            entry.message.content === "request 4",
+        );
+      assert(fork, "rewritten fourth request must remain inside the resident window");
+      await guarded.branchAsync(fork.id);
+      await append();
+      expect(updates.map(({ messageSeq }) => messageSeq)).toEqual([6, 6, 5]);
+    },
+  );
+
+  it.each([
+    { mode: "sync", reload: false },
+    { mode: "async", reload: false },
+    { mode: "sync", reload: true },
+    { mode: "async", reload: true },
+  ])(
+    "preserves live message ordinals across bounded $mode appends and compaction (reload=$reload)",
+    async ({ mode, reload }) => {
+      const { sessionManager: source, target } = await openPersistedSessionManager();
+      const userId = source.appendMessage(makeUserMessage("existing prompt", 1));
+      const evictedId = source.appendMessage(assistantText("older response"));
+      source.appendMessage(assistantText("latest response"));
+      const bounded = await SessionManager.openBoundedAsync(target, {
+        maxBytes: 16_384,
+        maxEvents: 3,
+      });
+      const updates = collectUpdates();
+      const guarded = guardSessionManager(bounded, {
+        agentId: target.agentId,
+        sessionKey: target.sessionKey,
+      });
+      const append = (message: Parameters<SessionManager["appendMessage"]>[0]) =>
+        mode === "async" ? guarded.appendMessageAsync(message) : guarded.appendMessage(message);
+      await append(
+        makeAgentAssistantMessage({
+          content: [{ type: "toolCall", id: "bounded-call", name: "read", arguments: {} }],
+        }),
+      );
+      await append(makeTextToolResult("bounded-call", "read", "bounded result", false, 2));
+      expect(bounded.getEntry(evictedId)).toBeUndefined();
+      await append(assistantText("final response"));
+      for (const content of ["excluded response 1", "excluded response 2"]) {
+        const excludedMessage = { ...assistantText(content), excludeFromContext: true };
+        const excludedId = await append(excludedMessage);
+        assert(excludedId, "excluded message must remain durable");
+        expect(bounded.getEntry(excludedId)).toBeUndefined();
+      }
+      if (reload) {
+        await bounded.reloadPersistedTranscriptAsync();
+      }
+      await append(assistantText("after excluded responses"));
+      if (mode === "async") {
+        await guarded.appendCompactionAsync("summary", userId, 100);
+      } else {
+        guarded.appendCompaction("summary", userId, 100);
+      }
+      await append(assistantText("after compaction"));
+      expect(updates.map(({ messageSeq }) => messageSeq)).toEqual([4, 6, 7, 8, 9, 11]);
+    },
+  );
+
+  it.each([
+    { selected: "earlier", reload: false, expectedSeq: 2 },
+    { selected: "earlier", reload: true, expectedSeq: 2 },
+    { selected: "current", reload: false, expectedSeq: 4 },
+    { selected: "current", reload: true, expectedSeq: 4 },
+    { selected: "opaque", reload: true, expectedSeq: 4 },
+    { selected: "empty", reload: true, expectedSeq: 1 },
+  ])(
+    "keeps the selected ordinal across an omitted cursor control ($selected, reload=$reload)",
+    async ({ selected, reload, expectedSeq }) => {
+      const { sessionManager: source, target } = await openPersistedSessionManager();
+      const firstMessage = makeUserMessage("selected request", 1);
+      const first = source.appendMessage(firstMessage);
+      const excludedMessage = {
+        ...assistantText("excluded middle response"),
+        excludeFromContext: true,
+      };
+      const omitted = source.appendMessage(excludedMessage);
+      const currentMessage = assistantText("current response");
+      const current = source.appendMessage(currentMessage);
+      const opaqueId = "selected-opaque";
+      if (selected === "opaque") {
+        await replaceTranscriptEvents(target, [
+          ...(await loadTranscriptEvents(target)),
+          { type: "future-metadata", id: opaqueId, parentId: current },
+        ]);
+      }
+      await waitForSessionTranscriptProjection(target);
+      const bounded = await SessionManager.openBoundedAsync(target, {
+        maxBytes: 16_384,
+        maxEvents: 3,
+      });
+      expect(bounded.getEntry(omitted)).toBeUndefined();
+      const selectedLeaf =
+        selected === "earlier"
+          ? first
+          : selected === "empty"
+            ? null
+            : selected === "opaque"
+              ? opaqueId
+              : current;
+      const control = { targetId: selectedLeaf, appendParentId: omitted };
+      if (selected === "opaque") {
+        await bounded.appendLeafControlAsync(control);
+      } else {
+        bounded.appendLeafControl(control);
+      }
+      if (reload) {
+        await waitForSessionTranscriptProjection(target);
+        await bounded.reloadPersistedTranscriptAsync();
+      }
+      const expectedContext =
+        selected === "empty"
+          ? []
+          : selected === "earlier"
+            ? [firstMessage]
+            : [firstMessage, currentMessage];
+      expect.soft(bounded.getLeafId()).toBe(selected === "opaque" ? current : selectedLeaf);
+      expect.soft(bounded.buildSessionContext().messages).toEqual(expectedContext);
+      expect(bounded.getAppendParentId()).toBe(omitted);
+      const updates = collectUpdates();
+      const guarded = guardSessionManager(bounded);
+      const continuation =
+        selected === "empty"
+          ? makeUserMessage("new root", 4)
+          : assistantText("continued selection");
+      const appended = await guarded.appendMessageAsync(continuation);
+      assert(appended);
+      expect(updates.map(({ messageSeq }) => messageSeq)).toEqual([expectedSeq]);
+      expect(bounded.buildSessionContext().messages).toEqual([...expectedContext, continuation]);
+      if (selected === "opaque" || selected === "empty") {
+        expect(await bounded.removeTrailingEntriesAsync((entry) => entry.id === appended)).toBe(1);
+        expect(bounded.getAppendParentId()).toBe(selectedLeaf);
+        const reopened = await SessionManager.openAsync(target);
+        expect(reopened.getAppendParentId()).toBe(selectedLeaf);
+        expect(reopened.buildSessionContext().messages).toEqual(expectedContext);
+      }
+    },
+  );
 });
 
 describe("deferred assistant error transcript", () => {

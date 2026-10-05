@@ -22,8 +22,11 @@ import {
 import { MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL } from "../../../sessions/input-provenance.js";
 import type { PersistedUserTurnMessage } from "../../../sessions/user-turn-transcript.types.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
+import { isRecordedModelFallbackStop } from "../../model-fallback-stop.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
+import { sessionManagerNavigate } from "../../sessions/session-manager-navigation.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { makeAssistantMessageFixture } from "../../test-helpers/assistant-message-fixtures.js";
 import {
@@ -126,18 +129,27 @@ async function withPersistedOrphanBoundary(
 }
 
 describe("prepareEmbeddedAttemptSessionBoundary orphan recovery", () => {
-  it.each(["aborted", "rebound-writer"] as const)(
+  it.each(["aborted", "rebound-writer", "navigation-receipt"] as const)(
     "does not persist orphan repair for an unavailable owner: %s",
     async (reason) => {
       await withPersistedOrphanBoundary(
         { parent: true, metadata: true, detachLeaf: true },
-        async ({ input, target }) => {
+        async ({ input, manager, target }) => {
           const before = loadTranscriptEventsSync(target);
           const invalidated = vi.fn();
           input.attempt.onUserMessagePersistenceInvalidated = invalidated;
           if (reason === "aborted") {
             input.abortSignal = AbortSignal.abort(new Error("cancel before repair"));
           }
+          const navigate = manager[sessionManagerNavigate].bind(manager);
+          const receipt =
+            reason === "navigation-receipt"
+              ? vi.spyOn(manager, sessionManagerNavigate).mockImplementation(async (parentId) => {
+                  const assertCurrent = await navigate(parentId);
+                  queueMicrotask(() => manager.resetLeaf());
+                  return assertCurrent;
+                })
+              : undefined;
           const prepare = () => prepareEmbeddedAttemptSessionBoundary(input);
           const preparing =
             reason === "rebound-writer"
@@ -149,11 +161,17 @@ describe("prepareEmbeddedAttemptSessionBoundary orphan recovery", () => {
                   prepare,
                 )
               : prepare();
-          await expect(preparing).rejects.toThrow(
-            reason === "aborted"
-              ? "cancel before repair"
-              : SessionTranscriptWriterClaimReboundError,
-          );
+          try {
+            await expect(preparing).rejects.toThrow(
+              reason === "aborted"
+                ? "cancel before repair"
+                : reason === "navigation-receipt"
+                  ? "navigation changed"
+                  : SessionTranscriptWriterClaimReboundError,
+            );
+          } finally {
+            receipt?.mockRestore();
+          }
           expect(loadTranscriptEventsSync(target)).toEqual(before);
           expect(invalidated).not.toHaveBeenCalled();
         },
@@ -206,9 +224,13 @@ describe("prepareEmbeddedAttemptSessionBoundary orphan recovery", () => {
           ]);
           const abortReason = new Error("cancel owned projection wait");
           controller.abort(abortReason);
-          await expect(outcome).resolves.toMatchObject({
+          const failed = await outcome;
+          expect(failed.kind === "rejected" && isRecordedModelFallbackStop(failed.error)).toBe(
+            true,
+          );
+          expect(failed).toMatchObject({
             kind: "rejected",
-            error: { name: "AbortError", cause: abortReason },
+            error: { cause: { name: "AbortError", cause: abortReason } },
           });
           expect(input.activeSession.agent.state.messages).toBe(messages);
           expect(invalidated).not.toHaveBeenCalled();
@@ -415,35 +437,31 @@ describe("prepareEmbeddedAttemptSessionBoundary orphan recovery", () => {
   it.each([false, true])(
     "handles a different durable user leaf with current-turn exclusion %s",
     async (excludeFromContext) => {
-      const currentUser = {
-        role: "user" as const,
+      const currentUser: PersistedUserTurnMessage = {
+        role: "user",
         content: "current prompt",
         idempotencyKey: "current-run:user",
-        excludeFromContext,
+        excludeFromContext: excludeFromContext ? true : undefined,
         timestamp: 2,
       };
-      const repairedMessages: AgentMessage[] = [currentUser];
       const { activeSession } = createActiveSession([]);
-      const branchAsync = vi.fn(async () => undefined);
       const clearNextUserMessagePersistenceSuppression = vi.fn();
       const onUserMessagePersistenceInvalidated = vi.fn();
-      const sessionManager = createSessionManager({
-        getLeafEntry: () => ({
-          id: "orphan-user",
-          parentId: "previous-assistant",
-          timestamp: "2026-07-13T00:00:00.000Z",
-          type: "message",
-          message: {
-            role: "user",
-            content: "old prompt",
-            idempotencyKey: "previous-run:user",
-            timestamp: 1,
-          },
-        }),
-        branchAsync,
+      const sessionManager = Object.assign(SessionManager.inMemory(), {
         clearNextUserMessagePersistenceSuppression,
-        buildSessionContext: () => ({ messages: repairedMessages }),
       });
+      const previous = makeAssistantMessageFixture({
+        content: [{ type: "text", text: "previous response" }],
+        timestamp: 0,
+      });
+      const previousId = sessionManager.appendMessage(previous);
+      const orphan: PersistedUserTurnMessage = {
+        role: "user",
+        content: "old prompt",
+        idempotencyKey: "previous-run:user",
+        timestamp: 1,
+      };
+      const orphanId = sessionManager.appendMessage(orphan);
       const recorder = {
         getPersistedMessage: () => currentUser,
         hasPersisted: () => true,
@@ -470,16 +488,19 @@ describe("prepareEmbeddedAttemptSessionBoundary orphan recovery", () => {
 
       if (excludeFromContext) {
         expect(boundary.orphanRepair).toBeUndefined();
-        expect(branchAsync).not.toHaveBeenCalled();
+        expect(sessionManager.getLeafId()).toBe(orphanId);
+        expect(sessionManager.getBranch().map((entry) => entry.id)).toEqual([previousId, orphanId]);
         expect(clearNextUserMessagePersistenceSuppression).not.toHaveBeenCalled();
         expect(onUserMessagePersistenceInvalidated).not.toHaveBeenCalled();
         expect(activeSession.agent.state.messages).toEqual([]);
       } else {
         expect(boundary.orphanRepair?.removeLeaf).toBe(true);
-        expect(branchAsync).toHaveBeenCalledWith("previous-assistant");
+        expect(sessionManager.getLeafId()).toBe(previousId);
+        expect(sessionManager.getBranch().map((entry) => entry.id)).toEqual([previousId]);
+        expect(sessionManager.getEntry(orphanId)).toBeDefined();
         expect(clearNextUserMessagePersistenceSuppression).toHaveBeenCalledOnce();
         expect(onUserMessagePersistenceInvalidated).toHaveBeenCalledOnce();
-        expect(activeSession.agent.state.messages).toEqual(repairedMessages);
+        expect(activeSession.agent.state.messages).toEqual([previous]);
       }
     },
   );
@@ -528,34 +549,26 @@ describe("prepareEmbeddedAttemptSessionBoundary orphan recovery", () => {
   });
 
   it("excludes a preserved orphan from this turn's messages without branching", async () => {
-    const contextMessages: AgentMessage[] = [
-      makeAssistantMessageFixture({
-        content: [{ type: "text" as const, text: "prior" }],
-        stopReason: "stop",
-        timestamp: 1,
-      }),
-      {
-        role: "user" as const,
-        content: [{ type: "text" as const, text: "old" }],
-        timestamp: 2,
-      },
-    ];
+    const previous = makeAssistantMessageFixture({
+      content: [{ type: "text", text: "prior" }],
+      stopReason: "stop",
+      timestamp: 1,
+    });
+    const orphan = {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "old" }],
+      timestamp: 2,
+    };
+    const contextMessages = [previous, orphan];
     const { activeSession } = createActiveSession([...contextMessages]);
-    const branchAsync = vi.fn(async () => undefined);
     const clearNextUserMessagePersistenceSuppression = vi.fn();
     const onUserMessagePersistenceInvalidated = vi.fn();
-    const sessionManager = createSessionManager({
-      getLeafEntry: () => ({
-        id: "user-leaf",
-        parentId: "parent-entry",
-        type: "message",
-        timestamp: "2026-07-13T00:00:00.000Z",
-        message: { role: "user", content: "old" },
-      }),
-      branchAsync,
+    const sessionManager = Object.assign(SessionManager.inMemory(), {
       clearNextUserMessagePersistenceSuppression,
-      buildSessionContext: () => ({ messages: contextMessages }),
     });
+    sessionManager.appendMessage(previous);
+    const orphanId = sessionManager.appendMessage(orphan);
+    const originalBranch = sessionManager.getBranch();
 
     const boundary = await prepareEmbeddedAttemptSessionBoundary({
       activeSession,
@@ -577,7 +590,8 @@ describe("prepareEmbeddedAttemptSessionBoundary orphan recovery", () => {
     });
 
     expect(boundary.orphanRepair?.removeLeaf).toBe(false);
-    expect(branchAsync).not.toHaveBeenCalled();
+    expect(sessionManager.getLeafId()).toBe(orphanId);
+    expect(sessionManager.getBranch()).toEqual(originalBranch);
     expect(clearNextUserMessagePersistenceSuppression).not.toHaveBeenCalled();
     expect(onUserMessagePersistenceInvalidated).not.toHaveBeenCalled();
     expect(activeSession.agent.state.messages).toMatchObject([
@@ -661,4 +675,87 @@ describe("prepareEmbeddedAttemptSessionBoundary orphan recovery", () => {
       },
     );
   });
+  it.each(["callback", "navigation", "messages", "append-receipt", "callback-navigation"] as const)(
+    "keeps a committed orphan repair nonretryable after a failing %s publication",
+    async (failureAt) => {
+      await withPersistedOrphanBoundary(
+        { parent: true, metadata: false, detachLeaf: true },
+        async ({ input, manager, orphanId, target }) => {
+          const priorMessages = input.activeSession.agent.state.messages;
+          const newerMessages: AgentMessage[] = [
+            { role: "user", content: "newer context", timestamp: 9 },
+          ];
+          const callbackFailure = new Error("invalidation callback failed");
+          if (failureAt === "callback") {
+            input.attempt.onUserMessagePersistenceInvalidated = () => {
+              throw callbackFailure;
+            };
+          } else if (failureAt === "callback-navigation") {
+            input.attempt.onUserMessagePersistenceInvalidated = () => manager.resetLeaf();
+          }
+          const append = manager.appendLeafControlAsync.bind(manager);
+          const receipt =
+            failureAt === "append-receipt"
+              ? vi.spyOn(manager, "appendLeafControlAsync").mockImplementation(async (params) => {
+                  const result = await append(params);
+                  queueMicrotask(() => manager.resetLeaf());
+                  return result;
+                })
+              : undefined;
+          const prepare = manager[sessionManagerPrepareHistoryRead].bind(manager);
+          const intercepted = vi
+            .spyOn(manager, sessionManagerPrepareHistoryRead)
+            .mockImplementation((signal) => {
+              const history = prepare(signal);
+              return {
+                ...history,
+                readContext: async () => {
+                  const context = await history.readContext();
+                  if (failureAt === "navigation" || failureAt === "messages") {
+                    queueMicrotask(() => {
+                      if (failureAt === "navigation") {
+                        manager.resetLeaf();
+                      }
+                      input.activeSession.agent.state.messages = newerMessages;
+                    });
+                  }
+                  return context;
+                },
+              };
+            });
+          let failure: unknown;
+          try {
+            await prepareEmbeddedAttemptSessionBoundary(input);
+          } catch (error) {
+            failure = error;
+          } finally {
+            intercepted.mockRestore();
+            receipt?.mockRestore();
+          }
+          expect(isRecordedModelFallbackStop(failure)).toBe(true);
+          expect(failure).toMatchObject({
+            cause:
+              failureAt === "callback"
+                ? callbackFailure
+                : {
+                    message: expect.stringContaining(
+                      failureAt === "messages"
+                        ? "Active session messages changed"
+                        : "navigation changed",
+                    ),
+                  },
+          });
+          expect(input.activeSession.agent.state.messages).toBe(
+            failureAt === "navigation" || failureAt === "messages" ? newerMessages : priorMessages,
+          );
+          const reopened = await SessionManager.openAsync(target);
+          expect(reopened.getEntry(orphanId)).toBeDefined();
+          expect(reopened.getBranch().some((entry) => entry.id === orphanId)).toBe(false);
+          if (failureAt !== "callback" && failureAt !== "messages") {
+            expect(manager.getLeafId()).toBeNull();
+          }
+        },
+      );
+    },
+  );
 });

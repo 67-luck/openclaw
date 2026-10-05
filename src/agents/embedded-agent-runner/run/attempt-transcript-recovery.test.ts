@@ -1,11 +1,18 @@
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { expect, it, vi } from "vitest";
+import { assert, expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../../../config/sessions/session-accessor.js";
 import * as workerAdmission from "../../../infra/sqlite-worker-operation-admission.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
+import { isRecordedModelFallbackStop } from "../../model-fallback-stop.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
+import {
+  createTestSession,
+  registerAgentSessionLoopTestLifecycle,
+  streamMocks,
+} from "../../sessions/agent-session-loop-correctness.test-support.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { createZeroUsageFixture } from "../../test-helpers/usage-fixtures.js";
 import { stripSessionsYieldArtifacts } from "./attempt-sessions-yield.js";
@@ -14,6 +21,8 @@ import {
   removeTrailingMidTurnPrecheckAssistantError,
 } from "./attempt-transcript-helpers.js";
 import { MidTurnPrecheckSignal } from "./midturn-precheck.js";
+
+registerAgentSessionLoopTestLifecycle();
 
 const MID_TURN_PRECHECK_ERROR_MESSAGE = new MidTurnPrecheckSignal({
   route: "compact_only",
@@ -101,6 +110,124 @@ it.each(["yield", "precheck", "compaction"])(
       expect(sessionManager.getEntries()).toEqual(
         expect.arrayContaining([expect.objectContaining({ customType: "preserved-state" })]),
       );
+    });
+  },
+);
+
+it.each([
+  { cleanup: "precheck", failure: "selection", committed: true },
+  { cleanup: "compaction", failure: "selection", committed: true },
+  { cleanup: "compaction", failure: "read", committed: true },
+  { cleanup: "precheck", failure: "replacement", committed: true },
+  { cleanup: "compaction", failure: "selection", committed: false },
+] as const)(
+  "settles $cleanup publication failure at $failure (committed=$committed)",
+  async ({ cleanup, failure: trigger, committed }) => {
+    await withOpenClawTestState({ label: "recovery-context-publication" }, async (state) => {
+      const target = {
+        agentId: "main",
+        sessionId: "recovery-context-publication",
+        sessionKey: "agent:main:recovery-context-publication",
+        storePath: path.join(state.agentDir(), "openclaw-agent.sqlite"),
+      };
+      await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
+      const sessionManager = await SessionManager.openBoundedAsync(target, {
+        maxBytes: 4096,
+        maxEvents: 3,
+      });
+      const { session: activeSession } = await createTestSession({ sessionManager });
+      const user: AgentMessage = { role: "user", content: "continue", timestamp: 1 };
+      const error: AgentMessage = {
+        role: "assistant",
+        content: [],
+        api: "openai-responses",
+        provider: "openai",
+        model: "test-model",
+        stopReason: "error",
+        errorMessage: MID_TURN_PRECHECK_ERROR_MESSAGE,
+        timestamp: 2,
+        usage: createZeroUsageFixture(),
+      };
+      await sessionManager.appendMessageAsync(user);
+      if (committed) {
+        await sessionManager.appendMessageAsync(error);
+      }
+      activeSession.agent.state.messages = [user, error];
+      const messages = activeSession.agent.state.messages;
+      let replacement: AgentMessage[] | undefined;
+      let removedCount: number | undefined;
+      const readFailure = new Error("cleanup context acquisition failed");
+      const remove = sessionManager.removeTrailingEntriesAsync.bind(sessionManager);
+      const removal = vi
+        .spyOn(sessionManager, "removeTrailingEntriesAsync")
+        .mockImplementation(async (...args) => {
+          removedCount = await remove(...args);
+          if (trigger === "replacement") {
+            activeSession.agent.state.messages = sessionManager.buildSessionContext().messages;
+            replacement = activeSession.agent.state.messages;
+          } else if (trigger === "selection" && (cleanup === "precheck" || !committed)) {
+            sessionManager.resetLeaf();
+          }
+          return removedCount;
+        });
+      const prepare = sessionManager[sessionManagerPrepareHistoryRead].bind(sessionManager);
+      const intercepted = vi
+        .spyOn(sessionManager, sessionManagerPrepareHistoryRead)
+        .mockImplementation((signal) => {
+          const history = prepare(signal);
+          return {
+            ...history,
+            readContext: async () => {
+              const context = await history.readContext();
+              if (trigger === "read") {
+                throw readFailure;
+              }
+              if (trigger === "selection") {
+                sessionManager.resetLeaf();
+              }
+              return context;
+            },
+          };
+        });
+      let failure: unknown;
+      try {
+        if (cleanup === "precheck") {
+          await removeTrailingMidTurnPrecheckAssistantError({ activeSession, sessionManager });
+        } else {
+          await normalizeCompactionRecoveryTranscriptTail({ activeSession, sessionManager });
+        }
+      } catch (cause) {
+        failure = cause;
+      } finally {
+        intercepted.mockRestore();
+        removal.mockRestore();
+      }
+      assert(failure instanceof Error);
+      expect(removedCount).toBe(committed ? 1 : 0);
+      expect(isRecordedModelFallbackStop(failure)).toBe(committed);
+      expect((await SessionManager.openAsync(target)).buildSessionContext().messages).toEqual([
+        user,
+      ]);
+      if (committed) {
+        expect(failure.name).toBe("SessionSuffixCommittedError");
+        expect(failure.message).toContain("cleanup committed");
+      }
+      if (trigger === "read") {
+        expect(failure.cause).toBe(readFailure);
+      }
+      if (replacement) {
+        expect(activeSession.messages).toBe(replacement);
+        expect(activeSession.messages).toEqual([user]);
+      } else if (committed) {
+        expect(activeSession.agent.state.messages).toBe(messages);
+        expect(() => activeSession.messages).toThrow(failure);
+        await expect(activeSession.prompt("must not reuse removed history")).rejects.toBe(failure);
+        expect(streamMocks.streamSimple).not.toHaveBeenCalled();
+        activeSession.agent.state.messages = [user];
+        expect(activeSession.messages).toEqual([user]);
+      } else {
+        expect(activeSession.messages).toBe(messages);
+      }
     });
   },
 );

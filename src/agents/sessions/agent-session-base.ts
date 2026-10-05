@@ -17,6 +17,7 @@ import type {
 } from "../runtime/index.js";
 import { isToolResultError } from "../tool-result-error.js";
 import { takeCodeModeResponseSource } from "../transcript-code-mode-source.js";
+import { assertSessionMessageViewAvailable } from "./agent-session-publication.js";
 import { persistAgentSessionMessage } from "./agent-session-transcript.js";
 import type {
   AgentSessionConfig,
@@ -46,6 +47,7 @@ import {
   retireQueuedUserMessage,
 } from "./queued-user-message-retirement.js";
 import type { ResourceLoader } from "./resource-loader.js";
+import { withSessionManagerWriteAssertion } from "./session-manager-write-admission.js";
 import type { SessionManager } from "./session-manager.js";
 import { prepareSessionToolResult } from "./session-tool-result-redaction.js";
 import type { SettingsManager } from "./settings-manager.js";
@@ -314,8 +316,12 @@ export abstract class AgentSessionBase {
         (reason as { turnHandoff?: unknown }).turnHandoff === true;
     }
     if (this.eventMayWriteSession(event)) {
-      await this.runWithSessionWriteSettlement(
-        async () => await this.handleAgentEventUnlocked(event),
+      await this.runWithSessionWriteSettlement(() =>
+        withSessionManagerWriteAssertion(
+          this.sessionManager,
+          () => assertSessionMessageViewAvailable(this.agent.state),
+          async () => await this.handleAgentEventUnlocked(event),
+        ),
       );
       // Supported callbacks can change the current result or register another secret.
       prepareSessionToolResult(this.sessionManager, event);
@@ -325,6 +331,9 @@ export abstract class AgentSessionBase {
   };
 
   private async handleAgentEventUnlocked(event: AgentEvent): Promise<void> {
+    if (event.type === "agent_start" || event.type === "message_end") {
+      assertSessionMessageViewAvailable(this.agent.state);
+    }
     if (event.type === "agent_start") {
       this.lastAssistantEntryId = undefined;
     }
@@ -340,6 +349,9 @@ export abstract class AgentSessionBase {
     let messageChanged = false;
     if (event.type !== "message_update" || this.currentExtensionRunner.hasHandlers(event.type)) {
       messageChanged = await this.emitExtensionEvent(event);
+    }
+    if (event.type === "agent_start") {
+      assertSessionMessageViewAvailable(this.agent.state);
     }
     // Extensions can replace the final result. Protect listeners before publishing it.
     messageChanged = prepareSessionToolResult(this.sessionManager, event) || messageChanged;
@@ -358,6 +370,7 @@ export abstract class AgentSessionBase {
     messageChanged = prepareSessionToolResult(this.sessionManager, event) || messageChanged;
 
     if (event.type === "message_end") {
+      assertSessionMessageViewAvailable(this.agent.state);
       if (event.message.role === "custom") {
         const message = event.message;
         await this.sessionManager.appendCustomMessageEntryAsync(
@@ -667,6 +680,7 @@ export abstract class AgentSessionBase {
 
   /** All messages including custom types like BashExecutionMessage */
   get messages(): AgentMessage[] {
+    assertSessionMessageViewAvailable(this.agent.state);
     return this.agent.state.messages;
   }
 

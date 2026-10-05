@@ -225,6 +225,7 @@ export function scanSessionTranscriptNavigation<T>(
         parentId: leafId,
         leafId,
         appendParentId: leafId,
+        appendMode: undefined,
       };
     }
     const isKnownLeafReference = (id: string | null): boolean =>

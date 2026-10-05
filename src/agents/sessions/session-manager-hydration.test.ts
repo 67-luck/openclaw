@@ -28,27 +28,14 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
-import {
-  withOpenClawTestState,
-  type OpenClawTestState,
-} from "../../test-utils/openclaw-test-state.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
+import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
 import { sessionManagerPrepareCurrentTurnReplay } from "./session-manager-current-turn.js";
+import { sessionManagerPrepareHistoryRead } from "./session-manager-history.js";
+import { canonicalTarget } from "./session-manager-hydration.test-support.js";
 
 const { prepareSessionTranscriptHydration } = transcriptHydration;
-
-function canonicalTarget(
-  state: OpenClawTestState,
-  sessionId: string,
-  sessionKey = `agent:main:${sessionId}`,
-) {
-  return {
-    agentId: "main",
-    sessionId,
-    sessionKey,
-    storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
-  };
-}
 
 it.each(["canonical", "shared"])(
   "opens cold and bounded %s SDK views without host SQLite and preserves complete durable history",
@@ -182,6 +169,25 @@ it.each(["file", "incognito"])(
         ...(storage === "incognito" ? { incognito: true } : {}),
       });
       const source = SessionManager.open(target);
+      const checkpoint = makeAgentAssistantMessage({ content: [] });
+      checkpoint.providerReplay = {
+        v: 1,
+        type: "openai-responses-retained-compaction",
+        data: "fenced-checkpoint",
+        provider: checkpoint.provider,
+        api: checkpoint.api,
+        model: checkpoint.model,
+        baseUrlHash: "0123456789abcdef",
+      };
+      const checkpointId = source.appendMessage(checkpoint);
+      expect(source.getEntry(checkpointId)).toMatchObject({
+        message: {
+          providerReplay: {
+            type: "openai-responses-retained-compaction",
+            data: "fenced-checkpoint",
+          },
+        },
+      });
       const beforeEntryId = source.appendMessage(makeUserMessage("earlier user", 0));
       const entryId = source.appendMessage(makeUserMessage("current user", 1));
       await waitForSessionTranscriptProjection(target);
@@ -215,6 +221,21 @@ it.each(["file", "incognito"])(
       const { snapshot: fencedSnapshot } = await fencedReader.read();
       expect(fencedSnapshot.events).toContainEqual(source.getEntry(beforeEntryId));
       expect(fencedSnapshot.events).not.toContainEqual(source.getEntry(entryId));
+      const residentReader = runWithSessionTranscriptReadFence(
+        { ...current.anchor, logicalTurnId: "current-turn-prefix", role: "user" },
+        () =>
+          prepareSessionTranscriptHydration(target, {
+            maxBytes: 4096,
+            maxEvents: 1,
+            retainContextUsageEvidence: true,
+          }),
+      );
+      const resident = await residentReader.read();
+      expect(resident.snapshot.events).toContainEqual(source.getEntry(checkpointId));
+      expect(resident.snapshot.events).toContainEqual(source.getEntry(beforeEntryId));
+      for (const hiddenId of [entryId, laterEntryId]) {
+        expect(resident.snapshot.events).not.toContainEqual(source.getEntry(hiddenId));
+      }
       const fencedRequest = { ...request, version: fencedSnapshot.version };
       expect(
         (await fencedReader.readCurrentTurnEntry({ ...fencedRequest, entryId: beforeEntryId }))
@@ -239,7 +260,7 @@ it.each(["file", "incognito"])(
         closeOpenClawAgentDatabases(state.root);
         const owners = listOpenIncognitoAgentDatabases();
         await expect(reader.readCurrentTurnEntry(request)).rejects.toThrow(
-          SessionTranscriptStorageUnavailableError,
+          "Session transcript incognito database owner is no longer current",
         );
         expect(listOpenIncognitoAgentDatabases()).toEqual(owners);
       }
@@ -461,6 +482,7 @@ it.each([
   { entry: "bounded-callback", transition: "close" },
   { entry: "retarget", transition: "replace" },
   { entry: "replay", transition: "replace" },
+  { entry: "history", transition: "replace" },
 ])(
   "rejects incognito $entry publication after owner $transition",
   async ({ entry, transition }) => {
@@ -481,7 +503,8 @@ it.each([
         source.appendMessage(makeUserMessage("latest private history", 2));
       }
       const onTruncated = vi.fn(() => closeOpenClawAgentDatabases(state.root));
-      const receiver = entry === "replay" ? source : SessionManager.inMemory();
+      const receiver =
+        entry === "replay" || entry === "history" ? source : SessionManager.inMemory();
       if (entry === "replay") {
         await receiver.reloadPersistedTranscriptAsync();
       }
@@ -505,6 +528,7 @@ it.each([
                   read: () => holdPublication(reader.read()),
                   readCurrentTurnEntry: (request) =>
                     holdPublication(reader.readCurrentTurnEntry(request)),
+                  readMaintenance: (request) => holdPublication(reader.readMaintenance(request)),
                 };
               })
           : undefined;
@@ -519,10 +543,13 @@ it.each([
               })
             : entry === "retarget"
               ? receiver.setSessionTargetAsync(target)
-              : receiver[sessionManagerPrepareCurrentTurnReplay](
-                  () => false,
-                  (candidate) => candidate?.type === "message" && candidate.message.role === "user",
-                );
+              : entry === "history"
+                ? receiver[sessionManagerPrepareHistoryRead]().readBranch()
+                : receiver[sessionManagerPrepareCurrentTurnReplay](
+                    () => false,
+                    (candidate) =>
+                      candidate?.type === "message" && candidate.message.role === "user",
+                  );
       const rejected = expect(pending).rejects.toThrow(
         "incognito database owner is no longer current",
       );

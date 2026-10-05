@@ -8,6 +8,8 @@ import {
   prepareTranscriptMessageAppend,
   prepareTranscriptMessageAppendForWorker,
 } from "../../config/sessions/session-accessor.sqlite-transcript-message-append.js";
+import { resolveSessionCanonicalParentId } from "../../config/sessions/session-entry-navigation.js";
+import { isSessionContextMessageEntry } from "../../config/sessions/session-history-context.js";
 import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
 import { transcriptEventContextEligibility } from "../../config/sessions/session-transcript-projection-append.js";
 import { resolveSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
@@ -29,6 +31,7 @@ import {
   resolveCurrentTurnEntryId,
   sessionManagerPrepareCurrentTurnReplay,
 } from "./session-manager-current-turn.js";
+import { sessionManagerPrepareHistoryRead } from "./session-manager-history.js";
 import { generateSessionEntryId } from "./session-manager-id.js";
 import { prepareSessionManagerSync } from "./session-manager-incognito-scope.js";
 import {
@@ -40,6 +43,8 @@ import { SessionManagerActorCommittedError } from "./session-manager-persistence
 import { SessionManagerSuffixPersistence } from "./session-manager-suffix-persistence.js";
 import type {
   AppendPersistenceOptions,
+  BranchSummaryEntry,
+  LabelEntry,
   SessionEntry,
   SessionMessageEntry,
 } from "./session-manager-types.js";
@@ -61,8 +66,14 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
     const canonical = canonicalizeSessionEntry(entry, options);
     return withSessionManagerWrite(this, async (admission) => {
       this.assertTranscriptWriteActive();
+      const labelContextStart = this.contextStartEntryId;
       if (canonical.type === "label" && !this.byId.has(canonical.targetId)) {
-        throw new Error(`Entry ${canonical.targetId} not found`);
+        const history = this[sessionManagerPrepareHistoryRead]();
+        const labelTarget = await history.readEntryNavigation(canonical.targetId);
+        if (!labelTarget || labelTarget.type === "opaque") {
+          throw new Error(`Entry ${canonical.targetId} not found`);
+        }
+        history.assertCurrent();
       }
       if (!preserveParent) {
         canonical.parentId = this.appendParentId;
@@ -85,7 +96,11 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
           canonical.parentId = this.byId.get(result.entryId)?.parentId ?? canonical.parentId;
           return { ...result, entry: canonical };
         }
-        return this.appendEntry(canonical, options, preserveParent);
+        const appended = this.appendEntry(canonical, options, preserveParent);
+        if (canonical.type === "label" || canonical.type === "branch_summary") {
+          await this.adoptCommittedEntryContext(canonical, labelContextStart);
+        }
+        return appended;
       }
       const activeBranchAppend =
         !preserveParent &&
@@ -119,6 +134,7 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
       if (canonical.type === "message" && message) {
         canonical.message = message.prepared.persistedMessage;
       }
+      const publication = this.captureTranscriptPublication();
       const committed = await this.persistWorkerRecord(
         canonical,
         activeBranchAppend ? "active-branch" : undefined,
@@ -132,6 +148,7 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
           message?.validateTurn === true,
         assertNavigation,
       );
+      let adopted: ReturnType<typeof this.adoptWorkerCommittedEntry<T>>;
       try {
         this.assertTranscriptWriteActive();
         if (
@@ -144,7 +161,8 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
         if (!this.hasNewerPublishedTranscriptView(committed.committedVersion)) {
           assertNavigation();
         }
-        return this.adoptWorkerCommittedEntry(canonical, committed, admittedUserId);
+        publication.beginAdoption();
+        adopted = this.adoptWorkerCommittedEntry(canonical, committed, admittedUserId);
       } catch (cause) {
         if (committed.result?.appended === false) {
           // A replay refusal has no newly committed transcript row to recover.
@@ -159,11 +177,57 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
             ? "SessionMessageCommittedError"
             : "SessionEntryCommittedError";
         recordModelFallbackStop(error);
-        this.invalidateTranscriptView(error);
+        publication.invalidate(error);
         throw error;
       }
+      if (
+        (canonical.type === "label" || canonical.type === "branch_summary") &&
+        !adopted.viewWasSuperseded
+      ) {
+        await this.adoptCommittedEntryContext(canonical, labelContextStart);
+      }
+      return adopted;
     });
   }
+
+  private async adoptCommittedEntryContext(
+    entry: LabelEntry | BranchSummaryEntry,
+    contextStartEntryId: string | null | undefined,
+  ): Promise<void> {
+    if (!this.persistenceTarget || !this.boundedContextLimits) {
+      return;
+    }
+    const publication = this.captureTranscriptPublication();
+    try {
+      const history = this[sessionManagerPrepareHistoryRead]();
+      const prepared = await history.readSelectedContext(entry.id, this.boundedContextLimits, {
+        retainedEntryIds: [entry.id],
+      });
+      history.assertCurrent();
+      publication.beginAdoption();
+      this.adoptPreparedTranscriptReload(prepared);
+      if (entry.type === "label") {
+        this.contextStartEntryId = contextStartEntryId;
+        this.enforceResidentBudget();
+        if (
+          entry.label &&
+          (!this.byId.has(entry.targetId) || this.getLabel(entry.targetId) !== entry.label)
+        ) {
+          throw new Error("Committed session label lost its target");
+        }
+      }
+    } catch (cause) {
+      const error = new Error(
+        "Session entry committed, but its context could not be adopted; do not replay the append",
+        { cause },
+      );
+      error.name = "SessionEntryCommittedError";
+      recordModelFallbackStop(error);
+      publication.invalidate(error);
+      throw error;
+    }
+  }
+
   protected appendEntry<T extends SessionEntry>(
     entry: T,
     options?: AppendPersistenceOptions,
@@ -380,79 +444,114 @@ export class SessionManagerAppend extends SessionManagerSuffixPersistence {
       } else {
         this.reloadPersistedTranscriptSync();
       }
-    } else if (
-      this.boundedContextIncomplete &&
-      transcriptEventContextEligibility(canonicalEntry) === 0
-    ) {
-      // Match bounded hydration: SQLite owns display payloads; only the tail's ancestry is live.
-      const parentId =
-        !isSessionTranscriptSideAppendEntry(canonicalEntry) &&
-        canonicalEntry.parentId === this.appendParentId &&
-        this.leafId !== this.appendParentId
-          ? this.leafId
-          : this.resolveCanonicalParentId(canonicalEntry.parentId);
-      if (this.appendParentId && this.appendParentId !== this.leafId && !this.appendMode) {
-        this.opaqueParentsById.delete(this.appendParentId);
-      }
-      this.opaqueParentsById.set(canonicalEntry.id, parentId);
-      this.appendParentId = canonicalEntry.id;
-      if (isSessionTranscriptSideAppendEntry(canonicalEntry)) {
-        this.appendMode = "side";
-      } else {
-        this.leafId = parentId;
-        this.appendMode = undefined;
-      }
     } else {
-      if (
-        !isSessionTranscriptSideAppendEntry(canonicalEntry) &&
-        canonicalEntry.parentId === this.appendParentId &&
-        this.leafId !== this.appendParentId
-      ) {
-        this.logicalParentsById.set(canonicalEntry.id, this.leafId);
+      if (this.boundedContextLimits) {
+        const rawParentId =
+          !isSessionTranscriptSideAppendEntry(canonicalEntry) &&
+          canonicalEntry.parentId === this.appendParentId &&
+          this.rawLeafId !== this.appendParentId
+            ? this.rawLeafId
+            : canonicalEntry.parentId;
+        const canonicalParentId = resolveSessionCanonicalParentId(
+          rawParentId,
+          { has: (id) => this.byId.has(id) || this.boundedParentIds.has(id) },
+          this.opaqueParentsById,
+        );
+        this.boundedParentIds.set(canonicalEntry.id, { rawParentId, canonicalParentId });
+        this.cacheAppendedTranscriptEntrySeq(canonicalEntry, canonicalParentId);
       }
-      this.fileEntries.push(canonicalEntry);
-      // Reloaded views already include the committed boundary; count only local adoption.
       if (
-        this.persistedBoundaryCount !== undefined &&
-        (canonicalEntry.type === "compaction" || canonicalEntry.type === "reset")
+        this.boundedContextIncomplete &&
+        transcriptEventContextEligibility(canonicalEntry) === 0
       ) {
-        this.persistedBoundaryCount += 1;
-      }
-      this.byId.set(canonicalEntry.id, canonicalEntry);
-      this.appendParentId = canonicalEntry.id;
-      if (isSessionTranscriptSideAppendEntry(canonicalEntry)) {
-        this.appendMode = "side";
-      } else {
-        this.leafId = canonicalEntry.id;
-        this.appendMode = undefined;
-        // Bind opaque-only inherited state only after the visible append succeeds.
-        this.cacheTtlProjectionPrefixes = this.cacheTtlProjectionPrefixes?.flatMap((prefix) => {
-          if (prefix.anchorIds.length) {
-            return [prefix];
+        // Match bounded hydration: SQLite owns display payloads; only the tail's ancestry is live.
+        const parentId =
+          !isSessionTranscriptSideAppendEntry(canonicalEntry) &&
+          canonicalEntry.parentId === this.appendParentId &&
+          this.leafId !== this.appendParentId
+            ? this.leafId
+            : this.resolveCanonicalParentId(canonicalEntry.parentId);
+        if (this.appendParentId && this.appendParentId !== this.leafId && !this.appendMode) {
+          this.opaqueParentsById.delete(this.appendParentId);
+          if (!this.byId.has(this.appendParentId)) {
+            this.transcriptSeqByEntryId.delete(this.appendParentId);
           }
-          return canonicalEntry.type === "reset" || canonicalEntry.type === "branch_summary"
-            ? []
-            : [{ ...prefix, anchorIds: [canonicalEntry.id] }];
-        });
-      }
-      if (canonicalEntry.type === "label") {
-        if (canonicalEntry.label) {
-          this.labelsById.set(canonicalEntry.targetId, canonicalEntry.label);
-          this.labelTimestampsById.set(canonicalEntry.targetId, canonicalEntry.timestamp);
+        }
+        this.opaqueParentsById.set(canonicalEntry.id, parentId);
+        this.appendParentId = canonicalEntry.id;
+        if (isSessionTranscriptSideAppendEntry(canonicalEntry)) {
+          this.appendMode = "side";
         } else {
-          this.labelsById.delete(canonicalEntry.targetId);
-          this.labelTimestampsById.delete(canonicalEntry.targetId);
+          this.leafId = parentId;
+          this.rawLeafId = canonicalEntry.id;
+          this.appendMode = undefined;
+        }
+      } else {
+        if (
+          !isSessionTranscriptSideAppendEntry(canonicalEntry) &&
+          canonicalEntry.parentId === this.appendParentId &&
+          this.leafId !== this.appendParentId
+        ) {
+          this.logicalParentsById.set(canonicalEntry.id, this.rawLeafId);
+        }
+        this.fileEntries.push(canonicalEntry);
+        // Reloaded views already include the committed boundary; count only local adoption.
+        if (
+          this.persistedBoundaryCount !== undefined &&
+          (canonicalEntry.type === "compaction" || canonicalEntry.type === "reset")
+        ) {
+          this.persistedBoundaryCount += 1;
+        }
+        this.byId.set(canonicalEntry.id, canonicalEntry);
+        this.appendParentId = canonicalEntry.id;
+        if (isSessionTranscriptSideAppendEntry(canonicalEntry)) {
+          this.appendMode = "side";
+        } else {
+          this.leafId = canonicalEntry.id;
+          this.rawLeafId = canonicalEntry.id;
+          this.appendMode = undefined;
+          // Bind opaque-only inherited state only after the visible append succeeds.
+          this.cacheTtlProjectionPrefixes = this.cacheTtlProjectionPrefixes?.flatMap((prefix) => {
+            if (prefix.anchorIds.length) {
+              return [prefix];
+            }
+            return canonicalEntry.type === "reset" || canonicalEntry.type === "branch_summary"
+              ? []
+              : [{ ...prefix, anchorIds: [canonicalEntry.id] }];
+          });
+        }
+        if (canonicalEntry.type === "label") {
+          this.admittedLabelRecords.set(canonicalEntry, {
+            targetId: canonicalEntry.targetId,
+            rawSeq: this.persistenceTarget ? (this.transcriptVersion?.rawSeq ?? null) : null,
+          });
+          if (canonicalEntry.label) {
+            this.labelsById.set(canonicalEntry.targetId, canonicalEntry.label);
+            this.labelTimestampsById.set(canonicalEntry.targetId, canonicalEntry.timestamp);
+          } else {
+            this.labelsById.delete(canonicalEntry.targetId);
+            this.labelTimestampsById.delete(canonicalEntry.targetId);
+          }
         }
       }
     }
     this.pendingDeliberateAppend = false;
+    const appended = persistenceResult?.appended ?? true;
+    // An idempotent receipt can reload inspection pins without admitting new model history.
+    if (appended && isSessionContextMessageEntry(canonicalEntry)) {
+      if (this.contextStartEntryId === null) {
+        this.contextStartEntryId = canonicalEntry.id;
+      }
+      this.admitResidentContextEntry(this.byId.get(canonicalEntry.id));
+    }
     freezeJsonSnapshot(canonicalEntry);
+    this.enforceResidentBudget();
     return {
       entry: canonicalEntry,
       anchor: persistenceResult?.anchor,
       lifecycleRevision: persistenceResult?.lifecycleRevision,
       // Detached managers append locally; only the storage owner supplies a durable anchor.
-      appended: persistenceResult?.appended ?? true,
+      appended,
     };
   }
 

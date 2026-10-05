@@ -12,6 +12,7 @@ import { runOpenClawAgentWorkerWrite } from "../../../state/openclaw-agent-write
 import { useSessionStoreTempDirs } from "../../../test-utils/session-state-cleanup.js";
 import { FULL_BOOTSTRAP_COMPLETED_CUSTOM_TYPE } from "../../bootstrap-files.js";
 import { installSessionToolResultGuard } from "../../session-tool-result-guard.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { makeAgentAssistantMessage } from "../../test-helpers/agent-message-fixtures.js";
 import { createToolResultPromptProjectionState } from "../session-prompt-state.js";
@@ -508,102 +509,124 @@ describe("embedded attempt phase lifecycle state", () => {
     expect(event?.error).toBeUndefined();
   });
 
-  it.each(["blocked writes", "interrupted tool result"] as const)(
-    "selects review evidence after the pre-turn boundary with %s",
-    async (tail) => {
-      const dir = tempDirs.make();
-      const target = {
-        agentId: "main",
-        sessionId: "review-boundary",
-        sessionKey: "agent:main:review-boundary",
-        storePath: path.join(dir, "sessions.json"),
-      };
-      await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
-      const sessionManager = SessionManager.open(target, dir);
-      let currentTurn = false;
-      installSessionToolResultGuard(sessionManager, {
-        runId: "reused-run-id",
-        beforeMessageWriteHook: ({ message }) =>
-          currentTurn &&
-          (tail === "blocked writes" ||
-            (message.role === "assistant" && message.stopReason !== "toolUse"))
-            ? { block: true }
-            : undefined,
-      });
-      sessionManager.appendMessage(
-        makeAgentAssistantMessage({ content: [{ type: "text", text: "Previous turn." }] }),
-      );
-      const transcriptLeafId = sessionManager.appendCustomEntry("previous-turn-finished");
-      currentTurn = true;
-      sessionManager.appendMessage({ role: "user", content: "Current task.", timestamp: 2 });
-      sessionManager.appendMessage(
-        makeAgentAssistantMessage({
-          content: [{ type: "toolCall", id: "call-1", name: "read", arguments: {} }],
-          stopReason: "toolUse",
-        }),
-      );
-      const toolResultEntryId = sessionManager.appendMessage(
-        makeTextToolResult("call-1", "read", "Current verified result.", false, 3),
-      );
-      sessionManager.appendMessage(
-        makeAgentAssistantMessage({ content: [{ type: "text", text: "Suppressed terminal." }] }),
-      );
-
-      await completeEmbeddedAttemptAfterTurn(
-        {
-          attempt: { runId: "reused-run-id", sessionId: target.sessionId } as never,
-          activeContextEngine: undefined,
-          agentDir: dir,
-          resolveActiveContextEnginePluginId: () => undefined,
-          setup: { effectiveWorkspace: dir, sessionAgentId: "main" },
-          sessionLock: {
-            withOwnedTranscriptWrite: async (operation: () => unknown) => await operation(),
-          },
-          state: {
-            terminal:
-              tail === "interrupted tool result"
-                ? { kind: "aborted", source: "external" }
-                : { kind: "ok" },
-          },
-          prepared: {
-            bootstrap: { shouldRecordCompletedBootstrapTurn: true },
-            bundleTools: { uncompactedEffectiveTools: [{ name: "skill_workshop" }] },
-            toolBase: { nestedToolActivityState: createAttemptNestedToolActivityState() },
-            sessionRuntime: {
-              sessionManager,
-              agentSession: { hookRunner: null },
-              state: { prePromptMessageCount: 0 },
-              contextGuards: { getAfterTurnCheckpoint: () => null },
-              cacheTrace: null,
-              anthropicPayloadLogger: null,
-            },
-          },
-          diagnostics: { diagnosticTrace: { traceId: "trace-1", spanId: "span-1" } as never },
-        } as never,
-        {
-          promptError: null,
-          sessionIdUsed: target.sessionId,
-          messagesSnapshot: [],
-          lastCallUsage: undefined,
-          promptCache: undefined,
-          compactionOccurredThisAttempt: false,
-        } as never,
-        {
-          yieldAborted: false,
-          transcriptLeafId,
-          promptStartedAt: Date.now(),
-          beforeAgentFinalizeRevisionReason: undefined,
-        },
-      );
-
-      expect(hoisted.runAgentEndSideEffects).toHaveBeenCalledOnce();
-      expect(hoisted.runAgentEndSideEffects.mock.calls[0]?.[0].skillExperienceReviewSource).toEqual(
-        tail === "interrupted tool result"
-          ? { ...sessionManager.getSessionTarget(), entryId: toolResultEntryId }
+  it.each([
+    "blocked writes",
+    "interrupted tool result",
+    "evicted assistant boundary",
+    "history acquisition failure",
+  ] as const)("selects review evidence after the pre-turn boundary with %s", async (tail) => {
+    const dir = tempDirs.make();
+    const target = {
+      agentId: "main",
+      sessionId: "review-boundary",
+      sessionKey: "agent:main:review-boundary",
+      storePath: path.join(dir, "sessions.json"),
+    };
+    await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
+    const sessionManager =
+      tail === "evicted assistant boundary"
+        ? await SessionManager.openBoundedAsync(target, {
+            cwd: dir,
+            maxBytes: 4096,
+            maxEvents: 2,
+          })
+        : SessionManager.open(target, dir);
+    let currentTurn = false;
+    installSessionToolResultGuard(sessionManager, {
+      runId: "reused-run-id",
+      beforeMessageWriteHook: ({ message }) =>
+        currentTurn &&
+        (tail === "blocked writes" ||
+          (message.role === "assistant" && message.stopReason !== "toolUse"))
+          ? { block: true }
           : undefined,
-      );
-    },
-  );
+    });
+    const previousAssistantId = sessionManager.appendMessage(
+      makeAgentAssistantMessage({ content: [{ type: "text", text: "Previous turn." }] }),
+    );
+    const transcriptLeafId =
+      tail === "evicted assistant boundary"
+        ? previousAssistantId
+        : sessionManager.appendCustomEntry("previous-turn-finished");
+    currentTurn = true;
+    sessionManager.appendMessage({ role: "user", content: "Current task.", timestamp: 2 });
+    sessionManager.appendMessage(
+      makeAgentAssistantMessage({
+        content: [{ type: "toolCall", id: "call-1", name: "read", arguments: {} }],
+        stopReason: "toolUse",
+      }),
+    );
+    const toolResultEntryId = sessionManager.appendMessage(
+      makeTextToolResult("call-1", "read", "Current verified result.", false, 3),
+    );
+    sessionManager.appendMessage(
+      makeAgentAssistantMessage({ content: [{ type: "text", text: "Suppressed terminal." }] }),
+    );
+    if (tail === "evicted assistant boundary") {
+      expect(sessionManager.getEntry(transcriptLeafId)).toBeUndefined();
+    }
+    if (tail === "history acquisition failure") {
+      const history = sessionManager[sessionManagerPrepareHistoryRead]();
+      vi.spyOn(sessionManager, sessionManagerPrepareHistoryRead).mockReturnValueOnce({
+        ...history,
+        readTerminalMessageAfter: async () => {
+          throw new Error("History read owner is unavailable");
+        },
+      });
+    }
+
+    await completeEmbeddedAttemptAfterTurn(
+      {
+        attempt: { runId: "reused-run-id", sessionId: target.sessionId } as never,
+        activeContextEngine: undefined,
+        agentDir: dir,
+        resolveActiveContextEnginePluginId: () => undefined,
+        setup: { effectiveWorkspace: dir, sessionAgentId: "main" },
+        sessionLock: {
+          withOwnedTranscriptWrite: async (operation: () => unknown) => await operation(),
+        },
+        state: {
+          terminal:
+            tail !== "blocked writes" ? { kind: "aborted", source: "external" } : { kind: "ok" },
+        },
+        prepared: {
+          bootstrap: { shouldRecordCompletedBootstrapTurn: true },
+          bundleTools: { uncompactedEffectiveTools: [{ name: "skill_workshop" }] },
+          toolBase: { nestedToolActivityState: createAttemptNestedToolActivityState() },
+          sessionRuntime: {
+            sessionManager,
+            agentSession: { hookRunner: null },
+            state: { prePromptMessageCount: 0 },
+            contextGuards: { getAfterTurnCheckpoint: () => null },
+            cacheTrace: null,
+            anthropicPayloadLogger: null,
+          },
+        },
+        diagnostics: { diagnosticTrace: { traceId: "trace-1", spanId: "span-1" } as never },
+      } as never,
+      {
+        promptError: null,
+        sessionIdUsed: target.sessionId,
+        messagesSnapshot: [],
+        lastCallUsage: undefined,
+        promptCache: undefined,
+        compactionOccurredThisAttempt: false,
+      } as never,
+      {
+        yieldAborted: false,
+        transcriptLeafId,
+        promptStartedAt: Date.now(),
+        beforeAgentFinalizeRevisionReason: undefined,
+      },
+    );
+
+    expect(hoisted.runAgentEndSideEffects).toHaveBeenCalledOnce();
+    expect(hoisted.runAgentEndSideEffects.mock.calls[0]?.[0].skillExperienceReviewSource).toEqual(
+      tail === "blocked writes" || tail === "history acquisition failure"
+        ? undefined
+        : { ...sessionManager.getSessionTarget(), entryId: toolResultEntryId },
+    );
+  });
 
   it.each([
     "already aborted",

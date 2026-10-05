@@ -11,6 +11,7 @@ import { MAX_OVERFLOW_COMPACTION_ATTEMPTS } from "../agent-compaction-constants.
 import { resolveCompactionInstructions } from "../agent-hooks/compaction-instructions.js";
 import { SAFETY_MARGIN } from "../compaction-planning.js";
 import { sanitizeCompactionReplayMessages } from "../compaction-replay.js";
+import { isRecordedModelFallbackStop } from "../model-fallback-stop.js";
 import {
   calculateContextTokens,
   buildSessionContext,
@@ -24,6 +25,10 @@ import {
 } from "../runtime/index.js";
 import { wrapUntrustedPromptDataBlock } from "../sanitize-for-prompt.js";
 import { AgentSessionInspection } from "./agent-session-inspection.js";
+import {
+  committedSessionPublicationError,
+  prepareSessionMessagePublication,
+} from "./agent-session-publication.js";
 import { unwrapCoreResult } from "./agent-session-utils.js";
 import { formatNoModelSelectedMessage } from "./auth-guidance.js";
 import {
@@ -36,7 +41,9 @@ import {
 } from "./compaction/request-budget.js";
 import { createCompactionRuntime } from "./compaction/runtime.js";
 import { preflightManualSessionCompaction } from "./manual-compaction-preflight.js";
+import { sessionManagerPrepareHistoryRead } from "./session-manager-history.js";
 import { generateSessionEntryId } from "./session-manager-id.js";
+import { sessionManagerCaptureView } from "./session-manager-publication.js";
 import { withSessionManagerWrite } from "./session-manager-write-admission.js";
 import { getLatestCompactionEntry } from "./session-manager.js";
 import { recordSessionModelUsage } from "./session-model-usage.js";
@@ -233,7 +240,9 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
       }
     }
 
-    const pathEntries = this.sessionManager.getBranch();
+    const publication = prepareSessionMessagePublication(() => this.agent.state);
+    const history = this.sessionManager[sessionManagerPrepareHistoryRead](options.signal);
+    const pathEntries = await history.readBranch({ oversizedToolResults: "complete" });
     const requestBudget = options.requestBudget;
     const pendingUserIdempotencyKey = requestBudget?.pendingTokens
       ? requestBudget.pendingUserIdempotencyKey
@@ -451,7 +460,7 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
             pendingTokens: 0,
           })
         : estimateContextTokens(replacementMessages).tokens;
-      const assertCommitCurrent = () => {
+      const assertReplacementCurrent = () => {
         options.signal.throwIfAborted();
         const controller = isManual
           ? this.compactionAbortController
@@ -464,6 +473,11 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
           throw new Error("Compaction context changed before transcript commit");
         }
         assertContextReplacementActive?.();
+        publication.assertCurrent();
+      };
+      const assertCommitCurrent = () => {
+        assertReplacementCurrent();
+        history.assertCurrent();
       };
       const append = () =>
         this.sessionManager.appendCompactionAsync(
@@ -476,14 +490,38 @@ export abstract class AgentSessionCompaction extends AgentSessionInspection {
           tokensAfter,
         );
       const target = this.sessionManager.getSessionTarget();
-      const entryId = await (target
-        ? withSessionTranscriptWriteAssertion(target, assertCommitCurrent, append)
-        : append());
-      const sessionContext = this.sessionManager.buildSessionContext();
-      // Publish the committed replacement and accounting together after its receipt.
-      this.agent.state.messages = sanitizeCompactionReplayMessages(sessionContext.messages);
-      onContextReplaced?.(tokensAfter, completedCompaction.tokensBefore);
-      return { entryId, tokensAfter };
+      assertCommitCurrent();
+      const pendingView = this.sessionManager[sessionManagerCaptureView]();
+      let appendCommitted = false;
+      try {
+        const entryId = await (target
+          ? withSessionTranscriptWriteAssertion(target, assertCommitCurrent, append)
+          : append());
+        appendCommitted = true;
+        pendingView.assertNavigationCurrent();
+        history.assertNavigationCurrent();
+        const committedHistory = this.sessionManager[sessionManagerPrepareHistoryRead](
+          options.signal,
+        );
+        const sessionContext = await committedHistory.readContext();
+        assertReplacementCurrent();
+        committedHistory.assertCurrent();
+        // Publish the committed replacement and accounting together after its receipt.
+        publication.publish(sanitizeCompactionReplayMessages(sessionContext.messages));
+        onContextReplaced?.(tokensAfter, completedCompaction.tokensBefore);
+        return { entryId, tokensAfter };
+      } catch (cause) {
+        const committedFailure = isRecordedModelFallbackStop(cause);
+        if (!appendCommitted && !committedFailure) {
+          throw cause;
+        }
+        const error = committedSessionPublicationError(
+          "Compaction committed, but context publication failed; do not replay the compaction. Reopen the session before continuing.",
+          cause,
+        );
+        publication.invalidateIfCurrent(error);
+        throw error;
+      }
     });
     if (committed === undefined) {
       return { status: "aborted" };

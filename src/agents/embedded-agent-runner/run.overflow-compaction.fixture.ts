@@ -1,6 +1,7 @@
 /**
  * Test fixtures for embedded-run overflow compaction scenarios.
  */
+import { vi } from "vitest";
 import type { ContextEngineSessionTarget } from "../../context-engine/types.js";
 import { normalizeAgentRunAttemptTerminal } from "../agent-run-terminal-outcome.js";
 import type { AgentRuntimePlan } from "../runtime-plan/types.js";
@@ -10,6 +11,33 @@ import { buildAttemptReplayMetadata } from "./run/attempt-terminal-evidence.js";
 
 const DEFAULT_OVERFLOW_ERROR_MESSAGE =
   "request_too_large: Request size exceeds model context window";
+
+export function installToolResultRecoveryMocks(mocks: {
+  resolveLiveToolResultMaxChars: () => number;
+  sessionLikelyHasOversizedToolResults: () => boolean;
+  truncateOversizedToolResultsInSessionManager: (...args: unknown[]) => unknown;
+}) {
+  vi.doMock("./tool-result-truncation.js", async () => {
+    const actual = await vi.importActual<typeof import("./tool-result-truncation.js")>(
+      "./tool-result-truncation.js",
+    );
+    return {
+      ...actual,
+      resolveLiveToolResultMaxChars: mocks.resolveLiveToolResultMaxChars,
+      sessionLikelyHasOversizedToolResults: mocks.sessionLikelyHasOversizedToolResults,
+    };
+  });
+  vi.doMock("./tool-result-recovery.js", async () => {
+    const actual = await vi.importActual<typeof import("./tool-result-recovery.js")>(
+      "./tool-result-recovery.js",
+    );
+    return {
+      ...actual,
+      truncateOversizedToolResultsInSessionManager:
+        mocks.truncateOversizedToolResultsInSessionManager,
+    };
+  });
+}
 
 export function makeOverflowError(message: string = DEFAULT_OVERFLOW_ERROR_MESSAGE): Error {
   return new Error(message);

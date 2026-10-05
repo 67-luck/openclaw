@@ -3,6 +3,7 @@ import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import type { AssistantMessage, Model } from "openclaw/plugin-sdk/llm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { isRecordedModelFallbackStop } from "../model-fallback-stop.js";
 import { createZeroUsageFixture } from "../test-helpers/usage-fixtures.js";
 
 const { requestPreparedCompactionMock } = vi.hoisted(() => ({
@@ -16,6 +17,7 @@ vi.mock("@openclaw/ai/transports", async (importOriginal) => ({
 
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import { testing } from "../openai-transport-stream.test-support.js";
+import { resolveCompactionFailure } from "./compact-reasons.js";
 import { attemptServerEndpointCompaction } from "./server-endpoint-compaction.js";
 
 const model = {
@@ -105,6 +107,7 @@ describe("attemptServerEndpointCompaction", () => {
   it.each([
     { trigger: "manual", throws: false, model },
     { trigger: "manual", throws: true, model },
+    { trigger: "manual", throws: "async", model },
     { trigger: "budget", throws: false, model },
     { trigger: "budget", throws: false, model: openAIModel },
   ] as const)(
@@ -115,15 +118,25 @@ describe("attemptServerEndpointCompaction", () => {
       const observerError = new Error("committed observer failed");
       const onCompactionCommitted = vi.fn(() => {
         committedOwner = session.sessionManager.getLeafEntry();
+        if (throws === "async") {
+          return Promise.reject(observerError);
+        }
         if (throws) {
           throw observerError;
         }
+        return undefined;
       });
       const request = { trigger, model: requestModel, onCompactionCommitted };
       const { session, result } = attempt(request);
 
       if (throws) {
-        await expect(result).rejects.toBe(observerError);
+        const error: unknown = await result.catch((cause: unknown) => cause);
+        expect(isRecordedModelFallbackStop(error)).toBe(true);
+        expect(error).toMatchObject({ cause: observerError });
+        if (!(error instanceof Error)) {
+          throw new Error("expected a committed publication failure");
+        }
+        expect(() => resolveCompactionFailure({ error })).toThrow(error);
       } else {
         await expect(result).resolves.toMatchObject({
           item: { type: "compaction", id: "cmp_test", encrypted_content: "opaque" },

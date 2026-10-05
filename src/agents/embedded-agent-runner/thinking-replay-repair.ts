@@ -5,6 +5,8 @@ import {
 } from "@openclaw/ai/transports";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import type { AgentMessage } from "../runtime/index.js";
+import { sessionManagerPrepareHistoryRead } from "../sessions/session-manager-history.js";
+import type { SessionEntry } from "../sessions/session-manager-types.js";
 import { log } from "./logger.js";
 import { stripThinkingBlocksFromMessage } from "./thinking.js";
 import { rewriteTranscriptEntriesInSessionManager } from "./transcript-rewrite.js";
@@ -64,21 +66,23 @@ async function rewriteRejectedReplayInSessionManager(
   };
 }
 
-export function repairRejectedThinkingReplayInSessionManager(
+export async function repairRejectedThinkingReplayInSessionManager(
   params: ReplayRepairParams,
 ): Promise<ReplayRepairResult> {
   const replacements: Array<{ entryId: string; message: AgentMessage }> = [];
-  for (const entry of params.sessionManager.getBranch()) {
-    if (entry.type !== "message") {
-      continue;
+  const history = params.sessionManager[sessionManagerPrepareHistoryRead]();
+  for await (const page of history.pages({ oversizedToolResults: "complete" })) {
+    for (const entry of page.entries) {
+      if (entry.type !== "message") {
+        continue;
+      }
+      const replacement = stripThinkingBlocksFromMessage(entry.message);
+      if (replacement !== entry.message) {
+        replacements.push({ entryId: entry.id, message: replacement });
+      }
     }
-    const replacement = stripThinkingBlocksFromMessage(entry.message);
-    if (replacement === entry.message) {
-      continue;
-    }
-    replacements.push({ entryId: entry.id, message: replacement });
   }
-
+  history.assertCurrent();
   return rewriteRejectedReplayInSessionManager(params, {
     replacements,
     emptyReason: "no thinking blocks on active branch",
@@ -86,12 +90,16 @@ export function repairRejectedThinkingReplayInSessionManager(
   });
 }
 
-export function repairRejectedCompactionReplayInSessionManager(
+export async function repairRejectedCompactionReplayInSessionManager(
   params: ReplayRepairParams & { checkpoint: OpenAIResponsesCompactionRejection },
 ): Promise<ReplayRepairResult> {
-  const owner = params.sessionManager
-    .getBranch()
-    .findLast(
+  const history = params.sessionManager[sessionManagerPrepareHistoryRead]();
+  let owner: SessionEntry | undefined;
+  for await (const page of history.pages({
+    direction: "reverse",
+    oversizedToolResults: "complete",
+  })) {
+    owner = page.entries.find(
       (entry) =>
         entry.type === "message" &&
         entry.message.role === "assistant" &&
@@ -101,6 +109,11 @@ export function repairRejectedCompactionReplayInSessionManager(
         (params.checkpoint.id === undefined ||
           entry.message.providerReplay.id === params.checkpoint.id),
     );
+    if (owner) {
+      break;
+    }
+  }
+  history.assertCurrent();
   const replacements =
     owner?.type === "message" && owner.message.role === "assistant"
       ? [

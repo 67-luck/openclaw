@@ -7,14 +7,12 @@ import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import { readSessionEntryRow } from "./session-accessor.sqlite-entry-store.js";
 import { readTranscriptIdentityByEventId } from "./session-accessor.sqlite-read.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
-import {
-  loadTranscriptSuffixEventsBoundedFromDatabase,
-  readPreviousIndexedTranscriptEventSync,
-} from "./session-accessor.sqlite-suffix-read.js";
+import { loadTranscriptSuffixEventsBoundedFromDatabase } from "./session-accessor.sqlite-suffix-read.js";
 import { resolveTranscriptMessageAppendParent } from "./session-accessor.sqlite-transcript-parent.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
 import { readWithCanonicalSessionAdmission } from "./session-canonical-key.js";
+import { readSessionTranscriptHistoryPage } from "./session-transcript-history-read.js";
 import type {
   SessionTranscriptMaintenanceRead,
   SessionTranscriptMaintenanceFacts,
@@ -26,23 +24,13 @@ export function readSessionTranscriptMaintenance(
   target: SessionTranscriptRuntimeTarget,
   request: SessionTranscriptMaintenanceRead,
 ): SessionTranscriptMaintenanceFacts {
-  if (request.operation === "previous") {
-    return {
-      kind: "transcript-maintenance",
-      previous: readPreviousIndexedTranscriptEventSync(target, request.beforeSeq, {
-        readOnly: true,
-      })?.event,
-    };
+  if (request.operation === "history-page") {
+    return readSessionTranscriptHistoryPage(database, target, request);
   }
   if (request.operation === "suffix") {
     return {
       kind: "transcript-maintenance",
-      events: loadTranscriptSuffixEventsBoundedFromDatabase(
-        database,
-        target,
-        request.startSeq,
-        request,
-      ),
+      ...loadTranscriptSuffixEventsBoundedFromDatabase(database, target, request.startSeq, request),
     };
   }
   if (request.operation === "nested-activity") {

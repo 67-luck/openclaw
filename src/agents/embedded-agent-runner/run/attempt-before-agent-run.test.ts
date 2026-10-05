@@ -9,6 +9,7 @@ import { createHookRunner } from "../../../plugins/hooks.js";
 import type { AgentMessage } from "../../runtime/index.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
 import { SessionManager } from "../../sessions/index.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
 import { runEmbeddedAttemptBeforeAgentRun } from "./attempt-before-agent-run.js";
 
 function createRegistry(hooks: PluginHookRegistration[] = []): GlobalHookRunnerRegistry {
@@ -171,5 +172,44 @@ describe("runEmbeddedAttemptBeforeAgentRun", () => {
         idempotencyKey: "hook-block:before_agent_run:user:run-1",
       }),
     ]);
+  });
+
+  it("keeps a newer active message when blocked-turn context publication loses its snapshot", async () => {
+    const { input, sessionManager, state } = createInput([
+      {
+        pluginId: "policy",
+        hookName: "before_agent_run",
+        handler: async () => ({ outcome: "block" as const, message: "Request blocked." }),
+        source: "test",
+      },
+    ]);
+    const messages = state.messages;
+    const original = messages[0];
+    const newer: AgentMessage = { role: "user", content: "newer input", timestamp: 2 };
+    const prepare = sessionManager[sessionManagerPrepareHistoryRead].bind(sessionManager);
+    const read = vi
+      .spyOn(sessionManager, sessionManagerPrepareHistoryRead)
+      .mockImplementation((signal) => {
+        const history = prepare(signal);
+        return {
+          ...history,
+          readContext: async () => {
+            const context = await history.readContext();
+            queueMicrotask(() => messages.push(newer));
+            return context;
+          },
+        };
+      });
+    try {
+      const outcome = await runEmbeddedAttemptBeforeAgentRun(input);
+      expect(outcome?.blockedBy).toBe("policy");
+      expect(state.messages).toBe(messages);
+      expect(state.messages).toEqual([original, newer]);
+      expect(sessionManager.buildSessionContext().messages).toEqual([
+        expect.objectContaining({ idempotencyKey: "hook-block:before_agent_run:user:run-1" }),
+      ]);
+    } finally {
+      read.mockRestore();
+    }
   });
 });

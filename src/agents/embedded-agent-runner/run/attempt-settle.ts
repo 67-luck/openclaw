@@ -16,6 +16,11 @@ import {
 } from "../../agent-run-terminal-outcome.js";
 import { sanitizeCompactionReplayMessages } from "../../compaction-replay.js";
 import type { AgentMessage } from "../../runtime/index.js";
+import {
+  committedSessionPublicationError,
+  prepareSessionMessagePublication,
+} from "../../sessions/agent-session-publication.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
 import { SessionTranscriptMessageCommittedError } from "../../sessions/session-manager-message-error.js";
 import {
   appendSessionTranscriptNote,
@@ -36,6 +41,7 @@ import {
 } from "./attempt-result.js";
 import type { PreparedStreamRuntime } from "./attempt-stream-runtime.types.js";
 import { settleEmbeddedAttemptStream } from "./attempt-stream-settle.js";
+import { rewindRejectedFinalizationEntry } from "./attempt-transcript-helpers.js";
 import type { EmbeddedAttemptDeferredLifecycleOwner } from "./deferred-lifecycle-owner.js";
 import { buildPromptImageFailureNotice } from "./images.js";
 import type { EmbeddedAttemptExecutionState, EmbeddedRunAttemptParams } from "./types.js";
@@ -147,6 +153,36 @@ export async function runEmbeddedAttemptSettledPhase(
       error !== null && error !== undefined ? { error, source: source ?? "prompt" } : null,
     );
   };
+  const publishRecoveredContext = async (
+    publication: ReturnType<typeof prepareSessionMessagePublication>,
+    withOwnedWrite?: typeof input.sessionLock.withOwnedTranscriptWrite,
+    assertRecoveryCurrent?: () => void,
+  ) => {
+    try {
+      assertRecoveryCurrent?.();
+      publication.assertCurrent();
+      const publish = async () => {
+        assertRecoveryCurrent?.();
+        const history = sessionManager[sessionManagerPrepareHistoryRead]();
+        const context = await history.readContext();
+        history.assertCurrent();
+        assertRecoveryCurrent?.();
+        publication.publish(sanitizeCompactionReplayMessages(context.messages));
+      };
+      if (withOwnedWrite) {
+        await withOwnedWrite(publish);
+      } else {
+        await publish();
+      }
+    } catch (cause) {
+      const error = committedSessionPublicationError(
+        "Transcript recovery committed, but context publication failed; do not replay the recovery",
+        cause,
+      );
+      publication.invalidateIfCurrent(error);
+      throw error;
+    }
+  };
 
   try {
     const { promptStartedAt, transcriptLeafId } = await runEmbeddedAttemptPromptPhase(
@@ -195,31 +231,35 @@ export async function runEmbeddedAttemptSettledPhase(
     }
     const beforeAgentFinalizeRevisionReason = getBeforeAgentFinalizeRevisionReason();
     const beforeAgentFinalizeRevisionEntryId = getBeforeAgentFinalizeRevisionEntryId();
-    let rewoundBeforeAgentFinalizeRevision = false;
-    if (beforeAgentFinalizeRevisionReason && beforeAgentFinalizeRevisionEntryId) {
-      await input.sessionLock.withOwnedTranscriptWrite(() =>
-        withSessionManagerWrite(sessionManager, async () => {
-          const rejectedEntry = sessionManager.getEntry(beforeAgentFinalizeRevisionEntryId);
-          if (rejectedEntry?.type !== "message" || rejectedEntry.message.role !== "assistant") {
-            throw new Error(
-              `before_agent_finalize persisted assistant entry is missing or invalid ` +
-                `(entry=${beforeAgentFinalizeRevisionEntryId})`,
-            );
+    const rewind:
+      | {
+          entryId: string;
+          publication: ReturnType<typeof prepareSessionMessagePublication>;
+          assertCurrent?: () => void;
+        }
+      | undefined =
+      beforeAgentFinalizeRevisionReason && beforeAgentFinalizeRevisionEntryId
+        ? {
+            entryId: beforeAgentFinalizeRevisionEntryId,
+            publication: prepareSessionMessagePublication(() => activeSession.agent.state),
           }
-          // Keep persistence append-only while excluding the rejected draft and
-          // every trailing descendant from the hidden retry's active branch.
-          await sessionManager.appendLeafControlAsync({
-            targetId: rejectedEntry.parentId,
-            appendParentId: rejectedEntry.parentId,
-          });
-          rewoundBeforeAgentFinalizeRevision = true;
-        }),
-      );
-    }
+        : undefined;
     try {
-      if (input.getRepairedRejectedProviderReplay() && !rewoundBeforeAgentFinalizeRevision) {
-        activeSession.agent.state.messages = sanitizeCompactionReplayMessages(
-          sessionManager.buildSessionContext().messages,
+      if (rewind) {
+        await input.sessionLock.withOwnedTranscriptWrite(async () => {
+          rewind.assertCurrent = await rewindRejectedFinalizationEntry(
+            sessionManager,
+            rewind.entryId,
+          );
+          rewind.assertCurrent();
+          rewind.publication.assertCurrent();
+        });
+        rewind.assertCurrent?.();
+        rewind.publication.assertCurrent();
+      }
+      if (input.getRepairedRejectedProviderReplay() && !rewind?.assertCurrent) {
+        await publishRecoveredContext(
+          prepareSessionMessagePublication(() => activeSession.agent.state),
         );
       }
       const settleTerminal = readTerminal();
@@ -268,14 +308,13 @@ export async function runEmbeddedAttemptSettledPhase(
         throw error;
       }
     } finally {
-      if (rewoundBeforeAgentFinalizeRevision) {
-        await input.sessionLock.withOwnedTranscriptWrite(() => {
-          // Settlement classifies the completed attempt from its original
-          // in-memory messages. Later work always sees the rewound branch.
-          activeSession.agent.state.messages = sanitizeCompactionReplayMessages(
-            sessionManager.buildSessionContext().messages,
-          );
-        });
+      if (rewind?.assertCurrent) {
+        // Settlement classifies the original attempt; only later work sees the rewound branch.
+        await publishRecoveredContext(
+          rewind.publication,
+          input.sessionLock.withOwnedTranscriptWrite,
+          rewind.assertCurrent,
+        );
       }
     }
     // Publish settled fields before after-turn hooks: those hooks may throw, and

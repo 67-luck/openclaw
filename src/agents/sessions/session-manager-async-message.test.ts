@@ -1,6 +1,7 @@
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
+import { makeUserMessage } from "../../../test/helpers/user-message.js";
 import {
   appendTranscriptMessageSync,
   loadTranscriptEvents,
@@ -21,6 +22,8 @@ import {
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
 import { isRecordedModelFallbackStop } from "../model-fallback-stop.js";
+import { makeAgentAssistantMessage } from "../test-helpers/agent-message-fixtures.js";
+import { sessionManagerPrepareHistoryRead } from "./session-manager-history.js";
 import * as metadataRuntime from "./session-manager-metadata-runtime.js";
 import { SessionManager } from "./session-manager.js";
 
@@ -510,6 +513,53 @@ it("commits user and custom messages in FIFO order without host writes, and chec
   }
 });
 
+it.each(["empty", "tool result"] as const)(
+  "keeps a reloaded keyed user pin outside the selected %s model context",
+  async (selection) => {
+    const { target, manager: writer } = await fixture(state, `replayed-context-pin-${selection}`);
+    const keyedUser = user("replayed-context-pin");
+    const original = await writer.appendMessageWithTranscriptAnchorAsync(keyedUser);
+    const limits = { maxEvents: selection === "empty" ? 1 : 2, maxBytes: 64_000 };
+    const stale = await SessionManager.openBoundedAsync(target, limits);
+    const tail = {
+      role: "toolResult" as const,
+      toolCallId: "selected-result",
+      toolName: "read",
+      content: [{ type: "text" as const, text: "Selected result" }],
+      isError: false,
+      timestamp: 2,
+    };
+    if (selection === "tool result") {
+      await writer.appendMessageAsync(tail);
+    }
+    const metadataId = await writer.appendCustomEntryAsync("after-keyed-user", { selected: true });
+    expect(stale.getEntry(metadataId)).toBeUndefined();
+    const selected = await SessionManager.openBoundedAsync(target, limits);
+    await selected.reloadPersistedTranscriptAsync();
+    const messages = selection === "empty" ? [] : [tail];
+    expect(selected.getEntry(original.entryId)).toMatchObject({ message: keyedUser });
+    expect(selected.buildSessionContext().messages).toEqual(messages);
+    const database = openOpenClawAgentDatabase({ agentId: target.agentId, path: target.storePath });
+    const before = readTranscriptEventRows(database, target.sessionId);
+
+    const replay = await stale.appendMessageWithTranscriptAnchorAsync(keyedUser);
+
+    expect(replay).toMatchObject({
+      appended: false,
+      entryId: original.entryId,
+      message: original.message,
+      anchor: original.anchor,
+    });
+    expect(stale.getEntry(metadataId)).toMatchObject({ type: "custom" });
+    expect(stale.getEntry(original.entryId)).toMatchObject({ message: keyedUser });
+    expect(stale.buildSessionContext().messages).toEqual(messages);
+    expect((await stale[sessionManagerPrepareHistoryRead]().readContext()).messages).toEqual(
+      messages,
+    );
+    expect(readTranscriptEventRows(database, target.sessionId)).toEqual(before);
+  },
+);
+
 it("revalidates overtaken keyed replays while retaining fresh committed pending users", async () => {
   const { target, manager } = await fixture(state, "overtaken-keyed-replay");
   const originalId = await manager.appendMessageAsync(user("original"));
@@ -641,7 +691,8 @@ it("fences local navigation changes at worker commit and receipt publication", a
       cause: { message: "Session transcript navigation changed before publication" },
     });
     expect(isRecordedModelFallbackStop(failure)).toBe(true);
-    expect(() => manager.getEntries()).toThrow("Session entry committed");
+    expect(manager.getLeafId()).toBeNull();
+    expect(manager.buildSessionContext().messages).toEqual([]);
   } finally {
     publication.mockRestore();
   }
@@ -650,6 +701,9 @@ it("fences local navigation changes at worker commit and receipt publication", a
   expect(persisted.slice(before.length)).toMatchObject([
     { type: "message", parentId: tail, message: user("committed-before-reset") },
   ]);
+  const next = await manager.appendMessageAsync(user("after-reset"));
+  expect(manager.getLeafId()).toBe(next);
+  expect(manager.buildSessionContext().messages).toEqual([user("after-reset")]);
 });
 
 it.each([false, true])(
@@ -758,4 +812,166 @@ it("rolls back worker promotion when pending authority retires at commit", async
     receipt.finish("interrupted");
   }
   expect(await loadTranscriptEvents(target)).toEqual(before);
+});
+
+it.each([
+  "same control",
+  "same branch",
+  "live same control",
+  "live same branch",
+  "changed cursor",
+  "earlier branch",
+  "omitted branch",
+  "visible proxy",
+  "metadata target",
+  "omitted metadata target",
+  "async metadata target",
+] as const)("keeps the selected context through %s", async (action) => {
+  const { target: scope, manager: source } = await fixture(state, `sync-context-${action}`);
+  const user = makeUserMessage("admitted user", 1);
+  const userId = source.appendMessage(user);
+  if (action === "omitted metadata target" || action === "async metadata target") {
+    const first = makeAgentAssistantMessage({
+      content: [{ type: "text", text: "first selected answer" }],
+      timestamp: 2,
+    });
+    const second = makeAgentAssistantMessage({
+      content: [{ type: "text", text: "second selected answer" }],
+      timestamp: 3,
+    });
+    const firstId = source.appendMessage(first);
+    const secondId = source.appendMessage(second);
+    const metadataId = source.appendCustomEntry("selected metadata", { exact: true });
+    const laterIds = [4, 5].map((timestamp) =>
+      source.appendMessage(
+        makeAgentAssistantMessage({
+          content: [{ type: "text", text: `later answer ${timestamp}` }],
+          timestamp,
+        }),
+      ),
+    );
+    const manager = await SessionManager.openBoundedAsync(scope, {
+      maxBytes: 4096,
+      maxEvents: 2,
+    });
+    expect(manager.getEntry(metadataId)).toBeUndefined();
+    expect(manager.buildSessionContext().messages).toHaveLength(2);
+    if (action === "async metadata target") {
+      await manager.branchAsync(metadataId);
+      expect(manager.buildSessionContext().messages).toEqual([second]);
+      await manager.branchAsync(laterIds.at(-1)!);
+      expect(manager.getEntry(metadataId)).toMatchObject({ type: "custom" });
+    }
+    const before = await loadTranscriptEvents(scope);
+    if (action === "omitted metadata target") manager.branch(metadataId);
+    else await manager.appendLeafControlAsync({ targetId: metadataId, appendParentId: metadataId });
+    expect(manager.buildSessionContext().messages).toEqual([first, second]);
+    expect(manager.getEntry(firstId)).toMatchObject({ message: first });
+    expect(manager.getEntry(secondId)).toMatchObject({ message: second });
+    for (const id of laterIds) expect(manager.getEntry(id)).toBeUndefined();
+    expect((await manager[sessionManagerPrepareHistoryRead]().readContext()).messages).toEqual([
+      first,
+      second,
+    ]);
+    const after = await loadTranscriptEvents(scope);
+    expect(after.slice(0, before.length)).toEqual(before);
+    expect(after).toHaveLength(before.length + (action === "async metadata target" ? 1 : 0));
+    manager.branch(metadataId);
+    expect(manager.buildSessionContext().messages).toEqual([first, second]);
+    manager.appendLeafControl({ targetId: metadataId, appendParentId: metadataId });
+    expect(manager.buildSessionContext().messages).toEqual([first, second]);
+    const next = makeAgentAssistantMessage({
+      content: [{ type: "text", text: "next appended answer" }],
+      timestamp: 6,
+    });
+    await manager.appendMessageAsync(next);
+    expect(manager.getEntry(firstId)).toBeUndefined();
+    expect(manager.getEntry(secondId)).toBeUndefined();
+    expect(manager.buildSessionContext().messages).toEqual([next]);
+    return;
+  }
+  const manager = await SessionManager.openAsync(scope, undefined, {
+    maxBytes: 4096,
+    maxEvents: 1,
+  });
+  if (action === "metadata target") {
+    const metadataId = await manager.appendCustomEntryAsync("retained metadata", { exact: true });
+    await manager.branchAsync(userId);
+    expect(manager.getEntry(metadataId)).toMatchObject({ type: "custom" });
+    expect(manager.buildSessionContext().messages).toEqual([user]);
+    const before = await loadTranscriptEvents(scope);
+    manager.branch(metadataId);
+    expect(manager.buildSessionContext().messages).toEqual([user]);
+    expect((await manager[sessionManagerPrepareHistoryRead]().readContext()).messages).toEqual([
+      user,
+    ]);
+    expect(await loadTranscriptEvents(scope)).toEqual(before);
+    return;
+  }
+  const older = makeAgentAssistantMessage({
+    content: [{ type: "text", text: "older answer" }],
+    timestamp: 2,
+  });
+  const olderId = await manager.appendMessageAsync(older);
+  const latest = makeAgentAssistantMessage({
+    content: [{ type: "text", text: "latest answer" }],
+    timestamp: 3,
+  });
+  const latestId = await manager.appendMessageAsync(latest);
+  if (!olderId || !latestId) throw new Error("Missing synchronous selection fixture messages");
+  const live = action.startsWith("live") || action === "visible proxy";
+  if (!live) await manager.reloadPersistedTranscriptAsync();
+  expect(manager.getEntry(userId)).toMatchObject({ message: user });
+  expect(manager.getEntry(olderId)).toBeUndefined();
+  const initialMessages = live ? [user, latest] : [latest];
+  expect(manager.buildSessionContext().messages).toEqual(initialMessages);
+  expect((await manager[sessionManagerPrepareHistoryRead]().readContext()).messages).toEqual(
+    live ? [user, older, latest] : [latest],
+  );
+  let cursor = latestId;
+  if (action === "visible proxy") {
+    const excluded = await manager.appendMessageAsync({
+      role: "custom",
+      customType: "display-only",
+      content: "raw selected display",
+      display: true,
+      excludeFromContext: true,
+      timestamp: 4,
+    });
+    if (!excluded) throw new Error("Missing raw selected fixture entry");
+    cursor = excluded;
+    expect(manager.getLeafId()).toBe(latestId);
+    expect(manager.getAppendParentId()).toBe(excluded);
+    expect(manager.getEntry(excluded)).toBeUndefined();
+  }
+  const before = await loadTranscriptEvents(scope);
+  if (action === "earlier branch") manager.branch(userId);
+  else if (action === "omitted branch") manager.branch(olderId);
+  else if (action.endsWith("branch")) manager.branch(latestId);
+  else
+    manager.appendLeafControl({
+      targetId: latestId,
+      appendParentId: action === "changed cursor" ? userId : cursor,
+      ...(action === "changed cursor" ? { appendMode: "side" as const } : {}),
+    });
+  const expected =
+    action === "earlier branch"
+      ? [user]
+      : action === "omitted branch"
+        ? [older]
+        : action.startsWith("live same")
+          ? [user, latest]
+          : [latest];
+  expect(manager.buildSessionContext().messages).toEqual(expected);
+  const context = await manager[sessionManagerPrepareHistoryRead]().readContext();
+  expect(context.messages).toEqual(
+    action.startsWith("live same") ? [user, older, latest] : expected,
+  );
+  const after = await loadTranscriptEvents(scope);
+  expect(after.slice(0, before.length)).toEqual(before);
+  expect(after).toHaveLength(before.length + (action.endsWith("branch") ? 0 : 1));
+  if (action === "omitted branch") {
+    expect(manager.getEntry(latestId)).toBeUndefined();
+    expect(manager.getEntry(olderId)).toMatchObject({ message: older });
+  }
 });

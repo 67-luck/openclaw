@@ -20,6 +20,7 @@ import {
   waitForSessionTranscriptIndexReconcile,
   waitForSessionTranscriptProjection,
 } from "../config/sessions/session-transcript-reconcile.js";
+import { CURRENT_SESSION_VERSION } from "../config/sessions/version.js";
 import { refreshCostUsageCacheForAgent } from "../infra/session-cost-usage-aggregation.js";
 import { isSessionCostUsageRefreshRunning } from "../infra/session-cost-usage-cache.sqlite.js";
 import { onSessionCostUsageUpdated } from "../infra/session-cost-usage-events.js";
@@ -117,6 +118,11 @@ function append(
 }
 async function branch(target: IncognitoComputeTarget): Promise<IncognitoComputeTarget> {
   const sessionId = `${target.sessionId}-next`;
+  const facts = await actor.sessions.history(authority, {
+    type: "session.history.maintenance",
+    input: { ...target, request: { operation: "version" } },
+  });
+  assert(facts.version && facts.appendParentId);
   const result = await actor.sessions.transcript(authority, {
     type: "session.manager.transcript.branch",
     input: {
@@ -125,13 +131,26 @@ async function branch(target: IncognitoComputeTarget): Promise<IncognitoComputeT
         type: "session.transcript.branch",
         input: {
           scope: { ...target, agentId: "main", storePath: actor.path },
-          branch: { sessionId, events: [] },
+          branch: {
+            leafId: facts.appendParentId,
+            header: {
+              type: "session",
+              id: sessionId,
+              version: CURRENT_SESSION_VERSION,
+              timestamp: new Date(10_000).toISOString(),
+              cwd: path.dirname(actor.path),
+              parentSession: target.sessionId,
+            },
+          },
+          version: facts.version,
+          retainedEntryIds: [],
+          retainedCustomDataIds: [],
           expectedLifecycleRevision: target.lifecycleRevision,
         },
       },
     },
   });
-  assert(result.ok);
+  assert(result.ok && result.value.reload.ok);
   return { ...target, sessionId };
 }
 function marker(target: IncognitoComputeTarget, owner = actor) {
@@ -232,35 +251,23 @@ it("composes empty and multi-session store compute without holding its actor FIF
     });
   }
   const sessionFiles = [marker(first), marker(second)];
-  const inventory = await runUsageCostWorker(prepare(), { kind: "inventory" }, binding);
-  expect(inventory).toMatchObject({
+  const minMtimeMs = Number.MAX_SAFE_INTEGER;
+  const selectedInventory = expect.objectContaining({
     kind: "inventory",
     files: expect.arrayContaining(
       sessionFiles.map((sourcePath) => expect.objectContaining({ sourcePath })),
     ),
   });
-  await expect(
-    runUsageCostWorker(prepare(), { kind: "inventory", sessionFiles: [] }, binding),
-  ).resolves.toEqual({ kind: "inventory", files: [] });
-  await expect(
-    runUsageCostWorker(
-      prepare(),
-      { kind: "inventory", minMtimeMs: Number.MAX_SAFE_INTEGER },
-      binding,
-    ),
-  ).resolves.toEqual({ kind: "inventory", files: [] });
-  await expect(
-    runUsageCostWorker(
-      prepare(),
-      { kind: "inventory", sessionFiles, minMtimeMs: Number.MAX_SAFE_INTEGER },
-      binding,
-    ),
-  ).resolves.toMatchObject({
-    kind: "inventory",
-    files: expect.arrayContaining(
-      sessionFiles.map((sourcePath) => expect.objectContaining({ sourcePath })),
-    ),
-  });
+  for (const { selection, expected } of [
+    { selection: {}, expected: selectedInventory },
+    { selection: { sessionFiles: [] }, expected: { kind: "inventory", files: [] } },
+    { selection: { minMtimeMs }, expected: { kind: "inventory", files: [] } },
+    { selection: { sessionFiles, minMtimeMs }, expected: selectedInventory },
+  ]) {
+    await expect(
+      runUsageCostWorker(prepare(), { kind: "inventory", ...selection }, binding),
+    ).resolves.toEqual(expected);
+  }
   await expect(
     runUsageCostWorker(prepare(), { kind: "refresh", sessionFiles }, binding),
   ).resolves.toEqual({ kind: "refresh", changed: true });
@@ -495,14 +502,7 @@ describe("cross-actor compute", () => {
     const target = await create("actor-loss", otherActor);
     const barrier = await hold(otherActor);
     const outcome = Promise.resolve()
-      .then(() =>
-        otherActor.sessions.withCompute(authority, target, (compute) =>
-          compute.execute({
-            type: "session.compute.usage.stats",
-            input: { ...target, request: {} },
-          }),
-        ),
-      )
+      .then(() => stats(target, otherActor))
       .then(
         (value) => ({ value }),
         (error: unknown) => ({ error }),
@@ -614,7 +614,7 @@ it("reads explicit retained usage windows and preserves their discovery", async 
   const previous = await create("usage-retained");
   await append(previous, "retained usage");
   const current = await branch(previous);
-  await append(current, "current usage");
+  await append(current, "current usage", actor, null);
   const incognito = { actor, authority };
   const inventory = await runUsageCostWorker(prepare(), { kind: "inventory" }, incognito);
   assert(inventory.kind === "inventory");

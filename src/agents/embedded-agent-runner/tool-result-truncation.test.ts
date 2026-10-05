@@ -33,7 +33,7 @@ import {
 
 let truncateToolResultMessage: typeof import("./tool-result-truncation.js").truncateToolResultMessage;
 let truncateOversizedToolResultsInMessages: typeof import("./tool-result-truncation.js").truncateOversizedToolResultsInMessages;
-let truncateOversizedToolResultsInSessionManager: typeof import("./tool-result-truncation.js").truncateOversizedToolResultsInSessionManager;
+let truncateOversizedToolResultsInSessionManager: typeof import("./tool-result-recovery.js").truncateOversizedToolResultsInSessionManager;
 let sessionLikelyHasOversizedToolResults: typeof import("./tool-result-truncation.js").sessionLikelyHasOversizedToolResults;
 let estimateToolResultReductionPotential: typeof import("./tool-result-truncation.js").estimateToolResultReductionPotential;
 let resolveLiveToolResultMaxChars: typeof import("./tool-result-truncation.js").resolveLiveToolResultMaxChars;
@@ -48,13 +48,13 @@ async function loadFreshToolResultTruncationModuleForTest() {
   ({
     truncateToolResultMessage,
     truncateOversizedToolResultsInMessages,
-    truncateOversizedToolResultsInSessionManager,
     sessionLikelyHasOversizedToolResults,
     estimateToolResultReductionPotential,
     resolveLiveToolResultMaxChars,
     resolveLiveToolResultAggregateMaxChars,
     toolResultWarningDedupe,
   } = await import("./tool-result-truncation.js"));
+  ({ truncateOversizedToolResultsInSessionManager } = await import("./tool-result-recovery.js"));
 }
 
 let testTimestamp = 1;
@@ -1402,7 +1402,7 @@ describe("truncateOversizedToolResultsInSession", () => {
       projectionState,
     });
 
-    expect(result.truncated).toBe(true);
+    expect(result).toMatchObject({ truncated: true });
     expect(projectionState.sourceHashByKey.size).toBe(0);
     expect(projectionState.replacements.size).toBe(0);
     expect(projectionState.frozen.size).toBe(0);
@@ -1472,7 +1472,7 @@ describe("truncateOversizedToolResultsInSession", () => {
       projectionState,
     });
 
-    expect(result.truncated).toBe(true);
+    expect(result).toMatchObject({ truncated: true });
     const recovered = SessionManager.open(scope)
       .getBranch()
       .filter((entry) => entry.type === "message" && entry.message.role === "toolResult")

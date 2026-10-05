@@ -22,6 +22,7 @@ import {
   assertCurrentSessionTranscriptHeader,
   findSessionTranscriptHeader,
 } from "../../config/sessions/session-entry-codec.js";
+import type { SessionLabelAdmission } from "../../config/sessions/session-entry-navigation.js";
 import { withSessionContextAdmission } from "../../config/sessions/session-transcript-read-fence.js";
 import { startSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
@@ -38,8 +39,8 @@ import type { Message } from "../../llm/types.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import { freezeJsonSnapshot } from "../../shared/immutable-data.js";
+import { recordModelFallbackStop } from "../model-fallback-stop.js";
 import type { BashExecutionMessage, CustomMessage } from "./messages.js";
-import { SessionManagerBranching } from "./session-manager-branching.js";
 import {
   sessionManagerReadInitialContext,
   sessionManagerReadTranscriptStart,
@@ -51,10 +52,11 @@ import {
   readSessionManagerModelContextAsync,
 } from "./session-manager-incognito.js";
 import { receiveSessionManagerCommit } from "./session-manager-persistence-error.js";
+import { SessionManagerRewrite } from "./session-manager-rewrite-runtime.js";
+import { sessionManagerResolveTranscriptSeq } from "./session-manager-transcript-seq.js";
 import type {
   SessionLeafControl,
   AppendPersistenceOptions,
-  FileEntry,
   SessionEntry,
 } from "./session-manager-types.js";
 import type {
@@ -84,13 +86,14 @@ export type {
   BranchSummaryEntry,
   CompactionEntry,
   FileEntry,
+  ReadonlySessionManager,
   SessionEntry,
   SessionHeader,
   SessionLeafControl,
   SessionMessageEntry,
 } from "./session-manager-types.js";
 
-export class SessionManager extends SessionManagerBranching {
+export class SessionManager extends SessionManagerRewrite {
   private constructor(
     cwd: string,
     persistenceTarget?: SessionManagerPersistenceTarget,
@@ -166,23 +169,6 @@ export class SessionManager extends SessionManagerBranching {
   /** No buffered writes remain here; asynchronous metadata methods own their settlement. */
   flushPendingPersistence(): void {}
 
-  // Worker rollback instrumentation wraps the method on this public prototype.
-  /** @deprecated Await appendMessageAsync. Removal: next Plugin SDK major. */
-  override appendMessage(
-    message: Message | CustomMessage | BashExecutionMessage,
-    options?: AppendPersistenceOptions,
-  ): string {
-    return super.appendMessage(message, options);
-  }
-
-  /** @deprecated Await appendMessageWithTranscriptAnchorAsync. Removal: next Plugin SDK major. */
-  override appendMessageWithTranscriptAnchor(
-    message: Message | CustomMessage | BashExecutionMessage,
-    options?: AppendPersistenceOptions,
-  ) {
-    return super.appendMessageWithTranscriptAnchor(message, options);
-  }
-
   /** @deprecated Use prepareTranscriptRewriteAsync; removed at the next Plugin SDK major. */
   prepareTranscriptRewrite() {
     prepareSessionManagerSync("prepareTranscriptRewrite", this.persistenceTarget, this);
@@ -202,7 +188,7 @@ export class SessionManager extends SessionManagerBranching {
     };
   }
 
-  /** Preparation returns a detached branch; only its awaited commit publishes changes. */
+  /** Legacy Plugin SDK preparation contract; removed with synchronous preparation at its next major. */
   async prepareTranscriptRewriteAsync() {
     return withSessionManagerWrite(this, async (writeAdmission) => {
       this.assertTranscriptWriteActive();
@@ -265,7 +251,7 @@ export class SessionManager extends SessionManagerBranching {
           throw new Error("Session transcript changed before rewrite publication");
         }
       };
-      const reader = prepareSessionManagerHydration(target);
+      const reader = prepareSessionManagerHydration(target, undefined, undefined, this);
       const facts = await reader.readMaintenance({ operation: "version" });
       reader.assertCurrent();
       assertCurrent();
@@ -291,6 +277,7 @@ export class SessionManager extends SessionManagerBranching {
               admission.assertCurrent();
               assertCurrent();
             };
+            const publication = this.captureTranscriptPublication();
             for (const entry of entries) {
               if (entry.type === "message") {
                 entry.message = redactTranscriptMessageForStorage(entry.message, {});
@@ -333,13 +320,19 @@ export class SessionManager extends SessionManagerBranching {
               for (const [index, entry] of committed.entries.entries()) {
                 Object.assign(entries[index]!, entry);
               }
+              publication.beginAdoption();
               adopt(committed.version);
             } catch (cause) {
               const error = new Error(
                 "Session transcript rewrite committed but view publication failed",
                 { cause },
               );
-              this.invalidateTranscriptView(error);
+              recordModelFallbackStop(error);
+              if (receipt.failure) {
+                this.invalidateTranscriptView(error);
+              } else {
+                publication.invalidate(error);
+              }
               throw error;
             }
           });
@@ -398,11 +391,11 @@ export class SessionManager extends SessionManagerBranching {
         }
         const first = entries[0];
         const source = first && sources.get(first.id);
-        const parentId = source ? this.boundedParentIds.get(source.id) : undefined;
+        const parent = source ? this.boundedParentIds.get(source.id) : undefined;
         // The bounded reader owns logical ancestry, including parents outside its payload window.
-        if (first?.parentId === null && parentId !== undefined) {
-          first.parentId = parentId;
-          publication.boundedParentIds.set(first.id, first.parentId);
+        if (first?.parentId === null && parent !== undefined) {
+          first.parentId = parent.rawParentId;
+          publication.boundedParentIds.set(first.id, parent);
         }
         // A maintenance branch may cross a reset. Side entries preserve its
         // explicit ancestry; ordinary appends would normalize onto the old leaf.
@@ -411,7 +404,25 @@ export class SessionManager extends SessionManagerBranching {
         }
         // Reconstruct with the reader's canonical reset/leaf rules, then retain
         // the bounded reader's ancestry for payloads absent from the loaded view.
-        publication.buildIndex();
+        if (entries.length > 0) {
+          publication.buildIndex();
+        }
+        publication.transcriptSeqByEntryId = new Map(
+          [...this.transcriptSeqByEntryId].filter(
+            ([id]) => publication.byId.has(id) || this.opaqueParentsById.has(id),
+          ),
+        );
+        if (first && source) {
+          const sourceSeq = this[sessionManagerResolveTranscriptSeq](source.id);
+          if (sourceSeq !== undefined) {
+            publication.transcriptSeqByEntryId.set(
+              first.id,
+              sourceSeq -
+                (source.type === "message" || source.type === "compaction" ? 1 : 0) +
+                (first.type === "message" || first.type === "compaction" ? 1 : 0),
+            );
+          }
+        }
         for (const [id, parent] of this.opaqueParentsById) {
           publication.opaqueParentsById.set(id, parent);
         }
@@ -427,14 +438,33 @@ export class SessionManager extends SessionManagerBranching {
                 publication.appendLeafControlAsync({ targetId: last.id, appendParentId: last.id }),
             )
           : undefined;
+        publication.inheritResidentContextEntries(this, sources);
         if (persistedBoundaryCount !== undefined) {
           publication.persistedBoundaryCount =
             persistedBoundaryCount + publication.getBoundaryCount() - loadedBoundaryCount;
         }
         const adopt = (version = publication.transcriptVersion) => {
+          if (this.persistenceTarget && version) {
+            // The rewrite writer appends this entire batch contiguously, including its leaf control.
+            for (const [index, entry] of events.entries()) {
+              const admission =
+                entry.type === "label" ? publication.admittedLabelRecords.get(entry) : undefined;
+              if (entry.type === "label" && admission?.targetId === entry.targetId) {
+                publication.admittedLabelRecords.set(entry, {
+                  targetId: entry.targetId,
+                  rawSeq: version.rawSeq - events.length + 1 + index,
+                });
+              }
+            }
+          }
           publication.transcriptVersion = version;
           publication.transcriptMutationAt = version?.updatedAt;
+          publication.contextStartEntryId =
+            typeof this.contextStartEntryId === "string"
+              ? (rewrittenEntryIds.get(this.contextStartEntryId) ?? this.contextStartEntryId)
+              : this.contextStartEntryId;
           Object.assign(this, publication.captureTranscriptView());
+          this.enforceResidentBudget();
         };
         const events = leaf ? [...entries, leaf] : entries;
         assertBeforeCommit?.();
@@ -500,10 +530,8 @@ export class SessionManager extends SessionManagerBranching {
     }
     const capturedTarget = captureSessionTranscriptTargetBinding(target);
     const snapshot = loadTranscriptReadSnapshotSync(capturedTarget);
-    const entries = snapshot.events as FileEntry[];
-    const header = entries.find(
-      (entry) => typeof entry === "object" && entry !== null && entry.type === "session",
-    );
+    const entries = snapshot.events;
+    const header = findSessionTranscriptHeader(entries);
     return new SessionManager(
       cwdOverride ?? header?.cwd ?? process.cwd(),
       capturedTarget,
@@ -525,11 +553,8 @@ export class SessionManager extends SessionManagerBranching {
     if (context.truncated) {
       onTruncated?.();
     }
-    // SAFETY: The accessor returns the same persisted transcript event union consumed by open().
-    const entries = context.events as FileEntry[];
-    const header = entries.find(
-      (entry) => typeof entry === "object" && entry !== null && entry.type === "session",
-    );
+    const entries = context.events;
+    const header = findSessionTranscriptHeader(entries);
     return new SessionManager(cwd ?? header?.cwd ?? process.cwd(), capturedTarget, entries, {
       ...context,
       limits,
@@ -577,11 +602,14 @@ export class SessionManager extends SessionManagerBranching {
   }
 
   private static detachBounded(source: SessionManager) {
+    const branch = source.getBranch();
     const detached = SessionManager.fromSelectedEntries(
-      [source.getHeader(), ...source.getBranch()],
+      [source.getHeader(), ...branch],
       source.getCwd(),
+      source.bindDetachedLabelRecords(branch),
     );
     detached.cacheTtlProjectionPrefixes = source.cacheTtlProjectionPrefixes;
+    detached.inheritResidentContextEntries(source);
     return detached;
   }
 
@@ -635,15 +663,25 @@ export class SessionManager extends SessionManagerBranching {
     );
   }
 
-  private static fromSelectedEntries(contextEntries: unknown[], cwd?: string): SessionManager {
-    // SAFETY: The transcript owner preserves the entry union; the constructor applies the normal codec.
-    const entries = contextEntries as FileEntry[];
-    const header = entries.find((entry) => entry.type === "session");
-    if (entries.length > 0) {
+  private static fromSelectedEntries(
+    contextEntries: unknown[],
+    cwd?: string,
+    admittedLabels?: Map<SessionEntry, SessionLabelAdmission>,
+  ): SessionManager {
+    const header = findSessionTranscriptHeader(contextEntries);
+    if (contextEntries.length > 0) {
       assertCurrentSessionTranscriptHeader(header);
     }
-    const manager = new SessionManager(cwd ?? header?.cwd ?? process.cwd(), undefined, entries);
+    const manager = new SessionManager(
+      cwd ?? header?.cwd ?? process.cwd(),
+      undefined,
+      contextEntries,
+    );
+    if (admittedLabels) {
+      manager.buildIndex(admittedLabels);
+    }
     manager.adoptSelectedTranscriptPath(
+      manager.appendParentId,
       manager.appendParentId,
       [...manager.byId].map(([id, entry]) => [id, entry.parentId]),
     );
@@ -708,28 +746,8 @@ export class SessionManager extends SessionManagerBranching {
   }
 
   static fromEntries(entries: readonly unknown[], cwdOverride?: string): SessionManager {
-    const fileEntries = structuredClone(entries) as FileEntry[];
-    const header = fileEntries.find(
-      (entry) => typeof entry === "object" && entry !== null && entry.type === "session",
-    );
+    const fileEntries = structuredClone(entries);
+    const header = findSessionTranscriptHeader(fileEntries);
     return new SessionManager(cwdOverride ?? header?.cwd ?? process.cwd(), undefined, fileEntries);
   }
 }
-
-export type ReadonlySessionManager = Pick<
-  SessionManager,
-  | "getCwd"
-  | "getSessionId"
-  | "getSessionTarget"
-  | "getLeafId"
-  | "getAppendParentId"
-  | "getAppendMode"
-  | "getLeafEntry"
-  | "getEntry"
-  | "getLabel"
-  | "getBranch"
-  | "getHeader"
-  | "getEntries"
-  | "getTree"
-  | "getSessionName"
->;

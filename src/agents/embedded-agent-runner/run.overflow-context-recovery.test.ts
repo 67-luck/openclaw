@@ -51,12 +51,27 @@ vi.mock("./provider-prompt-state.js", () => ({
   markLastProviderPromptContextRejected: mocks.markProviderPromptRejected,
 }));
 
-vi.mock("./tool-result-truncation.js", () => ({
-  resolveLiveToolResultMaxChars: () => 32_000,
-  restoreCacheTtlToolResultProjections: vi.fn(),
-  sessionLikelyHasOversizedToolResults: mocks.sessionLikelyHasOversizedToolResults,
-  truncateOversizedToolResultsInSessionManager: mocks.truncateOversizedToolResults,
-}));
+vi.mock("./tool-result-truncation.js", async () => {
+  const actual = await vi.importActual<typeof import("./tool-result-truncation.js")>(
+    "./tool-result-truncation.js",
+  );
+  return {
+    ...actual,
+    resolveLiveToolResultMaxChars: () => 32_000,
+    restoreCacheTtlToolResultProjections: vi.fn(),
+    sessionLikelyHasOversizedToolResults: mocks.sessionLikelyHasOversizedToolResults,
+  };
+});
+
+vi.mock("./tool-result-recovery.js", async () => {
+  const actual = await vi.importActual<typeof import("./tool-result-recovery.js")>(
+    "./tool-result-recovery.js",
+  );
+  return {
+    ...actual,
+    truncateOversizedToolResultsInSessionManager: mocks.truncateOversizedToolResults,
+  };
+});
 
 vi.mock("./run/session-bootstrap.js", async () => {
   const { buildContextEngineCompactionSessionTarget } = await vi.importActual<

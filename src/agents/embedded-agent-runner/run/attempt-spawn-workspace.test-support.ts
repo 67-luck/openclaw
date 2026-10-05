@@ -38,6 +38,8 @@ import type { WorkspaceBootstrapFile } from "../../workspace.js";
 import { runPreparedTestPrompt } from "./attempt-prompt-admission.test-support.js";
 import { getSkillMocks, resetSkillMocks } from "./attempt-skills-mock.test-support.js";
 import {
+  createCompletedAssistantStream,
+  createSessionManagerFixture,
   readMockSessionCacheTtlTimestamp,
   resetSessionManagerMocks,
   type SessionManagerMocks,
@@ -172,7 +174,7 @@ const hoisted = vi.hoisted((): AttemptBaseMocks => {
   const embeddedSystemPromptInputs: unknown[] = [];
   const trajectoryEvents: CapturedTrajectoryEvent[] = [];
   const getBranch = vi.fn(() => []);
-  const sessionManager = {
+  const sessionManager: SessionManagerMocks = {
     getSessionTarget: vi.fn(() => undefined),
     getSessionId: vi.fn(() => "embedded-session"),
     getAppendParentId: vi.fn<() => string | null>(() => null),
@@ -186,6 +188,7 @@ const hoisted = vi.hoisted((): AttemptBaseMocks => {
     getBoundaryCount: vi.fn(() => 0),
     branchAsync: vi.fn(async () => undefined),
     resetLeafAsync: vi.fn(async () => undefined),
+    navigate: vi.fn(),
     buildSessionContext: vi.fn<() => { messages: AgentMessage[] }>(() => ({ messages: [] })),
     appendThinkingLevelChange: vi.fn(),
     appendModelChange: vi.fn(),
@@ -235,6 +238,8 @@ const hoisted = vi.hoisted((): AttemptBaseMocks => {
     sessionManager,
   };
 });
+
+let sessionManagerFixture = createSessionManagerFixture(hoisted.sessionManager, []);
 
 export function getHoisted(): AttemptSpawnWorkspaceHoisted {
   return Object.assign(hoisted, getSkillMocks());
@@ -830,16 +835,6 @@ type SessionPromptOverride = (
   options?: { images?: unknown[]; preflightResult?: (submitted: boolean) => void },
 ) => Promise<void>;
 
-function createCompletedAssistantStream() {
-  return {
-    async result() {
-      return { role: "assistant", content: "done" };
-    },
-    [Symbol.asyncIterator]() {
-      return (async function* () {})();
-    },
-  };
-}
 const ATTEMPT_SPAWN_WORKSPACE_TEST_SPECIFIER = "./attempt.ts?spawn-workspace-test";
 
 const loadRunEmbeddedAttempt = createLazyPromise(
@@ -872,7 +867,7 @@ export function resetEmbeddedAttemptHarness(
   }
   hoisted.createAgentSessionMock.mockReset();
   hoisted.applyExtraParamsToAgentMock.mockReset();
-  hoisted.sessionManagerOpenMock.mockReset().mockReturnValue(hoisted.sessionManager);
+  hoisted.sessionManagerOpenMock.mockReset().mockImplementation(() => sessionManagerFixture);
   hoisted.guardSessionManagerMock
     .mockReset()
     .mockImplementation((sessionManager) => sessionManager);
@@ -936,7 +931,7 @@ export function resetEmbeddedAttemptHarness(
   hoisted.systemPromptTexts.length = 0;
   hoisted.embeddedSystemPromptInputs.length = 0;
   hoisted.trajectoryEvents.length = 0;
-  resetSessionManagerMocks(hoisted.sessionManager, params.sessionMessages);
+  sessionManagerFixture = resetSessionManagerMocks(hoisted.sessionManager, params.sessionMessages);
   if (params.subscribeImpl) {
     hoisted.subscribeEmbeddedAgentSessionMock.mockImplementation(params.subscribeImpl);
   }
@@ -1183,9 +1178,10 @@ export async function createContextEngineAttemptRunner(params: {
           })
         : undefined;
 
-  hoisted.sessionManager.buildSessionContext
-    .mockReset()
-    .mockReturnValue({ messages: params.sessionMessagesAfterRepair ?? seedMessages });
+  sessionManagerFixture = createSessionManagerFixture(
+    hoisted.sessionManager,
+    params.sessionMessagesAfterRepair ?? seedMessages,
+  );
 
   const modelRegistry = {};
   initializeModelRegistryRuntime(modelRegistry);

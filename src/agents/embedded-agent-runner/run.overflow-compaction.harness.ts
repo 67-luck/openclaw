@@ -35,7 +35,11 @@ import type {
   PreparedModelRuntimeLeaseOptions,
 } from "../prepared-model-runtime.types.js";
 import type { AgentRuntimePlan } from "../runtime-plan/types.js";
-import { makeAttemptResult, makeMockRuntimePlan } from "./run.overflow-compaction.fixture.js";
+import {
+  installToolResultRecoveryMocks,
+  makeAttemptResult,
+  makeMockRuntimePlan,
+} from "./run.overflow-compaction.fixture.js";
 import { createRunWorkspaceMock } from "./run.workspace-ownership.test-support.js";
 import type { RunEmbeddedAgentInternalParams } from "./run/internal-params.js";
 import type { buildEmbeddedRunPayloads } from "./run/payloads.js";
@@ -861,16 +865,10 @@ export async function loadRunOverflowCompactionHarness(): Promise<{
     runEmbeddedAttempt: mockedRunEmbeddedAttempt,
   }));
 
-  vi.doMock("./tool-result-truncation.js", async () => {
-    const { restoreCacheTtlToolResultProjections } = await vi.importActual<
-      typeof import("./tool-result-truncation.js")
-    >("./tool-result-truncation.js");
-    return {
-      restoreCacheTtlToolResultProjections,
-      resolveLiveToolResultMaxChars: mockedResolveLiveToolResultMaxChars,
-      sessionLikelyHasOversizedToolResults: mockedSessionLikelyHasOversizedToolResults,
-      truncateOversizedToolResultsInSessionManager: mockedTruncateOversizedToolResultsInSession,
-    };
+  installToolResultRecoveryMocks({
+    resolveLiveToolResultMaxChars: mockedResolveLiveToolResultMaxChars,
+    sessionLikelyHasOversizedToolResults: mockedSessionLikelyHasOversizedToolResults,
+    truncateOversizedToolResultsInSessionManager: mockedTruncateOversizedToolResultsInSession,
   });
 
   vi.doMock("./context-engine-maintenance.js", () => ({

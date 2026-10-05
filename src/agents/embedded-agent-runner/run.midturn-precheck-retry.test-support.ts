@@ -175,17 +175,20 @@ describe("runEmbeddedAgent mid-turn precheck retry", () => {
     const { SessionManager } = await import("../sessions/session-manager.js");
     const { getEmbeddedSessionPromptState, clearEmbeddedSessionPromptStates } =
       await import("./session-prompt-state.js");
+    const actualRecovery = await vi.importActual<typeof import("./tool-result-recovery.js")>(
+      "./tool-result-recovery.js",
+    );
     const actualTruncation = await vi.importActual<typeof import("./tool-result-truncation.js")>(
       "./tool-result-truncation.js",
     );
     const { truncateOversizedToolResultsInSessionManager } =
-      await import("./tool-result-truncation.js");
+      await import("./tool-result-recovery.js");
     const truncate = vi.mocked(truncateOversizedToolResultsInSessionManager);
     const previousTruncate = truncate.getMockImplementation();
     if (!previousTruncate) {
       throw new Error("expected the shared harness truncation implementation");
     }
-    truncate.mockImplementation(actualTruncation.truncateOversizedToolResultsInSessionManager);
+    truncate.mockImplementation(actualRecovery.truncateOversizedToolResultsInSessionManager);
     const successorId = `${session.runParams.sessionId}-tool-projection-successor`;
     const toolResult = makeTextToolResult(
       "call-exec",

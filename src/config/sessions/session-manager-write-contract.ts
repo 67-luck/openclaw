@@ -5,10 +5,16 @@ import type {
   PreparedCompactionAppend,
 } from "../../agents/sessions/session-compaction-persistence.js";
 import type {
+  SessionTranscriptMessageRewrite,
+  SessionTranscriptRewriteRetention,
+} from "../../agents/sessions/session-manager-rewrite.js";
+import type {
   SessionEntry,
+  SessionHeader,
   SessionLeafControl,
   SessionMessageEntry,
 } from "../../agents/sessions/session-manager-types.js";
+import type { TranscriptRewriteResult } from "../../context-engine/types.js";
 import type { SqliteWorkerStore } from "../../infra/sqlite-worker-contract.js";
 import type { Message } from "../../llm/types.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
@@ -61,21 +67,49 @@ export type SessionMetadataMessageControl = {
 };
 
 export type SessionMaintenanceOperations = {
+  "session.transcript.rewriteMessages": {
+    input: {
+      scope: MetadataTarget;
+      request: SessionTranscriptMessageRewrite;
+      retention: SessionTranscriptRewriteRetention;
+      version: SessionTranscriptContextVersion;
+      appendParentId: string | null;
+      limits?: SessionManagerBoundedContextLimits;
+      pendingInput?: { facts: SessionPendingInputWorkerFacts; relocation?: string };
+    };
+    output: {
+      result: TranscriptRewriteResult;
+      version?: SessionTranscriptContextVersion;
+      retained: SessionTranscriptRewriteRetention & {
+        customDataSources: Array<[string, string]>;
+      };
+      reload?: Result<PreparedSessionTranscriptReload, OpenClawStateWorkerErrorPayload | undefined>;
+      pendingInputReceipt?: SessionPendingInputWorkerReceipt;
+    };
+  };
   "session.transcript.branch": {
     input: {
       scope: MetadataTarget;
-      branch: { sessionId: string; events: unknown[] };
+      branch: { leafId: string; header: SessionHeader };
+      version: SessionTranscriptContextVersion;
+      limits?: SessionManagerBoundedContextLimits;
+      retainedEntryIds: readonly string[];
+      retainedCustomDataIds: readonly string[];
       expectedLifecycleRevision: SessionTranscriptWriteScope["expectedLifecycleRevision"];
     };
     output: {
       identity: NonNullable<InitialSessionEntryCommit["identity"]>;
       version: SessionTranscriptContextVersion;
       projectionNeedsReconcile: boolean;
+      reload: Result<PreparedSessionTranscriptReload, OpenClawStateWorkerErrorPayload | undefined>;
     };
   };
   "session.transcript.replaceSuffix": {
     input: {
       scope: MetadataTarget;
+      limits?: SessionManagerBoundedContextLimits;
+      retainedEntryIds?: readonly string[];
+      retainedCustomDataIds?: readonly string[];
       args: [
         expectedEvents: readonly unknown[],
         nextEvents: readonly unknown[],
@@ -88,7 +122,9 @@ export type SessionMaintenanceOperations = {
     output: {
       replaced: boolean;
       version?: SessionTranscriptContextVersion;
+      rewritten?: { firstIndex: number; firstSeq: number };
       projectionNeedsReconcile: boolean;
+      reload?: Result<PreparedSessionTranscriptReload, OpenClawStateWorkerErrorPayload | undefined>;
     };
   };
   "session.transcript.rewrite": {

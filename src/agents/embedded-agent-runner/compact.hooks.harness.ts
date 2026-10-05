@@ -218,10 +218,11 @@ export const createOpenClawCodingToolsMock = vi.fn<typeof createOpenClawCodingTo
 );
 const buildEmbeddedExtensionFactoriesMock = vi.fn(() => []);
 export const resolveEffectiveCompactionModeMock = vi.fn(() => "default");
-const guardSessionManagerMock = vi.fn((sessionManager: Record<string, unknown>) => ({
-  ...sessionManager,
-  flushPendingToolResultsAsync: vi.fn(async () => undefined),
-}));
+const guardSessionManagerMock = vi.fn((sessionManager: object) =>
+  Object.assign(sessionManager, {
+    flushPendingToolResultsAsync: vi.fn(async () => undefined),
+  }),
+);
 const applyAgentCompactionSettingsFromConfigMock = vi.fn();
 const createPreparedEmbeddedAgentSettingsManagerMock = vi.fn(() => ({
   getGlobalSettings: vi.fn(() => ({})),
@@ -550,10 +551,6 @@ export function resetCompactHooksHarnessMocks(workspaceDir: string, sessionId = 
   createOpenClawCodingToolsMock.mockReset();
   createOpenClawCodingToolsMock.mockReturnValue([]);
   guardSessionManagerMock.mockReset();
-  guardSessionManagerMock.mockImplementation((sessionManager) => ({
-    ...sessionManager,
-    flushPendingToolResultsAsync: vi.fn(async () => undefined),
-  }));
   applyAgentCompactionSettingsFromConfigMock.mockReset();
   createPreparedEmbeddedAgentSettingsManagerMock.mockReset();
   createPreparedEmbeddedAgentSettingsManagerMock.mockReturnValue({
@@ -628,9 +625,12 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     };
   });
 
+  // mock-isolation: No provider plugins run; the generic replay sanitizer remains real.
   vi.doMock("../../plugins/provider-runtime.js", () => ({
     prepareProviderRuntimeAuth: vi.fn(async () => ({ resolvedApiKey: undefined })),
     resolveProviderReasoningOutputModeWithPlugin: vi.fn(() => undefined),
+    sanitizeProviderReplayHistoryWithPluginAsync: vi.fn(async () => undefined),
+    validateProviderReplayTurnsWithPlugin: vi.fn(async () => undefined),
     resolveProviderSystemPromptContribution: vi.fn(() => undefined),
     resolveProviderTextTransforms: vi.fn(() => undefined),
     shouldPreferProviderRuntimeResolvedModel: vi.fn(() => false),
@@ -945,15 +945,14 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     };
   });
 
-  vi.doMock("../embedded-agent-helpers.js", async () => {
-    const { pickFallbackThinkingLevel } = await import("../embedded-agent-helpers/thinking.js");
-    return {
-      ensureSessionHeader: vi.fn(async () => {}),
-      pickFallbackThinkingLevel,
-      validateAnthropicTurns: vi.fn((m: unknown[]) => m),
-      validateGeminiTurns: vi.fn((m: unknown[]) => m),
-    };
-  });
+  // mock-isolation: Keep the broad helper barrel out while using real replay sanitizers.
+  vi.doMock("../embedded-agent-helpers.js", async () => ({
+    ...(await import("../embedded-agent-helpers/images.js")),
+    ...(await import("../embedded-agent-helpers/openai.js")),
+    ...(await import("../embedded-agent-helpers/thinking.js")),
+    ...(await import("../embedded-agent-helpers/turns.js")),
+    ...(await import("../embedded-agent-helpers/google.js")),
+  }));
 
   if (!options.durableSession) {
     vi.doMock("../agent-project-settings.js", () => ({

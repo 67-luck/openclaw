@@ -246,7 +246,6 @@ export {
   publishTranscriptUpdate,
   readLatestTranscriptAssistantText,
   readTranscriptEventAtSeqSync,
-  readPreviousIndexedTranscriptEventSync,
   readTranscriptIdentityByEventId,
   readSessionTranscriptMessageByEventId,
   readTranscriptRawDelta,

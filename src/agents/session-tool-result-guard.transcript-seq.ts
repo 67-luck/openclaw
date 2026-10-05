@@ -1,45 +1,18 @@
 import type { SessionManager } from "./sessions/index.js";
-
-function resolveEntryTranscriptSeq(
-  sessionManager: SessionManager,
-  entryId: string | null | undefined,
-  seqByEntryId: Map<string, number>,
-): number | undefined {
-  if (!entryId) {
-    return 0;
-  }
-  const cached = seqByEntryId.get(entryId);
-  if (cached !== undefined) {
-    return cached;
-  }
-  let seq = 0;
-  for (const entry of sessionManager.getBranch(entryId)) {
-    if (entry.type === "message" || entry.type === "compaction") {
-      seq += 1;
-    }
-    seqByEntryId.set(entry.id, seq);
-  }
-  return seqByEntryId.get(entryId);
-}
+import { sessionManagerResolveTranscriptSeq } from "./sessions/session-manager-transcript-seq.js";
 
 export function resolveAppendedMessageSeq(params: {
   sessionManager: SessionManager;
-  entryId: unknown;
+  entryId: string;
   parentEntryId: string | null | undefined;
-  seqByEntryId: Map<string, number>;
+  preparedParentSeq?: number;
 }): number | undefined {
-  if (typeof params.entryId !== "string") {
-    return undefined;
+  const committedSeq = params.sessionManager[sessionManagerResolveTranscriptSeq](params.entryId);
+  if (committedSeq !== undefined) {
+    return committedSeq;
   }
-  const parentSeq = resolveEntryTranscriptSeq(
-    params.sessionManager,
-    params.parentEntryId,
-    params.seqByEntryId,
-  );
-  if (parentSeq === undefined) {
-    return undefined;
-  }
-  const messageSeq = parentSeq + 1;
-  params.seqByEntryId.set(params.entryId, messageSeq);
-  return messageSeq;
+  const parentSeq =
+    params.sessionManager[sessionManagerResolveTranscriptSeq](params.parentEntryId) ??
+    params.preparedParentSeq;
+  return parentSeq === undefined ? undefined : parentSeq + 1;
 }

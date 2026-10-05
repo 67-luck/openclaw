@@ -2,6 +2,8 @@ import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coer
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import type { Mock } from "vitest";
 import type { AgentMessage } from "../../runtime/index.js";
+import { sessionManagerNavigate } from "../../sessions/session-manager-navigation.js";
+import { CURRENT_SESSION_VERSION, SessionManager } from "../../sessions/session-manager.js";
 
 type UnknownMock = Mock<(...args: unknown[]) => unknown>;
 
@@ -19,6 +21,7 @@ export type SessionManagerMocks = {
   getBoundaryCount: UnknownMock;
   branchAsync: UnknownMock;
   resetLeafAsync: UnknownMock;
+  navigate: Mock<SessionManager[typeof sessionManagerNavigate]>;
   buildSessionContext: Mock<() => { messages: AgentMessage[] }>;
   appendThinkingLevelChange: UnknownMock;
   appendModelChange: UnknownMock;
@@ -33,6 +36,52 @@ export type SessionManagerMocks = {
   clearNextUserMessagePersistenceSuppression: UnknownMock;
   removeTrailingEntriesAsync: UnknownMock;
 };
+
+export function createSessionManagerFixture(mocks: SessionManagerMocks, messages: AgentMessage[]) {
+  const manager = SessionManager.fromEntries([
+    {
+      type: "session",
+      id: "embedded-session",
+      version: CURRENT_SESSION_VERSION,
+      cwd: process.cwd(),
+      timestamp: new Date(0).toISOString(),
+    },
+    ...messages.map((message, index) => ({
+      type: "message",
+      id: `fixture-message-${index}`,
+      parentId: index === 0 ? null : `fixture-message-${index - 1}`,
+      timestamp: new Date(index).toISOString(),
+      message,
+    })),
+  ]);
+  const getBranch = manager.getBranch.bind(manager);
+  const buildSessionContext = manager.buildSessionContext.bind(manager);
+  mocks.getBranch.mockImplementation((fromId: unknown) =>
+    getBranch(typeof fromId === "string" ? fromId : undefined),
+  );
+  mocks.buildSessionContext.mockImplementation(buildSessionContext);
+  mocks.navigate.mockImplementation(async (branchFromId) => {
+    // Synthetic branch IDs select the fixture's already-prepared post-repair view.
+    if (branchFromId === null) {
+      await mocks.resetLeafAsync();
+    } else {
+      await mocks.branchAsync(branchFromId);
+    }
+    return { assertCurrent: () => undefined, restoreIfCurrent: () => undefined };
+  });
+  return Object.assign(manager, mocks, { [sessionManagerNavigate]: mocks.navigate });
+}
+
+export function createCompletedAssistantStream() {
+  return {
+    async result() {
+      return { role: "assistant", content: "done" };
+    },
+    [Symbol.asyncIterator]() {
+      return (async function* () {})();
+    },
+  };
+}
 
 export function readMockSessionCacheTtlTimestamp(
   sessionManager: {
@@ -70,7 +119,7 @@ export function readMockSessionCacheTtlTimestamp(
 export function resetSessionManagerMocks(
   sessionManager: SessionManagerMocks,
   messages: AgentMessage[] = [],
-): void {
+) {
   sessionManager.getSessionTarget.mockReset().mockReturnValue(undefined);
   sessionManager.getSessionId.mockReset().mockReturnValue("embedded-session");
   sessionManager.getAppendParentId.mockReset().mockReturnValue(null);
@@ -83,6 +132,7 @@ export function resetSessionManagerMocks(
   sessionManager.getBoundaryCount.mockReset().mockReturnValue(0);
   sessionManager.branchAsync.mockReset();
   sessionManager.resetLeafAsync.mockReset();
+  sessionManager.navigate.mockReset();
   sessionManager.clearNextUserMessagePersistenceSuppression.mockReset();
   sessionManager.buildSessionContext.mockReset().mockReturnValue({ messages });
   sessionManager.appendThinkingLevelChange.mockReset();
@@ -93,4 +143,5 @@ export function resetSessionManagerMocks(
   sessionManager.appendLabelChangeAsync.mockReset();
   sessionManager.flushPendingPersistence.mockReset();
   sessionManager.reloadPersistedTranscriptAsync.mockReset();
+  return createSessionManagerFixture(sessionManager, messages);
 }

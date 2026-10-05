@@ -43,6 +43,7 @@ export class SessionManagerMetadata extends SessionManagerEntries {
         ? resolveSessionTranscriptReadFence(this.persistenceTarget)?.entryId
         : undefined;
       const committedTarget = publication.target;
+      const viewPublication = this.captureTranscriptPublication();
       const committed = await this.persistWorkerRecord(
         canonical,
         appendIntent,
@@ -63,7 +64,7 @@ export class SessionManagerMetadata extends SessionManagerEntries {
         version: committedVersion,
         target: committedTarget,
       };
-      let failure: { cause: unknown } | undefined;
+      let failure: { cause: unknown; invalidate: (error: Error) => void } | undefined;
       try {
         const currentTarget = this.getSessionTarget();
         if (
@@ -81,9 +82,10 @@ export class SessionManagerMetadata extends SessionManagerEntries {
             : rebound;
         }
         assertNavigation();
+        viewPublication.beginAdoption();
         this.adoptWorkerCommittedEntry(canonical, committed, admittedUserId);
       } catch (cause) {
-        failure = { cause };
+        failure = { cause, invalidate: viewPublication.invalidate };
       }
       return this.publishMetadataCommit(commit, publication.publish, failure);
     });
@@ -92,13 +94,13 @@ export class SessionManagerMetadata extends SessionManagerEntries {
   private publishMetadataCommit(
     commit: SessionMetadataCommit,
     publish: (commit: SessionMetadataCommit) => undefined,
-    failure?: { cause: unknown },
+    failure?: { cause: unknown; invalidate: (error: Error) => void },
   ): string {
     const committedError = (cause: unknown) =>
       new SessionMetadataCommittedError(commit.entry, commit.version, cause, commit.target);
     let error = failure ? committedError(failure.cause) : undefined;
-    if (error) {
-      this.invalidateTranscriptView(error);
+    if (error && failure) {
+      failure.invalidate(error);
     }
     try {
       publish(commit);

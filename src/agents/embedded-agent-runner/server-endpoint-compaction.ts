@@ -8,7 +8,9 @@ import {
 import type { Message } from "@openclaw/llm-core";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { isRecordedModelFallbackStop } from "../model-fallback-stop.js";
 import type { AgentMessage } from "../runtime/index.js";
+import { committedSessionPublicationError } from "../sessions/agent-session-publication.js";
 import { withSessionManagerWrite } from "../sessions/session-manager-write-admission.js";
 import { redactTranscriptMessage } from "../transcript-redact.js";
 import { compactWithSafetyTimeout } from "./compaction-safety-timeout.js";
@@ -35,7 +37,7 @@ export async function attemptServerEndpointCompaction(params: {
   customInstructions?: string;
   config?: OpenClawConfig;
   onUsage?: (usage: ServerEndpointCompactionResult["usage"]) => void;
-  onCompactionCommitted?: (tokensBefore: number) => void;
+  onCompactionCommitted?: (tokensBefore: number) => Promise<void> | void;
   assertActive?: () => void;
 }): Promise<ServerEndpointCompactionResult | undefined> {
   if (
@@ -105,6 +107,7 @@ export async function attemptServerEndpointCompaction(params: {
         replacements: [{ entryId: owner.id, message: redacted }],
         preserveReplacementCompactionReplay: true,
       });
+      compactionCommitted = rewritten.changed;
       if (
         replacement.providerReplay?.data !== compacted.item.encrypted_content ||
         !rewritten.changed
@@ -113,14 +116,19 @@ export async function attemptServerEndpointCompaction(params: {
           `Responses compact endpoint checkpoint was not persisted: ${rewritten.reason}`,
         );
       }
-      compactionCommitted = true;
-      params.onCompactionCommitted?.(compacted.usage.input_tokens);
+      await params.onCompactionCommitted?.(compacted.usage.input_tokens);
     });
   } catch (err) {
+    if (isRecordedModelFallbackStop(err)) {
+      throw err;
+    }
     // Observer or handle-release failures after commit must not trigger a
     // second client compaction of the already replaced context.
     if (compactionCommitted) {
-      throw err;
+      throw committedSessionPublicationError(
+        "Responses compact endpoint rewrite committed but publication failed",
+        err,
+      );
     }
     params.assertActive?.();
     log.debug(

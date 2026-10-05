@@ -27,11 +27,14 @@ import { waitForSessionTranscriptProjection } from "../../config/sessions/sessio
 import type { SessionEntry } from "../../config/sessions/types.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
-import { useTranscriptRewriteTempDirs } from "./transcript-rewrite.test-support.js";
+import {
+  getBranchMessages,
+  useTranscriptRewriteFixtures,
+} from "./transcript-rewrite.test-support.js";
 
 let rewriteTranscriptEntriesInSessionManager: typeof import("./transcript-rewrite.js").rewriteTranscriptEntriesInSessionManager;
 let installSessionToolResultGuard: typeof import("../session-tool-result-guard.js").installSessionToolResultGuard;
-const tempDirs = useTranscriptRewriteTempDirs(afterEach);
+const { tempDirs, createPersistedRewriteTarget } = useTranscriptRewriteFixtures(afterEach);
 
 type AppendMessage = Parameters<SessionManager["appendMessage"]>[0];
 
@@ -39,30 +42,11 @@ function asAppendMessage(message: unknown): AppendMessage {
   return message as AppendMessage;
 }
 
-function getBranchMessages(sessionManager: SessionManager): AgentMessage[] {
-  return sessionManager
-    .getBranch()
-    .filter((entry) => entry.type === "message")
-    .map((entry) => entry.message);
-}
-
 function appendSessionMessages(
   sessionManager: SessionManager,
   messages: AppendMessage[],
 ): string[] {
   return messages.map((message) => sessionManager.appendMessage(message));
-}
-
-async function createPersistedRewriteTarget(sessionId: string) {
-  const directory = tempDirs.make(`openclaw-${sessionId}-`);
-  const target = {
-    agentId: "main",
-    sessionId,
-    sessionKey: `agent:main:${sessionId}`,
-    storePath: path.join(directory, "sessions.json"),
-  };
-  await replaceSessionEntry(target, { sessionId, updatedAt: 1 });
-  return { directory, target };
 }
 
 function createTextContent(text: string) {
@@ -517,17 +501,32 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
       await waitForSessionTranscriptProjection(target);
       const bounded = SessionManager.openBounded(target, { maxBytes: 64_000, maxEvents: 20 });
       expect(bounded.buildSessionContext()).toEqual(manager.buildSessionContext());
-      const detached = SessionManager.openDetachedBounded(target, {
-        maxBytes: 64_000,
-        maxEvents: 20,
-      });
-      expect(detached.buildSessionContext()).toEqual(manager.buildSessionContext());
+      expect(bounded.getLeafEntry()).toMatchObject({ appendMode: "side" });
       const rowsBeforeDetachedAppend = await loadTranscriptEvents(target);
-      detached.appendMessage({ role: "user", content: "detached turn", timestamp: 5 });
-      expect(detached.buildSessionContext().messages).toEqual([
-        ...manager.buildSessionContext().messages,
-        { role: "user", content: "detached turn", timestamp: 5 },
-      ]);
+      for (const detached of [
+        SessionManager.openDetachedBounded(target, { maxBytes: 64_000, maxEvents: 20 }),
+        await SessionManager.openDetachedBoundedAsync(target, { maxBytes: 64_000, maxEvents: 20 }),
+      ]) {
+        expect(detached.isPersisted()).toBe(false);
+        expect(detached.getLeafId()).toBe(bounded.getLeafId());
+        expect(detached.getAppendParentId()).toBe(bounded.getLeafId());
+        expect(
+          getBranchMessages(detached).map((message) =>
+            "content" in message ? message.content : undefined,
+          ),
+        ).toEqual(["prefix", "replacement-3", "suffix", ...(withReset ? ["current task"] : [])]);
+        expect(detached.buildSessionContext()).toEqual(manager.buildSessionContext());
+        const next = detached.appendMessage({
+          role: "user",
+          content: "detached turn",
+          timestamp: 5,
+        });
+        expect(detached.getEntry(next)?.parentId).toBe(bounded.getLeafId());
+        expect(detached.buildSessionContext().messages).toEqual([
+          ...manager.buildSessionContext().messages,
+          { role: "user", content: "detached turn", timestamp: 5 },
+        ]);
+      }
       expect(await loadTranscriptEvents(target)).toEqual(rowsBeforeDetachedAppend);
       expect(SessionManager.openModelContext(target).buildSessionContext()).toEqual(
         manager.buildSessionContext(),
@@ -775,76 +774,6 @@ describe("rewriteTranscriptEntriesInSessionManager", () => {
         }),
       ).rejects.toThrow("Session transcript changed");
       expect(await loadTranscriptEvents(target)).toEqual(current);
-    },
-  );
-
-  it.each([undefined, 3, 1])(
-    "preserves the selected logical parent across a rewrite (maxEvents=%s)",
-    async (maxEvents) => {
-      const { directory, target } = await createPersistedRewriteTarget("logical-rewrite");
-      let manager = SessionManager.open(target, directory);
-      const first = manager.appendMessage({ role: "user", content: "selected", timestamp: 1 });
-      const abandoned = manager.appendMessage({ role: "user", content: "abandoned", timestamp: 2 });
-      manager.appendLeafControl({ targetId: first, appendParentId: abandoned, appendMode: "side" });
-      const current = manager.appendMessage({ role: "user", content: "current", timestamp: 3 });
-      await waitForSessionTranscriptProjection(target);
-      if (maxEvents !== undefined) {
-        manager = SessionManager.openBounded(target, { maxBytes: 4096, maxEvents });
-      }
-      expect(getBranchMessages(manager)).toMatchObject(
-        (maxEvents === 1 ? ["current"] : ["selected", "current"]).map((content) => ({
-          role: "user",
-          content,
-        })),
-      );
-      await rewriteTranscriptEntriesInSessionManager({
-        sessionManager: manager,
-        replacements: [
-          { entryId: current, message: { role: "user", content: "rewritten", timestamp: 3 } },
-        ],
-      });
-      expect(getBranchMessages(SessionManager.open(target, directory))).toMatchObject([
-        { role: "user", content: "selected" },
-        { role: "user", content: "rewritten" },
-      ]);
-    },
-  );
-
-  it.each([0, 2])(
-    "keeps an unhydrated prefix when rewriting bounded entry %i",
-    async (replacementIndex) => {
-      const { directory, target } = await createPersistedRewriteTarget("bounded-rewrite");
-      const full = SessionManager.open(target, directory);
-      for (let index = 0; index < 24; index++) {
-        full.appendMessage({
-          role: "user",
-          content: `Archived ${index}: ${"x".repeat(16_384)}`,
-          timestamp: index,
-        });
-      }
-      for (const content of ["first retained", "second retained", "last retained"]) {
-        full.appendMessage({ role: "user", content, timestamp: 30 });
-      }
-      const expected = getBranchMessages(full);
-      const bounded = SessionManager.openBounded(target, { maxEvents: 3, maxBytes: 2048 });
-      expect(bounded.getEntries()).toHaveLength(3);
-      const entry = bounded.getBranch()[replacementIndex];
-      if (entry?.type !== "message" || entry.message.role !== "user") {
-        throw new Error("missing bounded rewrite target");
-      }
-      const replacement = { ...entry.message, content: "bounded replacement" };
-      await rewriteTranscriptEntriesInSessionManager({
-        sessionManager: bounded,
-        replacements: [{ entryId: entry.id, message: replacement }],
-      });
-      expected[24 + replacementIndex] = replacement;
-      expect(bounded.getEntries().length).toBeLessThanOrEqual(6);
-      expect(getBranchMessages(SessionManager.open(target, directory))).toEqual(expected);
-      bounded.appendMessage({ role: "user", content: "next turn", timestamp: 31 });
-      expect(getBranchMessages(SessionManager.open(target, directory))).toEqual([
-        ...expected,
-        { role: "user", content: "next turn", timestamp: 31 },
-      ]);
     },
   );
 

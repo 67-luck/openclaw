@@ -46,6 +46,7 @@ import {
   runWithSessionTranscriptReadFence,
   SessionTranscriptReadFenceError,
 } from "./session-transcript-read-fence.js";
+import { readSessionTranscriptResidentContext } from "./session-transcript-resident-context.worker.js";
 
 type Command = SqliteWorkerCommand<IncognitoHistoryOperations>;
 
@@ -247,12 +248,15 @@ export function createIncognitoHistoryWorker(
         break;
       case "session.history.hydrate": {
         const { limits, maxEventBytes } = command.input;
+        const readContext = limits?.retainContextUsageEvidence
+          ? readSessionTranscriptResidentContext
+          : readSessionTranscriptBoundedActiveContextCore;
         prepared = prepareHistoryRead(command.type, () =>
           runWithSessionTranscriptReadFence(admission, () =>
             limits
               ? {
                   kind: "bounded",
-                  snapshot: readSessionTranscriptBoundedActiveContextCore(target, {
+                  snapshot: readContext(target, {
                     ...limits,
                     readOnly: true,
                     resolvedScope,

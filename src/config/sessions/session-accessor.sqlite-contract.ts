@@ -50,11 +50,26 @@ export type CacheTtlProjectionPrefix = {
   entries: Record<string, unknown>[];
 };
 
+/** Raw logical anchors retain opaque structure; canonical callbacks skip that structure. */
+export type SessionTranscriptParentIds = Readonly<{
+  rawParentId: string | null;
+  canonicalParentId: string | null;
+}>;
+
 export type SessionTranscriptBoundedActiveContext = {
+  /** Private inspection witnesses must not move the selected model-context start. */
+  contextStartEntryId?: string | null;
+  entryTranscriptSeqs: Map<string, number>;
+  /** Exact payload positions selected for model history before inspection-only retention. */
+  residentContextEntryIndexes: number[];
+  /** Exact rows admitted before payload selection; indexes address this snapshot's events. */
+  admittedLabelRecords?: Array<{ eventIndex: number; rawSeq: number }>;
+  /** Raw append cursor; a leaf control can select a different branch tip. */
   activeLeafEntryId: string | null;
+  selectedLeafEntryId: string | null;
   version: SessionTranscriptContextVersion;
   opaqueParents: Map<string, string | null>;
-  parents: Map<string, string | null>;
+  parents: Map<string, SessionTranscriptParentIds>;
   firstKeptRanges: Map<string, { startIndex: number; endIndex: number }>;
   persistedSuffixStartSeq: number;
   boundaryCount: number;

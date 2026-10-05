@@ -3,16 +3,12 @@ import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
-import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import { withCurrentProjectionSnapshot } from "./session-accessor.sqlite-active-projection.js";
 import type {
-  SessionTranscriptEventRow,
   SessionTranscriptReadScope,
   TranscriptEvent,
 } from "./session-accessor.sqlite-contract.js";
-import { getActiveTranscriptKysely } from "./session-accessor.sqlite-projection-read.js";
 import {
   getSessionKysely,
   resolveSqliteTranscriptReadScope,
@@ -38,7 +34,7 @@ export function loadTranscriptSuffixEventsBoundedSync(
     maxEvents: number;
     retainedCustomDataIds?: readonly string[];
   },
-): TranscriptEvent[] {
+): { events: TranscriptEvent[]; eventSeqs: number[] } {
   const resolved = resolveSqliteTranscriptReadScope(scope);
   return loadTranscriptSuffixEventsBoundedFromDatabase(
     openOpenClawAgentDatabase(toDatabaseOptions(resolved)),
@@ -53,7 +49,7 @@ export function loadTranscriptSuffixEventsBoundedFromDatabase(
   scope: SessionTranscriptReadScope,
   startSeq: number,
   limits: { maxBytes: number; maxEvents: number; retainedCustomDataIds?: readonly string[] },
-): TranscriptEvent[] {
+): { events: TranscriptEvent[]; eventSeqs: number[] } {
   const resolved = resolveSqliteTranscriptReadScope(scope);
   return runSqliteDeferredTransactionSync(
     database.db,
@@ -108,7 +104,7 @@ export function loadTranscriptSuffixEventsBoundedFromDatabase(
         }
       }
       if (metadata.length === 0) {
-        return [];
+        return { events: [], eventSeqs: [] };
       }
       const rows = executeSqliteQuerySync(
         database.db,
@@ -135,57 +131,14 @@ export function loadTranscriptSuffixEventsBoundedFromDatabase(
       ) {
         throw new Error(`SQLite transcript changed while reading suffix for ${resolved.sessionId}`);
       }
-      // SAFETY: Raw transcript rows are parsed through the persisted transcript event union.
-      return rows.map((row) => JSON.parse(row.event_json) as TranscriptEvent);
+      return {
+        events: rows.map((row): TranscriptEvent => JSON.parse(row.event_json)),
+        eventSeqs: rows.map((row) => row.seq),
+      };
     },
     {
       databaseLabel: database.path,
       operationLabel: "bounded transcript suffix read",
     },
-  );
-}
-
-/** Reads the nearest active indexed event before a raw transcript sequence. */
-export function readPreviousIndexedTranscriptEventSync(
-  scope: SessionTranscriptReadScope,
-  beforeSeq: number,
-  options: { readOnly?: boolean } = {},
-): SessionTranscriptEventRow | undefined {
-  return withCurrentProjectionSnapshot(
-    scope,
-    (projection) => {
-      const db = getActiveTranscriptKysely(projection.database);
-      const row = executeSqliteQueryTakeFirstSync(
-        projection.database.db,
-        db
-          .selectFrom("transcript_event_identities as identity")
-          .innerJoin("session_transcript_active_events as active", (join) =>
-            join
-              .onRef("active.session_id", "=", "identity.session_id")
-              .onRef("active.event_seq", "=", "identity.seq"),
-          )
-          .innerJoin("transcript_events as event", (join) =>
-            join
-              .onRef("event.session_id", "=", "identity.session_id")
-              .onRef("event.seq", "=", "identity.seq"),
-          )
-          .select([
-            transcriptEventJsonSql(projection.database.db, "event").as("event_json"),
-            "identity.seq",
-          ])
-          .where("identity.session_id", "=", projection.resolved.sessionId)
-          .where("identity.seq", "<", beforeSeq)
-          .orderBy("active.active_position", "desc")
-          .limit(1),
-      );
-      return row
-        ? {
-            // SAFETY: Indexed transcript rows contain the persisted transcript event union.
-            event: JSON.parse(row.event_json) as TranscriptEvent,
-            seq: sqliteNumber(row.seq),
-          }
-        : undefined;
-    },
-    options,
   );
 }

@@ -1,5 +1,5 @@
 ---
-summary: "Proposed worker-owned transcript acquisition and bounded SessionManager working sets"
+summary: "Worker-owned transcript acquisition, resident message windows, and remaining SDK migration"
 read_when:
   - Changing which transcript payloads an active session retains
   - Migrating synchronous session history consumers to worker reads
@@ -7,9 +7,11 @@ read_when:
 title: "Session transcript working sets"
 ---
 
-**Status: proposed design.** This page defines a remaining runtime migration;
-it does not claim that append eviction or the consumer cutover is implemented.
-It adds no configuration option and changes no schema, persisted bytes,
+**Status: private runtime migration, with synchronous SDK exceptions.** Committed
+appends and rewrites evict old resident message payloads. Internal recovery and
+navigation acquire omitted history through the storage owner. The proposed SDK
+capability below remains a separate migration; this is not a universal resident
+memory cap. This adds no configuration option and changes no schema, persisted bytes,
 retention, session identity, or permissions.
 
 The canonical transcript belongs to SQLite and its existing storage owners.
@@ -20,13 +22,47 @@ and [database access in workers](/reference/database-schemas/worker-access).
 
 ## Current boundary
 
-Bounded opening already selects raw entries by byte/event budget. The manager's
-entry array and ID index share one payload graph, while initial model-context
-acquisition hydrates overlapping messages separately. Appends and complete
-history hydration can enlarge the resident view beyond its opening budget.
-The owners are `session-manager-core.ts`, `session-manager.ts`, and
-`session-accessor.sqlite-active-context.ts` under `src/agents/sessions/` and
-`src/config/sessions/` respectively.
+Bounded opening selects raw entries by byte/event budget. The manager's entry
+array and ID index share one payload graph; equal initial raw/model messages
+also share immutable objects. Committed append and rewrite publication evicts
+old message payloads and their resident parent-map entries using that same budget.
+The newest message and user anchors, non-message SDK metadata, labeled targets,
+and at most two assistant records needed for synchronous context-usage accounting
+are retained exceptions. These exceptions can exceed the byte/event budget,
+including an oversized complete custom payload. Accounting records preserve the
+provider checkpoint and post-compaction usage decision without moving the admitted
+context start backward.
+
+A context-start entry ID survives raw eviction. Internal context readers acquire
+the original context plus committed appends at the captured transcript version;
+they do not restart at the newest resident row or silently replace the model's
+existing prompt prefix. Rewrites remap this anchor, and explicit navigation or
+context replacement publishes a new selection. Frozen row identity owns cached
+byte counts; weak keys disappear with evicted payloads.
+
+The selected raw entry, visible context leaf, and append cursor are distinct
+navigation facts. Raw branch reads and cleanup include a selected entry excluded
+from model context, even when a side-append cursor points elsewhere. Context
+readers continue to omit that entry; serialization preserves the raw selection.
+Parent facts retain both the exact raw rewrite anchor and its nearest canonical
+ancestor. Eviction keeps canonical identity anchors only while resident entries,
+the current cursor, or opaque links reference them; these anchors retain IDs and
+ordinals, never payloads.
+
+Generic history pages and branch reads refuse entries larger than their acquisition budget.
+Admitted context and navigation reads preserve complete tool results, including selected
+tool targets; recovery and replay scans can request the same exception. Each page admits
+at most one oversized result, and collected context, navigation, and truncation stay within
+64 MiB plus the largest complete result, checking bytes before acquiring payloads. Replay
+scans release each page while collecting the assistant replacements they need. This
+operation allowance is separate from resident memory and does not cap stored content.
+Rewrite preparation applies that operation budget to its complete raw suffix,
+including context-excluded rows and custom data, before acquiring suffix payloads.
+It refuses excess acquisition before committing a replacement.
+The resident navigation and eviction owner is `session-manager-resident-window.ts`;
+`session-manager-core.ts` and `session-manager.ts` publish its views. Storage
+acquisition lives in `session-accessor.sqlite-active-context.ts` and
+`session-transcript-history-read.ts` under `src/config/sessions/`.
 
 The manager is legitimately retained by `AgentSession` and active-run callbacks.
 Reducing its working set complements correct run teardown; it does not replace
@@ -51,8 +87,23 @@ The snapshot records its byte/event counts and completeness. Arbitrary-history
 results remain operation-owned; they never become a second manager cache.
 Committed append, suffix replacement, navigation, and rewrite operations must
 publish a bounded replacement before notifying observers. Failed writes retain
-the old snapshot. A committed write whose publication fails invalidates the
-manager through the existing committed-write error path; it is never replayed.
+the old snapshot. If a manager cannot adopt its own committed durable view, the
+existing committed-write error path invalidates it; the write is never replayed.
+After destructive commits, preserving a superseding view requires a published version
+that includes the deletion; local navigation alone cannot keep the old view usable.
+An outer AgentSession context publisher instead rejects a stale acquired view
+without invalidating a newer legitimate manager selection. It revalidates its
+captured history reader immediately before installing messages or accounting.
+The active message array has its own publication fence: replacement also checks
+the captured array and ordered message identities, since an agent can receive a
+message before its transcript write settles. Navigation completion checks come
+from the operation owner before its caller resumes. If context acquisition fails
+before navigation commits, the owner restores its previous view only while the
+selected version, binding, and navigation are still current.
+If navigation or compaction commits but its model-context publication fails, the
+exact old message view becomes unavailable. Further prompts and message writes
+reject it until the session is reopened or valid replacement context is installed.
+Canonical history remains readable, and a superseding view is left intact.
 
 ## Proposed asynchronous operations
 
@@ -180,11 +231,36 @@ incognito expiry, restart loss, or retention.
 
 ## First slice and completion evidence
 
-Start with worker-owned rewrite acquisition and committed-context publication,
-migrating replay repair and tool-result truncation together. Remove their
-cloned-manager preparation path; retain compatibility only where the shipped
-SDK audit requires it. This private slice does not complete arbitrary tree or
-extension history access and must not claim a universal memory bound.
+Private runtime rewrites acquire canonical source rows and construct the suffix
+in the storage owner, replacing the cloned-manager preparation path. Replay
+repair, tool-result truncation, compaction, and settlement use versioned context
+reads. Awaited cleanup walks the predicate boundary once before deciding whether
+to mutate; it preserves oversized resident custom data by reference. Deprecated
+synchronous cleanup refuses an eviction gap instead of treating incomplete
+history as a successful no-op.
+
+Async tree navigation acquires the target and abandoned path, then installs a
+bounded selected context. Forking copies canonical history in the storage owner
+and returns a bounded destination view. These operations recheck navigation,
+target binding, transcript version, cancellation, and live ownership before
+publication. Failed adoption of the manager's own committed view invalidates the
+manager and cannot be replayed as a fresh write. If a newer selection supersedes
+an outer context read, that read cannot overwrite AgentSession state; an already
+committed operation reports a non-retryable publication failure while preserving
+the newer selection.
+
+Synchronous SDK custom-history readers preserve ordering and duplicates, so
+non-message records remain resident. Synchronous settings, prompt-series,
+cache-TTL, and boundary readers consume those retained records; label readers
+also retain their target payloads. The existing deprecated synchronous mutation
+and rewrite-preparation methods remain until the next Plugin SDK major. Removing
+these exceptions requires the versioned SDK capability described above and its
+owner acceptance. No universal resident bound is claimed for those contracts.
+
+Deprecated synchronous reload preserves live pins at an unchanged target, leaf,
+and transcript revision. A changed revision or deliberate navigation uses its
+shipped strict bounded reload. Async runtime reloads acquire current retention
+facts from the storage worker within the same snapshot as their selected payloads.
 
 Freeze published canonical payloads and use replacement objects for sanitation,
 redaction, and explicit rewrites. Eviction only drops references: it does not

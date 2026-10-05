@@ -454,11 +454,6 @@ it("composes hydration navigation and maintenance on the captured actor", async 
   expect(await reader.readRecentActiveEvents(1)).toEqual([message("latest hydration entry")]);
   const identity = await reader.readMaintenance({ operation: "identity", eventId: entryId });
   assert(identity.seq !== undefined);
-  expect(
-    await reader.readMaintenance({ operation: "previous", beforeSeq: identity.seq }),
-  ).toMatchObject({
-    previous: { id: first.value.append.messageId },
-  });
   expect(await reader.readMaintenance({ operation: "version" })).toMatchObject({
     version: snapshot.snapshot.version,
     lifecycleRevision: target.entry.lifecycleRevision,

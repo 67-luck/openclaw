@@ -273,6 +273,7 @@ const createCompactionHandler = () => {
 const createCompactionEvent = (
   params: {
     messageText?: string;
+    branchEntries?: ReturnType<ExtensionContext["sessionManager"]["getBranch"]>;
     tokensBefore?: number;
     preparation?: Partial<Omit<CompactionPreparation, "fileOps" | "settings">> & {
       settings?: { reserveTokens: number };
@@ -281,6 +282,7 @@ const createCompactionEvent = (
     signal?: AbortSignal;
   } = {},
 ) => ({
+  branchEntries: params.branchEntries ?? [],
   preparation: {
     messagesToSummarize: [
       { role: "user", content: params.messageText ?? "summarize me", timestamp: Date.now() },
@@ -2092,7 +2094,7 @@ describe("compaction-safeguard double-compaction guard", () => {
   });
 
   it.each([false, true])(
-    "summarizes only the boundary-scoped window (recover omitted conversation=%s)",
+    "summarizes the prepared boundary window without synchronous history (recover=%s)",
     async (recover) => {
       mockSummarizeInStages.mockResolvedValue(recover ? "range summary" : "tool window summary");
       const now = Date.now();
@@ -2101,7 +2103,7 @@ describe("compaction-safeguard double-compaction guard", () => {
         parentId: string | null,
         offset: number,
         message: AgentMessage,
-      ) => ({
+      ): CompactionEvent["branchEntries"][number] => ({
         type: "message",
         id,
         parentId,
@@ -2114,7 +2116,7 @@ describe("compaction-safeguard double-compaction guard", () => {
         timestamp: now + 5,
       });
       const oldUser = entry("old-user", null, 0, userMessage("old request behind reset", now));
-      const reset = {
+      const reset: CompactionEvent["branchEntries"][number] = {
         type: "reset",
         id: "reset-1",
         parentId: recover ? "old-user" : "old-assistant",
@@ -2122,51 +2124,48 @@ describe("compaction-safeguard double-compaction guard", () => {
         reason: "new",
         firstKeptEntryId: recover ? "reset-1" : "old-assistant",
       };
-      const sessionManager = {
-        ...stubSessionManager(),
-        getBranch: () =>
-          recover
-            ? [
-                oldUser,
-                reset,
-                entry(
-                  "omitted-user",
-                  "reset-1",
-                  2,
-                  userMessage("verify the deploy status now", now + 2),
-                ),
-                entry("assistant-1", "omitted-user", 3, toolCall),
-                entry("tool-1", "assistant-1", 4, toolResult),
-                entry("kept-user", "tool-1", 5, userMessage("and then?", now + 5)),
-              ]
-            : [
-                oldUser,
-                entry(
-                  "old-assistant",
-                  "old-user",
-                  1,
-                  castAgentMessage(timestampedTextAssistant("old reply behind reset", now + 1)),
-                ),
-                reset,
-                {
-                  type: "compaction",
-                  id: "compaction-1",
-                  parentId: "reset-1",
-                  timestamp: new Date(now + 3).toISOString(),
-                  summary: "## Decisions\nUser asked for the deploy status.",
-                  firstKeptEntryId: "compaction-1",
-                  tokensBefore: 90_000,
-                  fromHook: true,
-                },
-              ],
-      } as ExtensionContext["sessionManager"];
-      setCompactionSafeguardRuntime(sessionManager, {
-        model: createAnthropicModelFixture(),
-        recentTurnsPreserve: 0,
-      });
+      const branchEntries: CompactionEvent["branchEntries"] = recover
+        ? [
+            oldUser,
+            reset,
+            entry(
+              "omitted-user",
+              "reset-1",
+              2,
+              userMessage("verify the deploy status now", now + 2),
+            ),
+            entry("assistant-1", "omitted-user", 3, toolCall),
+            entry("tool-1", "assistant-1", 4, toolResult),
+            entry("kept-user", "tool-1", 5, userMessage("and then?", now + 5)),
+          ]
+        : [
+            oldUser,
+            entry(
+              "old-assistant",
+              "old-user",
+              1,
+              castAgentMessage(timestampedTextAssistant("old reply behind reset", now + 1)),
+            ),
+            reset,
+            {
+              type: "compaction",
+              id: "compaction-1",
+              parentId: "reset-1",
+              timestamp: new Date(now + 3).toISOString(),
+              summary: "## Decisions\nUser asked for the deploy status.",
+              firstKeptEntryId: "compaction-1",
+              tokensBefore: 90_000,
+              fromHook: true,
+            },
+          ];
+      const sessionManager = modelSession({ recentTurnsPreserve: 0 });
+      sessionManager.getBranch = () => {
+        throw new Error("Synchronous history is unavailable");
+      };
       const { result } = await runCompactionScenario(
         sessionManager,
         createCompactionEvent({
+          branchEntries,
           preparation: {
             messagesToSummarize: [toolCall, toolResult],
             firstKeptEntryId: recover ? "kept-user" : "entry-6",

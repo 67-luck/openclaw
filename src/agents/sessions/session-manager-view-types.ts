@@ -8,10 +8,15 @@ export type PreparedSessionTranscriptReload = PreparedSessionTranscriptHydration
 export type SessionManagerBoundedView = Pick<
   SessionTranscriptBoundedActiveContext,
   | "activeLeafEntryId"
+  | "selectedLeafEntryId"
   | "version"
   | "opaqueParents"
   | "parents"
   | "firstKeptRanges"
+  | "contextStartEntryId"
+  | "entryTranscriptSeqs"
+  | "residentContextEntryIndexes"
+  | "admittedLabelRecords"
   | "cacheTtlProjectionPrefixes"
 >;
 export type SessionManagerBoundedContext = SessionManagerBoundedView &

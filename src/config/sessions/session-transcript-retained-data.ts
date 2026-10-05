@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sql, type AliasableExpression } from "kysely";
-import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import { executeSqliteQuerySync, sqliteStringSet } from "../../infra/kysely-sync.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import type { SqliteTranscriptStorageRow } from "./session-accessor.sqlite-read.js";
@@ -22,7 +22,7 @@ export function transcriptRetainedDataBytesSql(retainedIds: readonly string[]) {
   const event = transcriptEventNavigationSql();
   return /* kysely-allow-raw: mirror the retained-data projection's SQLite-first member matching. */ sql<number>`CASE WHEN json_valid(${event}) THEN
     CASE WHEN json_extract(${event}, '$.type') = 'custom'
-      AND json_extract(${event}, '$.id') IN (${sql.join(retainedIds)})
+      AND json_extract(${event}, '$.id') IN ${sqliteStringSet(retainedIds)}
       THEN ${transcriptEventWithoutCustomDataBytesSql()} ELSE ${transcriptEventReadBytesSql()} END
     ELSE ${transcriptEventReadBytesSql()} END`;
 }
@@ -36,7 +36,7 @@ export function projectTranscriptRetainedDataSql(
     ? event
     : /* kysely-allow-raw: bound cleanup planning to navigation while retaining opaque custom data in its original row. */ sql<string>`CASE WHEN json_valid(${event}) THEN
         CASE WHEN json_extract(${event}, '$.type') = 'custom'
-          AND json_extract(${event}, '$.id') IN (${sql.join(retainedIds)})
+          AND json_extract(${event}, '$.id') IN ${sqliteStringSet(retainedIds)}
         THEN json_remove(${event}, '$.data') ELSE ${event} END
       ELSE ${event} END`;
 }

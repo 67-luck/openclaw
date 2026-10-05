@@ -41,6 +41,7 @@ import { retainAgentHarnessCompactionSource } from "../harness/host-source-autho
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { acquireAgentRunPreparedModelRuntime } from "../prepared-model-runtime.js";
 import type { PreparedModelRuntimePluginGeneration } from "../prepared-model-runtime.types.js";
+import { sessionManagerPrepareHistoryRead } from "../sessions/session-manager-history.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import {
   buildCliCompactionParams,
@@ -416,8 +417,12 @@ export async function runCliTurnCompactionLifecycle(
     });
     assertActive();
 
+    const context = await sessionManager[sessionManagerPrepareHistoryRead](
+      params.abortSignal,
+    ).readContext();
+    assertActive();
     const preemptiveCompaction = shouldPreemptivelyCompactBeforePrompt({
-      messages: sessionManager.buildSessionContext().messages,
+      messages: context.messages,
       prompt: "",
       contextTokenBudget,
       reserveTokens: settingsManager.getCompactionReserveTokens(),

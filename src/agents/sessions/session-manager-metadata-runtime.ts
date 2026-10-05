@@ -128,13 +128,15 @@ export async function withSessionMetadataWorker<T>(
         if (command.type === "session.transcript.appendMessage") {
           Object.assign(command.input, admission.control);
         }
-        if (
-          command.type === "session.transcript.rewrite" &&
-          "entries" in command.input &&
+        const admittedCommand =
+          (command.type === "session.transcript.rewrite" ||
+            command.type === "session.transcript.rewriteMessages") &&
           admission.control.pendingInput
-        ) {
-          command.input.pendingInput = admission.control.pendingInput;
-        }
+            ? {
+                ...command,
+                input: { ...command.input, pendingInput: admission.control.pendingInput },
+              }
+            : command;
         if (
           "event" in command.input &&
           typeof command.input.event !== "string" &&
@@ -145,7 +147,7 @@ export async function withSessionMetadataWorker<T>(
             ...admission.control,
           };
         }
-        const reply = await worker.execute(command, assertCurrent, commandOptions);
+        const reply = await worker.execute(admittedCommand, assertCurrent, commandOptions);
         if (!reply.ok) {
           throw new SessionTranscriptWriterClaimReboundError(reply.refusal);
         }

@@ -29,12 +29,18 @@ import { relocateCurrentRuntimeContextCarrierToTail } from "../../internal-runti
 import type { AgentMessage } from "../../runtime/index.js";
 import { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
 import {
+  committedSessionPublicationError,
+  prepareSessionMessagePublication,
+} from "../../sessions/agent-session-publication.js";
+import {
   type AgentSession,
   type CreateAgentSessionOptions,
   SessionManager,
 } from "../../sessions/index.js";
 import { DefaultResourceLoader } from "../../sessions/resource-loader.js";
 import { createAgentSession } from "../../sessions/sdk.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
+import { sessionManagerNavigate } from "../../sessions/session-manager-navigation.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { wrapToolDefinition } from "../../sessions/tools/tool-definition-wrapper.js";
 import { resolveToolSearchCatalogTool } from "../../tool-search.js";
@@ -363,46 +369,69 @@ export async function prepareEmbeddedAttemptSessionBoundary(input: {
     (!orphanProvenance || orphanProvenance.kind === "external_user");
   const orphanRepair =
     reconciledCurrentUser || preserveUnansweredUser ? undefined : orphanRepairCandidate;
-  if (orphanRepair?.removeLeaf) {
-    const repairedTarget = await withSessionManagerWrite(sessionManager, async () => {
-      input.abortSignal?.throwIfAborted();
-      if (orphanRepair.messageEntry.parentId) {
-        await sessionManager.branchAsync(orphanRepair.messageEntry.parentId);
-      } else {
-        await sessionManager.resetLeafAsync();
-      }
-      const target = sessionManager.getSessionTarget();
-      if (target) {
-        // Commit the repaired cursor even when no metadata follows the orphan.
-        // Its owning attempt must settle the projection before the next append adopts it.
-        await sessionManager.appendLeafControlAsync({
-          targetId: sessionManager.getLeafId(),
-          appendParentId: sessionManager.getAppendParentId(),
-        });
-      }
-      await replayTrailingEntriesForOrphanRepair(sessionManager, orphanRepair.trailingEntries);
-      return target;
-    });
-    if (repairedTarget) {
-      const { waitForSessionTranscriptProjection } =
-        await import("../../../config/sessions/session-transcript-reconcile.js");
-      await waitForSessionTranscriptProjection(repairedTarget, input.abortSignal);
-      input.abortSignal?.throwIfAborted();
-    }
-    // The old canonical user turn is gone. Its persistence suppression must not
-    // discard the merged replacement prompt.
-    sessionManager.clearNextUserMessagePersistenceSuppression?.();
-    attempt.onUserMessagePersistenceInvalidated?.();
-  }
   if (orphanRepair) {
-    const repairedMessages = sanitizeCompactionReplayMessages(
-      sessionManager.buildSessionContext().messages,
-    );
-    // A preserved orphan is the final message in this canonical context. Keep
-    // it durable, but omit it from this provider call because prompt assembly includes it.
-    activeSession.agent.state.messages = orphanRepair.removeLeaf
-      ? repairedMessages
-      : repairedMessages.slice(0, -1);
+    const publication = prepareSessionMessagePublication(() => activeSession.agent.state);
+    let orphanRepairCommitted = false;
+    const navigation: { assertCurrent?: () => void } = {};
+    try {
+      if (orphanRepair.removeLeaf) {
+        const repairedTarget = await withSessionManagerWrite(sessionManager, async () => {
+          input.abortSignal?.throwIfAborted();
+          const completedNavigation = await sessionManager[sessionManagerNavigate](
+            orphanRepair.messageEntry.parentId,
+          );
+          navigation.assertCurrent = () => {
+            input.abortSignal?.throwIfAborted();
+            completedNavigation.assertCurrent();
+          };
+          navigation.assertCurrent();
+          const target = sessionManager.getSessionTarget();
+          if (target) {
+            // Commit the repaired cursor even when no metadata follows the orphan.
+            // Its owning attempt must settle the projection before the next append adopts it.
+            await sessionManager.appendLeafControlAsync({
+              targetId: sessionManager.getLeafId(),
+              appendParentId: sessionManager.getAppendParentId(),
+            });
+            orphanRepairCommitted = true;
+            navigation.assertCurrent();
+          }
+          await replayTrailingEntriesForOrphanRepair(sessionManager, orphanRepair.trailingEntries);
+          navigation.assertCurrent();
+          return target;
+        });
+        navigation.assertCurrent?.();
+        if (repairedTarget) {
+          const { waitForSessionTranscriptProjection } =
+            await import("../../../config/sessions/session-transcript-reconcile.js");
+          await waitForSessionTranscriptProjection(repairedTarget, input.abortSignal);
+          navigation.assertCurrent?.();
+        }
+        // The old canonical user turn is gone. Its persistence suppression must not
+        // discard the merged replacement prompt.
+        sessionManager.clearNextUserMessagePersistenceSuppression?.();
+        attempt.onUserMessagePersistenceInvalidated?.();
+        navigation.assertCurrent?.();
+      }
+      const history = sessionManager[sessionManagerPrepareHistoryRead](input.abortSignal);
+      const context = await history.readContext();
+      const repairedMessages = sanitizeCompactionReplayMessages(context.messages);
+      // A preserved orphan is the final message in this canonical context. Keep
+      // it durable, but omit it from this provider call because prompt assembly includes it.
+      history.assertCurrent();
+      navigation.assertCurrent?.();
+      publication.publish(
+        orphanRepair.removeLeaf ? repairedMessages : repairedMessages.slice(0, -1),
+      );
+    } catch (cause) {
+      if (!orphanRepairCommitted) {
+        throw cause;
+      }
+      throw committedSessionPublicationError(
+        "Orphan transcript repair committed, but context publication failed; do not replay the repair",
+        cause,
+      );
+    }
   }
 
   // This is the single timestamping source for user messages sent to the LLM.

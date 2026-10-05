@@ -35,10 +35,7 @@ export {
 } from "./session-accessor.sqlite-read.js";
 export { hasSessionTranscriptMessage } from "./session-transcript-message-presence.js";
 export { loadTranscriptEvents } from "./session-transcript-events.js";
-export {
-  loadTranscriptSuffixEventsBoundedSync,
-  readPreviousIndexedTranscriptEventSync,
-} from "./session-accessor.sqlite-suffix-read.js";
+export { loadTranscriptSuffixEventsBoundedSync } from "./session-accessor.sqlite-suffix-read.js";
 export {
   rewriteAssistantTranscriptMessageForRun,
   rewriteTranscriptMessageAtAnchor,

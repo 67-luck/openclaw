@@ -15,7 +15,8 @@ import { isSignalTimeoutReason } from "../../failover-error.js";
 import { runAgentEndSideEffectsAsync } from "../../harness/agent-end-side-effects.js";
 import { finalizeHarnessContextEngineTurn } from "../../harness/context-engine-lifecycle.js";
 import { bindAgentHarnessHookMessages } from "../../harness/lifecycle-hook-messages.js";
-import type { AgentSession, SessionMessageEntry } from "../../sessions/index.js";
+import type { AgentSession } from "../../sessions/index.js";
+import { sessionManagerPrepareHistoryRead } from "../../sessions/session-manager-history.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
 import { log } from "../logger.js";
@@ -304,22 +305,22 @@ export async function completeEmbeddedAttemptAfterTurn(
     const agentEndError =
       promptError && !lifecycleForAgentEnd.aborted ? formatErrorMessage(promptError) : undefined;
     const sourceTarget = sessionManager.getSessionTarget();
-    let terminalEntry: SessionMessageEntry | undefined;
-    let entry = sessionManager.getLeafEntry();
     // Suppressed writes can leave the previous turn as the tail. Partial current
     // turns remain useful, but review must never cross the pre-prompt boundary.
-    while (entry && entry.id !== transcriptLeafId) {
-      if (!terminalEntry && entry.type === "message") {
-        terminalEntry = entry;
+    let terminalEntryId: string | undefined;
+    if (sourceTarget) {
+      try {
+        const history = sessionManager[sessionManagerPrepareHistoryRead]();
+        const candidate = await history.readTerminalMessageAfter(transcriptLeafId);
+        history.assertCurrent();
+        terminalEntryId = candidate;
+      } catch (error) {
+        log.warn(`skill experience review source unavailable: ${formatErrorMessage(error)}`);
       }
-      entry = entry.parentId ? sessionManager.getEntry(entry.parentId) : undefined;
     }
-    const reachedPromptBoundary = transcriptLeafId === null || entry?.id === transcriptLeafId;
     await runAgentEndSideEffectsAsync({
       skillExperienceReviewSource:
-        sourceTarget && terminalEntry && reachedPromptBoundary
-          ? { ...sourceTarget, entryId: terminalEntry.id }
-          : undefined,
+        sourceTarget && terminalEntryId ? { ...sourceTarget, entryId: terminalEntryId } : undefined,
       event: bindAgentHarnessHookMessages(
         {
           messages: messagesSnapshot,
