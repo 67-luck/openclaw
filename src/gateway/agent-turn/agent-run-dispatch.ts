@@ -382,7 +382,11 @@ export function dispatchAgentRunFromGateway(params: {
       return { terminalOutcome, settled };
     })
     .catch(async (cause: unknown) => {
-      const aborted = isGatewayAgentAbortRejection(cause, params.abortController.signal);
+      const controllerAbortCommitted =
+        params.admittedRunEntry?.input.claim?.operation?.result?.kind === "aborted";
+      const aborted =
+        controllerAbortCommitted ||
+        isGatewayAgentAbortRejection(cause, params.abortController.signal);
       const error = errorShapeFromError(ErrorCodes.UNAVAILABLE, cause);
       const renderedErr = error.message;
       const stopReason = aborted

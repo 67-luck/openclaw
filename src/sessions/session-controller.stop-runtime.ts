@@ -37,6 +37,8 @@ export async function interruptReplyRunTarget(
   const stopped = stopSession({
     source: "interrupt",
     capture: captureSessionControllerStop({ operations: [operation] }),
+    // The controller result distinguishes a committed abort from an observer failure.
+    onError: () => "continue",
   });
   const aborted = stopped.aborted;
   const settled =

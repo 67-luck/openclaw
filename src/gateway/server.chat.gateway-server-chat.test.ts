@@ -531,7 +531,7 @@ describe("gateway server chat", () => {
     });
   });
 
-  test("chat.send interrupt releases its admission when backend cancellation throws", async () => {
+  test("chat.send interrupt keeps committed cancellation when the backend observer throws", async () => {
     await withMainSessionStore(async () => {
       await startInterruptibleChatRun("idem-chat-interrupt-throw-old");
 
@@ -551,7 +551,14 @@ describe("gateway server chat", () => {
         queueMode: "interrupt",
         idempotencyKey: "idem-chat-interrupt-throw-new",
       });
-      expect(res.ok).toBe(false);
+      expect(res).toMatchObject({
+        ok: true,
+        payload: {
+          runId: "idem-chat-interrupt-throw-new",
+          status: "started",
+          interruptedActiveRun: true,
+        },
+      });
       await waitForFast(() => expect(getSessionControllerWorkCount()).toBe(0));
       await requestExecution.waitForCompletion("idem-chat-interrupt-throw-old");
       await requestExecution.waitForCompletion("idem-chat-interrupt-throw-new");
@@ -562,20 +569,20 @@ describe("gateway server chat", () => {
     });
   });
 
-  test("chat.send interrupt releases its admission when session interruption throws", async () => {
+  test("chat.send interrupt ignores subordinate session-effect interruption hooks", async () => {
     await withMainSessionStore(async () => {
       const storePath = testState.sessionStorePath;
       if (!storePath) {
         throw new Error("session store path was not initialized");
       }
+      const onInterrupt = vi.fn(() => {
+        throw new Error("session interruption failed");
+      });
       const activeAdmission = await beginSessionEffect({
         scope: storePath,
         identities: ["agent:main:main", "sess-main"],
         assertAllowed: () => {},
-        onInterrupt: () => {
-          activeAdmission.release();
-          throw new Error("session interruption failed");
-        },
+        onInterrupt,
       });
 
       try {
@@ -586,20 +593,28 @@ describe("gateway server chat", () => {
           idempotencyKey: "idem-chat-interrupt-non-reply-throw",
         });
 
-        expect(res.ok).toBe(false);
-        await waitForFast(() => expect(getSessionControllerWorkCount()).toBe(0));
+        expect(res).toMatchObject({
+          ok: true,
+          payload: {
+            runId: "idem-chat-interrupt-non-reply-throw",
+            status: "started",
+          },
+        });
+        expect(res.payload).not.toHaveProperty("interruptedActiveRun");
+        expect(onInterrupt).not.toHaveBeenCalled();
         await requestExecution.waitForCompletion("idem-chat-interrupt-non-reply-throw");
-        expect(getActiveGatewayRootWorkCount()).toBe(0);
-
-        const reset = await rpcReq(ws, "sessions.reset", { key: "main", reason: "new" });
-        expect(reset.ok).toBe(true);
       } finally {
         activeAdmission.release();
       }
+      await waitForFast(() => expect(getSessionControllerWorkCount()).toBe(0));
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
+
+      const reset = await rpcReq(ws, "sessions.reset", { key: "main", reason: "new" });
+      expect(reset.ok).toBe(true);
     });
   });
 
-  test("chat.send interrupt drains a non-reply session admission before dispatching", async () => {
+  test("chat.send interrupt leaves a subordinate session effect with its owner", async () => {
     await withMainSessionStore(async () => {
       const storePath = testState.sessionStorePath;
       if (!storePath) {
@@ -630,18 +645,19 @@ describe("gateway server chat", () => {
         });
 
         expect(res.ok).toBe(true);
-        expect(onInterrupt).toHaveBeenCalledOnce();
+        expect(onInterrupt).not.toHaveBeenCalled();
         expect(res.payload).toMatchObject({
           runId: "idem-chat-interrupt-non-reply",
           status: "started",
-          interruptedActiveRun: true,
         });
+        expect(res.payload).not.toHaveProperty("interruptedActiveRun");
         await waitForAgentRunDrained("idem-chat-interrupt-non-reply");
       } finally {
         interrupted.resolve(undefined);
         activeAdmission.release();
         await activeWork;
       }
+      await waitForFast(() => expect(getSessionControllerWorkCount()).toBe(0));
     });
   });
 
