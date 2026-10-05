@@ -15,6 +15,7 @@ import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runti
 import { readSessionMessagesAsync } from "../../gateway/session-transcript-readers.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { findDeliveryIntentOwners } from "../../infra/outbound/delivery-queue-storage.js";
+import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import {
   getOwedHarnessCompletionTask,
   readAdmittedHarnessCompletionInput,
@@ -171,6 +172,7 @@ export function loadExpectedRestartRecoveryTarget(params: {
 export async function recoverStore(params: {
   storeAgentId?: string;
   cfg?: OpenClawConfig;
+  controllerInput?: SessionControllerInput;
   observationOnly?: boolean;
   onExhaustedTarget?: (target: ExhaustedRestartRecoveryTarget) => void;
   storePath: string;
@@ -545,6 +547,7 @@ export async function recoverStore(params: {
       observation: recoveryView.observation,
       recoveryAttempt: recoveryView.nextAttempt,
       recoveryAdmission: params.recoveryAdmission,
+      controllerInput: params.controllerInput,
       gatewayRuntime: params.gatewayRuntime,
       ...resumeOptions,
       lifecycleGeneration: params.lifecycleGeneration,

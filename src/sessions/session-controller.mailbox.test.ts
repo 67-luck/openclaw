@@ -6,6 +6,7 @@ import { admitFollowupRunLifecycle } from "../auto-reply/reply/queue/lifecycle.j
 import { clearFollowupQueue } from "../auto-reply/reply/queue/state.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { deferSessionControllerClaimBeforeExecution } from "./session-controller.mailbox-claim.js";
+import { reserveSessionControllerClaimPredecessor } from "./session-controller.mailbox-predecessor.js";
 import {
   reserveSessionControllerSource,
   bindSessionControllerSource,
@@ -35,6 +36,92 @@ function source(prompt: string) {
 }
 
 describe("controller mailbox scheduling", () => {
+  it("restores the selected pre-execution claim after its exact predecessor settles", async () => {
+    const selected = reserveSessionControllerSource(key, { policy: { mode: "followup" } });
+    const selectedClaim = tryClaimSessionControllerTask(selected);
+    expect(selectedClaim).toBeDefined();
+    if (!selectedClaim) {
+      throw new Error("expected selected source claim");
+    }
+    const predecessor = reserveSessionControllerClaimPredecessor(selectedClaim, {
+      policy: { mode: "followup" },
+    });
+
+    expect(selected.mailbox.claim).toBeUndefined();
+    expect(selected.mailbox.entries).toEqual([predecessor.input, selected]);
+    expect(selected.phase).toBe("claimed");
+
+    const predecessorClaim = await claimSessionControllerTask(predecessor.input, () => {});
+    releaseSessionControllerClaim(predecessorClaim);
+    await predecessorClaim.settlement.promise;
+
+    await expect(predecessor.restored).resolves.toBe(true);
+    expect(selected.mailbox.claim).toBe(selectedClaim);
+    expect(selected.claim).toBe(selectedClaim);
+    expect(selected.phase).toBe("claimed");
+
+    releaseSessionControllerClaim(selectedClaim);
+    await selectedClaim.settlement.promise;
+  });
+
+  it("does not restore a selected claim cancelled during its predecessor", async () => {
+    const cancelled = new AbortController();
+    const selected = reserveSessionControllerSource(key, {
+      policy: { mode: "followup" },
+      adapter: { signal: cancelled.signal },
+    });
+    const selectedClaim = tryClaimSessionControllerTask(selected);
+    expect(selectedClaim).toBeDefined();
+    if (!selectedClaim) {
+      throw new Error("expected selected source claim");
+    }
+    const predecessor = reserveSessionControllerClaimPredecessor(selectedClaim, {
+      policy: { mode: "followup" },
+    });
+
+    cancelled.abort(new Error("cancel selected source"));
+    await expect(predecessor.restored).resolves.toBe(false);
+    const predecessorClaim = await claimSessionControllerTask(predecessor.input, () => {});
+    releaseSessionControllerClaim(predecessorClaim);
+    await predecessorClaim.settlement.promise;
+
+    expect(selected.mailbox.claim).not.toBe(selectedClaim);
+    expect(selected.retirementRequested).toBe(true);
+
+    releaseSessionControllerClaim(selectedClaim);
+    await selectedClaim.settlement.promise;
+  });
+
+  it("preserves a later interrupt before restoring the selected claim", async () => {
+    const selected = reserveSessionControllerSource(key, { policy: { mode: "followup" } });
+    const selectedClaim = tryClaimSessionControllerTask(selected);
+    expect(selectedClaim).toBeDefined();
+    if (!selectedClaim) {
+      throw new Error("expected selected source claim");
+    }
+    const predecessor = reserveSessionControllerClaimPredecessor(selectedClaim, {
+      policy: { mode: "followup" },
+    });
+    const predecessorClaim = await claimSessionControllerTask(predecessor.input, () => {});
+    const interrupt = reserveSessionControllerSource(key, { policy: { mode: "interrupt" } });
+    const interruptClaim = claimSessionControllerTask(interrupt, () => {});
+
+    releaseSessionControllerClaim(predecessorClaim);
+    await predecessorClaim.settlement.promise;
+    const priorityClaim = await interruptClaim;
+
+    expect(selected.mailbox.claim).toBe(priorityClaim);
+    expect(selected.mailbox.claim).not.toBe(selectedClaim);
+
+    releaseSessionControllerClaim(priorityClaim);
+    await priorityClaim.settlement.promise;
+    await expect(predecessor.restored).resolves.toBe(true);
+    expect(selected.mailbox.claim).toBe(selectedClaim);
+
+    releaseSessionControllerClaim(selectedClaim);
+    await selectedClaim.settlement.promise;
+  });
+
   it.each(["ready", "task"] as const)(
     "releases the consumed %s callback before a source retry",
     async (kind) => {

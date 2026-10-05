@@ -65,6 +65,7 @@ import {
   bindReplyAdmissionRelease,
   releaseReplyRecoveryOwner,
 } from "./reply-turn-admission-lifecycle.js";
+import { retryRestartRecoveryBeforeSelectedClaim } from "./reply-turn-recovery-predecessor.js";
 import { waitForRestartRecoveryProgress } from "./reply-turn-recovery-wait.js";
 import { createReplyTurnRotationEvidence } from "./reply-turn-rotation.js";
 
@@ -489,20 +490,23 @@ export async function admitReplyTurn(
               recoveryDispatchOutcome = undefined;
               continue;
             }
-            const { retryRestartAbortedMainSessionRecovery } =
-              await import("../../agents/main-session-recovery/main-session-restart-recovery.js");
             assertRecoveryOwnerCurrent(recoveryRuntime, "starting");
             params.upstreamAbortSignal?.throwIfAborted();
-            const recovery = await retryRestartAbortedMainSessionRecovery({
+            const recovery = await retryRestartRecoveryBeforeSelectedClaim({
               agentId: params.agentId,
               cfg: gatewayContext.getRuntimeConfig(),
-              expectedSessionId: sessionId,
+              claim: params.mailboxClaim,
               expectedRecoveryRunId: admittedSessionEntry.restartRecoveryDeliveryRunId,
               expectedRecoverySourceRunId: admittedSessionEntry.restartRecoveryDeliverySourceRunId,
               gatewayRuntime: recoveryRuntime,
+              sessionId,
               sessionKey: params.sessionKey,
               storePath,
+              upstreamAbortSignal: params.upstreamAbortSignal,
             });
+            if (!recovery) {
+              continue;
+            }
             assertRecoveryOwnerCurrent(recoveryRuntime, "starting");
             recoveryDispatchOutcome = recovery.failed > 0 ? "failed" : "deferred";
             // Recovery may have completed or another owner may have won. Reload

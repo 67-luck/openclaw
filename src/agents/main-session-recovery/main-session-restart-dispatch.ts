@@ -17,6 +17,7 @@ import type { AgentRunRequest } from "../../gateway/server-methods/agent-request
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { CommandLane } from "../../process/lanes.js";
 import { MAIN_SESSION_RESTART_RECOVERY_SOURCE_TOOL } from "../../sessions/input-provenance.js";
+import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import { formatSystemTurnPrompt } from "../../sessions/system-turn-prompt.js";
 import { getOwedHarnessCompletionTask } from "../agent-harness-completion-recovery.js";
 import { listSubagentRunsForRequester } from "../subagents/registry/subagent-registry-read.js";
@@ -162,6 +163,7 @@ type ResumeMainSessionParams = {
   agentId: string;
   canonicalSessionKey?: string;
   cfg?: OpenClawConfig;
+  controllerInput?: SessionControllerInput;
   entry: SessionEntry;
   observation: MainSessionRecoveryObservation;
   recoveryAttempt: number;
@@ -473,6 +475,7 @@ async function resumeMainSessionWithinAdmission(
     const dispatchOutcome = await dispatchRestartRecoveryWithinCapacity({
       agentParams,
       capacity: params.recoveryCapacity,
+      controllerInput: params.controllerInput,
       beginDispatch: params.recoveryAdmission.beginDispatch,
       gatewayRuntime: params.gatewayRuntime,
       onSettled: () => {

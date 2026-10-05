@@ -2,6 +2,7 @@ import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runti
 import type { AgentRunRequest } from "../../gateway/server-methods/agent-request-types.js";
 import { hasLiveAgentRunContext } from "../../infra/agent-run-registry.js";
 import { sleepWithAbort } from "../../infra/backoff.js";
+import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import type { MainSessionRecoveryCapacity } from "./main-session-recovery-capacity.js";
 import {
   dispatchRestartRecoveryUntilStarted,
@@ -11,6 +12,7 @@ import {
 export async function dispatchRestartRecoveryWithinCapacity(params: {
   agentParams: AgentRunRequest;
   capacity?: MainSessionRecoveryCapacity;
+  controllerInput?: SessionControllerInput;
   gatewayRuntime: GatewayRecoveryRuntime;
   onSettled?: () => void;
   beginDispatch: () => boolean;
@@ -39,6 +41,7 @@ export async function dispatchRestartRecoveryWithinCapacity(params: {
   try {
     const outcome = await dispatchRestartRecoveryUntilStarted({
       agentParams: params.agentParams,
+      controllerInput: params.controllerInput,
       gatewayRuntime: params.gatewayRuntime,
       onSettled,
     });
