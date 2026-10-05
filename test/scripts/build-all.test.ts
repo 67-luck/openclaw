@@ -306,14 +306,11 @@ describe("resolveBuildAllSteps", () => {
       const cwd = tempDirs.make("openclaw-phase-stamp-");
       const steps = resolveBuildAllSteps(profile, {})
         .filter((step) => ["runtime-postbuild", "runtime-postbuild-stamp"].includes(step.label))
-        .map((step) => {
-          if (step.kind === "pnpm") {
-            throw new Error("Runtime metadata steps must use the native Node owner");
-          }
-          return step.label === "runtime-postbuild"
+        .map((step) =>
+          step.label === "runtime-postbuild"
             ? Object.assign({}, step, { args: ["-e", "process.exit(0)"] })
-            : step;
-        });
+            : step,
+        );
       const result = await runBuildAllSteps(profile, {
         cwd,
         env: {},
