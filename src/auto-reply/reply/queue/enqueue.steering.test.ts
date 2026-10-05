@@ -273,7 +273,14 @@ describe("parked steering admission", () => {
         });
       }
       const disposition = vi.fn();
+      const abandoned = vi.fn();
+      const settled = vi.fn();
       newer.onQueueDisposition = disposition;
+      newer.turnAdoptionLifecycle = {
+        onAdopted: () => undefined,
+        onAbandoned: abandoned,
+        onSettled: settled,
+      };
       const activeEntered = createDeferred();
       const releaseActive = createDeferred();
       const drained = createDeferred();
@@ -296,6 +303,8 @@ describe("parked steering admission", () => {
         firstReservation.fallback();
         const newerReservation = reserveSteerCandidate(key, newer, settings, runFollowup)!;
         await expect(newerReservation.admit()).resolves.toBe("steer");
+        const newerInput = newer.controllerInput!;
+        const newerSettlement = captureSessionControllerSourceSettlement(newerInput);
         expect(getExistingFollowupQueue(key)?.items).toEqual([active, first, newer]);
         expect(disposition).not.toHaveBeenCalled();
         firstCurrent = false;
@@ -305,6 +314,12 @@ describe("parked steering admission", () => {
           dropPolicy === "new" ? first : newer,
         ]);
         expect(disposition.mock.calls).toEqual(dropPolicy === "new" ? [["queue-cap-new"]] : []);
+        if (dropPolicy === "new") {
+          expect(newerInput).toMatchObject({ phase: "consumed", payload: "unbound" });
+          expect(abandoned).toHaveBeenCalledOnce();
+          expect(settled).toHaveBeenCalledOnce();
+          await expect(newerSettlement).resolves.toBeUndefined();
+        }
         releaseActive.resolve();
         await drained.promise;
         expect(delivered).toEqual(
