@@ -1867,7 +1867,7 @@ describe("createGatewayCloseHandler", () => {
       claim.operation!.complete();
       releaseSessionControllerClaim(claim);
       await claim.settlement.promise;
-      expect(rpcSourceTesting.deleteExpected(runId, source)).toBe(true);
+      expect(rpcSourceTesting.has(runId)).toBe(false);
     }
     expect(rpcSourceTesting.size).toBe(0);
     expect(chatRunState.runs.get("run-1")?.buffer).toBeUndefined();

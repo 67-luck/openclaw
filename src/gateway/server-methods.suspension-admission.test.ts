@@ -1,6 +1,6 @@
 // Proves dispatcher root-work accounting and fail-closed suspension behavior.
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { validateGatewaySuspendStatusResult } from "../../packages/gateway-protocol/src/index.js";
 import { awaitGateBeforeSettlement } from "../../test/helpers/promise.js";
 import { createGatewayHostLifecycle } from "../cli/gateway-cli/host-lifecycle.js";
@@ -22,6 +22,7 @@ import {
   tryBeginGatewayRootWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
+import { retireSessionControllerInput } from "../sessions/session-controller.mailbox.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { getAsyncWorkSignal, trackAsyncWork } from "../shared/async-work-scope.js";
 import { createPluginGatewayMethodDescriptor } from "./methods/descriptor.js";
@@ -29,10 +30,7 @@ import { createGatewayMethodRegistry } from "./methods/registry.js";
 import { getGatewayProcessInstanceId } from "./process-instance.js";
 import { runWithGatewayRequestEnvelope, type handleGatewayRequest } from "./server-methods.js";
 import { dispatchSuspensionRequest as dispatch } from "./server-methods.suspension-admission.test-support.js";
-import {
-  registerSuspensionHandoffLifecycleTests,
-  registerSuspensionHandoffAuthorizationTests,
-} from "./server-methods.suspension-handoff.test-support.js";
+import { registerSuspensionHandoffAuthorizationTests } from "./server-methods.suspension-handoff.test-support.js";
 import { createLazyCoreHandlers } from "./server-methods/lazy-core-handlers.js";
 import { suspendHandlers } from "./server-methods/suspend.js";
 import type { GatewayRequestHandler } from "./server-methods/types.js";
@@ -47,6 +45,30 @@ function deferred() {
     resolve = done;
   });
   return { promise, resolve };
+}
+
+/** Retain terminal write custody after execution retires so suspension can observe it. */
+async function registerTerminalPersistenceFixture(
+  runId: string,
+  identity: { sessionId: string; sessionKey: string },
+) {
+  const terminalPersistence = deferred();
+  const source = createRpcSourceForTest(
+    {
+      controlUiVisible: true,
+      projectSessionTerminalPending: true,
+      onSettled: () => terminalPersistence.promise,
+    },
+    { ...identity, runId },
+  );
+  rpcSourceTesting.set(runId, source);
+  retireSessionControllerInput(source.input);
+  const settle = async () => {
+    terminalPersistence.resolve();
+    await source.input.settlement.promise;
+  };
+  onTestFinished(settle);
+  return { source, settle };
 }
 
 beforeEach(() => {
@@ -555,21 +577,10 @@ describe("gateway request suspension admission", () => {
       resumed: true,
     });
 
-    rpcSourceTesting.set(
-      "persisting",
-      createRpcSourceForTest(
-        {
-          controlUiVisible: true,
-          projectSessionTerminalPending: true,
-        },
-        {
-          phase: "consumed",
-          retirementRequested: true,
-          sessionId: "session-persisting",
-          sessionKey: "agent:main:session-persisting",
-        },
-      ),
-    );
+    await registerTerminalPersistenceFixture("persisting", {
+      sessionId: "session-persisting",
+      sessionKey: "agent:main:session-persisting",
+    });
     const persisting = dispatch({
       method: "gateway.suspend.prepare",
       scope: "operator.admin",
@@ -619,23 +630,11 @@ describe("gateway request suspension admission", () => {
         spawn: async () => pty,
       });
       await terminalSessions.open(baseOpenRequest());
-      rpcSourceTesting.reset([
-        [
-          "reply-pending",
-          createRpcSourceForTest(
-            {
-              controlUiVisible: true,
-              projectSessionTerminalPending: true,
-            },
-            {
-              phase: "consumed",
-              retirementRequested: true,
-              sessionId: "session-pending",
-              sessionKey: "agent:main:session-pending",
-            },
-          ),
-        ],
-      ]);
+      rpcSourceTesting.reset();
+      const terminalPersistence = await registerTerminalPersistenceFixture("reply-pending", {
+        sessionId: "session-pending",
+        sessionKey: "agent:main:session-pending",
+      });
       const context = {
         cron,
         logGateway: { warn: vi.fn() },
@@ -733,7 +732,7 @@ describe("gateway request suspension admission", () => {
           writeCustody: [{ phase: "terminal-persistence", count: 1 }],
         });
 
-        rpcSourceTesting.clear();
+        await terminalPersistence.settle();
         const ready = dispatch({
           method: "gateway.suspend.status",
           scope: "operator.read",
