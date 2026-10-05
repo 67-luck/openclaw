@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { configHealthReadOperations } from "../config/io.health-state.kernel.js";
 import type { MentionReadOperations } from "../gateway/mention-inbox.worker-contract.js";
-import type { deferredPluginMigrationReadOperations } from "../infra/deferred-plugin-migrations.js";
+import type { deferredPluginMigrationReadOperations } from "../infra/deferred-plugin-migrations.store.js";
 import type { RestartSentinelReadOperations } from "../infra/restart-sentinel.read.worker-contract.js";
 import type { DiagnosticReadOperations } from "../infra/sqlite-audit-record.read-contract.js";
 import type { SqliteWorkerCommand } from "../infra/sqlite-worker-contract.js";
@@ -32,7 +32,7 @@ export const stateReadRegistry = createWorkerOperationRegistry<Operations, Datab
   config: () =>
     import("../config/io.health-state.kernel.js").then((m) => m.configHealthReadOperations),
   plugins: () =>
-    import("../infra/deferred-plugin-migrations.js").then(
+    import("../infra/deferred-plugin-migrations.store.js").then(
       (m) => m.deferredPluginMigrationReadOperations,
     ),
   generatedHtmlProvenance: () =>

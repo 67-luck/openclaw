@@ -23,7 +23,6 @@ import type { DB } from "../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import type { WorkerOperationHandlers } from "../state/worker-operation-registry.js";
 import { isTruthyEnvValue } from "./env.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "./kysely-sync-cache-state.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
@@ -32,19 +31,16 @@ import { runWithSqliteCleanup, throwSqliteLifecycleErrors } from "./sqlite-lifec
 import { invalidateSuccessfulMigrationCheckpointsInTransaction } from "./startup-migration-checkpoint.js";
 import { withStateDatabaseSchemaMaintenance } from "./state-database-maintenance.js";
 import { recordLegacyMigrationRun } from "./state-migrations.receipts.js";
+import {
+  DEFERRED_PLUGIN_MIGRATION_RUN_PREFIX as RUN_PREFIX,
+  deferredPluginMigrationSchema,
+  pendingMigrationRecords,
+  readPendingMigrationRecords,
+  readPendingMigrationRows,
+  type DeferredPluginMigration,
+} from "./deferred-plugin-migrations.store.js";
 
-const RUN_PREFIX = "deferred-plugin-migration:";
-const deferredPluginMigrationSchema = z.object({
-  pluginId: z.string().min(1),
-  reason: z.string().min(1),
-  command: z.string().min(1),
-  requiresStateMigration: z.literal(true).optional(),
-  requiresDoctorInspection: z.literal(true).optional(),
-  configPaths: z.array(z.array(z.string().min(1)).min(1)).optional(),
-  validationExcludedPaths: z.array(z.array(z.string().min(1)).min(1)).optional(),
-});
-
-export type DeferredPluginMigration = z.infer<typeof deferredPluginMigrationSchema>;
+export type { DeferredPluginMigration } from "./deferred-plugin-migrations.store.js";
 
 type ConfigMigrationCompletion = {
   configPath: string;
@@ -164,35 +160,6 @@ export function mergeDeferredPluginMigration(
     ...(validationExcludedPaths.length > 0 ? { validationExcludedPaths } : {}),
   };
 }
-
-function readPendingMigrationRows(database: DatabaseSync) {
-  return executeSqliteQuerySync(
-    database,
-    getNodeSqliteKysely<Pick<DB, "migration_runs">>(database)
-      .selectFrom("migration_runs")
-      .select(["id", "report_json"])
-      .where("id", "like", `${RUN_PREFIX}%`)
-      .where("status", "=", "pending")
-      .orderBy("id"),
-  ).rows;
-}
-
-function pendingMigrationRecords(rows: ReturnType<typeof readPendingMigrationRows>) {
-  return rows.map((row) => deferredPluginMigrationSchema.parse(JSON.parse(row.report_json)));
-}
-
-function readPendingMigrationRecords(database: DatabaseSync) {
-  return tableExists(database, "migration_runs")
-    ? pendingMigrationRecords(readPendingMigrationRows(database))
-    : [];
-}
-
-export const deferredPluginMigrationReadOperations = {
-  "plugins.deferredMigrations.read": (_input: undefined, db) => ({
-    type: "plugins.deferredMigrations.read" as const,
-    pending: readPendingMigrationRecords(db),
-  }),
-} satisfies WorkerOperationHandlers<DatabaseSync>;
 
 function assertPendingGeneration(
   current: readonly DeferredPluginMigration[],
