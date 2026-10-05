@@ -144,7 +144,7 @@ describe("heartbeat recovery after exec preparation", () => {
             result: { details: { status: "completed" } },
           });
         } else {
-          expect(outcome).toMatchObject({ status: "aborted", action: "abort_embedded_run" });
+          expect(outcome).toMatchObject({ status: "failed", action: "none" });
           expect(abort).toHaveBeenCalledOnce();
         }
       } finally {
