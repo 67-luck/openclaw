@@ -868,9 +868,12 @@ describe("scripts/lib/plugin-npm-security-scan.mts", () => {
       const frozen = await scanPublishablePluginPackages([artifact.artifact], "release/2026.9.1");
       expect(frozen.scanErrors).toEqual([]);
       expect(frozen.packageResults[0]?.reviewedCriticalFindings).toEqual([installerKey]);
-      expect(frozen.packageResults[0]?.unexpectedCriticalFindings).toHaveLength(count);
+      expect(frozen.packageResults[0]?.unexpectedCriticalFindings).toHaveLength(count + 1);
       expect(frozen.packageResults[0]?.unexpectedCriticalFindings).toEqual(
-        expect.arrayContaining([{ line: 2, path: "src/hardware.ts", ruleId: "dangerous-exec" }]),
+        expect.arrayContaining([
+          { line: 2, path: "src/hardware.ts", ruleId: "dangerous-exec" },
+          { line: 2, path: "src/llama-server-vc-runtime.ts", ruleId: "dangerous-exec" },
+        ]),
       );
     },
   );
