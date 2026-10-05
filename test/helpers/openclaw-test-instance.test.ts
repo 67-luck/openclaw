@@ -2281,7 +2281,12 @@ describe("openclaw test instance", () => {
       )
       .mockResolvedValueOnce(
         new Response('{"ready":true,"failing":[],"uptimeMs":0}', { status: 200 }),
-      );
+      )
+      .mockResolvedValueOnce(new Response('{"ok":false,"status":"starting"}', { status: 503 }))
+      .mockResolvedValueOnce(
+        new Response('{"ready":true,"failing":[],"uptimeMs":0}', { status: 200 }),
+      )
+      .mockResolvedValueOnce(new Response('{"ok":true,"status":"started"}', { status: 200 }));
 
     const record = vi.fn<(diagnostic: GatewayReadinessDiagnostic) => void>();
     await expect(
@@ -2299,20 +2304,32 @@ describe("openclaw test instance", () => {
     expect(record).toHaveBeenCalledWith(
       expect.objectContaining({
         outcome: "ready",
-        lastProbe: expect.objectContaining({ attempt: 3, status: 200, ready: true }),
-        lastFailedResponse: expect.objectContaining({
-          attempt: 2,
+        probe: "GET /readyz",
+        settlementProbe: "GET /startupz",
+        lastProbe: expect.objectContaining({
+          attempt: 4,
           status: 200,
+          ready: true,
+          endpoint: "/startupz",
+          startupStatus: "started",
+        }),
+        lastFailedResponse: expect.objectContaining({
+          attempt: 3,
+          status: 503,
           ready: true,
           error: "foreign-responder",
         }),
       }),
     );
 
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
-    expect(fetchImpl.mock.calls.every(([url]) => url === "http://127.0.0.1:12345/readyz")).toBe(
-      true,
-    );
+    expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
+      "http://127.0.0.1:12345/readyz",
+      "http://127.0.0.1:12345/readyz",
+      "http://127.0.0.1:12345/readyz",
+      "http://127.0.0.1:12345/startupz",
+      "http://127.0.0.1:12345/readyz",
+      "http://127.0.0.1:12345/startupz",
+    ]);
   });
 
   it("bounds not-ready diagnostics without exposing response details", async () => {

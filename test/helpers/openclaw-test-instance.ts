@@ -464,6 +464,25 @@ async function waitForGatewayReady(
               probe.error = "foreign-responder";
               return false;
             }
+            // Readiness serves healthy agents while startup still owns deferred admission.
+            probeAbort.signal.throwIfAborted();
+            probe.endpoint = "/startupz";
+            probe.phase = "headers";
+            delete probe.status;
+            const startupResponse = await fetchImpl(`http://127.0.0.1:${port}/startupz`, {
+              signal: probeAbort.signal,
+            });
+            probe.status = startupResponse.status;
+            probe.phase = "body";
+            const startup: unknown = await startupResponse.json();
+            probe.phase = "complete";
+            if (
+              probe.uptimeMs !== undefined &&
+              probe.uptimeMs > Date.now() - startedAt + GATEWAY_READINESS_UPTIME_SKEW_MS
+            ) {
+              probe.error = "foreign-responder";
+              return false;
+            }
             return true;
           })(),
           exitPromise,
