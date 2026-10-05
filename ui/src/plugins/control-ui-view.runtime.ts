@@ -491,20 +491,25 @@ class ControlUiPluginContributions extends OpenClawLightDomContentsElement {
           </div>`;
         });
     }
+    const accessories = runtime
+      .registrations("accessories")
+      .filter((entry) => entry.value.placement === this.kind)
+      .map((entry) =>
+        renderPluginContribution(
+          "accessories",
+          entry.key,
+          {
+            sessionKey: this.sessionKey,
+            agentId: this.agentId,
+            session: this.kind === "session-header" ? this.session : this.currentSession(),
+          },
+          this.presented,
+        ),
+      );
     if (this.kind === "session-header") {
-      return runtime
-        .registrations("accessories")
-        .filter((entry) => entry.value.placement === "session-header")
-        .map((entry) =>
-          renderPluginContribution(
-            "accessories",
-            entry.key,
-            { sessionKey: this.sessionKey, agentId: this.agentId, session: this.session },
-            this.presented,
-          ),
-        );
+      return accessories;
     }
-    return html`${
+    return html`${accessories}${
       this.actionError ? html`<span role="alert">${this.actionError}</span>` : nothing
     }${runtime
       .registrations("actions")

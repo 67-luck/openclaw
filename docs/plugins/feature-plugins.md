@@ -142,7 +142,7 @@ Its id must match the plugin manifest. Register contributions through
 | `registerPage` and `registerNavigation` | Plugin-owned routes and sidebar destinations.                                                                                           |
 | `registerAction`                        | Composer, header, or session menu actions. An optional `resolve` function supplies the current label, hidden state, and disabled state. |
 | `registerPanel`                         | Session panels.                                                                                                                         |
-| `registerAccessory`                     | Session header content.                                                                                                                 |
+| `registerAccessory`                     | Session header content or content above the composer, alongside composer actions.                                                       |
 | `registerWidget`                        | Native dashboard widget views.                                                                                                          |
 | `registerReplacement`                   | `workspace`, `session-list`, `composer`, `transcript`, or `tool-result`.                                                                |
 
@@ -218,6 +218,12 @@ view is presented again; previously captured operations remain retired.
 Session-header accessories also receive `props.session`, the pane's current
 session snapshot. It can be absent while loading and does not depend on the
 filtered sidebar roster. Changes arrive through the accessory's `update`.
+
+Use `placement: "composer"` for status cards and other content above the input
+without replacing the composer. Composer accessories receive the same session
+identity and view lifecycle; `props.session` is the current available session
+snapshot and can be absent while loading. Pause visual work when `presented`
+is false and release subscriptions in `dispose`.
 
 For a standard direct link, register an accessory using the shared browser
 helper. The plugin decides when and where the link appears:
