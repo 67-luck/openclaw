@@ -30,6 +30,7 @@ import {
   type ReplyMessageInjectionResolution,
   type ReplyMessageInjectionTarget,
   type ReplyOperation,
+  type ReplyToolAuthorityOverlay,
   type ReplyTurnParticipants,
 } from "./session-controller.contracts.js";
 import {
@@ -51,14 +52,14 @@ export function captureReplyMessageInjectionTarget(
   }
   const entry = getSessionControllerEntryForOperation(operation);
   const attachment = entry.attachment;
-  const projectToolAuthorityFingerprint =
+  const toolAuthority =
     attachment?.operation === operation && "toolAuthority" in attachment
-      ? attachment.toolAuthority?.project
-      : operation.projectToolAuthorityFingerprint;
-  const assertToolAuthorityActive =
-    attachment?.operation === operation && "toolAuthority" in attachment
-      ? attachment.toolAuthority?.assertActive
+      ? attachment.toolAuthority
       : undefined;
+  const projectToolAuthorityFingerprint = toolAuthority
+    ? (overlay: ReplyToolAuthorityOverlay) => toolAuthority.project(overlay)
+    : (overlay: ReplyToolAuthorityOverlay) => operation.projectToolAuthorityFingerprint(overlay);
+  const assertToolAuthorityActive = toolAuthority ? () => toolAuthority.assertActive() : undefined;
   const sourceTurnId = entry.sourceTurnId;
   return {
     [replyMessageInjectionTargetOwner]: {
