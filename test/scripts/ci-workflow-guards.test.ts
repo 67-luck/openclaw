@@ -265,12 +265,7 @@ function findUnpinnedExternalActions(): string[] {
   ]) {
     for (const [index, line] of readFileSync(workflowPath, "utf8").split("\n").entries()) {
       const uses = line.match(/^\s*(?:-\s*)?uses:\s*(?:&[^\s]+\s+)?([^#\s]+)/u)?.[1];
-      if (
-        !uses ||
-        uses.startsWith("*") ||
-        uses.startsWith("./") ||
-        uses.startsWith("docker://")
-      ) {
+      if (!uses || uses.startsWith("*") || uses.startsWith("./") || uses.startsWith("docker://")) {
         continue;
       }
       const at = uses.lastIndexOf("@");
