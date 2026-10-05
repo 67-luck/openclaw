@@ -253,7 +253,9 @@ export function createClawHubParentAuthorization(transactions, authorizationRout
 
 function parentAuthorizationRecord(transactions, authorizationRoute) {
   const { identity: i, packages } = validateClawHubTransactions(transactions);
-  if (!["automated-awaited", "automated-detached"].includes(authorizationRoute)) {
+  if (
+    !["automated-awaited", "automated-detached", "automated-sealed"].includes(authorizationRoute)
+  ) {
     throw new Error("Unsupported ClawHub authorization route.");
   }
   const receipt = {
@@ -655,10 +657,9 @@ async function main() {
       parent: true,
     });
     validateClawHubWorkflowRun(api(`actions/runs/${identity.runId}`), identity);
-    result = createClawHubParentAuthorization(
-      transactions,
-      env.WAIT_FOR_CLAWHUB === "true" ? "automated-awaited" : "automated-detached",
-    );
+    // Core npm publication and the exact package roster are immutable before
+    // this point; later parent work must not revoke these transactions.
+    result = createClawHubParentAuthorization(transactions, "automated-sealed");
     appendFileSync(env.GITHUB_OUTPUT, `artifact_name=${clawHubParentArtifactName(identity)}\n`);
   } else if (positionals[0] === "recovery-approval") {
     result = createClawHubRecoveryApproval(process.env);

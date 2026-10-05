@@ -1,11 +1,16 @@
 #!/usr/bin/env node
 
-import { readFileSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { validateClawHubTransactions } from "./clawhub-parent-authorization.mjs";
 import { stripLeadingPackageManagerSeparator } from "./lib/arg-utils.runtime.mjs";
+import { readBoundedResponseText } from "./lib/bounded-response.mjs";
 import { isClawHubPublishAttemptId } from "./lib/clawhub-publication-state.mjs";
 import { isDirectRunUrl } from "./lib/direct-run.mjs";
+
+const PACKAGE_PATTERN = /^@openclaw\/[a-z0-9][a-z0-9._-]*$/u;
+const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 
 export function formatClawHubRecoveryCommand({ attemptId, clawhubSource, reason }) {
   if (!isClawHubPublishAttemptId(attemptId)) {
@@ -23,7 +28,212 @@ export function formatClawHubRecoveryCommand({ attemptId, clawhubSource, reason 
   ].join(" ");
 }
 
-function main() {
+function parsePublishRecord(path) {
+  const record = JSON.parse(readFileSync(path, "utf8"));
+  if (
+    !record ||
+    typeof record !== "object" ||
+    !PACKAGE_PATTERN.test(record.name) ||
+    !VERSION_PATTERN.test(record.version) ||
+    !["published", "pending", "failed"].includes(record.publicationStatus)
+  ) {
+    throw new Error(`Invalid ClawHub publish artifact: ${path}`);
+  }
+  if (record.publicationStatus !== "published" && !isClawHubPublishAttemptId(record.attemptId)) {
+    throw new Error(`Missing or invalid ClawHub publish attempt: ${path}`);
+  }
+  return record;
+}
+
+export function createClawHubRecoveryManifest(transactionsInput, recordsInput) {
+  const transactions = validateClawHubTransactions(transactionsInput);
+  const records = new Map();
+  for (const record of recordsInput) {
+    const key = `${record.name}@${record.version}`;
+    if (records.has(key)) {
+      throw new Error(`Duplicate ClawHub publish artifact: ${key}`);
+    }
+    records.set(key, record);
+  }
+  const attempts = new Set();
+  const packages = transactions.packages.map((transaction) => {
+    const key = `${transaction.name}@${transaction.version}`;
+    const record = records.get(key);
+    if (!record) {
+      throw new Error(`Missing ClawHub publish artifact for ${key}.`);
+    }
+    records.delete(key);
+    if (record.attemptId) {
+      if (attempts.has(record.attemptId)) {
+        throw new Error(`Duplicate ClawHub publish attempt: ${record.attemptId}`);
+      }
+      attempts.add(record.attemptId);
+    }
+    return {
+      name: transaction.name,
+      version: transaction.version,
+      inventoryDigest: transaction.inventoryDigest,
+      artifactName: transaction.artifactName,
+      artifactSha256: transaction.artifactSha256,
+      artifactSize: transaction.artifactSize,
+      publicationStatus: record.publicationStatus,
+      ...(record.attemptId ? { attemptId: record.attemptId } : {}),
+    };
+  });
+  if (records.size) {
+    throw new Error(
+      "ClawHub publish artifacts contain packages outside the sealed transaction roster.",
+    );
+  }
+  return {
+    schemaVersion: 1,
+    kind: "openclaw-clawhub-recovery-manifest",
+    identity: transactions.identity,
+    packages,
+  };
+}
+
+export function validateClawHubRecoveryManifest(manifest) {
+  if (
+    !manifest ||
+    typeof manifest !== "object" ||
+    manifest.schemaVersion !== 1 ||
+    manifest.kind !== "openclaw-clawhub-recovery-manifest" ||
+    !Array.isArray(manifest.packages)
+  ) {
+    throw new Error("Invalid ClawHub recovery manifest.");
+  }
+  validateClawHubTransactions({
+    schemaVersion: 1,
+    identity: manifest.identity,
+    packages: manifest.packages.map(
+      ({ name, version, inventoryDigest, artifactName, artifactSha256, artifactSize }) => ({
+        name,
+        version,
+        inventoryDigest,
+        artifactName,
+        artifactSha256,
+        artifactSize,
+      }),
+    ),
+  });
+  for (const entry of manifest.packages) {
+    if (
+      !["published", "pending", "failed"].includes(entry.publicationStatus) ||
+      (entry.publicationStatus !== "published" && !isClawHubPublishAttemptId(entry.attemptId))
+    ) {
+      throw new Error("Invalid ClawHub recovery manifest package state.");
+    }
+  }
+  return manifest;
+}
+
+export function validateClawHubRecoveryRun(manifestInput, run) {
+  const manifest = validateClawHubRecoveryManifest(manifestInput);
+  const identity = manifest.identity;
+  if (
+    run?.repository?.full_name !== identity.repository ||
+    run?.head_repository?.full_name !== identity.repository ||
+    String(run?.id) !== identity.runId ||
+    String(run?.run_attempt) !== identity.runAttempt ||
+    run?.path?.split("@")[0] !== identity.workflow ||
+    run?.head_sha !== identity.sha ||
+    run?.head_branch !== identity.ref ||
+    run?.event !== "workflow_dispatch"
+  ) {
+    throw new Error("ClawHub recovery manifest does not bind the selected child run.");
+  }
+  return manifest;
+}
+
+async function requestRecovery(path, { registry, token, fetchImpl, body }) {
+  const response = await fetchImpl(`${registry}${path}`, {
+    method: body ? "POST" : "GET",
+    headers: {
+      accept: "application/json",
+      authorization: `Bearer ${token}`,
+      ...(body ? { "content-type": "application/json" } : {}),
+    },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+    redirect: "error",
+    signal: AbortSignal.timeout(60_000),
+  });
+  const text = await readBoundedResponseText(response, "ClawHub recovery", 256 * 1024);
+  if (!response.ok) {
+    throw new Error(`ClawHub recovery returned HTTP ${response.status}.`);
+  }
+  return JSON.parse(text);
+}
+
+export async function executeClawHubRecoveryManifest({
+  manifest: rawManifest,
+  reason,
+  registry = "https://clawhub.ai",
+  token,
+  fetchImpl = fetch,
+  wait = (milliseconds) =>
+    new Promise((resolveWait) => {
+      setTimeout(resolveWait, milliseconds);
+    }),
+  timeoutMilliseconds = 30 * 60 * 1000,
+}) {
+  const manifest = validateClawHubRecoveryManifest(rawManifest);
+  const trimmedReason = reason?.trim();
+  if (!trimmedReason || trimmedReason.length > 500 || !token) {
+    throw new Error("ClawHub recovery requires a token and a 1-500 character reason.");
+  }
+  const recovered = [];
+  for (const entry of manifest.packages) {
+    if (entry.publicationStatus === "published") {
+      continue;
+    }
+    const started = await requestRecovery(
+      `/api/v1/publish/attempts/${encodeURIComponent(entry.attemptId)}/recover`,
+      {
+        registry,
+        token,
+        fetchImpl,
+        body: { manualOverrideReason: trimmedReason },
+      },
+    );
+    if (
+      started.recoveredFromAttemptId !== entry.attemptId ||
+      started.name !== entry.name ||
+      started.version !== entry.version ||
+      !isClawHubPublishAttemptId(started.attemptId)
+    ) {
+      throw new Error(`ClawHub recovery response changed the sealed transaction: ${entry.name}.`);
+    }
+    const deadline = Date.now() + timeoutMilliseconds;
+    let current = started;
+    while (current.publicationStatus !== "published") {
+      if (["blocked", "failed", "expired"].includes(current.publicationStatus)) {
+        throw new Error(`ClawHub recovery ${current.publicationStatus}: ${entry.name}.`);
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`ClawHub recovery timed out: ${entry.name}.`);
+      }
+      await wait(10_000);
+      current = await requestRecovery(
+        `/api/v1/publish/attempts/${encodeURIComponent(started.attemptId)}`,
+        { registry, token, fetchImpl },
+      );
+      if (current.name !== entry.name || current.version !== entry.version) {
+        throw new Error(`ClawHub recovery status changed the sealed transaction: ${entry.name}.`);
+      }
+    }
+    recovered.push({
+      name: entry.name,
+      version: entry.version,
+      recoveredFromAttemptId: entry.attemptId,
+      attemptId: started.attemptId,
+      publicationStatus: "published",
+    });
+  }
+  return { schemaVersion: 1, complete: true, recovered };
+}
+
+async function main() {
   const { values, positionals } = parseArgs({
     args: stripLeadingPackageManagerSeparator(process.argv.slice(2)),
     allowPositionals: true,
@@ -31,42 +241,103 @@ function main() {
       version: { type: "string" },
       reason: { type: "string" },
       "clawhub-source": { type: "string" },
+      transactions: { type: "string" },
+      manifest: { type: "string" },
+      "run-json": { type: "string" },
+      output: { type: "string" },
+      registry: { type: "string", default: "https://clawhub.ai" },
     },
   });
+  const operation = positionals[0];
+  if (operation === "create") {
+    positionals.shift();
+    if (!values.transactions || !values.output || !positionals.length) {
+      throw new Error("Create requires --transactions, --output, and publish JSON artifacts.");
+    }
+    const manifest = createClawHubRecoveryManifest(
+      JSON.parse(readFileSync(values.transactions, "utf8")),
+      positionals.map(parsePublishRecord),
+    );
+    mkdirSync(dirname(values.output), { recursive: true });
+    writeFileSync(values.output, `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
+    return;
+  }
+  if (operation === "snapshot") {
+    positionals.shift();
+    if (!values.output) {
+      throw new Error("Snapshot requires --output.");
+    }
+    const packages = positionals.map(parsePublishRecord).map((record) => {
+      const entry = {
+        name: record.name,
+        version: record.version,
+        publicationStatus: record.publicationStatus,
+      };
+      return record.attemptId ? Object.assign(entry, { attemptId: record.attemptId }) : entry;
+    });
+    const snapshot = {
+      schemaVersion: 1,
+      kind: "openclaw-clawhub-cleanup-snapshot",
+      childRunId: process.env.CHILD_RUN_ID,
+      childRunAttempt: process.env.CHILD_RUN_ATTEMPT,
+      completeManifestAvailable: process.env.COMPLETE_MANIFEST_AVAILABLE === "true",
+      packages,
+    };
+    mkdirSync(dirname(values.output), { recursive: true });
+    writeFileSync(values.output, `${JSON.stringify(snapshot, null, 2)}\n`, { flag: "wx" });
+    return;
+  }
+  if (operation === "execute") {
+    positionals.shift();
+    if (!values.manifest || !values["run-json"]) {
+      throw new Error("Execute requires --manifest and --run-json.");
+    }
+    const manifest = validateClawHubRecoveryRun(
+      JSON.parse(readFileSync(values.manifest, "utf8")),
+      JSON.parse(readFileSync(values["run-json"], "utf8")),
+    );
+    const result = await executeClawHubRecoveryManifest({
+      manifest,
+      reason: values.reason,
+      registry: values.registry,
+      token: process.env.CLAWHUB_TOKEN,
+    });
+    if (values.output) {
+      mkdirSync(dirname(values.output), { recursive: true });
+      writeFileSync(values.output, `${JSON.stringify(result, null, 2)}\n`, { flag: "wx" });
+    } else {
+      console.log(JSON.stringify(result));
+    }
+    return;
+  }
+
   const reason = values.reason?.trim();
   if (
     !values.version ||
-    !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u.test(values.version) ||
+    !VERSION_PATTERN.test(values.version) ||
     !reason ||
     reason.length > 500 ||
     !values["clawhub-source"] ||
     !positionals.length
   ) {
     throw new Error(
-      "Usage: node scripts/plugin-clawhub-recovery.mjs --version <version> --reason <1-500 characters> --clawhub-source <pinned checkout> <package-publish.json>...",
+      "Usage: node scripts/plugin-clawhub-recovery.mjs --version <version> --reason <reason> --clawhub-source <checkout> <publish-json>...",
     );
   }
   const names = new Set();
   const attempts = new Set();
   const commands = [];
   for (const path of positionals) {
-    const record = JSON.parse(readFileSync(path, "utf8"));
-    if (
-      !record ||
-      typeof record !== "object" ||
-      !/^@openclaw\/[a-z0-9][a-z0-9._-]*$/u.test(record.name) ||
-      record.version !== values.version ||
-      !["published", "pending", "failed"].includes(record.publicationStatus) ||
-      names.has(record.name)
-    ) {
-      throw new Error(`Invalid, mixed-version, or duplicate publish artifact: ${path}`);
+    const record = parsePublishRecord(path);
+    if (record.version !== values.version || names.has(record.name)) {
+      throw new Error(`Mixed-version or duplicate publish artifact: ${path}`);
     }
     names.add(record.name);
     if (record.publicationStatus === "published") {
       continue;
     }
-    if (!isClawHubPublishAttemptId(record.attemptId) || attempts.has(record.attemptId)) {
-      throw new Error(`Missing, invalid, or duplicate publish attempt: ${path}`);
+    if (attempts.has(record.attemptId)) {
+      throw new Error(`Duplicate publish attempt: ${path}`);
     }
     attempts.add(record.attemptId);
     commands.push(
@@ -78,7 +349,6 @@ function main() {
       }),
     );
   }
-  // Artifact snapshots select attempts; ClawHub remains the live state and recovery owner.
   console.error(
     "Review these commands against the original child/parent attempt before executing; no recovery was performed.",
   );
@@ -88,5 +358,11 @@ function main() {
 }
 
 if (process.argv[1] && isDirectRunUrl(realpathSync(process.argv[1]), import.meta.url)) {
-  main();
+  try {
+    await main();
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    console.error("[plugin-clawhub-recovery] FAILED (exit 1)");
+    process.exitCode = 1;
+  }
 }

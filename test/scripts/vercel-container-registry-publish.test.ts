@@ -895,6 +895,7 @@ describe("Vercel Container Registry publishing", () => {
     expect(finalizeRelease.needs).toEqual([
       "publish",
       "publish_docker",
+      "verify_clawhub_publication",
       "approve_github_release",
       "finalize_github_release_before_docker",
     ]);

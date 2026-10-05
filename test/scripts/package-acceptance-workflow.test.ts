@@ -7294,6 +7294,7 @@ wait_for_run "$WORKFLOW" 404 "$EXPECTED_SHA" "$STARTED_JOB" "$APPROVE_ENVIRONMEN
     expect(workflowJob(RELEASE_PUBLISH_WORKFLOW, "finalize_github_release").needs).toEqual([
       "publish",
       "publish_docker",
+      "verify_clawhub_publication",
       "approve_github_release",
       "finalize_github_release_before_docker",
     ]);
@@ -7307,7 +7308,7 @@ wait_for_run "$WORKFLOW" 404 "$EXPECTED_SHA" "$STARTED_JOB" "$APPROVE_ENVIRONMEN
       "${{ steps.clawhub_plan.outputs.child_workflow_ref }}",
     );
     expect(readFileSync(RELEASE_PUBLISH_WORKFLOW, "utf8")).toContain(
-      "public verification follows terminal parent success",
+      "public verification follows the sealed release milestone",
     );
     expectTextToIncludeAll(publishOrchestration.run, [
       'gh_read api "repos/${GITHUB_REPOSITORY}/commits/${encoded_workflow_ref}"',
@@ -14692,6 +14693,7 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
     expect(finalizeJob.needs).toEqual([
       "publish",
       "publish_docker",
+      "verify_clawhub_publication",
       "approve_github_release",
       "finalize_github_release_before_docker",
     ]);
@@ -14913,6 +14915,7 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
     expect(finalize.needs).toEqual([
       "publish",
       "publish_docker",
+      "verify_clawhub_publication",
       "approve_github_release",
       "finalize_github_release_before_docker",
     ]);

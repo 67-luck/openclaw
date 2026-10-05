@@ -946,6 +946,96 @@ describe("ClawHub detached postpublish verification", () => {
   );
 
   it.each([
+    {
+      label: "sealed milestone while the parent remains active",
+      status: "in_progress",
+      conclusion: null,
+      parentStatePolicy: "sealed-producer",
+    },
+    {
+      label: "protected recovery after parent cancellation",
+      status: "completed",
+      conclusion: "cancelled",
+      parentStatePolicy: "recovery-producer",
+    },
+  ])("reconciles the complete roster from $label", async (parentState) => {
+    const f = fixture();
+    const parent = {
+      ...f.parent,
+      status: parentState.status,
+      conclusion: parentState.conclusion,
+    };
+    f.metadata.set("actions/runs/10/attempts/1", parent);
+    const receipt = createClawHubParentAuthorization(f.transactions, "automated-sealed");
+    const receiptArchive = zip("authorization.json", Buffer.from(JSON.stringify(receipt)));
+    f.archives.set(1, receiptArchive);
+    Object.assign(f.receiptArtifact, {
+      size_in_bytes: receiptArchive.length,
+      digest: `sha256:${digest(receiptArchive)}`,
+    });
+    f.metadata.set("actions/runs/10/attempts/1/jobs?per_page=100", {
+      total_count: 1,
+      jobs: [
+        {
+          name: "Publish plugins, then OpenClaw",
+          run_id: 10,
+          run_attempt: 1,
+          head_sha: sha,
+          status: "completed",
+          conclusion: "success",
+          steps: [
+            {
+              name: "Upload exact release child dispatch record",
+              status: "completed",
+              conclusion: "success",
+            },
+            {
+              name: "Upload immutable ClawHub parent authorization",
+              status: "completed",
+              conclusion: "success",
+            },
+          ],
+        },
+      ],
+    });
+
+    const recoveryManifest = {
+      schemaVersion: 1,
+      kind: "openclaw-clawhub-recovery-manifest",
+      identity: f.transactions.identity,
+      packages: f.transactions.packages.map((entry) => ({
+        ...entry,
+        publicationStatus: "pending",
+        attemptId: "attempt-1",
+      })),
+    };
+    if (parentState.parentStatePolicy === "recovery-producer") {
+      const authorized = await verifyClawHubPostpublish({
+        ...f.options,
+        parent,
+        parentStatePolicy: parentState.parentStatePolicy,
+        recoveryManifest,
+        verifyPublication: false,
+      });
+      expect(authorized).toMatchObject({
+        complete: true,
+        outcome: "authorized-recovery-roster",
+      });
+      expect(f.registryReads).toEqual([]);
+    }
+
+    const result = await verifyClawHubPostpublish({
+      ...f.options,
+      parent,
+      parentStatePolicy: parentState.parentStatePolicy,
+      recoveryManifest:
+        parentState.parentStatePolicy === "recovery-producer" ? recoveryManifest : undefined,
+    });
+    expect(result.complete).toBe(true);
+    expect(result.packages).toHaveLength(1);
+  });
+
+  it.each([
     { label: "protected-tag parent", parentOnMain: false, status: "identical" },
     { label: "main parent and protected-tag child", parentOnMain: true, status: "ahead" },
   ])(
