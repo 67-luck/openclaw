@@ -35,6 +35,8 @@ export type ActiveWorkerTurn = {
   sessionKey: string;
   signal: AbortSignal;
   recoverTerminal?: (assertCurrent?: () => void) => Promise<string | undefined>;
+  /** Start the worker execution budget when transport dispatch acquires custody. */
+  beginExecution: () => void;
   dispose: () => void;
 };
 
@@ -85,7 +87,7 @@ export async function createWorkerTurnRunOwner(params: {
       : controller.signal;
     let closed = false;
     const startedAtMs = Date.now();
-    const executionDeadlineAtMs = startedAtMs + turn.timeoutMs;
+    let executionDeadlineAtMs: number | undefined;
     const operation = turn.replyOperation;
     const diagnosticOwner = createDiagnosticEmbeddedRunOwner({
       sessionId: claim.sessionId,
@@ -102,7 +104,13 @@ export async function createWorkerTurnRunOwner(params: {
           })
         : undefined,
     });
-    diagnosticOwner.watchdogAttempt?.setExecutionDeadline(executionDeadlineAtMs);
+    const beginExecution = () => {
+      assertCurrent();
+      if (executionDeadlineAtMs === undefined) {
+        executionDeadlineAtMs = Date.now() + turn.timeoutMs;
+        diagnosticOwner.watchdogAttempt?.setExecutionDeadline(executionDeadlineAtMs);
+      }
+    };
     const cancel = (reason?: "user_abort" | "restart" | "superseded") => {
       controller.abort(
         reason === "restart"
@@ -261,7 +269,7 @@ export async function createWorkerTurnRunOwner(params: {
     assertCurrent();
     signal.throwIfAborted();
     activeOwners.set(claim.sessionId, owner);
-    return { claim, sessionKey, signal, dispose: cleanup };
+    return { claim, sessionKey, signal, beginExecution, dispose: cleanup };
   } catch (error) {
     cleanup();
     throw error;

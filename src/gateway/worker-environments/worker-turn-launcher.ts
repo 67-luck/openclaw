@@ -534,6 +534,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
           const executionParams = {
             environments: options.environments,
             onHandoff: (custody?: { requiresTerminalReceipt: true }) => {
+              activeWorkerTurn?.beginExecution();
               if (!admissionReported) {
                 onAdmitted?.();
                 admissionReported = true;

@@ -390,10 +390,24 @@ describe("cloud worker run ownership", () => {
           expect(resolveActiveEmbeddedRunOwner(SESSION_ID)).toBeUndefined();
           expect(first.signal.aborted).toBe(true);
         } else if (closure === "same-claim replacement") {
+          first.dispose();
+          await placements.releaseTurn(firstClaim);
+          operation.complete();
+          await operation.ownerSettlement;
+          const readmittedClaim = await placements.claimTurn({
+            ...claimInput,
+            claimId: firstClaim.claimId,
+          });
+          replacementOperation = createReplyOperation({
+            sessionKey: SESSION_KEY,
+            sessionId: SESSION_ID,
+            agentId: "main",
+            resetTriggered: false,
+          });
           replacement = await createWorkerTurnRunOwner({
             placements,
-            claim: firstClaim,
-            turn: turn(runId),
+            claim: readmittedClaim,
+            turn: { ...turn(runId), replyOperation: replacementOperation },
             sessionKey: SESSION_KEY,
           });
           expect(captureWorkerTurnLiveEventOwner(identity)).not.toBe(eventOwner);
@@ -465,10 +479,16 @@ describe("cloud worker run ownership", () => {
         claimId: "preparing-claim",
         owner: { kind: "worker", environmentId: ENVIRONMENT_ID, ownerEpoch: OWNER_EPOCH },
       });
+      const operation = createReplyOperation({
+        sessionKey: SESSION_KEY,
+        sessionId: SESSION_ID,
+        agentId: "main",
+        resetTriggered: false,
+      });
       const first = await createWorkerTurnRunOwner({
         placements,
         claim,
-        turn: turn(runId),
+        turn: { ...turn(runId), replyOperation: operation },
         sessionKey: SESSION_KEY,
       });
       const previous = resolveActiveEmbeddedRunOwner(SESSION_ID);
@@ -492,7 +512,7 @@ describe("cloud worker run ownership", () => {
       const attempt = createWorkerTurnRunOwner({
         placements,
         claim: requested,
-        turn: { ...turn(runId), abortSignal: controller.signal },
+        turn: { ...turn(runId), replyOperation: operation, abortSignal: controller.signal },
         sessionKey: SESSION_KEY,
         assertCurrent: () => {
           if (!callerCurrent) {
@@ -543,6 +563,7 @@ describe("cloud worker run ownership", () => {
         await settled;
         created?.dispose();
         first.dispose();
+        operation.complete();
       }
     },
   );

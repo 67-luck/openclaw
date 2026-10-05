@@ -4,6 +4,7 @@ import { expectDefined } from "@openclaw/normalization-core/expect";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkerConnectRequestFrameSchema } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { makeTextToolResult } from "../../../test/helpers/text-tool-result.js";
 import {
   makeAgentAssistantMessage,
@@ -200,7 +201,13 @@ describe("worker turn launcher remote handoff", () => {
       stopTunnel: vi.fn(async () => {}),
       destroy: vi.fn(async () => attachedEnvironment()),
     };
-    const resolveWorkspace = vi.fn(async () => ({ kind: "local" as const, path: root }));
+    const preparingWorkspace = createDeferred();
+    const resumePreparation = createDeferred();
+    const resolveWorkspace = vi.fn(async () => {
+      preparingWorkspace.resolve();
+      await resumePreparation.promise;
+      return { kind: "local" as const, path: root };
+    });
     const provider = createWorkerSessionTurnPlacementProvider({
       environments,
       placements,
@@ -211,7 +218,10 @@ describe("worker turn launcher remote handoff", () => {
       throw new Error("supplemental event failed");
     });
 
-    const result = await provider.executeTurn(
+    const preparationStartedAtMs = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(preparationStartedAtMs);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const execution = provider.executeTurn(
       {
         sessionId: SESSION_ID,
         sessionKey: sessionTarget.sessionKey,
@@ -229,6 +239,25 @@ describe("worker turn launcher remote handoff", () => {
       },
       runLocal,
     );
+    let result: Awaited<typeof execution>;
+    try {
+      await awaitGateBeforeSettlement(
+        preparingWorkspace.promise,
+        execution,
+        "Worker settled before workspace preparation",
+      );
+      // Descriptor timeout belongs to worker execution, not host preparation.
+      clock.mockReturnValue(preparationStartedAtMs + 6_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      resumePreparation.resolve();
+      vi.useRealTimers();
+      result = await execution;
+    } finally {
+      resumePreparation.resolve();
+      vi.useRealTimers();
+      await execution.catch(() => {});
+      clock.mockRestore();
+    }
 
     expect(runLocal).not.toHaveBeenCalled();
     expect(resolveWorkspace).toHaveBeenCalledWith({
