@@ -92,7 +92,7 @@ describe("diagnostic recovery delegates only to a captured controller", () => {
     vi.setSystemTime(request.ageMs);
     const first = recoverStuckDiagnosticSession(request);
     const second = recoverStuckDiagnosticSession(request);
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(60_000 - 1);
     expect(cancel).toHaveBeenCalledOnce();
     expect(operation.watchdog.snapshot().recovery?.status).toBe("blocked");
     expect(getSessionControllerOperation(sessionKey)).toBe(operation);

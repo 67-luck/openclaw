@@ -60,7 +60,7 @@ describe("controller watchdog and actual followup delivery custody", () => {
         sessionId,
         ageMs: Date.now(),
       });
-      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(60_000 - 1);
       expect(cancel).toHaveBeenCalledOnce();
       expect(operation.watchdog.decide().action).toBe("blocked");
       expect(dispatch).not.toHaveBeenCalled();
