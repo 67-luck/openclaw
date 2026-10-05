@@ -202,28 +202,6 @@ async function invokeSessionsCompact({
   });
 }
 
-async function expectListedSessionActiveRun(
-  requestId: string,
-  run: Parameters<typeof registerSessionListRpcSourceForTest>[0],
-  expected: boolean,
-  expectedStatus?: "queued" | "running",
-  sessionOptions?: SessionStoreEntryOptions,
-) {
-  await writeMainSessionStore(sessionOptions);
-  await registerSessionListRpcSourceForTest(run);
-
-  const { respond } = await invokeSessionsList({
-    requestId,
-  });
-
-  const payload = expectRespondPayload(respond);
-  const session = findSession(payload, "agent:main:main");
-  expect(session.hasActiveRun).toBe(expected);
-  expect(session.activeRunIds).toEqual(expected ? ["run-1"] : []);
-  expect(session.status).toBe(expectedStatus);
-}
-
-
 test("sessions.list uses persisted usage and selected model fields", async () => {
   const { storePath } = await createFreshSessionStoreDir();
   testState.agentConfig = {
@@ -529,7 +507,7 @@ test("sessions.list distinguishes proven idle from unavailable run identities", 
   }
 });
 
-test("sessions.changed publishes running status during ordinary startup", async () => {
+test("sessions.changed does not publish a preparing source as running", async () => {
   await writeMainSessionStore({ status: "failed" });
   await registerSessionListRpcSourceForTest({ executionStarted: false });
   const result = await invokeSessionMutation({
@@ -540,9 +518,9 @@ test("sessions.changed publishes running status during ordinary startup", async 
   expectChangedBroadcast(result.broadcastToConnIds, {
     sessionKey: "agent:main:main",
     reason: "patch",
-    status: "running",
-    hasActiveRun: true,
-    activeRunIds: ["run-1"],
+    status: "failed",
+    hasActiveRun: false,
+    activeRunIds: [],
   });
 });
 

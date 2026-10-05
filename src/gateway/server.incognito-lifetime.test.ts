@@ -149,6 +149,7 @@ it("expires Incognito at creation plus 24 hours, cancels work, and deletes witho
     await time.advanceBy(60 * 60_000 - 1);
     expect(loadSessionEntryReadOnly(scope)).toBeDefined();
     const active = createReplyOperation({ ...scope, resetTriggered: false });
+    active.abortSignal.addEventListener("abort", () => active.complete(), { once: true });
     try {
       await time.advanceBy(1);
       const result = await deleted.promise;

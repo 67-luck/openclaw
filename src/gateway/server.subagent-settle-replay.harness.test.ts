@@ -26,6 +26,8 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { resolvePhysicalSessionStorePath } from "../config/sessions/session-store-path.js";
 import { bindGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
+import { getRpcSource } from "../sessions/session-controller.rpc-sources.js";
+import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import * as inProcessDispatch from "./server-plugin-in-process-dispatch.js";
@@ -136,6 +138,13 @@ describe("public yielded settle replay with real Gateway admission", () => {
     },
   });
 
+  async function markCommandExecutionStarted(command: AgentCommandOpts): Promise<void> {
+    const operation = getRpcSource(command.runId)?.input.claim?.operation;
+    expect(operation).toBeDefined();
+    markReplyOperationExecutionStarted(operation!);
+    await command.onExecutionStarted?.();
+  }
+
   function wake(settledEntry = child) {
     const completeBatch = vi.fn<
       Parameters<typeof maybeWakeRequesterAfterAllChildrenSettled>[0]["completeBatch"]
@@ -234,15 +243,12 @@ describe("public yielded settle replay with real Gateway admission", () => {
           attemptCount: 1,
           rearmGeneration: 1,
         });
-        const replayDueAt = child.requesterSettleWake?.nextAttemptAt;
-        expect(replayDueAt).toBeGreaterThan(Date.now());
+        expect(child.requesterSettleWake?.nextAttemptAt).toBeUndefined();
         release.resolve();
         await terminal;
         expect(agentCommandMock).toHaveBeenCalledOnce();
-        // Only advance Date after original execution has settled. No Gateway
-        // timers run early and the persisted owner/deadline remain unchanged.
-        vi.useFakeTimers({ toFake: ["Date"] });
-        vi.setSystemTime(replayDueAt! + 1);
+        // The live controller source owned replay custody, so no duplicate retry
+        // deadline was scheduled. Reconcile immediately after exact settlement.
         const reconciliation = wake();
         expect(await reconciliation.result).toBe(outcome === "success");
         expect(agentCommandMock).toHaveBeenCalledOnce();
@@ -461,7 +467,7 @@ describe("public yielded settle replay with real Gateway admission", () => {
       if (!legacy || transcriptOnly) {
         await command.userTurnTranscriptRecorder!.persistApproved();
       }
-      command.onExecutionStarted?.();
+      await markCommandExecutionStarted(command);
       return finalResult();
     });
     if (retryable) {
@@ -612,7 +618,7 @@ describe("public yielded settle replay with real Gateway admission", () => {
       agentCommandMock.mockImplementationOnce(async (input) => {
         const command = input as AgentCommandOpts;
         await command.userTurnTranscriptRecorder!.persistApproved();
-        command.onExecutionStarted?.();
+        await markCommandExecutionStarted(command);
         await appendTranscriptMessage(scope, {
           cwd: process.env.OPENCLAW_STATE_DIR!,
           message: {
@@ -704,7 +710,7 @@ describe("public yielded settle replay with real Gateway admission", () => {
           expect(JSON.stringify(loadTranscriptEventsSync(scope))).toContain(
             "Changes verified; the requested landing remains.",
           );
-          command.onExecutionStarted?.();
+          await markCommandExecutionStarted(command);
           resumed.resolve();
           await resumedRelease.promise;
           const rawEvidence: AgentDeliveryEvidence =
@@ -755,12 +761,10 @@ describe("public yielded settle replay with real Gateway admission", () => {
             timeoutMs: 5_000,
           }),
         ).resolves.toMatchObject({ status: "ok" });
-        const nextAttemptAt = child.requesterSettleWake?.nextAttemptAt;
-        expect(nextAttemptAt).toBeGreaterThan(Date.now());
-        vi.useFakeTimers({ toFake: ["Date"] });
-        vi.setSystemTime(nextAttemptAt! + 1);
+        expect(child.requesterSettleWake?.nextAttemptAt).toBeUndefined();
         // Restart removed the old Gateway's dedupe cache. The already-admitted
-        // settle batch must recognize its completed successor instead of rerunning.
+        // settle batch must recognize its completed successor immediately instead
+        // of scheduling a duplicate retry or rerunning it.
         const completedReplay = wake(sibling);
         expect(await completedReplay.result).toBe(reply === "visible final");
         expect(agentCommandMock).toHaveBeenCalledTimes(2);

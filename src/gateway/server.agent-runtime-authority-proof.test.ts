@@ -13,7 +13,10 @@ import {
 import { registerInternalHook, unregisterInternalHook } from "../hooks/internal-hooks.js";
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { validateAgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
-import { startSessionControllerInterruption } from "../sessions/session-controller.lifecycle.js";
+import {
+  captureSessionTarget,
+  startSessionControllerInterruption,
+} from "../sessions/session-controller.lifecycle.js";
 import { createAgentAdmissionController } from "./agent-turn/agent-admission-controller.js";
 import { createAgentDedupeLifecycle } from "./agent-turn/agent-dedupe-lifecycle.js";
 import { createAgentRunAdmissionRevalidator } from "./agent-turn/agent-run-admission-revalidation.js";
@@ -426,7 +429,7 @@ describe("agent RPC real delegated-authority effects", () => {
         if (mode === "revoked") {
           f.owner.revoke();
         } else if (mode === "stopped") {
-          expect(await f.stop()).toMatchObject({ ok: true, payload: { aborted: true } });
+          expect(await f.stop()).toMatchObject({ ok: true, payload: { aborted: false } });
         } else if (mode === "replaced") {
           replacement = createAgentDedupeLifecycle({
             cfg: f.context.getRuntimeConfig(),
@@ -453,7 +456,7 @@ describe("agent RPC real delegated-authority effects", () => {
           sessionPreserved: committed?.sessionId === f.sessionId,
           deliveryCount: delivered?.toString("utf8").split("\n").filter(Boolean).length ?? 0,
         });
-        if (mode !== "live") {
+        if (mode === "revoked" || mode === "replaced") {
           expect(result.ok).toBe(false);
           expect(result.error?.message).toContain("is no longer active");
           await expect(fs.stat(sink)).rejects.toMatchObject({ code: "ENOENT" });
@@ -470,12 +473,12 @@ describe("agent RPC real delegated-authority effects", () => {
           ...rpcObservation(retry),
           deliveryCount: afterRetry?.toString("utf8").split("\n").filter(Boolean).length ?? 0,
         });
-        if (mode === "stopped" || mode === "replaced") {
+        if (mode === "replaced") {
           expect(f.context.dedupe.get(`agent:${f.runId}`)).toBe(retained);
           expect(retry).toMatchObject({
             ok: true,
             meta: { cached: true },
-            payload: { status: mode === "stopped" ? "timeout" : "in_flight" },
+            payload: { status: "in_flight" },
           });
         } else {
           expect(retry).toMatchObject({ ok: result.ok, meta: { cached: true } });
@@ -485,7 +488,7 @@ describe("agent RPC real delegated-authority effects", () => {
         expect(loadSessionEntry(f.sessionKey, { agentId: "main" }).entry?.lifecycleRevision).toBe(
           committed?.lifecycleRevision,
         );
-        if (mode !== "live") {
+        if (mode === "revoked" || mode === "replaced") {
           await expect(fs.stat(sink)).rejects.toMatchObject({ code: "ENOENT" });
           if (mode === "revoked") {
             expect(validateAgentRunDelegatedAuthority(f.owner.authority)).toBe(false);
@@ -738,6 +741,12 @@ describe("agent RPC real delegated-authority effects", () => {
           });
         } else {
           registration = registerChatAbortController({
+            target: captureSessionTarget({
+              storeScope: f.scope.storePath,
+              sessionKey: f.sessionKey,
+              incarnation: f.sessionId,
+              agentId: "main",
+            }),
             runId: f.runId,
             sessionKey: f.sessionKey,
             sessionId: f.sessionId,

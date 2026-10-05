@@ -478,8 +478,8 @@ describe("startGatewayEventSubscriptions", () => {
     transitions.push({ state: "Removed" });
     expect(rpcSourceTesting.has(runId)).toBe(false);
     expect(transitions).toEqual([
-      { state: "Registered", lifecycle: lifecycleState(true) },
-      { state: "Start-normalized", lifecycle: lifecycleState(true, false) },
+      { state: "Registered", lifecycle: lifecycleState(undefined) },
+      { state: "Start-normalized", lifecycle: lifecycleState(undefined, false) },
       {
         state: "Persisting",
         lifecycle: lifecycleState(false, true, 3_000, terminalPersistence.promise, false),
@@ -497,7 +497,7 @@ describe("startGatewayEventSubscriptions", () => {
     "settles captured terminal ownership after $change (persisted=$persisted)",
     async ({ change, persisted }) => {
       const params = createParams();
-      const runId = "captured-terminal";
+      const runId = `captured-terminal-${change.replaceAll(" ", "-")}-${persisted}`;
       const sessionKey = "agent:main:captured-terminal";
       const register = () =>
         registerSubscriptionChatRun(params, {
@@ -598,13 +598,15 @@ describe("startGatewayEventSubscriptions", () => {
           }
         }
         if (change === "removed") {
-          expect(params.restartRecoveryCandidates.get(runId)).toEqual(recovery);
+          expect(params.restartRecoveryCandidates.has(runId)).toBe(!persisted);
         } else {
           expect(rpcSourceTesting.get(runId)).toBe(
             change === "retired replacement" ? undefined : current,
           );
           expect(readLifecycleState(current)).toEqual(currentState);
-          expect(params.restartRecoveryCandidates.get(runId)?.observedAt).toBe(3_000);
+          expect(params.restartRecoveryCandidates.get(runId)?.observedAt).toBe(
+            change === "retired replacement" ? (persisted ? undefined : 2_000) : 3_000,
+          );
         }
         if (change === "newer write") {
           successor.resolve();
@@ -699,6 +701,7 @@ describe("startGatewayEventSubscriptions", () => {
         ...(hidden ? { controlUiVisible: false, projectSessionActive: false } : {}),
       });
       const entry = registration.entry;
+      const releaseEntry = await claimRpcSourceForTest(entry);
       const identity = getRpcSourceIdentity(entry);
       claimAgentRunContext(runId, {
         lifecycleGeneration,
@@ -779,7 +782,7 @@ describe("startGatewayEventSubscriptions", () => {
         const outcome = await waiter;
         const failure = persistenceFails
           ? persistenceFailure
-          : dispatchFails
+          : hidden && dispatchFails
             ? dispatchFailure
             : undefined;
         expect(outcome).toEqual(failure ? { ok: false, error: failure } : { ok: true });
@@ -796,13 +799,16 @@ describe("startGatewayEventSubscriptions", () => {
           );
         } else {
           expect(entry.adapter.projectSessionTerminalPending).toBe(false);
-          expect(rpcSourceTesting.has(runId)).toBe(false);
           expect(warn).not.toHaveBeenCalled();
         }
+        releaseEntry();
+        await entry.input.settlement.promise;
+        expect(rpcSourceTesting.has(runId)).toBe(false);
       } finally {
         releaseDispatch.resolve();
         terminalPersistence.resolve();
         await waiter;
+        releaseEntry();
         rpcSourceTesting.deleteExpected(runId, entry);
       }
     },

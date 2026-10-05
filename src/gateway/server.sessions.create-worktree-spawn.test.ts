@@ -25,7 +25,6 @@ import {
   captureSessionControllerSettlement,
   SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
 } from "../sessions/session-controller.lifecycle.js";
-import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -245,7 +244,9 @@ test.each([
         throw new Error("Missing child session key");
       }
       childKey = result.details.childSessionKey;
-      await settleWorkspaceRuns(context, storePath, childKey);
+      if (childKey) {
+        await settleWorkspaceRuns(context, storePath, childKey);
+      }
       const child = loadSessionEntry({ agentId: "main", sessionKey: childKey, storePath });
       expect(child).toMatchObject({ parentSessionId: parent.sessionId, sandbox: "required" });
       if (source !== "inherited") {
@@ -273,7 +274,9 @@ test.each([
       await expect(fs.stat(path.join(child!.spawnedCwd!, "setup-marker.txt"))).rejects.toThrow();
       expect(registerRun).toHaveBeenCalledOnce();
     } finally {
-      await settleWorkspaceRuns(context, storePath, childKey, true);
+      if (childKey) {
+        await settleWorkspaceRuns(context, storePath, childKey, true);
+      }
       dispatchInboundMessageMock.mockReset();
     }
   },
@@ -307,7 +310,9 @@ test.each(["registered", "github"] as const)(
       if (isRecord(result?.details) && typeof result.details.childSessionKey === "string") {
         childKey = result.details.childSessionKey;
       }
-      await settleWorkspaceRuns(context, storePath, childKey);
+      if (childKey) {
+        await settleWorkspaceRuns(context, storePath, childKey);
+      }
       const child = childKey
         ? loadSessionEntry({ agentId: "main", sessionKey: childKey, storePath })
         : undefined;
@@ -331,7 +336,9 @@ test.each(["registered", "github"] as const)(
       expect(child?.projectId).toBeUndefined();
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
-      await settleWorkspaceRuns(context, storePath, childKey, true);
+      if (childKey) {
+        await settleWorkspaceRuns(context, storePath, childKey, true);
+      }
       dispatchInboundMessageMock.mockReset();
     }
   },

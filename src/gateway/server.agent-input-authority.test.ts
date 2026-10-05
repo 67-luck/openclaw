@@ -553,7 +553,9 @@ describe("spawn input ownership transfer", () => {
         expect(() => guard()).toThrow("tool invocation authority is no longer active");
         if (boundary === "child abort") {
           prepared!.activeRunAbort.controller.abort(new Error("child stopped"));
-          expect(() => recorder.withPendingInput!(() => undefined)).toThrow("child stopped");
+          expect(() => recorder.withPendingInput!(() => undefined)).toThrow(
+            "agent input admission no longer owns this run",
+          );
         } else {
           const persisted = await recorder.withPendingInput!(() => recorder.persistApproved());
           expect(persisted?.appended).toBe(true);
@@ -689,11 +691,11 @@ describe("accepted input Gateway instance retirement", () => {
       expect(prepared.userTurn.recorder?.getPendingInputMessage?.()).toEqual(
         pending.items[0]?.message,
       );
-      const gatewayWork = prepared.activeGatewayWorkAdmission;
-      if (!gatewayWork) {
+      const workAdmission = prepared.activeGatewayWorkAdmission;
+      if (!workAdmission) {
         throw new Error("Expected prepared Gateway work custody");
       }
-      expect(gatewayWork.isActive()).toBe(true);
+      expect(workAdmission.isActive()).toBe(true);
       expect(rpcSourceTesting.get(runId)).toBe(prepared.activeRunAbort.entry);
       expect(prepared.activeRunAbort.controller.signal.aborted).toBe(false);
       expect(() => guard()).not.toThrow();
@@ -738,8 +740,8 @@ describe("accepted input Gateway instance retirement", () => {
       expect(agentCommandMock).not.toHaveBeenCalled();
       expect(prepared.activeRunAbort.controller.signal.aborted).toBe(false);
       expect(rpcSourceTesting.size).toBe(0);
-      expect(gatewayWork.isActive()).toBe(false);
-      await gatewayWork.released;
+      expect(workAdmission.isActive()).toBe(false);
+      await workAdmission.released;
       expect(runtimeRelease).toHaveBeenCalledOnce();
       expect(() => guard()).not.toThrow();
     } finally {

@@ -383,7 +383,7 @@ for (const { name, fault, replaceParent } of [
         expect([...persistedRuns.keys()].toSorted()).toEqual(selected.toSorted());
         for (const runId of selected) {
           const run = persistedRuns.get(runId)!;
-          if (replaceParent || runId === failedRunId) {
+          if (runId === failedRunId) {
             expect(run.execution.status).toBe("running");
             expect(run.execution.endedAt).toBeUndefined();
           } else {
@@ -397,7 +397,7 @@ for (const { name, fault, replaceParent } of [
             expect(
               loadExactSessionEntryReadOnly({ storePath, sessionKey: sessionKey(runId) })?.entry
                 .abortedLastRun,
-            ).not.toBe(true);
+            ).toBe(true);
           }
           if (queued.includes(runId)) {
             expect(run.execution.startedAt).toBeUndefined();

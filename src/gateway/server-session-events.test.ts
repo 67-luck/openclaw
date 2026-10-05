@@ -636,12 +636,12 @@ describe("createTranscriptUpdateBroadcastHandler", () => {
     );
   });
 
-  it("projects running status into ordinary startup transcript snapshots", async () => {
+  it("does not project a prepared source as a running startup transcript", async () => {
     await expect(emitAssistantTranscriptUpdate(true, undefined, false)).resolves.toMatchObject({
       sessionKey: "agent:main:main",
-      status: "running",
-      hasActiveRun: true,
-      session: { key: "agent:main:main", status: "running", hasActiveRun: true },
+      status: "done",
+      hasActiveRun: false,
+      session: { key: "agent:main:main", status: "done", hasActiveRun: false },
     });
   });
 
@@ -680,26 +680,23 @@ describe("createTranscriptUpdateBroadcastHandler", () => {
     });
   });
 
-  it("keeps transcript snapshots active for embedded or channel reply runs", async () => {
+  it("does not let an unowned embedded projection replace controller activity", async () => {
     resolveEmbeddedAgentSessionProgressStateMock.mockImplementation((sessionId) =>
       sessionId === "sess-main" ? "running" : undefined,
     );
 
     await expect(emitAssistantTranscriptUpdate(false)).resolves.toMatchObject({
       sessionKey: "agent:main:main",
-      hasActiveRun: true,
-      activeRunIds: null,
+      hasActiveRun: false,
+      activeRunIds: [],
       session: {
         key: "agent:main:main",
         sessionId: "sess-main",
-        hasActiveRun: true,
-        activeRunIds: null,
+        hasActiveRun: false,
+        activeRunIds: [],
       },
     });
-    expect(resolveEmbeddedAgentSessionProgressStateMock).toHaveBeenCalledWith(
-      "sess-main",
-      expect.objectContaining({ agentId: "main" }),
-    );
+    expect(resolveEmbeddedAgentSessionProgressStateMock).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -8,13 +8,14 @@ import { claimAgentRunContext, releaseAgentRunContext } from "../infra/agent-run
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { serializeGatewayFrame } from "./serialized-json.js";
+import { registerRpcSourceForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
 import { listSessions, requestContext } from "./server-methods/sessions-read-cache.test-support.js";
 import { withCurrentSessionListRows } from "./session-list-read-result.js";
 import { beginSessionPermissionChange } from "./session-permission-change.js";
 import { retainSessionListForegroundWork } from "./session-projection-work.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
 import { roleClient, rolePolicyConfig } from "./session-sharing.test-utils.js";
-import { claimRpcSourceForTest, createRpcSourceForTest } from "./test-helpers.rpc-source.js";
+import { claimRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -100,16 +101,16 @@ it("reuses list row encodings across clients and refreshes compact, published, a
       snapshotAt: start + 103,
     });
     clock.mockReturnValue(start + 104);
-    const run = createRpcSourceForTest(
-      {},
-      {
-        runId: "serialization-run",
-        sessionId: entry.sessionId,
-        sessionKey: scope.sessionKey,
-        agentId: scope.agentId,
-      },
-    );
-    const releaseRun = await claimRpcSourceForTest(run);
+    const run = registerRpcSourceForTest({
+      runId: "serialization-run",
+      sessionId: entry.sessionId,
+      sessionKey: scope.sessionKey,
+      agentId: scope.agentId,
+    });
+    if (!run.entry) {
+      throw new Error("Expected a registered serialization run");
+    }
+    const releaseRun = await claimRpcSourceForTest(run.entry);
     try {
       expect((await read(0)).sessions[0]).toMatchObject({
         hasActiveRun: true,
@@ -118,6 +119,7 @@ it("reuses list row encodings across clients and refreshes compact, published, a
       });
     } finally {
       releaseRun();
+      run.cleanup();
     }
     clock.mockReturnValue(start + 105);
     expect.soft((await read(1)).sessions[0]).toMatchObject({

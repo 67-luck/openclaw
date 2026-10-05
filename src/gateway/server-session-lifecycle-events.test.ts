@@ -239,11 +239,11 @@ describe("createLifecycleEventBroadcastHandler", () => {
     sessionRow.key = "global";
     const goal = { ...ownerGoal };
     loadGatewaySessionRowMock.mockReturnValue({ ...sessionRow, goal });
-    const activeRun = {
-      ...createActiveRun(true),
+    const activeRun = createActiveRun(true, true, {
       agentId: "ops",
       sessionKey: "global",
-    };
+      sessionId: sessionRow.sessionId,
+    });
     const broadcastToConnIds = vi.fn();
     rpcSourceTesting.reset([["run-before-finalize", activeRun]]);
     const handler = createLifecycleEventBroadcastHandler({

@@ -394,7 +394,7 @@ describe("built-in session tool role authority", () => {
           undefined,
           {
             code: "INVALID_REQUEST",
-            message: expect.stringMatching(/turn has ended|no longer active/),
+            message: expect.stringContaining("no longer owns controller admission"),
           },
         ],
       ]);

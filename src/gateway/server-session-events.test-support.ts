@@ -4,9 +4,9 @@ import { tryClaimSessionControllerTask } from "../sessions/session-controller.ma
 import { createReplyOperation } from "../sessions/session-controller.operation.js";
 import {
   getRpcSourceIdentity,
+  setRpcSourceProjectSessionActive,
   type RpcSourceRef,
 } from "../sessions/session-controller.rpc-sources.js";
-import { setRpcSourceProjectSessionActive } from "../sessions/session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import type { SessionMessageSubscriberRegistry } from "./server-chat-state.js";
@@ -161,20 +161,28 @@ function createTranscriptUpdateBroadcastHandler(
   return createTranscriptHandler({ getSessionRowProjection: () => projection, ...params });
 }
 
-function createActiveRun(projectSessionActive: boolean, executionStarted = true): RpcSourceRef {
+function createActiveRun(
+  projectSessionActive: boolean,
+  executionStarted = true,
+  identity: { sessionKey?: string; sessionId?: string; agentId?: string } = {},
+): RpcSourceRef {
   const ref = createRpcSourceForTest(
     { projectSessionActive },
-    { sessionId: "sess-main", sessionKey: "agent:main:main" },
+    {
+      sessionId: identity.sessionId ?? "sess-main",
+      sessionKey: identity.sessionKey ?? "agent:main:main",
+      agentId: identity.agentId,
+    },
   );
   if (executionStarted) {
     const claim = tryClaimSessionControllerTask(ref.input);
     if (!claim) {
       throw new Error("Fixture could not acquire its isolated turn");
     }
-    const identity = getRpcSourceIdentity(ref);
+    const sourceIdentity = getRpcSourceIdentity(ref);
     const operation = createReplyOperation({
-      sessionId: identity.sessionId,
-      sessionKey: identity.sessionKey,
+      sessionId: sourceIdentity.sessionId,
+      sessionKey: sourceIdentity.sessionKey,
       resetTriggered: false,
       mailboxClaim: claim,
       target: ref.input.mailbox.owner.target,

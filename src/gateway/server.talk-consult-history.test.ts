@@ -134,7 +134,24 @@ beforeEach(async () => {
   releaseModel = createDeferred();
   runEmbeddedAgent.mockImplementation(async (params) => {
     modelStarted.resolve();
-    await releaseModel.promise;
+    const signal = params.abortSignal;
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<void>((resolve) => {
+      onAbort = resolve;
+      if (signal?.aborted) {
+        resolve();
+      } else {
+        signal?.addEventListener("abort", resolve, { once: true });
+      }
+    });
+    try {
+      await Promise.race([releaseModel.promise, aborted]);
+    } finally {
+      if (onAbort) {
+        signal?.removeEventListener("abort", onAbort);
+      }
+    }
+    signal?.throwIfAborted();
     return {
       payloads: [{ text: answer }],
       meta: {

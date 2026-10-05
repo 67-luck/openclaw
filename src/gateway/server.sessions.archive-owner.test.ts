@@ -1,5 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { registerChatAbortController } from "./chat-abort.js";
 import { createChatRunState } from "./server-chat-state.js";
@@ -32,8 +33,15 @@ test("archiving a non-default agent ignores the compatibility owner's ownerless 
   rpcSourceTesting.clear();
   const compatibilityRun = registerChatAbortController({
     runId: "run-ops-ownerless",
-    sessionId,
+    sessionId: "session-ops-ownerless",
     sessionKey: "legacy-unscoped",
+    agentId: "ops",
+    target: captureSessionTarget({
+      storeScope: storePath,
+      sessionKey: "legacy-unscoped",
+      incarnation: "session-ops-ownerless",
+      agentId: "ops",
+    }),
     timeoutMs: 60_000,
   });
 

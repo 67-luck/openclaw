@@ -24,7 +24,7 @@ const key = "agent:main:pending-stop";
 
 describe("pending Stop producer binding", () => {
   it.each(["current", "replacement"] as const)(
-    "uses the agent reservation's original row across %s admission",
+    "does not treat an agent routing reservation as controller admission across %s row state",
     async (target) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const client = roleClient("view", "pending-agent-owner");
@@ -96,15 +96,8 @@ describe("pending Stop producer binding", () => {
           isWebchatConnect: () => false,
           extraHandlers: { "chat.abort": handleChatAbortRequest },
         });
-        expect(respond.mock.calls[0]?.[1]).toMatchObject({ aborted: target === "current" });
-        if (target === "replacement") {
-          expect(context.dedupe.get(`agent:${runId}`)).toBe(pending);
-        } else {
-          expect(context.dedupe.get(`agent:${runId}`)?.payload).toMatchObject({
-            status: "timeout",
-            summary: "aborted",
-          });
-        }
+        expect(respond.mock.calls[0]?.[1]).toMatchObject({ aborted: false });
+        expect(context.dedupe.get(`agent:${runId}`)).toBe(pending);
       });
     },
   );
@@ -143,7 +136,6 @@ describe("pending Stop producer binding", () => {
       const entered = createDeferredCore();
       const release = createDeferredCore();
       const hold = runSessionMutation({
-
         scope: session.value.storePath,
         identities: [key, "original"],
         run: async () => {
@@ -180,10 +172,6 @@ describe("pending Stop producer binding", () => {
           extraHandlers: { "chat.abort": handleChatAbortRequest },
         });
         expect(respond.mock.calls[0]?.[1]).toMatchObject({ aborted: true, runIds: [runId] });
-        expect(context.dedupe.get(`chat:${runId}`)?.payload).toMatchObject({
-          status: "timeout",
-          summary: "aborted",
-        });
       } finally {
         release.resolve();
         await hold;
@@ -192,6 +180,10 @@ describe("pending Stop producer binding", () => {
           settled.value.cleanupAdmittedRun();
         }
         expect(settled.ok).toBe(false);
+        expect(context.dedupe.get(`chat:${runId}`)?.payload).toMatchObject({
+          status: "timeout",
+          summary: "aborted",
+        });
       }
     });
   });

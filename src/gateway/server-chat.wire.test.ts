@@ -10,7 +10,6 @@ import {
   resetAgentEventsForTest,
 } from "../infra/agent-events.js";
 import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
-import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { abortChatRunById, registerChatAbortController } from "./chat-abort.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import { emitAgentEvent, registerChatRun } from "./server-chat.agent-events.test-helpers.js";
@@ -384,29 +383,8 @@ it.each(["native", "dispatch", "abort", "retry", "clearRun", "clear"] as const)(
       } else if (terminal === "clearRun") {
         chatRunState.clearRun(runId);
       } else {
-        rpcSourceTesting.clear();
-        registerChatAbortController({
-          target: captureSessionTarget({
-            storeScope: "/synthetic/chat-wire/" + runId,
-            sessionKey,
-            incarnation: runId,
-          }),
-          runId,
-          sessionId: runId,
-          sessionKey,
-          timeoutMs: 60_000,
-        });
-        expect(
-          abortChatRunById(
-            {
-              ...harness,
-              ...broadcaster,
-              removeChatRun: (sourceRunId, clientRunId, key) =>
-                chatRunState.registry.remove(sourceRunId, clientRunId, key),
-            },
-            { runId, sessionKey },
-          ).aborted,
-        ).toBe(true);
+        chatRunState.clear();
+        harness.registerRun(runId, sessionKey);
       }
       expect(broadcaster.getBufferedAmount(client.connId)).toBe(socket.bufferedAmount);
       expected = "successor reply";

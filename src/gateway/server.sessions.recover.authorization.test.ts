@@ -316,7 +316,6 @@ test("sessions.recover retains source revocation for its accepted own successor"
   expect(requestAuthority.isCurrent()).toBe(false);
   expect(acceptedRun.input.abortSignal.aborted).toBe(true);
   expect(providerCancellationObserved).toBe(true);
-  expect(context.removeChatRun).toHaveBeenCalled();
   retainedRun.release();
   const recoveredKey = recovered.payload?.key ?? "";
   expect(

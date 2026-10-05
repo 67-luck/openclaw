@@ -104,6 +104,7 @@ export function createActiveRun(
         agentId: params.agentId,
         resetTriggered: false,
         mailboxClaim: claim,
+        target: input.target,
       });
       // This fixture owns a real producer that returns after observing cancellation.
       // Stop must still join its finally block rather than treating abort as settlement.

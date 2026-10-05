@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
 import {
   bindTestChannelParticipantAdmissionEvidence,
@@ -76,7 +77,7 @@ export function registerSubscriptionChatRun(
     target:
       input.target ??
       captureSessionTarget({
-        storeScope: "/synthetic/subscription/sessions",
+        storeScope: `/synthetic/subscription/${randomUUID()}/sessions`,
         sessionKey: input.sessionKey ?? "agent:main:subscription",
         agentId: input.agentId,
         incarnation: input.sessionId,

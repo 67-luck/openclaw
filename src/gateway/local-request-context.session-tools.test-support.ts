@@ -1,10 +1,10 @@
 import { steerActiveSessionWithOptionalDeliveryWait } from "../agents/embedded-agent-runner/run/attempt-queue-message.js";
+import { abortEmbeddedAgentRun } from "../agents/embedded-agent-runner/runs.js";
 import {
-  abortEmbeddedAgentRun,
-  clearActiveEmbeddedRun,
-  setActiveEmbeddedRun,
-} from "../agents/embedded-agent-runner/runs.js";
-import { createEmbeddedRunHandle } from "../agents/embedded-agent-runner/runs.test-support.js";
+  clearTestEmbeddedRun,
+  createEmbeddedRunHandle,
+  registerTestEmbeddedRun,
+} from "../agents/embedded-agent-runner/runs.test-support.js";
 import { guardSessionManager } from "../agents/session-tool-result-guard-wrapper.js";
 import { persistAgentSessionMessage } from "../agents/sessions/agent-session-transcript.js";
 import { registerQueuedUserMessageRetirement } from "../agents/sessions/queued-user-message-retirement.js";
@@ -261,7 +261,7 @@ export async function withDelayedSessionToolsSteering(
       ),
   };
   withoutGatewayToolCallerIdentity(() =>
-    setActiveEmbeddedRun(target.sessionId, handle, target.sessionKey, undefined, target.agentId),
+    registerTestEmbeddedRun(target.sessionId, handle, target.sessionKey, undefined, target.agentId),
   );
   const cancel = async () => {
     if (listeners.size === 0) {
@@ -270,18 +270,26 @@ export async function withDelayedSessionToolsSteering(
     emit({ type: "agent_settled" });
     await settled.promise;
   };
+  const settleReceiver = () => emit({ type: "agent_settled" });
   let replacement: ReturnType<typeof createEmbeddedRunHandle> | undefined;
   try {
     await run({
       pendingCount: () => queued.length,
       cancel,
-      end: () => clearActiveEmbeddedRun(target.sessionId, handle, target.sessionKey),
-      abort: () => abortEmbeddedAgentRun(target.sessionId),
+      end: () => {
+        settleReceiver();
+        clearTestEmbeddedRun(target.sessionId, handle, target.sessionKey);
+      },
+      abort: () => {
+        const aborted = abortEmbeddedAgentRun(target.sessionId);
+        settleReceiver();
+        return aborted;
+      },
       replace: () => {
         const next = createEmbeddedRunHandle({ runId: "participant-steering-replacement" });
         replacement = next;
         withoutGatewayToolCallerIdentity(() =>
-          setActiveEmbeddedRun(target.sessionId, next, target.sessionKey),
+          registerTestEmbeddedRun(target.sessionId, next, target.sessionKey),
         );
       },
       commit: async () => {
@@ -300,9 +308,9 @@ export async function withDelayedSessionToolsSteering(
     });
   } finally {
     await cancel();
-    clearActiveEmbeddedRun(target.sessionId, handle, target.sessionKey);
+    clearTestEmbeddedRun(target.sessionId, handle, target.sessionKey);
     if (replacement) {
-      clearActiveEmbeddedRun(target.sessionId, replacement, target.sessionKey);
+      clearTestEmbeddedRun(target.sessionId, replacement, target.sessionKey);
     }
   }
 }

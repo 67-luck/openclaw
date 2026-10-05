@@ -2,7 +2,6 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { addSessionMember } from "../config/sessions/session-sharing-store.js";
-import { getRpcSourceIdentity } from "../sessions/session-controller.rpc-sources.js";
 import {
   rpcSourceTesting,
   setRpcSourceIdentityForTest,
@@ -218,27 +217,11 @@ describe("invocation-owned session mutations", () => {
                     : "current-incarnation",
               owner: { connId: client.connId },
             });
-            if (kind === "active") {
-              rpcSourceTesting.set(runId, run);
-            } else if (kind === "queued") {
+            if (kind === "active" || kind === "queued") {
               rpcSourceTesting.set(runId, run);
             } else {
-              context.dedupe.set(`${kind}:${runId}`, {
-                ts: Date.now(),
-                ok: true,
-                payload: {
-                  runId,
-                  status: "accepted",
-                  agentId: "main",
-                  ownerConnId: client.connId,
-                  ...(mismatch === "unbound" || mismatch === "missing-target"
-                    ? {}
-                    : {
-                        sessionKey: getRpcSourceIdentity(run).sessionKey,
-                        sessionId: getRpcSourceIdentity(run).sessionId,
-                      }),
-                },
-              });
+              run.adapter.kind = kind === "agent" ? "agent" : "chat-send";
+              rpcSourceTesting.set(runId, run);
             }
             const before = [...context.dedupe];
             const respond = vi.fn();
@@ -262,9 +245,8 @@ describe("invocation-owned session mutations", () => {
               },
             });
             const allowed = mismatch === "none";
-            if (kind === "active" || kind === "queued") {
-              expect(run.input.abortSignal.aborted).toBe(allowed);
-            } else if (!allowed) {
+            expect(run.input.abortSignal.aborted).toBe(allowed);
+            if (!allowed) {
               expect([...context.dedupe]).toEqual(before);
             }
             if (allowed) {
@@ -281,74 +263,87 @@ describe("invocation-owned session mutations", () => {
     },
   );
 
-  it.each([
-    { kind: "active", method: "chat.abort" },
-    { kind: "queued", method: "chat.abort" },
-    { kind: "queued", method: "sessions.abort" },
-  ] as const)(
-    "$method does not adopt a reentrant $kind producer replacement during narrow Stop",
-    async ({ kind, method }) => {
+  it.each(
+    (
+      [
+        { kind: "active", method: "chat.abort" },
+        { kind: "queued", method: "chat.abort" },
+        { kind: "queued", method: "sessions.abort" },
+      ] as const
+    ).flatMap((entry) =>
+      (["registration", "key", "sessionId", "agentId"] as const).map((changed) => ({
+        kind: entry.kind,
+        method: entry.method,
+        changed,
+      })),
+    ),
+  )(
+    "$method does not adopt a reentrant $kind producer $changed during narrow Stop",
+    async ({ kind, method, changed }) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const client = roleClient("view", "reentrant-stop-owner");
         client.connId = "reentrant-stop";
         client.connect.scopes = ["operator.sessions.write"];
         const cfg = rolePolicyConfig();
         await upsertSessionEntryCore(scope, ownedEntry(client, "original"));
-        for (const changed of ["registration", "key", "sessionId", "agentId"] as const) {
-          const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
-          const runs = kind === "active" ? rpcSourceTesting : rpcSourceTesting;
-          const target = {
-            queued: kind === "queued",
-            agentId: "main",
-            sessionId: "original",
-            owner: { connId: client.connId },
-          };
-          const first = createActiveRun(key, target);
-          const second = createActiveRun(key, target);
-          const replacement = createActiveRun(key, target);
-          runs.set("first", first);
-          runs.set("second", second);
-          first.input.abortSignal.addEventListener(
-            "abort",
-            () => {
-              if (changed === "registration") {
-                runs.set("second", replacement);
-              } else if (changed === "key") {
-                setRpcSourceIdentityForTest(second, { sessionKey: "agent:main:other" });
-              } else if (changed === "sessionId") {
-                setRpcSourceIdentityForTest(second, { sessionId: "replacement" });
-              } else {
-                setRpcSourceIdentityForTest(second, { agentId: "replacement" });
+        const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+        const runs = rpcSourceTesting;
+        const target = {
+          queued: kind === "queued",
+          storeScope: "/synthetic/narrow-stop/reentrant/sessions.db",
+          agentId: "main",
+          sessionId: "original",
+          owner: { connId: client.connId },
+        };
+        const first = createActiveRun(key, target);
+        const second = createActiveRun(key, target);
+        const replacement = createActiveRun(key, target);
+        runs.set("first", first);
+        runs.set("second", second);
+        first.input.abortSignal.addEventListener(
+          "abort",
+          () => {
+            if (changed === "registration") {
+              runs.set("second", replacement);
+            } else if (changed === "key") {
+              setRpcSourceIdentityForTest(second, { sessionKey: "agent:main:other" });
+            } else if (changed === "sessionId") {
+              setRpcSourceIdentityForTest(second, { sessionId: "replacement" });
+            } else {
+              setRpcSourceIdentityForTest(second, { agentId: "replacement" });
+            }
+          },
+          { once: true },
+        );
+        const respond = vi.fn();
+        await handleGatewayRequest({
+          req: {
+            type: "req",
+            id: changed,
+            method,
+            params: method === "chat.abort" ? { sessionKey: key } : { key },
+          },
+          client,
+          context,
+          respond,
+          isWebchatConnect: () => false,
+          extraHandlers: {
+            "chat.abort": handleChatAbortRequest,
+            "sessions.abort": sessionAbortHandlers["sessions.abort"]!,
+          },
+        });
+        const secondAborted = kind === "active" || changed === "key" || changed === "agentId";
+        expect(first.input.abortSignal.aborted).toBe(true);
+        expect(second.input.abortSignal.aborted).toBe(secondAborted);
+        expect(replacement.input.abortSignal.aborted).toBe(false);
+        expect(respond.mock.calls[0]?.[1]).toMatchObject(
+          method === "chat.abort"
+            ? {
+                aborted: true,
+                runIds: secondAborted ? ["second", "first"] : ["first"],
               }
-            },
-            { once: true },
-          );
-          const respond = vi.fn();
-          await handleGatewayRequest({
-            req: {
-              type: "req",
-              id: changed,
-              method,
-              params: method === "chat.abort" ? { sessionKey: key } : { key },
-            },
-            client,
-            context,
-            respond,
-            isWebchatConnect: () => false,
-            extraHandlers: {
-              "chat.abort": handleChatAbortRequest,
-              "sessions.abort": sessionAbortHandlers["sessions.abort"]!,
-            },
-          });
-          expect(first.input.abortSignal.aborted).toBe(true);
-          expect(second.input.abortSignal.aborted).toBe(false);
-          expect(replacement.input.abortSignal.aborted).toBe(false);
-          expect(respond.mock.calls[0]?.[1]).toMatchObject(
-            method === "chat.abort"
-              ? { aborted: true, runIds: ["first"] }
-              : { abortedRunId: "first", status: "aborted" },
-          );
-        }
+            : { abortedRunId: secondAborted ? "second" : "first", status: "aborted" },
+        );
       });
     },
   );
