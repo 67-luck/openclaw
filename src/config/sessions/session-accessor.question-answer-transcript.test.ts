@@ -88,6 +88,7 @@ it.each([
         delivery: { hostCapabilities: host.hostCapabilities, onBlockReply: async () => {} },
       });
     const foreignQuestion = createDeferred<Awaited<ReturnType<typeof askQuestion>>>();
+    const runStarted = createDeferred();
     const writer = SessionManager.open(target, dir);
     const releaseAppend = createDeferred();
     const providerResumed = vi.fn();
@@ -98,6 +99,7 @@ it.each([
       { ...attempt, hostCapabilities: host.hostCapabilities },
       undefined,
       async () => {
+        runStarted.resolve();
         const answer =
           scenario === "foreign-registration" ? await foreignQuestion.promise : await askQuestion();
         await releaseAppend.promise;
@@ -118,6 +120,7 @@ it.each([
       (error: unknown) => ({ entryId: undefined, error }),
     );
     if (scenario === "foreign-registration") {
+      await runStarted.promise;
       void askQuestion().then(foreignQuestion.resolve, foreignQuestion.reject);
     }
     let sourceAnchor: TranscriptEntryAnchor | undefined;
