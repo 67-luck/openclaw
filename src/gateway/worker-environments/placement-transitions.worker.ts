@@ -1,12 +1,14 @@
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { drainWorkerSessionPlacement } from "./placement-drain.js";
 import {
+  isCurrentPlacementTurnClaim,
   nextGeneration,
   normalizeEpoch,
   placementTurnOwner,
   projectWorkerSessionTurnClaim,
   required,
   type WorkerSessionPlacementTransitionPatch,
+  type WorkerSessionTurnClaim,
 } from "./placement-record.js";
 import { getRequired, query, transitionValues, updateTransition } from "./placement-row-codec.js";
 import type { PlacementStoreRuntime } from "./placement-runtime.js";
@@ -88,6 +90,8 @@ export function createPlacementTransitionOps(runtime: PlacementStoreRuntime) {
       ownerEpoch: number;
       expectedGeneration: number;
       forceLocalClaim?: true;
+      requireUnclaimed?: true;
+      expectedTurnClaim?: WorkerSessionTurnClaim;
     }): PlacementTurnClaimReceipt {
       const sessionId = required(input.sessionId, "session id");
       const environmentId = required(input.environmentId, "environment id");
@@ -101,6 +105,14 @@ export function createPlacementTransitionOps(runtime: PlacementStoreRuntime) {
           current.activeOwnerEpoch !== ownerEpoch
         ) {
           throw new Error(`Cannot reconcile stale worker placement for session ${sessionId}`);
+        }
+        // A same-generation claim replacement must not inherit this caller's teardown.
+        if (
+          (input.requireUnclaimed && current.turnClaim) ||
+          (input.expectedTurnClaim &&
+            !isCurrentPlacementTurnClaim(current, input.expectedTurnClaim))
+        ) {
+          throw new Error(`Cannot reconcile stale worker turn for session ${sessionId}`);
         }
         if (hasWorkerWorkspacePendingResult(db, sessionId)) {
           throw new Error(
