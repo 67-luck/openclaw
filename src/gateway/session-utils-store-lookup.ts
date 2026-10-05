@@ -6,6 +6,7 @@ import { resolveAgentMainSessionKey, type SessionEntry } from "../config/session
 import { collectCanonicalSessionLookupKeys } from "../config/sessions/main-session-key.js";
 import { listSessionChildEntriesReadOnly } from "../config/sessions/session-accessor.js";
 import type { SessionEntryReadScope } from "../config/sessions/session-accessor.types.js";
+import { SessionEntryChangedDuringReadError } from "../config/sessions/session-entry-read-errors.js";
 import { withSessionEntriesFromStoresInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import type { SessionMember } from "../config/sessions/session-sharing-store.kernel.js";
 import { prepareSessionStoreTargetInventory } from "../config/sessions/session-store-target-inventory.js";
@@ -473,7 +474,10 @@ export async function withGatewaySessionStoreTarget<T>(
           if (
             consumed ||
             attempt >= 1 ||
-            !(error instanceof GatewaySessionFactsChangedDuringReadError)
+            !(
+              error instanceof GatewaySessionFactsChangedDuringReadError ||
+              error instanceof SessionEntryChangedDuringReadError
+            )
           ) {
             throw error;
           }
