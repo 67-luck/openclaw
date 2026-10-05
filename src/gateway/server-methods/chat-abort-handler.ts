@@ -418,6 +418,7 @@ export async function handleChatAbortRequestWithLifecycle(
           sessionKey: activeIdentity.sessionKey,
           sessionId: activeIdentity.sessionId,
         },
+        afterParent: cancelWorker,
         onCancelled: (target) => {
           if (target === reserved) {
             aborted = true;
@@ -514,6 +515,7 @@ export async function handleChatAbortRequestWithLifecycle(
         assertCurrent,
         reason: "rpc",
         hookContext: { ...stopHookContext, sessionKey, sessionId },
+        afterParent: cancelWorker,
         onCancelled: (target) => {
           if (target === active.input) {
             aborted = true;
