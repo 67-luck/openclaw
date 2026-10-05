@@ -141,7 +141,7 @@ beforeEach(async () => {
       if (signal?.aborted) {
         resolve();
       } else {
-        signal?.addEventListener("abort", resolve, { once: true });
+        signal?.addEventListener("abort", onAbort, { once: true });
       }
     });
     try {

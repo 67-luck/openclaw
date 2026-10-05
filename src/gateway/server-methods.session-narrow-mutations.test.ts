@@ -288,7 +288,10 @@ describe("invocation-owned session mutations", () => {
         await upsertSessionEntryCore(scope, ownedEntry(client, "original"));
         const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
         const runs = rpcSourceTesting;
-        const session = expectDefined(resolveSessionSharingTarget({ cfg, ...scope }));
+        const session = expectDefined(
+          resolveSessionSharingTarget({ cfg, ...scope }),
+          "narrow Stop session target",
+        );
         const target = {
           queued: kind === "queued",
           storeScope: session.storePath,
@@ -316,13 +319,17 @@ describe("invocation-owned session mutations", () => {
               });
               runs.set("second", replacement);
             } else if (changed === "key") {
-              setRpcSourceIdentityForTest(expectDefined(second), {
+              setRpcSourceIdentityForTest(expectDefined(second, "queued narrow Stop source"), {
                 sessionKey: "agent:main:other",
               });
             } else if (changed === "sessionId") {
-              setRpcSourceIdentityForTest(expectDefined(second), { sessionId: "replacement" });
+              setRpcSourceIdentityForTest(expectDefined(second, "queued narrow Stop source"), {
+                sessionId: "replacement",
+              });
             } else {
-              setRpcSourceIdentityForTest(expectDefined(second), { agentId: "replacement" });
+              setRpcSourceIdentityForTest(expectDefined(second, "queued narrow Stop source"), {
+                agentId: "replacement",
+              });
             }
           },
           { once: true },
@@ -346,10 +353,14 @@ describe("invocation-owned session mutations", () => {
         });
         expect(first.input.abortSignal.aborted).toBe(true);
         if (kind === "queued") {
-          expect(expectDefined(second).input.abortSignal.aborted).toBe(false);
+          expect(expectDefined(second, "queued narrow Stop source").input.abortSignal.aborted).toBe(
+            false,
+          );
         }
         if (kind === "active" || changed === "registration") {
-          expect(expectDefined(replacement).input.abortSignal.aborted).toBe(false);
+          expect(
+            expectDefined(replacement, "reentrant narrow Stop successor").input.abortSignal.aborted,
+          ).toBe(false);
         }
         expect(respond.mock.calls[0]?.[1]).toMatchObject(
           method === "chat.abort"

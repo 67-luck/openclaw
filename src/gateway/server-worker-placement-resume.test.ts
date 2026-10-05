@@ -143,7 +143,7 @@ describe("worker automatic resume", () => {
           sessionKey: REQUEST.sessionKey,
           sessionId: REQUEST.sessionId,
           target: controllerTarget,
-          signal: controller.signal,
+          abortSignal: controller.signal,
         },
         () =>
           runtime.admissionProvider.executeTurn(

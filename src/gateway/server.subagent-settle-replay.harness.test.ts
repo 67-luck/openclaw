@@ -139,9 +139,15 @@ describe("public yielded settle replay with real Gateway admission", () => {
   });
 
   async function markCommandExecutionStarted(command: AgentCommandOpts): Promise<void> {
-    const operation = getRpcSource(command.runId)?.input.claim?.operation;
-    expect(operation).toBeDefined();
-    markReplyOperationExecutionStarted(operation!);
+    const runId = command.runId;
+    if (!runId) {
+      throw new Error("Expected the replayed command to carry its admitted run ID");
+    }
+    const operation = getRpcSource(runId)?.input.claim?.operation;
+    if (!operation) {
+      throw new Error(`Expected an admitted RPC source operation for ${runId}`);
+    }
+    markReplyOperationExecutionStarted(operation);
     await command.onExecutionStarted?.();
   }
 

@@ -244,11 +244,14 @@ function bindFollowupCompletion(execution: ReturnType<typeof createExecution>) {
   params.resolvedSessionId = getRpcSourceIdentity(entry).sessionId;
   params.lifecycleGeneration = lifecycleGeneration;
   rpcSourceTesting.reset([[params.runId, entry]]);
+  const previousAbort = params.prepared.activeRunAbort;
   params.prepared.activeRunAbort = {
-    ...params.prepared.activeRunAbort,
     registered: true,
     controller: testRpcSourceController(entry),
     entry,
+    markExecutionStarted: previousAbort.markExecutionStarted,
+    bindAgentRunDelegatedAuthority: previousAbort.bindAgentRunDelegatedAuthority,
+    cleanup: previousAbort.cleanup,
   };
   params.prepared.activeGatewayWorkAdmission!.isActive = () => true;
   execution.abortCleanup.mockImplementation(() => {
