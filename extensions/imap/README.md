@@ -14,6 +14,9 @@ publishes no DMARC policy. Senders affected by this change should publish the
 appropriate DMARC policy or sign with the sender domain; do not lower the
 configured authentication requirement to compensate. Sender-bound tokens and
 explicitly configured trusted authentication headers keep their existing rules.
+Check affected senders before upgrading: permanently rejected messages advance
+the mailbox cursor and are recorded as skipped, so repairing DNS later does not
+automatically replay those messages.
 
 ## Get started
 

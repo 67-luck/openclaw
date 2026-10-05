@@ -49,16 +49,14 @@ async function signedMessage(signingDomain: string, partial = false) {
       "",
     ].join("\r\n"),
   );
-  const signed = await dkimSign(input, {
-    signatureData: [
-      {
-        signingDomain,
-        selector: "fixture",
-        privateKey: signingKey,
-        ...(partial ? { maxBodyLength: 5 } : {}),
-      },
-    ],
-  });
+  const signature = {
+    signingDomain,
+    selector: "fixture",
+    privateKey: signingKey,
+    ...(partial ? { maxBodyLength: 5 } : {}),
+  };
+  // Mailauth's declaration requires top-level signing fields, but its signer reads signatureData.
+  const signed = await dkimSign(input, { ...signature, signatureData: [signature] });
   expect(signed.errors).toEqual([]);
   return Buffer.concat([Buffer.from(signed.signatures), input]);
 }
