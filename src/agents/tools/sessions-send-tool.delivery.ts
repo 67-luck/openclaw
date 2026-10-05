@@ -231,7 +231,11 @@ export async function trySessionsSendActiveRunDelivery(
       };
       const queueOutcome = selection.operatorAuthority
         ? await queueSessionsSendSteeringWithCustody(
-            { sessionKey: params.sessionKey, agentId: params.sendParams.agentId },
+            {
+              sessionKey: params.sessionKey,
+              sessionId: activeRunSessionId,
+              agentId: params.sendParams.agentId,
+            },
             selection.assertCurrent,
             queue,
           )

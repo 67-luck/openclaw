@@ -147,10 +147,12 @@ export async function withPersonalToolTurn<T>(
     admittedRunContext: AdmittedRunContext;
     runtimeIdentity: AgentRuntimeIdentity;
     releaseCounts: Map<string, number>;
+    authorityLeases: Array<{ profileId: string; releases: number }>;
   }) => Promise<T>,
 ): Promise<T> {
   const revoked = new Set<string>();
   const releaseCounts = new Map<string, number>();
+  const authorityLeases: Array<{ profileId: string; releases: number }> = [];
   const run = createQueueTestRun({ prompt: "Arrange my view" });
   const modelPolicy = prepareOperatorModelPolicy({ cfg: {}, policy: {} });
   const authority = (person: Person, scopes = ["operator.read", "operator.write"]) =>
@@ -166,8 +168,14 @@ export async function withPersonalToolTurn<T>(
           throw new Error("Profile access revoked");
         }
       },
-      retain: () => () =>
-        releaseCounts.set(person.profileId, (releaseCounts.get(person.profileId) ?? 0) + 1),
+      retain: () => {
+        const lease = { profileId: person.profileId, releases: 0 };
+        authorityLeases.push(lease);
+        return () => {
+          lease.releases += 1;
+          releaseCounts.set(person.profileId, (releaseCounts.get(person.profileId) ?? 0) + 1);
+        };
+      },
     });
   run.operatorAuthority = authority(params.owner);
   Object.assign(run.run, {
@@ -309,6 +317,7 @@ export async function withPersonalToolTurn<T>(
               admittedRunContext,
               runtimeIdentity,
               releaseCounts,
+              authorityLeases,
               complete: () => operation.complete(),
               revoke: (profileId) => {
                 revoked.add(profileId);

@@ -3,15 +3,16 @@ import {
   runWithInProcessGatewaySessionMutation,
 } from "../../gateway/server-plugin-in-process-dispatch.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import type {
-  EmbeddedAgentQueueMessageOptions,
-  EmbeddedAgentQueueMessageOutcome,
+import {
+  captureActiveEmbeddedRunAttemptSettlement,
+  type EmbeddedAgentQueueMessageOptions,
+  type EmbeddedAgentQueueMessageOutcome,
 } from "../embedded-agent-runner/runs.js";
 import { captureGatewayToolCallerAssertion } from "./gateway-caller-context.js";
 
 /** The recipient owns accepted input until commit or cancellation, independently of the sender. */
 export async function queueSessionsSendSteeringWithCustody(
-  target: { sessionKey: string; agentId: string },
+  target: { sessionKey: string; sessionId: string; agentId: string },
   assertSelectionCurrent: () => void,
   queue: (
     assertCurrent: () => void,
@@ -38,6 +39,7 @@ export async function queueSessionsSendSteeringWithCustody(
             assertMutationCurrent();
           };
           assertCurrent();
+          const attemptSettlement = captureActiveEmbeddedRunAttemptSettlement(target.sessionId);
           const queued = queue(assertCurrent, {
             onQueueAccepted: (value) => {
               accepted ||= value;
@@ -57,7 +59,9 @@ export async function queueSessionsSendSteeringWithCustody(
             },
           );
           // Receiver teardown can precede a backend's queue receipt.
-          await settlement.promise;
+          await (attemptSettlement
+            ? Promise.race([settlement.promise, attemptSettlement])
+            : settlement.promise);
         }),
       );
     } catch (error) {

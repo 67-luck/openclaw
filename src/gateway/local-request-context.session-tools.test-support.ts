@@ -283,6 +283,9 @@ export async function withDelayedSessionToolsSteering(
       abort: () => {
         const aborted = abortEmbeddedAgentRun(target.sessionId);
         settleReceiver();
+        if (aborted) {
+          clearTestEmbeddedRun(target.sessionId, handle, target.sessionKey);
+        }
         return aborted;
       },
       replace: () => {
