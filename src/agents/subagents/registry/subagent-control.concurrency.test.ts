@@ -402,7 +402,8 @@ it.each(["bulk", "admin"] as const)(
     const start = vi.fn(async () => {});
     const cleanupGate = createDeferred();
     const removed = vi.fn(async () => await cleanupGate.promise);
-    for (const runId of queued) {
+    const queuedCleanup = queued.map((runId) => ({ runId, entered: createDeferred() }));
+    for (const { runId, entered } of queuedCleanup) {
       enqueueSwarmRun({
         groupId: "sibling-cancellation",
         runId,
@@ -410,7 +411,10 @@ it.each(["bulk", "admin"] as const)(
         activeRunIds: running,
         start,
         onStartFailure: () => true,
-        onRemoved: removed,
+        onRemoved: async () => {
+          entered.resolve();
+          await removed();
+        },
       });
     }
     const interrupted: string[] = [];
@@ -464,7 +468,15 @@ it.each(["bulk", "admin"] as const)(
       for (const lease of leases.toReversed()) {
         lease.release();
       }
-      await vi.waitFor(() => expect(removed).toHaveBeenCalledTimes(queued.length));
+      // Preparation may publish asynchronously; synchronize with physical cleanup,
+      // while still rejecting a Stop that returns without entering every callback.
+      await Promise.race([
+        Promise.all(queuedCleanup.map(({ entered }) => entered.promise)),
+        pending.then(() => {
+          throw new Error("Stop returned before every queued cleanup entered.");
+        }),
+      ]);
+      expect(removed).toHaveBeenCalledTimes(queued.length);
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
