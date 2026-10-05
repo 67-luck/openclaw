@@ -45,6 +45,7 @@ export function registerAgentTurnSourceAdmission({
   assertAdmissionCurrent,
   isSourcePreparationComplete,
   onRegistered,
+  onCancelled,
   controllerInput,
 }: {
   sessionKey?: string;
@@ -60,6 +61,7 @@ export function registerAgentTurnSourceAdmission({
   assertAdmissionCurrent?: () => void;
   isSourcePreparationComplete: () => boolean;
   onRegistered: (registration: ReturnType<typeof registerChatAbortController>) => void;
+  onCancelled: (target: { agentId?: string; sessionKey: string; stopReason: string }) => void;
   controllerInput?: SessionControllerInput;
 }) {
   const { request, cfg, runId, suppressVisibleSessionEffects, inputProvenance } = preflight;
@@ -112,6 +114,8 @@ export function registerAgentTurnSourceAdmission({
     controlUiVisible:
       !suppressVisibleSessionEffects && !isSubagentCoordinationInputProvenance(inputProvenance),
     operationalRunInstance: createOperationalRunInstanceRef(runId),
+    onCancel: (stopReason) =>
+      onCancelled({ agentId: sourceAgentId, sessionKey: loaded.canonicalKey, stopReason }),
     sourceInput: controllerInput,
   });
   onRegistered(earlyRunAbort);

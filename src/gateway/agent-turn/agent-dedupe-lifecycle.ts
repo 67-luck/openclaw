@@ -218,6 +218,30 @@ export function createAgentDedupeLifecycle(params: {
     reserved = false;
   };
 
+  const cancelOwnedReservation = (target: {
+    agentId?: string;
+    sessionKey: string;
+    stopReason: string;
+  }) => {
+    if (accepted) {
+      return false;
+    }
+    const keys = ownedReservationKeys();
+    if (keys.length !== params.agentDedupeKeys.length) {
+      return false;
+    }
+    setAbortedAgentDedupeEntries({
+      dedupe: params.context.dedupe,
+      keys,
+      agentId: target.agentId,
+      sessionKey: target.sessionKey,
+      runId: params.runId,
+      stopReason: target.stopReason,
+    });
+    accepted = true;
+    return true;
+  };
+
   const bindSessionTarget = (target: {
     sessionKey: string;
     agentId?: string;
@@ -324,6 +348,7 @@ export function createAgentDedupeLifecycle(params: {
     reserve,
     bindSessionTarget,
     clearUnaccepted,
+    cancelOwnedReservation,
     abortForLifecycleRotation,
     isReserved: () => reserved,
     markAccepted: (value: boolean) => {

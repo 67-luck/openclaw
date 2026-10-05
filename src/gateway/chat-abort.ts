@@ -162,6 +162,7 @@ export function registerChatAbortController(params: {
   operationalRunInstance?: OperationalRunInstanceRef;
   /** Raw source work includes preparation and source-specific terminal publication. */
   sourceWork?: Promise<unknown>;
+  onCancel?: (stopReason: string) => void;
   now?: number;
   expiresAtMs?: number;
   sourceInput?: SessionControllerInput;
@@ -227,6 +228,7 @@ export function registerChatAbortController(params: {
         ? reason
         : resolveAgentRunAbortLifecycleFields(input.abortSignal).stopReason;
     adapter.abortDiagnosticReason ??= resolveChatAbortDiagnosticReason(input.abortSignal, adapter);
+    params.onCancel?.(adapter.abortStopReason);
   };
   adapter.resolveTerminalProducer = params.resolveTerminalProducer
     ? () => params.resolveTerminalProducer?.(entry)

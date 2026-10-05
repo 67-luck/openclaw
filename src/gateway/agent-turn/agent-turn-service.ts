@@ -10,6 +10,7 @@ import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
+import { getRpcSource } from "../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import { registerChatAbortController } from "../chat-abort.js";
@@ -164,6 +165,10 @@ export function createAgentTurnService(
       assertAdmissionCurrent?.();
       dedupeLifecycle.assertReservationCurrent();
       assertInputCommitAllowed?.();
+      if (earlyRunAbort?.entry && getRpcSource(runId) !== earlyRunAbort.entry) {
+        earlyRunAbort.controller.signal.throwIfAborted();
+        throw new Error("Agent request no longer owns its RPC source");
+      }
       earlyRunAbort?.controller.signal.throwIfAborted();
     };
     let agentId = routing.agentId;
@@ -214,6 +219,7 @@ export function createAgentTurnService(
             onRegistered: (registration) => {
               earlyRunAbort = registration;
             },
+            onCancelled: dedupeLifecycle.cancelOwnedReservation,
             controllerInput,
           }),
       }).catch(dedupeLifecycle.handlePreparationFailure(assertAdmissionCurrent));
@@ -443,6 +449,12 @@ export function createAgentTurnService(
               !suppressVisibleSessionEffects &&
               !isSubagentCoordinationInputProvenance(inputProvenance),
             operationalRunInstance: createOperationalRunInstanceRef(runId),
+            onCancel: (stopReason) =>
+              dedupeLifecycle.cancelOwnedReservation({
+                agentId: sessionAgentId,
+                sessionKey: canonicalSessionKey,
+                stopReason,
+              }),
             sourceInput: controllerInput,
           });
           admissionController.setAdmittedRunAbort(earlyRunAbort);
