@@ -151,13 +151,15 @@ vi.mock("../plugin-state/plugin-state-store.js", async () => ({
   closePluginStateDatabaseAsync: mocks.closePluginStateDatabaseAsync,
 }));
 
-vi.mock("../logging/subsystem.js", () => ({
-  createSubsystemLogger: vi.fn(() => ({
-    debug: vi.fn(),
-    info: mocks.logInfo,
-    warn: mocks.logWarn,
-  })),
-}));
+vi.mock("../logging/subsystem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../logging/subsystem.js")>();
+  const { createMockSubsystemLogger } = await import("../../test/helpers/mock-subsystem-logger.js");
+  return {
+    ...actual,
+    createSubsystemLogger: (subsystem: string) =>
+      createMockSubsystemLogger(subsystem, { info: mocks.logInfo, warn: mocks.logWarn }),
+  };
+});
 
 const createGatewayCloseHandler = createGatewayCloseTestHandlerFactory(
   await import("./server-close.js"),

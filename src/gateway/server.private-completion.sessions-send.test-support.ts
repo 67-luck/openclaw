@@ -25,6 +25,7 @@ type PrivateCompletionFixture = {
   transcript: () => unknown;
   recorder: (input: unknown) => UserTurnTranscriptRecorder;
   agentCommandMock: typeof gatewayAgentCommandMock;
+  verifyChatSuccessor(signal: AbortSignal): Promise<void>;
 };
 
 export function registerSessionsSendPrivateCompletionTests(
@@ -43,6 +44,7 @@ export function registerSessionsSendPrivateCompletionTests(
         transcript,
         recorder,
         agentCommandMock,
+        verifyChatSuccessor,
       } = getFixture();
       const childRunId = `sessions-send-child-${sequence}`;
       const childSessionKey = `agent:main:subagent:${childRunId}`;
@@ -149,6 +151,7 @@ export function registerSessionsSendPrivateCompletionTests(
             status: "ok",
             inputProcessingCompleted: true,
           });
+          await verifyChatSuccessor(signal);
         } else {
           expect(settled.pending).toMatchObject([
             {

@@ -27,6 +27,7 @@ import {
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { evaluateTurnAdmission } from "../../sessions/session-controller.admission-rule.js";
+import { createSessionControllerPhaseLogger } from "../../sessions/session-controller.diagnostics.js";
 import {
   createReplyOperation,
   isReplyRunSuccessorAdmissionBlocked,
@@ -250,10 +251,20 @@ export async function admitReplyTurn(
         if (params.kind === "heartbeat") {
           return { status: "skipped", reason: "active-run" };
         }
+        const logBarrier = createSessionControllerPhaseLogger("successor-barrier", {
+          sessionKey: params.sessionKey,
+          sessionId,
+          sourceId: params.runId,
+        });
+        logBarrier("waiting");
         const successorAdmission = await waitForReplyRunSuccessorAdmission(
           controllerKey,
           params.kind === "visible" ? null : waitTimeoutMs,
           { signal: params.upstreamAbortSignal },
+        );
+        logBarrier(
+          successorAdmission.settled ? "settled" : "failed",
+          successorAdmission.settled ? undefined : "aborted-or-deadline",
         );
         if (!successorAdmission.settled) {
           return {
@@ -291,10 +302,20 @@ export async function admitReplyTurn(
           );
           admittedDatabaseClaim = current.databaseClaim;
         }
+        const logBarrier = createSessionControllerPhaseLogger("followup-barrier", {
+          sessionKey: params.sessionKey,
+          sessionId,
+          sourceId: params.runId,
+        });
+        logBarrier("waiting");
         const settlement = await waitForReplyRunFollowupAdmission(
           controllerKey,
           waitTimeoutMs ?? REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
           { signal: params.upstreamAbortSignal },
+        );
+        logBarrier(
+          settlement.settled ? "settled" : "failed",
+          settlement.settled ? undefined : "aborted-or-deadline",
         );
         if (!settlement.settled) {
           return {

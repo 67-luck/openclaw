@@ -4,6 +4,7 @@ import { createQueueTestRun } from "../auto-reply/reply/queue.test-helpers.js";
 import { reserveSteerCandidate, enqueueFollowupRun } from "../auto-reply/reply/queue/enqueue.js";
 import { admitFollowupRunLifecycle } from "../auto-reply/reply/queue/lifecycle.js";
 import { clearFollowupQueue } from "../auto-reply/reply/queue/state.js";
+import { diagnosticLogger } from "../logging/diagnostic-runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { deferSessionControllerClaimBeforeExecution } from "./session-controller.mailbox-claim.js";
 import { reserveSessionControllerClaimPredecessor } from "./session-controller.mailbox-predecessor.js";
@@ -191,6 +192,8 @@ describe("controller mailbox scheduling", () => {
     expect(findSessionControllerEntry(key)).toBeUndefined();
   });
   it("does not let pre-dispatch bypass an older preparing input or retain a failed claim request", async () => {
+    using _enabled = vi.spyOn(diagnosticLogger, "isEnabled").mockReturnValue(true);
+    using phases = vi.spyOn(diagnosticLogger, "info").mockImplementation(() => undefined);
     const first = reserveSessionControllerSource(key, { policy: { mode: "followup" } });
     const second = reserveSessionControllerSource(key, { policy: { mode: "followup" } });
     expect(tryClaimSessionControllerTask(second)).toBeUndefined();
@@ -201,6 +204,16 @@ describe("controller mailbox scheduling", () => {
     await firstClaim!.settlement.promise;
     const secondClaim = await claimSessionControllerTask(second, () => {});
     expect(secondClaim.inputs).toEqual([second]);
+    expect(
+      phases.mock.calls
+        .filter(
+          ([message, details]) =>
+            message === "session controller phase" &&
+            details?.phase === "source-claim" &&
+            details.sourceId === second.instance.id,
+        )
+        .map(([, details]) => details?.status),
+    ).toEqual(["waiting", "selected"]);
     releaseSessionControllerClaim(secondClaim);
     await secondClaim.settlement.promise;
     expect(findSessionControllerEntry(key)).toBeUndefined();

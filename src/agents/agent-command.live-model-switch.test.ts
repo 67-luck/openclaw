@@ -500,20 +500,17 @@ vi.mock("../infra/skills-remote.js", () => ({
   getRemoteSkillEligibility: () => ({ eligible: false }),
 }));
 
-vi.mock("../logging/subsystem.js", () => ({
-  createSubsystemLogger: (subsystem: string) => {
-    const logger = {
-      info: vi.fn(),
-      warn: subsystem === "agents/agent-command" ? state.commandWarnMock : vi.fn(),
-      error: vi.fn(),
-      debug: vi.fn(),
-      trace: vi.fn(),
-      raw: vi.fn(),
-      child: vi.fn(() => logger),
-    };
-    return logger;
-  },
-}));
+vi.mock("../logging/subsystem.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../logging/subsystem.js")>();
+  const { createMockSubsystemLogger } = await import("../../test/helpers/mock-subsystem-logger.js");
+  return {
+    ...actual,
+    createSubsystemLogger: (subsystem: string) =>
+      createMockSubsystemLogger(subsystem, {
+        warn: subsystem === "agents/agent-command" ? state.commandWarnMock : vi.fn(),
+      }),
+  };
+});
 
 afterAll(() => {
   // This suite runs in a shared worker; do not leak its module-level logger

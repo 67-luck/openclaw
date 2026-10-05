@@ -5,7 +5,6 @@ import { requiresIndividualCollectDrain } from "../auto-reply/reply/queue/envelo
 import type { FollowupRun, QueueSettings } from "../auto-reply/reply/queue/types.js";
 import { isFollowupRunAborted } from "../auto-reply/reply/queue/types.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
-import { toErrorObject } from "../infra/errors.js";
 import {
   bindGatewayContextResolver,
   getGatewayContextResolver,
@@ -14,8 +13,8 @@ import {
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
+import { logSessionControllerSourceClaim } from "./session-controller.diagnostics.js";
 import { captureSessionTarget, type SessionTarget } from "./session-controller.lifecycle.js";
-import { releaseSessionControllerClaim } from "./session-controller.mailbox-claim.js";
 import {
   inputCancellation,
   bindSessionControllerSource,
@@ -175,6 +174,7 @@ export function claimSessionControllerInput(
   };
   input.reject = (error) => {
     signal?.removeEventListener("abort", abort);
+    logSessionControllerSourceClaim(input, "failed");
     pending.reject(error);
   };
   if (signal?.aborted) {
@@ -183,6 +183,7 @@ export function claimSessionControllerInput(
   }
   signal?.addEventListener("abort", abort, { once: true });
   input.phase = "waiting";
+  logSessionControllerSourceClaim(input, "waiting");
   input.mailbox.wake();
   return pending.promise;
 }
@@ -438,6 +439,7 @@ function pumpSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
     settleSessionControllerSourceInjectionOrder(input, false);
     input.phase = "claimed";
     input.claim = claim;
+    logSessionControllerSourceClaim(input, "selected");
   }
   if (first.ready) {
     first.ready(claim);
@@ -448,102 +450,11 @@ function pumpSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
   }
 }
 
-/** Native producer admission enters the same sequence, not a parallel runnable list. */
-export function submitSessionControllerTask(
-  key: string,
-  params: {
-    signal?: AbortSignal;
-    target?: SessionTarget;
-    start(claim: SessionControllerMailboxClaim): void;
-  },
-): Promise<SessionControllerMailboxClaim> {
-  const input = reserveSessionControllerSource(key, {
-    policy: { mode: "followup" },
-    target: params.target,
-    adapter: { signal: params.signal },
-  });
-  return claimSessionControllerTask(input, (claim) => params.start(claim));
-}
-
-/** A prepared producer consumes its existing source, never submits another runnable input. */
-export function claimSessionControllerTask(
-  input: SessionControllerInput,
-  start: (claim: SessionControllerMailboxClaim) => void,
-  kind: NonNullable<SessionControllerInput["taskTurnKind"]> = "direct",
-): Promise<SessionControllerMailboxClaim> {
-  if (input.phase === "consumed" || input.retirementRequested || input.abortSignal.aborted) {
-    return Promise.reject(toErrorObject(input.abortSignal.reason, "Source no longer available"));
-  }
-  if (input.injection) {
-    return Promise.reject(new Error("Source injection outcome pending"));
-  }
-  if (input.claim && !input.claim.released) {
-    try {
-      start(input.claim);
-      return Promise.resolve(input.claim);
-    } catch (error) {
-      return Promise.reject(toErrorObject(error, "Source claim failed"));
-    }
-  }
-  if (input.task || input.ready) {
-    return Promise.reject(new Error("Source already has a claim request"));
-  }
-  const pending = createDeferredCore<SessionControllerMailboxClaim>();
-  input.reject = pending.reject;
-  input.taskTurnKind = kind;
-  input.task = (claim) => {
-    try {
-      input.abortSignal.throwIfAborted();
-      start(claim);
-      pending.resolve(claim);
-    } catch (error) {
-      releaseSessionControllerClaim(claim);
-      pending.reject(error);
-    }
-  };
-  input.phase = "waiting";
-  input.mailbox.wake();
-  return pending.promise;
-}
-
-/** Pre-dispatch may prepare a queued source, but cannot bypass the turn selector. */
-export function tryClaimSessionControllerTask(
-  input: SessionControllerInput,
-  kind: NonNullable<SessionControllerInput["taskTurnKind"]> = "direct",
-): SessionControllerMailboxClaim | undefined {
-  if (input.claim && !input.claim.released) {
-    return input.claim;
-  }
-  if (
-    input.phase === "consumed" ||
-    input.retirementRequested ||
-    input.abortSignal.aborted ||
-    input.injection ||
-    input.withdrawalHolds
-  ) {
-    return undefined;
-  }
-  if (input.task || input.ready) {
-    throw new Error("Source already has a claim request");
-  }
-  const phase = input.phase;
-  let selected: SessionControllerMailboxClaim | undefined;
-  input.taskTurnKind = kind;
-  input.task = (claim) => {
-    selected = claim;
-  };
-  input.phase = "waiting";
-  try {
-    input.mailbox.wake();
-    return selected;
-  } finally {
-    input.task = undefined;
-    if (!selected && !input.retirementRequested) {
-      input.taskTurnKind = undefined;
-      input.phase = phase;
-    }
-  }
-}
+export {
+  submitSessionControllerTask,
+  claimSessionControllerTask,
+  tryClaimSessionControllerTask,
+} from "./session-controller.mailbox-task.js";
 
 function disposeSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
   const now = Date.now();

@@ -14,6 +14,7 @@ import {
 import { createDeferredCore } from "../shared/deferred.js";
 import { ownerContext, sourceSettlements } from "./session-controller.context.js";
 import type { ReplyOperation } from "./session-controller.contracts.js";
+import { createSessionControllerPhaseLogger } from "./session-controller.diagnostics.js";
 import {
   runAfterRetiringSessionSources,
   waitForSessionControllerSettlement,
@@ -458,6 +459,11 @@ export async function beginSessionEffect(
     : getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext;
   const cancel = new AbortController();
   const signal = params.signal ? AbortSignal.any([params.signal, cancel.signal]) : cancel.signal;
+  const logAdmission = createSessionControllerPhaseLogger("lifecycle-admission", {
+    sessionKey: target.sessionKey,
+    sessionId: target.incarnation,
+    sourceId: params.sourceInput?.protocolRunId ?? current?.claim?.inputs[0]?.protocolRunId,
+  });
   const settled = createDeferredCore();
   let running = 0;
   let releaseRequested = false;
@@ -530,6 +536,7 @@ export async function beginSessionEffect(
   bindGatewayContextResolver(effect, resolver);
   state.effects.add(effect);
   const admission = () => resolveSessionEffectAdmission(effect, state, current, params.sourceInput);
+  logAdmission("waiting", "controller-admission");
   try {
     const closure = state.closures.values().next().value;
     if (closure && !admission().finishingCapturedTurn) {
@@ -546,6 +553,7 @@ export async function beginSessionEffect(
     }
     signal.throwIfAborted();
     effect.phase = "validating";
+    logAdmission("waiting", "validation");
     // No cancellation race once arbitrary validator I/O starts: the controller
     // retains custody until that exact invocation and writer barrier settle.
     await ref.run(async () => await params.assertAllowed(signal));
@@ -554,6 +562,7 @@ export async function beginSessionEffect(
       throw new GatewayDrainingError();
     }
     effect.phase = "writer";
+    logAdmission("waiting", "store-writer");
     let writerStarted = false;
     let removeAbort = () => {};
     const aborted = new Promise<never>((_, reject) => {
@@ -595,9 +604,11 @@ export async function beginSessionEffect(
       removeAbort();
     }
     effect.phase = "acquired";
+    logAdmission("settled", "acquired");
     effect.validated.resolve();
     return ref;
   } catch (error) {
+    logAdmission("failed", signal.aborted ? "aborted" : effect.phase);
     ref.release();
     throw error;
   }

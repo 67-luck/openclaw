@@ -4,6 +4,7 @@ import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { defaultRuntime } from "../runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { logSessionControllerPhase } from "./session-controller.diagnostics.js";
 import type {
   SessionControllerInput,
   SessionControllerSourceCustody,
@@ -88,6 +89,16 @@ export function beginSessionControllerSourceInjection(
   input.injectionAttempted = true;
   input.injection = pending;
   input.phase = "injecting";
+  const diagnosticIdentity = {
+    sessionKey: input.mailbox.key,
+    sourceId: input.protocolRunId ?? input.instance.id,
+  };
+  logSessionControllerPhase({
+    ...diagnosticIdentity,
+    phase: "injection-predecessor",
+    status: "waiting",
+    pendingInputs: olderReservations.length,
+  });
   let started = false;
   let finished = false;
   const finish = (consumed: boolean) => {
@@ -96,6 +107,12 @@ export function beginSessionControllerSourceInjection(
     }
     finished = true;
     const mustConsume = consumed || pending.accepted === true;
+    logSessionControllerPhase({
+      ...diagnosticIdentity,
+      phase: "injection-outcome",
+      status: "settled",
+      reason: mustConsume ? "consumed" : "declined",
+    });
     input.injection = undefined;
     input.phase = phase;
     pending.settle(mustConsume);
@@ -122,6 +139,11 @@ export function beginSessionControllerSourceInjection(
       }
       try {
         await racePromiseWithAbortSignal(predecessor, input.abortSignal);
+        logSessionControllerPhase({
+          ...diagnosticIdentity,
+          phase: "injection-predecessor",
+          status: "settled",
+        });
         if (
           started ||
           finished ||
@@ -142,6 +164,11 @@ export function beginSessionControllerSourceInjection(
         input.sourceAdapter?.authority?.assertCurrent();
         input.abortSignal.throwIfAborted();
         started = true;
+        logSessionControllerPhase({
+          ...diagnosticIdentity,
+          phase: "injection-outcome",
+          status: "waiting",
+        });
         return true;
       } catch (error) {
         // A failed live-authority assertion cannot return a queued-ready source

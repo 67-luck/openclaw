@@ -1,5 +1,6 @@
 /** Pre-execution predecessor ordering for one retained mailbox claim. */
 import { createDeferredCore } from "../shared/deferred.js";
+import { logSessionControllerPhase } from "./session-controller.diagnostics.js";
 import { retireSessionControllerInput } from "./session-controller.mailbox-source.js";
 import { reserveSessionControllerSource } from "./session-controller.mailbox.js";
 import type {
@@ -72,6 +73,13 @@ function waitForSessionControllerClaimRestoration(
     }
     settled = true;
     claim.abortController.signal.removeEventListener("abort", onAbort);
+    logSessionControllerPhase({
+      phase: "recovery-predecessor",
+      status: restored ? "restored" : "failed",
+      sessionKey: mailbox.key,
+      sourceId: predecessor.protocolRunId ?? predecessor.instance.id,
+      reason: restored ? "claim-restored" : "claim-revoked",
+    });
     restoration.resolve(restored);
   };
   const onAbort = () => finish(false);
@@ -135,6 +143,12 @@ export function reserveSessionControllerClaimPredecessor(
 
   // Reorder both selector and cancellation sequence before exposing the open slot.
   orderSessionControllerClaimPredecessor(claim, predecessor);
+  logSessionControllerPhase({
+    phase: "recovery-predecessor",
+    status: "reserved",
+    sessionKey: mailbox.key,
+    sourceId: predecessor.protocolRunId ?? predecessor.instance.id,
+  });
   const restored = waitForSessionControllerClaimRestoration(claim, predecessor);
   mailbox.wake();
   return { input: predecessor, restored };
