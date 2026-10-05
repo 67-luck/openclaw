@@ -2,16 +2,12 @@ import {
   GATEWAY_CLIENT_CAPS,
   hasGatewayClientCap,
 } from "../../../packages/gateway-protocol/src/client-info.js";
-import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { getAdmittedRunDelegatedAuthority } from "../../agents/admitted-run-context.js";
 import {
   attachAgentCommandAdmissionFacts,
   attachAgentCommandRecoveryAdmissionFacts,
 } from "../../agents/agent-command-admission-facts.js";
-import {
-  buildAgentRunTerminalOutcome,
-  type AgentRunTerminalOutcome,
-} from "../../agents/agent-run-terminal-outcome.js";
+import type { AgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
 import { repairMainSessionRecoveryMutation } from "../../agents/main-session-recovery/main-session-recovery-lifecycle.js";
 import { scheduleMainSessionRecoveryPendingTarget } from "../../agents/main-session-recovery/main-session-recovery-owner-release.js";
 import {
@@ -38,10 +34,8 @@ import {
   isRpcSourceRegistered,
   updateRpcSourceSessionId,
 } from "../../sessions/session-controller.rpc-sources.js";
-import { completeUserTurnProcessing } from "../../sessions/user-turn-transcript-processing.js";
 import { isOperatorUiClient } from "../../utils/message-channel.js";
 import { discardPreparedInboundMedia } from "../chat-attachments.js";
-import { errorShapeFromError } from "../error-shape.js";
 import { getGatewayLocalUserIngress } from "../local-user-ingress.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import { createAgentRunModelSelectionHandler } from "../server-methods/agent-run-model-selection.js";
@@ -52,11 +46,6 @@ import { prepareSessionWorkspaceForRun } from "../server-methods/session-create-
 import { reactivateCompletedSubagentSession } from "../session-subagent-reactivation.js";
 import { prepareGatewaySkillAuthoring } from "../skill-library-authoring.js";
 import { captureGatewayUiCommandTarget } from "../ui-command-target.js";
-import {
-  buildAbortedAgentPayload,
-  setAbortedAgentDedupeEntries,
-  setGatewayDedupeEntries,
-} from "./agent-dedupe.js";
 import { yieldAfterAgentAcceptedAck } from "./agent-handler-helpers.js";
 import { captureAgentJobSession } from "./agent-job.js";
 import {
@@ -69,6 +58,7 @@ import { dispatchAgentRunFromGateway } from "./agent-run-dispatch.js";
 import { resolveExecutionIdentitySpawnFacts } from "./agent-run-execution-lineage.js";
 import type { StartAgentRunExecutionParams } from "./agent-run-execution-types.js";
 import { settleUnstartedGatewayFollowup } from "./agent-run-subagent.js";
+import { createAgentRunUndispatchedOutcome } from "./agent-run-undispatched-outcome.js";
 import {
   annotateAgentRunUserTurnPrompt,
   finalizePreparedAgentRunUserTurn,
@@ -160,7 +150,6 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
       }
     };
     let mediaCleanup: Promise<void> | undefined;
-    let publishUndispatchedFinalAfterCleanup: (() => void) | undefined;
     const cleanupAdmittedRun = async () => {
       const refsToDiscard = unpersistedOffloadedRefs;
       unpersistedOffloadedRefs = [];
@@ -228,64 +217,17 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
               outcome,
             })
           : undefined;
-      const finishFailure = async (err: unknown, recordCompletion = true) => {
-        const error = errorShapeFromError(ErrorCodes.UNAVAILABLE, err);
-        const renderedErr = error.message;
-        const outcome = buildAgentRunTerminalOutcome({ status: "error", error: renderedErr });
-        if (recordCompletion) {
-          try {
-            await completeUserTurnProcessing(prepared.userTurn.recorder, outcome);
-          } catch (completionError) {
-            diagnostics.warning("input completion persistence failed")(completionError);
-          }
-        }
-        await settleUnstartedFollowup(outcome);
-        const payload = { runId: params.runId, status: "error" as const, summary: renderedErr };
-        publishUndispatchedFinalAfterCleanup = () => {
-          setGatewayDedupeEntries({
-            dedupe: params.context.dedupe,
-            keys: params.agentDedupeKeys,
-            session: captureJobSession(),
-            entry: diagnostics.forReplay({ ts: Date.now(), ok: false, payload, error }),
-          });
-          deferFinal([false, payload, error], {
-            runId: params.runId,
-            ...diagnostics.errorMeta(renderedErr),
-          });
-        };
-      };
-      const finishUndispatchedAbort = async () => {
-        const stopReason = prepared.activeRunAbort.entry?.adapter.abortStopReason?.trim() || "rpc";
-        const outcome = buildAgentRunTerminalOutcome({
-          status: "timeout",
-          stopReason,
-          timeoutPhase: "queue",
-          providerStarted: false,
+      const { finishFailure, finishUndispatchedAbort, publishAfterCleanup } =
+        createAgentRunUndispatchedOutcome({
+          execution: params,
+          diagnostics,
+          captureJobSession,
+          settleUnstartedFollowup,
+          deferFinal,
+          onRecoveryRestored: (target) => {
+            pendingRecovery = target;
+          },
         });
-        try {
-          pendingRecovery = await prepared.restoreAdmittedRestartRecoveryInterrupted?.();
-          await completeUserTurnProcessing(prepared.userTurn.recorder, outcome);
-        } catch (error) {
-          // This helper also runs from the outer abort catch. A failed required
-          // write must still publish a final error and release the admitted turn.
-          await finishFailure(error, false);
-          return;
-        }
-        await settleUnstartedFollowup(outcome);
-        publishUndispatchedFinalAfterCleanup = () => {
-          setAbortedAgentDedupeEntries({
-            dedupe: params.context.dedupe,
-            keys: params.agentDedupeKeys,
-            session: captureJobSession(),
-            agentId: params.activeSessionAgentId,
-            runId: params.runId,
-            stopReason,
-          });
-          deferFinal([true, buildAbortedAgentPayload(params.runId, stopReason), undefined], {
-            runId: params.runId,
-          });
-        };
-      };
       try {
         if (prepared.activeRunAbort.controller.signal.aborted) {
           await finishUndispatchedAbort();
@@ -733,7 +675,7 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
             await mediaCleanup;
           } finally {
             finishUndispatchedFollowup = !dispatched;
-            publishUndispatchedFinalAfterCleanup?.();
+            publishAfterCleanup();
           }
         }
       }

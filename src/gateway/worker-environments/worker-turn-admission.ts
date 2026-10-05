@@ -11,6 +11,7 @@ import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import { createAbortError } from "../../infra/abort-signal.js";
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
+import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
 import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../../sessions/session-controller.lifecycle.js";
 import { parseCronRunScopeSuffix } from "../../sessions/session-key-utils.js";
 import { projectWorkerSessionTurnClaim } from "./placement-record.js";
@@ -30,6 +31,43 @@ import {
 } from "./workspace-conflicts.js";
 
 type ActiveWorkerPlacement = Extract<WorkerSessionPlacementRecord, { state: "active" }>;
+
+/** Bind the exact caller turn to its admitted operation and restore its fields after settlement. */
+export function bindWorkerTurnOperation<T>(
+  turn: SessionPlacementTurnParams,
+  run: () => Promise<T>,
+): (operation: ReplyOperation | undefined) => Promise<T> {
+  return async (operation) => {
+    if (!operation) {
+      throw new Error("Worker turn session id is required");
+    }
+    const hadAbortSignal = Object.hasOwn(turn, "abortSignal");
+    const callerAbortSignal = turn.abortSignal;
+    const hadReplyOperation = Object.hasOwn(turn, "replyOperation");
+    const callerReplyOperation = turn.replyOperation;
+    // Remote-exec projects attachment guidance onto the same turn captured by runLocal.
+    turn.replyOperation = operation;
+    turn.abortSignal = AbortSignal.any([
+      operation.abortSignal,
+      ...(callerAbortSignal ? [callerAbortSignal] : []),
+    ]);
+    try {
+      return await run();
+    } finally {
+      // Preserve absent fields as well as explicit undefined values on every exit.
+      if (hadReplyOperation) {
+        turn.replyOperation = callerReplyOperation;
+      } else {
+        delete turn.replyOperation;
+      }
+      if (hadAbortSignal) {
+        turn.abortSignal = callerAbortSignal;
+      } else {
+        delete turn.abortSignal;
+      }
+    }
+  };
+}
 
 /** Wait without a placement claim: a claim would fail the refresh's authority check. */
 export async function waitForWorkerRuntimeRefresh(params: {

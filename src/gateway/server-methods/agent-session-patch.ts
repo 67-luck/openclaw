@@ -30,6 +30,7 @@ import {
   type DeliveryContext,
 } from "../../utils/delivery-context.shared.js";
 import { resolveSessionStoreKey } from "../session-store-key.js";
+import type { prepareAgentSession } from "./agent-session-prepare.js";
 import {
   normalizeTrustedGroupMetadata,
   requestGroupMatchesTrusted,
@@ -65,6 +66,48 @@ type AgentSessionReuseInput = {
   visibleRequest: boolean;
   failedSessionTranscriptMissing: (entry: SessionEntry | undefined) => boolean;
 };
+
+/** Keep the prepared target fixed while evaluating each fresh entry for persistence. */
+export function createAgentSessionPatchBuilder(params: {
+  session: NonNullable<ReturnType<typeof prepareAgentSession>>;
+  normalizedSpawned: Parameters<typeof buildAgentSessionPatch>[0]["normalizedSpawned"];
+  requestDeliveryHint: DeliveryContext | undefined;
+  getRequestLabel: () => string | undefined;
+  explicitSessionKey?: string;
+  getPluginOwnerId: () => string | undefined;
+  expectedExistingSessionId?: string;
+  hasRestoredCronContinuation: boolean;
+  requestedSessionId?: string;
+}) {
+  const { session } = params;
+  const prepared = {
+    initialEntry: session.entry,
+    cfg: session.cfg,
+    sessionAgentId: session.canonicalSessionAgentId,
+    canonicalSessionKey: session.canonicalKey,
+    storePath: session.storePath,
+    normalizedSpawned: params.normalizedSpawned,
+    requestDeliveryHint: params.requestDeliveryHint,
+    explicitSessionKey: params.explicitSessionKey,
+    expectedExistingSessionId: params.expectedExistingSessionId,
+    hasRestoredCronContinuation: params.hasRestoredCronContinuation,
+    resetPolicy: session.resetPolicy,
+    now: session.now,
+    requestedSessionId: params.requestedSessionId,
+    isSystemGatewayRun: session.isSystemGatewayRun,
+    visibleRequest: session.visibleRequest,
+    fallbackSessionId: session.sessionId,
+    touchInteraction: session.touchInteraction,
+    failedSessionTranscriptMissing: session.failedSessionTranscriptMissing,
+  };
+  return (freshEntry: SessionEntry | undefined) =>
+    buildAgentSessionPatch({
+      ...prepared,
+      freshEntry,
+      requestLabel: params.getRequestLabel(),
+      pluginOwnerId: freshEntry === undefined ? params.getPluginOwnerId() : undefined,
+    });
+}
 
 /** Re-evaluate the entry from each read; callers retain admission and concurrent-rotation fencing. */
 export function evaluateAgentSessionReuse(params: AgentSessionReuseInput) {

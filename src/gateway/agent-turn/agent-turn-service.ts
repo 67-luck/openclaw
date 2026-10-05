@@ -14,12 +14,12 @@ import { isRpcSourceRegistered } from "../../sessions/session-controller.rpc-sou
 import { createDeferredCore } from "../../shared/deferred.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import { registerChatAbortController } from "../chat-abort.js";
-import { discardPreparedInboundMedia, type OffloadedRef } from "../chat-attachments.js";
+import type { OffloadedRef } from "../chat-attachments.js";
 import { errorShapeFromError } from "../error-shape.js";
 import { readInProcessSubagentResume } from "../in-process-subagent-resume.js";
 import { createCronContinuationController } from "../server-methods/agent-cron-continuation.js";
 import { runAgentResetPhase } from "../server-methods/agent-reset-phase.js";
-import { buildAgentSessionPatch } from "../server-methods/agent-session-patch.js";
+import { createAgentSessionPatchBuilder } from "../server-methods/agent-session-patch.js";
 import { prepareAgentSession } from "../server-methods/agent-session-prepare.js";
 import type { GatewayRequestHandlerOptions, RespondFn } from "../server-methods/shared-types.js";
 import { resolveAgentRunSessionCreation } from "../session-creation-provenance.js";
@@ -35,7 +35,7 @@ import { prepareAgentRequestRouting } from "./agent-request-routing.js";
 import { prepareAgentRunDispatch } from "./agent-run-admission-phase.js";
 import { startAgentRunExecution } from "./agent-run-execution-phase.js";
 import { persistAgentSessionPhase } from "./agent-session-persist.js";
-import { cleanupAgentTurnAdmission } from "./agent-turn-admission-cleanup.js";
+import { finishAgentTurnPreparation } from "./agent-turn-admission-cleanup.js";
 import {
   authorizeAgentTurnSession,
   registerAgentTurnSourceAdmission,
@@ -352,14 +352,9 @@ export function createAgentTurnService(
           storeKeys,
           maintenanceConfig: sessionMaintenanceConfig,
           canonicalSessionAgentId: sessionAgentId,
-          resetPolicy,
-          now,
-          visibleRequest,
           mainSessionKey,
-          isSystemGatewayRun,
           sessionId,
           touchInteraction,
-          failedSessionTranscriptMissing: resolveFailedSessionTranscriptMissingForEntry,
         } = preparedSession;
         cfgForAgent = cfgLocal;
         // Authorize the canonical session the run will actually target — covering
@@ -388,34 +383,18 @@ export function createAgentTurnService(
           // string and numeric threadIds (e.g., Matrix uses integers).
           threadId: recipientThreadId,
         });
-        const explicitSessionKey = normalizeOptionalString(request.sessionKey);
-        const buildSessionPatch = (freshEntry: SessionEntry | undefined) =>
-          buildAgentSessionPatch({
-            freshEntry,
-            initialEntry: entry,
-            cfg: cfgLocal,
-            sessionAgentId,
-            canonicalSessionKey,
-            storePath,
-            normalizedSpawned,
-            requestDeliveryHint,
-            requestLabel: request.label,
-            ...(explicitSessionKey ? { explicitSessionKey } : {}),
-            pluginOwnerId:
-              freshEntry === undefined
-                ? normalizeOptionalString(principal?.internal?.pluginRuntimeOwnerId)
-                : undefined,
-            expectedExistingSessionId,
-            hasRestoredCronContinuation: restoredCronContinuationIdentity !== undefined,
-            resetPolicy,
-            now,
-            requestedSessionId,
-            isSystemGatewayRun,
-            visibleRequest,
-            fallbackSessionId: sessionId,
-            touchInteraction,
-            failedSessionTranscriptMissing: resolveFailedSessionTranscriptMissingForEntry,
-          });
+        const buildSessionPatch = createAgentSessionPatchBuilder({
+          session: preparedSession,
+          normalizedSpawned,
+          requestDeliveryHint,
+          getRequestLabel: () => request.label,
+          explicitSessionKey: normalizeOptionalString(request.sessionKey),
+          getPluginOwnerId: () =>
+            normalizeOptionalString(principal?.internal?.pluginRuntimeOwnerId),
+          expectedExistingSessionId,
+          hasRestoredCronContinuation: restoredCronContinuationIdentity !== undefined,
+          requestedSessionId,
+        });
         const patchBuild = buildSessionPatch(entry);
         isNewSession = patchBuild.isNewSession;
         sessionEntry = mergeSessionEntry(entry, patchBuild.patch);
@@ -711,25 +690,16 @@ export function createAgentTurnService(
       gatewayAdmissionTransferred = true;
       mainRestartRecoveryOwnerLease = undefined;
     } finally {
-      try {
-        if (!gatewayAdmissionTransferred) {
-          await cleanupAgentTurnAdmission({
-            lease: mainRestartRecoveryOwnerLease,
-            cleanupRunAbort: () => earlyRunAbort?.cleanup(),
-            releaseGatewayAdmission,
-            releaseCronContinuation: cronContinuation.releaseWithRecovery,
-          });
-        }
-      } finally {
-        try {
-          await discardPreparedInboundMedia(preparedOffloadedRefs);
-          dedupeLifecycle.clearUnaccepted();
-        } finally {
-          if (!gatewayAdmissionTransferred) {
-            sourceWork.resolve();
-          }
-        }
-      }
+      await finishAgentTurnPreparation({
+        transferred: gatewayAdmissionTransferred,
+        lease: mainRestartRecoveryOwnerLease,
+        cleanupRunAbort: () => earlyRunAbort?.cleanup(),
+        releaseGatewayAdmission,
+        releaseCronContinuation: cronContinuation.releaseWithRecovery,
+        getOffloadedRefs: () => preparedOffloadedRefs,
+        clearUnaccepted: dedupeLifecycle.clearUnaccepted,
+        settleSourceWork: () => sourceWork.resolve(),
+      });
     }
   };
 

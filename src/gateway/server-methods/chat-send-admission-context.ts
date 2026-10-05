@@ -36,13 +36,14 @@ export function prepareChatSendAdmissionContext(params: {
   };
 }
 
+/** Check the captured target assertion and settle admission failure before responding. */
 export function assertChatSendSessionTargetOrRespond(params: {
-  session: PreparedChatSendSession;
+  assertSessionTargetCurrent: PreparedChatSendSession["assertSessionTargetCurrent"];
   cleanup: () => void;
   respond: GatewayRequestHandlerOptions["respond"];
 }): boolean {
   try {
-    params.session.assertSessionTargetCurrent();
+    params.assertSessionTargetCurrent();
     return true;
   } catch (error) {
     params.cleanup();
