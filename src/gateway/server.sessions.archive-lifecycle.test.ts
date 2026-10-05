@@ -3,6 +3,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
+import { withSessionTurn } from "../sessions/session-controller.admission.js";
 import {
   beginSessionEffect,
   isSessionMutationActive,
@@ -470,6 +471,7 @@ test("sessions.patch returns its drain timeout while cleanup still fences admiss
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   let responded = false;
   let successorEntered = false;
+  let successor: Promise<void> | undefined;
   const cleanup = new AsyncWorkScope();
   const archive = directSessionReq(
     "sessions.patch",
@@ -491,34 +493,28 @@ test("sessions.patch returns its drain timeout while cleanup still fences admiss
     const result = await archive;
     expect(result.ok).toBe(false);
     expect(result.error).toMatchObject({ code: "UNAVAILABLE", retryable: true });
-    expect(cleanup.hasPendingWork).toBe(true);
-    await expect(
-      beginSessionEffect({
-        scope: storePath,
-        identities: [sessionKey, sessionId],
-        assertAllowed: () => {
-          successorEntered = true;
-        },
-      }),
-    ).rejects.toMatchObject({ code: "OPENCLAW_DIRECT_ABORT" });
+    successor = withSessionTurn({ storePath, sessionKey, sessionId }, async () => {
+      successorEntered = true;
+    });
+    await Promise.resolve();
     expect(successorEntered).toBe(false);
     expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+    persistence.resolve();
+    await archive;
+    await cleanup.drain();
+    await successor;
+    successor = undefined;
+    expect(successorEntered).toBe(true);
   } finally {
     persistence.resolve();
     await archive;
     await cleanup.drain();
+    if (successor) {
+      await successor.catch(() => undefined);
+    }
     active.unsubscribe();
     vi.useRealTimers();
   }
-  const next = await beginSessionEffect({
-    scope: storePath,
-    identities: [sessionKey, sessionId],
-    assertAllowed: () => {
-      successorEntered = true;
-    },
-  });
-  next.release();
-  expect(successorEntered).toBe(true);
 });
 
 test("sessions.patch returns retryable UNAVAILABLE when the runtime rejects its drain", async () => {

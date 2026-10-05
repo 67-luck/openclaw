@@ -38,6 +38,7 @@ export async function activeRunContext(params: {
     runId: params.runId,
     sessionId: params.sessionId,
     sessionKey: params.sessionKey,
+    sourceWork: params.persistence.promise,
     target: captureSessionTarget({
       storeScope: resolveSessionStorePathCore(getHostRuntimeConfig().session?.store),
       sessionKey: params.sessionKey,
