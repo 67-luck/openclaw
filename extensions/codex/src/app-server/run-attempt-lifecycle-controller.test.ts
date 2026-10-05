@@ -509,7 +509,9 @@ describe("Codex batch release after a tool-authored final reply", () => {
     await harness.notifyNativeItem("item/completed", "failed", 1);
     await yieldImmediate();
     harness.pendingOpenClawDynamicToolCompletionIds.delete("reply");
-    if (!sameBatch) await harness.observeResponse(["reply"]);
+    if (!sameBatch) {
+      await harness.observeResponse(["reply"]);
+    }
     try {
       harness.controller.recordDynamicToolResult(
         dynamicToolResult("reply", {
@@ -683,7 +685,9 @@ describe("Codex authored model response boundary", () => {
     async (order) => {
       const h = createTerminalReleaseHarness();
       await h.notifyRawCall("reply");
-      if (order === "after") await h.finishResponse();
+      if (order === "after") {
+        await h.finishResponse();
+      }
       h.controller.recordDynamicToolResult(authored("reply"));
       await yieldImmediate();
       if (order === "before") {
@@ -717,7 +721,9 @@ describe("Codex authored model response boundary", () => {
       h.controller.recordDynamicToolResult(authored("reply"));
       await yieldImmediate();
       expect(h.state.completed).toBe(false);
-      if (order === "reply-first") await h.notifyRawCall("native", "shell");
+      if (order === "reply-first") {
+        await h.notifyRawCall("native", "shell");
+      }
       await h.finishResponse();
       if (order === "reply-first") {
         await h.notifyNativeItem("item/started", "inProgress");

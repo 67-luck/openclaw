@@ -173,12 +173,12 @@ export function createCodexAttemptLifecycleController(
     }
   };
   const recordModelResponseNotification = (notification: CodexServerNotification) => {
-    const params = notification.params;
-    if (!isJsonObject(params)) {
+    const notificationParams = notification.params;
+    if (!isJsonObject(notificationParams)) {
       return;
     }
     if (notification.method === "rawResponse/completed") {
-      const responseId = params.responseId;
+      const responseId = notificationParams.responseId;
       if (typeof responseId !== "string" || !responseId || responseId === lastClosedResponseId) {
         return;
       }
@@ -190,11 +190,14 @@ export function createCodexAttemptLifecycleController(
       scheduleTerminalDynamicToolReleaseCheck();
       return;
     }
-    if (notification.method !== "rawResponseItem/completed" || !isJsonObject(params.item)) {
+    if (
+      notification.method !== "rawResponseItem/completed" ||
+      !isJsonObject(notificationParams.item)
+    ) {
       return;
     }
     const callId = readRawResponseToolCallId(notification);
-    const item = params.item;
+    const item = notificationParams.item;
     const startsModelResponse =
       callId !== undefined ||
       item.type === "reasoning" ||
