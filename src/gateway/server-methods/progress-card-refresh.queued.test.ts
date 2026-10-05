@@ -31,7 +31,6 @@ import { registerChatAbortController } from "../chat-abort.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import type { handleTrustedInternalChatSend } from "./chat-send-handler.js";
 import { createChatSendTurnAdoptionLifecycle } from "./chat-send-turn-adoption.js";
-import { createChatSendWorkAdmission } from "./chat-send-work-admission.js";
 import { requestProgressCardRefresh } from "./progress-card-refresh.js";
 import type { GatewayRequestContext, GatewayRequestHandlerOptions, RespondFn } from "./types.js";
 
@@ -115,7 +114,7 @@ function settledExecution(runId: string): FollowupExecutionResult {
   };
 }
 
-function fixture(options: { parkSteer?: boolean } = {}) {
+function fixture(options: { parkSteer?: boolean; onQueuedFollowupSettled?: () => void } = {}) {
   const sessionKey = `agent:work:queued-refresh-` + randomUUID();
   queueKeys.add(sessionKey);
   const storeScope = "/synthetic/progress-refresh/" + randomUUID();
@@ -145,6 +144,7 @@ function fixture(options: { parkSteer?: boolean } = {}) {
     }
   >();
   const runFollowup = createFollowupRunner({
+    opts: { onQueuedFollowupSettled: options.onQueuedFollowupSettled },
     defaultModel: "test",
     typingMode: "never",
     typing: {
@@ -371,44 +371,53 @@ function expectTerminal(respond: ReturnType<typeof vi.fn<RespondFn>>) {
 }
 
 describe("queued progress refresh settlement", () => {
-  it("keeps progress pending, then reconciles the separate followup run before retrying a new intent", async () => {
-    const f = fixture();
-    expectAccepted(await f.refresh());
-    const source = f.first();
-    expect(isRpcSourceQueued(source.sourceRef)).toBe(true);
-    expect(rpcSourceTesting.get(source.runId)).toBe(source.sourceRef);
-    const execution = holdQueuedExecution(f);
-    const turn = await execution.entered;
-    expect(turn.runId).not.toBe(source.runId);
-    expect(turn.queued.controllerInput).toBe(source.sourceRef.input);
-    expect(rpcSourceTesting.get(source.runId)).toBe(source.sourceRef);
-    expect(getExistingFollowupQueue(f.sessionKey)?.inFlight.has(source.queued)).toBe(true);
-    expectAccepted(await f.refresh());
-    expect(f.sources.size).toBe(1);
-    expect(f.releases.get(source.runId)).not.toHaveBeenCalled();
+  it.each([false, true])(
+    "reconciles queued completion before a new intent (late cancellation: %s)",
+    async (lateCancellation) => {
+      const f = fixture({
+        onQueuedFollowupSettled: () => {
+          if (lateCancellation) {
+            expect(requestRpcSourceCancellation(source.sourceRef)).toBe(false);
+          }
+        },
+      });
+      expectAccepted(await f.refresh());
+      const source = f.first();
+      expect(isRpcSourceQueued(source.sourceRef)).toBe(true);
+      expect(rpcSourceTesting.get(source.runId)).toBe(source.sourceRef);
+      const execution = holdQueuedExecution(f);
+      const turn = await execution.entered;
+      expect(turn.runId).not.toBe(source.runId);
+      expect(turn.queued.controllerInput).toBe(source.sourceRef.input);
+      expect(rpcSourceTesting.get(source.runId)).toBe(source.sourceRef);
+      expect(getExistingFollowupQueue(f.sessionKey)?.inFlight.has(source.queued)).toBe(true);
+      expectAccepted(await f.refresh());
+      expect(f.sources.size).toBe(1);
+      expect(f.releases.get(source.runId)).not.toHaveBeenCalled();
 
-    await execution.finish();
-    await source.sourceRef.input.settlement.promise;
-    expect(rpcSourceTesting.has(source.runId)).toBe(false);
-    expect(f.releases.get(source.runId)).toHaveBeenCalledOnce();
-    expectTerminal(await f.refresh());
-    expect(f.context.dedupe.get(`chat:` + source.runId)?.payload).toMatchObject({
-      status: "completed",
-    });
-    expect(f.card).toEqual({
-      sessionKey: f.sessionKey,
-      revision: 7,
-      updatedAt: 1,
-      markdown: "Previous status",
-    });
-    expect(f.context.broadcast).not.toHaveBeenCalled();
-    expect(mocks.execute).toHaveBeenCalledOnce();
+      await execution.finish();
+      await source.sourceRef.input.settlement.promise;
+      expect(rpcSourceTesting.has(source.runId)).toBe(false);
+      expect(f.releases.get(source.runId)).toHaveBeenCalledOnce();
+      expectTerminal(await f.refresh());
+      expect(f.context.dedupe.get(`chat:` + source.runId)?.payload).toMatchObject({
+        status: "completed",
+      });
+      expect(f.card).toEqual({
+        sessionKey: f.sessionKey,
+        revision: 7,
+        updatedAt: 1,
+        markdown: "Previous status",
+      });
+      expect(f.context.broadcast).not.toHaveBeenCalled();
+      expect(mocks.execute).toHaveBeenCalledOnce();
 
-    expectAccepted(await f.refresh("click-2"));
-    expect(f.sources.size).toBe(2);
-    expect([...f.sources.keys()][1]).not.toBe(source.runId);
-    expect(mocks.execute).toHaveBeenCalledOnce();
-  });
+      expectAccepted(await f.refresh("click-2"));
+      expect(f.sources.size).toBe(2);
+      expect([...f.sources.keys()][1]).not.toBe(source.runId);
+      expect(mocks.execute).toHaveBeenCalledOnce();
+    },
+  );
 
   it("does not turn consumed steering custody into terminal completion", async () => {
     const f = fixture({ parkSteer: true });

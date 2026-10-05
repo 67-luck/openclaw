@@ -77,7 +77,11 @@ type ChatSendAgentReplyFinalization =
   | { kind: "dropped"; reason: "no-visible-content" };
 
 export function createChatSendLateReplyFinalizer(
-  params: Omit<FinalizeChatSendAgentRepliesBase, "emitFirstAssistantServerTiming">,
+  params: Omit<FinalizeChatSendAgentRepliesBase, "emitFirstAssistantServerTiming"> & {
+    onTerminalPublished?: (
+      completion: Exclude<QueuedFollowupReplyBatch["completion"], { kind: "progress" }>,
+    ) => void;
+  },
 ) {
   return async ({
     runId,
@@ -172,6 +176,9 @@ export function createChatSendLateReplyFinalizer(
               }),
         });
       }
+      if (terminal) {
+        params.onTerminalPublished?.(completion);
+      }
       return terminal
         ? {
             kind: "delivered",
@@ -188,6 +195,7 @@ export function createChatSendLateReplyFinalizer(
           state: "error",
           errorMessage: formatErrorMessage(error),
         });
+        params.onTerminalPublished?.({ kind: "failed", error: formatErrorMessage(error) });
       }
       throw error;
     } finally {

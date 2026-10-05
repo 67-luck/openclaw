@@ -19,7 +19,6 @@ import {
 } from "../agents/subagents/registry/subagent-registry-persistence.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import { isSameSubagentRun } from "../agents/subagents/registry/subagent-run-generation.js";
-import { clearFollowupQueue, getExistingFollowupQueue } from "../auto-reply/reply/queue/state.js";
 import {
   appendTranscriptMessage,
   loadSessionEntryReadOnly,
@@ -34,9 +33,9 @@ import {
   beginSessionEffect,
   captureSessionEffectOwnerSettlement,
 } from "../sessions/session-controller.lifecycle.js";
+import { getRpcSource } from "../sessions/session-controller.rpc-sources.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { countPendingQueueItems } from "../utils/queue-helpers.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { getGatewayRecoveryRuntime } from "./server-recovery-runtime-context.js";
 import { disconnectGatewayClient, startGatewayWithClient } from "./test-helpers.e2e.js";
@@ -301,10 +300,6 @@ it(
 
       const canceledRunId = "webchat-canceled-during-recovery";
       const survivorRunId = "webchat-survives-recovery";
-      const expectedQueuedMessages = new Map([
-        [canceledRunId, canceledMessage],
-        [survivorRunId, survivorMessage],
-      ]);
       const sendQueuedTurn = async (runId: string, message: string) => {
         await expect(
           client.request("chat.send", {
@@ -317,24 +312,16 @@ it(
           }),
         ).resolves.toMatchObject({ runId, status: "started" });
       };
-      // Hold the cancellation target in flight before queueing the survivor.
-      // A started ACK precedes insertion into the followup queue.
+      // Hold the cancellation target in controller custody before queueing the survivor.
       await sendQueuedTurn(canceledRunId, canceledMessage);
       await vi.waitFor(() => {
-        const queue = getExistingFollowupQueue(sessionKey);
-        expect([...(queue?.inFlight ?? [])].map((item) => item.messageId)).toEqual([canceledRunId]);
+        expect(getRpcSource(canceledRunId)).toBeDefined();
       });
+      const canceledSource = getRpcSource(canceledRunId)!;
       await sendQueuedTurn(survivorRunId, survivorMessage);
       await vi.waitFor(() => {
-        const queue = getExistingFollowupQueue(sessionKey);
-        // Active sources remain in items; started ACKs can precede queue admission.
-        expect(queue?.items).toHaveLength(expectedQueuedMessages.size);
-        expect(new Map(queue?.items.map(({ messageId, prompt }) => [messageId, prompt]))).toEqual(
-          expectedQueuedMessages,
-        );
-        expect(queue?.inFlight).toHaveLength(1);
-        expect(queue?.items.map((item) => item.messageId)).toEqual([canceledRunId, survivorRunId]);
-        expect(countPendingQueueItems(queue?.items ?? [], queue?.inFlight)).toBe(1);
+        expect(getRpcSource(canceledRunId)).toBe(canceledSource);
+        expect(getRpcSource(survivorRunId)).toBeDefined();
         expect(targetRequests).toHaveLength(1);
       });
       replacementOwner = await beginSessionEffect({
@@ -355,19 +342,18 @@ it(
         client.request("chat.abort", { sessionKey, runId: canceledRunId }),
       ).resolves.toMatchObject({ aborted: true, runIds: [canceledRunId] });
       await vi.waitFor(() => {
-        const queue = getExistingFollowupQueue(sessionKey);
-        const queued = new Set([...(queue?.items ?? []), ...(queue?.inFlight ?? [])]);
-        expect(Array.from(queued, (item) => item.messageId)).toEqual([survivorRunId]);
+        expect(canceledSource.input.abortSignal.aborted).toBe(true);
+        expect(getRpcSource(survivorRunId)).toBeDefined();
       });
 
       replacementOwner.release();
       await vi.waitFor(() => expect(targetRequests).toHaveLength(2), { timeout: 30_000 });
       expect(targetRequests[1]).toContain(survivorMessage);
       expect(targetRequests[1]).not.toContain(canceledMessage);
-      await vi.waitFor(() => expect(getExistingFollowupQueue(sessionKey)).toBeUndefined());
       await expect(
         client.request("agent.wait", { runId: survivorRunId, timeoutMs: 30_000 }),
       ).resolves.toMatchObject({ status: "ok" });
+      await vi.waitFor(() => expect(getRpcSource(survivorRunId)).toBeUndefined());
       expect(targetRequests).toHaveLength(2);
 
       const beforeReset = loadSessionEntryReadOnly({ storePath, sessionKey });
@@ -546,7 +532,6 @@ it(
       if (recovery) {
         await Promise.allSettled([recovery]);
       }
-      clearFollowupQueue(sessionKey);
       if (gateway) {
         await disconnectGatewayClient(gateway.client).catch(() => undefined);
         await gateway.server.close().catch(() => undefined);

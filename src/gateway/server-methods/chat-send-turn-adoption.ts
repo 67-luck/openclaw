@@ -1,6 +1,9 @@
 import { resolveAgentRunAbortLifecycleFields } from "../../agents/run-termination.js";
 import type { TurnAdoptionLifecycle } from "../../auto-reply/get-reply-options.types.js";
-import type { QueuedFollowupReplyDelivery } from "../../auto-reply/reply/queue/types.js";
+import type {
+  QueuedFollowupReplyBatch,
+  QueuedFollowupReplyDelivery,
+} from "../../auto-reply/reply/queue/types.js";
 import { bindReplySourceInput } from "../../auto-reply/reply/reply-source-binding.js";
 import { retireSessionControllerSourceCancellation } from "../../sessions/session-controller.mailbox.js";
 import {
@@ -49,14 +52,21 @@ export function createChatSendTurnAdoptionLifecycle(params: {
   onQueuedFollowupReplyBatch: QueuedFollowupReplyDelivery;
 } {
   let terminalKnown = false;
+  let terminalCompletion:
+    | Exclude<QueuedFollowupReplyBatch["completion"], { kind: "progress" }>
+    | undefined;
   let completed = false;
   let settlementRecorded = false;
   let releaseWorkAdmission: (() => void) | undefined;
-  const recordQueuedTerminal = (status: "completed" | "aborted") => {
-    // An active source dispatch still owns terminal recording after its work settles.
+  const recordQueuedTerminal = (
+    completion: Exclude<QueuedFollowupReplyBatch["completion"], { kind: "progress" }>,
+  ) => {
+    // Before deferral, the active dispatch owns terminal recording. Once queued,
+    // this producer must publish completion after the exact source's delivery.
     if (
       !params.suppressReplies &&
-      (status !== "aborted" ||
+      releaseWorkAdmission === undefined &&
+      (completion.kind !== "aborted" ||
         (params.sourceRef.input.claim?.operation !== undefined &&
           !params.sourceRef.input.claim.released))
     ) {
@@ -72,16 +82,23 @@ export function createChatSendTurnAdoptionLifecycle(params: {
       }),
       entry: {
         ts: now,
-        ok: true,
+        ok: completion.kind !== "failed",
         payload:
-          status === "aborted"
+          completion.kind === "aborted"
             ? buildAbortedChatSendPayload({
                 runId: params.runId,
                 endedAt: now,
                 stopReason: resolveAgentRunAbortLifecycleFields(params.controller.signal)
                   .stopReason,
               })
-            : { runId: params.runId, status },
+            : completion.kind === "failed"
+              ? {
+                  runId: params.runId,
+                  status: completion.errorKind === "timeout" ? "timeout" : "error",
+                  summary: completion.error,
+                  stopReason: completion.stopReason,
+                }
+              : { runId: params.runId, status: "completed", stopReason: completion.stopReason },
       },
     });
   };
@@ -92,6 +109,9 @@ export function createChatSendTurnAdoptionLifecycle(params: {
     deliver: params.suppressReplies
       ? async ({ completion }) => {
           terminalKnown ||= completion.kind !== "progress";
+          if (completion.kind !== "progress") {
+            terminalCompletion = completion;
+          }
           return { kind: "dropped" as const, reason: "no-visible-content" as const };
         }
       : createChatSendLateReplyFinalizer({
@@ -100,12 +120,16 @@ export function createChatSendTurnAdoptionLifecycle(params: {
           accountId: params.accountId,
           context: params.context,
           session: params.session,
+          onTerminalPublished: (completion) => {
+            terminalKnown = true;
+            terminalCompletion = completion;
+          },
         }),
   });
   const priorCancel = params.sourceRef.adapter.cancel?.bind(params.sourceRef.adapter);
   params.sourceRef.adapter.cancel = (reason) => {
     priorCancel?.(reason);
-    recordQueuedTerminal("aborted");
+    recordQueuedTerminal({ kind: "aborted" });
   };
   const lifecycle: TurnAdoptionLifecycle = {
     // Gateway cancel identity only — share collect key via ownerKey.
@@ -153,7 +177,10 @@ export function createChatSendTurnAdoptionLifecycle(params: {
           params.retireOperatorRunCancellation?.();
         }
         if (completed) {
-          recordQueuedTerminal(params.controller.signal.aborted ? "aborted" : "completed");
+          recordQueuedTerminal(
+            terminalCompletion ??
+              (params.controller.signal.aborted ? { kind: "aborted" } : { kind: "completed" }),
+          );
         }
       } finally {
         releaseWorkAdmission?.();
