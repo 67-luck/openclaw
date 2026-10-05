@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
 import { runExclusiveSessionStoreWrite } from "../config/sessions/store-writer.js";
 import type { GatewayContextResolver } from "../gateway/server-methods/types.js";
 import { getAgentRunLifecycleGeneration } from "../infra/agent-run-registry.js";
@@ -660,6 +661,9 @@ export function startSessionControllerInterruption(
   interruptedRunIds: ReadonlySet<string>;
 } {
   const target = targetFrom(params);
+  // Unspecified lifecycle interruption retains restart recovery semantics;
+  // explicit Stop and supersession reasons remain the captured caller's reason.
+  const reason = params.reason ?? createAgentRunRestartAbortError();
   const { effects, operations, claims } = selectSessionControllerInterruptionOwners(
     target,
     ownerContext.getStore(),
@@ -678,11 +682,11 @@ export function startSessionControllerInterruption(
   const interruptedRunIds = new Set<string>();
   const failures: unknown[] = [];
   for (const claim of claims) {
-    claim.abortController.abort(params.reason);
+    claim.abortController.abort(reason);
   }
   for (const effect of effects) {
     try {
-      const receipt = interruptEffect(effect, params.reason);
+      const receipt = interruptEffect(effect, reason);
       if (receipt) {
         interruptedRunIds.add(receipt.runId);
       }
@@ -692,7 +696,7 @@ export function startSessionControllerInterruption(
   }
   for (const operation of operations) {
     try {
-      operation.abortByUser();
+      operation.abort(reason);
     } catch (error) {
       failures.push(error);
     }

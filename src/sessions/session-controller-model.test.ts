@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { QuestionAnswerUnconfirmedError } from "../agents/harness/gateway-question-dispatch.js";
+import { isAgentRunRestartAbortReason } from "../agents/run-termination.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { applyQueueDropPolicy } from "../utils/queue-helpers.js";
 import {
@@ -393,7 +394,8 @@ describe("session controller executable pilot", () => {
       expect(operation.abortSignal.aborted).toBe(true);
       expect(lease.isActive()).toBe(false);
       expect(effectSettled).toBe(false);
-      await expect(lease.run(async () => {})).rejects.toThrow("Session effect interrupted");
+      const interrupted = lease.run(async () => {}).catch((error: unknown) => error);
+      expect(isAgentRunRestartAbortReason(await interrupted)).toBe(true);
       operation.completeWithAfterClearBarrier(delivery.promise);
       await Promise.resolve();
       expect(effectSettled).toBe(false);
