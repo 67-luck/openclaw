@@ -10,6 +10,7 @@ import {
   resetGatewayWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
 import {
   retireSessionControllerInput,
   trackSessionControllerSourceWork,
@@ -20,7 +21,7 @@ import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
-import { waitForChatAbortControllerRemoval } from "./chat-abort-lifecycle-internal.js";
+import { registerChatAbortController } from "./chat-abort.js";
 import type { HealthSummary } from "./health/types.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS, TICK_INTERVAL_MS } from "./server-constants.js";
 import { pendingChatSendDedupeKey } from "./server-shared.js";
@@ -874,7 +875,7 @@ describe("startGatewayMaintenanceTimers", () => {
     await stopMaintenanceTimers(timers);
   });
 
-  it("recovers a wedged terminal-pending run whose projection clear never ran", async () => {
+  it("leaves a wedged terminal-pending source to its controller watchdog", async () => {
     const { startGatewayMaintenanceTimers, deps } = await createTimedMaintenanceScenario();
     const runId = "run-wedged-terminal-pending";
     const wedgedRun = createActiveRun("main");
@@ -887,7 +888,7 @@ describe("startGatewayMaintenanceTimers", () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(wedgedRun.input.abortSignal.aborted).toBe(false);
-    expect(rpcSourceTesting.has(runId)).toBe(false);
+    expect(rpcSourceTesting.get(runId)).toBe(wedgedRun);
     await stopMaintenanceTimers(timers);
   });
 
@@ -908,7 +909,7 @@ describe("startGatewayMaintenanceTimers", () => {
     await stopMaintenanceTimers(timers);
   });
 
-  it("converts expired stalled terminal persistence into a recovery candidate", async () => {
+  it("leaves stalled terminal persistence and recovery ownership with the controller", async () => {
     const { startGatewayMaintenanceTimers, deps } = await createTimedMaintenanceScenario();
     const runId = "run-terminal-persistence";
     const terminalRun = createActiveRun("main");
@@ -919,26 +920,15 @@ describe("startGatewayMaintenanceTimers", () => {
     rpcSourceTesting.set(runId, terminalRun);
 
     const timers = startGatewayMaintenanceTimers(deps);
-    await vi.advanceTimersByTimeAsync(59_000);
-    const drain = waitForChatAbortControllerRemoval({
-      targets: [{ runId, entry: terminalRun }],
-      timeoutMs: 15_000,
-    });
-    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.advanceTimersByTimeAsync(60_000);
 
     expect(terminalRun.input.abortSignal.aborted).toBe(false);
-    expect([await drain, rpcSourceTesting.has(runId)]).toEqual([false, false]);
-    expect(deps.restartRecoveryCandidates.get(runId)).toEqual({
-      runId,
-      lifecycleGeneration: "generation-1",
-      sessionKey: "main",
-      sessionId: "sess-1",
-      observedAt: Date.now() - 180_000,
-    });
+    expect(rpcSourceTesting.get(runId)).toBe(terminalRun);
+    expect(deps.restartRecoveryCandidates.has(runId)).toBe(false);
     await stopMaintenanceTimers(timers);
   });
 
-  it("reaps expired inactive registrations without emitting a timeout abort", async () => {
+  it("leaves expired inactive registrations to controller cleanup", async () => {
     const { startGatewayMaintenanceTimers, deps } = await createTimedMaintenanceScenario();
     const runId = "run-terminal-persisted";
     const terminalRun = createActiveRun("main");
@@ -950,25 +940,37 @@ describe("startGatewayMaintenanceTimers", () => {
     await vi.advanceTimersByTimeAsync(60_000);
 
     expect(terminalRun.input.abortSignal.aborted).toBe(false);
-    expect(rpcSourceTesting.has(runId)).toBe(false);
+    expect(rpcSourceTesting.get(runId)).toBe(terminalRun);
     await stopMaintenanceTimers(timers);
   });
 
   it("retains an expired terminal projection until raw source publication finishes", async () => {
     const { startGatewayMaintenanceTimers, deps } = await createTimedMaintenanceScenario();
-    const source = createActiveRun("main");
+    const registration = registerChatAbortController({
+      runId: "private-timeout",
+      sessionId: "sess-1",
+      sessionKey: "main",
+      target: captureSessionTarget({
+        storeScope: "/synthetic/maintenance-source",
+        sessionKey: "main",
+        incarnation: "sess-1",
+      }),
+      timeoutMs: 60_000,
+    });
+    const source = registration.entry;
+    if (!source) {
+      throw new Error("Expected registered maintenance source");
+    }
     const publication = createDeferred();
     trackSessionControllerSourceWork(source.input, publication.promise);
-    source.input.retirementRequested = true;
     source.adapter.projectSessionTerminalObservedAt = Date.now() - 120_000;
-    rpcSourceTesting.set("private-timeout", source);
     const timers = startGatewayMaintenanceTimers(deps);
     try {
       await vi.advanceTimersByTimeAsync(120_000);
       expect(rpcSourceTesting.get("private-timeout")).toBe(source);
       expect(source.input.abortSignal.aborted).toBe(false);
       publication.resolve();
-      await vi.advanceTimersByTimeAsync(60_000);
+      registration.cleanup();
       await source.input.settlement.promise;
       expect(rpcSourceTesting.has("private-timeout")).toBe(false);
     } finally {

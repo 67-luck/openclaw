@@ -1,7 +1,6 @@
 // Gateway maintenance timers.
 // Starts periodic health, dedupe, abort, and media cleanup loops.
 import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
-import { AGENT_RUN_TERMINAL_RETRY_GRACE_MS } from "../agents/agent-run-terminal-outcome.js";
 import { isActiveEmbeddedRunId } from "../agents/embedded-agent-runner/runs.js";
 import { formatWorktreeGcResult } from "../agents/worktrees/gc-result.js";
 import type { ManagedWorktreeGcResult } from "../agents/worktrees/types.js";
@@ -31,15 +30,7 @@ import {
   isGatewayWorkAdmissionClosed,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
-import {
-  getRpcSource,
-  getRpcSourceIdentity,
-  getRpcSourceLifecycleGeneration,
-  getRpcSourceProjectSessionActive,
-  hasRpcSource,
-  listRpcSourceEntries,
-  retireRpcSource,
-} from "../sessions/session-controller.rpc-sources.js";
+import { getRpcSource, hasRpcSource } from "../sessions/session-controller.rpc-sources.js";
 import { getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { registerSkillUsageTracking } from "../skills/workshop/curator.js";
 import { pruneExpiredArtifactDownloads } from "./artifact-download-grants.js";
@@ -405,37 +396,6 @@ export function startGatewayMaintenanceTimers(params: {
     }
 
     pruneMapToMaxSize(params.agentRunSeq, AGENT_RUN_SEQ_MAX);
-
-    for (const [runId, entry] of listRpcSourceEntries()) {
-      const adapter = entry.adapter;
-      // Maintenance retires projections only after their source has settled;
-      // an elapsed grace never completes private input or releases raw work.
-      const terminalClearOverdue =
-        typeof adapter.projectSessionTerminalObservedAt === "number" &&
-        now - adapter.projectSessionTerminalObservedAt > AGENT_RUN_TERMINAL_RETRY_GRACE_MS;
-      if (!terminalClearOverdue || getRpcSource(runId) !== entry) {
-        continue;
-      }
-      if (adapter.projectSessionTerminalPersistence) {
-        const lifecycleGeneration = getRpcSourceLifecycleGeneration(entry);
-        const { sessionKey, sessionId } = getRpcSourceIdentity(entry);
-        if (adapter.controlUiVisible !== false && lifecycleGeneration && sessionKey && sessionId) {
-          params.restartRecoveryCandidates.set(runId, {
-            runId,
-            lifecycleGeneration,
-            sessionKey,
-            sessionId,
-            observedAt: adapter.projectSessionTerminalObservedAt,
-          });
-        }
-      }
-      if (
-        getRpcSourceProjectSessionActive(entry) === false ||
-        adapter.projectSessionTerminalPending === true
-      ) {
-        retireRpcSource(runId, entry);
-      }
-    }
 
     const ABORTED_RUN_TTL_MS = 60 * 60_000;
     // Prune expired control-plane rate-limit buckets to prevent unbounded
