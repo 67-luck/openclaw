@@ -121,6 +121,9 @@ describe("nested settled-turn finalization ownership", () => {
           params.agentId,
           params.replyOperation ?? admittedOperation,
         );
+        if (!attachment) {
+          throw new Error("Finalization proof requires an attached embedded run");
+        }
         admittedOperation ??= attachment.operation;
         try {
           const sessionKey = params.sessionTarget?.sessionKey;

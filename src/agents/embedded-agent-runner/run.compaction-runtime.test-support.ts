@@ -224,16 +224,14 @@ async function createRecoveryFixture(state: OpenClawTestState, options: FixtureO
         forgetActiveSessionForShutdown(accepted.sessionId);
       }
     };
+    // The worker accepts only the exact fence fields carried by an admitted run target.
+    const fencedTarget = {
+      ...target,
+      expectedLifecycleRevision: writerFence?.expectedLifecycleRevision,
+      expectedWriterRunId: writerFence?.expectedWriterRunId,
+    };
     const openWriter = async () =>
-      memoryManager ??
-      (await SessionManager.openAsync(
-        {
-          ...target,
-          expectedLifecycleRevision: writerFence?.expectedLifecycleRevision,
-          expectedWriterRunId: writerFence?.expectedWriterRunId,
-        },
-        state.workspaceDir,
-      ));
+      memoryManager ?? (await SessionManager.openAsync(fencedTarget, state.workspaceDir));
     const commitCompaction = async () => {
       await (
         await openWriter()
