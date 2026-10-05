@@ -195,11 +195,14 @@ changes the source never delivered and no longer retains.
 
 ## Disable or downgrade
 
-Pause or remove event automations before disabling the plugin. To downgrade to an
-OpenClaw version that predates event schedules, first remove those jobs using the
-current version, or restore a compatible pre-feature backup. Older versions do
-not understand the persisted `event` schedule kind; disabling the plugin alone
-does not convert it to a timed schedule.
+Pause or remove event automations before disabling the plugin. Before downgrading
+to a version that predates event schedules, remove those jobs using the current
+version and check the target release's [database compatibility](/reference/database-schemas/storage-changes#preflight-a-target-release)
+against a copied state database. Removing event jobs does not undo database
+schema upgrades. If the target release rejects the newer schema, restore a
+compatible pre-upgrade backup instead of opening the upgraded state with it.
+Older versions do not understand the persisted `event` schedule kind; disabling
+the plugin alone does not convert it to a timed schedule.
 
 ## Developer proof server
 

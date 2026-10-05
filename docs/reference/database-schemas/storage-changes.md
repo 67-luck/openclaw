@@ -1249,7 +1249,9 @@ credential changes made outside this process. No lease spans a subscription
 request or its synchronous webhook verification. These facts authorize neither
 tool execution nor a replacement account: event admission still requires the
 original Automation and caller authority. Remove event jobs before downgrading
-to a runtime without this lifetime contract.
+to a runtime without this lifetime contract, and verify target-release database
+compatibility. Removing jobs cannot reverse a schema upgrade; an incompatible
+target requires restoration of a compatible pre-upgrade backup.
 
 Auth-profile-backed event sources use private `authorizationLifetimes` metadata
 in their existing credential JSON rows. Only explicitly observed profile IDs are
