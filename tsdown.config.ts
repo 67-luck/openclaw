@@ -451,6 +451,7 @@ function buildCoreDistEntries(): Record<string, string> {
     "daemon/launchd-update-compat": "src/daemon/launchd-update-compat.ts",
     "state/openclaw-state-lease-worker-operation":
       "src/state/openclaw-state-lease-worker-operation.ts",
+    "plugins/plugin-lifecycle-lease": "src/plugins/plugin-lifecycle-lease.ts",
     "infra/update-managed-service-handoff-current":
       "src/infra/update-managed-service-handoff-current.ts",
     "cli/update-cli/update-command-immutable": "src/cli/update-cli/update-command-immutable.ts",
