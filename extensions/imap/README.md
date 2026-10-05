@@ -6,6 +6,15 @@ starts an isolated session for each accepted message. It reads incoming mail;
 it does not send replies or process the mailbox's existing messages on first
 startup.
 
+## Sender authentication
+
+DMARC policy discovery and relaxed alignment follow the RFC 9989 DNS Tree Walk.
+A parent-domain signature does not authenticate a subdomain when the parent
+publishes no DMARC policy. Senders affected by this change should publish the
+appropriate DMARC policy or sign with the sender domain; do not lower the
+configured authentication requirement to compensate. Sender-bound tokens and
+explicitly configured trusted authentication headers keep their existing rules.
+
 ## Get started
 
 Prepare a restricted reader agent with an authenticated model and working
