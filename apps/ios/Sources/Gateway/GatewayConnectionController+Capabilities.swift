@@ -18,26 +18,23 @@ struct GatewayManualTransportPresentation: Equatable {
 extension GatewayConnectionController {
     /// Rebuild connect options from current local settings (caps/commands/permissions)
     /// and re-apply the active gateway config so capability changes take effect immediately.
-    func refreshActiveGatewayRegistrationFromSettings() {
+    @discardableResult
+    func refreshActiveGatewayRegistrationFromSettings() -> Task<Void, Never> {
         Task { [weak self] in
-            await self?.refreshActiveGatewayRegistrationFromSettingsAsync()
+            guard let self, let appModel = self.appModel,
+                  let cfg = appModel.activeGatewayConnectConfig,
+                  appModel.gatewayAutoReconnectEnabled
+            else { return }
+            let generation = appModel.gatewayConnectGeneration
+            var refreshedConfig = cfg
+            refreshedConfig.nodeOptions = await self.makeConnectOptions(
+                deviceAuthGatewayID: cfg.nodeOptions.deviceAuthGatewayID,
+                allowStoredDeviceAuth: cfg.nodeOptions.allowStoredDeviceAuth)
+            guard !Task.isCancelled,
+                  !self.hasPendingForgetCleanup(stableID: cfg.stableID),
+                  cfg.ingressAuthorization?.isCurrent() != false else { return }
+            appModel.applyGatewayConnectConfig(refreshedConfig, expectedGeneration: generation)
         }
-    }
-
-    func refreshActiveGatewayRegistrationFromSettingsAsync() async {
-        guard let appModel else { return }
-        guard let cfg = appModel.activeGatewayConnectConfig else { return }
-        guard appModel.gatewayAutoReconnectEnabled else { return }
-        let generation = appModel.gatewayConnectGeneration
-
-        var refreshedConfig = cfg
-        refreshedConfig.nodeOptions = await self.makeConnectOptions(
-            deviceAuthGatewayID: cfg.nodeOptions.deviceAuthGatewayID,
-            allowStoredDeviceAuth: cfg.nodeOptions.allowStoredDeviceAuth)
-        guard !Task.isCancelled,
-              !hasPendingForgetCleanup(stableID: cfg.stableID),
-              cfg.ingressAuthorization?.isCurrent() != false else { return }
-        appModel.applyGatewayConnectConfig(refreshedConfig, expectedGeneration: generation)
     }
 
     func buildGatewayURL(

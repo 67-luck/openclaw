@@ -36,6 +36,7 @@ struct GatewayOperatorFleetTests {
             let authorization = GatewayIngressAuthorization(
                 origin: origin,
                 revision: 1,
+                registrationID: UUID(),
                 headers: { _ in [:] },
                 isCurrent: { false },
                 checkResponse: { _ in },

@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Observation
 import OpenClawChatUI
 import OpenClawKit
 import OpenClawProtocol
@@ -8,6 +9,80 @@ import Testing
 @testable import OpenClaw
 
 extension GatewayIngressControllerTests {
+    @Test(arguments: [false, true]) @MainActor
+    func `certificate recovery follows the failed replacement and retains its setup receipt`(
+        expiresBeforeRetry: Bool) async throws
+    {
+        let isolation = await GatewayRegistryTestIsolation()
+        defer { isolation.restore() }
+        let state = try TemporaryOpenClawState(instanceID: "access-pin-retry-\(UUID().uuidString)")
+        defer { state.restore() }
+        let fixture = try IngressTestHarness()
+        fixture.preauthenticated = true
+        let oldPin = String(repeating: "ab", count: 32)
+        let newPin = String(repeating: "cd", count: 32)
+        let previousPin = GatewayTLSStore.loadFingerprint(stableID: fixture.stableID)
+        GatewayTLSStore.saveFingerprint(oldPin, stableID: fixture.stableID)
+        defer {
+            _ = GatewayTLSStore.clearFingerprint(stableID: fixture.stableID)
+            if let previousPin { GatewayTLSStore.saveFingerprint(previousPin, stableID: fixture.stableID) }
+        }
+        let failure = GatewayTLSValidationError(
+            failure: .init(
+                kind: .pinMismatch,
+                host: "gateway.example.test",
+                storeKey: fixture.stableID,
+                expectedFingerprint: oldPin,
+                observedFingerprint: newPin,
+                systemTrustOk: true),
+            context: "test replacement admission")
+        let ingress = fixture.controller(requestFactory: { route in
+            { request, _ in
+                await fixture.record(route)
+                if route.tls?.expectedFingerprint == oldPin { throw failure }
+                return try await fixture.respond(to: request, stableID: route.stableID)
+            }
+        })
+        let model = NodeAppModel()
+        defer { model.disconnectGateway() }
+        let previousID = "manual|previous.example.test|443"
+        let previous = try GatewayConnectConfig(
+            url: #require(URL(string: "wss://previous.example.test")), stableID: previousID,
+            tls: .init(required: true, expectedFingerprint: "previous-pin", allowTOFU: false, storeKey: previousID),
+            token: nil, bootstrapToken: nil, password: nil, nodeOptions: fixture.config(nil).nodeOptions)
+        model.applyGatewayConnectConfig(previous)
+        let controller = GatewayConnectionController(
+            appModel: model, startDiscovery: false, ingress: ingress, now: { fixture.now })
+        let expiry = fixture.now.addingTimeInterval(30)
+        let auth = GatewayConnectionController.ManualAuthOverride.explicit(
+            token: nil, bootstrapToken: "setup-placeholder", password: nil, targetStableID: fixture.stableID,
+            expiresAtMs: Int64(expiry.timeIntervalSince1970 * 1000),
+            isSetupCodeOrigin: true, suppressStoredDeviceAuth: true)
+        _ = await controller.connectManual(
+            host: "gateway.example.test", port: 8443, useTLS: true, authOverride: auth)
+        try await waitForIngress { !controller.hasPendingConnectionHandoff }
+        let problem = try #require(model.lastGatewayProblem)
+        #expect(problem.canTrustRotatedCertificate)
+        #expect(model.activeGatewayConnectConfig?.stableID == previousID)
+        #expect(!auth.wasHandedOff)
+        if expiresBeforeRetry { fixture.now = expiry }
+        let accepted = await controller.trustRotatedGatewayCertificate(from: problem)
+        if expiresBeforeRetry {
+            #expect(!accepted)
+            #expect(model.lastGatewayProblem?.kind == .bootstrapTokenInvalid)
+            #expect(!auth.wasHandedOff)
+        } else {
+            #expect(accepted)
+            try await waitForIngress { !controller.hasPendingConnectionHandoff }
+            let current = try #require(model.activeGatewayConnectConfig)
+            #expect(current.stableID == fixture.stableID)
+            #expect(current.tls?.expectedFingerprint == newPin)
+            #expect(current.bootstrapToken == "setup-placeholder")
+            #expect(auth.wasHandedOff)
+            #expect(fixture.requestRoutes.allSatisfy { $0.stableID == fixture.stableID })
+        }
+    }
+
     @Test(arguments: [false, true]) @MainActor
     func `pre-TLS reservation and trust acceptance retain Access sign-out authority`(ordinary: Bool) async throws {
         let isolation = await GatewayRegistryTestIsolation()
@@ -292,6 +367,51 @@ extension GatewayIngressControllerTests {
         try await ingress.forget(origin: fixture.application.origin)
     }
 
+    @Test @MainActor
+    func `common retry reconnects its active gateway without signing in unrelated attention`() async throws {
+        let isolation = await GatewayRegistryTestIsolation()
+        defer { isolation.restore() }
+        let state = try TemporaryOpenClawState(instanceID: "access-unrelated-retry-\(UUID().uuidString)")
+        defer { state.restore() }
+        let fixture = try IngressTestHarness()
+        let activeID = "manual|active.example.test|443"
+        fixture.preauthenticatedStableIDs.insert(activeID)
+        #expect(GatewaySettingsStore.upsertGatewayRegistryEntry(.init(
+            stableID: activeID, kind: .manual, name: "Active", host: "active.example.test", port: 443,
+            useTLS: true, lastConnectedAtMs: nil), activate: true))
+        let previousPin = GatewayTLSStore.loadFingerprint(stableID: activeID)
+        GatewayTLSStore.saveFingerprint(String(repeating: "ab", count: 32), stableID: activeID)
+        defer {
+            _ = GatewayTLSStore.clearFingerprint(stableID: activeID)
+            if let previousPin { GatewayTLSStore.saveFingerprint(previousPin, stableID: activeID) }
+        }
+        let ingress = fixture.controller()
+        let model = NodeAppModel()
+        defer { model.disconnectGateway() }
+        let controller = GatewayConnectionController(appModel: model, startDiscovery: false, ingress: ingress)
+        await #expect(throws: GatewayExternalAuthorizationError.self) {
+            try await ingress.prepare(
+                route: fixture.route,
+                userInitiated: false,
+                admissionCheckpoint: ingress.admissionCheckpoint())
+        }
+        let attention = try #require(ingress.attention)
+        let retry = Task { await controller.retryGatewayConnection() }
+        defer {
+            retry.cancel()
+            fixture.release.continuation.finish()
+            ingress.cancelSignIn()
+        }
+        // Settle the incorrect background-sign-in path too: fail assertions rather than hang.
+        fixture.release.continuation.finish()
+        #expect(await retry.value == .accepted)
+        try await waitForIngress { !controller.hasPendingConnectionHandoff }
+        #expect(model.activeGatewayConnectConfig?.stableID == activeID)
+        #expect(fixture.browser.presented.isEmpty)
+        #expect(ingress.attention?.id == attention.id)
+        #expect(GatewaySettingsStore.activeGatewayEntry()?.stableID == activeID)
+    }
+
     @Test(arguments: ["renew", "stop", "switch"]) @MainActor
     func `common recovery restores the desired active profile sharing background attention`(
         action: String) async throws
@@ -564,6 +684,63 @@ extension GatewayIngressControllerTests {
     }
 
     @Test @MainActor
+    func `retry after TLS acceptance still enforces setup expiry before handoff`() async throws {
+        let isolation = await GatewayRegistryTestIsolation()
+        defer { isolation.restore() }
+        let instanceID = "access-trust-retry-\(UUID().uuidString)"
+        let state = try TemporaryOpenClawState(instanceID: instanceID)
+        defer { state.restore() }
+        let fixture = try IngressTestHarness()
+        let previousPin = GatewayTLSStore.loadFingerprint(stableID: fixture.stableID)
+        _ = GatewayTLSStore.clearFingerprint(stableID: fixture.stableID)
+        defer {
+            _ = GatewayTLSStore.clearFingerprint(stableID: fixture.stableID)
+            if let previousPin { GatewayTLSStore.saveFingerprint(previousPin, stableID: fixture.stableID) }
+        }
+        fixture.probeFailure = URLError(.notConnectedToInternet)
+        let ingress = fixture.controller()
+        let model = NodeAppModel()
+        defer { model.disconnectGateway() }
+        let controller = GatewayConnectionController(
+            appModel: model, startDiscovery: false,
+            tcpReachabilityProbe: { _, _, _, _ in true },
+            tlsFingerprintProbe: { _ in .fingerprint(String(repeating: "ab", count: 32)) },
+            ingress: ingress, now: { fixture.now })
+        let expiry = fixture.now.addingTimeInterval(30)
+        let auth = GatewayConnectionController.ManualAuthOverride.explicit(
+            token: "gateway-token", bootstrapToken: "setup-placeholder", password: nil,
+            targetStableID: fixture.stableID, expiresAtMs: Int64(expiry.timeIntervalSince1970 * 1000),
+            isSetupCodeOrigin: true, suppressStoredDeviceAuth: true)
+        #expect(GatewaySettingsStore.saveGatewayCredentials(
+            token: auth.token, bootstrapToken: auth.bootstrapToken, password: nil,
+            gatewayStableID: fixture.stableID, suppressStoredDeviceAuth: true, instanceId: instanceID))
+        #expect(await controller.connectManual(
+            host: "gateway.example.test", port: 8443, useTLS: true, authOverride: auth) == .accepted)
+        let prompt = try #require(controller.pendingTrustPrompt)
+        #expect(controller.pendingGatewayRetryKind == nil)
+        await controller.acceptPendingTrustPrompt(prompt)
+        try await waitForIngress { !controller.hasPendingConnectionHandoff }
+        #expect(model.activeGatewayConnectConfig == nil)
+        #expect(!auth.wasHandedOff)
+        #expect(controller.pendingGatewayRetryKind == .manual)
+        let requestCount = fixture.requests.count
+        fixture.now = expiry
+        fixture.probeFailure = nil
+        fixture.preauthenticated = true
+        _ = await controller.retryGatewayConnection()
+        try await waitForIngress { !controller.hasPendingConnectionHandoff }
+        #expect(model.lastGatewayProblem?.kind == .bootstrapTokenInvalid)
+        #expect(model.activeGatewayConnectConfig == nil)
+        #expect(!auth.wasHandedOff)
+        #expect(fixture.requests.count == requestCount)
+        let stored = GatewaySettingsStore.loadGatewayCredentials(
+            instanceId: instanceID,
+            gatewayStableID: fixture.stableID)
+        #expect(stored.bootstrapToken == nil)
+        #expect(stored.token == "gateway-token")
+    }
+
+    @Test @MainActor
     func `capability refresh retains ingress and certificate rotation reacquires TLS`() async throws {
         let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
@@ -590,7 +767,7 @@ extension GatewayIngressControllerTests {
         let oldTLS = GatewayTLSParams(
             required: true, expectedFingerprint: "old-certificate", allowTOFU: false, storeKey: fixture.stableID)
         try model.applyGatewayConnectConfig(fixture.config(authorization, tls: oldTLS))
-        await controller.refreshActiveGatewayRegistrationFromSettingsAsync()
+        await controller.refreshActiveGatewayRegistrationFromSettings().value
         #expect(model.activeGatewayConnectConfig?.ingressAuthorization?.revision == authorization.revision)
         #expect(model.activeGatewayConnectConfig?.token == "gateway-token")
         let error = GatewayTLSValidationError(
@@ -909,11 +1086,14 @@ extension GatewayIngressControllerTests {
 }
 
 extension GatewayIngressControllerTests {
-    @Test @MainActor
-    func `canceling website preparation leaves friendly ingress guidance without a network failure`() async throws {
+    @Test(arguments: [false, true], ["attention", "reconnect", "switch"]) @MainActor
+    func `canceling website preparation leaves friendly ingress guidance without a network failure`(
+        expiresBeforeRetry: Bool, retryAction: String) async throws
+    {
         let isolation = await GatewayRegistryTestIsolation()
         defer { isolation.restore() }
-        let state = try TemporaryOpenClawState(instanceID: "access-cancel-preparation-\(UUID().uuidString)")
+        let instanceID = "access-cancel-preparation-\(UUID().uuidString)"
+        let state = try TemporaryOpenClawState(instanceID: instanceID)
         defer { state.restore() }
         let fixture = try IngressTestHarness()
         let previousPin = GatewayTLSStore.loadFingerprint(stableID: fixture.stableID)
@@ -923,6 +1103,7 @@ extension GatewayIngressControllerTests {
                 GatewayTLSStore.saveFingerprint(previousPin, stableID: fixture.stableID)
             }
         }
+        GatewayTLSStore.saveFingerprint(String(repeating: "ab", count: 32), stableID: fixture.stableID)
         let gate = IngressTestGate()
         fixture.browser.preparationGate = gate
         let ingress = fixture.controller()
@@ -933,16 +1114,23 @@ extension GatewayIngressControllerTests {
             startDiscovery: false,
             tcpReachabilityProbe: { _, _, _, _ in true },
             tlsFingerprintProbe: { _ in .fingerprint(String(repeating: "ab", count: 32)) },
-            ingress: ingress)
+            ingress: ingress, now: { fixture.now })
         defer {
             gate.release()
             fixture.release.continuation.finish()
             ingress.cancelSignIn()
         }
-        #expect(await controller.connectManual(host: "gateway.example.test", port: 8443, useTLS: true) == .accepted)
-        if let prompt = controller.pendingTrustPrompt {
-            await controller.acceptPendingTrustPrompt(prompt)
-        }
+        let expiry = fixture.now.addingTimeInterval(30)
+        let auth = GatewayConnectionController.ManualAuthOverride.explicit(
+            token: nil, bootstrapToken: "setup-placeholder", password: nil,
+            targetStableID: fixture.stableID, expiresAtMs: Int64(expiry.timeIntervalSince1970 * 1000),
+            isSetupCodeOrigin: true, suppressStoredDeviceAuth: true)
+        #expect(GatewaySettingsStore.saveGatewayCredentials(
+            token: nil, bootstrapToken: auth.bootstrapToken, password: nil, gatewayStableID: fixture.stableID,
+            suppressStoredDeviceAuth: true, instanceId: instanceID))
+        #expect(await controller.connectManual(
+            host: "gateway.example.test", port: 8443, useTLS: true, authOverride: auth) == .accepted)
+        #expect(controller.pendingTrustPrompt == nil)
         await gate.waitUntilStarted()
         #expect(model.activeGatewayConnectConfig == nil)
         fixture.browser.cancel?()
@@ -954,5 +1142,337 @@ extension GatewayIngressControllerTests {
         #expect(ingress.attention?.message == "Sign-in was canceled. Choose Sign in to try again.")
         #expect(fixture.browser.presented.isEmpty)
         #expect(fixture.persisted == nil)
+        #expect(!auth.wasHandedOff)
+        #expect(controller.pendingGatewayRetryKind == .manual)
+        let attention = try #require(ingress.attention)
+        if expiresBeforeRetry { fixture.now = expiry }
+        fixture.browser.preparationGate = nil
+        fixture.release.continuation.finish()
+        let outcome = switch retryAction {
+        case "reconnect": await controller.connectActiveGateway()
+        case "switch": await controller.switchToGateway(stableID: fixture.stableID)
+        default: await controller.retryGatewayIngress(attention)
+        }
+        try await waitForIngress { !controller.hasPendingConnectionHandoff }
+        if expiresBeforeRetry {
+            #expect(outcome != .accepted)
+            #expect(model.lastGatewayProblem?.kind == .bootstrapTokenInvalid)
+            #expect(model.activeGatewayConnectConfig == nil)
+            #expect(!auth.wasHandedOff)
+            #expect(fixture.browser.presented.isEmpty)
+            #expect(GatewaySettingsStore.loadGatewayCredentials(
+                instanceId: instanceID, gatewayStableID: fixture.stableID).bootstrapToken == nil)
+        } else {
+            #expect(outcome == .accepted)
+            #expect(auth.wasHandedOff)
+            #expect(model.activeGatewayConnectConfig?.bootstrapToken == "setup-placeholder")
+            #expect(fixture.browser.presented.count == 1)
+        }
+    }
+}
+
+@MainActor
+private func waitForAutomaticIngressHandoff(_ controller: GatewayConnectionController) async {
+    while controller.hasPendingConnectionHandoff {
+        let changed = AsyncStream<Void>.makeStream()
+        withObservationTracking {
+            _ = controller.hasPendingConnectionHandoff
+        } onChange: {
+            changed.continuation.finish()
+        }
+        // Event-driven observation, not a yield/sleep poll. Register before
+        // suspending so completion before iteration remains buffered.
+        if controller.hasPendingConnectionHandoff {
+            for await _ in changed.stream {}
+        }
+    }
+}
+
+extension GatewayIngressControllerTests {
+    @Test(arguments: ["recover", "attention", "background", "disable", "focus", "credentials", "forget"]) @MainActor
+    func `background preflight recovers only while its saved route remains wanted`(change: String) async throws {
+        let isolation = await GatewayRegistryTestIsolation()
+        defer { isolation.restore() }
+        let instanceID = "background-preflight-\(UUID().uuidString)"
+        let state = try TemporaryOpenClawState(instanceID: instanceID)
+        defer { state.restore() }
+        let previousAutoConnect = UserDefaults.standard.object(forKey: "gateway.autoconnect")
+        UserDefaults.standard.set(false, forKey: "gateway.autoconnect")
+        defer { UserDefaults.standard.set(previousAutoConnect, forKey: "gateway.autoconnect") }
+        let fixture = try IngressTestHarness()
+        #expect(try GatewaySettingsStore.upsertGatewayRegistryEntry(#require(fixture.profileRows.first)))
+        #expect(GatewaySettingsStore.upsertGatewayRegistryEntry(.init(
+            stableID: "focused-gateway", kind: .discovered, name: "Focused",
+            host: nil, port: nil, useTLS: true, lastConnectedAtMs: nil), activate: true))
+        #expect(GatewaySettingsStore.setGatewayConnectionEnabled(stableID: fixture.stableID, enabled: true))
+        let previousPin = GatewayTLSStore.loadFingerprint(stableID: fixture.stableID)
+        GatewayTLSStore.saveFingerprint(String(repeating: "ab", count: 32), stableID: fixture.stableID)
+        defer {
+            _ = GatewayTLSStore.clearFingerprint(stableID: fixture.stableID)
+            if let previousPin { GatewayTLSStore.saveFingerprint(previousPin, stableID: fixture.stableID) }
+        }
+        fixture.probeFailure = URLError(.notConnectedToInternet)
+        fixture.preauthenticated = change != "attention"
+        let ingress = fixture.controller(useSavedProfiles: true)
+        let model = NodeAppModel()
+        defer { model.disconnectGateway() }
+        let delayGate = IngressTestGate()
+        var delays: [Duration] = []
+        let controller = GatewayConnectionController(
+            appModel: model, startDiscovery: false,
+            autoConnectRetryDelay: { duration in
+                delays.append(duration)
+                await delayGate.wait()
+            }, ingress: ingress)
+        defer {
+            delayGate.release()
+            controller.cancelOperatorFleetReconcile()
+            controller.operatorFleet.stopAll()
+        }
+        controller.setScenePhase(.active)
+        let reconciliation = try #require(controller.operatorFleetReconcileTask)
+        await delayGate.waitUntilStarted()
+        #expect(controller.operatorFleet._test_runtimeStableIDs().isEmpty)
+        switch change {
+        case "background": controller.setScenePhase(.background)
+        case "disable":
+            #expect(GatewaySettingsStore.setGatewayConnectionEnabled(stableID: fixture.stableID, enabled: false))
+        case "focus": #expect(GatewaySettingsStore.setActiveGateway(stableID: fixture.stableID))
+        case "credentials":
+            #expect(GatewaySettingsStore.saveGatewayCredentials(
+                token: "replacement-token", bootstrapToken: nil, password: nil,
+                gatewayStableID: fixture.stableID, suppressStoredDeviceAuth: false, instanceId: instanceID))
+        case "forget": #expect(await controller.forgetGateway(stableID: fixture.stableID))
+        default: break
+        }
+        fixture.probeFailure = nil
+        delayGate.release()
+        await reconciliation.value
+        #expect(delays == [.seconds(1)])
+        #expect(fixture.browser.prepared.isEmpty)
+        #expect(fixture.browser.presented.isEmpty)
+        #expect(model.activeGatewayConnectConfig == nil)
+        if change == "recover" {
+            #expect(controller.operatorFleet._test_runtimeStableIDs() == [fixture.stableID])
+            #expect(fixture.requests.count == 2)
+        } else {
+            #expect(controller.operatorFleet._test_runtimeStableIDs().isEmpty)
+            if change == "attention" {
+                #expect(ingress.attention?.stableID == fixture.stableID)
+            } else {
+                #expect(fixture.requests.count == 1)
+            }
+        }
+    }
+
+    @Test(arguments: [false, true]) @MainActor
+    func `automatic preflight retries without gaining browser authority`(requiresAccess: Bool) async throws {
+        let isolation = await GatewayRegistryTestIsolation()
+        defer { isolation.restore() }
+        let instanceID = "automatic-ingress-recovery-\(UUID().uuidString)"
+        let state = try TemporaryOpenClawState(instanceID: instanceID)
+        defer { state.restore() }
+        let previousAutoConnect = UserDefaults.standard.object(forKey: "gateway.autoconnect")
+        defer { UserDefaults.standard.set(previousAutoConnect, forKey: "gateway.autoconnect") }
+        let fixture = try IngressTestHarness()
+        #expect(try GatewaySettingsStore.upsertGatewayRegistryEntry(
+            #require(fixture.profileRows.first),
+            activate: true))
+        #expect(GatewaySettingsStore.saveGatewayCredentials(
+            token: "gateway-token", bootstrapToken: nil, password: nil,
+            gatewayStableID: fixture.stableID, suppressStoredDeviceAuth: false, instanceId: instanceID))
+        let previousPin = GatewayTLSStore.loadFingerprint(stableID: fixture.stableID)
+        let fingerprint = String(repeating: "ab", count: 32)
+        GatewayTLSStore.saveFingerprint(fingerprint, stableID: fixture.stableID)
+        defer {
+            _ = GatewayTLSStore.clearFingerprint(stableID: fixture.stableID)
+            if let previousPin { GatewayTLSStore.saveFingerprint(previousPin, stableID: fixture.stableID) }
+        }
+        fixture.probeFailure = URLError(.notConnectedToInternet)
+        fixture.preauthenticated = !requiresAccess
+        let ingress = fixture.controller(useSavedProfiles: true)
+        let model = NodeAppModel()
+        defer { model.disconnectGateway() }
+        let delayGate = IngressTestGate()
+        var delays: [Duration] = []
+        UserDefaults.standard.set(true, forKey: "gateway.autoconnect")
+        let controller = GatewayConnectionController(
+            appModel: model, startDiscovery: false,
+            autoConnectRetryDelay: { duration in
+                delays.append(duration)
+                await delayGate.wait()
+                fixture.now.addTimeInterval(Double(duration.components.seconds))
+            }, ingress: ingress, now: { fixture.now })
+        defer { delayGate.release() }
+        await delayGate.waitUntilStarted()
+        let generation = model.gatewayConnectGeneration
+        #expect(controller._test_didAutoConnect())
+        #expect(controller._test_pendingAutoConnectState().pending)
+        #expect(model.activeGatewayConnectConfig == nil)
+        #expect(!model._test_hasGatewayLoopTasks().node)
+        #expect(fixture.requests.count == 1)
+        controller._test_triggerAutoConnect()
+        #expect(model.gatewayConnectGeneration == generation)
+        #expect(delays == [.seconds(1)])
+        fixture.probeFailure = nil
+        delayGate.release()
+        await waitForAutomaticIngressHandoff(controller)
+        #expect(model.gatewayConnectGeneration == generation)
+        #expect(fixture.browser.prepared.isEmpty)
+        #expect(fixture.browser.presented.isEmpty)
+        #expect(delays == [.seconds(1)])
+        if requiresAccess {
+            #expect(model.activeGatewayConnectConfig == nil)
+            #expect(model.lastGatewayProblem?.kind == .externalAuthorizationRequired)
+            #expect(ingress.attention?.canSignIn == true)
+        } else {
+            let config = try #require(model.activeGatewayConnectConfig)
+            #expect(config.stableID == fixture.stableID)
+            #expect(config.token == "gateway-token")
+            #expect(config.tls?.expectedFingerprint == fingerprint)
+            #expect(config.ingressAuthorization == nil)
+            #expect(model._test_hasGatewayLoopTasks().node)
+            #expect(model._test_hasGatewayLoopTasks().operator)
+            #expect(fixture.requests.count == 2)
+        }
+    }
+
+    @Test(arguments: [false, true], ["network", "deadline", "certificate", "cancelled"]) @MainActor
+    func `only automatic transient preflight retries with capped backoff`(
+        automatic: Bool,
+        failure: String) async throws
+    {
+        let isolation = await GatewayRegistryTestIsolation()
+        defer { isolation.restore() }
+        let state = try TemporaryOpenClawState(instanceID: "automatic-ingress-budget-\(UUID().uuidString)")
+        defer { state.restore() }
+        let previousAutoConnect = UserDefaults.standard.object(forKey: "gateway.autoconnect")
+        defer { UserDefaults.standard.set(previousAutoConnect, forKey: "gateway.autoconnect") }
+        let fixture = try IngressTestHarness()
+        #expect(try GatewaySettingsStore.upsertGatewayRegistryEntry(
+            #require(fixture.profileRows.first),
+            activate: true))
+        let previousPin = GatewayTLSStore.loadFingerprint(stableID: fixture.stableID)
+        GatewayTLSStore.saveFingerprint(String(repeating: "ab", count: 32), stableID: fixture.stableID)
+        defer {
+            _ = GatewayTLSStore.clearFingerprint(stableID: fixture.stableID)
+            if let previousPin { GatewayTLSStore.saveFingerprint(previousPin, stableID: fixture.stableID) }
+        }
+        let ingress = fixture.controller(requestFactory: { route in
+            { _, _ in
+                await fixture.record(route)
+                switch failure {
+                case "deadline": throw CloudflareAccessError.connectionFailed
+                case "cancelled": throw URLError(.cancelled)
+                case "certificate":
+                    throw GatewayTLSValidationError(
+                        failure: .init(
+                            kind: .pinMismatch, host: "gateway.example.test", storeKey: route.stableID,
+                            expectedFingerprint: String(repeating: "ab", count: 32),
+                            observedFingerprint: String(repeating: "cd", count: 32), systemTrustOk: true),
+                        context: "automatic admission")
+                default: throw URLError(.notConnectedToInternet)
+                }
+            }
+        })
+        let model = NodeAppModel()
+        defer { model.disconnectGateway() }
+        var delays: [Duration] = []
+        UserDefaults.standard.set(automatic, forKey: "gateway.autoconnect")
+        let controller = GatewayConnectionController(
+            appModel: model, startDiscovery: false,
+            autoConnectRetryDelay: { duration in
+                delays.append(duration)
+                fixture.now.addTimeInterval(Double(duration.components.seconds))
+                if delays.count == 7 { model.disconnectGateway() }
+            }, ingress: ingress, now: { fixture.now })
+        if !automatic {
+            #expect(await controller.connectManual(host: "gateway.example.test", port: 8443, useTLS: true) == .accepted)
+        }
+        await waitForAutomaticIngressHandoff(controller)
+        let shouldRetry = automatic && (failure == "network" || failure == "deadline")
+        #expect(delays == (shouldRetry
+                ? [.seconds(1), .seconds(2), .seconds(4), .seconds(8), .seconds(16), .seconds(30), .seconds(30)]
+                : []))
+        #expect(fixture.requestRoutes.count == (shouldRetry ? 7 : 1))
+        #expect(model.activeGatewayConnectConfig == nil)
+        if !shouldRetry { #expect(model.lastGatewayProblem != nil) }
+        #expect(fixture.browser.prepared.isEmpty)
+        #expect(!controller._test_pendingAutoConnectState().pending)
+        #expect(!controller._test_isAutoConnectSuppressed())
+        controller._test_triggerAutoConnect()
+        #expect(!controller._test_pendingAutoConnectState().pending)
+    }
+
+    @Test(arguments: ["stop", "cancel", "forget", "replacement", "preference", "endpoint", "credentials", "pin"])
+    @MainActor
+    func `automatic retry does not revive A retired or edited target`(change: String) async throws {
+        let isolation = await GatewayRegistryTestIsolation()
+        defer { isolation.restore() }
+        let instanceID = "automatic-ingress-retired-\(UUID().uuidString)"
+        let state = try TemporaryOpenClawState(instanceID: instanceID)
+        defer { state.restore() }
+        let previousAutoConnect = UserDefaults.standard.object(forKey: "gateway.autoconnect")
+        defer { UserDefaults.standard.set(previousAutoConnect, forKey: "gateway.autoconnect") }
+        let fixture = try IngressTestHarness()
+        let entry = try #require(fixture.profileRows.first)
+        #expect(GatewaySettingsStore.upsertGatewayRegistryEntry(entry, activate: true))
+        let previousPin = GatewayTLSStore.loadFingerprint(stableID: fixture.stableID)
+        GatewayTLSStore.saveFingerprint(String(repeating: "ab", count: 32), stableID: fixture.stableID)
+        defer {
+            _ = GatewayTLSStore.clearFingerprint(stableID: fixture.stableID)
+            if let previousPin { GatewayTLSStore.saveFingerprint(previousPin, stableID: fixture.stableID) }
+        }
+        fixture.probeFailure = URLError(.notConnectedToInternet)
+        fixture.preauthenticated = true
+        let ingress = fixture.controller(useSavedProfiles: true)
+        let model = NodeAppModel()
+        defer { model.disconnectGateway() }
+        let delayGate = IngressTestGate()
+        var delays: [Duration] = []
+        UserDefaults.standard.set(true, forKey: "gateway.autoconnect")
+        let controller = GatewayConnectionController(
+            appModel: model, startDiscovery: false,
+            autoConnectRetryDelay: { duration in
+                delays.append(duration)
+                // Noncooperative on purpose: post-delay authority, not a clock
+                // CancellationError, must fence a retired attempt.
+                await delayGate.wait()
+            }, ingress: ingress)
+        defer { delayGate.release() }
+        await delayGate.waitUntilStarted()
+        let replacement = try fixture.config(nil, stableID: "replacement-gateway")
+        switch change {
+        case "stop": model.disconnectGateway()
+        case "cancel":
+            let lease = controller.cancelPendingConnectionAttempts()
+            controller.releaseAutoConnectSuppression(after: lease)
+        case "forget":
+            #expect(await controller.forgetGateway(stableID: fixture.stableID))
+        case "replacement": model.applyGatewayConnectConfig(replacement)
+        case "preference": UserDefaults.standard.set(false, forKey: "gateway.autoconnect")
+        case "endpoint":
+            var edited = entry
+            edited.useTLS = false
+            #expect(GatewaySettingsStore.upsertGatewayRegistryEntry(edited, activate: true))
+        case "credentials":
+            #expect(GatewaySettingsStore.saveGatewayCredentials(
+                token: "replacement-token", bootstrapToken: nil, password: nil,
+                gatewayStableID: fixture.stableID, suppressStoredDeviceAuth: false, instanceId: instanceID))
+        case "pin":
+            GatewayTLSStore.saveFingerprint(String(repeating: "cd", count: 32), stableID: fixture.stableID)
+        default: Issue.record("Unknown invalidation case")
+        }
+        fixture.probeFailure = nil
+        delayGate.release()
+        await waitForAutomaticIngressHandoff(controller)
+        #expect(fixture.requests.count == 1)
+        #expect(delays == [.seconds(1)])
+        #expect(fixture.browser.prepared.isEmpty)
+        #expect(!controller._test_pendingAutoConnectState().pending)
+        #expect(model.activeGatewayConnectConfig?.stableID == (change == "replacement" ? replacement.stableID : nil))
+        if change == "forget" {
+            #expect(!GatewaySettingsStore.loadGatewayRegistry().entries.contains { $0.id == entry.id })
+        }
     }
 }
