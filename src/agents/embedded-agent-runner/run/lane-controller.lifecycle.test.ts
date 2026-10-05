@@ -12,6 +12,7 @@ import { createTestAdmittedRunContext } from "../../admitted-run-context.test-su
 import type { EmbeddedAgentRunResult } from "../types.js";
 import { createEmbeddedRunLaneController } from "./lane-controller.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
+import * as sessionBootstrap from "./session-bootstrap.js";
 
 type LaneParams = RunEmbeddedAgentParams & { sessionFile: string };
 
@@ -102,6 +103,8 @@ describe("createEmbeddedRunLaneController lifecycle admission", () => {
     { trigger: "user" as const, expected: "foreground" },
     { trigger: "cron" as const, expected: "background" },
   ])("marks $trigger session work as $expected", async ({ trigger, expected }) => {
+    using writer = vi.spyOn(sessionBootstrap, "claimAgentSessionWriter");
+    writer.mockResolvedValue(undefined);
     const priorities: Array<CommandQueueEnqueueOptions["priority"]> = [];
     const enqueue: LaneParams["enqueue"] = async (task, options) => {
       priorities.push(options?.priority);

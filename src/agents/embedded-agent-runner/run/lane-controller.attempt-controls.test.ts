@@ -14,6 +14,11 @@ import { createEmbeddedRunLaneController } from "./lane-controller.js";
 import { EMBEDDED_RUN_LANE_TIMEOUT_GRACE_MS } from "./lane-runtime.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 
+// mock-isolation: Attempt-control unit cases retain raw work without a persisted transcript writer.
+vi.mock("./session-bootstrap.js", () => ({
+  claimAgentSessionWriter: vi.fn(async () => undefined),
+}));
+
 const globalLane = "test:attempt-owner-deadline";
 const cleanups: Array<() => void | Promise<void>> = [];
 async function setup() {

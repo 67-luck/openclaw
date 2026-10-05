@@ -13,6 +13,11 @@ import { createTestAdmittedRunContext } from "../../admitted-run-context.test-su
 import { createEmbeddedRunLaneController } from "./lane-controller.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 
+// mock-isolation: Execution-guard unit cases exercise raw custody without durable writer admission.
+vi.mock("./session-bootstrap.js", () => ({
+  claimAgentSessionWriter: vi.fn(async () => undefined),
+}));
+
 const key = "agent:main:controller-execution";
 const globalLane = "test:controller-global";
 function create(runId: string, enqueue?: CommandQueueEnqueueFn) {

@@ -36,6 +36,11 @@ import type { EmbeddedAgentRunResult } from "../types.js";
 import { createEmbeddedRunLaneController } from "./lane-controller.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 
+// mock-isolation: Context-retention unit cases exercise mailbox and capacity, not durable writers.
+vi.mock("./session-bootstrap.js", () => ({
+  claimAgentSessionWriter: vi.fn(async () => undefined),
+}));
+
 const CONTEXT_TTL_MS = 30 * 60 * 1000;
 const GLOBAL_LANE = "queued-run-context-global";
 
@@ -57,7 +62,6 @@ function createRunController(overrides: Partial<RunEmbeddedAgentParams> = {}) {
     runId,
     sessionFile: "/tmp/queued-run.jsonl",
     sessionId: "queued-session",
-    sessionPersistence: "detached",
     timeoutMs: 60_000,
     workspaceDir: "/tmp",
     ...overrides,
