@@ -5,6 +5,7 @@ import type {
   RpcSourceAdapter,
   RpcSourceIdentity,
 } from "../../sessions/session-controller.rpc-sources.js";
+import { registerRpcSource } from "../../sessions/session-controller.rpc-sources.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
 import { claimRpcSourceForTest, createRpcSourceForTest } from "../test-helpers.rpc-source.js";
@@ -60,4 +61,15 @@ export async function createActiveRpcSourceForTest(
   const ref = createRpcSourceForTest(metadata, identity);
   const release = await claimRpcSourceForTest(ref);
   return Object.assign(ref, { release });
+}
+
+/** Registers an active projection through the controller-owned protocol index. */
+export async function registerActiveRpcSourceForTest(
+  runId: string,
+  metadata: Partial<RpcSourceAdapter> & { projectSessionActive?: boolean } = {},
+  identity: Partial<RpcSourceIdentity> = {},
+) {
+  const ref = await createActiveRpcSourceForTest(metadata, identity);
+  registerRpcSource(runId, ref);
+  return ref;
 }

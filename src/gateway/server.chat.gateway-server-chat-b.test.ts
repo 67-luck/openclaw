@@ -20,6 +20,10 @@ import { createSessionsHistoryTool } from "../agents/tools/sessions-history-tool
 import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
 import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
+import { createQueueSettings, createQueueTestRun } from "../auto-reply/reply/queue.test-helpers.js";
+import { enqueueFollowupRun } from "../auto-reply/reply/queue/enqueue.js";
+import { completeFollowupRunLifecycle } from "../auto-reply/reply/queue/lifecycle.js";
+import { readReplySourceInput } from "../auto-reply/reply/reply-source-binding.js";
 import {
   getRuntimeConfig,
   resetConfigRuntimeState,
@@ -56,6 +60,7 @@ import {
   isSessionControllerWorkActive,
   runSessionMutation,
 } from "../sessions/session-controller.lifecycle.js";
+import { bindSessionControllerSource } from "../sessions/session-controller.mailbox.js";
 import {
   isRpcSourceQueued,
   requestRpcSourceCancellation,
@@ -80,7 +85,7 @@ import {
 } from "./server-chat.agent-events.test-helpers.js";
 import { getMaxChatHistoryMessagesBytes } from "./server-constants.js";
 import { createGatewayChatMetadataRuntime } from "./server-methods/chat-metadata-runtime.js";
-import { createActiveRpcSourceForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
+import { registerActiveRpcSourceForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
 import {
   disposeSessionReadContexts,
   initializeSessionReadContext,
@@ -927,16 +932,14 @@ describe("gateway server chat", () => {
         // chat.send registers the agent-scoped canonical key; the handler's
         // in-flight adoption must resolve the same scoped key for the bare
         // alias request or the streaming run renders idle on switch-back.
-        rpcSourceTesting.set(
+        await registerActiveRpcSourceForTest(
           "run-writer",
-          await createActiveRpcSourceForTest(
-            { projectSessionActive: true },
-            {
-              sessionId: "sess-writer",
-              sessionKey: "agent:writer:notes",
-              agentId: "writer",
-            },
-          ),
+          { projectSessionActive: true },
+          {
+            sessionId: "sess-writer",
+            sessionKey: "agent:writer:notes",
+            agentId: "writer",
+          },
         );
         context.chatRunState.getOrCreate("run-writer").buffer = "writer partial";
         const responses: CapturedChatResponse[] = [];
@@ -984,12 +987,10 @@ describe("gateway server chat", () => {
       });
       try {
         await writeMainSessionStore();
-        rpcSourceTesting.set(
+        await registerActiveRpcSourceForTest(
           "run-active",
-          await createActiveRpcSourceForTest(
-            { projectSessionActive: true },
-            { sessionId: "sess-main", sessionKey: "main" },
-          ),
+          { projectSessionActive: true },
+          { sessionId: "sess-main", sessionKey: "main" },
         );
         context.chatRunState.registry.add("provider-run", {
           sessionKey: "main",
@@ -4154,13 +4155,45 @@ describe("gateway server chat", () => {
       let turnAdoptionLifecycle: GetReplyOptions["turnAdoptionLifecycle"];
       let onQueueDisposition: InternalGetReplyOptions["onFollowupQueueDisposition"];
       let onQueuedFollowupReplyBatch: InternalGetReplyOptions["onQueuedFollowupReplyBatch"];
+      const bindQueuedRun = (
+        lifecycle: GetReplyOptions["turnAdoptionLifecycle"],
+        prompt: string,
+      ) => {
+        const input = readReplySourceInput({ turnAdoptionLifecycle: lifecycle });
+        if (!input) {
+          throw new Error("Missing queued chat source");
+        }
+        const run = createQueueTestRun({ prompt });
+        run.run = {
+          ...run.run,
+          sessionKey: "agent:main:main",
+          sessionId: "sess-main",
+          agentId: "main",
+          config: { ...run.run.config, session: { store: storePath } },
+        };
+        run.abortSignal = input.abortSignal;
+        run.turnAdoptionLifecycle = lifecycle;
+        bindSessionControllerSource(input, run);
+        expect(
+          enqueueFollowupRun(
+            "agent:main:main",
+            run,
+            createQueueSettings({ mode: "followup" }),
+            "none",
+            undefined,
+            false,
+          ),
+        ).toBe(true);
+        return run;
+      };
+      let queuedRun: ReturnType<typeof createQueueTestRun> | undefined;
       const dispatchRelease = createDeferred();
       dispatchInboundMessageMock.mockImplementationOnce(async (args: unknown) => {
         const replyOptions = (args as { replyOptions?: InternalGetReplyOptions }).replyOptions;
         turnAdoptionLifecycle = replyOptions?.turnAdoptionLifecycle;
         onQueueDisposition = replyOptions?.onFollowupQueueDisposition;
         onQueuedFollowupReplyBatch = replyOptions?.onQueuedFollowupReplyBatch;
-        turnAdoptionLifecycle?.onDeferred?.();
+        queuedRun = bindQueuedRun(turnAdoptionLifecycle, "queued prompt");
         await dispatchRelease.promise;
         return {};
       });
@@ -4274,10 +4307,16 @@ describe("gateway server chat", () => {
       if (queuedEntry) {
         requestRpcSourceCancellation(queuedEntry);
       }
-      expect(rpcSourceTesting.has("idem-queued-followup")).toBe(false);
+      expect(rpcSourceTesting.has("idem-queued-followup")).toBe(true);
 
-      await turnAdoptionLifecycle?.onSettled?.();
+      if (!queuedRun) {
+        throw new Error("Missing queued follow-up fixture");
+      }
+      const queuedInput = queuedRun.controllerInput;
+      completeFollowupRunLifecycle(queuedRun);
+      await queuedInput?.settlement.promise;
       expect(rpcSourceTesting.has("idem-queued-followup")).toBe(false);
+      await getDirectChatSessionWorkRelease();
       expect(isSessionControllerWorkActive(storePath, ["agent:main:main", "sess-main"])).toBe(
         false,
       );
@@ -4295,11 +4334,12 @@ describe("gateway server chat", () => {
         );
       }, FAST_WAIT_OPTS);
 
-      let failedDispatchLifecycle: GetReplyOptions["turnAdoptionLifecycle"];
+      let failedQueuedRun: ReturnType<typeof createQueueTestRun> | undefined;
       dispatchInboundMessageMock.mockImplementationOnce(async (args: unknown) => {
-        failedDispatchLifecycle = (args as { replyOptions?: GetReplyOptions }).replyOptions
-          ?.turnAdoptionLifecycle;
-        failedDispatchLifecycle?.onDeferred?.();
+        failedQueuedRun = bindQueuedRun(
+          (args as { replyOptions?: GetReplyOptions }).replyOptions?.turnAdoptionLifecycle,
+          "accepted before dispatch error",
+        );
         throw new Error("post-enqueue bookkeeping failed");
       });
       await callDirectChat("chat.send", {
@@ -4334,7 +4374,12 @@ describe("gateway server chat", () => {
         payload: { status: "ok" },
       });
       expect(rpcSourceTesting.has("idem-queued-followup-post-error")).toBe(true);
-      await failedDispatchLifecycle?.onSettled?.();
+      if (!failedQueuedRun) {
+        throw new Error("Missing failed queued follow-up fixture");
+      }
+      const failedInput = failedQueuedRun.controllerInput;
+      completeFollowupRunLifecycle(failedQueuedRun);
+      await failedInput?.settlement.promise;
       expect(rpcSourceTesting.has("idem-queued-followup-post-error")).toBe(false);
     });
   });
