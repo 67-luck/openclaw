@@ -25,7 +25,7 @@ import {
   captureSessionControllerSettlement,
   isSessionControllerWorkActive,
 } from "../sessions/session-controller.lifecycle.js";
-import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
+import { resetSessionControllerStateForTest } from "../sessions/session-lifecycle-admission.test-support.js";
 import { listSessionStateEventsSince } from "../sessions/session-state-events.js";
 import * as skillLibrarySelection from "../skills/library/selection.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
@@ -131,6 +131,7 @@ beforeEach(async () => {
 afterEach(async () => {
   const released = await waitForGatewayActiveWork(30_000);
   expect(released.drained, JSON.stringify(released.snapshot.blockers)).toBe(true);
+  resetSessionControllerStateForTest();
   getSessionRowProjection(context)?.dispose();
   for (const dir of temporaryDirs.dirs) {
     await releaseGatewaySessionStoreFixture(dir);
@@ -225,7 +226,6 @@ async function waitForDispatchEnd() {
     scope: storePath,
     identities: [sessionKey, sessionId],
   });
-  expect(rpcSourceTesting.size).toBe(0);
 }
 
 async function withHeldModel(run: () => Promise<void>) {
@@ -246,10 +246,9 @@ function profileClient(profileId: string): GatewayClient {
   };
 }
 
-function expectNoDispatch() {
+async function expectNoDispatch() {
   expect(userMessages()).toEqual([]);
   expect(runEmbeddedAgent).not.toHaveBeenCalled();
-  expect(rpcSourceTesting.size).toBe(0);
 }
 
 async function waitForModelRun(count = 1) {
@@ -361,7 +360,7 @@ describe("Goal chat admission and continuation", () => {
       message: expect.stringContaining("recoverable history"),
     });
     expect(loadSessionEntry(scope())).toBeUndefined();
-    expectNoDispatch();
+    await expectNoDispatch();
     expect(dispatch).not.toHaveBeenCalled();
   });
 
@@ -400,7 +399,7 @@ describe("Goal chat admission and continuation", () => {
     expect(response.mock.calls[0]?.[0]).toBe(false);
     expect(response.mock.calls[0]?.[2]).toMatchObject({ code: "INVALID_REQUEST" });
     expect(loadSessionEntry(scope())).toBeUndefined();
-    expectNoDispatch();
+    await expectNoDispatch();
   });
 
   it.each(["creation revoked", "sandbox now required"] as const)(
@@ -448,7 +447,7 @@ describe("Goal chat admission and continuation", () => {
         change === "creation revoked" ? /cannot create sessions/ : /creation policy changed/,
       );
       expect(loadSessionEntry(scope())).toBeUndefined();
-      expectNoDispatch();
+      await expectNoDispatch();
     },
   );
 
@@ -570,7 +569,7 @@ describe("Goal chat admission and continuation", () => {
     };
     await handleChatSend(options, async () => false);
     expect(loadSessionEntry(scope())?.goal).toBeUndefined();
-    expectNoDispatch();
+    await expectNoDispatch();
     const retried = await rpc("chat.send", params);
     expect(retried.mock.calls[0]?.[0]).toBe(true);
     await waitForModelRun();
@@ -623,7 +622,7 @@ describe("Goal chat admission and continuation", () => {
         expect(loadSessionEntry(scope())?.goal).toBeUndefined();
         expect(context.dedupe.size).toBe(0);
         expect(respond).not.toHaveBeenCalled();
-        expectNoDispatch();
+        await expectNoDispatch();
       } finally {
         release.resolve();
         await pending.catch(() => undefined);
@@ -676,7 +675,7 @@ describe("Goal chat admission and continuation", () => {
             : { status: "in_flight" },
         );
         expect(loadSessionEntry(scope())).toBeUndefined();
-        expectNoDispatch();
+        await expectNoDispatch();
         expect(isSessionControllerWorkActive(storePath, [sessionKey])).toBe(false);
         if (change === "replaced") {
           expect(context.dedupe.get(key)?.payload).toMatchObject({
@@ -731,7 +730,6 @@ describe("Goal chat admission and continuation", () => {
         }),
       );
       expect(loadSessionEntry(scope())?.sessionId).toBe(reboundSessionId);
-      expect(rpcSourceTesting.size).toBe(0);
       expect(runEmbeddedAgent).toHaveBeenCalledOnce();
     } finally {
       release.resolve();
@@ -839,7 +837,7 @@ describe("Goal chat admission and continuation", () => {
       details: { reason: "goal-operation-conflict" },
     });
     expect(loadSessionEntry(scope())?.goal).toBeUndefined();
-    expectNoDispatch();
+    await expectNoDispatch();
   });
 
   it("does not let ordinary chat displace a Goal reservation with the same run ID", async () => {

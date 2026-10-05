@@ -214,7 +214,21 @@ export async function admitChatSend(
   }
   let retryComparison = reserved.retryComparison;
   const uploadAdmission = reserved.uploadAdmission;
-  let admittedSessionId = backingSessionId ?? clientRunId;
+  let preparedGoalEntry: Awaited<ReturnType<typeof prepareChatSendSessionEntry>> | undefined;
+  try {
+    if (request.goalOperation?.action === "start" && !entry && !requestedSessionId) {
+      preparedGoalEntry = await prepareChatSendSessionEntry({
+        cfg: session.cfg,
+        client,
+        agentId,
+        getRuntimeConfig: context.getRuntimeConfig,
+      });
+    }
+  } catch (error) {
+    clearPendingChatSendReservation();
+    throw error;
+  }
+  let admittedSessionId = preparedGoalEntry?.entry.sessionId ?? backingSessionId ?? clientRunId;
   let expectedActiveReplyOperation: ReplyOperation | undefined;
   let gatewayWorkAdmission: Awaited<ReturnType<typeof beginSessionEffect>> | undefined;
   let restartSafeAdmission: ReturnType<typeof resolveRestartSafeChatAdmission>;
@@ -226,14 +240,13 @@ export async function admitChatSend(
   let reservationSuperseded = false;
   let supersedingResult: DedupeEntry | undefined;
   let assertSourceAuthority: (() => void) | undefined = params.assertCurrent;
-  let preparedGoalEntry: Awaited<ReturnType<typeof prepareChatSendSessionEntry>> | undefined;
   const admittedRunAbort = registerChatAbortController({
     target: captureSessionTarget({
       storeScope: storePath,
       sessionKey,
       aliases: [rawSessionKey, session.sessionTarget.storeKey],
       agentId,
-      incarnation: backingSessionId,
+      incarnation: admittedSessionId,
     }),
     policy: resolveQueueSettings({
       cfg,
@@ -275,19 +288,6 @@ export async function admitChatSend(
       return withRestartSafeChatPlacement(placementService, admittedSessionId, (prepared) =>
         commitChatWorkAdmission(acpMeta, prepared),
       );
-    }
-    if (
-      request.goalOperation?.action === "start" &&
-      !entry &&
-      !requestedSessionId &&
-      !preparedGoalEntry
-    ) {
-      preparedGoalEntry = await prepareChatSendSessionEntry({
-        cfg: session.cfg,
-        client,
-        agentId,
-        getRuntimeConfig: context.getRuntimeConfig,
-      });
     }
     let refreshPlacement = false;
     await withCurrentChatSendRetry(params, pendingAttemptId, (latestSession, comparison) => {
@@ -471,7 +471,7 @@ export async function admitChatSend(
         sessionKey,
         aliases: [rawSessionKey, session.sessionTarget.storeKey],
         agentId,
-        incarnation: backingSessionId,
+        incarnation: admittedSessionId,
       }),
       storeWriterIdentities: [sessionKey, session.sessionTarget.storeKey],
       assertAllowed: () => {
