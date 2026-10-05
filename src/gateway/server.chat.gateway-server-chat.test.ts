@@ -3,6 +3,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
@@ -491,8 +492,9 @@ describe("gateway server chat", () => {
     },
   );
 
-  const startInterruptibleChatRun = async (runId: string) => {
+  const startInterruptibleChatRun = async (runId: string, settlementGate?: Promise<void>) => {
     const activeRunStarted = createDeferred();
+    const producer = { cancelled: false, settled: false };
     mockGetReplyFromConfigOnce(async (_ctx, opts) => {
       activeRunStarted.resolve(undefined);
       if (!opts?.abortSignal?.aborted) {
@@ -500,6 +502,12 @@ describe("gateway server chat", () => {
           opts?.abortSignal?.addEventListener("abort", () => resolve(), { once: true });
         });
       }
+      producer.cancelled = true;
+      // The gate holds the real producer after cancellation, through replacement acknowledgement.
+      if (settlementGate) {
+        await settlementGate;
+      }
+      producer.settled = true;
       return undefined;
     });
     const active = await rpcReq(ws, "chat.send", {
@@ -509,27 +517,44 @@ describe("gateway server chat", () => {
     });
     expect(active.ok).toBe(true);
     await activeRunStarted.promise;
+    return producer;
   };
 
-  test("chat.send interrupt drains the captured admission before starting", async () => {
-    await withMainSessionStore(async () => {
-      await startInterruptibleChatRun("idem-chat-interrupt-old");
-
-      const res = await rpcReq(ws, "chat.send", {
-        sessionKey: "main",
-        message: "replace the captured turn",
-        queueMode: "interrupt",
-        idempotencyKey: "idem-chat-interrupt-active",
+  test.each(["chat.send", "sessions.send"] as const)(
+    "%s acknowledges an interrupt before predecessor settlement",
+    async (method) => {
+      await withMainSessionStore(async () => {
+        await updateSessionEntry(
+          { sessionKey: "main", storePath: expectDefined(testState.sessionStorePath) },
+          () => ({ queueMode: "interrupt" }),
+        );
+        const oldRunId = `idem-${method}-interrupt-old`;
+        const newRunId = `idem-${method}-interrupt-active`;
+        const releasePredecessor = createDeferred();
+        const predecessor = await startInterruptibleChatRun(oldRunId, releasePredecessor.promise);
+        try {
+          await expect(
+            rpcReq(ws, method, {
+              ...(method === "chat.send"
+                ? { sessionKey: "main", queueMode: "interrupt" }
+                : { key: "main" }),
+              message: "replace the captured turn",
+              idempotencyKey: newRunId,
+            }),
+          ).resolves.toMatchObject({
+            ok: true,
+            payload: { runId: newRunId, status: "started", interruptedActiveRun: true },
+          });
+          expect(predecessor.cancelled).toBe(true);
+          expect(predecessor.settled).toBe(false);
+        } finally {
+          releasePredecessor.resolve();
+        }
+        await requestExecution.waitForCompletion(oldRunId);
+        await waitForAgentRunDrained(newRunId);
       });
-      expect(res.ok).toBe(true);
-      expect(res.payload).toMatchObject({
-        runId: "idem-chat-interrupt-active",
-        status: "started",
-        interruptedActiveRun: true,
-      });
-      await waitForAgentRunDrained("idem-chat-interrupt-active");
-    });
-  });
+    },
+  );
 
   test("chat.send interrupt keeps committed cancellation when the backend observer throws", async () => {
     await withMainSessionStore(async () => {
