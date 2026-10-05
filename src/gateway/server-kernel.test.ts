@@ -808,7 +808,8 @@ describe("createGatewayKernel", () => {
     });
     const originalPluginRegistry = captureActivePluginRegistrySnapshot();
     const inspectAccount = vi.fn(() => ({ enabled: true, configured: true }));
-    const capturedRegistryCleanup = vi.fn();
+    const registryCleanup = createDeferred();
+    const capturedRegistryCleanup = vi.fn(() => registryCleanup.resolve());
     const ambientPlugin = createChannelTestPluginBase({
       id: "telegram",
       config: { inspectAccount },
@@ -986,7 +987,8 @@ describe("createGatewayKernel", () => {
       }
     }
     expect(prematureCleanupCalls).toBe(0);
-    await vi.waitFor(() => expect(capturedRegistryCleanup).toHaveBeenCalledOnce());
+    await registryCleanup.promise;
+    expect(capturedRegistryCleanup).toHaveBeenCalledOnce();
     expect(inspectAccount).not.toHaveBeenCalled();
   });
 
