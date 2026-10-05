@@ -107,18 +107,21 @@ describe("nested settled-turn finalization ownership", () => {
       ];
       let toolRuns = 0;
       let finalizerRuns = 0;
+      let admittedOperation: Parameters<typeof setActiveEmbeddedRun>[5];
       runAttempt.mockImplementation(async (params: EmbeddedRunAttemptParams) => {
         const handle = createEmbeddedRunHandle({
           runId: params.runId,
           toolAuthorityFingerprint: params.toolAuthorityFingerprint,
         });
-        setActiveEmbeddedRun(
+        const attachment = setActiveEmbeddedRun(
           params.sessionId,
           handle,
           params.sessionKey,
           params.sessionFile,
           params.agentId,
+          params.replyOperation ?? admittedOperation,
         );
+        admittedOperation ??= attachment.operation;
         try {
           const sessionKey = params.sessionTarget?.sessionKey;
           if (!sessionKey) {
@@ -167,7 +170,14 @@ describe("nested settled-turn finalization ownership", () => {
             settledTurnFinalizationContext: { source: "openclaw-transcript", messages },
           });
         } finally {
-          clearActiveEmbeddedRun(params.sessionId, handle, params.sessionKey);
+          clearActiveEmbeddedRun(
+            params.sessionId,
+            handle,
+            params.sessionKey,
+            params.sessionFile,
+            undefined,
+            attachment,
+          );
         }
       });
       let release!: () => void;
