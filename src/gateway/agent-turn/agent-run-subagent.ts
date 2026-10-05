@@ -22,6 +22,7 @@ import {
   getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
+  isRpcSourceRegistered,
   type RpcSourceAdapter,
   type RpcSourceIdentity,
   type RpcSourceRef,
@@ -192,7 +193,10 @@ export async function settleUnstartedGatewayFollowup(params: {
       params.runId,
       { ...params.outcome, endedAt: params.outcome.endedAt ?? Date.now() },
       () => {
-        const current = getRpcSource(params.runId);
+        const current =
+          params.admittedRunEntry && isRpcSourceRegistered(params.admittedRunEntry)
+            ? params.admittedRunEntry
+            : getRpcSource(params.runId);
         const admitted = params.admittedRunIdentity;
         const ownsRegistration =
           current === params.admittedRunEntry &&

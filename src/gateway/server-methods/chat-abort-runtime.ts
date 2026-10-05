@@ -25,6 +25,7 @@ import {
   getRpcSourceLifecycleGeneration,
   getRpcSourceProjectSessionActive,
   getSessionControllerSourceIdentity,
+  isRpcSourceRegistered,
   listRpcSourceEntries,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
@@ -127,7 +128,7 @@ export function abortQueuedCollectorSession(
       !parentRunId ||
       !parentSource ||
       !parentIdentity ||
-      getRpcSource(parentRunId) !== parentSource ||
+      !isRpcSourceRegistered(parentSource) ||
       parentSource.input.phase === "consumed" ||
       parentSource.input.retirementRequested ||
       parentSource.input.custody.cancellationRetired ||
@@ -484,7 +485,7 @@ export function prepareChatSessionAbort(
             const identity = getRpcSourceIdentity(source.entry);
             const adapter = source.entry.adapter;
             if (
-              getRpcSource(source.runId) !== source.entry ||
+              !isRpcSourceRegistered(source.entry) ||
               (params.includeProtectedRuns !== true &&
                 (adapter.controlUiVisible === false ||
                   (params.preserveSideRuns && adapter.turnKind === "btw"))) ||
@@ -517,7 +518,7 @@ export function prepareChatSessionAbort(
       const { runId, sessionKey, sessionId, agentId, entry } = target;
       const identity = getRpcSourceIdentity(entry);
       if (
-        getRpcSource(runId) !== entry ||
+        !isRpcSourceRegistered(entry) ||
         identity.sessionKey !== sessionKey ||
         identity.sessionId !== sessionId ||
         identity.agentId !== agentId

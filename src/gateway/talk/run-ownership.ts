@@ -4,9 +4,9 @@ import {
 } from "../../agents/embedded-agent-runner/run-state.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import {
-  getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
+  isRpcSourceRegistered,
   listRpcSourceEntries,
 } from "../../sessions/session-controller.rpc-sources.js";
 import {
@@ -78,7 +78,7 @@ export function resolveOwnedActiveTalkRunTarget(params: {
         }
       }
       return (
-        getRpcSource(runId) === entry &&
+        isRpcSourceRegistered(entry) &&
         entry.input.claim === claim &&
         claim.operation === operation &&
         !claim.released &&

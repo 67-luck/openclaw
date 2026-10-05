@@ -33,6 +33,8 @@ import {
   getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
+  hasRpcSourceForController,
+  isRpcSourceRegistered,
   retireRpcSource,
   setRpcSourceProjectSessionActive,
   type RpcSourceRef,
@@ -253,8 +255,7 @@ export function startGatewayEventSubscriptions(params: {
         entry.adapter.projectSessionTerminalPersistence = undefined;
         entry.adapter.projectSessionTerminalPersisted = persisted;
         markChatAbortTerminalPersistenceError(entry, error);
-        const current = getRpcSource(candidateRunId);
-        if (current && current !== entry) {
+        if (!isRpcSourceRegistered(entry) && hasRpcSourceForController(candidateRunId, entry)) {
           return;
         }
         if (persisted) {
@@ -273,7 +274,7 @@ export function startGatewayEventSubscriptions(params: {
             observedAt,
           });
         }
-        if (current === entry && entry.input.retirementRequested) {
+        if (isRpcSourceRegistered(entry) && entry.input.retirementRequested) {
           retireRpcSource(candidateRunId, entry);
         }
       };

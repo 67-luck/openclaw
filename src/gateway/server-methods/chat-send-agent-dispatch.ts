@@ -16,9 +16,9 @@ import { onAgentEventForRun } from "../../infra/agent-events.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
 import {
-  getRpcSource,
   getRpcSourceIdentity,
   isRpcSourceActive,
+  isRpcSourceRegistered,
   listRpcSourceEntries,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -142,7 +142,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
   let agentRunStarted = false;
   let replyDispatchRun: ReplyDispatchRun | undefined;
   const isRunCurrent = () =>
-    !activeRunAbort.controller.signal.aborted && getRpcSource(clientRunId) === activeRunAbort.entry;
+    !activeRunAbort.controller.signal.aborted && isRpcSourceRegistered(activeRunAbort.entry);
   const replyDispatch = createChatSendReplyDispatch({
     requesterContext: ctx,
     accountId,
@@ -150,8 +150,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     isAgentRunStarted: () => agentRunStarted,
     isRunCurrent: () =>
       isRunCurrent() ||
-      (!activeRunAbort.controller.signal.aborted &&
-        getRpcSource(clientRunId) === admission.sourceRef),
+      (!activeRunAbort.controller.signal.aborted && isRpcSourceRegistered(admission.sourceRef)),
     abortSignal: activeRunAbort.controller.signal,
     onCommandBlock: isInternalTextSlashCommandTurn
       ? (text) =>

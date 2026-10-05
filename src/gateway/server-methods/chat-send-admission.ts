@@ -29,8 +29,9 @@ import {
 } from "../../sessions/session-controller.lifecycle.js";
 import { captureCurrentReplyMessageInjectionTarget } from "../../sessions/session-controller.message-injection.js";
 import {
-  getRpcSource,
   getRpcSourceIdentity,
+  hasRpcSourceForController,
+  isRpcSourceRegistered,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-controller.state.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
@@ -314,8 +315,13 @@ export async function admitChatSend(
       }
       if (!pendingReservation) {
         const terminalResult = readChatSendDedupeResponse(context.dedupe, clientRunId);
-        const registeredSource = getRpcSource(clientRunId);
-        if (terminalResult || (registeredSource && registeredSource !== admittedRunAbort.entry)) {
+        const admittedSource = admittedRunAbort.entry;
+        if (
+          terminalResult ||
+          (admittedSource &&
+            !isRpcSourceRegistered(admittedSource) &&
+            hasRpcSourceForController(clientRunId, admittedSource))
+        ) {
           reservationSuperseded = true;
           supersedingResult = terminalResult;
           return;
@@ -784,7 +790,6 @@ export async function admitChatSend(
       setPendingInputCleanup: retainedWork.setPendingInputCleanup,
       assertClientUploadAllowed: uploadAdmission.assertClientUploadAllowed,
       assertWorkAdmissionCurrent: () => {
-        const queued = getRpcSource(clientRunId);
         // Collect retires source cancellation while retaining the original
         // admission until the aggregate commits or settles.
         if (
@@ -792,7 +797,7 @@ export async function admitChatSend(
           !acquiredGatewayWorkAdmission.isActive() ||
           lifecycleGeneration !== getAgentEventLifecycleGeneration() ||
           (admittedRunAbort.controller.signal.aborted &&
-            !(queued === sourceRef && queued.input.custody.cancellationRetired))
+            !(isRpcSourceRegistered(sourceRef) && sourceRef.input.custody.cancellationRetired))
         ) {
           throw new Error("Chat admission ended or was cancelled; submit a new turn.");
         }

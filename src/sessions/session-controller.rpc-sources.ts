@@ -9,6 +9,7 @@ import {
   type SessionControllerSourceAdapter,
 } from "./session-controller.mailbox.js";
 import {
+  findSessionControllerEntries,
   getSessionControllerEntryForOperation,
   hasReplyOperationExecutionStarted,
   isCurrentSessionControllerOperation,
@@ -18,7 +19,8 @@ import {
   cancelCapturedSessionControllerSource,
   captureSessionControllerStop,
 } from "./session-controller.stop.js";
-import { rpcSourceByRunId, rpcSourceRemovalByRef } from "./session-controller.storage.js";
+import { rpcSourceRemovalByRef, rpcSourcesByRunId } from "./session-controller.storage.js";
+import type { SessionTarget } from "./session-controller.target.js";
 
 type ChatTerminalProducer = {
   sessionId: string;
@@ -95,10 +97,13 @@ export function updateRpcSourceSessionId(ref: RpcSourceRef, sessionId: string): 
 }
 
 function removeRpcSource(runId: string, ref: RpcSourceRef): boolean {
-  if (rpcSourceByRunId.get(runId) !== ref) {
+  const sources = rpcSourcesByRunId.get(runId);
+  if (!sources?.delete(ref)) {
     return false;
   }
-  rpcSourceByRunId.delete(runId);
+  if (sources.size === 0) {
+    rpcSourcesByRunId.delete(runId);
+  }
   const onRemoved = rpcSourceRemovalByRef.get(ref);
   rpcSourceRemovalByRef.delete(ref);
   try {
@@ -111,7 +116,33 @@ function removeRpcSource(runId: string, ref: RpcSourceRef): boolean {
 
 /** Resolves the exact controller-owned source registered for a protocol run. */
 export function getRpcSource(runId: string): RpcSourceRef | undefined {
-  return rpcSourceByRunId.get(runId);
+  const sources = rpcSourcesByRunId.get(runId);
+  return sources?.size === 1 ? sources.values().next().value : undefined;
+}
+
+/** Resolves one source for the exact controller target; ambiguity fails closed. */
+export function getRpcSourceForTarget(
+  runId: string,
+  target: SessionTarget,
+): RpcSourceRef | undefined {
+  const owners = new Set(findSessionControllerEntries(target.sessionKey, target));
+  const matches = [...(rpcSourcesByRunId.get(runId) ?? [])].filter((source) =>
+    owners.has(source.input.mailbox.owner),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** Reports whether this exact source remains in the controller-owned index. */
+export function isRpcSourceRegistered(ref: RpcSourceRef): boolean {
+  const runId = ref.input.protocolRunId;
+  return runId !== undefined && rpcSourcesByRunId.get(runId)?.has(ref) === true;
+}
+
+/** Reports whether this protocol ID is still owned by the source's controller target. */
+export function hasRpcSourceForController(runId: string, ref: RpcSourceRef): boolean {
+  return [...(rpcSourcesByRunId.get(runId) ?? [])].some(
+    (source) => source.input.mailbox.owner === ref.input.mailbox.owner,
+  );
 }
 
 /** Resolves one exact pre-registration source; ambiguous protocol IDs fail closed. */
@@ -141,22 +172,35 @@ export function getReservedRpcSourceInput(runId: string): SessionControllerInput
 
 /** Reports whether the controller owns a source for a protocol run. */
 export function hasRpcSource(runId: string): boolean {
-  return getRpcSource(runId) !== undefined;
+  return (rpcSourcesByRunId.get(runId)?.size ?? 0) > 0;
 }
 
 /** Returns a stable snapshot for Gateway projection, shutdown, and abort iteration. */
 export function listRpcSourceEntries(): Array<[runId: string, ref: RpcSourceRef]> {
-  return [...rpcSourceByRunId].flatMap(([runId, ref]) =>
-    getRpcSource(runId) === ref ? [[runId, ref]] : [],
+  return [...rpcSourcesByRunId].flatMap(([runId, sources]) =>
+    [...sources].map((ref): [string, RpcSourceRef] => [runId, ref]),
   );
+}
+
+/** Returns sources owned by the exact physical controller selected by a captured target. */
+export function listRpcSourceEntriesForTarget(
+  target: SessionTarget,
+): Array<[runId: string, ref: RpcSourceRef]> {
+  const owners = new Set(findSessionControllerEntries(target.sessionKey, target));
+  return listRpcSourceEntries().filter(([, source]) => owners.has(source.input.mailbox.owner));
 }
 
 /** Registers protocol correlation after the controller has reserved the source input. */
 export function registerRpcSource(runId: string, ref: RpcSourceRef, onRemoved?: () => void): void {
-  if (hasRpcSource(runId)) {
-    throw new Error(`RPC source already registered for run ${runId}`);
+  if (ref.input.protocolRunId !== runId) {
+    throw new Error("RPC source protocol ID does not match its index key");
   }
-  rpcSourceByRunId.set(runId, ref);
+  const sources = rpcSourcesByRunId.get(runId) ?? new Set<RpcSourceRef>();
+  if ([...sources].some((source) => source.input.mailbox.owner === ref.input.mailbox.owner)) {
+    throw new Error(`RPC source already registered for run ${runId} on this session controller`);
+  }
+  sources.add(ref);
+  rpcSourcesByRunId.set(runId, sources);
   ref.input.custody.rpcAccepted = true;
   if (onRemoved) {
     rpcSourceRemovalByRef.set(ref, onRemoved);
@@ -167,8 +211,12 @@ export function registerRpcSource(runId: string, ref: RpcSourceRef, onRemoved?: 
 
 /** Requests retirement; the index leaves only when the exact controller input settles. */
 export function retireRpcSource(runId: string, expected?: RpcSourceRef): boolean {
-  const ref = rpcSourceByRunId.get(runId);
-  if (!ref || (expected && ref !== expected)) {
+  const ref = expected ?? getRpcSource(runId);
+  if (
+    !ref ||
+    ref.input.protocolRunId !== runId ||
+    rpcSourcesByRunId.get(runId)?.has(ref) !== true
+  ) {
     return false;
   }
   if (
@@ -309,16 +357,16 @@ export function requestRpcSourceCancellation(
 }
 
 export function isRpcSourceQueuedForSession(runId: string, scope: RpcSourceIdentity): boolean {
-  const ref = getRpcSource(runId);
-  const identity = ref && getRpcSourceIdentity(ref);
-  return (
-    ref !== undefined &&
-    identity !== undefined &&
-    isRpcSourceQueued(ref) &&
-    identity.sessionId === scope.sessionId &&
-    identity.sessionKey === scope.sessionKey &&
-    identity.agentId === scope.agentId
-  );
+  const matches = [...(rpcSourcesByRunId.get(runId) ?? [])].filter((ref) => {
+    const identity = getRpcSourceIdentity(ref);
+    return (
+      identity.sessionId === scope.sessionId &&
+      identity.sessionKey === scope.sessionKey &&
+      identity.agentId === scope.agentId
+    );
+  });
+  const ref = matches.length === 1 ? matches[0] : undefined;
+  return ref !== undefined && isRpcSourceQueued(ref) && isRpcSourceRegistered(ref);
 }
 
 /** Capture presentation correlation with exact inputs; no scheduler state is copied. */

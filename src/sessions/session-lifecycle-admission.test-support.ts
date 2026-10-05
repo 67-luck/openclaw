@@ -1,10 +1,14 @@
 import { vi } from "vitest";
 import { captureSessionTarget } from "./session-controller.lifecycle.js";
 import * as sessionLifecycle from "./session-controller.lifecycle.js";
-import type { RpcSourceIdentity, RpcSourceRef } from "./session-controller.rpc-sources.js";
 import {
-  rpcSourceByRunId,
+  registerRpcSource,
+  type RpcSourceIdentity,
+  type RpcSourceRef,
+} from "./session-controller.rpc-sources.js";
+import {
   rpcSourceRemovalByRef,
+  rpcSourcesByRunId,
   sessionControllerEntriesByAlias,
   sessionControllerEntriesByStore,
   sessionControllers,
@@ -112,28 +116,105 @@ export function setRpcSourceTerminalProjectionForTest(
 
 /** Drops test-owned controller singletons after their operations have been completed. */
 export function resetSessionControllerStateForTest(): void {
-  rpcSourceByRunId.clear();
+  rpcSourcesByRunId.clear();
   sessionControllers.clear();
   sessionControllerEntriesByAlias.clear();
   sessionControllerEntriesByStore.clear();
 }
 
-/** Test-only access to controller-owned protocol correlation. */
-export const rpcSourceTesting = Object.assign(rpcSourceByRunId, {
+// Bind the fixture's protocol ID before using the controller's registration owner.
+function registerFixtureRpcSource(runId: string, source: RpcSourceRef): void {
+  if (source.input.protocolRunId !== undefined && source.input.protocolRunId !== runId) {
+    throw new Error("Fixture RPC source protocol ID does not match its index key");
+  }
+  source.input.protocolRunId = runId;
+  registerRpcSource(runId, source);
+}
+
+class RpcSourceTestMap extends Map<string, RpcSourceRef> {
+  override get size(): number {
+    return rpcSourcesByRunId.size;
+  }
+
+  override clear(): void {
+    rpcSourcesByRunId.clear();
+  }
+
+  override delete(runId: string): boolean {
+    return rpcSourcesByRunId.delete(runId);
+  }
+
+  override entries(): MapIterator<[string, RpcSourceRef]> {
+    return new Map(this.uniqueEntries()).entries();
+  }
+
+  override forEach(
+    callbackfn: (value: RpcSourceRef, key: string, map: Map<string, RpcSourceRef>) => void,
+    thisArg?: unknown,
+  ): void {
+    for (const [runId, source] of this) {
+      callbackfn.call(thisArg, source, runId, this);
+    }
+  }
+
+  override get(runId: string): RpcSourceRef | undefined {
+    const sources = rpcSourcesByRunId.get(runId);
+    return sources?.size === 1 ? sources.values().next().value : undefined;
+  }
+
+  override has(runId: string): boolean {
+    return (rpcSourcesByRunId.get(runId)?.size ?? 0) > 0;
+  }
+
+  override keys(): MapIterator<string> {
+    return new Map(this.uniqueEntries()).keys();
+  }
+
+  override set(runId: string, source: RpcSourceRef): this {
+    if (rpcSourcesByRunId.get(runId)?.has(source)) {
+      return this;
+    }
+    rpcSourcesByRunId.delete(runId);
+    registerFixtureRpcSource(runId, source);
+    return this;
+  }
+
+  override values(): MapIterator<RpcSourceRef> {
+    return new Map(this.uniqueEntries()).values();
+  }
+
+  override [Symbol.iterator](): MapIterator<[string, RpcSourceRef]> {
+    return this.entries();
+  }
+
+  /** Legacy test fixtures only observe unambiguous protocol IDs. */
+  private uniqueEntries(): Array<[string, RpcSourceRef]> {
+    return [...rpcSourcesByRunId].flatMap(([runId, sources]) => {
+      const source = sources.size === 1 ? sources.values().next().value : undefined;
+      return source ? [[runId, source]] : [];
+    });
+  }
+}
+
+/** Test-only Map-shaped access to controller-owned protocol correlation. */
+export const rpcSourceTesting = Object.assign(new RpcSourceTestMap(), {
   deleteExpected(runId: string, expected: RpcSourceRef): boolean {
-    if (rpcSourceByRunId.get(runId) !== expected) {
+    const sources = rpcSourcesByRunId.get(runId);
+    if (!sources?.delete(expected)) {
       return false;
     }
-    rpcSourceByRunId.delete(runId);
+    if (sources.size === 0) {
+      rpcSourcesByRunId.delete(runId);
+    }
     const onRemoved = rpcSourceRemovalByRef.get(expected);
     rpcSourceRemovalByRef.delete(expected);
     onRemoved?.();
     return true;
   },
   reset(entries: Iterable<readonly [string, RpcSourceRef]> = []): void {
-    rpcSourceByRunId.clear();
+    rpcSourcesByRunId.clear();
     for (const [runId, ref] of entries) {
-      rpcSourceByRunId.set(runId, ref);
+      registerFixtureRpcSource(runId, ref);
     }
   },
 });

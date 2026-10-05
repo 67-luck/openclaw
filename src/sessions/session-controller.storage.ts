@@ -11,7 +11,7 @@ const controllerState = resolveGlobalSingleton(Symbol.for("openclaw.sessionContr
   controllers: new Map<string, SessionControllerEntry>(),
   entriesByAlias: new Map<string, Set<SessionControllerEntry>>(),
   entriesByStore: new Map<string, Set<SessionControllerEntry>>(),
-  rpcSourceByRunId: new Map<string, RpcSourceRef>(),
+  rpcSourcesByRunId: new Map<string, Set<RpcSourceRef>>(),
   rpcSourceRemovalByRef: new WeakMap<RpcSourceRef, () => void>(),
   entryByOperation: new WeakMap<ReplyOperation, SessionControllerEntry>(),
   lifecycleAdmissionByOperation: new WeakMap<ReplyOperation, ReplyOperationAdmission>(),
@@ -29,7 +29,7 @@ const controllerState = resolveGlobalSingleton(Symbol.for("openclaw.sessionContr
 export const sessionControllers = controllerState.controllers;
 export const sessionControllerEntriesByAlias = controllerState.entriesByAlias;
 export const sessionControllerEntriesByStore = controllerState.entriesByStore;
-export const rpcSourceByRunId = controllerState.rpcSourceByRunId;
+export const rpcSourcesByRunId = controllerState.rpcSourcesByRunId;
 export const rpcSourceRemovalByRef = controllerState.rpcSourceRemovalByRef;
 export const controllerEntryByOperation = controllerState.entryByOperation;
 export const lifecycleAdmissionByOperation = controllerState.lifecycleAdmissionByOperation;

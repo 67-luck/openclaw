@@ -1,5 +1,8 @@
 import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../sessions/session-controller.lifecycle.js";
-import { getRpcSource, type RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
+import {
+  isRpcSourceRegistered,
+  type RpcSourceRef,
+} from "../sessions/session-controller.rpc-sources.js";
 import { settlesWithin } from "../shared/settle-within.js";
 
 const terminalPersistenceErrorByEntry = new WeakMap<object, unknown>();
@@ -86,8 +89,8 @@ export function isChatAbortTerminalPersistenceSettled(entry: RpcSourceRef): bool
 }
 
 /** Waits for captured run registrations and their terminal persistence owner to leave. */
-export async function waitForChatAbortControllerRemoval<TEntry extends RpcSourceRef>(params: {
-  targets: ReadonlyArray<{ runId: string; entry: TEntry }>;
+export async function waitForChatAbortControllerRemoval(params: {
+  targets: ReadonlyArray<{ runId: string; entry: RpcSourceRef }>;
   timeoutMs: number;
 }): Promise<boolean> {
   const terminalOwnersSettled = () =>
@@ -97,9 +100,9 @@ export async function waitForChatAbortControllerRemoval<TEntry extends RpcSource
         entry.adapter.projectSessionTerminalPersistence === undefined &&
         !terminalPersistenceErrorByEntry.has(entry),
     );
-  const registeredWaiters: Array<{ entry: TEntry; resolve: () => void }> = [];
-  const removals = params.targets.flatMap(({ runId, entry }) => {
-    if (getRpcSource(runId) !== entry) {
+  const registeredWaiters: Array<{ entry: RpcSourceRef; resolve: () => void }> = [];
+  const removals = params.targets.flatMap(({ entry }) => {
+    if (!isRpcSourceRegistered(entry)) {
       return [];
     }
     return [

@@ -20,12 +20,15 @@ import {
   holdSessionControllerSourceWithdrawal,
 } from "./session-controller.mailbox.js";
 import {
+  getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceProjectSessionActive,
   getRpcSourceSignal,
   getRpcSourceStartedAt,
+  hasRpcSource,
   isRpcSourceActive,
   isRpcSourceQueued,
+  listRpcSourceEntries,
   listRpcSourceEntriesForSession,
   requestRpcSourceCancellation,
   setRpcSourceProjectSessionActive,
@@ -43,21 +46,22 @@ afterEach(() => {
 });
 
 function reserve(runId: string, scope = { sessionKey, sessionId, agentId: "main" }) {
+  const target = captureSessionTarget({
+    storeScope: scope.sessionKey === "global" ? storeScope + "/" + scope.agentId : storeScope,
+    sessionKey: scope.sessionKey,
+    incarnation: scope.sessionId,
+    agentId: scope.agentId,
+  });
   const registration = registerChatAbortController({
     runId,
     ...scope,
     timeoutMs: 1,
-    target: captureSessionTarget({
-      storeScope: scope.sessionKey === "global" ? storeScope + "/" + scope.agentId : storeScope,
-      sessionKey: scope.sessionKey,
-      incarnation: scope.sessionId,
-      agentId: scope.agentId,
-    }),
+    target,
   });
   if (!registration.entry) {
     throw new Error("Expected fresh RPC source reservation");
   }
-  return { ...registration, entry: registration.entry };
+  return { ...registration, entry: registration.entry, target };
 }
 
 function runSource(ref: RpcSourceRef, run: Parameters<typeof withSessionTurn>[1]) {
@@ -153,6 +157,7 @@ describe("RPC source owner boundary", () => {
       sessionKey,
       sessionId,
       timeoutMs: 1,
+      target: spaced.target,
     });
     expect(duplicate.registered).toBe(false);
     expect(requestRpcSourceCancellation(spaced.entry)).toBe(true);
@@ -230,6 +235,7 @@ describe("RPC source owner boundary", () => {
           sessionKey,
           sessionId,
           timeoutMs: 1,
+          target: first.target,
         }).registered,
       ).toBe(false);
     };
@@ -240,6 +246,38 @@ describe("RPC source owner boundary", () => {
     expect(rpcSourceTesting.get("reentrant")).toBe(successor.entry);
     expect(successor.entry.input.abortSignal.aborted).toBe(false);
     successor.cleanup();
+  });
+
+  it("keeps duplicate protocol IDs independent across controller targets", () => {
+    const first = reserve("shared-run", {
+      sessionKey: "agent:first:main",
+      sessionId: "first-session",
+      agentId: "first",
+    });
+    const second = reserve("shared-run", {
+      sessionKey: "agent:second:main",
+      sessionId: "second-session",
+      agentId: "second",
+    });
+    const duplicate = registerChatAbortController({
+      runId: "shared-run",
+      sessionKey: "agent:first:main",
+      sessionId: "first-session",
+      timeoutMs: 1,
+      target: first.target,
+    });
+
+    expect(duplicate).toMatchObject({ registered: false, existingEntry: first.entry });
+    expect(hasRpcSource("shared-run")).toBe(true);
+    expect(getRpcSource("shared-run")).toBeUndefined();
+    expect(listRpcSourceEntries()).toEqual([
+      ["shared-run", first.entry],
+      ["shared-run", second.entry],
+    ]);
+
+    first.cleanup();
+    expect(getRpcSource("shared-run")).toBe(second.entry);
+    second.cleanup();
   });
 
   it("retains collected siblings as retry identities after retiring cancellation until aggregate settlement", async () => {

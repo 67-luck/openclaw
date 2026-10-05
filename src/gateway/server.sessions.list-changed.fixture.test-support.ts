@@ -55,5 +55,8 @@ export async function registerSessionListRpcSourceForTest(
     executionStarted || metadata.projectSessionActive === false
       ? await createActiveRpcSourceForTest(metadata, identity)
       : createRpcSourceForTest(metadata, identity);
-  rpcSourceTesting.set("run-1", source);
+  // Unaccepted preparation reserves custody without publishing a queued RPC source.
+  if (executionStarted !== false) {
+    rpcSourceTesting.set("run-1", source);
+  }
 }

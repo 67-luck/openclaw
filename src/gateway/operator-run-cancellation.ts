@@ -2,10 +2,10 @@ import { isAgentEventLifecycleGenerationCurrent } from "../infra/agent-events.js
 import { captureSessionControllerSourceSettlement } from "../sessions/session-controller.mailbox.js";
 import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import {
-  getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
   isRpcSourceQueued,
+  isRpcSourceRegistered,
   requestRpcSourceCancellation,
 } from "../sessions/session-controller.rpc-sources.js";
 import { waitForChatAbortTerminalPersistence } from "./chat-abort-lifecycle-internal.js";
@@ -87,20 +87,20 @@ function createGatewayOperatorRunCancellation(params: {
   // owner's abortability, not sidebar projection, distinguish terminal work.
   const ownsActiveRun = () =>
     ownsLifetime() &&
-    getRpcSource(runId) === entry &&
+    isRpcSourceRegistered(entry) &&
     entry.input === input &&
     getRpcSourceIdentity(entry).sessionKey === sessionKey &&
     entry.adapter.projectSessionTerminalPersistence === undefined &&
     entry.adapter.projectSessionTerminalPersisted !== true;
   const cancelQueuedTurn = () => {
-    const queued = getRpcSource(runId);
-    if (!ownsLifetime() || queued !== entry || !isRpcSourceQueued(queued)) {
+    const queued = entry;
+    if (!ownsLifetime() || !isRpcSourceRegistered(queued) || !isRpcSourceQueued(queued)) {
       return false;
     }
     queued.adapter.abortStopReason = "rpc";
     queued.adapter.abortDiagnosticReason = "authority-revoked";
     return requestRpcSourceCancellation(queued, signal.reason, () => {
-      if (!ownsLifetime() || getRpcSource(runId) !== entry) {
+      if (!ownsLifetime() || !isRpcSourceRegistered(entry)) {
         throw new Error("Operator cancellation source is no longer current");
       }
     });
@@ -108,7 +108,7 @@ function createGatewayOperatorRunCancellation(params: {
   const cancel = async () => {
     // Queue custody supersedes the source admission even before its active entry
     // is removed. A collected source cannot fall back to aborting another owner.
-    if (getRpcSource(runId) === entry && isRpcSourceQueued(entry)) {
+    if (isRpcSourceRegistered(entry) && isRpcSourceQueued(entry)) {
       if (cancelQueuedTurn()) {
         await captureSessionControllerSourceSettlement(input);
       }

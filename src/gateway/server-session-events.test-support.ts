@@ -219,9 +219,9 @@ function createHandler(
   getSessionMessageSubscribers: SessionMessageSubscriberRegistry["get"] = () => new Set<string>(),
 ) {
   const broadcastToConnIds = vi.fn();
-  rpcSourceTesting.reset([
-    ["run-before-finalize", createActiveRun(projectSessionActive, executionStarted)],
-  ]);
+  const source = createActiveRun(projectSessionActive, executionStarted);
+  // Preparation has controller custody, but acceptance owns its queued projection.
+  rpcSourceTesting.reset(executionStarted ? [["run-before-finalize", source]] : []);
   const handler = createTranscriptUpdateBroadcastHandler({
     broadcastToConnIds,
     sessionEventSubscribers: { getAll: () => new Set(["conn-1"]) },

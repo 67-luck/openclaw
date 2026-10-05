@@ -5,11 +5,11 @@ import { createSubsystemLogger } from "../logging/subsystem.js";
 import { hasGatewayContextOwner } from "../plugins/runtime/gateway-request-scope.js";
 import { sessionControllerMailboxes } from "../sessions/session-controller.mailbox.js";
 import {
-  getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
   getRpcSourceProjectSessionActive,
   isRpcSourceQueued,
+  isRpcSourceRegistered,
   listRpcSourceEntries,
   type RpcSourceRef,
 } from "../sessions/session-controller.rpc-sources.js";
@@ -163,32 +163,62 @@ function collectActiveRestartSessionRefs(
     GatewayRunShutdownParams,
     "resolveActiveSessionIdForKey" | "restartRecoveryCandidates"
   > & { entries?: Iterable<readonly [string, RpcSourceRef]> },
-): RestartRecoveryCandidate[] {
-  const activeRuns = new Map<string, RestartRecoveryCandidate>();
+): Array<{
+  run: RestartRecoveryCandidate;
+  source?: RpcSourceRef;
+  recoveryCandidate?: RestartRecoveryCandidate;
+}> {
+  const activeRuns: Array<{
+    run: RestartRecoveryCandidate;
+    source?: RpcSourceRef;
+    recoveryCandidate?: RestartRecoveryCandidate;
+  }> = [];
   const observedAt = Date.now();
-  const addRun = (run: RestartRecoveryCandidate) => {
-    activeRuns.set(`${run.runId}\u0000${run.lifecycleGeneration}`, {
-      ...run,
-      observedAt: run.observedAt ?? observedAt,
+  const addRun = (
+    run: RestartRecoveryCandidate,
+    source?: RpcSourceRef,
+    recoveryCandidate?: RestartRecoveryCandidate,
+  ) => {
+    activeRuns.push({
+      run: {
+        ...run,
+        observedAt: run.observedAt ?? observedAt,
+      },
+      ...(source ? { source } : {}),
+      ...(recoveryCandidate ? { recoveryCandidate } : {}),
     });
   };
   for (const [runId, entry] of listRestartRecoveryRuns(params.entries)) {
     const { sessionKey, sessionId } = getRpcSourceIdentity(entry);
     const lifecycleGeneration = getRpcSourceLifecycleGeneration(entry);
     if (runId && lifecycleGeneration && sessionKey && sessionId) {
-      addRun({
-        runId,
-        lifecycleGeneration,
-        sessionKey,
-        sessionId,
-        observedAt: entry.adapter.projectSessionTerminalObservedAt,
-      });
+      addRun(
+        {
+          runId,
+          lifecycleGeneration,
+          sessionKey,
+          sessionId,
+          observedAt: entry.adapter.projectSessionTerminalObservedAt,
+        },
+        entry,
+      );
     }
   }
   for (const candidate of params.restartRecoveryCandidates?.values() ?? []) {
-    addRun(candidate);
+    const alreadyCaptured = activeRuns.find(
+      ({ run }) =>
+        run.runId === candidate.runId &&
+        run.lifecycleGeneration === candidate.lifecycleGeneration &&
+        run.sessionKey === candidate.sessionKey &&
+        run.sessionId === candidate.sessionId,
+    );
+    if (alreadyCaptured) {
+      alreadyCaptured.recoveryCandidate = candidate;
+    } else {
+      addRun(candidate, undefined, candidate);
+    }
   }
-  return [...activeRuns.values()];
+  return activeRuns;
 }
 
 async function settleTerminalSessionPersistenceForRestart(
@@ -236,7 +266,7 @@ async function markActiveRunsForRestartRecovery(
   params: GatewayRunShutdownParams & {
     reason: string;
     warnings: string[];
-    capturedSources: ReadonlyMap<string, RpcSourceRef>;
+    capturedSources: ReadonlyArray<readonly [string, RpcSourceRef]>;
     capturedRecoveryCandidates: Map<string, RestartRecoveryCandidate>;
   },
 ): Promise<void> {
@@ -245,11 +275,13 @@ async function markActiveRunsForRestartRecovery(
   }
   const activeEntries = params.capturedSources;
   const recoveryCandidates = params.capturedRecoveryCandidates;
-  const activeRuns = collectActiveRestartSessionRefs({
+  const capturedRuns = collectActiveRestartSessionRefs({
     ...params,
     entries: activeEntries,
     restartRecoveryCandidates: recoveryCandidates,
   });
+  const activeRuns = capturedRuns.map(({ run }) => run);
+  const capturedByRun = new Map(capturedRuns.map((captured) => [captured.run, captured]));
   await settleTerminalSessionPersistenceForRestart(activeEntries);
   try {
     let markerOutcome!: Promise<void>;
@@ -261,19 +293,25 @@ async function markActiveRunsForRestartRecovery(
             activeRuns,
             reason: params.reason,
             isActiveRun: (run) => {
-              const entry = getRpcSource(run.runId);
-              const candidate = params.restartRecoveryCandidates?.get(run.runId);
-              return (
-                (entry &&
-                  entry === activeEntries.get(run.runId) &&
-                  !entry.input.abortSignal.aborted &&
-                  ((entry.input.claim && !entry.input.claim.released) ||
-                    entry.adapter.projectSessionTerminalPersisted !== true) &&
-                  getRpcSourceLifecycleGeneration(entry) === run.lifecycleGeneration) ||
-                (candidate !== undefined &&
-                  candidate === recoveryCandidates.get(run.runId) &&
-                  candidate.lifecycleGeneration === run.lifecycleGeneration)
-              );
+              const captured = capturedByRun.get(run);
+              if (!captured) {
+                return false;
+              }
+              const entry = captured.source;
+              const sourceActive =
+                entry !== undefined &&
+                isRpcSourceRegistered(entry) &&
+                !entry.input.abortSignal.aborted &&
+                ((entry.input.claim && !entry.input.claim.released) ||
+                  entry.adapter.projectSessionTerminalPersisted !== true) &&
+                getRpcSourceLifecycleGeneration(entry) === run.lifecycleGeneration;
+              const candidate = captured.recoveryCandidate;
+              const recoveryCandidateActive =
+                candidate !== undefined &&
+                candidate === params.restartRecoveryCandidates?.get(run.runId) &&
+                candidate === recoveryCandidates.get(run.runId) &&
+                candidate.lifecycleGeneration === run.lifecycleGeneration;
+              return sourceActive || recoveryCandidateActive;
             },
           }),
         );
@@ -290,9 +328,13 @@ async function markActiveRunsForRestartRecovery(
       recordGatewayShutdownWarning(params.warnings, "restart-main-session-marker");
       await markerOutcome!;
     }
-    for (const run of activeRuns) {
-      if (params.restartRecoveryCandidates?.get(run.runId) === recoveryCandidates.get(run.runId)) {
-        params.restartRecoveryCandidates?.delete(run.runId);
+    for (const captured of capturedRuns) {
+      if (
+        captured.recoveryCandidate &&
+        params.restartRecoveryCandidates?.get(captured.run.runId) === captured.recoveryCandidate &&
+        captured.recoveryCandidate === recoveryCandidates.get(captured.run.runId)
+      ) {
+        params.restartRecoveryCandidates?.delete(captured.run.runId);
       }
     }
   } catch (err) {
@@ -338,7 +380,7 @@ export async function prepareGatewayRunShutdown(
     }
   }
   // Preparation accepted during grace belongs to this cancellation boundary.
-  const capturedSources = new Map(listGatewayRpcSourceEntries(params.resolveGatewayContext));
+  const capturedSources = listGatewayRpcSourceEntries(params.resolveGatewayContext);
   const capturedRecoveryCandidates = new Map(params.restartRecoveryCandidates);
   const sourceByInput = new Map(
     [...capturedSources].map(([runId, entry]) => [
@@ -375,7 +417,7 @@ export async function prepareGatewayRunShutdown(
         }
         const lifecycleGeneration = getRpcSourceLifecycleGeneration(target.entry);
         if (
-          getRpcSource(target.runId) !== target.entry ||
+          !isRpcSourceRegistered(target.entry) ||
           (lifecycleGeneration && !isAgentEventLifecycleGenerationCurrent(lifecycleGeneration))
         ) {
           return false;

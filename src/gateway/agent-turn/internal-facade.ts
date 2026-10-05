@@ -11,6 +11,7 @@ import {
   getRpcSourceLifecycleGeneration,
   isRpcSourceExecuting,
   isRpcSourceQueued,
+  isRpcSourceRegistered,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore, type Deferred } from "../../shared/deferred.js";
@@ -119,7 +120,7 @@ export function createInternalAgentTurnFacade(
           identity.sessionKey !== expectedSessionKey ||
           identity.sessionId !== expectedSessionId ||
           getRpcSourceLifecycleGeneration(owner) !== lifecycleGeneration ||
-          getRpcSource(runId) !== owner
+          !isRpcSourceRegistered(owner)
         ) {
           return;
         }
@@ -131,7 +132,7 @@ export function createInternalAgentTurnFacade(
             return undefined;
           }
           if (
-            getRpcSource(runId) !== owner ||
+            !isRpcSourceRegistered(owner) ||
             getAgentEventLifecycleGeneration() !== lifecycleGeneration ||
             getRpcSourceLifecycleGeneration(owner) !== lifecycleGeneration ||
             (expectedAgentId !== undefined &&
@@ -183,7 +184,7 @@ export function createInternalAgentTurnFacade(
       const cancelAcceptedRun = (reason: "rpc" | "timeout") => {
         pendingCancelReason ??= reason;
         const owner = acceptedAbortOwner;
-        if (!owner || getRpcSource(owner.runId) !== owner.entry) {
+        if (!owner || !isRpcSourceRegistered(owner.entry)) {
           return;
         }
         abortChatRunById(context, {

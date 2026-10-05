@@ -25,6 +25,7 @@ import {
   PROGRESS_CARD_REFRESH_SOURCE_TOOL,
   progressCardRefreshRunProjection,
 } from "../sessions/input-provenance.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
 import { getRpcSourceIdentity } from "../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
@@ -499,11 +500,17 @@ describe("startGatewayEventSubscriptions", () => {
       const params = createParams();
       const runId = `captured-terminal-${change.replaceAll(" ", "-")}-${persisted}`;
       const sessionKey = "agent:main:captured-terminal";
+      const target = captureSessionTarget({
+        storeScope: `/synthetic/subscription/${runId}/sessions`,
+        sessionKey,
+        incarnation: "captured-session",
+      });
       const register = () =>
         registerSubscriptionChatRun(params, {
           runId,
           sessionId: "captured-session",
           sessionKey,
+          target,
         }).entry;
       const entry = register();
       const terminal = createDeferred();

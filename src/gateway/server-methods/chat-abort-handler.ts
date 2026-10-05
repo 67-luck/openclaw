@@ -14,11 +14,12 @@ import {
 } from "../../sessions/session-controller.mailbox.js";
 import {
   getRpcSource,
+  getRpcSourceForTarget,
   getRpcSourceIdentity,
   getReservedRpcSourceInput,
   getSessionControllerSourceIdentity,
   isRpcSourceQueued,
-  isRpcSourceQueuedForSession,
+  isRpcSourceRegistered,
 } from "../../sessions/session-controller.rpc-sources.js";
 import {
   captureSessionControllerStop,
@@ -188,7 +189,7 @@ export async function handleChatAbortRequestWithLifecycle(
   })();
   const abortSessionEntry = abortSession.ok ? abortSession.value.entry : undefined;
   const controllerTargets =
-    !runId && abortSession.ok && abortSession.value.storePath
+    abortSession.ok && abortSession.value.storePath
       ? [
           captureSessionTarget({
             storeScope: abortSession.value.storePath,
@@ -198,7 +199,7 @@ export async function handleChatAbortRequestWithLifecycle(
             incarnation: abortSessionEntry?.sessionId,
           }),
         ]
-      : undefined;
+      : [];
   const stopHookContext = lifecycle.hookContext ?? {
     sessionKey: canonicalAbortSessionKey,
     sessionEntry: abortSessionEntry,
@@ -269,7 +270,15 @@ export async function handleChatAbortRequestWithLifecycle(
   };
 
   // Capture the exact input once; an await must never select a successor by run ID.
-  const active = getRpcSource(runId);
+  const targetMatches = new Set(
+    controllerTargets.flatMap((target) => {
+      const source = getRpcSourceForTarget(runId, target);
+      return source ? [source] : [];
+    }),
+  );
+  const active =
+    getRpcSource(runId) ??
+    (targetMatches.size === 1 ? targetMatches.values().next().value : undefined);
   const reserved = active ? undefined : getReservedRpcSourceInput(runId);
   const activeIdentity = active
     ? getRpcSourceIdentity(active)
@@ -310,6 +319,7 @@ export async function handleChatAbortRequestWithLifecycle(
       return;
     }
     const withdrawalScope = getRpcSourceIdentity(active);
+    const withdrawalTarget = active.input.target;
     const captured = {
       ...withdrawalScope,
       agentId: withdrawalScope.agentId ?? abortAgentId,
@@ -324,9 +334,16 @@ export async function handleChatAbortRequestWithLifecycle(
         runId,
         () => {
           assertCurrent();
+          const currentIdentity = getRpcSourceIdentity(active);
+          // The write retains this source and physical owner across each awaited phase.
           if (
-            getRpcSource(runId) !== active ||
-            !isRpcSourceQueuedForSession(runId, withdrawalScope)
+            !isRpcSourceRegistered(active) ||
+            !isRpcSourceQueued(active) ||
+            !withdrawalTarget ||
+            active.input.target !== withdrawalTarget ||
+            currentIdentity.sessionKey !== withdrawalScope.sessionKey ||
+            currentIdentity.sessionId !== withdrawalScope.sessionId ||
+            currentIdentity.agentId !== withdrawalScope.agentId
           ) {
             throw new Error("Run changed before input removal; refresh and retry.");
           }

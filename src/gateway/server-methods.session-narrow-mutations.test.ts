@@ -288,29 +288,41 @@ describe("invocation-owned session mutations", () => {
         await upsertSessionEntryCore(scope, ownedEntry(client, "original"));
         const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
         const runs = rpcSourceTesting;
+        const session = expectDefined(resolveSessionSharingTarget({ cfg, ...scope }));
         const target = {
           queued: kind === "queued",
-          storeScope: "/synthetic/narrow-stop/reentrant/sessions.db",
+          storeScope: session.storePath,
           agentId: "main",
           sessionId: "original",
           owner: { connId: client.connId },
         };
         const first = createActiveRun(key, target);
-        const second = createActiveRun(key, target);
-        const replacement = createActiveRun(key, target);
+        // One controller has one active turn; only queued rows retain a second input.
+        const second = kind === "queued" ? createActiveRun(key, target) : undefined;
+        let replacement: ReturnType<typeof createActiveRun> | undefined;
         runs.set("first", first);
-        runs.set("second", second);
+        if (second) {
+          runs.set("second", second);
+        }
         first.input.abortSignal.addEventListener(
           "abort",
           () => {
-            if (changed === "registration") {
+            if (kind === "active" || changed === "registration") {
+              // Reserve successors after Stop captures the original mailbox inputs.
+              replacement = createActiveRun(changed === "key" ? "agent:main:other" : key, {
+                ...target,
+                sessionId: changed === "sessionId" ? "replacement" : "original",
+                agentId: changed === "agentId" ? "replacement" : "main",
+              });
               runs.set("second", replacement);
             } else if (changed === "key") {
-              setRpcSourceIdentityForTest(second, { sessionKey: "agent:main:other" });
+              setRpcSourceIdentityForTest(expectDefined(second), {
+                sessionKey: "agent:main:other",
+              });
             } else if (changed === "sessionId") {
-              setRpcSourceIdentityForTest(second, { sessionId: "replacement" });
+              setRpcSourceIdentityForTest(expectDefined(second), { sessionId: "replacement" });
             } else {
-              setRpcSourceIdentityForTest(second, { agentId: "replacement" });
+              setRpcSourceIdentityForTest(expectDefined(second), { agentId: "replacement" });
             }
           },
           { once: true },
@@ -332,17 +344,20 @@ describe("invocation-owned session mutations", () => {
             "sessions.abort": sessionAbortHandlers["sessions.abort"]!,
           },
         });
-        const secondAborted = kind === "active" || changed === "key" || changed === "agentId";
         expect(first.input.abortSignal.aborted).toBe(true);
-        expect(second.input.abortSignal.aborted).toBe(secondAborted);
-        expect(replacement.input.abortSignal.aborted).toBe(false);
+        if (kind === "queued") {
+          expect(expectDefined(second).input.abortSignal.aborted).toBe(false);
+        }
+        if (kind === "active" || changed === "registration") {
+          expect(expectDefined(replacement).input.abortSignal.aborted).toBe(false);
+        }
         expect(respond.mock.calls[0]?.[1]).toMatchObject(
           method === "chat.abort"
             ? {
                 aborted: true,
-                runIds: secondAborted ? ["second", "first"] : ["first"],
+                runIds: ["first"],
               }
-            : { abortedRunId: secondAborted ? "second" : "first", status: "aborted" },
+            : { abortedRunId: "first", status: "aborted" },
         );
       });
     },

@@ -28,8 +28,10 @@ import { runWithGatewayDetachedWorkContinuation } from "../../process/gateway-wo
 import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
-  getRpcSource,
   getRpcSourceIdentity,
+  hasRpcSource,
+  hasRpcSourceForController,
+  isRpcSourceRegistered,
   updateRpcSourceSessionId,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { registerChatAbortController } from "../chat-abort.js";
@@ -238,7 +240,7 @@ export async function prepareAgentRunDispatch(
     ]);
     return undefined;
   }
-  const existingRunAbort = getRpcSource(params.runId);
+  const existingRunAbort = activeRunAbort.existingEntry;
   if (!activeRunAbort.registered && existingRunAbort) {
     activeGatewayWorkAdmission?.release();
     params.markAgentRunAccepted(existingRunAbort.adapter.kind === "agent");
@@ -519,10 +521,12 @@ export async function prepareAgentRunDispatch(
       assertParentSubagentResumeSuccessorCurrent(parentResume, params.runId);
     }
     assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
-    const entry = getRpcSource(params.runId);
     const capturedEntry = activeRunAbort.entry;
     if (
-      (entry !== capturedEntry && (!terminal || entry !== undefined)) ||
+      (capturedEntry !== undefined &&
+        !isRpcSourceRegistered(capturedEntry) &&
+        (!terminal || hasRpcSourceForController(params.runId, capturedEntry))) ||
+      (capturedEntry === undefined && hasRpcSource(params.runId)) ||
       (capturedEntry !== undefined &&
         capturedEntry.adapter.operationalRunInstance !== operationalRunInstance) ||
       (!terminal && capturedEntry?.input.retirementRequested)

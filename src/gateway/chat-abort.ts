@@ -30,10 +30,11 @@ import {
   getRpcSourceProjectSessionActive,
   getRpcSourceStartedAt,
   getRpcSource,
+  getRpcSourceForTarget,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
-  hasRpcSource,
   isRpcSourceExecuting,
+  isRpcSourceRegistered,
   listRpcSourceEntries,
   registerRpcSource,
   retireRpcSource,
@@ -79,7 +80,10 @@ type RegisteredChatAbortController = {
   markExecutionStarted: () => boolean;
   bindAgentRunDelegatedAuthority: (authority: AgentRunDelegatedAuthority) => void;
   cleanup: () => void;
-} & ({ registered: true; entry: RpcSourceRef } | { registered: false; entry?: undefined });
+} & (
+  | { registered: true; entry: RpcSourceRef; existingEntry?: undefined }
+  | { registered: false; entry?: undefined; existingEntry?: RpcSourceRef }
+);
 
 function createChatAbortSignalReason(stopReason: string | undefined): Error | undefined {
   if (stopReason === "restart") {
@@ -168,10 +172,7 @@ export function registerChatAbortController(params: {
   sourceInput?: SessionControllerInput;
 }): RegisteredChatAbortController {
   // Sessionless RPCs retain prepared authority without a fabricated session owner.
-  if (!params.sessionKey || hasRpcSource(params.runId)) {
-    if (params.sessionKey && params.sourceInput) {
-      throw new Error("Reserved source cannot adopt an existing RPC registration");
-    }
+  if (!params.sessionKey) {
     const controller = new AbortController();
     return {
       controller,
@@ -185,6 +186,23 @@ export function registerChatAbortController(params: {
   }
   if (!params.target) {
     throw new Error("RPC source requires its captured physical session target");
+  }
+  const existingEntry = getRpcSourceForTarget(params.runId, params.target);
+  if (existingEntry) {
+    if (params.sourceInput) {
+      throw new Error("Reserved source cannot adopt an existing RPC registration");
+    }
+    const controller = new AbortController();
+    return {
+      controller,
+      registered: false,
+      existingEntry,
+      markExecutionStarted: () => false,
+      bindAgentRunDelegatedAuthority: () => {
+        throw new Error("Unregistered source cannot own a projected run authority");
+      },
+      cleanup: () => {},
+    };
   }
   const adapter: RpcSourceAdapter = {
     authority: params.authority,
@@ -242,7 +260,7 @@ export function registerChatAbortController(params: {
     },
   };
   const cleanup = () => {
-    if (getRpcSource(params.runId) !== entry) {
+    if (!isRpcSourceRegistered(entry)) {
       return;
     }
     if (adapter.agentRunDelegatedAuthority) {
@@ -286,7 +304,7 @@ export function registerChatAbortController(params: {
     markExecutionStarted: () => isRpcSourceExecuting(entry),
     bindAgentRunDelegatedAuthority: (authority) => {
       if (
-        getRpcSource(params.runId) !== entry ||
+        !isRpcSourceRegistered(entry) ||
         !adapter.operationalRunInstance ||
         authority.operationalRunInstance !== adapter.operationalRunInstance ||
         (adapter.agentRunDelegatedAuthority && adapter.agentRunDelegatedAuthority !== authority)
@@ -424,7 +442,7 @@ export function abortChatRunById(
   const { runId, sessionKey, stopReason } = params;
   params.assertCurrent?.();
   const active = params.expectedEntry ?? getRpcSource(runId);
-  if (!active || getRpcSource(runId) !== active) {
+  if (!active || active.input.protocolRunId !== runId || !isRpcSourceRegistered(active)) {
     return { aborted: false };
   }
   const identity = getRpcSourceIdentity(active);
@@ -564,7 +582,7 @@ export function abortChatRunById(
   // entry as suspension-visible ownership until its persistence write settles.
   if (
     !params.preserveTerminal &&
-    getRpcSource(runId) === active &&
+    isRpcSourceRegistered(active) &&
     active.adapter.projectSessionTerminalObservedAt === undefined &&
     !active.adapter.projectSessionTerminalPersistence
   ) {

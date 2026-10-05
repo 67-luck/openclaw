@@ -5,6 +5,7 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { isAgentRunRestartAbortReason } from "../agents/run-termination.js";
 import { deleteSubagentSessionForCleanup } from "../agents/subagents/registry/subagent-session-cleanup.js";
 import { waitForGatewayActiveWork } from "../infra/gateway-active-work.js";
+import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
 import { callGateway } from "./call.js";
 import { registerChatAbortController } from "./chat-abort.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
@@ -90,6 +91,12 @@ for (const mode of ["stop", "restart", "graceful"] as const) {
       };
       const cleanupOutcomes: string[] = [];
       const foreign = registerChatAbortController({
+        target: captureSessionTarget({
+          storeScope: "foreign-store",
+          sessionKey: "agent:foreign:main",
+          incarnation: "foreign-session",
+          agentId: "foreign",
+        }),
         runId,
         sessionId: "foreign-session",
         sessionKey: "agent:foreign:main",

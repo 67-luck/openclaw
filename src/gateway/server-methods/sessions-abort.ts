@@ -25,11 +25,15 @@ import {
   getAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
   getRpcSource,
+  getRpcSourceForTarget,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
+  hasRpcSource,
   listRpcSourceEntries,
+  listRpcSourceEntriesForTarget,
 } from "../../sessions/session-controller.rpc-sources.js";
 import {
   captureSessionControllerStop,
@@ -117,21 +121,23 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     const requestedKeyAgentId = scopedRequestedKey
       ? resolveSessionKeyAgentId(scopedRequestedKey, cfg)
       : undefined;
-    const activeRun = requestedRunId ? getRpcSource(requestedRunId) : undefined;
-    const activeRunIdentity = activeRun && getRpcSourceIdentity(activeRun);
-    const activeRunSessionKey = activeRunIdentity?.sessionKey;
-    const activeRunAgentId = normalizeOptionalString(activeRunIdentity?.agentId);
+    // A run ID without its physical target is inference only: duplicate protocol IDs can be
+    // active in independent stores, and the index deliberately fails closed in that case.
+    const inferredActiveRun = requestedRunId ? getRpcSource(requestedRunId) : undefined;
+    const inferredActiveRunIdentity = inferredActiveRun && getRpcSourceIdentity(inferredActiveRun);
+    const inferredActiveRunSessionKey = inferredActiveRunIdentity?.sessionKey;
+    const inferredActiveRunAgentId = normalizeOptionalString(inferredActiveRunIdentity?.agentId);
     let inferredRunAgentId =
       requestedParamAgentId ??
-      activeRunAgentId ??
+      inferredActiveRunAgentId ??
       requestedKeyAgentId ??
       workerRunTarget?.agentId ??
-      resolveSessionKeyAgentId(activeRunSessionKey, cfg) ??
+      resolveSessionKeyAgentId(inferredActiveRunSessionKey, cfg) ??
       resolveSessionKeyAgentId(embeddedRunSessionKey, cfg);
     if (requestedRunId && !inferredRunAgentId) {
       const runOwner = resolveRequestedGlobalAgentId(
         cfg,
-        scopedRequestedKey ?? activeRunSessionKey ?? workerRunTarget?.sessionKey ?? "main",
+        scopedRequestedKey ?? inferredActiveRunSessionKey ?? workerRunTarget?.sessionKey ?? "main",
       );
       if (!runOwner.ok) {
         respond(false, undefined, runOwner.error);
@@ -144,16 +150,16 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         ? normalizeAgentId(inferredRunAgentId)
         : undefined
       : undefined;
-    const scopedActiveRunSessionKey = activeRunSessionKey
+    const scopedInferredActiveRunSessionKey = inferredActiveRunSessionKey
       ? requestedRunAgentId
-        ? sessionKeyBelongsToAgent(activeRunSessionKey, requestedRunAgentId, cfg)
-          ? activeRunSessionKey
+        ? sessionKeyBelongsToAgent(inferredActiveRunSessionKey, requestedRunAgentId, cfg)
+          ? inferredActiveRunSessionKey
           : undefined
-        : activeRunSessionKey
+        : inferredActiveRunSessionKey
       : undefined;
     const keyCandidate =
       scopedRequestedKey ??
-      scopedActiveRunSessionKey ??
+      scopedInferredActiveRunSessionKey ??
       (requestedRunId
         ? resolveSessionForRun(requestedRunId, {
             agentId: requestedRunAgentId,
@@ -187,6 +193,50 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       ? []
       : resolveExistingAgentSessionStoreTargetsSync(cfg, targetAgentId);
     const stableTargetOwner = tryResolveSessionCompatibilityOwnerAgentId(cfg, key);
+    // Avoid opening a fallback store for a retired owner. A unique live source already carries
+    // its exact physical target; configured or persisted owners can be resolved from storage.
+    const loadedSession =
+      configuredTarget || existingTargets.length > 0
+        ? loadSessionEntry(key, { agentId: targetAgentId })
+        : undefined;
+    const canonicalKey =
+      loadedSession?.canonicalKey ??
+      resolveSessionStoreKey({
+        cfg,
+        sessionKey: key,
+        storeAgentId: targetAgentId,
+      });
+    const sessionEntry = loadedSession?.entry;
+    const requestedKeyAliases =
+      requestedKey &&
+      requestedKey !== key &&
+      (!requestedParamAgentId || sessionKeyBelongsToAgent(requestedKey, requestedParamAgentId, cfg))
+        ? [requestedKey]
+        : undefined;
+    const activeRunTarget = loadedSession
+      ? captureSessionTarget({
+          storeScope: loadedSession.storePath,
+          sessionKey: canonicalKey,
+          aliases: [key, ...(requestedKeyAliases ?? [])],
+          agentId: targetAgentId,
+          incarnation: sessionEntry?.sessionId,
+        })
+      : inferredActiveRun?.input.target;
+    const activeRun =
+      inferredActiveRun ??
+      (requestedRunId && activeRunTarget
+        ? getRpcSourceForTarget(requestedRunId, activeRunTarget)
+        : undefined);
+    const activeRunIdentity = activeRun && getRpcSourceIdentity(activeRun);
+    const activeRunSessionKey = activeRunIdentity?.sessionKey;
+    const activeRunAgentId = normalizeOptionalString(activeRunIdentity?.agentId);
+    const scopedActiveRunSessionKey = activeRunSessionKey
+      ? requestedRunAgentId
+        ? sessionKeyBelongsToAgent(activeRunSessionKey, requestedRunAgentId, cfg)
+          ? activeRunSessionKey
+          : undefined
+        : activeRunSessionKey
+      : undefined;
     const hasExactActiveRun = requestedRunId
       ? (scopedActiveRunSessionKey === key &&
           resolveChatRunOwnerAgentId({
@@ -216,20 +266,6 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    // An exact live controller is already authoritative. Avoid opening the fallback store when
-    // neither config nor persistence owns it; that edge is the only one that could create state.
-    const loadedSession =
-      configuredTarget || existingTargets.length > 0
-        ? loadSessionEntry(key, { agentId: targetAgentId })
-        : undefined;
-    const canonicalKey =
-      loadedSession?.canonicalKey ??
-      resolveSessionStoreKey({
-        cfg,
-        sessionKey: key,
-        storeAgentId: targetAgentId,
-      });
-    const sessionEntry = loadedSession?.entry;
     const admittedTarget = sessionMutationAuthorization?.admittedTarget;
     if (
       narrow &&
@@ -264,12 +300,6 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       );
       return;
     }
-    const requestedKeyAliases =
-      requestedKey &&
-      requestedKey !== key &&
-      (!requestedParamAgentId || sessionKeyBelongsToAgent(requestedKey, requestedParamAgentId, cfg))
-        ? [requestedKey]
-        : undefined;
     const resolvedAbortSessionKey = resolveAbortSessionKey({
       requestedKey: key,
       canonicalKey,
@@ -317,8 +347,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
     };
     // Controller-backed runs must keep the requester checks and lifecycle cleanup below.
-    if (embeddedRun && !activeRun) {
-      let aborted = false;
+    if (embeddedRun && !activeRun && (!requestedRunId || !hasRpcSource(requestedRunId))) {
       let parentStatus: ReturnType<ActiveEmbeddedRunOwner["stop"]> = "unchanged";
       let descendants: Awaited<ReturnType<typeof abortControlledSubagents>> | undefined;
       const stopped = stopSession({
@@ -337,7 +366,6 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
           stop: () => {
             assertAbortCurrent();
             parentStatus = embeddedRun.stop();
-            aborted = parentStatus === "aborted";
             return parentStatus;
           },
           settled: embeddedRun.waitForSettlement(),
@@ -358,7 +386,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         continueChildStop: () => parentStatus !== "unchanged",
       });
       const outcome = await stopped.completed;
-      aborted = outcome.aborted;
+      const aborted = outcome.aborted;
       if (aborted) {
         await Promise.all([persistSessionAbort(embeddedRun), embeddedRun.waitForSettlement()]);
       }
@@ -383,9 +411,18 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
     }
     // Snapshot before abort can remove controllers. Agent run IDs are idempotency
     // keys, so preserve their dedupe namespace instead of colliding with chat.send.
-    const preAbortRuns = new Map(listRpcSourceEntries());
-    const preAbortDedupe = new Map(context.dedupe);
     const persistedSessionId = sessionEntry?.sessionId;
+    const abortTarget = loadedSession
+      ? captureSessionTarget({
+          storeScope: loadedSession.storePath,
+          sessionKey: canonicalKey,
+          aliases: [key, abortSessionKey, ...(requestedKeyAliases ?? [])],
+          agentId: targetAgentId,
+          incarnation: persistedSessionId,
+        })
+      : activeRun?.input.target;
+    const preAbortRuns = new Map(abortTarget ? listRpcSourceEntriesForTarget(abortTarget) : []);
+    const preAbortDedupe = new Map(context.dedupe);
     const preAbortSessions = new Map(
       [...preAbortRuns].map(([runId, entry]) => [
         runId,

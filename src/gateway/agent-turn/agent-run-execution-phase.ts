@@ -33,9 +33,9 @@ import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-reques
 import { retainGatewayRootWorkAdmissionContinuation } from "../../process/gateway-work-admission.js";
 import { withSessionTurn } from "../../sessions/session-controller.admission.js";
 import {
-  getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
+  isRpcSourceRegistered,
   updateRpcSourceSessionId,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { completeUserTurnProcessing } from "../../sessions/user-turn-transcript-processing.js";
@@ -149,7 +149,7 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
         (abortRegistration.registered &&
           (prepared.activeGatewayWorkAdmission?.isActive() === false ||
             !abortEntry ||
-            getRpcSource(params.runId) !== abortEntry ||
+            !isRpcSourceRegistered(abortEntry) ||
             abortEntry.input.abortSignal !== abortController.signal ||
             abortEntry.adapter.operationalRunInstance !== operationalRunInstance ||
             getRpcSourceLifecycleGeneration(abortEntry) !== params.lifecycleGeneration ||

@@ -6,7 +6,7 @@ import {
   type SessionEffectRef,
 } from "../../sessions/session-controller.lifecycle.js";
 import {
-  getRpcSource,
+  isRpcSourceRegistered,
   updateRpcSourceSessionId,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
@@ -31,7 +31,7 @@ export function bindChatSendPreparedSession(params: {
       return;
     }
     if (
-      getRpcSource(params.clientRunId) !== sourceRef ||
+      !isRpcSourceRegistered(sourceRef) ||
       params.lifecycleGeneration !== getAgentEventLifecycleGeneration() ||
       !params.admission.isActive() ||
       input.abortSignal.aborted ||

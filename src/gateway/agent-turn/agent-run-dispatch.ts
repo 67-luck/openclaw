@@ -32,6 +32,7 @@ import {
   getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
+  isRpcSourceRegistered,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { completeUserTurnProcessing } from "../../sessions/user-turn-transcript-processing.js";
@@ -236,7 +237,7 @@ export function dispatchAgentRunFromGateway(params: {
       if (
         !registeredRunEntry ||
         !ownsRunRegistration() ||
-        getRpcSource(params.runId) !== registeredRunEntry ||
+        !isRpcSourceRegistered(registeredRunEntry) ||
         registeredRunEntry.input.retirementRequested
       ) {
         throw new Error("Followup no longer owns its Gateway run registration.");

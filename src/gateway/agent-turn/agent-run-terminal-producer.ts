@@ -1,10 +1,10 @@
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { validateAgentRunDelegatedAuthority } from "../../infra/agent-run-registry.js";
 import {
-  getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
   getRpcSourceStartedAt,
+  isRpcSourceRegistered,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -35,7 +35,7 @@ export function bindGatewayAgentTerminalProducer(params: {
           !params.isOwnerReleased() &&
           !controller.signal.aborted &&
           params.ingressOpts.abortSignal === controller.signal &&
-          getRpcSource(params.runId) === entry &&
+          isRpcSourceRegistered(entry) &&
           entry.input.abortSignal === controller.signal &&
           entry.adapter.operationalRunInstance === registeredRunInstance &&
           getRpcSourceLifecycleGeneration(entry) === registeredLifecycleGeneration &&

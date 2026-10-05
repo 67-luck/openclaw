@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import * as withdrawal from "../../config/sessions/session-pending-input-withdrawal.js";
-import { isRpcSourceQueued } from "../../sessions/session-controller.rpc-sources.js";
+import {
+  isRpcSourceQueued,
+  registerRpcSource,
+  updateRpcSourceSessionId,
+} from "../../sessions/session-controller.rpc-sources.js";
 import { createRpcSourceForTest, claimRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import { handleChatAbortRequestWithLifecycle } from "./chat-abort-handler.js";
 import {
@@ -19,6 +23,56 @@ vi.mock("../session-utils.js", async (original) => ({
 }));
 
 describe("chat.abort exact controller input withdrawal", () => {
+  it("does not borrow a foreign same-ID source's identity at the withdrawal fence", async () => {
+    const runId = "withdrawal-collision";
+    const source = createActiveRun("main", {
+      sessionId: "main-session",
+      agentId: "main",
+      storeScope: "/synthetic/withdrawal/sessions.json",
+      queued: true,
+      runId,
+    });
+    const context = createChatAbortContext({
+      sources: [[runId, source]],
+      getSessionEventSubscriberConnIds: () => new Set(),
+    });
+    let foreign: ReturnType<typeof createActiveRun> | undefined;
+    const discard = vi
+      .spyOn(withdrawal, "discardSessionPendingInput")
+      .mockImplementation(async (_scope, _runId, assertCurrent) => {
+        assertCurrent();
+        // A different physical owner registers while the write retains source A.
+        foreign = createActiveRun("main", {
+          sessionId: "main-session",
+          agentId: "main",
+          storeScope: "/synthetic/foreign-withdrawal/sessions.json",
+          queued: true,
+          runId,
+        });
+        registerRpcSource(runId, foreign);
+        updateRpcSourceSessionId(source, "rebound-session");
+        assertCurrent();
+        return true;
+      });
+    try {
+      await expect(
+        invokeChatAbortHandler({
+          handler: handleChatAbortRequestWithLifecycle,
+          context,
+          request: { sessionKey: "main", runId, discardPendingInput: true },
+          client: { connect: { scopes: ["operator.admin"] } },
+        }),
+      ).rejects.toThrow("Run changed before input removal");
+      expect(discard).toHaveBeenCalledOnce();
+      expect(source.input.abortSignal.aborted).toBe(false);
+      expect(foreign).toBeDefined();
+      expect(foreign?.input.abortSignal.aborted).toBe(false);
+      expect(source.input.withdrawalHolds).toBe(0);
+    } finally {
+      discard.mockRestore();
+    }
+  });
+
   it.each(["rejected", "committed and revoked"] as const)(
     "retains atomic input custody when the write is %s",
     async (outcome) => {

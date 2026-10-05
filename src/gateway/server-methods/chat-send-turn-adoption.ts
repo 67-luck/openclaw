@@ -4,9 +4,9 @@ import type { QueuedFollowupReplyDelivery } from "../../auto-reply/reply/queue/t
 import { bindReplySourceInput } from "../../auto-reply/reply/reply-source-binding.js";
 import { retireSessionControllerSourceCancellation } from "../../sessions/session-controller.mailbox.js";
 import {
-  getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
+  isRpcSourceRegistered,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
@@ -125,7 +125,6 @@ export function createChatSendTurnAdoptionLifecycle(params: {
       const input = params.sourceRef.input;
       if (input.abortSignal.aborted || input.phase === "consumed") {
         return false;
-
       }
       // Only physical source-publication custody survives ACK; selection lives on input.
       releaseWorkAdmission ??= params.retainWorkAdmission();
@@ -145,7 +144,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
         return;
       }
       settlementRecorded = true;
-      const ownsCompletion = getRpcSource(params.runId) === params.sourceRef;
+      const ownsCompletion = isRpcSourceRegistered(params.sourceRef);
       // Consumed steering also settles custody, but has no terminal batch. Only
       // the exact queued owner can retire an executed or abandoned refresh.
       completed = ownsCompletion && terminalKnown;

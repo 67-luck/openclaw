@@ -22,6 +22,7 @@ import {
   getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
+  isRpcSourceRegistered,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import {
@@ -438,7 +439,7 @@ export function createTalkClientAgentConsultRunner(params: {
                 return (
                   params.getVoiceSessionId() === voiceSessionId &&
                   (!params.ownerConnId ||
-                    (getRpcSource(runId) === entry &&
+                    (isRpcSourceRegistered(entry) &&
                       entry?.input.abortSignal.aborted === false &&
                       entry.adapter.requester?.connectionId === params.ownerConnId &&
                       identity?.sessionId === sessionId &&

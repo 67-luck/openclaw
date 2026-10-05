@@ -16,10 +16,10 @@ import { materializeProjectClone, refreshProjectClone } from "../../projects/pro
 import { parseConfiguredProjectGitUrl } from "../../projects/project-git-url.runtime.js";
 import { resolveProjectDirectory } from "../../projects/project-registry.js";
 import {
-  getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
   getRpcSourceProjectSessionActive,
+  isRpcSourceRegistered,
 } from "../../sessions/session-controller.rpc-sources.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
@@ -214,11 +214,10 @@ export async function prepareSessionWorkspace(params: {
   const signal = admission.activeRunAbort.entry.input.abortSignal;
   const assertRunOwnership = () => {
     signal.throwIfAborted();
-    const activeRun = getRpcSource(clientRunId);
-    const activeRunIdentity = activeRun && getRpcSourceIdentity(activeRun);
+    const activeRun = admission.activeRunAbort.entry;
+    const activeRunIdentity = getRpcSourceIdentity(activeRun);
     if (
-      !activeRun ||
-      activeRun !== admission.activeRunAbort.entry ||
+      !isRpcSourceRegistered(activeRun) ||
       activeRun.input.abortSignal !== signal ||
       activeRunIdentity?.sessionKey !== sessionKey ||
       activeRunIdentity.sessionId !== entry.sessionId ||

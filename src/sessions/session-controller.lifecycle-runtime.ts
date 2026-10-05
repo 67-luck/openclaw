@@ -54,7 +54,7 @@ const replyRunRegistryTestApi = {
     controllerStorage.sessionControllers.clear();
     controllerStorage.sessionControllerEntriesByAlias.clear();
     controllerStorage.sessionControllerEntriesByStore.clear();
-    controllerStorage.rpcSourceByRunId.clear();
+    controllerStorage.rpcSourcesByRunId.clear();
   },
 };
 
