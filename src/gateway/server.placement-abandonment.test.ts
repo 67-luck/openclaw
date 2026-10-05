@@ -242,7 +242,7 @@ it.for(cases)(
       }
       const { sessionId, sessionKey, agentId } = REQUEST;
       const worktreeId = "abandonment-worktree";
-      insertRegistryWorktree(process.env, {
+      await insertRegistryWorktree(process.env, {
         id: worktreeId,
         name: "abandonment",
         repoFingerprint: "fixture",
@@ -298,7 +298,7 @@ it.for(cases)(
           abandonSource: true,
         });
         if (failed) {
-          placements.failWorkspaceResultAndReleaseTurn(
+          await placements.failWorkspaceResultAndReleaseTurn(
             (await placements.listPendingWorkspaceResultsAsync())[0]!,
             "Earlier workspace recovery failed",
           );

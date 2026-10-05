@@ -203,7 +203,7 @@ describe("heartbeat event classification", () => {
     { value: "Exec completed (abc12345, code 0)", expected: false },
     { value: "Exec completed (rotate api keys)", expected: true },
   ])("classifies cron system events for %j", ({ value, expected }) => {
-    expect(isCronSystemEvent(value)).toBe(expected);
+    expect(isCronSystemEvent({ text: value })).toBe(expected);
   });
 
   it.each([

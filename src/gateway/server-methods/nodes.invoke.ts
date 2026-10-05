@@ -355,6 +355,7 @@ export const nodeInvokeHandlers: GatewayRequestHandlers = {
         const forwardedParams = await sanitizeNodeInvokeParamsForForwarding({
           nodeId,
           command,
+          caps: nodeSession.caps,
           rawParams: p.params,
           client,
           execApprovalManager: context.execApprovalManager,

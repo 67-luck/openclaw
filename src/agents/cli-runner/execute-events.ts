@@ -4,6 +4,7 @@ import { emitTrustedDiagnosticEvent } from "../../infra/diagnostic-events.js";
 import { markToolExecutionLivenessDiagnosticEvent } from "../../infra/diagnostic-tool-execution-liveness.js";
 import { projectProgressCardChannelUpdate } from "../../session-cards/progress-card-channel-summary.js";
 import { isAgentPlanProgressToolName } from "../../session-cards/progress-card-input.js";
+import { registerListener } from "../../shared/listeners.js";
 import { projectAgentActivityItem } from "../agent-activity-presentation.js";
 import type {
   CliCompactionDelta,
@@ -439,8 +440,6 @@ export function createCliEventHandlers(params: {
 
   return {
     emitLiveEvents,
-    emitCliToolUseStart: (event: CliToolUseStartDelta) => emitToolUseStart(event, true),
-    emitCliToolResult: (event: CliToolResultDelta) => emitToolResult(event, true),
     // Display-only native events never enter host-tool correlation or delivery accounting.
     emitCliDisplayToolUseStart: (event: CliToolUseStartDelta) => emitToolUseStart(event, false),
     emitCliDisplayToolResult: (event: CliToolResultDelta) => emitToolResult(event, false),
@@ -455,10 +454,8 @@ export function createCliEventHandlers(params: {
     emitCliThinkingProgress,
     hasObservedCliActivity: () => observedCliActivity,
     hasActiveCompaction: () => compactionActive,
-    onCompactionActiveChange: (listener: () => void) => {
-      compactionChangeListeners.add(listener);
-      return () => compactionChangeListeners.delete(listener);
-    },
+    onCompactionActiveChange: (listener: () => void) =>
+      registerListener(compactionChangeListeners, listener),
     activeParsedToolCount: () => activeParsedTools.size,
     isActiveForegroundAgentTool: (toolCallId: string) => {
       const tool = activeParsedTools.get(toolCallId);

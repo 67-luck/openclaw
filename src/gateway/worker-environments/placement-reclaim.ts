@@ -11,19 +11,18 @@ import type {
 } from "./placement-reclaim-contract.js";
 import { placementTurnOwner, reportPlacementTransition } from "./placement-record.js";
 import type { PlacementRecoveryDeps } from "./placement-recovery-contract.js";
-import {
-  completeMovedWorkspaceTeardown,
-  completeReclaimedWorkspaceTeardown,
-} from "./placement-teardown.js";
+import { completeWorkerWorkspaceTeardown } from "./placement-teardown.js";
 import { findPendingWorkerWorkspaceResult } from "./placement-workspace-result.js";
 import type {
   WorkerPlacementAuthorization,
   WorkerPlacementReclaimRequest,
+  WorkerPlacementReclaimSourceCheck,
 } from "./service-contract.js";
 import {
   createWorkerWorkspaceReconcileRequest,
   sessionWorkspaceRoot,
 } from "./session-workspace.js";
+import { AcceptedWorkspacePublicationIndeterminateError } from "./workspace-accepted-publication.js";
 import {
   verifyReconciledWorkspaceFinal,
   WorkerWorkspaceFinalFenceError,
@@ -55,18 +54,18 @@ export type WorkerPlacementReclaimOptions = Pick<
 
 export function createWorkerPlacementReclaim(options: WorkerPlacementReclaimOptions) {
   const { environments, placements } = options;
-  const reclaimOnce = async (
+  return async (
     request: WorkerPlacementReclaimRequest,
     moveIntent?: WorkerPlacementMoveIntent,
     authorize?: WorkerPlacementAuthorization,
-    beforeDrain?: WorkerPlacementAuthorization,
+    beforeDrain?: WorkerPlacementReclaimSourceCheck,
     onTransition?: (placement: WorkerDispatchPlacement) => void,
   ): Promise<WorkerReclaimPlacement> =>
     await options.runReclaimBarrier({
       ...request,
       authorize,
       beforeDrain,
-      begin: () => {
+      begin: async (assertCurrent) => {
         const current = placements.get(request.sessionId);
         // A queued stop can observe the previous stop's completion only after
         // entering the lifecycle fence; joining an outside promise can deadlock it.
@@ -89,12 +88,32 @@ export function createWorkerPlacementReclaim(options: WorkerPlacementReclaimOpti
         if (current.state === "draining") {
           return current;
         }
-        const draining = placements.startDrain({
-          sessionId: current.sessionId,
-          environmentId: current.environmentId,
-          ownerEpoch: current.activeOwnerEpoch,
-          expectedGeneration: current.generation,
-        });
+        let draining: WorkerDispatchPlacement;
+        try {
+          draining = await placements.startDrain(
+            {
+              sessionId: current.sessionId,
+              environmentId: current.environmentId,
+              ownerEpoch: current.activeOwnerEpoch,
+              expectedGeneration: current.generation,
+              expectedUpdatedAtMs: current.updatedAtMs,
+              requireUnclaimed: true,
+            },
+            () => {
+              assertCurrent?.();
+              beforeDrain?.assertCurrent?.();
+              if (!isExactAttachedEnvironment(environments.get(current.environmentId), current)) {
+                throw new Error("Active cloud worker does not match its session placement");
+              }
+            },
+          );
+        } catch (error) {
+          if (!(error instanceof AcceptedWorkspacePublicationIndeterminateError)) {
+            // Classify a settled refusal without replaying a write or inspecting an unknown one.
+            beforeDrain?.();
+          }
+          throw error;
+        }
         if (draining.state !== "draining") {
           throw new Error(`Session ${request.sessionKey} did not enter draining placement`);
         }
@@ -187,7 +206,7 @@ export function createWorkerPlacementReclaim(options: WorkerPlacementReclaimOpti
                 }
               });
             };
-            const finishReclaim = async (): Promise<WorkerReclaimPlacement> => {
+            try {
               const pending = await journal.load();
               if (pending) {
                 reauthorize?.();
@@ -323,20 +342,13 @@ export function createWorkerPlacementReclaim(options: WorkerPlacementReclaimOpti
                       complete: async () => {
                         // Destroy is the final privileged effect. Once it commits, durable placement
                         // completion must finish even if caller authority closes during the await.
-                        const completed = moveIntent
-                          ? await completeMovedWorkspaceTeardown({
-                              placements,
-                              turnClaim: reclaimClaim,
-                              environmentId: current.environmentId,
-                              ownerEpoch: current.activeOwnerEpoch,
-                              operationId: moveIntent.operationId,
-                            })
-                          : await completeReclaimedWorkspaceTeardown({
-                              placements,
-                              turnClaim: reclaimClaim,
-                              environmentId: current.environmentId,
-                              ownerEpoch: current.activeOwnerEpoch,
-                            });
+                        const completed = await completeWorkerWorkspaceTeardown({
+                          placements,
+                          turnClaim: reclaimClaim,
+                          environmentId: current.environmentId,
+                          ownerEpoch: current.activeOwnerEpoch,
+                          operationId: moveIntent?.operationId,
+                        });
                         // Publish the committed owner before cleanup refs and the tunnel can yield.
                         reportPlacementTransition(onTransition, completed);
                         return completed;
@@ -368,10 +380,10 @@ export function createWorkerPlacementReclaim(options: WorkerPlacementReclaimOpti
                 // Provider teardown is authoritative; local tunnel cleanup is best effort.
               }
               return reclaimed;
-            };
-            try {
-              return await finishReclaim();
             } catch (error) {
+              if (error instanceof AcceptedWorkspacePublicationIndeterminateError) {
+                throw error;
+              }
               // An unstaged final-fence failure is retryable even after an unchanged
               // manifest commit; the journal remains authoritative for the next attempt.
               await cancelUnstagedFailedReclaim(
@@ -393,6 +405,4 @@ export function createWorkerPlacementReclaim(options: WorkerPlacementReclaimOpti
         );
       },
     });
-
-  return reclaimOnce;
 }

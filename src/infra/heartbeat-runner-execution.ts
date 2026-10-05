@@ -52,6 +52,7 @@ import {
   shouldPreflightWakeBeforeBusy,
 } from "./heartbeat-runner-prompt.js";
 import {
+  type HeartbeatSessionSelection,
   resolveHeartbeatSession,
   resolveStaleHeartbeatIsolatedSessionKey,
 } from "./heartbeat-runner-session.js";
@@ -401,20 +402,32 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     scheduledTasks.length === 0 &&
     preflight.turnSourceDeliveryContext !== undefined &&
     preflight.selectedEventEntries.some(isExecCompletionSystemEvent);
-  const resolvedDelivery = await resolveHeartbeatDeliveryTargetWithSessionRoute({
-    cfg,
-    agentId,
-    entry: conversationEntry,
-    heartbeat,
-    currentSessionKey: sessionKey,
-    // A base queue's route stays excluded; events on the actual isolated queue
-    // own their route, including exec completion after the base route moves.
-    turnSource:
-      execOwnsRoute || preflight.session.inspectsRunQueue
-        ? preflight.turnSourceDeliveryContext
-        : undefined,
-    ...(execOwnsRoute ? { turnSourceKind: "exec" as const } : {}),
-  });
+  const resolveDeliveryFor = (
+    selection: HeartbeatSessionSelection,
+    heartbeatPolicy: typeof heartbeat,
+    turnSourceKind?: "exec",
+  ) =>
+    resolveHeartbeatDeliveryTargetWithSessionRoute({
+      cfg,
+      agentId,
+      entry: selection.conversationEntry,
+      heartbeat: heartbeatPolicy,
+      currentSessionKey: sessionKey,
+      // A base queue's route stays excluded; events on the actual isolated queue
+      // own their route, including exec completion after the base route moves.
+      turnSource:
+        turnSourceKind === "exec" || selection.inspectsRunQueue
+          ? preflight.turnSourceDeliveryContext
+          : undefined,
+      ...(turnSourceKind ? { turnSourceKind } : {}),
+    });
+  // The heartbeat target, recipient and direct-chat policy govern heartbeat output.
+  // A conversation's own command completion answers in that conversation.
+  const resolvedDelivery = await resolveDeliveryFor(
+    preflight.session,
+    preflight.conversationRoute ? { target: "last" } : heartbeat,
+    execOwnsRoute ? "exec" : undefined,
+  );
   // Operator-chosen suppression is the resolver's verdict, not a config string:
   // an explicit target that never resolves to a route also reports `target-none`.
   // Gate here so neither the relay prompt nor the session publication path can
@@ -463,14 +476,31 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
       channel: delivery.channel,
     });
   }
+  // A continuation is the conversation's reply: channel heartbeat toggles govern polls,
+  // and a quiet outcome stays quiet.
   const visibility =
-    delivery.channel !== "none"
-      ? resolveHeartbeatVisibility({
+    delivery.channel === "none" || preflight.conversationRoute
+      ? { showOk: false, showAlerts: true, useIndicator: true }
+      : resolveHeartbeatVisibility({
           cfg,
           channel: delivery.channel,
           accountId: delivery.accountId,
-        })
-      : { showOk: false, showAlerts: true, useIndicator: true };
+        });
+  // The continuation authorizes the model's reply, not host-generated notices (failure
+  // notices, tool warnings): those keep the heartbeat target, isolation and alert toggle
+  // that governed them (#153573).
+  const heartbeatDelivery = preflight.conversationRoute
+    ? await resolveDeliveryFor(preflight.heartbeatSession, heartbeat)
+    : undefined;
+  const quietHostNotices =
+    heartbeatDelivery !== undefined &&
+    (heartbeatDelivery.channel === "none" ||
+      !heartbeatDelivery.to ||
+      !resolveHeartbeatVisibility({
+        cfg,
+        channel: heartbeatDelivery.channel,
+        accountId: heartbeatDelivery.accountId,
+      }).showAlerts);
   const { sender } = resolveHeartbeatSenderContext({ cfg, entry, delivery });
   const replyPrefix = createReplyPrefixContext({
     cfg,
@@ -619,6 +649,7 @@ export async function prepareHeartbeatRunStage(wake: ReadyHeartbeatWake) {
     runSessionKey,
     outboundPolicySessionKey,
     internalProjection,
+    quietHostNotices,
     ...heartbeatRunPrompt,
     // Selected work outranks a coalesced wake; periodic tasks own their prompt even on an exec wake.
     useHeartbeatFailureCopy:

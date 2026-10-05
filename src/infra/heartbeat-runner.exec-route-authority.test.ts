@@ -9,6 +9,7 @@ import { resolveMainSessionKey } from "../config/sessions/main-session.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
 import { SESSION_CREATED_NOTICE_CONTEXT_PREFIX } from "../sessions/session-state-event-kinds.js";
 import { createTestRegistry } from "../test-utils/channel-plugins.js";
+import { formatQueuedEvents } from "./heartbeat-runner.event-routing.test-support.js";
 import { runHeartbeatOnce } from "./heartbeat-runner.js";
 import {
   heartbeatTestConfig,
@@ -357,7 +358,7 @@ it("does not replace an unavailable captured account with a configured heartbeat
   });
 });
 
-it.each(["generic", "cron", "cron-exec-text"] as const)(
+it.each(["generic", "cron", "generic-exec-text", "cron-exec-text"] as const)(
   "does not grant exec authority to %s event context",
   async (kind) => {
     await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
@@ -375,28 +376,33 @@ it.each(["generic", "cron", "cron-exec-text"] as const)(
         lastAccountId: "work",
         lastThreadId: 47,
       });
+      const cron = kind.startsWith("cron");
       enqueueSystemEvent(
-        kind === "cron-exec-text"
-          ? "Exec completed (cron notice, code 0) :: ordinary configured notification"
+        kind.endsWith("exec-text")
+          ? "Exec completed (ordinary-notice, code 0) :: ordinary configured notification"
           : "Reminder: ordinary configured notification",
         {
           sessionKey,
           deliveryContext: captured,
-          ...(kind !== "generic" ? { contextKey: "cron:ordinary" } : {}),
+          contextKey: cron ? "cron:ordinary" : "notice:ordinary",
         },
       );
       const telegram = vi.fn().mockResolvedValue({ messageId: "ordinary" });
-      replySpy.mockImplementation(async (ctx) => {
+      replySpy.mockImplementation(async (ctx, options) => {
         expect(ctx).toMatchObject({ OriginatingTo: "1234567890", AccountId: "personal" });
+        const formatted = await formatQueuedEvents(cfg, ctx, options);
+        expect(`${ctx.Body ?? ""}\n${formatted ?? ""}`).toContain(
+          "ordinary configured notification",
+        );
         return { text: "Ordinary notification." };
       });
       await runHeartbeatOnce({
         cfg,
         agentId: "main",
         sessionKey,
-        source: kind !== "generic" ? "cron" : "hook",
+        source: cron ? "cron" : "hook",
         intent: "immediate",
-        reason: kind !== "generic" ? "cron:ordinary" : "hook:ordinary",
+        reason: cron ? "cron:ordinary" : "hook:ordinary",
         deps: { getReplyFromConfig: replySpy, telegram },
       });
       expect(telegram.mock.calls[0]).toMatchObject([

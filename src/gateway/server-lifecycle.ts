@@ -1,10 +1,14 @@
+import { closeAuthProfileUsage } from "../agents/auth-profiles/usage-lifecycle.js";
 import { resolveActiveEmbeddedRunSessionId } from "../agents/embedded-agent-runner/active-run-projections.js";
 import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
+import { prepareSandboxRegistryClose } from "../agents/sandbox/registry-lifecycle.js";
 import { fenceSessionSuspensionWritesForGatewayShutdown } from "../agents/session-suspension.js";
+import { prepareWorktreeRunEndClose } from "../agents/worktrees/run-end-lifecycle.js";
 import { getTotalPendingReplies } from "../auto-reply/reply/dispatcher-registry.js";
 import { listLoadedChannelPluginsForRegistry } from "../channels/plugins/registry-loaded.js";
 import { getRuntimeConfig } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { beginCronReceiptAuthorityClose } from "../cron/store/receipt-authority-owner.js";
 import {
   isDiagnosticsEnabled,
   setDiagnosticsEnabledForProcess,
@@ -66,6 +70,8 @@ export async function prepareGatewayLifecycle(params: {
 }) {
   const { runtime, port, log, logCron, shutdownRuntime } = params;
   const requestEntryLifetime = new GatewayRequestEntryLifetime();
+  const worktreeRunEnd = prepareWorktreeRunEndClose();
+  const sandboxRegistry = prepareSandboxRegistryClose();
   const {
     minimalTestGateway,
     transportBridge,
@@ -376,6 +382,11 @@ export async function prepareGatewayLifecycle(params: {
   let mediaCleanupStopPromise: ReturnType<typeof runtimeState.stopMediaCleanup> | null = null;
   const stopMediaCleanupForClose = () =>
     (mediaCleanupStopPromise ??= runtimeState.stopMediaCleanup());
+  let modelAccountStopPromise: Promise<void> | undefined;
+  const stopModelAccountsForClose = () =>
+    (modelAccountStopPromise ??= runtime
+      .resolvePluginGatewayContext()
+      ?.modelAccountConnectService?.stop());
   // Connect, RPC, and maintenance refreshes share a Gateway owner, not a socket lifetime.
   const healthWork = new AsyncWorkScope();
   const markClosePreludeStarted = (options?: GatewayCloseOptions) => {
@@ -388,6 +399,13 @@ export async function prepareGatewayLifecycle(params: {
     markGatewaySuspendExiting();
     authRateLimiter.dispose();
     browserAuthRateLimiter.dispose();
+    worktreeRunEnd.beginClose();
+    sandboxRegistry.beginClose();
+    if (prelude) {
+      beginCronReceiptAuthorityClose();
+    }
+    void stopModelAccountsForClose();
+    void closeAuthProfileUsage(params.sdkResourceHost);
     runtime.scheduler.beginClose();
     void runtimeState.maintenance?.stopPeriodicTasks();
     // Publish the exact cancellation before withdrawing capabilities or running
@@ -422,7 +440,9 @@ export async function prepareGatewayLifecycle(params: {
     // Owners are fenced synchronously above. Join them before any runtime they
     // can publish into is torn down.
     await Promise.all([
+      closeAuthProfileUsage(params.sdkResourceHost),
       requestEntryLifetime.waitForPendingEntries(),
+      stopModelAccountsForClose(),
       stopDeliveryRecoveryForClose(),
       stopMediaCleanupForClose(),
       runtimeState.stopGatewayUpdateCheck(),
@@ -431,6 +451,8 @@ export async function prepareGatewayLifecycle(params: {
       runtimeState.controlUiSessionPullRequests?.stop(),
       healthWork.drain(),
       mentionInbox.dispose(),
+      worktreeRunEnd.drain(),
+      sandboxRegistry.drain(),
     ]);
   };
   const runClosePrelude = async () => {
@@ -501,6 +523,8 @@ export async function prepareGatewayLifecycle(params: {
     const preparation = await shutdownRuntime.prepareGatewayClose(
       {
         resolveGatewayContext: runtime.resolvePluginGatewayContext,
+        preparePluginRegistryClose: () => pluginRuntime.prepareClose(),
+        agentUnsub: runtimeState.agentUnsub,
         chatRunState,
         chatAbortControllers,
         chatQueuedTurns,

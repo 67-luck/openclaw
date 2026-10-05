@@ -166,6 +166,18 @@ export type PluginRuntime = PluginRuntimeCore & {
       },
       run: (assertCurrent: () => void) => Promise<T>,
     ) => Promise<T>;
+    /** Resolve public GitHub identity with the Gateway credential; never retry anonymously. */
+    resolveGitHubAccount?: (params: { login: string; signal?: AbortSignal }) => Promise<
+      | { accountId: number; login: string; error?: never }
+      | {
+          error: {
+            statusCode: number;
+            message: string;
+            retryAtMs?: number;
+            credentialConfigured: boolean;
+          };
+        }
+    >;
   };
   subagent: {
     /** Fresh, tool-free background inference under the existing subagent model policy. */
@@ -202,20 +214,11 @@ export type PluginRuntime = PluginRuntimeCore & {
       workspaceAccess: "none" | "ro" | "rw";
       confinementError?: string;
     };
-    prepareWorkspaceAuthority: (params: {
-      config: OpenClawConfig;
-      agentId?: string;
-      confinedToolNames?: readonly string[];
-      requiredToolNames?: readonly string[];
-      modelProvider?: string;
-      modelId?: string;
-      sessionKey: string;
-      workspaceDir: string;
-    }) => Promise<{
-      sandboxed: boolean;
-      workspaceAccess: "none" | "ro" | "rw";
-      confinementError?: string;
-    }>;
+    prepareWorkspaceAuthority: (
+      params: Parameters<PluginRuntime["sandbox"]["resolveWorkspaceAuthority"]>[0] & {
+        workspaceDir: string;
+      },
+    ) => Promise<ReturnType<PluginRuntime["sandbox"]["resolveWorkspaceAuthority"]>>;
   };
   worktrees: {
     resolveCheckoutRoot: (params: { path: string }) => Promise<string | undefined>;
@@ -253,5 +256,5 @@ export type CreatePluginRuntimeOptions = {
 /** Checked contract for both the path-loaded factory and its implementation. */
 export type PluginRuntimeFactory = (
   options?: CreatePluginRuntimeOptions,
-  base?: Pick<PluginRuntime, "config" | "state" | "system">,
+  base?: Pick<PluginRuntime, "capabilities" | "config" | "state" | "system">,
 ) => PluginRuntime;

@@ -36,7 +36,15 @@ it.each(["current", "backup", "webhook-repair"] as const)(
       const original = JSON.stringify({
         gateway: { mode: "local" },
         ...(source === "webhook-repair"
-          ? { channels: { "nextcloud-talk": { enabled: true } } }
+          ? {
+              channels: {
+                "nextcloud-talk": {
+                  enabled: true,
+                  baseUrl: "https://cloud.example.com",
+                  botSecret: "test-bot-secret",
+                },
+              },
+            }
           : { plugins: { enabled: false } }),
       });
       await fs.mkdir(stateDir, { recursive: true });
@@ -203,7 +211,7 @@ it("restores the admitted backup after database readiness exceeds the lease TTL"
     openOpenClawStateDatabase({ path: path.join(stateDir, "state", "openclaw.sqlite") });
     closeOpenClawStateDatabaseForTest();
     vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
-    let acquired = false;
+    let acquired: checkpoint.StartupMigrationLease | undefined;
     let heartbeats = 0;
     const acquire = checkpoint.acquireStartupMigrationLeaseWithWait;
     vi.spyOn(checkpoint, "acquireStartupMigrationLeaseWithWait").mockImplementationOnce(
@@ -214,7 +222,7 @@ it("restores the admitted backup after database readiness exceeds the lease TTL"
           heartbeats++;
           heartbeat(heartbeatParams);
         });
-        acquired = true;
+        acquired = lease;
         return lease;
       },
     );
@@ -227,7 +235,8 @@ it("restores the admitted backup after database readiness exceeds the lease TTL"
         delayed = true;
         // Keep the real admission promise pending while interval renewals become due.
         await vi.advanceTimersByTimeAsync(checkpoint.STARTUP_MIGRATION_LEASE_TTL_MS + 60_000);
-        expect(checkpoint.hasActiveStartupMigrationLease()).toBe(true);
+        // Authority must observe heartbeat commits beyond the preparation snapshot.
+        acquired.assertOwned();
         // Subsequent plugin lease acquisition uses a worker with the real wall clock.
         vi.setSystemTime(vi.getRealSystemTime());
       }
