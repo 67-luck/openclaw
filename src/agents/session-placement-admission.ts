@@ -8,7 +8,10 @@ import {
 import { retainQueuedAgentRunContext } from "../infra/agent-run-registry.js";
 import { withSessionTurn } from "../sessions/session-controller.admission.js";
 import { registerReplyOperationSuccessorBarrier } from "../sessions/session-controller.js";
-import { assertSessionControllerOperation } from "../sessions/session-controller.state.js";
+import {
+  assertSessionControllerOperation,
+  isCurrentSessionControllerOperation,
+} from "../sessions/session-controller.state.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { resolveAdmittedRunActiveAssertion } from "./admitted-run-context.js";
 import { resolveEmbeddedRunSessionLanePolicy } from "./embedded-agent-runner/run/lane-runtime.js";
@@ -270,12 +273,14 @@ export async function withLocalSessionPlacementTurnSettlement(
           let open = true;
           const assertSettlementCurrent = () => {
             // Captured controller and placement custody, not a queue generation.
-            if (!open || operation?.abortSignal.aborted) {
+            // Cancellation does not release exact-owner cleanup; the operation
+            // remains the settlement fence until this callback returns.
+            if (!open) {
               throw createSessionPlacementSettlementClosedAbortError();
             }
             assertOwnerCurrent();
-            if (operation) {
-              assertSessionControllerOperation(operation);
+            if (operation && !isCurrentSessionControllerOperation(operation)) {
+              throw createSessionPlacementSettlementClosedAbortError();
             }
             assertClaimCurrent?.();
           };
