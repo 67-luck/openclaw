@@ -19,6 +19,11 @@ export const ownerContext = resolveGlobalSingleton(
   () => new AsyncLocalStorage<OwnerContext>(),
 );
 
+/** Required cleanup acquires its target's mutation owner without inheriting the retired turn. */
+export function runWithSessionControllerCleanup<T>(run: () => T): T {
+  return ownerContext.exit(run);
+}
+
 export function withSessionControllerOwner<T>(operation: ReplyOperation, run: () => T): T {
   assertSessionControllerOperation(operation);
   const current = ownerContext.getStore();
