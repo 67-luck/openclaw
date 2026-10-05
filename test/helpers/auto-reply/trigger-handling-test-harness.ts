@@ -172,7 +172,13 @@ const modelFallbackMocks = getSharedMocks("openclaw.trigger-handling.model-fallb
       model: string;
       run: (provider: string, model: string, runOptions?: unknown) => Promise<unknown>;
     }) => ({
-      result: await params.run(params.provider, params.model),
+      result: await params.run(params.provider, params.model, {
+        modelRoutingProvenance: {
+          requestedProvider: params.provider,
+          requestedModel: params.model,
+          stage: "initial",
+        },
+      }),
       provider: params.provider,
       model: params.model,
       attempts: [],
