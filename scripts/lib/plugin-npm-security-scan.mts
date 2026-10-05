@@ -137,6 +137,7 @@ const RELEASE_2026_9_5_REQUIRED_REVIEWED_SOURCE_FINDING_COUNTS = new Map(
 const CURRENT_REQUIRED_REVIEWED_SOURCE_FINDING_COUNTS = new Map<string, number>([
   ...RELEASE_2026_9_5_REQUIRED_REVIEWED_SOURCE_FINDING_COUNTS,
   ["@openclaw/facetime:dangerous-exec:src/audio-pump.ts", 1],
+  ["@openclaw/llama-cpp-provider:dangerous-exec:src/llama-server-vc-runtime.ts", 1],
   ["@openclaw/onnx:dangerous-exec:src/worker-client.ts", 1],
 ]);
 
