@@ -541,11 +541,6 @@ export async function handleChatAbortRequestWithLifecycle(
         Promise.allSettled([
           snapshot ? persistAbortedPartials({ context, snapshots: [snapshot] }) : undefined,
           active.adapter.kind === "agent" ? undefined : waitForChatAbortTerminalPersistence(active),
-          // A native hook can await this acknowledgment before its producer returns.
-          // An accepted handoff retains that producer and transcript work independently.
-          active.adapter.kind === "agent" || (snapshot?.ok && snapshot.settlement.deferred)
-            ? undefined
-            : stopCapture.settled,
         ]),
       );
       warning = settled[0].status === "fulfilled" ? settled[0].value : undefined;

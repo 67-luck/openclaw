@@ -291,8 +291,7 @@ describe("gateway WebSocket chat abort settlement", () => {
             const outcome = {
               runId,
               status: "error",
-              error: "aborted",
-              stopReason: "aborted",
+              stopReason: "rpc",
               endedAt: expect.any(Number),
             };
             await expect(
@@ -315,14 +314,24 @@ describe("gateway WebSocket chat abort settlement", () => {
           return;
         }
 
-        // Hold the wait deadline while real abort and persistence work establishes ordering.
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-        const waitResponse = rpcReq(socket, "agent.wait", { runId, timeoutMs: 2_000 });
-        frames.push(waitResponse);
-        void waitResponse.catch(() => {});
-        await waitInstalled.promise;
-        if (settlement.startsWith("queued-")) {
-          expect(queuedLifecycle?.onDeferred?.()).toBe(true);
+        let waitResponse: Promise<unknown> | undefined;
+        if (settlement.startsWith("queued-") || settlement === "accepted-injection") {
+          if (settlement.startsWith("queued-")) {
+            expect(queuedLifecycle?.onDeferred?.()).toBe(true);
+          }
+          await expect(
+            rpcReq(socket, "agent.wait", { runId, timeoutMs: 0 }),
+          ).resolves.toMatchObject({
+            ok: true,
+            payload: { runId, status: "pending", timeoutPhase: "queue" },
+          });
+        } else {
+          // Hold the wait deadline while real abort and persistence work establishes ordering.
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+          waitResponse = rpcReq(socket, "agent.wait", { runId, timeoutMs: 2_000 });
+          frames.push(waitResponse);
+          void waitResponse.catch(() => {});
+          await waitInstalled.promise;
         }
         const abortedFrame = onceMessage(
           socket,
@@ -344,16 +353,35 @@ describe("gateway WebSocket chat abort settlement", () => {
         await expect(abortedFrame).resolves.toMatchObject({
           payload: { runId, state: "aborted" },
         });
-        expect(waitSettled).toBe(false);
         if (settlement === "accepted-injection") {
           expect(injectionSignal?.aborted).toBe(true);
         }
 
-        dispatchRelease.resolve();
-        await expect(waitResponse).resolves.toMatchObject({
+        const terminalOutcome = {
           ok: true,
-          payload: { runId, status: "error", stopReason: "rpc", endedAt: expect.any(Number) },
-        });
+          payload: {
+            runId,
+            status: "error",
+            stopReason:
+              settlement === "accepted-injection" || settlement.startsWith("queued-")
+                ? "rpc"
+                : "aborted",
+            endedAt: expect.any(Number),
+          },
+        };
+        if (waitResponse) {
+          expect(waitSettled).toBe(settlement !== "accepted-injection");
+          if (settlement === "accepted-injection") {
+            dispatchRelease.resolve();
+          }
+          await expect(waitResponse).resolves.toMatchObject(terminalOutcome);
+          dispatchRelease.resolve();
+          expect(waitSettled).toBe(true);
+        } else {
+          await expect(
+            rpcReq(socket, "agent.wait", { runId, timeoutMs: 0 }),
+          ).resolves.toMatchObject(terminalOutcome);
+        }
         vi.useRealTimers();
 
         // Replay can itself record an aborted receipt, so it must follow the original wait.
