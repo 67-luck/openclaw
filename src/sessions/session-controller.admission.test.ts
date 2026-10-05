@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { withSessionTurn } from "./session-controller.admission.js";
 import { captureSessionTarget } from "./session-controller.lifecycle.js";
 import {
@@ -16,6 +17,39 @@ import {
 
 afterEach(() => {
   sessionControllers.clear();
+});
+
+it("relays caller cancellation through a borrowed ambient turn", async () => {
+  const params = {
+    storePath: "/synthetic/borrowed-cancellation/sessions.json",
+    sessionKey: "agent:main:borrowed-cancellation",
+    sessionId: "borrowed-cancellation-session",
+  };
+  const caller = new AbortController();
+  const callbackStarted = createDeferred();
+  const releaseCallback = createDeferred();
+  let borrowedSignal: AbortSignal | undefined;
+
+  await withSessionTurn(params, async (operation) => {
+    const borrowed = withSessionTurn(
+      { ...params, abortSignal: caller.signal },
+      async (_, signal) => {
+        borrowedSignal = signal;
+        callbackStarted.resolve();
+        await releaseCallback.promise;
+      },
+    );
+    await callbackStarted.promise;
+
+    try {
+      caller.abort("caller cancelled");
+      expect(borrowedSignal).toMatchObject({ aborted: true, reason: "caller cancelled" });
+      expect(operation?.abortSignal.aborted).toBe(false);
+    } finally {
+      releaseCallback.resolve();
+      await borrowed;
+    }
+  });
 });
 
 it.each([false, true])(

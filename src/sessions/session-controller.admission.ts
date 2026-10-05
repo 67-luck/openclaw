@@ -91,7 +91,11 @@ export async function withSessionTurn<T>(
     if (target) {
       bindSessionControllerTarget(inherited, target);
     }
-    return await withSessionControllerOwner(inherited, () => run(inherited, inherited.abortSignal));
+    params.abortSignal?.throwIfAborted();
+    const signal = params.abortSignal
+      ? AbortSignal.any([inherited.abortSignal, params.abortSignal])
+      : inherited.abortSignal;
+    return await withSessionControllerOwner(inherited, () => run(inherited, signal));
   }
   if (params.detached || !sessionKey) {
     const signal = params.abortSignal ?? new AbortController().signal;
