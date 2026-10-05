@@ -584,7 +584,11 @@ describe("scripts/lib/plugin-prerelease-test-plan.mts", () => {
           Object.entries(job.outputs).map(([key, expression]) => [
             key,
             runInNewContext(String(expression).slice(3, -2), {
-              steps: { [step.id]: { outputs }, node_test_exclusions: { outputs: {} } },
+              steps: {
+                [step.id]: { outputs },
+                node_test_exclusions: { outputs: {} },
+                qualification_baselines: { outputs: {} },
+              },
             }),
           ]),
         ),

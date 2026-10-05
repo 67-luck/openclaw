@@ -494,24 +494,22 @@ console.log(JSON.stringify(process.argv[4] === "dist-tags"
       args: { requested: "supported-lines" },
     })),
     {
-      tags: { latest: "2026.9.2" },
-      versions: ["2026.9.1", "2026.9.2"],
-      error: "oldest supported baseline is not published",
+      args: { requested: "release-history", "history-count": "1e3" },
+      releases: [],
+      error: "--history-count must be a positive integer",
     },
-  ])("fails closed on unusable supported-line metadata ($error)", ({ tags, versions, error }) => {
-    withJsonFixture("tags.json", tags, (tagsFile) => {
-      withJsonFixture("versions.json", versions, (versionsFile) => {
-        expect(() =>
-          resolveBaselines(
-            new Map([
-              ["requested", "supported-lines"],
-              ["npm-dist-tags-json", tagsFile],
-              ["npm-versions-json", versionsFile],
-            ]),
-          ),
-        ).toThrow(error);
-      });
-    });
+    {
+      args: { requested: "last-stable-1e3" },
+      releases: [],
+      error: "last-stable baseline count must be a positive integer",
+    },
+    {
+      args: { requested: "all-since-2026.6.9007199254740993" },
+      releases: [],
+      error: "invalid all-since baseline token: all-since-2026.6.9007199254740993",
+    },
+  ])("rejects unusable baseline inputs: $args $tags", ({ error, ...fixture }) => {
+    expect(() => resolveFixture(fixture)).toThrow(error);
   });
 
   it("resolves release-history to the last six supported stable releases", () => {

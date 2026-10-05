@@ -264,8 +264,13 @@ function findUnpinnedExternalActions(): string[] {
     ...findYamlFiles(".github/actions"),
   ]) {
     for (const [index, line] of readFileSync(workflowPath, "utf8").split("\n").entries()) {
-      const uses = line.match(/^\s*(?:-\s*)?uses:\s*([^#\s]+)/u)?.[1];
-      if (!uses || uses.startsWith("./") || uses.startsWith("docker://")) {
+      const uses = line.match(/^\s*(?:-\s*)?uses:\s*(?:&[^\s]+\s+)?([^#\s]+)/u)?.[1];
+      if (
+        !uses ||
+        uses.startsWith("*") ||
+        uses.startsWith("./") ||
+        uses.startsWith("docker://")
+      ) {
         continue;
       }
       const at = uses.lastIndexOf("@");
@@ -3245,9 +3250,9 @@ require("node:fs").writeFileSync("scheduler-restart", process.env.OPENCLAW_UPGRA
         expect(result.status, result.stderr).toBe(0);
         expect(readFileSync(receipt, "utf8")).toBe(fixture.expected);
         expect(readFileSync(path.join(root, "scheduler-scenario"), "utf8")).toBe(
-          fixture.scenario ?? "base",
+          fixture.frozen ? "base" : "legacy-operator-state",
         );
-        expect(readFileSync(path.join(root, "scheduler-restart"), "utf8")).toBe("first-hop");
+        expect(readFileSync(path.join(root, "scheduler-restart"), "utf8")).toBe("auto-auth");
       } else {
         expect(result.status).not.toBe(0);
         expect(result.stderr).toContain(

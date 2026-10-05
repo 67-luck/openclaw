@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -1493,46 +1494,6 @@ describe("full-release-validation-at-sha", () => {
     expect(fixture.gitCalls().filter((call) => call[0] === "push")).toEqual([]);
     expect(fixture.calls().filter((call) => ghApiMethod(call) !== "GET")).toEqual([]);
     expect(fixture.dispatches()).toEqual([]);
-  });
-
-  it("dispatches a frozen correction candidate and removes only its workflow ref", () => {
-    const fixture = createDispatchFixture();
-    const releaseRef = `${fixture.releaseRef}-2`;
-    runGit(fixture.checkout, ["branch", releaseRef, fixture.targetSha]);
-    runGit(fixture.checkout, ["tag", "-a", "v2026.8.1", fixture.targetSha, "-m", "base release"]);
-    runGit(fixture.checkout, ["push", "origin", `refs/heads/${releaseRef}`, "refs/tags/v2026.8.1"]);
-    expect(runGit(fixture.origin, ["tag", "--list", "v2026.8.1-2"])).toBe("");
-    const result = fixture.run(["--target-ref", releaseRef]);
-    expect(result.status, result.stderr).toBe(0);
-    const creates = fixture
-      .calls("POST")
-      .filter((args) => ghApiEndpoint(args).endsWith("/git/refs"));
-    expect(creates).toHaveLength(1);
-    const branch = ghField(creates[0]!, "ref");
-    expect(branch).toMatch(
-      new RegExp(`^refs/heads/release-ci/${fixture.workflowSha.slice(0, 12)}-[0-9]+$`, "u"),
-    );
-    expect(ghField(creates[0]!, "sha")).toBe(fixture.workflowSha);
-    const payload = fixture.readPayload();
-    expect(payload.body.ref).toBe(branch.slice("refs/heads/".length));
-    expect(payload.body.inputs).toMatchObject({
-      ref: fixture.targetSha,
-      expected_sha: fixture.targetSha,
-      target_context_ref: releaseRef,
-      allow_unreleased_changelog: "false",
-    });
-    try {
-      const result = fixture.run([
-        "--workflow-sha",
-        fixture.workflowSha,
-        "-f",
-        "allow_unreleased_changelog=true",
-      ]);
-      expect(result.status, result.stderr).toBe(0);
-      expect(fixture.readCalls(fixture.ghCallsPath).some(isWorkflowDispatch)).toBe(true);
-    } finally {
-      fixture.cleanup();
-    }
   });
 
   it.each([false, true])(

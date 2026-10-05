@@ -16160,10 +16160,9 @@ wait_for_run plugin-clawhub-new.yml 123 "${expectedSha}" || status=$?
       "cannot replace this admitted Q=C publish proof",
     ]);
     expectTextToIncludeAll(releaseCi, [
-      "standalone run is a supplemental validation-only preflight",
-      "Do not pass",
-      "publication `preflight_run_id`",
-      "Publication continues to use",
+      "The all-group parent prepares core and selected plugin npm tarballs itself",
+      "A standalone npm or plugin npm preflight is diagnostic-only",
+      "cannot replace the manifest-bound evidence",
     ]);
     expectTextToIncludeAll(ciDocs, [
       'VALIDATION_SHA="<full-commit-sha>"',

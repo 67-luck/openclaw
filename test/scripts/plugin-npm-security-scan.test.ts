@@ -830,6 +830,7 @@ describe("scripts/lib/plugin-npm-security-scan.mts", () => {
       const packageName = "@openclaw/llama-cpp-provider";
       const hardwareKey = `${packageName}:dangerous-exec:src/hardware.ts`;
       const installerKey = `${packageName}:dangerous-exec:src/llama-server-install.ts`;
+      const vcRuntimeKey = `${packageName}:dangerous-exec:src/llama-server-vc-runtime.ts`;
       const probe =
         'import { execFile } from "node:child_process";\nexecFile("/usr/bin/vm_stat", []);\n';
       const artifact = writePluginArtifact({
@@ -837,6 +838,7 @@ describe("scripts/lib/plugin-npm-security-scan.mts", () => {
         files: {
           "src/hardware.ts": probe + (count === 2 ? 'execFile("/bin/df", ["-P", "/tmp"]);\n' : ""),
           "src/llama-server-install.ts": probe,
+          "src/llama-server-vc-runtime.ts": probe,
         },
         packageName,
       });
@@ -846,6 +848,7 @@ describe("scripts/lib/plugin-npm-security-scan.mts", () => {
       expect(current.packageResults[0]?.reviewedCriticalFindings).toEqual([
         ...Array.from({ length: count }, () => hardwareKey),
         installerKey,
+        vcRuntimeKey,
       ]);
       const currentReport = buildPluginNpmSecurityScanReport({
         candidateSha: CANDIDATE_SHA,
