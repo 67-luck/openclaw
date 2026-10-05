@@ -8,6 +8,7 @@ import {
   getRpcSourceLifecycleGeneration,
   isRpcSourceRegistered,
   listRpcSourceEntries,
+  type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import {
   getAttachedBackend,
@@ -16,6 +17,40 @@ import {
 import type { controlRealtimeVoiceAgentRun } from "../../talk/agent-run-control.js";
 import { resolveClientVoiceRunBinding } from "../../talk/client-voice-session.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
+
+/** Validate consult control or completion against its captured source identity. */
+export function isTalkConsultSourceCurrent(params: {
+  entry?: RpcSourceRef;
+  connectionId: string;
+  sessionId: string;
+  sessionKey: string;
+  lifecycleGeneration?: string;
+  phase: "active" | "completion";
+}): boolean {
+  const { entry, lifecycleGeneration } = params;
+  if (!entry || entry.input.abortSignal.aborted || !lifecycleGeneration) {
+    return false;
+  }
+  // Clean settlement retains completion custody, never active steering authority.
+  if (
+    !isRpcSourceRegistered(entry) &&
+    !(
+      params.phase === "completion" &&
+      entry.input.phase === "consumed" &&
+      entry.input.custody.failure === undefined
+    )
+  ) {
+    return false;
+  }
+  const identity = getRpcSourceIdentity(entry);
+  return (
+    entry.adapter.requester?.connectionId === params.connectionId &&
+    identity.sessionId === params.sessionId &&
+    identity.sessionKey === params.sessionKey &&
+    getRpcSourceLifecycleGeneration(entry) === lifecycleGeneration &&
+    isAgentEventLifecycleGenerationCurrent(lifecycleGeneration)
+  );
+}
 
 export function resolveOwnedActiveTalkRunTarget(params: {
   clientConnId?: string;

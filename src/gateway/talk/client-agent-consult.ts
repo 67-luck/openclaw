@@ -20,9 +20,7 @@ import { withSessionTurn } from "../../sessions/session-controller.admission.js"
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
   getRpcSource,
-  getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
-  isRpcSourceRegistered,
   type RpcSourceRef,
 } from "../../sessions/session-controller.rpc-sources.js";
 import {
@@ -58,6 +56,7 @@ import {
   resolveTalkAgentConsultAuthority,
   type TalkAgentConsultAuthority,
 } from "./client-gateway-control.js";
+import { isTalkConsultSourceCurrent } from "./run-ownership.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
 const loadTalkAgentExecution = createLazyRuntimeModule(async () => {
@@ -242,7 +241,7 @@ export function createTalkClientAgentConsultRunner(params: {
     completionClaim?: ReturnType<typeof prepareEmbeddedAgentRunCompletionClaim>;
     cleanup?: () => void;
     identity?: { runId: string; sessionId: string };
-    isCurrent?: (sessionId?: string) => boolean;
+    isCurrent?: (sessionId?: string, phase?: "active" | "completion") => boolean;
     lifecycleGeneration: string;
     registered: Promise<EmbeddedRunCompletionRegistration | undefined>;
     requestSignal?: AbortSignal;
@@ -434,20 +433,18 @@ export function createTalkClientAgentConsultRunner(params: {
               const generation = entry ? getRpcSourceLifecycleGeneration(entry) : undefined;
               owner.cleanup = registration?.cleanup;
               owner.signal = entry?.input.abortSignal;
-              owner.isCurrent = (resolvedSessionId) => {
-                const identity = entry ? getRpcSourceIdentity(entry) : undefined;
+              owner.isCurrent = (resolvedSessionId, phase = "active") => {
                 return (
                   params.getVoiceSessionId() === voiceSessionId &&
                   (!params.ownerConnId ||
-                    (entry !== undefined &&
-                      isRpcSourceRegistered(entry) &&
-                      entry.input.abortSignal.aborted === false &&
-                      entry.adapter.requester?.connectionId === params.ownerConnId &&
-                      identity?.sessionId === sessionId &&
-                      identity.sessionKey === canonicalKey &&
-                      generation !== undefined &&
-                      getRpcSourceLifecycleGeneration(entry) === generation &&
-                      isAgentEventLifecycleGenerationCurrent(generation))) &&
+                    isTalkConsultSourceCurrent({
+                      entry,
+                      connectionId: params.ownerConnId,
+                      sessionId,
+                      sessionKey: canonicalKey,
+                      lifecycleGeneration: generation,
+                      phase,
+                    })) &&
                   (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
                   (params.isRunCurrent?.(runId) ?? true)
                 );
@@ -477,8 +474,11 @@ export function createTalkClientAgentConsultRunner(params: {
         admission.release();
       });
   };
-  const isOwnerCurrent = (owner: PromptOwner, sessionId?: string): boolean =>
-    promptOwner === owner && owner.isCurrent?.(sessionId) === true;
+  const isOwnerCurrent = (
+    owner: PromptOwner,
+    sessionId?: string,
+    phase: "active" | "completion" = "active",
+  ): boolean => promptOwner === owner && owner.isCurrent?.(sessionId, phase) === true;
   const clearOwner = (owner: PromptOwner): void => {
     if (promptOwner === owner) {
       promptOwner = undefined;
@@ -508,7 +508,7 @@ export function createTalkClientAgentConsultRunner(params: {
     if (!owner) {
       return false;
     }
-    const current = isOwnerCurrent(owner);
+    const current = isOwnerCurrent(owner, undefined, "completion");
     const completed = owner.completionClaim?.claimCompletion() === true;
     clearRequesterFinalRegistration(owner, current && completed ? "release" : "revoke");
     clearOwner(owner);
@@ -524,7 +524,7 @@ export function createTalkClientAgentConsultRunner(params: {
       owner.requestSignal?.aborted !== true &&
       isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration) &&
       params.getVoiceSessionId() === owner.voiceSessionId &&
-      (identity ? isOwnerCurrent(owner, identity.sessionId) : promptOwner === owner);
+      (identity ? isOwnerCurrent(owner, identity.sessionId, "completion") : promptOwner === owner);
     const claimed = owner.completionClaim
       ? owner.completionClaim.claimFailure()
       : identity === undefined &&

@@ -66,6 +66,38 @@ const nativeUpstream = await vi.hoisted(async () => {
 
     send(payload: string): void {
       this.sent.push(payload);
+      this.emit("sent", payload);
+    }
+
+    /** Await a captured or future outgoing frame without polling the transport. */
+    waitForSent(matches: (payload: string) => boolean): Promise<string> {
+      const captured = this.sent.find(matches);
+      if (captured !== undefined) {
+        return Promise.resolve(captured);
+      }
+      if (this.readyState === NativeSocket.CLOSED) {
+        return Promise.reject(new Error("Native socket closed before the expected frame"));
+      }
+      return new Promise((resolve, reject) => {
+        // Subscribe synchronously after inspecting captured frames, so a send cannot
+        // cross an asynchronous gap between the snapshot and its event listener.
+        const cleanup = () => {
+          this.off("sent", onSent);
+          this.off("close", onClose);
+        };
+        const onSent = (payload: string) => {
+          if (matches(payload)) {
+            cleanup();
+            resolve(payload);
+          }
+        };
+        const onClose = () => {
+          cleanup();
+          reject(new Error("Native socket closed before the expected frame"));
+        };
+        this.on("sent", onSent);
+        this.on("close", onClose);
+      });
     }
 
     close(code = 1000, reason = "closed"): void {
@@ -175,6 +207,7 @@ type NativePluginFixture = {
 
 export async function withNativePlugin(
   run: (fixture: NativePluginFixture) => Promise<void>,
+  configure?: (config: OpenClawConfig) => void,
 ): Promise<void> {
   await withOpenClawTestState(
     { layout: "state-only", prefix: "talk-native-control-", env: { OPENAI_API_KEY: undefined } },
@@ -196,6 +229,7 @@ export async function withNativePlugin(
         plugins: { allow: ["openai"], entries: { openai: { enabled: true } } },
       };
       const registry = createEmptyPluginRegistry();
+      configure?.(config);
       // Native factory binding must retain the fixture's synthetic auth, not resolve operator credentials.
       const capabilityCatalogContext = {
         ...resolvePluginCapabilityCatalogContext(),
@@ -232,6 +266,8 @@ export async function withNativePlugin(
             registrationMode: "full",
             config,
             runtime: createPluginRuntimeMock({ config: { current: () => config } }),
+            registerProvider: (provider) =>
+              registry.providers.push({ pluginId: "openai", source: "test", provider }),
             registerRealtimeVoiceProvider: (entry) => {
               const provider = resolveCapabilityProviderRegistration(
                 entry,

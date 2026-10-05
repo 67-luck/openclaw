@@ -1,23 +1,17 @@
-import { setImmediate as nextEventLoopTurn, setTimeout as delay } from "node:timers/promises";
+import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { getActiveNativeAttempt } from "../../../agents/embedded-agent-runner/run-state.js";
-import type { RunEmbeddedAgentParams } from "../../../agents/embedded-agent-runner/run/params.js";
-import {
-  clearTestEmbeddedRun as clearActiveEmbeddedRun,
-  registerTestEmbeddedRun as setActiveEmbeddedRun,
-  createEmbeddedRunHandle,
-} from "../../../agents/embedded-agent-runner/runs.test-support.js";
 import * as workspace from "../../../agents/workspace.js";
 import { readSessionTranscriptMessageEvents } from "../../../config/sessions/session-accessor.js";
-import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
+import { racePromiseWithAbortSignal } from "../../../infra/abort-signal.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import {
   flushClientVoiceSessionWrites,
   isClientVoiceSessionConfirmable,
 } from "../../../talk/client-voice-session.js";
+import { buildMockOpenAiResponsesProvider } from "../../test-openai-responses-model.js";
 import {
   AGENT_ID,
-  CONNECTION_ID,
   SESSION_ID,
   SESSION_KEY,
   connectNativeSession,
@@ -51,163 +45,288 @@ describe("native Talk through the public OpenAI plugin registration", () => {
     ).toBe(true);
   });
 
-  it("waits for session preparation before observing backend registration readiness", async () => {
-    const preparing = createDeferredCore();
-    const releasePreparation = createDeferredCore();
-    const ensureWorkspace = workspace.ensureAgentWorkspace;
-    vi.spyOn(workspace, "ensureAgentWorkspace").mockImplementationOnce(async (...args) => {
-      const result = await ensureWorkspace(...args);
-      preparing.resolve();
-      await releasePreparation.promise;
-      return result;
-    });
-    const assertions = vi.fn<Parameters<typeof withParkedNativeTask>[0]>(
-      async ({ settleBackend }) => {
-        expect(upstream.runEmbeddedAgent).toHaveBeenCalledOnce();
-        await settleBackend();
-      },
-    );
-    const parked = withParkedNativeTask(assertions);
-    const outcome = parked.then(
-      () => ({ error: undefined }),
-      (error: unknown) => ({ error }),
-    );
-    try {
-      await Promise.race([
-        preparing.promise,
-        parked.then(() => {
-          throw new Error("Native task completed before workspace preparation");
-        }),
-      ]);
-      // Hold a real setup boundary past the separate registration deadline.
-      await delay(1100);
-    } finally {
-      releasePreparation.resolve();
-    }
-    expect(await outcome).toEqual({ error: undefined });
-    expect(assertions).toHaveBeenCalledOnce();
-    expect(Boolean(getActiveNativeAttempt(SESSION_ID))).toBe(false);
-  });
-
-  it("negotiates Gateway control and persists native sideband speech without client control", async () => {
-    await withNativePlugin(async ({ create, offer, invoke, broadcast }) => {
-      const { result, socket } = await connectNativeSession({ create, offer });
-      expect(talkEventTypes(broadcast).filter((type) => type === "session.ready")).toHaveLength(1);
-      expect(
-        isClientVoiceSessionConfirmable({
-          agentId: AGENT_ID,
-          sessionKey: SESSION_KEY,
-          voiceSessionId: requireString(result, "voiceSessionId"),
-        }),
-      ).toBe(true);
-      socket.serverEvent({ type: "turn.done", turn: { role: "user", transcript: "Hello voice" } });
-      socket.serverEvent({
-        type: "turn.done",
-        turn: { role: "assistant", transcript: "Hello human" },
-      });
-      await flushClientVoiceSessionWrites({
-        agentId: AGENT_ID,
-        voiceSessionId: requireString(result, "voiceSessionId"),
-      });
-      const messages = readSessionTranscriptMessageEvents({
-        agentId: AGENT_ID,
-        sessionId: SESSION_ID,
-      });
-      expect(messages).toMatchObject([
-        { event: { message: { role: "user", content: [{ type: "text", text: "Hello voice" }] } } },
-        {
-          event: {
-            message: { role: "assistant", content: [{ type: "text", text: "Hello human" }] },
-          },
-        },
-      ]);
-      expect(talkEventTypes(broadcast)).not.toContain("turn.ended");
-      await invoke("talk.client.close", {});
-      expect(socket.readyState).toBe(upstream.NativeSocket.CLOSED);
-    });
-  });
-
   it.each([
-    ["Status?", "transcript-first"],
-    ["Status?", "delegation-first"],
-    ["cancel", "transcript-first"],
-    ["cancel", "delegation-first"],
+    ["Status?", "transcript-first", "complete"],
+    ["Status?", "delegation-first", "complete"],
+    ["cancel", "transcript-first", "rejection"],
+    ["cancel", "delegation-first", "rejection"],
+    ["cancel", "transcript-first", "empty"],
+    ["cancel", "delegation-first", "partial"],
   ] as const)(
-    "handles native %s without a duplicate consult with %s provider events",
-    async (text, eventOrder) => {
-      await withParkedNativeTask(
-        async ({ create, offer, result, socket, activeRun, abortOwned, rpcSourceTesting }) => {
-          const { runId, abortSignal } = activeRun;
-          expect(rpcSourceTesting.get(runId)?.adapter).toMatchObject({
-            agentId: AGENT_ID,
-            sessionKey: SESSION_KEY,
-            sessionId: SESSION_ID,
-            ownerConnId: CONNECTION_ID,
+    "negotiates Gateway control and persists native sideband speech without client control (%s, %s, %s)",
+    async (control, eventOrder, settlement) => {
+      const model = buildMockOpenAiResponsesProvider("https://native-model.example.invalid/v1");
+      const requested = createDeferredCore();
+      const runnerFinished = createDeferredCore<{ error?: unknown }>();
+      const finishModel = createDeferredCore();
+      const nativeFetch = upstream.fetch.getMockImplementation()!;
+      let modelRequests = 0;
+      upstream.fetch.mockImplementation(async (input, init) => {
+        const url =
+          typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+        if (url !== model.config.baseUrl + "/responses") {
+          return await nativeFetch(input, init);
+        }
+        modelRequests++;
+        if (modelRequests === 1 && (settlement === "complete" || settlement === "rejection")) {
+          requested.resolve();
+          await racePromiseWithAbortSignal(finishModel.promise, init?.signal ?? undefined);
+        }
+        const item = {
+          type: "message",
+          id: "voice-message",
+          role: "assistant",
+          status: "completed",
+          content: [
+            { type: "output_text", text: "Real runner consultation completed.", annotations: [] },
+          ],
+        };
+        const events = [
+          {
+            type: "response.output_item.added",
+            item: { ...item, status: "in_progress", content: [] },
+          },
+          { type: "response.output_item.done", item },
+          {
+            type: "response.completed",
+            response: {
+              status: "completed",
+              usage: { input_tokens: 10, output_tokens: 10, total_tokens: 20 },
+            },
+          },
+        ];
+        const encode = (event: unknown) =>
+          new TextEncoder().encode("data: " + JSON.stringify(event) + "\n\n");
+        if (modelRequests === 1 && (settlement === "empty" || settlement === "partial")) {
+          let closed = false;
+          const body = new ReadableStream<Uint8Array>({
+            start(stream) {
+              stream.enqueue(encode(events[0]));
+              if (settlement === "partial") {
+                stream.enqueue(
+                  encode({
+                    type: "response.content_part.added",
+                    item_id: item.id,
+                    output_index: 0,
+                    content_index: 0,
+                    part: { type: "output_text", text: "", annotations: [] },
+                  }),
+                );
+                stream.enqueue(
+                  encode({
+                    type: "response.output_text.delta",
+                    item_id: item.id,
+                    output_index: 0,
+                    content_index: 0,
+                    delta: "Cancelled partial output.",
+                  }),
+                );
+              }
+              requested.resolve();
+              void racePromiseWithAbortSignal(finishModel.promise, init?.signal ?? undefined).then(
+                () => {
+                  if (!closed) {
+                    for (const event of events.slice(1)) {
+                      stream.enqueue(encode(event));
+                    }
+                    stream.close();
+                  }
+                },
+                (error: unknown) => {
+                  if (!closed) {
+                    stream.error(error);
+                  }
+                },
+              );
+            },
+            cancel() {
+              closed = true;
+            },
           });
-          const transcript = { type: "turn.done", turn: { role: "user", transcript: text } };
-          const delegation = nativeDelegation("control-request", text);
-          const idle = await connectNativeSession({ create, offer });
-          expect(idle.result.voiceSessionId).not.toBe(result.voiceSessionId);
-          idle.socket.serverEvent(delegation);
-          idle.socket.serverEvent(transcript);
-          const idleReply =
-            text === "cancel"
-              ? "There is no active OpenClaw run to cancel."
-              : "I'm not working on an active request right now.";
-          await vi.waitFor(() => expect(idle.socket.sent.join("\n")).toContain(idleReply));
-          expect(abortSignal.aborted).toBe(false);
-          expect(abortOwned).not.toHaveBeenCalled();
-          expect(upstream.runEmbeddedAgent).toHaveBeenCalledOnce();
-          const preControlSocketIndex = socket.sent.length;
-          const reply =
-            text === "cancel"
-              ? "Cancelled the active OpenClaw run."
-              : "OpenClaw is working on the current voice request.";
-          const waitForControlReply = () =>
-            vi.waitFor(() => {
-              expect(socket.sent.slice(preControlSocketIndex).join("\n")).toContain(reply);
-              expect(abortSignal.aborted).toBe(text === "cancel");
+          return new Response(body, { headers: { "content-type": "text/event-stream" } });
+        }
+        return new Response(
+          events.map((event) => "data: " + JSON.stringify(event) + "\n\n").join("") +
+            "data: [DONE]\n\n",
+          { headers: { "content-type": "text/event-stream" } },
+        );
+      });
+      const actualRunner = await vi.importActual<
+        typeof import("../../../agents/embedded-agent.js")
+      >("../../../agents/embedded-agent.js");
+      upstream.runEmbeddedAgent.mockImplementation(async (params) => {
+        try {
+          const result = await actualRunner.runEmbeddedAgent(params);
+          runnerFinished.resolve({});
+          return result;
+        } catch (error) {
+          runnerFinished.resolve({ error });
+          throw error;
+        }
+      });
+      const preparing = createDeferredCore();
+      const releasePreparation = createDeferredCore();
+      const ensureWorkspace = workspace.ensureAgentWorkspace;
+      vi.spyOn(workspace, "ensureAgentWorkspace").mockImplementationOnce(async (...args) => {
+        const result = await ensureWorkspace(...args);
+        preparing.resolve();
+        await releasePreparation.promise;
+        return result;
+      });
+      await withNativePlugin(
+        async ({ create, offer, invoke, broadcast }) => {
+          try {
+            const { result, socket } = await connectNativeSession({ create, offer });
+            expect(
+              talkEventTypes(broadcast).filter((type) => type === "session.ready"),
+            ).toHaveLength(1);
+            expect(
+              isClientVoiceSessionConfirmable({
+                agentId: AGENT_ID,
+                sessionKey: SESSION_KEY,
+                voiceSessionId: requireString(result, "voiceSessionId"),
+              }),
+            ).toBe(true);
+            socket.serverEvent({
+              type: "turn.done",
+              turn: { role: "user", transcript: "Hello voice" },
             });
-          if (eventOrder === "transcript-first") {
-            socket.serverEvent(transcript);
-            socket.serverEvent(delegation);
-          } else {
-            socket.serverEvent(delegation);
-            // Native control must finish while final ASR is withheld, not merely after both events.
-            await waitForControlReply();
-            socket.serverEvent(transcript);
-          }
-          await waitForControlReply();
-          await flushClientVoiceSessionWrites({
-            agentId: AGENT_ID,
-            voiceSessionId: requireString(result, "voiceSessionId"),
-          });
-          await nextEventLoopTurn();
-          expect({
-            originalRunAborted: abortSignal.aborted,
-            agentStarts: upstream.runEmbeddedAgent.mock.calls.length,
-          }).toEqual({ originalRunAborted: text === "cancel", agentStarts: 1 });
-          expect(
-            socket.sent
-              .slice(preControlSocketIndex)
-              .filter((frame) => frame.includes("Internal OpenClaw voice control result.")),
-          ).toHaveLength(1);
-          expect(
-            readSessionTranscriptMessageEvents({ agentId: AGENT_ID, sessionId: SESSION_ID }),
-          ).toMatchObject(
-            [text, text].map((transcriptText) => ({
-              event: {
-                message: { role: "user", content: [{ type: "text", text: transcriptText }] },
+            socket.serverEvent({
+              type: "turn.done",
+              turn: { role: "assistant", transcript: "Hello human" },
+            });
+            await flushClientVoiceSessionWrites({
+              agentId: AGENT_ID,
+              voiceSessionId: requireString(result, "voiceSessionId"),
+            });
+            const messages = readSessionTranscriptMessageEvents({
+              agentId: AGENT_ID,
+              sessionId: SESSION_ID,
+            });
+            expect(messages).toMatchObject([
+              {
+                event: {
+                  message: { role: "user", content: [{ type: "text", text: "Hello voice" }] },
+                },
               },
-            })),
-          );
-          if (text === "Status?") {
-            expect(abortOwned).not.toHaveBeenCalled();
-            expect(rpcSourceTesting.has(runId)).toBe(true);
-          } else {
-            expect(abortOwned).toHaveBeenCalledOnce();
+              {
+                event: {
+                  message: { role: "assistant", content: [{ type: "text", text: "Hello human" }] },
+                },
+              },
+            ]);
+            expect(talkEventTypes(broadcast)).not.toContain("turn.ended");
+            socket.serverEvent(
+              nativeDelegation("real-runner-request", "Complete a small voice consultation."),
+            );
+            await Promise.race([
+              preparing.promise,
+              runnerFinished.promise.then(({ error }) => {
+                throw new Error("Native consultation settled before workspace preparation", {
+                  cause: error,
+                });
+              }),
+            ]);
+            expect(modelRequests).toBe(0);
+            expect(upstream.runEmbeddedAgent).not.toHaveBeenCalled();
+            releasePreparation.resolve();
+            await Promise.race([
+              requested.promise,
+              runnerFinished.promise.then(({ error }) => {
+                throw new Error("Native consultation settled before the model request", {
+                  cause: error,
+                });
+              }),
+            ]);
+            const idle = await connectNativeSession({ create, offer });
+            idle.socket.serverEvent(nativeDelegation("other-call-control", control));
+            await idle.socket.waitForSent((frame) =>
+              frame.includes(
+                control === "cancel"
+                  ? "There is no active OpenClaw run to cancel."
+                  : "I'm not working on an active request right now.",
+              ),
+            );
+            const transcript = { type: "turn.done", turn: { role: "user", transcript: control } };
+            if (eventOrder === "transcript-first") {
+              socket.serverEvent(transcript);
+            }
+            socket.serverEvent(nativeDelegation("real-runner-control", control));
+            await socket.waitForSent((frame) =>
+              frame.includes(
+                control === "cancel"
+                  ? "Cancelled the active OpenClaw run."
+                  : "OpenClaw is waiting on the model.",
+              ),
+            );
+            if (eventOrder === "delegation-first") {
+              socket.serverEvent(transcript);
+            }
+            finishModel.resolve();
+            await Promise.allSettled(
+              upstream.runEmbeddedAgent.mock.results
+                .filter((invocation) => invocation.type === "return")
+                .map((invocation) => invocation.value),
+            );
+            await nextEventLoopTurn();
+            const frames = socket.sent.map((frame): unknown => JSON.parse(frame));
+            const completion = expect.objectContaining({
+              type: "delegation.context.append",
+              delegation_item_id: "real-runner-request",
+              content: [expect.objectContaining({ text: "Real runner consultation completed." })],
+            });
+            if (control === "cancel") {
+              expect(frames).not.toContainEqual(completion);
+              expect(frames).not.toContainEqual(
+                expect.objectContaining({
+                  type: "delegation.context.append",
+                  delegation_item_id: "real-runner-request",
+                }),
+              );
+            } else {
+              expect(frames).toContainEqual(completion);
+            }
+            expect(upstream.runEmbeddedAgent).toHaveBeenCalledOnce();
+            expect(modelRequests).toBe(1);
+            if (control === "cancel") {
+              socket.serverEvent(nativeDelegation("late-cancel", "cancel"));
+              await socket.waitForSent((frame) =>
+                frame.includes("There is no active OpenClaw run to cancel."),
+              );
+              expect(upstream.runEmbeddedAgent).toHaveBeenCalledOnce();
+              socket.serverEvent(nativeDelegation("after-cancel", "Start a fresh small task."));
+              await socket.waitForSent(
+                (frame) =>
+                  frame.includes('"delegation_item_id":"after-cancel"') &&
+                  frame.includes("Real runner consultation completed."),
+              );
+              expect(socket.sent.map((frame): unknown => JSON.parse(frame))).toContainEqual(
+                expect.objectContaining({
+                  type: "delegation.context.append",
+                  delegation_item_id: "after-cancel",
+                  content: [
+                    expect.objectContaining({ text: "Real runner consultation completed." }),
+                  ],
+                }),
+              );
+              expect(upstream.runEmbeddedAgent).toHaveBeenCalledTimes(2);
+              expect(modelRequests).toBe(2);
+            }
+            await invoke("talk.client.close", {
+              voiceSessionId: requireString(result, "voiceSessionId"),
+            });
+            expect(socket.readyState).toBe(upstream.NativeSocket.CLOSED);
+          } finally {
+            releasePreparation.resolve();
+            finishModel.resolve();
           }
-          expect(socket.readyState).toBe(upstream.NativeSocket.OPEN);
+        },
+        (config) => {
+          config.agents!.defaults = {
+            model: { primary: model.modelRef },
+            models: { [model.modelRef]: { params: { transport: "sse", openaiWsWarmup: false } } },
+          };
+          config.models = { mode: "replace", providers: { [model.providerId]: model.config } };
         },
       );
     },
@@ -235,126 +354,6 @@ describe("native Talk through the public OpenAI plugin registration", () => {
       expect(socket.readyState).toBe(upstream.NativeSocket.OPEN);
     });
   });
-
-  it.each(["empty", "partial", "rejection"] as const)(
-    "preserves intentional native cancellation after %s backend settlement",
-    async (settlement) => {
-      const releaseBackend = createDeferredCore();
-      let activeRun: RunEmbeddedAgentParams | undefined;
-      let backendAborted = false;
-      const abortOwned = vi.fn(() => {
-        backendAborted = true;
-      });
-      upstream.runEmbeddedAgent
-        .mockImplementationOnce(async (params) => {
-          const handle = {
-            ...createEmbeddedRunHandle({ runId: params.runId, abort: abortOwned }),
-            isAborted: () => backendAborted,
-          };
-          setActiveEmbeddedRun(params.sessionId, handle, params.sessionKey);
-          activeRun = params;
-          try {
-            await releaseBackend.promise;
-            if (settlement === "rejection") {
-              params.abortSignal?.throwIfAborted();
-              throw new Error("Expected the model's actual cancellation signal");
-            }
-            return {
-              payloads: settlement === "partial" ? [{ text: "Canceled partial output." }] : [],
-              meta: { durationMs: 0, aborted: true },
-            };
-          } finally {
-            clearActiveEmbeddedRun(params.sessionId, handle, params.sessionKey);
-          }
-        })
-        .mockImplementationOnce(
-          async (params) =>
-            await withRegisteredNativeEmbeddedRun(params, () => ({
-              payloads: [{ text: "Fresh consult completed." }],
-              meta: { durationMs: 0 },
-            })),
-        );
-      const settleBackend = async () => {
-        releaseBackend.resolve();
-        await Promise.allSettled(
-          upstream.runEmbeddedAgent.mock.results
-            .filter((result) => result.type === "return")
-            .map((result) => result.value),
-        );
-        // Drain the consult/broker Promise continuations before another delegation
-        // could supersede the original signal and hide a canceled-result append.
-        await nextEventLoopTurn();
-      };
-
-      await withNativePlugin(async ({ create, offer, broadcast, rpcSourceTesting }) => {
-        try {
-          const { socket } = await connectNativeSession({ create, offer });
-          const sentFrames = () => socket.sent.map((frame): unknown => JSON.parse(frame));
-          socket.serverEvent(
-            nativeDelegation("canceled-delegation", "Keep working until I cancel."),
-          );
-          await vi.waitFor(() => expect(activeRun).toBeDefined());
-          if (!activeRun) {
-            throw new Error("Native delegation did not reach the model backend");
-          }
-          const { runId, abortSignal } = activeRun;
-          expect(rpcSourceTesting.get(runId)?.adapter).toMatchObject({
-            agentId: AGENT_ID,
-            sessionKey: SESSION_KEY,
-            sessionId: SESSION_ID,
-            ownerConnId: CONNECTION_ID,
-          });
-          expect(abortSignal?.aborted).toBe(false);
-
-          socket.serverEvent({ type: "turn.done", turn: { role: "user", transcript: "cancel" } });
-          socket.serverEvent(nativeDelegation("cancel-request", "cancel"));
-          await vi.waitFor(() => expect(abortOwned).toHaveBeenCalledOnce());
-          await vi.waitFor(() =>
-            expect(sentFrames()).toContainEqual(
-              expect.objectContaining({
-                type: "delegation.context.append",
-                delegation_item_id: "cancel-request",
-                channel: "speakable",
-                content: [
-                  expect.objectContaining({
-                    type: "input_text",
-                    text: expect.stringContaining("Cancelled the active OpenClaw run."),
-                  }),
-                ],
-              }),
-            ),
-          );
-          expect(abortSignal?.aborted).toBe(true);
-          expect(socket.readyState).toBe(upstream.NativeSocket.OPEN);
-
-          await settleBackend();
-          expect(sentFrames()).not.toContainEqual(
-            expect.objectContaining({
-              type: "delegation.context.append",
-              delegation_item_id: "canceled-delegation",
-            }),
-          );
-          socket.serverEvent(nativeDelegation("late-cancel", "cancel"));
-          await nextEventLoopTurn();
-          expect(upstream.runEmbeddedAgent).toHaveBeenCalledOnce();
-          socket.serverEvent(nativeDelegation("after-cancel", "Start a fresh small task."));
-          await vi.waitFor(() =>
-            expect(sentFrames()).toContainEqual({
-              type: "delegation.context.append",
-              delegation_item_id: "after-cancel",
-              channel: "speakable",
-              content: [{ type: "input_text", text: "Fresh consult completed." }],
-            }),
-          );
-          expect(upstream.runEmbeddedAgent).toHaveBeenCalledTimes(2);
-          expect(socket.readyState).toBe(upstream.NativeSocket.OPEN);
-          expect(talkEventTypes(broadcast)).not.toContain("session.error");
-        } finally {
-          await settleBackend();
-        }
-      });
-    },
-  );
 
   it("keeps legacy native data-channel and client transcript ownership unchanged", async () => {
     await withNativePlugin(async ({ create, offer, invoke, broadcast }) => {

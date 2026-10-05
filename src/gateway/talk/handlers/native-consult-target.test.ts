@@ -30,7 +30,10 @@ import {
   claimSessionControllerTask,
   releaseSessionControllerClaim,
 } from "../../../sessions/session-controller.mailbox.js";
-import { updateRpcSourceSessionId } from "../../../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSourceIdentity,
+  updateRpcSourceSessionId,
+} from "../../../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../../../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
@@ -57,7 +60,7 @@ import { handleGatewayRequest } from "../../server-methods.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
-import { claimRpcSourceForTest } from "../../test-helpers.rpc-source.js";
+import { adoptRpcSourceSessionKeyForTest } from "../../test-helpers.rpc-source.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
 import { drainingRelaySessions } from "../relay/state.js";
 import { resolveOwnedActiveTalkRunTarget } from "../run-ownership.js";
@@ -73,6 +76,7 @@ import {
   resolveTalkVoiceSession,
 } from "../voice-selection.js";
 import { talkClientHandlers } from "./client.js";
+import { registerOwnedNativeConsultRun } from "./native-consult-target.test-support.js";
 import { talkSessionHandlers } from "./session.js";
 
 const mocks = vi.hoisted(() => ({
@@ -351,43 +355,6 @@ it("fences an opaque relay record replaced after authorization", async () => {
   );
 });
 
-async function registerOwnedEmbeddedRun(runId: string, sessionId: string) {
-  const target = prepareTalkSessionTarget(config, "main");
-  const registration = registerChatAbortController({
-    runId,
-    sessionId,
-    target: captureSessionTarget({
-      storeScope: target.storePath,
-      sessionKey: "global",
-      agentId: "voice",
-      incarnation: sessionId,
-    }),
-    sessionKey: "global",
-    agentId: "voice",
-    ownerConnId: client.connId,
-    timeoutMs: 60_000,
-    kind: "chat-send",
-  });
-  if (!registration.registered) {
-    throw new Error("Missing owned Talk source");
-  }
-  const releaseClaim = await claimRpcSourceForTest(registration.entry);
-  onTestFinished(() => {
-    releaseClaim();
-    registration.cleanup();
-  });
-  const abort = vi.fn();
-  setActiveEmbeddedRun(
-    sessionId,
-    createEmbeddedRunHandle({ runId, abort }),
-    "global",
-    undefined,
-    "voice",
-    registration.entry.input.claim!.operation!,
-  );
-  return { registration, abort };
-}
-
 it("rechecks RPC sharing authorization after the control runtime import", async () => {
   config.session = { scope: "global" };
   const target = prepareTalkSessionTarget(config, "main");
@@ -397,7 +364,12 @@ it("rechecks RPC sharing authorization after the control runtime import", async 
     updatedAt: 1,
     visibility: "shared",
   });
-  const { registration, abort } = await registerOwnedEmbeddedRun("acl-run", "acl-session");
+  const { registration, abort } = await registerOwnedNativeConsultRun(
+    config,
+    client.connId,
+    "acl-run",
+    "acl-session",
+  );
   const authorization = resolveSessionMutationAuthorization({
     client,
     method: "talk.client.steer",
@@ -452,7 +424,15 @@ it.each([
   const voiceScope = { agentId: target.agentId, sessionKey: target.sessionKey };
   const voiceSessionId = createOrResumeClientVoiceSession({ ...voiceScope, origin: "client" });
   registerClientVoiceConsultRun({ ...voiceScope, voiceSessionId, runId });
-  const { registration, abort } = await registerOwnedEmbeddedRun(runId, "captured-session");
+  const { registration, abort } = await registerOwnedNativeConsultRun(
+    config,
+    client.connId,
+    runId,
+    "captured-session",
+    {
+      executionStarted: change !== "agent" && change !== "key",
+    },
+  );
   const runTarget = resolveOwnedActiveTalkRunTarget({
     clientConnId: client.connId,
     sessionTarget: target,
@@ -471,10 +451,14 @@ it.each([
   } else if (change === "agent") {
     entry.input.claim!.operation!.updateSessionKey("global", "primary", entry.input.claim);
   } else if (change === "key") {
-    entry.input.claim!.operation!.updateSessionKey(
-      "agent:voice:another",
-      "voice",
-      entry.input.claim,
+    const destinationKey = "agent:voice:another";
+    await adoptRpcSourceSessionKeyForTest(
+      entry,
+      captureSessionTarget({
+        storeScope: target.storePath,
+        sessionKey: destinationKey,
+        agentId: "voice",
+      }),
     );
   } else if (change === "connection") {
     Object.assign(entry.adapter.requester!, { connectionId: "another-client" });
@@ -507,7 +491,7 @@ it.each([
   }
   try {
     expect(await control).toMatchObject({ ok: false, active: false, reason: "no_active_run" });
-    expect(abort).toHaveBeenCalledTimes(change === "signal" ? 1 : 0);
+    expect(abort).toHaveBeenCalledTimes(change === "signal" || change === "generation" ? 1 : 0);
   } finally {
     registration.cleanup();
   }
@@ -916,7 +900,8 @@ describe.each(["browser-rpc", "browser-provider", "relay"] as const)(
             throw new Error("consult ended before model dispatch");
           }),
         ]);
-        expect(rpcSourceTesting.get(active.runId)?.adapter).toMatchObject({
+        const source = rpcSourceTesting.get(active.runId);
+        expect(source && getRpcSourceIdentity(source)).toMatchObject({
           agentId: "voice",
           sessionKey: "global",
           sessionId: active.sessionId,
