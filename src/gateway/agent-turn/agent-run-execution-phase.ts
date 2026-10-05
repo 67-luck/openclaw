@@ -160,6 +160,7 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
       }
     };
     let mediaCleanup: Promise<void> | undefined;
+    let publishUndispatchedFinalAfterCleanup: (() => void) | undefined;
     const cleanupAdmittedRun = async () => {
       const refsToDiscard = unpersistedOffloadedRefs;
       unpersistedOffloadedRefs = [];
@@ -240,16 +241,18 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
         }
         await settleUnstartedFollowup(outcome);
         const payload = { runId: params.runId, status: "error" as const, summary: renderedErr };
-        setGatewayDedupeEntries({
-          dedupe: params.context.dedupe,
-          keys: params.agentDedupeKeys,
-          session: captureJobSession(),
-          entry: diagnostics.forReplay({ ts: Date.now(), ok: false, payload, error }),
-        });
-        deferFinal([false, payload, error], {
-          runId: params.runId,
-          ...diagnostics.errorMeta(renderedErr),
-        });
+        publishUndispatchedFinalAfterCleanup = () => {
+          setGatewayDedupeEntries({
+            dedupe: params.context.dedupe,
+            keys: params.agentDedupeKeys,
+            session: captureJobSession(),
+            entry: diagnostics.forReplay({ ts: Date.now(), ok: false, payload, error }),
+          });
+          deferFinal([false, payload, error], {
+            runId: params.runId,
+            ...diagnostics.errorMeta(renderedErr),
+          });
+        };
       };
       const finishUndispatchedAbort = async () => {
         const stopReason = prepared.activeRunAbort.entry?.adapter.abortStopReason?.trim() || "rpc";
@@ -269,17 +272,19 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
           return;
         }
         await settleUnstartedFollowup(outcome);
-        setAbortedAgentDedupeEntries({
-          dedupe: params.context.dedupe,
-          keys: params.agentDedupeKeys,
-          session: captureJobSession(),
-          agentId: params.activeSessionAgentId,
-          runId: params.runId,
-          stopReason,
-        });
-        deferFinal([true, buildAbortedAgentPayload(params.runId, stopReason), undefined], {
-          runId: params.runId,
-        });
+        publishUndispatchedFinalAfterCleanup = () => {
+          setAbortedAgentDedupeEntries({
+            dedupe: params.context.dedupe,
+            keys: params.agentDedupeKeys,
+            session: captureJobSession(),
+            agentId: params.activeSessionAgentId,
+            runId: params.runId,
+            stopReason,
+          });
+          deferFinal([true, buildAbortedAgentPayload(params.runId, stopReason), undefined], {
+            runId: params.runId,
+          });
+        };
       };
       try {
         if (prepared.activeRunAbort.controller.signal.aborted) {
@@ -728,6 +733,7 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
             await mediaCleanup;
           } finally {
             finishUndispatchedFollowup = !dispatched;
+            publishUndispatchedFinalAfterCleanup?.();
           }
         }
       }

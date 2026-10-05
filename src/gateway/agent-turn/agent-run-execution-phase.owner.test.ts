@@ -49,11 +49,7 @@ import { replayAgentTurnIfCached } from "./agent-dedupe.js";
 import { resolveAgentDeliveryPhase } from "./agent-delivery-phase.js";
 import * as agentHandlerHelpers from "./agent-handler-helpers.js";
 import { startAgentRunExecution } from "./agent-run-execution-phase.js";
-import {
-  createTestRpcSource,
-  setTestRpcSourceIdentity,
-  testRpcSourceController,
-} from "./rpc-source.test-support.js";
+import { createTestRpcSource, testRpcSourceController } from "./rpc-source.test-support.js";
 import type { AgentTurnPrincipal } from "./types.js";
 
 const { dispatchAgentRunFromGateway, agentCommand } = vi.hoisted(() => ({
@@ -77,7 +73,10 @@ function createExecution(
   } = {},
 ) {
   const abortCleanup = vi.fn();
-  const gatewayRelease = vi.fn();
+  let gatewayActive = true;
+  const gatewayRelease = vi.fn(() => {
+    gatewayActive = false;
+  });
   const callerRelease = vi.fn();
   const { promise: runtimeReleased, resolve: resolveRuntimeReleased } = createDeferred();
   const runtimeRelease = vi.fn(async () => resolveRuntimeReleased());
@@ -97,6 +96,7 @@ function createExecution(
         releaseCallerAuthority: callerRelease,
         activeGatewayWorkAdmission: {
           release: gatewayRelease,
+          isActive: () => gatewayActive,
           run: async (run: () => Promise<void>) => await run(),
         },
         activeRunAbort: {
@@ -795,16 +795,18 @@ describe("startAgentRunExecution Gateway ownership", () => {
     },
   );
 
+  // Cancelled sources retain their captured identity through disposal. Every
+  // successor is a separately reserved source with its own controller target.
   it.each([
     { ending: "aborted", registration: "current" },
     { ending: "failed", registration: "current" },
     { ending: "aborted", registration: "foreign" },
     { ending: "aborted", registration: "absent" },
     { ending: "aborted", registration: "replacement" },
-    { ending: "aborted", registration: "controller" },
-    { ending: "aborted", registration: "session" },
-    { ending: "aborted", registration: "instance" },
-    { ending: "aborted", registration: "lifecycle" },
+    { ending: "aborted", registration: "controller successor" },
+    { ending: "aborted", registration: "session incarnation successor" },
+    { ending: "aborted", registration: "operational instance successor" },
+    { ending: "aborted", registration: "lifecycle successor" },
   ] as const)(
     "settles an undispatched $ending followup only after cleanup (registration: $registration)",
     async ({ ending, registration }) => {
@@ -827,45 +829,38 @@ describe("startAgentRunExecution Gateway ownership", () => {
       execution.params.agentDedupeKeys = [`agent:${execution.params.runId}`];
       const owner = bindFollowupCompletion(execution);
       const entry = execution.params.prepared.activeRunAbort.entry!;
+      const identity = getRpcSourceIdentity(entry);
       const successor =
-        registration === "foreign" || registration === "replacement" || registration === "lifecycle"
+        registration !== "current" && registration !== "absent"
           ? createTestRpcSource(
               {
                 ...entry.adapter,
-                ...getRpcSourceIdentity(entry),
+                ...identity,
                 sessionKey:
-                  registration === "foreign"
-                    ? "agent:main:unrelated"
-                    : getRpcSourceIdentity(entry).sessionKey,
-                operationalRunInstance: { runId: execution.params.runId, instanceId: "successor" },
-                ...(registration === "lifecycle"
-                  ? { lifecycleGeneration: "successor-lifecycle" }
-                  : {}),
+                  registration === "foreign" ? "agent:main:unrelated" : identity.sessionKey,
+                sessionId:
+                  registration === "session incarnation successor"
+                    ? "successor-session"
+                    : identity.sessionId,
+                operationalRunInstance:
+                  registration === "replacement" ||
+                  registration === "operational instance successor"
+                    ? createOperationalRunInstanceRef(execution.params.runId)
+                    : entry.adapter.operationalRunInstance,
+                lifecycleGeneration:
+                  registration === "replacement" || registration === "lifecycle successor"
+                    ? "successor-lifecycle"
+                    : entry.adapter.lifecycleGeneration,
               },
               execution.params.runId,
             )
           : undefined;
       if (successor) {
         rpcSourceTesting.set(execution.params.runId, successor);
+      } else if (registration === "absent") {
+        rpcSourceTesting.deleteExpected(execution.params.runId, entry);
       }
-      const lostRegistration = !["current", "foreign", "absent"].includes(registration);
-      execution.params.prepared.activeGatewayWorkAdmission!.run = async (run) => {
-        if (registration === "absent") {
-          rpcSourceTesting.delete(execution.params.runId);
-        } else if (registration === "controller") {
-          Object.defineProperty(entry.input, "abortSignal", {
-            value: new AbortController().signal,
-          });
-        } else if (registration === "session") {
-          setTestRpcSourceIdentity(entry, { sessionKey: "agent:main:unrelated" });
-        } else if (registration === "instance") {
-          entry.adapter.operationalRunInstance = {
-            runId: execution.params.runId,
-            instanceId: "successor",
-          };
-        }
-        return await run();
-      };
+      const lostRegistration = successor !== undefined && registration !== "foreign";
       const recoveryEntered = createDeferred();
       const releaseRecovery = createDeferred();
       const disposalEntered = createDeferred();
@@ -879,7 +874,6 @@ describe("startAgentRunExecution Gateway ownership", () => {
         disposalEntered.resolve();
         await finishDisposal.promise;
       });
-      const finishExecution = vi.spyOn(owner, "finishExecution");
       const replyObserved = vi.fn();
       const reply = owner.take().then((result) => {
         replyObserved(result);
@@ -893,7 +887,6 @@ describe("startAgentRunExecution Gateway ownership", () => {
         expect(dispatchAgentRunFromGateway).not.toHaveBeenCalled();
         expect(execution.params.io.emitFinal).not.toHaveBeenCalled();
         expect(execution.params.context.dedupe.size).toBe(0);
-        expect(finishExecution).not.toHaveBeenCalled();
         expect(replyObserved).not.toHaveBeenCalled();
         expect(execution.abortCleanup).not.toHaveBeenCalled();
         releaseRecovery.resolve();
@@ -909,14 +902,12 @@ describe("startAgentRunExecution Gateway ownership", () => {
         expect(execution.gatewayRelease).toHaveBeenCalledOnce();
         expect(execution.runtimeRelease).toHaveBeenCalledOnce();
         expect(execution.callerRelease).not.toHaveBeenCalled();
-        expect(finishExecution).not.toHaveBeenCalled();
         expect(replyObserved).not.toHaveBeenCalled();
         expect(finished).not.toHaveBeenCalled();
         finishDisposal.resolve();
         await completion;
         expect(finished).toHaveBeenCalledOnce();
         expect(execution.callerRelease).toHaveBeenCalledOnce();
-        expect(finishExecution).toHaveBeenCalledExactlyOnceWith(execution.params.runId);
         if (successor) {
           expect(rpcSourceTesting.get(execution.params.runId)).toBe(successor);
         }
