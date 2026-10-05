@@ -11,6 +11,10 @@ import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { parseAgentSessionKey } from "../../../routing/session-key.js";
 import { getCurrentSessionControllerOwner } from "../../../sessions/session-controller.context.js";
+import {
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+  waitForSessionControllerSettlement,
+} from "../../../sessions/session-controller.lifecycle.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.types.js";
@@ -522,12 +526,24 @@ export async function withSubagentKillScope<T>(
     const { entry, session, dispatchHold } = tree;
     const capturedExecution = session && captureSubagentExecution({ entry, session });
     const currentOperation = getCurrentSessionControllerOwner();
+    if (tree.completedCleanupError) {
+      return;
+    }
     if (
       capturedExecution &&
       (!currentOperation || currentOperation !== capturedExecution.execution.input.claim?.operation)
     ) {
       try {
-        await capturedExecution.execution.input.settlement.promise;
+        const settled = await waitForSessionControllerSettlement(
+          capturedExecution.execution.input.settlement.promise,
+          SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+        );
+        if (!settled) {
+          tree.errors.add(
+            "Subagent queued execution cleanup remains pending after its drain deadline.",
+          );
+          return;
+        }
       } catch {
         return;
       }

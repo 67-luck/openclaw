@@ -15,6 +15,7 @@ import {
   bindWorkerTurnOwner,
   getWorkerTurnExecutionIdentityCapability,
 } from "../../../gateway/worker-environments/placement-turn-claim-events.js";
+import { withTimeout } from "../../../infra/fs-safe.js";
 import {
   bindGatewayContextResolver,
   withPluginRuntimeGatewayRequestScope,
@@ -308,6 +309,45 @@ export function createBoundSpawnInvocation(
 
 type BoundParent = Awaited<ReturnType<typeof createSpawnBoundaryParent>>;
 type GatewayRuntime = ReturnType<typeof createGatewayInstanceRuntime>;
+// Two loaded exact-head CI runs reached this cold model boundary in 28–37 seconds.
+const COLD_MODEL_ENTRY_TIMEOUT_MS = 60_000;
+
+/** Creates the shared embedded-entry waiter around the suite's model mock. */
+export function createEmbeddedRunWaiter(
+  runEmbeddedAgent: Mock<typeof import("../../embedded-agent.js").runEmbeddedAgent>,
+) {
+  return async (bound: BoundParent, childRunId: string, started?: Promise<void>, calls = 1) => {
+    try {
+      if (started) {
+        await withTimeout(started, COLD_MODEL_ENTRY_TIMEOUT_MS, {
+          message: "embedded execution entry timed out",
+        });
+        expect(runEmbeddedAgent).toHaveBeenCalledTimes(calls);
+      } else {
+        await vi.waitFor(() => expect(runEmbeddedAgent).toHaveBeenCalledTimes(calls), {
+          timeout: 15_000,
+        });
+      }
+    } catch (cause) {
+      throw new Error(
+        `Embedded execution did not arrive: ${JSON.stringify(readBoundExecutionState(bound, childRunId))}`,
+        { cause },
+      );
+    }
+  };
+}
+
+/** Rethrows proof and cleanup failures without losing either outcome. */
+export function throwBoundFailures(failures: unknown[]): void {
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Spawn proof and fixture cleanup failed", {
+      cause: failures[0],
+    });
+  }
+}
 
 export function registerYieldedRequesterBatchCase(options: {
   createBoundParent: () => Promise<BoundParent>;
@@ -495,6 +535,7 @@ export function registerYieldedRequesterBatchCase(options: {
   );
 }
 
+/** Reads bounded lifecycle facts without exposing model input or workspace paths. */
 export function readBoundExecutionState(
   bound: Awaited<ReturnType<typeof createSpawnBoundaryParent>>,
   childRunId?: string,

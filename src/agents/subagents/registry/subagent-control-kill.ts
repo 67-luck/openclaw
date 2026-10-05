@@ -3,6 +3,10 @@ import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
 import { getCurrentSessionControllerOwner } from "../../../sessions/session-controller.context.js";
+import {
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+  waitForSessionControllerSettlement,
+} from "../../../sessions/session-controller.lifecycle.js";
 import { getRpcSource } from "../../../sessions/session-controller.rpc-sources.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import { mutateSubagentRunForKill } from "./subagent-control-kill-runtime.js";
@@ -68,7 +72,18 @@ async function killSubagentRun(
           (execution.input.abortSignal.aborted || execution.input.retirementRequested)))
     ) {
       try {
-        await settlement;
+        const settled = await waitForSessionControllerSettlement(
+          settlement,
+          SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+        );
+        if (!settled) {
+          settlementFailure = {
+            error: new Error(
+              "Subagent execution cleanup remains pending after its drain deadline.",
+            ),
+            settlement,
+          };
+        }
       } catch (error) {
         settlementFailure = { error, settlement };
       }

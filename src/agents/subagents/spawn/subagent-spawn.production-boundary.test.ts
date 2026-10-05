@@ -3,7 +3,6 @@
 // oxfmt-ignore
 import { cleanupPreparedModelRuntimeHarness, getPreparedModelRuntimeMocks, resetPreparedModelRuntimeHarness } from "../../prepared-model-runtime.test-harness.js";
 import { expectDefined } from "@openclaw/normalization-core";
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
@@ -40,7 +39,6 @@ import { beginSessionEffect } from "../../../sessions/session-controller.lifecyc
 import {
   getRpcSource,
   getRpcSourceIdentity,
-  isRpcSourceExecuting,
 } from "../../../sessions/session-controller.rpc-sources.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { createTestRegistry } from "../../../test-utils/channel-plugins.js";
@@ -85,9 +83,12 @@ import { registerParticipantSpawnCases } from "./subagent-spawn.participants.tes
 import {
   createBoundSpawnInvocation,
   createBoundWorker,
+  createEmbeddedRunWaiter,
   createSpawnBoundaryParent,
   createSpawnOperatorSource,
+  readBoundExecutionState,
   registerYieldedRequesterBatchCase,
+  throwBoundFailures,
 } from "./subagent-spawn.production-boundary.test-support.js";
 import { registerOperatorSpawnRollbackCases } from "./subagent-spawn.rollback.test-support.js";
 import { registerManagedWorktreeSpawnCases } from "./subagent-spawn.worktree.test-support.js";
@@ -115,8 +116,6 @@ vi.mock("../../embedded-agent.js", async () => {
 
 const parentSessionKey = "agent:main:subagent:production-boundary-parent";
 const parentRunId = "production-boundary-parent";
-// Two loaded exact-head CI runs reached this cold model boundary in 28–37 seconds.
-const COLD_MODEL_ENTRY_TIMEOUT_MS = 60_000;
 let state: OpenClawTestState;
 let stateDir = "";
 let runtimeConfig: OpenClawConfig;
@@ -282,76 +281,7 @@ async function createBoundGateway(bound: Awaited<ReturnType<typeof createBoundPa
   return { context, runtime, identities, readAgentRuntimeExecutionLineage };
 }
 
-function readBoundExecutionState(
-  bound: Awaited<ReturnType<typeof createBoundParent>>,
-  childRunId?: string,
-) {
-  const context = bound.context as unknown as GatewayRequestContext;
-  const receipt = childRunId ? context.dedupe.get(`agent:${childRunId}`) : undefined;
-  const payload = asOptionalRecord(receipt?.payload);
-  const cause = asOptionalRecord(asOptionalRecord(receipt?.error)?.cause);
-  const controller = childRunId ? getRpcSource(childRunId) : undefined;
-  const execution = childRunId ? subagentRuns.get(childRunId)?.execution : undefined;
-  const collector = childRunId ? subagentRuns.get(childRunId) : undefined;
-  const label = (value: unknown, allowed: readonly string[]) =>
-    typeof value === "string" && allowed.includes(value) ? value : "unknown";
-  // Read bounded lifecycle facts before finally settles the synthetic model run.
-  return {
-    executionPending: bound.execution.hasPendingWork,
-    receiptPresent: receipt !== undefined,
-    receiptOk: receipt?.ok,
-    receiptStatus: label(payload?.status, ["accepted", "in_flight", "ok", "error", "timeout"]),
-    receiptErrorCode: label(receipt?.error?.code, ["UNAVAILABLE", "INVALID_REQUEST", "FORBIDDEN"]),
-    causeName: label(cause?.name, [
-      "Error",
-      "TypeError",
-      "AbortError",
-      "TimeoutError",
-      "SqliteWorkerError",
-      "FailoverError",
-    ]),
-    controllerPresent: controller !== undefined,
-    controllerAborted: controller?.input.abortSignal.aborted,
-    executionStarted: isRpcSourceExecuting(controller),
-    executionStatus: label(execution?.status, ["queued", "running", "interrupted", "terminal"]),
-    runStatus: label(
-      childRunId ? resolveSubagentSessionStatus(subagentRuns.get(childRunId)) : undefined,
-      ["queued", "running", "done", "failed", "killed", "timeout"],
-    ),
-    queuedLaunchPresent: collector?.queuedLaunch !== undefined,
-    collectorCleanupPending: collector?.collectorLaunchCleanupPending === true,
-    collectorKillPending: collector?.killIntent !== undefined,
-    outcomeStatus: label(execution?.outcome?.status, ["ok", "error", "timeout"]),
-    gatewayWarningCount: vi.mocked(context.logGateway.warn).mock.calls.length,
-    runtimeWarningCount: getPreparedModelRuntimeMocks().warn.mock.calls.length,
-  };
-}
-
-async function waitForEmbeddedRun(
-  bound: Awaited<ReturnType<typeof createBoundParent>>,
-  childRunId: string,
-  started?: Promise<void>,
-  calls = 1,
-) {
-  try {
-    if (started) {
-      await withTimeout(started, COLD_MODEL_ENTRY_TIMEOUT_MS, {
-        message: "embedded execution entry timed out",
-      });
-      expect(runEmbeddedAgent).toHaveBeenCalledTimes(calls);
-    } else {
-      await vi.waitFor(() => expect(runEmbeddedAgent).toHaveBeenCalledTimes(calls), {
-        timeout: 15_000,
-      });
-    }
-  } catch (cause) {
-    // Only report owner facts; terminal messages can contain workspace paths or private input.
-    throw new Error(
-      `Embedded execution did not arrive: ${JSON.stringify(readBoundExecutionState(bound, childRunId))}`,
-      { cause },
-    );
-  }
-}
+const waitForEmbeddedRun = createEmbeddedRunWaiter(runEmbeddedAgent);
 
 async function closeBoundGateway(
   bound: Awaited<ReturnType<typeof createBoundParent>>,
@@ -394,17 +324,6 @@ async function closeBoundGateway(
     }
   }
   return failures;
-}
-
-function throwBoundFailures(failures: unknown[]) {
-  if (failures.length === 1) {
-    throw failures[0];
-  }
-  if (failures.length > 1) {
-    throw new AggregateError(failures, "Spawn proof and fixture cleanup failed", {
-      cause: failures[0],
-    });
-  }
 }
 
 async function createGuestParent(audit = true) {
@@ -495,7 +414,6 @@ describe("recursive spawn production boundary", () => {
     parentRunId,
     assertNoModelExecution: () => expect(runEmbeddedAgent).not.toHaveBeenCalled(),
   });
-
   it("admits a descendant using the active parent turn model", async () => {
     const customProvider = expectDefined(
       runtimeConfig.models?.providers?.custom,
@@ -544,7 +462,7 @@ describe("recursive spawn production boundary", () => {
         modelOverrideSource: "user",
       },
     );
-    const { context, runtime, identities } = await createBoundGateway(bound);
+    const { runtime, identities } = await createBoundGateway(bound);
     const modelRun = createDeferred<EmbeddedAgentRunResult>();
     const modelRunStarted = createDeferred();
     runEmbeddedAgent.mockImplementationOnce(() => {
@@ -827,11 +745,11 @@ describe("recursive spawn production boundary", () => {
             runId: childRunId,
             sessionKey: details.childSessionKey,
           });
-          const source = expectDefined(getRpcSource(childRunId), "started child source");
-          expect(getRpcSourceIdentity(source)).toMatchObject({
+          const childSource = expectDefined(getRpcSource(childRunId), "started child source");
+          expect(getRpcSourceIdentity(childSource)).toMatchObject({
             sessionKey: details.childSessionKey,
           });
-          expect(source.adapter).toMatchObject({
+          expect(childSource.adapter).toMatchObject({
             operationalRunInstance: { runId: childRunId },
           });
           expect(subagentRuns.get(childRunId)).toMatchObject({
