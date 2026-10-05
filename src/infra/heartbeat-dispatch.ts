@@ -215,6 +215,8 @@ async function prepareHeartbeatDispatchReply(
       await suppressPendingFinalDelivery(reply, { preserveActivity: true });
     }
   }
+  // A delivered failure notice does not complete the work whose model turn failed.
+  const completedExecTurn = prepared.hasExecCompletion && outcome.kind !== "failure";
   const finish = (event: Parameters<typeof emitHeartbeatEvent>[0], consume = true) => {
     emitHeartbeatEvent({
       ...event,
@@ -223,7 +225,7 @@ async function prepareHeartbeatDispatchReply(
       accountId: delivery.accountId,
     });
     const queueKey = resolveSystemEventQueueKey(sessionKey, agentId);
-    if (prepared.hasExecCompletion && preflight.shouldInspectPendingEvents && !consume) {
+    if (completedExecTurn && preflight.shouldInspectPendingEvents && !consume) {
       const execEvents = prepared.inspectedSystemEventsToConsume.filter(
         isExecCompletionSystemEvent,
       );
@@ -257,7 +259,7 @@ async function prepareHeartbeatDispatchReply(
       }
     }
     if (
-      prepared.hasExecCompletion &&
+      completedExecTurn &&
       (consume ||
         policy.execEffectSettled ||
         (policy.deliveryError && !policy.retryUnqueuedDelivery)) &&
@@ -494,7 +496,7 @@ async function prepareHeartbeatDispatchReply(
     }),
     settle: async (result) => {
       const sent = result === "delivered";
-      if (sent) {
+      if (sent && !failed) {
         policy.execEffectSettled = true;
       }
       if (!sent) {
@@ -535,7 +537,7 @@ async function prepareHeartbeatDispatchReply(
             },
         sent && !failed,
       );
-      if (policy.retryUnqueuedDelivery) {
+      if (!failed && policy.retryUnqueuedDelivery) {
         policy.result = {
           status: "skipped",
           reason: HEARTBEAT_SKIP_CHANNEL_NOT_READY,
