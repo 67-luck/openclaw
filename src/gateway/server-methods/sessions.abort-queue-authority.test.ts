@@ -62,6 +62,7 @@ async function setup() {
   );
   const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
   const active = createActiveRun(key, {
+    runId: "active",
     agentId: "main",
     sessionId,
     owner: { connId: client.connId },
@@ -79,6 +80,7 @@ async function setup() {
     { once: true },
   );
   const queued = createActiveRun(key, {
+    runId: "queued",
     queued: true,
     agentId: "main",
     sessionId,
@@ -133,6 +135,7 @@ function followup(prompt: string, targetSessionId = sessionId) {
 it("UI-style narrow Stop clears owned lane entries through their signals and preserves foreign work", async () => {
   const fixture = await setup();
   const foreign = createActiveRun(key, {
+    runId: "foreign",
     queued: true,
     agentId: "main",
     sessionId: "previous-incarnation",

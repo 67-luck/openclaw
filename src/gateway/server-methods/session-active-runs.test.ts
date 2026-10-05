@@ -43,7 +43,6 @@ import { createRpcSourceForTest, claimRpcSourceForTest } from "../test-helpers.r
 import {
   createVisibleActiveSessionRunProjector,
   hasRegisteredChatRunForSessionKey,
-  hasTrackedActiveSessionRun,
   resolveVisibleActiveSessionRunState,
 } from "./session-active-runs.js";
 
@@ -57,16 +56,20 @@ async function activeSources(
   entries: Array<
     [
       string,
-      Partial<RpcSourceAdapter> & Partial<RpcSourceIdentity> & { projectSessionActive?: boolean },
+      Partial<RpcSourceAdapter> &
+        Partial<RpcSourceIdentity> & {
+          projectSessionActive?: boolean;
+          storeScope?: string;
+        },
     ]
   >,
 ) {
   const refs = await Promise.all(
     entries.map(async ([runId, metadata]) => {
-      const { sessionKey, sessionId, agentId, ...adapter } = metadata;
+      const { sessionKey, sessionId, agentId, storeScope, ...adapter } = metadata;
       const ref = createRpcSourceForTest(adapter, {
         runId,
-        storeScope: `/synthetic/active-projection/${agentId ?? "main"}/sessions`,
+        storeScope: storeScope ?? `/synthetic/active-projection/${agentId ?? "main"}/sessions`,
         sessionKey,
         sessionId: sessionId ?? `fixture-${runId}`,
         agentId,
@@ -293,40 +296,29 @@ it("matches session-id-only gateway runs during archive admission", async () => 
   ).toBe(true);
 });
 
-it("finds a visible active run for a fully qualified session key", async () => {
-  const sessionKey = "agent:main:main";
+it("returns deterministic protocol IDs for matching exact sources", async () => {
   rpcSourceTesting.reset(
     await activeSources([
       [
-        "replacement-run",
+        "run-z",
         {
-          sessionKey,
-          controlUiVisible: true,
-          projectSessionActive: true,
+          sessionKey: "main",
+          sessionId: "selected",
+          storeScope: "/synthetic/active-projection/z/sessions",
         },
       ],
-    ]),
-  );
-
-  expect(
-    hasTrackedActiveSessionRun({
-      requestedKey: sessionKey,
-      canonicalKey: sessionKey,
-    }),
-  ).toBe(true);
-});
-
-it("returns deterministic protocol aliases for the selected turn", async () => {
-  const source = createRpcSourceForTest({}, { sessionKey: "main", sessionId: "selected" });
-  releaseFixtureSources.push(await claimRpcSourceForTest(source));
-  rpcSourceTesting.reset([
-    ["run-z", source],
-    ["run-a", source],
-    ...(await activeSources([
+      [
+        "run-a",
+        {
+          sessionKey: "main",
+          sessionId: "selected",
+          storeScope: "/synthetic/active-projection/a/sessions",
+        },
+      ],
       ["run-hidden", { sessionKey: "hidden", controlUiVisible: false }],
       ["run-other", { sessionKey: "other" }],
-    ])),
-  ]);
+    ]),
+  );
 
   expect(
     resolveVisibleActiveSessionRunState({

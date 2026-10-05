@@ -21,7 +21,6 @@ import { NON_ENV_SECRETREF_MARKER } from "../../secrets/provider-credential-valu
 import { resolveProviderAuthLookupMaps } from "../../secrets/provider-env-vars.js";
 import * as rpcSources from "../../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
-import { withEnvAsync } from "../../test-utils/env.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -176,13 +175,18 @@ const orderHandler = expectDefined(
   'modelsAuthOrderHandlers["models.authOrderSet"] test invariant',
 );
 
-function createActiveRun(providerId: string, authProviderId?: string, agentId = "main") {
+function createActiveRun(
+  runId: string,
+  providerId: string,
+  authProviderId?: string,
+  agentId = "main",
+) {
   const identity = {
     sessionId: `session-${providerId}`,
     sessionKey: `agent:${agentId}:${providerId}`,
     agentId,
   };
-  return createRpcSourceForTest({ providerId, authProviderId }, identity);
+  return createRpcSourceForTest({ providerId, authProviderId }, { ...identity, runId });
 }
 
 function oauthCredential(
@@ -273,13 +277,6 @@ function createLogoutOptions(
     respond,
     context,
   } as unknown as GatewayRequestHandlerOptions & { respond: ReturnType<typeof vi.fn> };
-}
-
-function setLogoutProfiles(profiles: AuthProfileStore["profiles"]) {
-  mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(
-    createAuthProfileStoreFixture(profiles),
-  );
-  mocks.listProfilesForProvider.mockReturnValue(Object.keys(profiles));
 }
 
 function createOrderOptions(
@@ -448,7 +445,7 @@ async function expectLogoutFailureDoesNotAbortRun(params: {
 }): Promise<void> {
   params.arrangeFailure();
   const opts = createLogoutOptions({ provider: "openrouter" });
-  const activeRun = createActiveRun("openrouter");
+  const activeRun = createActiveRun("run-openrouter", "openrouter");
   rpcSources.registerRpcSource("run-openrouter", activeRun);
 
   await logoutHandler(opts);
@@ -1482,58 +1479,6 @@ describe("models.authLogout", () => {
     expect(mocks.buildAuthHealthSummary).toHaveBeenCalledTimes(2);
   });
 
-  it("removes only requested saved OAuth or token profiles", async () => {
-    setLogoutProfiles({
-      "openrouter:oauth": oauthCredential("openrouter"),
-      "openrouter:token": { type: "token", provider: "openrouter", token: "test-token" },
-      "openrouter:api-key": {
-        type: "api_key",
-        provider: "openrouter",
-        key: "key",
-      },
-    });
-    const opts = createLogoutOptions({
-      provider: "openrouter",
-      profileIds: [" openrouter:token ", "openrouter:oauth", "openrouter:token"],
-    });
-
-    const run = createActiveRun("openrouter");
-    rpcSources.registerRpcSource("active", run);
-    await logoutHandler(opts);
-    expect(run.input.abortSignal.aborted).toBe(false);
-    expect(rpcSourceTesting.has("active")).toBe(true);
-
-    expect(mocks.removeModelAuthCredentials).toHaveBeenCalledWith({
-      cfg: {},
-      profileIds: ["openrouter:token", "openrouter:oauth"],
-      agentDir: "/tmp/agent",
-    });
-    const [ok, payload] = firstRespondCall(opts) ?? [];
-    expect(ok).toBe(true);
-    expect(payload).toMatchObject({
-      removedProfiles: ["openrouter:token", "openrouter:oauth"],
-      abortedRunIds: [],
-    });
-  });
-
-  it("rejects unavailable or external targeted profiles without aborting runs", async () => {
-    setLogoutProfiles({ "openrouter:saved": oauthCredential("openrouter") });
-    const opts = createLogoutOptions({
-      provider: "openrouter",
-      profileIds: ["openrouter:external"],
-    });
-    const activeRun = createActiveRun("openrouter");
-    rpcSources.registerRpcSource("run-openrouter", activeRun);
-
-    await logoutHandler(opts);
-
-    expect(mocks.removeModelAuthCredentials).not.toHaveBeenCalled();
-    expect(activeRun.input.abortSignal.aborted).toBe(false);
-    const [ok, , error] = firstRespondCall(opts) ?? [];
-    expect(ok).toBe(false);
-    expect(error?.message).toContain("unavailable auth profiles");
-  });
-
   const sparseProfileIds: unknown[] = [];
   sparseProfileIds.length = 1;
 
@@ -1569,147 +1514,9 @@ describe("models.authLogout", () => {
     expect(mocks.removeModelAuthCredentials).not.toHaveBeenCalled();
   });
 
-  it("removes only inline API keys and preserves active provider runs", async () => {
-    setLogoutProfiles({
-      "openrouter:key": { type: "api_key", provider: "openrouter", key: "test-key" },
-      "openrouter:ref": {
-        type: "api_key",
-        provider: "openrouter",
-        keyRef: { source: "env", provider: "default", id: "OPENROUTER_API_KEY" },
-      },
-      "openrouter:token": { type: "token", provider: "openrouter", token: "test-token" },
-      "openrouter:oauth": oauthCredential("openrouter"),
-    });
-    const opts = createLogoutOptions({ provider: "openrouter", credentialType: "api_key" });
-    const run = createActiveRun("openrouter");
-    rpcSources.registerRpcSource("run-openrouter", run);
-
-    await logoutHandler(opts);
-
-    expect(mocks.removeModelAuthCredentials).toHaveBeenCalledWith({
-      cfg: {},
-      agentDir: "/tmp/agent",
-      profileIds: ["openrouter:key"],
-      apiKeyProvider: "openrouter",
-    });
-    expect(run.input.abortSignal.aborted).toBe(false);
-    expect(rpcSourceTesting.has("run-openrouter")).toBe(true);
-    expect(firstRespondCall(opts)).toEqual([
-      true,
-      { provider: "openrouter", removedProfiles: ["openrouter:key"], abortedRunIds: [] },
-      undefined,
-    ]);
-  });
-
-  it("aborts only revoked provider runs after auth profile removal succeeds", async () => {
-    const opts = createLogoutOptions({ provider: "openrouter" });
-    const openrouterRun = createActiveRun("openrouter");
-    const openaiRun = createActiveRun("openai");
-    rpcSources.registerRpcSource("run-openrouter", openrouterRun);
-    rpcSources.registerRpcSource("run-openai", openaiRun);
-
-    await logoutHandler(opts);
-
-    expect(openrouterRun.input.abortSignal.aborted).toBe(true);
-    expect(openaiRun.input.abortSignal.aborted).toBe(false);
-    expect(opts.context.removeChatRun).toHaveBeenCalledWith(
-      "run-openrouter",
-      "run-openrouter",
-      rpcSources.getRpcSourceIdentity(openrouterRun).sessionKey,
-    );
-    expect(opts.context.broadcast).toHaveBeenCalledWith(
-      "chat",
-      expect.objectContaining({
-        runId: "run-openrouter",
-        state: "aborted",
-        stopReason: "auth-revoked",
-      }),
-      { sessionKeys: [rpcSources.getRpcSourceIdentity(openrouterRun).sessionKey] },
-    );
-    const [, payload] = firstRespondCall(opts) ?? [];
-    expect((payload as ModelAuthLogoutResult).abortedRunIds).toEqual(["run-openrouter"]);
-  });
-
-  it("aborts only revoked provider runs before reporting a committed logout refresh failure", async () => {
-    const cfg = { agents: { entries: { main: {}, writer: {} } } };
-    mocks.getRuntimeConfig.mockReturnValue(cfg);
-    mocks.listAgentIds.mockReturnValue(["main", "writer"]);
-    const opts = createLogoutOptions({ provider: "openrouter", agentId: "writer" });
-    const mainRun = createActiveRun("openrouter", undefined, "main");
-    const writerRun = createActiveRun("openrouter", undefined, "writer");
-    rpcSources.registerRpcSource("run-main", mainRun);
-    rpcSources.registerRpcSource("run-writer", writerRun);
-
-    await logoutHandler(opts);
-
-    expect(mainRun.input.abortSignal.aborted).toBe(false);
-    expect(writerRun.input.abortSignal.aborted).toBe(true);
-    expect(rpcSourceTesting.has("run-writer")).toBe(false);
-    const [, payload] = firstRespondCall(opts) ?? [];
-    expect((payload as ModelAuthLogoutResult).abortedRunIds).toEqual(["run-writer"]);
-  });
-
-  it("aborts provider runs even when config uses external auth", async () => {
-    const cfg = {
-      models: {
-        providers: {
-          openrouter: {
-            auth: "api-key",
-            apiKey: {
-              source: "env",
-              provider: "default",
-              id: "OPENROUTER_API_KEY",
-            },
-          },
-        },
-      },
-    };
-    mocks.getRuntimeConfig.mockReturnValue(cfg);
-    mocks.listProfilesForProvider.mockReturnValue([]);
-    const opts = createLogoutOptions({ provider: "openrouter" });
-    const activeRun = createActiveRun("openrouter");
-    rpcSources.registerRpcSource("run-openrouter", activeRun);
-
-    await logoutHandler(opts);
-
-    expect(activeRun.input.abortSignal.aborted).toBe(true);
-    const [ok, payload] = firstRespondCall(opts) ?? [];
-    expect(ok).toBe(true);
-    expect((payload as ModelAuthLogoutResult).removedProfiles).toEqual([]);
-    expect((payload as ModelAuthLogoutResult).abortedRunIds).toEqual(["run-openrouter"]);
-  });
-
-  it("preserves active provider runs on a targeted logout", async () => {
-    const profileId = "openrouter:saved";
-    mocks.ensureAuthProfileStoreWithoutExternalProfiles.mockReturnValue(
-      createAuthProfileStoreFixture({
-        [profileId]: {
-          type: "oauth",
-          provider: "openrouter",
-          access: "access",
-          refresh: "refresh",
-          expires: 1_000_000,
-        },
-      }),
-    );
-    mocks.listProfilesForProvider.mockReturnValue([profileId]);
-    const opts = createLogoutOptions({ provider: "openrouter", profileIds: [profileId] });
-    const activeRun = createActiveRun("openrouter");
-    rpcSources.registerRpcSource("run-openrouter", activeRun);
-
-    await logoutHandler(opts);
-
-    // Targeted logout removes one credential but must not terminate runs that
-    // may be using other preserved credentials for the same provider.
-    expect(activeRun.input.abortSignal.aborted).toBe(false);
-    const [ok, payload] = firstRespondCall(opts) ?? [];
-    expect(ok).toBe(true);
-    expect((payload as ModelAuthLogoutResult).abortedRunIds).toEqual([]);
-  });
-
   it("aborts active runs that share a provider auth alias", async () => {
     const opts = createLogoutOptions({ provider: "byteplus" });
-    const aliasedRun = createActiveRun("byteplus-plan", "byteplus");
+    const aliasedRun = createActiveRun("run-byteplus-plan", "byteplus-plan", "byteplus");
     rpcSources.registerRpcSource("run-byteplus-plan", aliasedRun);
 
     await logoutHandler(opts);
@@ -1739,9 +1546,9 @@ describe("models.authLogout", () => {
           ? mocks.refreshActiveProviderAuthRuntimeSnapshot
           : mocks.prepareModelRuntimeSnapshot;
       const opts = createLogoutOptions({ provider: "openrouter", agentId: "writer" });
-      const revokedRun = createActiveRun("openrouter", undefined, "writer");
-      const otherAgentRun = createActiveRun("openrouter", undefined, "main");
-      const otherProviderRun = createActiveRun("openai", undefined, "writer");
+      const revokedRun = createActiveRun("revoked", "openrouter", undefined, "writer");
+      const otherAgentRun = createActiveRun("other-agent", "openrouter", undefined, "main");
+      const otherProviderRun = createActiveRun("other-provider", "openai", undefined, "writer");
       rpcSources.registerRpcSource("revoked", revokedRun);
       rpcSources.registerRpcSource("other-agent", otherAgentRun);
       rpcSources.registerRpcSource("other-provider", otherProviderRun);

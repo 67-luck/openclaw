@@ -2,13 +2,17 @@ import { randomUUID } from "node:crypto";
 import { onTestFinished } from "vitest";
 import { createQueueTestRun } from "../auto-reply/reply/queue.test-helpers.js";
 import { enqueueFollowupRun } from "../auto-reply/reply/queue/enqueue.js";
-import { captureSessionTarget } from "../sessions/session-controller.lifecycle.js";
+import {
+  captureSessionTarget,
+  type SessionTarget,
+} from "../sessions/session-controller.lifecycle.js";
 import {
   reserveSessionControllerSource,
   bindSessionControllerSource,
   retireSessionControllerInput,
   claimSessionControllerTask,
   releaseSessionControllerClaim,
+  submitSessionControllerTask,
 } from "../sessions/session-controller.mailbox.js";
 import { createReplyOperation } from "../sessions/session-controller.operation.js";
 import {
@@ -82,7 +86,10 @@ export function createRpcSourceForTest(
 }
 
 /** Claim through the controller selector before exercising an active projection. */
-export async function claimRpcSourceForTest(ref: RpcSourceRef): Promise<() => void> {
+export async function claimRpcSourceForTest(
+  ref: RpcSourceRef,
+  options: { executionStarted?: boolean } = {},
+): Promise<() => void> {
   const claim = await claimSessionControllerTask(ref.input, (selectedClaim) => {
     const identity = getRpcSourceIdentity(ref);
     const operation = createReplyOperation({
@@ -93,7 +100,9 @@ export async function claimRpcSourceForTest(ref: RpcSourceRef): Promise<() => vo
       mailboxClaim: selectedClaim,
       target: ref.input.mailbox.owner.target,
     });
-    markReplyOperationExecutionStarted(operation);
+    if (options.executionStarted !== false) {
+      markReplyOperationExecutionStarted(operation);
+    }
     const projectSessionActive = (ref as RpcSourceRef & { projectSessionActive?: boolean })
       .projectSessionActive;
     if (projectSessionActive !== undefined) {
@@ -112,4 +121,14 @@ export async function claimRpcSourceForTest(ref: RpcSourceRef): Promise<() => vo
     await claim.settlement.promise;
   });
   return release;
+}
+
+/** Admit a queued source at its destination before exercising exact-identity adoption. */
+export async function adoptRpcSourceSessionKeyForTest(ref: RpcSourceRef, target: SessionTarget) {
+  const destination = await submitSessionControllerTask(target.sessionKey, {
+    target,
+    start: (claim) =>
+      ref.input.claim!.operation!.updateSessionKey(target.sessionKey, target.agentId, claim),
+  });
+  onTestFinished(() => releaseSessionControllerClaim(destination));
 }

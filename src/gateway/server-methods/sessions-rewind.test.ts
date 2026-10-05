@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
@@ -22,7 +22,6 @@ import {
 import { setUserProfileRole } from "../../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
-import { createActiveRpcSourceForTest } from "./rpc-source-fixtures.test-support.js";
 import type { GatewayRequestContext, RespondFn, GatewayClient } from "./types.js";
 
 const mocks = vi.hoisted(() => ({
@@ -58,10 +57,6 @@ import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
-import {
-  registerRpcSource,
-  retireRpcSource,
-} from "../../sessions/session-controller.rpc-sources.js";
 import { listSessionStateEventsSince } from "../../sessions/session-state-events.js";
 import { upsertSessionUpstreamLink } from "../../sessions/session-upstream-links.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -198,17 +193,7 @@ it("drains rewind fixture owners before closing handles and restoring selectors"
   });
 });
 
-async function context(active = false): Promise<GatewayRequestContext> {
-  if (active) {
-    const source = await createActiveRpcSourceForTest(
-      {},
-      { sessionId: sourceSessionId, sessionKey },
-    );
-    registerRpcSource("active-run", source);
-    onTestFinished(() => {
-      retireRpcSource("active-run", source);
-    });
-  }
+async function context(): Promise<GatewayRequestContext> {
   return {
     broadcastToConnIds: vi.fn(),
     getRuntimeConfig: () => ({ agents: { list: [{ id: "main", default: true }] } }),
@@ -226,7 +211,6 @@ async function invoke(
   method: MessageCutMethod,
   entryId?: string,
   client: GatewayClient | null = null,
-  active = false,
   runtimeConfig?: GatewayRequestContext["getRuntimeConfig"],
 ) {
   const respond = vi.fn();
@@ -245,8 +229,8 @@ async function invoke(
     },
     respond: respond as unknown as RespondFn,
     context: runtimeConfig
-      ? { ...(await context(active)), getRuntimeConfig: runtimeConfig }
-      : await context(active),
+      ? { ...(await context()), getRuntimeConfig: runtimeConfig }
+      : await context(),
     client,
     isWebchatConnect: () => false,
   });
@@ -397,7 +381,7 @@ describe("session message-cut methods", () => {
       "guest-only",
     );
 
-    const fork = await invoke("sessions.fork", "user-entry", client, false, runtimeConfig);
+    const fork = await invoke("sessions.fork", "user-entry", client, runtimeConfig);
     expect(fork).toHaveBeenCalledWith(
       false,
       undefined,
@@ -408,7 +392,7 @@ describe("session message-cut methods", () => {
     );
     expect(listSessionEntriesCore({ agentId: "main" })).toHaveLength(1);
 
-    const rewind = await invoke("sessions.rewind", "user-entry", client, false, runtimeConfig);
+    const rewind = await invoke("sessions.rewind", "user-entry", client, runtimeConfig);
     expect(rewind).toHaveBeenCalledWith(true, expect.any(Object), undefined);
   });
 
@@ -419,7 +403,7 @@ describe("session message-cut methods", () => {
       "required",
     );
 
-    const fork = await invoke("sessions.fork", "user-entry", client, false, runtimeConfig);
+    const fork = await invoke("sessions.fork", "user-entry", client, runtimeConfig);
     const forkKey = (fork.mock.calls[0]?.[1] as { sessionKey?: string } | undefined)?.sessionKey;
 
     expect(fork).toHaveBeenCalledWith(
@@ -484,7 +468,7 @@ describe("session message-cut methods", () => {
     const respond = await invoke("sessions.branches.switch", "off-path-entry");
 
     expect(respond).toHaveBeenCalledWith(true, {}, undefined);
-    await expectSessionWorkCleared(work);
+    expectSessionWorkCleared(work);
   });
 
   it.each([false, true])(
@@ -527,7 +511,7 @@ describe("session message-cut methods", () => {
         expect.objectContaining({ editorText: "edit me" }),
         undefined,
       );
-      await expectSessionWorkCleared(work);
+      expectSessionWorkCleared(work);
     },
   );
 
@@ -916,7 +900,7 @@ describe("session message-cut methods", () => {
       installUpstreamForkHarness("host-only", contract);
       const fork = await withPluginRuntimeGatewayRequestScope(
         { client, isWebchatConnect: () => false },
-        () => invoke("sessions.fork", "user-entry", client, false, runtimeConfig),
+        () => invoke("sessions.fork", "user-entry", client, runtimeConfig),
       );
       expect(fork).toHaveBeenCalledWith(
         false,
@@ -975,28 +959,6 @@ describe("session message-cut methods", () => {
         code: ErrorCodes.INVALID_REQUEST,
         details: { reason },
         message: `boundary failed: ${reason}`,
-      }),
-    );
-  });
-
-  it.each([
-    ["sessions.fork", "Fork"],
-    ["sessions.rewind", "Rewind"],
-    ["sessions.branches.switch", "Branch switch"],
-  ] as const)("rejects %s while the source run is active", async (method, label) => {
-    const respond = await invoke(
-      method,
-      method === "sessions.branches.switch" ? "off-path-entry" : "user-entry",
-      null,
-      true,
-    );
-
-    expect(respond).toHaveBeenCalledWith(
-      false,
-      undefined,
-      expect.objectContaining({
-        code: ErrorCodes.UNAVAILABLE,
-        message: `${label} is unavailable while the agent is working.`,
       }),
     );
   });

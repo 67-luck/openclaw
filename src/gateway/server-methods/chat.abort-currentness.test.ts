@@ -53,26 +53,6 @@ function createDeferredWorkerCancellation() {
   return { cancelled, workerPersistence, service };
 }
 
-function setPendingRegistrations(
-  context: ReturnType<typeof createChatAbortContext>,
-  ts = 1,
-  attemptId?: string,
-) {
-  for (const prefix of ["agent", "pending-chat"]) {
-    context.dedupe.set(`${prefix}:pending`, {
-      ts,
-      ok: true,
-      payload: {
-        runId: "pending",
-        status: "accepted",
-        sessionKey: "main",
-        agentId: "main",
-        ...(attemptId ? { reservationId: attemptId, attemptId } : {}),
-      },
-    });
-  }
-}
-
 describe("chat.abort original authority and registration", () => {
   it("preserves exact-run descendant and partial persistence failures after parent Stop", async () => {
     const descendantFailure = new Error("descendant cancellation failed");
@@ -267,7 +247,6 @@ describe("chat.abort original authority and registration", () => {
       "abort",
       () => {
         rpcSourceTesting.set("reused", replacement);
-
       },
       { once: true },
     );
@@ -359,10 +338,15 @@ describe("chat.abort original authority and registration", () => {
   });
 });
 
-it.each([undefined, "retained-run"])(
-  "bounds Stop acknowledgment without releasing raw source custody for runId=%s",
-  async (runId) => {
-    vi.useFakeTimers();
+it.each([
+  { scope: "session-wide", runId: undefined, waitForCleanup: true },
+  { scope: "exact-run", runId: "retained-run", waitForCleanup: false },
+] as const)(
+  "$scope Stop preserves raw source custody after its bounded acknowledgment",
+  async ({ runId, waitForCleanup }) => {
+    if (waitForCleanup) {
+      vi.useFakeTimers();
+    }
     const raw = createDeferred();
     const cancelled = createDeferred();
     const source = createActiveRun("main", {
@@ -405,14 +389,21 @@ it.each([undefined, "retained-run"])(
       });
     try {
       await cancelled.promise;
-      await vi.advanceTimersByTimeAsync(0);
-      await vi.advanceTimersByTimeAsync(14_999);
-      expect(acknowledged).toBe(false);
-      await vi.advanceTimersByTimeAsync(1);
+      if (waitForCleanup) {
+        await vi.advanceTimersByTimeAsync(14_999);
+        expect(acknowledged).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+      } else {
+        await stopping;
+      }
       expect(acknowledged).toBe(true);
-      expect((await stopping).error).toMatchObject({
-        message: expect.stringContaining("cleanup is still pending"),
-      });
+      if (waitForCleanup) {
+        expect((await stopping).error).toMatchObject({
+          message: expect.stringContaining("cleanup is still pending"),
+        });
+      } else {
+        expect((await stopping).error).toBeUndefined();
+      }
       expect(claim.released).toBe(false);
       expect(source.input.phase).toBe("claimed");
       const snapshot = createGatewayActiveWorkSnapshot({
@@ -435,7 +426,9 @@ it.each([undefined, "retained-run"])(
       await producer;
       await claim.settlement.promise;
       await stopping;
-      vi.useRealTimers();
+      if (waitForCleanup) {
+        vi.useRealTimers();
+      }
     }
   },
 );

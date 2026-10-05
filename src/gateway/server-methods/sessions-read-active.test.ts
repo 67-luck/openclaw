@@ -38,7 +38,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
 import * as rowInputs from "../session-utils-row.js";
-import { claimRpcSourceForTest, createRpcSourceForTest } from "../test-helpers.rpc-source.js";
+import { claimRpcSourceForTest } from "../test-helpers.rpc-source.js";
 import {
   captureRpcTargetForTest,
   createActiveRpcSourceForTest,
@@ -121,7 +121,7 @@ it("selects current work before pagination and represents an isolated cron run o
     );
     rpcSourceTesting.set(
       "settled-run",
-      createRpcSourceForTest(
+      await createActiveRpcSourceForTest(
         { projectSessionActive: false },
         {
           sessionKey: "agent:main:settled",

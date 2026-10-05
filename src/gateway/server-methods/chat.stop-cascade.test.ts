@@ -74,7 +74,7 @@ function createGuardedStopFixture() {
     getRuntimeConfig: () => cfg,
     getSessionEventSubscriberConnIds: () => new Set(),
   });
-  const otherRun = createActiveRun(other.sessionKey, other);
+  const otherRun = createActiveRun(other.sessionKey, { ...other, runId: "other-owner" });
   registerRpcSource("other-owner", otherRun);
   const send = (sessionKey: string, extra: Record<string, unknown> = {}) =>
     invokeChatAbortHandler({
@@ -187,8 +187,12 @@ it.each([
     appendStopCanary(selected, "current-leaf", "selected conversation");
     await waitForSessionTranscriptProjection(selected);
     const before = await loadTranscriptEvents(selected);
-    const active = createActiveRun(selected.sessionKey, selected);
-    const queued = createActiveRun(selected.sessionKey, { ...selected, queued: true });
+    const active = createActiveRun(selected.sessionKey, { ...selected, runId: "parent" });
+    const queued = createActiveRun(selected.sessionKey, {
+      ...selected,
+      runId: "queued",
+      queued: true,
+    });
     registerRpcSource("parent", active);
     registerRpcSource("queued", queued);
     const respond = await test.send(key, extra);
@@ -220,7 +224,7 @@ it.each(["replacement", "branch"] as const)(
   async (change) => {
     const test = createGuardedStopFixture();
     const child = await test.child("original-child");
-    const parent = createActiveRun(test.parent.sessionKey, test.parent);
+    const parent = createActiveRun(test.parent.sessionKey, { ...test.parent, runId: "parent" });
     registerRpcSource("parent", parent);
     test.context.chatRunState.getOrCreate("parent").buffer = "captured parent partial";
     let successor: ReturnType<typeof createActiveRun> | undefined;
@@ -241,9 +245,13 @@ it.each(["replacement", "branch"] as const)(
             });
           }
           appendStopCanary(replacement, "successor-leaf", "successor conversation");
-          successor = createActiveRun(replacement.sessionKey, replacement);
+          successor = createActiveRun(replacement.sessionKey, {
+            ...replacement,
+            runId: "successor",
+          });
           successorQueue = createActiveRun(replacement.sessionKey, {
             ...replacement,
+            runId: "successor-queued",
             queued: true,
           });
           registerRpcSource("successor", successor);
@@ -334,17 +342,16 @@ it("typed Stop settles child cancellation accepted before its parent guard chang
     cleanup: "keep",
     expectsCompletionMessage: false,
   });
-  const parent = createActiveRun(test.parent.sessionKey, test.parent);
+  const parent = createActiveRun(test.parent.sessionKey, { ...test.parent, runId: "parent" });
   registerRpcSource("parent", parent);
   const controller = new AbortController();
   const changeParent = () => appendStopCanary(test.parent, "later-leaf", "changed parent");
-  let handle: ReturnType<typeof createEmbeddedRunHandle>;
   const abort = vi.fn(() => {
     controller.abort();
     clearActiveEmbeddedRun(child.sessionId, handle, child.sessionKey);
     changeParent();
   });
-  handle = createEmbeddedRunHandle({ runId, abort });
+  const handle = createEmbeddedRunHandle({ runId, abort });
   setActiveEmbeddedRun(child.sessionId, handle, child.sessionKey);
   try {
     const respond = await test.send("agent:ops:guarded-parent", {
@@ -376,7 +383,7 @@ it("typed Stop cannot acquire a replacement collector after projection readiness
     true,
   );
   const descendant = await test.child("collector-descendant", collector.sessionKey);
-  const old = createActiveRun(collector.sessionKey, collector);
+  const old = createActiveRun(collector.sessionKey, { ...collector, runId: "old-collector" });
   registerRpcSource("old-collector", old);
   test.context.chatRunState.getOrCreate("old-collector").buffer = "old collector partial";
   const projection = await createSessionRowProjection({ cfg: test.cfg });
@@ -410,8 +417,15 @@ it("typed Stop cannot acquire a replacement collector after projection readiness
       updatedAt: Date.now(),
     });
     appendStopCanary(replacement, "replacement-leaf", "replacement collector canary");
-    const successor = createActiveRun(collector.sessionKey, replacement);
-    const queued = createActiveRun(collector.sessionKey, { ...replacement, queued: true });
+    const successor = createActiveRun(collector.sessionKey, {
+      ...replacement,
+      runId: "successor-collector",
+    });
+    const queued = createActiveRun(collector.sessionKey, {
+      ...replacement,
+      runId: "successor-queued",
+      queued: true,
+    });
     registerRpcSource("successor-collector", successor);
     registerRpcSource("successor-queued", queued);
     resume.resolve();
@@ -503,11 +517,11 @@ it.each([
       start: dispatch,
       onStartFailure: () => true,
     });
-    let handle: ReturnType<typeof createEmbeddedRunHandle>;
     const runningAbort = vi.fn(() => clearActiveEmbeddedRun("running-session", handle, runningKey));
-    handle = createEmbeddedRunHandle({ runId: "running", abort: runningAbort });
+    const handle = createEmbeddedRunHandle({ runId: "running", abort: runningAbort });
     setActiveEmbeddedRun("running-session", handle, runningKey);
     const parent = createActiveRun(sessionKey, {
+      runId: "parent",
       sessionId: "parent-session",
       agentId: "main",
       owner: { connId: kind === "foreign" ? "foreign" : "owner" },

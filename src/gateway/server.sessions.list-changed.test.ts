@@ -3,7 +3,9 @@ import { expectDefined } from "@openclaw/normalization-core";
  * Gateway sessions.list changed-state tests.
  */
 import { expect, test, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
+import type { AgentCommandGatewayIngressOpts } from "../agents/command/types.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import { loadSessionEntry } from "../config/sessions/session-accessor.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
@@ -36,7 +38,14 @@ import {
   seedSessionListBackfillFixture,
 } from "./session-row-fixtures.test-support.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
-import { embeddedRunMock, rpcReq, testState, writeSessionStore } from "./test-helpers.js";
+import {
+  agentCommandMock,
+  embeddedRunMock,
+  prepareGatewayReplyRuntimeForTest,
+  rpcReq,
+  testState,
+  writeSessionStore,
+} from "./test-helpers.js";
 import {
   getGatewayConfigModule,
   getSessionsHandlers,
@@ -215,6 +224,8 @@ test("sessions.list uses persisted usage and selected model fields", async () =>
     sessionKey: "agent:main:dashboard:child",
     entries: {
       main: sessionStoreEntry("sess-parent"),
+      "dashboard:live": sessionStoreEntry("sess-live"),
+      "dashboard:idle": sessionStoreEntry("sess-idle", { updatedAt: Date.now() + 60_000 }),
       "dashboard:child": sessionStoreEntry("sess-child", {
         updatedAt: Date.now() - 1_000,
         providerOverride: "anthropic",
@@ -283,6 +294,77 @@ test("sessions.list uses persisted usage and selected model fields", async () =>
   expect(child?.model).toBe("test-model-without-catalog-context");
   expect(child?.modelSelectionLocked).toBe(true);
 
+  await prepareGatewayReplyRuntimeForTest();
+  const held = new Map<
+    string,
+    { entered: ReturnType<typeof createDeferred>; release: ReturnType<typeof createDeferred> }
+  >();
+  for (const runId of ["list-live-z", "list-live-a"]) {
+    held.set(runId, { entered: createDeferred(), release: createDeferred() });
+  }
+  agentCommandMock.mockImplementation(async (options) => {
+    const command = options as AgentCommandGatewayIngressOpts;
+    const turn = held.get(command.runId!);
+    if (!turn) {
+      throw new Error("Unexpected list boundary inference");
+    }
+    turn.entered.resolve();
+    await turn.release.promise;
+  });
+  try {
+    for (const [runId, sessionKey] of [
+      ["list-live-z", "agent:main:main"],
+      ["list-live-a", "agent:main:dashboard:live"],
+    ]) {
+      const accepted = await rpcReq(ws, "agent", {
+        sessionKey,
+        message: "Hold this list-visible turn",
+        idempotencyKey: runId,
+      });
+      expect(accepted.ok).toBe(true);
+      await held.get(runId)!.entered.promise;
+    }
+    const first = await rpcReq<{
+      count: number;
+      totalCount: number;
+      nextOffset: number | null;
+      sessions: Array<{ key: string; hasActiveRun: boolean; activeRunIds: string[] }>;
+    }>(ws, "sessions.list", { activeOnly: true, limit: 1 });
+    const second = await rpcReq<typeof first.payload>(ws, "sessions.list", {
+      activeOnly: true,
+      limit: 1,
+      offset: 1,
+    });
+    expect(first.payload).toMatchObject({ count: 1, totalCount: 2, nextOffset: 1 });
+    expect(second.payload).toMatchObject({ count: 1, totalCount: 2, nextOffset: null });
+    const active = [...first.payload!.sessions, ...second.payload!.sessions];
+    expect(active.map((session) => session.key).toSorted()).toEqual([
+      "agent:main:dashboard:live",
+      "agent:main:main",
+    ]);
+    expect(active.flatMap((session) => session.activeRunIds).toSorted()).toEqual([
+      "list-live-a",
+      "list-live-z",
+    ]);
+    expect(active.every((session) => session.hasActiveRun)).toBe(true);
+    for (const method of ["sessions.fork", "sessions.rewind", "sessions.branches.switch"]) {
+      const refused = await rpcReq(ws, method, {
+        sessionKey: "agent:main:main",
+        ...(method === "sessions.branches.switch"
+          ? { leafEntryId: "not-yet-a-boundary" }
+          : { entryId: "not-yet-a-boundary" }),
+      });
+      expect(refused.ok).toBe(false);
+      expect(refused.error?.code, `${method}: ${JSON.stringify(refused.error)}`).toBe(
+        "UNAVAILABLE",
+      );
+    }
+  } finally {
+    for (const turn of held.values()) {
+      turn.release.resolve();
+    }
+    agentCommandMock.mockReset();
+  }
   ws.close();
 });
 

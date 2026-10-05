@@ -135,6 +135,7 @@ it.each(["exact", "session cascade", "typed stop", "channel stop", "embedded sto
     }
     const cfg = getRuntimeConfig();
     const parent = createActiveRun(sessionKey, {
+      runId: "parent",
       sessionId: "parent-session",
       storeScope: parentStore,
       agentId: "main",
@@ -156,8 +157,7 @@ it.each(["exact", "session cascade", "typed stop", "channel stop", "embedded sto
       cancel: () => requestRpcSourceCancellation(parent),
     });
     const context = createChatAbortContext({ getRuntimeConfig: () => cfg });
-    let embedded!: ReturnType<typeof createEmbeddedRunHandle>;
-    embedded = createEmbeddedRunHandle({
+    const embedded = createEmbeddedRunHandle({
       runId: "parent",
       abort: () => {
         requestRpcSourceCancellation(parent);
@@ -297,13 +297,12 @@ it.each([
         onStartFailure: () => true,
       });
     }
-    let parentHandle: ReturnType<typeof createEmbeddedRunHandle>;
     const parentAbort = vi.fn(() => {
       expect(releaseSwarmRun("parent")).toBe(true);
       clearActiveEmbeddedRun("parent-session", parentHandle, sessionKey);
     });
     const badAbort = vi.fn();
-    parentHandle = createEmbeddedRunHandle({ runId: "parent", abort: parentAbort });
+    const parentHandle = createEmbeddedRunHandle({ runId: "parent", abort: parentAbort });
     const badHandle = createEmbeddedRunHandle({ runId: "bad", abort: badAbort });
     setActiveEmbeddedRun("parent-session", parentHandle, sessionKey);
     if (!queued) {
@@ -498,6 +497,7 @@ it.for(["cascade native new", "RPC reset", "RPC delete"])(
     const operation = createReplyOperation({ sessionKey, sessionId, resetTriggered: false });
     const cfg = getRuntimeConfig();
     const parent = createActiveRun(sessionKey, {
+      runId: "parent",
       sessionId,
       agentId: "main",
       owner: { connId: "owner" },
