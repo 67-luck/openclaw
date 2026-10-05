@@ -51,7 +51,10 @@ describe("worker context engine", () => {
       const followUpFile = path.join(input.workspaceDir, "engine-follow-up.txt");
       await writeFile(acceptedFile, "previous Gateway content");
       const engineId = `worker-context-${owner}`;
-      const config = { ...input.config, plugins: { slots: { contextEngine: engineId } } };
+      const config = {
+        ...input.config,
+        plugins: { allow: ["openai"], slots: { memory: "none", contextEngine: engineId } },
+      };
       const previous = await openSessionManager();
       await previous.appendMessageAsync(
         makeAgentUserMessage({ content: "Unassembled history", timestamp: 1 }),
