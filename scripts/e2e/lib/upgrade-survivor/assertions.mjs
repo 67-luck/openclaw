@@ -1111,11 +1111,7 @@ function assertSessionMetadataMigrated(stateDir, stage) {
         db.close();
       }
     }
-    assertStrict.deepEqual(
-      acp,
-      LEGACY_ACP_META,
-      "saved ACP session or model selection changed",
-    );
+    assertStrict.deepEqual(acp, LEGACY_ACP_META, "saved ACP session or model selection changed");
   }
   const migratedSessions = [
     [LEGACY_SESSION_MAIN_ID, main],
