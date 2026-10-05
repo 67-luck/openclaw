@@ -311,4 +311,59 @@ describe("captured session Stop", () => {
     expect(second.abortSignal.aborted).toBe(false);
     retireSessionControllerInput(second);
   });
+
+  it.each(["reject", "continue"] as const)(
+    "stops the active producer before reporting queued cleanup failure: %s",
+    async (errorPolicy) => {
+      const f = fixture();
+      const active = f.reserve("active");
+      const running = createDeferredCore();
+      const release = createDeferredCore();
+      const execution = withSessionTurn(
+        {
+          sessionKey: f.sessionKey,
+          sessionId: f.sessionId,
+          target: f.target,
+          controllerInput: active,
+        },
+        async () => {
+          running.resolve();
+          await release.promise;
+        },
+      );
+      await running.promise;
+      const cleanupError = new Error("synthetic queued cancellation cleanup failure");
+      const queued = reserveSessionControllerSource(f.sessionKey, {
+        target: f.target,
+        policy: { mode: "followup" },
+        adapter: {
+          cancel: () => {
+            throw cleanupError;
+          },
+        },
+      });
+
+      try {
+        const stop = stopSession({
+          source: "client-session",
+          capture: captureSessionControllerStop({ inputs: [active, queued] }),
+          hookContext: { sessionKey: f.sessionKey },
+          onError: errorPolicy === "continue" ? () => "continue" : undefined,
+        });
+
+        if (errorPolicy === "reject") {
+          await expect(stop.completed).rejects.toBe(cleanupError);
+        }
+        const outcome = errorPolicy === "continue" ? await stop.completed : stop;
+
+        expect(outcome.queuedCancelled).toBe(1);
+        expect(outcome.activeCancelled).toBe(1);
+        expect(active.abortSignal.aborted).toBe(true);
+        expect(outcome.failures).toEqual([{ target: queued, error: cleanupError }]);
+      } finally {
+        release.resolve();
+        await execution.catch(() => undefined);
+      }
+    },
+  );
 });

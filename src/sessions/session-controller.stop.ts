@@ -420,7 +420,10 @@ function applySessionControllerStop(
       run();
     } catch (error) {
       result.failures.push({ target, error });
-      if (params.onError?.(target, error) !== "continue") {
+      const committed =
+        result.abortedInputs.some((input) => input === target) ||
+        result.abortedOperations.some((operation) => operation === target);
+      if (params.onError?.(target, error) !== "continue" && !committed) {
         throw error;
       }
     }
@@ -537,6 +540,7 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
       : sourcePolicy;
   let externalStatus: SessionStopTargetStatus = "unchanged";
   let parentResult: SessionControllerStopResult | undefined;
+  const unhandledFailures: unknown[] = [];
   let runPostParent: (() => Promise<void>) | undefined;
   let resolveParentResult!: (result: SessionControllerStopResult) => void;
   let rejectParentResult!: (error: unknown) => void;
@@ -560,7 +564,13 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
       cancelOperation: request.cancelOperation,
       afterQueued: request.afterQueued,
       onCancelled: request.onCancelled,
-      onError: request.onError,
+      onError: (target, error) => {
+        const decision = request.onError?.(target, error);
+        if (decision !== "continue") {
+          unhandledFailures.push(error);
+        }
+        return decision;
+      },
     });
     // The external parent stops after controller owners, and Stop settles only after it does.
     const external = request.externalParent;
@@ -647,6 +657,14 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
         throw new Error("Parent Stop result is unavailable");
       }
       await postParent();
+      // Committed cancellation errors cannot strand later owners, but still fail
+      // default Stop callers after parent and descendant cancellation completes.
+      if (unhandledFailures.length === 1) {
+        throw unhandledFailures[0];
+      }
+      if (unhandledFailures.length > 1) {
+        throw new AggregateError(unhandledFailures, "Session cancellation failed");
+      }
       return resolveStopOutcome(currentParentResult, externalStatus, childResult);
     },
     async (error) => {
