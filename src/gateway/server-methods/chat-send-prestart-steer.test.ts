@@ -4,7 +4,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { managedWorktrees } from "../../agents/worktrees/service.js";
-import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
+import type { dispatchInboundMessageInternal } from "../../auto-reply/dispatch.js";
 import type { executeAgentTurn } from "../../auto-reply/reply/agent-runner-execution.js";
 import { clearFollowupQueueForTest } from "../../auto-reply/reply/queue.test-helpers.js";
 import { getFollowupQueueDepth } from "../../auto-reply/reply/queue/enqueue.js";
@@ -160,7 +160,7 @@ test.for(["accepted", "unavailable", "rejected"] as const)(
     });
     // Observe custody without replacing dispatch, reply preparation, or queue policy.
     dispatchInboundMessageMock.mockImplementation(async (raw: unknown) => {
-      const params = raw as Parameters<typeof dispatchInboundMessage>[0];
+      const params = raw as Parameters<typeof dispatchInboundMessageInternal>[0];
       if (params.replyOptions?.runId === steerRunId) {
         const lifecycle = expectDefined(params.replyOptions.turnAdoptionLifecycle, "input custody");
         const onDeferred = expectDefined(lifecycle.onDeferred, "queued input admission");
@@ -175,9 +175,9 @@ test.for(["accepted", "unavailable", "rejected"] as const)(
           queuedSettled.resolve();
         };
       }
-      return realDispatch.dispatchInboundMessage({
+      return realDispatch.dispatchInboundMessageInternal({
         ...params,
-        replyResolver: realReply.getReplyFromConfig,
+        replyResolver: realReply.getReplyFromConfigInternal,
       });
     });
     try {
