@@ -2,11 +2,15 @@ import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import type { UpdateCommandOptions } from "./shared.js";
+import type { UpdateCommandExecutionGuards } from "./update-command-execution.types.js";
 import { captureUpdateCommandExecutorAuthority } from "./update-command-executor.js";
 import { assertUpdateCommandRecoveryState } from "./update-command-recovery.js";
 
 /** Pin the invocation across parent work and the separately bound Doctor child. */
-export function createUpdateCommandExecutionGuards(opts: UpdateCommandOptions, root: string) {
+export function createUpdateCommandExecutionGuards(
+  opts: UpdateCommandOptions,
+  root: string,
+): UpdateCommandExecutionGuards {
   const run = opts.run;
   const runId = run?.runId;
   let executor = run?.executorFence;
