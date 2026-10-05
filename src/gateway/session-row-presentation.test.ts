@@ -13,6 +13,7 @@ import {
   getAgentRunLifecycleGeneration,
   releaseAgentRunContext,
 } from "../infra/agent-run-registry.js";
+import { rpcSourcesByRunId } from "../sessions/session-controller.storage.js";
 import {
   rpcSourceTesting,
   setRpcSourceIdentityForTest,
@@ -428,6 +429,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
       const activeRun = createRpcSourceForTest(
         {},
         {
+          runId: "old-run",
           sessionKey: query.key,
           sessionId: entry.sessionId,
           agentId: query.agentId,
@@ -436,19 +438,18 @@ it("presents current recipient roles without SQLite while rejecting source overr
       );
       rpcSourceTesting.set("old-run", activeRun);
       for (let index = 0; index < 49; index++) {
+        const runId = `unrelated-${index}`;
         rpcSourceTesting.set(
-          `unrelated-${index}`,
-          createRpcSourceForTest(
-            { ...activeRun.adapter },
-            {
-              sessionKey: `agent:main:unrelated-${index}`,
-              sessionId: `unrelated-session-${index}`,
-              accepted: true,
-            },
-          ),
+          runId,
+          createRpcSourceForTest(activeRun.adapter, {
+            runId,
+            sessionKey: `agent:main:unrelated-${index}`,
+            sessionId: `unrelated-session-${index}`,
+            accepted: true,
+          }),
         );
       }
-      const controllerScans = vi.spyOn(rpcSourceTesting, Symbol.iterator);
+      using controllerScans = vi.spyOn(rpcSourcesByRunId, Symbol.iterator);
       connection.broadcast("sessions.changed", { sessionKey: query.key, agentId: query.agentId });
       expect(controllerScans).toHaveBeenCalledTimes(1);
       controllerScans.mockClear();
@@ -462,11 +463,16 @@ it("presents current recipient roles without SQLite while rejecting source overr
       }
       vi.mocked(clients[0]!.socket).send.mockImplementationOnce(() => {
         rpcSourceTesting.delete("old-run");
-        setRpcSourceIdentityForTest(activeRun, {
-          sessionKey: "agent:main:adopted-source",
-          sessionId: ` ${entry.sessionId} `,
-        });
-        rpcSourceTesting.set("replacement-run", activeRun);
+        rpcSourceTesting.set(
+          "replacement-run",
+          createRpcSourceForTest(activeRun.adapter, {
+            runId: "replacement-run",
+            sessionKey: "agent:main:adopted-source",
+            sessionId: ` ${entry.sessionId} `,
+            agentId: query.agentId,
+            accepted: true,
+          }),
+        );
       });
       connection.broadcastToConnIds(
         "sessions.changed",
