@@ -276,6 +276,19 @@ export function respondChatSendRetry(
     respond(cached.ok, cached.payload, cached.error, { cached: true });
     return true;
   }
+  const accepted = context.dedupe.get(`chat:${clientRunId}`);
+  if (
+    accepted?.ok === true &&
+    accepted.requestIdentity === params.request.requestIdentity &&
+    accepted.payload === undefined &&
+    accepted.error === undefined
+  ) {
+    respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
+      cached: true,
+      runId: clientRunId,
+    });
+    return true;
+  }
   const abortMarker = context.chatRunState.runs.get(clientRunId)?.abortMarker;
   if (abortMarker !== undefined) {
     const abortedAt = chatAbortMarkerTimestampMs(abortMarker);
