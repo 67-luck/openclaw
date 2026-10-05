@@ -1,7 +1,10 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
-import { getRpcSource, hasRpcSource } from "../../sessions/session-controller.rpc-sources.js";
+import {
+  getRpcSource,
+  hasUnretiredRpcSource,
+} from "../../sessions/session-controller.rpc-sources.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { setGatewayDedupeEntry } from "./agent-job.js";
 import type { AgentTurnIo } from "./types.js";
@@ -198,7 +201,10 @@ export function replayAgentTurnIfCached(params: {
     params.acceptedOnly &&
     isAcceptedAgentDedupePayload(cached.payload) &&
     !cached.payload.reservationId &&
-    !hasRpcSource(runId)
+    !hasUnretiredRpcSource(runId, {
+      sessionKey: normalizeOptionalString(cached.payload.sessionKey),
+      agentId: normalizeOptionalString(cached.payload.agentId),
+    })
   ) {
     // Durable private input owns recovery after the accepted controller is gone.
     return false;

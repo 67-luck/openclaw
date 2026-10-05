@@ -46,7 +46,7 @@ it.each(["unchanged", "absent", "successor", "successor from absent"] as const)(
         lifecycleGeneration: getAgentEventLifecycleGeneration(),
         agentDedupeKeys: [key],
         suppressVisibleSessionEffects: false,
-        privateCompletion: true,
+        reconcileDurableInput: true,
         context,
         io: { emitAcceptance: vi.fn(), emitFinal: vi.fn() },
       });

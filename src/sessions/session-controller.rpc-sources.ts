@@ -175,6 +175,25 @@ export function hasRpcSource(runId: string): boolean {
   return (rpcSourcesByRunId.get(runId)?.size ?? 0) > 0;
 }
 
+/** Reports whether an indexed source can still own the matching protocol attempt. */
+export function hasUnretiredRpcSource(
+  runId: string,
+  scope: Partial<RpcSourceIdentity> = {},
+): boolean {
+  return [...(rpcSourcesByRunId.get(runId) ?? [])].some((ref) => {
+    const identity = getRpcSourceIdentity(ref);
+    return (
+      ref.input.phase !== "consumed" &&
+      !ref.input.retirementRequested &&
+      !ref.input.custody.cancellationRetired &&
+      !ref.input.abortSignal.aborted &&
+      (scope.sessionId === undefined || identity.sessionId === scope.sessionId) &&
+      (scope.sessionKey === undefined || identity.sessionKey === scope.sessionKey) &&
+      (scope.agentId === undefined || identity.agentId === scope.agentId)
+    );
+  });
+}
+
 /** Returns a stable snapshot for Gateway projection, shutdown, and abort iteration. */
 export function listRpcSourceEntries(): Array<[runId: string, ref: RpcSourceRef]> {
   return [...rpcSourcesByRunId].flatMap(([runId, sources]) =>

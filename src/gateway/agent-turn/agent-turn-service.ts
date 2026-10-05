@@ -16,6 +16,7 @@ import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js
 import { registerChatAbortController } from "../chat-abort.js";
 import { discardPreparedInboundMedia, type OffloadedRef } from "../chat-attachments.js";
 import { errorShapeFromError } from "../error-shape.js";
+import { readInProcessSubagentResume } from "../in-process-subagent-resume.js";
 import { createCronContinuationController } from "../server-methods/agent-cron-continuation.js";
 import { runAgentResetPhase } from "../server-methods/agent-reset-phase.js";
 import { buildAgentSessionPatch } from "../server-methods/agent-session-patch.js";
@@ -74,7 +75,11 @@ export function createAgentTurnService(
   }: AgentTurnStartRequest): Promise<void> => {
     const promptedAt = Date.now();
     assertAdmissionCurrent?.();
-    if (replayAgentTurnIfCached({ preflight, context, io, acceptedOnly: privateCompletion })) {
+    // Durable input decides replay for private continuations and trusted parent
+    // resumes after their prior source retires, including pre-admission Stop.
+    const reconcileDurableInput =
+      privateCompletion === true || readInProcessSubagentResume(principal?.internal) !== undefined;
+    if (replayAgentTurnIfCached({ preflight, context, io, acceptedOnly: reconcileDurableInput })) {
       return;
     }
     assertInputCommitAllowed?.();
@@ -115,7 +120,7 @@ export function createAgentTurnService(
     const ownerDeviceId =
       typeof principal?.connect?.device?.id === "string" ? principal.connect.device.id : undefined;
     const dedupeLifecycle = createAgentDedupeLifecycle({
-      privateCompletion,
+      reconcileDurableInput,
       inputProvenance,
       cfg,
       request,

@@ -1,7 +1,7 @@
 // Real Gateway admission and SQLite receipts with a controlled agent command.
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core/expect";
-import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   awaitGateBeforeSettlement,
   createDeferred,
@@ -11,14 +11,6 @@ import { observeHostDataSql } from "../../test/helpers/sqlite-statement-executio
 import type { AgentCommandOpts } from "../agents/command/types.js";
 import { resolveAgentRunErrorLifecycleFields } from "../agents/run-termination.js";
 import { runAnnounceAgentCall } from "../agents/subagents/announce/subagent-announce-completion-delivery.js";
-import { SubagentLifecycleController } from "../agents/subagents/registry/subagent-registry-lifecycle.js";
-import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
-import { registerSubagentRun } from "../agents/subagents/registry/subagent-registry.js";
-import {
-  writeSubagentSessionEntry,
-  settleSubagentRegistryPersistenceWork,
-} from "../agents/subagents/registry/subagent-registry.persistence.test-support.js";
-import { loadSubagentRunsForControllerFromSqlite } from "../agents/subagents/registry/subagent-registry.store.sqlite.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
 import {
   resolveSqliteScope,
@@ -32,10 +24,7 @@ import {
 import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import { isRpcSourceExecuting } from "../sessions/session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
-import {
-  observeSessionWorkAdmissionDrain,
-  rpcSourceTesting,
-} from "../sessions/session-lifecycle-admission.test-support.js";
+import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
@@ -55,7 +44,7 @@ import * as chatAbort from "./chat-abort.js";
 import { refusePendingInputCommit } from "./pending-input-commit.test-support.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugin-in-process-dispatch.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
-import { holdMetadataThroughSubagentStop } from "./server.private-completion.metadata-overlap.test-support.js";
+import { registerPrivateCompletionStopMetadataTests } from "./server.private-completion.metadata-overlap.test-support.js";
 import { registerSessionsSendPrivateCompletionTests } from "./server.private-completion.sessions-send.test-support.js";
 import * as lifecycleState from "./session-lifecycle-state.js";
 import { loadSessionEntry } from "./session-utils.js";
@@ -237,10 +226,9 @@ describe("private subagent completion processing receipts", () => {
     }
   });
 
-  it.each(["rpc", "stop", "restart", "foreign-session"])(
-    "preserves only a matching intentional pre-admission stop: %s",
+  it.each(["restart", "foreign-session"])(
+    "ignores nonauthoritative pre-admission cache entries: %s",
     async (reason) => {
-      const intentional = reason === "rpc" || reason === "stop";
       setAbortedAgentDedupeEntries({
         dedupe: kernel.gatewayRequestContext.dedupe,
         keys: [`agent:${runId}`],
@@ -250,27 +238,30 @@ describe("private subagent completion processing receipts", () => {
         stopReason: reason === "foreign-session" ? "rpc" : reason,
       });
       agentCommandMock.mockImplementationOnce(processPrivateInput);
-      if (intentional) {
-        expect(await dispatch()).toMatchObject({ status: "timeout", stopReason: reason });
-        expect(agentCommandMock).not.toHaveBeenCalled();
-        expect(pending()).toEqual([]);
-        expect(completions()).toEqual([]);
-        expect(await dispatch()).toMatchObject({ status: "timeout", stopReason: reason });
-        expect(agentCommandMock).not.toHaveBeenCalled();
-      } else {
-        expect(await dispatch()).toMatchObject({ status: "ok", inputProcessingCompleted: true });
-        expect(agentCommandMock).toHaveBeenCalledOnce();
-      }
+      expect(await dispatch()).toMatchObject({ status: "ok", inputProcessingCompleted: true });
+      expect(agentCommandMock).toHaveBeenCalledOnce();
     },
   );
 
-  it.each(["handled-hook", "yielded"] as const)(
-    "does not repeat completed parent work after restart before child delivery save (%s)",
+  it.each(["handled-hook", "yielded", "operator-stop"] as const)(
+    "does not repeat settled parent work after restart before child delivery save (%s)",
     async (kind) => {
+      const entered = createDeferred();
+      const release = createDeferred();
+      const stopped = kind === "operator-stop";
       agentCommandMock.mockImplementationOnce(async (input) => {
-        const inputRecorder = recorder(input);
+        const command = input as AgentCommandOpts;
+        const inputRecorder = stopped
+          ? expectDefined(command.userTurnTranscriptRecorder, "private input recorder")
+          : recorder(input);
         expect(completions()).toEqual([]);
         expect(pending()).toMatchObject([{ run_id: runId }]);
+        if (stopped) {
+          entered.resolve();
+          await release.promise;
+          command.abortSignal?.throwIfAborted();
+          throw new Error("Operator Stop must cancel this input before processing");
+        }
         if (kind !== "handled-hook") {
           expect(await inputRecorder.persistApproved()).toMatchObject({ appended: true });
         }
@@ -279,17 +270,47 @@ describe("private subagent completion processing receipts", () => {
           meta: { durationMs: 1, ...(kind === "yielded" ? { yielded: true } : {}) },
         };
       });
-      expect(await dispatch()).toMatchObject({ status: "ok", inputProcessingCompleted: true });
-      expect(completions()).toMatchObject([{ run_id: runId, succeeded: 1 }]);
+      if (stopped) {
+        const processing = dispatch();
+        const observed = processing.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+        try {
+          await entered.promise;
+          expect(
+            await dispatchGatewayMethodInProcess(
+              "chat.abort",
+              { runId, sessionKey },
+              {
+                forceSyntheticClient: true,
+                operatorRoleActor: { kind: "system" },
+                resolveGatewayContext: () => kernel.gatewayRequestContext,
+              },
+            ),
+          ).toMatchObject({ aborted: true });
+        } finally {
+          release.resolve();
+          await observed;
+        }
+        expect(await observed).toMatchObject({ value: { status: "timeout", stopReason: "rpc" } });
+      } else {
+        expect(await dispatch()).toMatchObject({ status: "ok", inputProcessingCompleted: true });
+      }
+      const replay = stopped
+        ? { status: "error", stopReason: "rpc" }
+        : { status: "ok", inputProcessingCompleted: true };
+      expect(completions()).toMatchObject([{ run_id: runId, succeeded: stopped ? 0 : 1 }]);
       expect(pending()).toEqual([]);
       const committed = transcript();
       expect(JSON.stringify(committed).includes("Synthetic private child marker")).toBe(
-        kind !== "handled-hook",
+        kind === "yielded",
       );
+      expect(await dispatch()).toMatchObject(replay);
       // The subagent delivery owner has received no saved acknowledgement yet.
       // Its replay must reconcile from SQLite, not the old process's dedupe map.
       await restart();
-      expect(await dispatch()).toMatchObject({ status: "ok", inputProcessingCompleted: true });
+      expect(await dispatch()).toMatchObject(replay);
       expect(agentCommandMock).toHaveBeenCalledOnce();
       expect(transcript()).toEqual(committed);
       expect(pending()).toEqual([]);
@@ -686,246 +707,20 @@ describe("private subagent completion processing receipts", () => {
     },
   );
 
-  it.for([false, true])(
-    "preserves an operator stop after private input consumption across retry and restart (terminal first=%s)",
-    async (terminalFirst, { signal }) => {
-      const metadataOverlap = holdMetadataThroughSubagentStop({
-        sessionKey: `agent:main:subagent:private-descendant-${sequence}`,
-        sessionId: `private-descendant-${sequence}-session`,
-        storePath,
-        signal,
-      });
-      onTestFinished(() => metadataOverlap.dispose());
-      const consumed = createDeferred();
-      const release = createDeferred();
-      signal.addEventListener("abort", () => release.resolve(), { once: true });
-      agentCommandMock.mockImplementationOnce(async (input) => {
-        const command = input as AgentCommandOpts;
-        await command.onExecutionStarted?.();
-        await recorder(input).persistApproved();
-        consumed.resolve();
-        command.abortSignal!.addEventListener("abort", () => release.resolve(), { once: true });
-        await release.promise;
-        command.abortSignal!.throwIfAborted();
-        throw new Error("operator stop must prevent further work");
-      });
-      const first = dispatch();
-      const observed = first.then(
-        (value) => ({ value }),
-        (error: unknown) => ({ error }),
-      );
-      await consumed.promise;
-      const descendantRunId = `private-descendant-${sequence}`;
-      const childSessionKey = `agent:main:subagent:${descendantRunId}`;
-      const childSessionId = `${descendantRunId}-session`;
-      const terminalPublished = createDeferred();
-      const releaseTerminalWait = () => terminalPublished.resolve();
-      signal.addEventListener("abort", releaseTerminalWait, { once: true });
-      let observedTerminal = false;
-      if (terminalFirst) {
-        const acquire = vi.spyOn(
-          SubagentLifecycleController.prototype,
-          "acquireTerminalCompletionLock",
-        );
-        acquire.mockRestore();
-        const lock = vi
-          .spyOn(SubagentLifecycleController.prototype, "acquireTerminalCompletionLock")
-          .mockImplementation(async function (this: SubagentLifecycleController, targetRunId) {
-            const unlock = await acquire.call(this, targetRunId);
-            return () => {
-              unlock();
-              const entry = subagentRuns.get(targetRunId);
-              if (
-                targetRunId === descendantRunId &&
-                entry?.endedReason === "subagent-killed" &&
-                entry.killReconciliation?.taskCancellationAccepted === true
-              ) {
-                observedTerminal = true;
-                terminalPublished.resolve();
-              }
-            };
-          });
-        const stop = observeSessionWorkAdmissionDrain(async (params, released) => {
-          const identities =
-            "target" in params
-              ? [params.target.sessionKey, params.target.incarnation, ...params.target.aliases]
-              : params.identities;
-          if (released && [...identities].includes(childSessionKey)) {
-            await terminalPublished.promise;
-            signal.throwIfAborted();
-          }
-        });
-        onTestFinished(() => {
-          stop();
-          lock.mockRestore();
-        });
-      }
-      onTestFinished(() => {
-        terminalPublished.resolve();
-        signal.removeEventListener("abort", releaseTerminalWait);
-      });
-      const childStarted = createDeferred();
-      const releaseChild = createDeferred();
-      let childAbortSignal: AbortSignal | undefined;
-      signal.addEventListener("abort", () => releaseChild.resolve(), { once: true });
-      await writeSubagentSessionEntry({
-        stateDir: process.env.OPENCLAW_STATE_DIR!,
-        agentId: "main",
-        sessionKey: childSessionKey,
-        defaultSessionId: childSessionId,
-      });
-      agentCommandMock.mockImplementationOnce(async (input) => {
-        const command = input as AgentCommandOpts;
-        expect(command.runId).toBe(descendantRunId);
-        expect(command.sessionId).toBe(childSessionId);
-        childAbortSignal = command.abortSignal;
-        await command.onExecutionStarted?.();
-        await command.userTurnTranscriptRecorder?.persistApproved();
-        childStarted.resolve();
-        command.abortSignal!.addEventListener("abort", () => releaseChild.resolve(), {
-          once: true,
-        });
-        await releaseChild.promise;
-        command.abortSignal!.throwIfAborted();
-        throw new Error("operator stop must interrupt the continuation child");
-      });
-      const child = dispatchGatewayMethodInProcess<Record<string, unknown>>(
-        "agent",
-        {
-          sessionKey: childSessionKey,
-          expectedExistingSessionId: childSessionId,
-          idempotencyKey: descendantRunId,
-          message: "Synthetic continuation child",
-          deliver: false,
-        },
-        {
-          expectFinal: true,
-          forceSyntheticClient: true,
-          operatorRoleActor: { kind: "system" },
-          resolveGatewayContext: () => kernel.gatewayRequestContext,
-        },
-      );
-      const observedChild = child.then(
-        (value) => ({ value }),
-        (error: unknown) => ({ error }),
-      );
-      const childWaitEntered = createDeferred();
-      const waitForAgentJob = agentJobs.waitForAgentJob;
-      const waitObservation = vi
-        .spyOn(agentJobs, "waitForAgentJob")
-        .mockImplementation((params) => {
-          const wait = waitForAgentJob(params);
-          if (params.runId === descendantRunId) {
-            childWaitEntered.resolve();
-          }
-          return wait;
-        });
-      // Cancellation must release the admission barrier so cleanup can join both producers.
-      const releaseWaitAdmission = () => childWaitEntered.resolve();
-      signal.addEventListener("abort", releaseWaitAdmission, { once: true });
-      try {
-        await Promise.race([
-          childStarted.promise,
-          observedChild.then(() => {
-            throw new Error("continuation child finished before execution started");
-          }),
-        ]);
-        await registerSubagentRun({
-          runId: descendantRunId,
-          childSessionKey,
-          requesterSessionKey: sessionKey,
-          requesterAgentId: "main",
-          requesterTurnRunId: runId,
-          requesterDisplayKey: sessionKey,
-          task: "synthetic continuation child",
-          cleanup: "keep",
-          expectsCompletionMessage: false,
-        });
-        // Keep both producers live until the child's registration and wait request
-        // are admitted; a slow socket handshake must not hide the outstanding wait.
-        await expect
-          .poll(() =>
-            loadSubagentRunsForControllerFromSqlite(sessionKey).some(
-              (run) => run.runId === descendantRunId,
-            ),
-          )
-          .toBe(true);
-        signal.throwIfAborted();
-        await childWaitEntered.promise;
-        signal.throwIfAborted();
-        expect(
-          await kernel.gatewayInstanceRuntime.recovery.dispatchSessionMethod("chat.abort", {
-            sessionKey,
-            runId,
-          }),
-        ).toMatchObject({ aborted: true });
-        expect(childAbortSignal?.aborted).toBe(true);
-        if (terminalFirst) {
-          expect(observedTerminal).toBe(true);
-        }
-        await metadataOverlap.assertCompleted();
-        expect(loadSessionEntry(childSessionKey).entry).toMatchObject({
-          sessionId: childSessionId,
-          label: metadataOverlap.label,
-          abortedLastRun: true,
-        });
-      } finally {
-        metadataOverlap.releaseForCleanup();
-        try {
-          signal.removeEventListener("abort", releaseWaitAdmission);
-          waitObservation.mockRestore();
-          if (rpcSourceTesting.has(runId)) {
-            await kernel.gatewayInstanceRuntime.recovery.dispatchSessionMethod("chat.abort", {
-              sessionKey,
-              runId,
-            });
-          }
-          if (rpcSourceTesting.has(descendantRunId)) {
-            await kernel.gatewayInstanceRuntime.recovery.dispatchSessionMethod("chat.abort", {
-              sessionKey: childSessionKey,
-              runId: descendantRunId,
-            });
-          }
-          release.resolve();
-          releaseChild.resolve();
-          await Promise.all([observed, observedChild]);
-        } finally {
-          await metadataOverlap.dispose();
-        }
-      }
-      await settleSubagentRegistryPersistenceWork();
-      expect(await observedChild).toMatchObject({
-        value: { status: "timeout", stopReason: "rpc" },
-      });
-      expect(
-        loadSubagentRunsForControllerFromSqlite(sessionKey).find(
-          (run) => run.runId === descendantRunId,
-        ),
-      ).toMatchObject({ endedReason: "subagent-killed", execution: { status: "terminal" } });
-      expect(completions()).toMatchObject([{ succeeded: 0 }]);
-      expect(JSON.parse(String(completions()[0]?.outcome_json))).toMatchObject({
-        reason: "cancelled",
-        stopReason: "rpc",
-      });
-      expect(pending()).toEqual([]);
-      expect(await observed).toMatchObject({ value: { status: "timeout", stopReason: "rpc" } });
-      // Retire only this run's process projection to exercise the durable receipt.
-      // Matching pre-admission Stop cache replay is covered separately above.
-      kernel.gatewayRequestContext.dedupe.delete(`agent:${runId}`);
-      expect(await dispatch()).toMatchObject({ status: "error", stopReason: "rpc" });
-      await restart();
-      expect(await dispatch()).toMatchObject({ status: "error", stopReason: "rpc" });
-      expect(
-        agentCommandMock.mock.calls.map(([input]) => {
-          const command = input as AgentCommandOpts;
-          return { runId: command.runId, sessionId: command.sessionId };
-        }),
-      ).toEqual([
-        { runId, sessionId },
-        { runId: descendantRunId, sessionId: childSessionId },
-      ]);
-    },
-  );
+  registerPrivateCompletionStopMetadataTests(() => ({
+    kernel,
+    sequence,
+    sessionKey,
+    sessionId,
+    runId,
+    storePath,
+    agentCommandMock,
+    recorder,
+    dispatch,
+    completions,
+    pending,
+    restart,
+  }));
 
   it.each(["resolved", "rejected", "abandoned"] as const)(
     "preserves executing private timeout facts (%s)",

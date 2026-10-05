@@ -7,7 +7,7 @@ import {
   isSubagentCoordinationInputProvenance,
   type InputProvenance,
 } from "../../sessions/input-provenance.js";
-import { hasRpcSource } from "../../sessions/session-controller.rpc-sources.js";
+import { hasUnretiredRpcSource } from "../../sessions/session-controller.rpc-sources.js";
 import { resolveAgentRunExpiresAtMs } from "../chat-abort.js";
 import { logAttachmentFailure } from "../chat-attachments.js";
 import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
@@ -40,7 +40,7 @@ export function createAgentDedupeLifecycle(params: {
   agentDedupeKeys: string[];
   suppressVisibleSessionEffects: boolean;
   inputProvenance?: InputProvenance;
-  privateCompletion?: true;
+  reconcileDurableInput?: boolean;
   ownerConnId?: string;
   ownerDeviceId?: string;
   context: AgentTurnContext;
@@ -56,20 +56,21 @@ export function createAgentDedupeLifecycle(params: {
     if (reserved) {
       return;
     }
-    // A private retry bypasses terminal cache replay to reconcile durable input.
+    // A durable retry bypasses terminal cache replay to reconcile its input.
     // Preserve an exact intentional Stop for the resolved admission guard.
     const previous = readGatewayDedupeEntry({
       dedupe: params.context.dedupe,
       keys: params.agentDedupeKeys,
     });
-    if (
-      isPreRegistrationAbortedAgentDedupeEntryForSession({
-        entry: previous,
-        runId: params.runId,
-        sessionKey,
-        agentId: dedupeAgentId,
-      })
-    ) {
+    const previousIsIntentionalStop = isPreRegistrationAbortedAgentDedupeEntryForSession({
+      entry: previous,
+      runId: params.runId,
+      sessionKey,
+      agentId: dedupeAgentId,
+    });
+    const hasCurrentSource = () =>
+      hasUnretiredRpcSource(params.runId, { sessionKey, agentId: dedupeAgentId });
+    if (previousIsIntentionalStop && (!params.reconcileDurableInput || hasCurrentSource())) {
       preservedStop = previous;
       return;
     }
@@ -82,9 +83,9 @@ export function createAgentDedupeLifecycle(params: {
     setGatewayDedupeEntries({
       dedupe: params.context.dedupe,
       keys: params.agentDedupeKeys,
-      // Durable private input decides replay after the prior controller ends.
+      // Durable input decides replay after the prior controller ends.
       // Its new reservation must retire stale sticky terminal projections.
-      ...(params.privateCompletion && !hasRpcSource(params.runId)
+      ...(params.reconcileDurableInput && !hasCurrentSource()
         ? { startNewAttempt: true as const }
         : {}),
       entry: {
@@ -143,7 +144,7 @@ export function createAgentDedupeLifecycle(params: {
           // A refused reservation may replay only the exact Stop preserved by
           // this target, never an unrelated or replaced terminal cache entry.
           acceptedOnly:
-            params.privateCompletion &&
+            params.reconcileDurableInput &&
             !(
               preservedStop &&
               readGatewayDedupeEntry({
