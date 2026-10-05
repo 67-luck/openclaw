@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { abortEmbeddedAgentRun } from "../../agents/embedded-agent-runner/runs.js";
+import type { SessionPlacementTurnParams } from "../../agents/session-placement-admission.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import {
@@ -362,6 +363,7 @@ describe("worker turn launcher build recovery", () => {
     const claimTurn = vi.spyOn(placements, "claimTurn");
     const provider = createWorkerSessionTurnPlacementProvider({ placements, environments });
     const input = turn();
+    let executionTurn: SessionPlacementTurnParams | undefined;
     const onAdmitted = vi.fn();
     return {
       acquireTurnCredential,
@@ -370,6 +372,13 @@ describe("worker turn launcher build recovery", () => {
       listeners,
       onAdmitted,
       reachedAdmission: reachedAdmission.promise,
+      watchdog() {
+        const watchdog = executionTurn?.replyOperation?.watchdog;
+        if (!watchdog) {
+          throw new Error("runtime refresh did not capture its admitted operation watchdog");
+        }
+        return watchdog;
+      },
       progress() {
         expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
         for (const listener of listeners) {
@@ -396,13 +405,15 @@ describe("worker turn launcher build recovery", () => {
         settled.resolve();
         input.preparedRunAdmission.close();
       },
-      execute: (signal: AbortSignal) =>
-        provider.executeTurn(
+      execute: (signal: AbortSignal) => {
+        executionTurn = { ...input, abortSignal: signal };
+        return provider.executeTurn(
           { sessionId: SESSION_ID, sessionKey: SESSION_KEY, agentId: "main", runId: input.runId },
-          { ...input, abortSignal: signal },
+          executionTurn,
           vi.fn(async () => ({ meta: { durationMs: 1 } })),
           onAdmitted,
-        ),
+        );
+      },
     };
   }
 
@@ -411,7 +422,15 @@ describe("worker turn launcher build recovery", () => {
     async (fence) => {
       const harness = await createRefreshWaitHarness(fence);
       const controller = new AbortController();
-      const execution = harness.execute(controller.signal);
+      // Admission captures this function synchronously; every awaited frame keeps real time.
+      const clock = vi.spyOn(Date, "now");
+      const execution = (() => {
+        try {
+          return harness.execute(controller.signal);
+        } finally {
+          clock.mockRestore();
+        }
+      })();
       const result = execution.catch((error: unknown) => error);
       try {
         await Promise.race([harness.reachedAdmission, execution]);
@@ -420,7 +439,16 @@ describe("worker turn launcher build recovery", () => {
         expect(harness.onAdmitted).not.toHaveBeenCalled();
         expect(harness.launchTurn).not.toHaveBeenCalled();
         expect(harness.claimTurn).toHaveBeenCalledTimes(fence ? 1 : 0);
-        harness.progress();
+        const watchdog = harness.watchdog();
+        const beforeProgress = watchdog.snapshot().transportProgressAtMs;
+        const progressAt = beforeProgress + 1;
+        clock.mockReturnValue(progressAt);
+        try {
+          harness.progress();
+          expect(watchdog.snapshot().transportProgressAtMs).toBe(progressAt);
+        } finally {
+          clock.mockRestore();
+        }
         expect(
           getDiagnosticSessionActivitySnapshot({ sessionId: SESSION_ID, sessionKey: SESSION_KEY })
             .lastProgressReason,

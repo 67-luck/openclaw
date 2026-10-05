@@ -366,13 +366,15 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
             refresh,
             ...(turn.abortSignal ? { signal: turn.abortSignal } : {}),
             timeoutMs: turn.timeoutMs,
-            onProgress: () =>
+            onProgress: () => {
+              turn.replyOperation?.watchdog.progress("transport", "worker:runtime_refresh");
               markDiagnosticRunProgress({
                 sessionId: identity.sessionId,
                 sessionKey: identity.sessionKey,
                 runId: claim.runId,
                 reason: "worker:runtime_refresh",
-              }),
+              });
+            },
           });
           const refreshed = readRoutablePlacement(
             "Cloud worker placement disappeared while waiting for runtime refresh",
