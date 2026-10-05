@@ -258,6 +258,8 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
       state.visibleBlockReplyCount > 0;
     assistantTexts.length = 0;
     state.answerSegments.length = 0;
+    state.inputAnswer = undefined;
+    state.keptAnswer = undefined;
     state.lastAssistant = undefined;
     state.lastAssistantTextMessageIndex = -1;
     state.lastAssistantTextContentIndex = undefined;
@@ -416,6 +418,7 @@ export function subscribeEmbeddedAgentSession(params: SubscribeEmbeddedAgentSess
     assistantTexts,
     answerSegments: state.answerSegments,
     getCurrentAttemptAssistant,
+    getKeptAnswer: () => state.keptAnswer,
     hasSuccessfulModelResponse,
     getLastAssistantTextMessageIndex: () =>
       state.lastAssistantTextMessageIndex >= 0 ? state.lastAssistantTextMessageIndex : undefined,
