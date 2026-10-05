@@ -429,14 +429,14 @@ export async function prepareGatewayLifecycle(params: {
   let configReloaderStopPromise: Promise<void> | null = null;
   const stopConfigReloaderForClose = () =>
     (configReloaderStopPromise ??= runtimeState.configReloader.stop());
-  const beginClosePrelude = async (options?: GatewayCloseOptions) => {
+  // Fence ingress and join background publishers before draining received work.
+  const beginClosePreludeBackground = async (options?: GatewayCloseOptions) => {
     fenceSessionSuspensionWritesForGatewayShutdown();
     await markClosePreludeStarted(options);
     // Owners are fenced synchronously above. Join them before any runtime they
     // can publish into is torn down.
     await Promise.all([
       closeAuthProfileUsage(params.sdkResourceHost),
-      requestEntryLifetime.waitForPendingEntries(),
       stopModelAccountsForClose(),
       stopDeliveryRecoveryForClose(),
       stopMediaCleanupForClose(),
@@ -448,6 +448,10 @@ export async function prepareGatewayLifecycle(params: {
       mentionInbox.dispose(),
       worktreeRunEnd.drain(),
     ]);
+  };
+  const beginClosePrelude = async (options?: GatewayCloseOptions) => {
+    await beginClosePreludeBackground(options);
+    await requestEntryLifetime.waitForPendingEntries();
   };
   const runClosePrelude = async () => {
     await beginClosePrelude();
@@ -513,7 +517,8 @@ export async function prepareGatewayLifecycle(params: {
     }
   };
   const prepareClose = async (optsValue?: GatewayCloseOptions) => {
-    await beginClosePrelude(optsValue);
+    // Request entries may await received-work drain, so join them in runClosePrelude.
+    await beginClosePreludeBackground(optsValue);
     const preparation = await shutdownRuntime.prepareGatewayClose(
       {
         resolveGatewayContext: runtime.resolvePluginGatewayContext,
@@ -689,6 +694,7 @@ export async function prepareGatewayLifecycle(params: {
     lifecycle,
     cronReconciliation,
     beginClosePrelude,
+    beginClosePreludeBackground,
     getRuntimeSnapshot,
     startChannels,
     startChannel,

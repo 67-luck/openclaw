@@ -43,7 +43,7 @@ async function startGatewayServerWithSdkHost(
   }
   let startupSettled: Promise<void>;
   const {
-    beginClosePrelude,
+    beginClosePreludeBackground,
     closeOnStartupFailure,
     prepareClose,
     terminalSessions,
@@ -118,7 +118,7 @@ async function startGatewayServerWithSdkHost(
       if (!closePromise) {
         closePromise = sdkResourceHost
           .run(async () => {
-            const prelude = beginClosePrelude(optsLocal);
+            const prelude = beginClosePreludeBackground(optsLocal);
             releasePostReadyWork();
             await prelude;
             const close = await prepareClose(optsLocal);

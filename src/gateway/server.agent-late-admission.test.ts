@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { isRpcSourceExecuting } from "../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
+import type { AgentTurnFrame, AgentTurnIo } from "./agent-turn/types.js";
 import { startGatewayServerHarness, type GatewayServerHarness } from "./server.e2e-ws-harness.js";
 import {
   agentCommandMock,
@@ -52,6 +53,8 @@ describe("Gateway close during agent admission", () => {
     let serviceCompletion: Promise<void> | undefined;
     let closing: Promise<void> | undefined;
     let observedTerminal = false;
+    let terminalFrame: AgentTurnFrame | undefined;
+    let terminalMeta: Parameters<AgentTurnIo["emitAcceptance"]>[1];
     const release = () => {
       releaseAdmission.resolve();
       releaseCommand.resolve();
@@ -82,7 +85,16 @@ describe("Gateway close during agent admission", () => {
             ...params.io,
             emitAcceptance: (...frame) => {
               params.io.emitAcceptance(...frame);
-              if (!frame[0][0]) {
+              const payload = frame[0][1];
+              if (
+                !frame[0][0] ||
+                (payload !== null &&
+                  typeof payload === "object" &&
+                  "status" in payload &&
+                  payload.status === "timeout")
+              ) {
+                terminalFrame = frame[0];
+                terminalMeta = frame[1];
                 observedTerminal = true;
                 terminalObserved.resolve();
               }
@@ -139,6 +151,18 @@ describe("Gateway close during agent admission", () => {
       await serviceCompletion;
       await closing;
       expect(observedTerminal).toBe(true);
+      expect(terminalMeta).toMatchObject({ cached: true });
+      expect(terminalFrame).toEqual([
+        true,
+        expect.objectContaining({
+          runId: "late-admission",
+          status: "timeout",
+          summary: "aborted",
+          timeoutPhase: "queue",
+          providerStarted: false,
+        }),
+        undefined,
+      ]);
       expect(providerStartedAfterClose).toBe(false);
       expect(rpcSourceTesting.has("late-admission")).toBe(false);
     } finally {
