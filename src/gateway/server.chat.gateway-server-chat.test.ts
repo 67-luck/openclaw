@@ -8,6 +8,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createDeferred } from "../../test/helpers/promise.js";
+import * as acpSessionMetadata from "../acp/runtime/session-meta-readonly.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import type { ReplyDispatcher } from "../auto-reply/reply/reply-dispatcher.types.js";
@@ -223,6 +224,71 @@ describe("gateway server chat", () => {
       },
       { archivedAt: Date.now() },
     );
+  });
+
+  test("chat.send replays cancellation when admission fails after its source is stopped", async () => {
+    await withMainSessionStore(async () => {
+      const browser = new WebSocket(`ws://127.0.0.1:${port}`, {
+        headers: { origin: `http://127.0.0.1:${port}` },
+      });
+      trackConnectChallengeNonce(browser);
+      await new Promise<void>((resolve) => browser.once("open", resolve));
+      await connectOk(browser, {
+        client: {
+          id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
+          version: "test",
+          platform: "web",
+          mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+        },
+      });
+      const runId = "idem-stopped-admission-read-failure";
+      const reading = createDeferred();
+      const aborted = createDeferred();
+      const finishRead = createDeferred();
+      const actualRead = acpSessionMetadata.readAcpSessionMetaForEntries;
+      using read = vi
+        .spyOn(acpSessionMetadata, "readAcpSessionMetaForEntries")
+        .mockImplementation(async (...args) => {
+          const source = getRpcSource(runId);
+          if (!source) {
+            return actualRead(...args);
+          }
+          source.input.abortSignal.addEventListener("abort", () => aborted.resolve(), {
+            once: true,
+          });
+          reading.resolve();
+          await finishRead.promise;
+          throw new Error("metadata read failed after source cancellation");
+        });
+      const params = {
+        sessionKey: "main",
+        message: "do not revive this stopped input",
+        idempotencyKey: runId,
+      };
+      const send = rpcReq(browser, "chat.send", params);
+      let reset: ReturnType<typeof rpcReq> | undefined;
+      try {
+        await reading.promise;
+        reset = rpcReq(browser, "sessions.reset", { key: "main", reason: "new" });
+        await aborted.promise;
+        finishRead.resolve();
+        expect(await send).toMatchObject({
+          ok: true,
+          payload: { runId, status: "timeout", summary: "aborted" },
+        });
+        expect(await reset).toMatchObject({ ok: true });
+        const replay = await rpcReq(browser, "chat.send", params);
+        expect(replay).toMatchObject({
+          ok: true,
+          payload: { runId, status: "timeout", summary: "aborted" },
+        });
+        expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+      } finally {
+        finishRead.resolve();
+        await Promise.allSettled([send, ...(reset ? [reset] : [])]);
+        browser.close();
+      }
+    });
   });
 
   test("chat.send fences the admitted session settings", async () => {
