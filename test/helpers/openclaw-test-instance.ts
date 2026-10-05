@@ -118,8 +118,21 @@ type ReadinessProbe = {
   ready?: boolean;
   failing?: string[];
   omittedFailing?: number;
-  error?: "timeout" | "child-exit" | "fetch-failed" | "invalid-json" | "body-failed" | "aborted";
+  /** Responder's reported server uptime; binds the answer to a process started after spawn. */
+  uptimeMs?: number;
+  error?:
+    | "timeout"
+    | "child-exit"
+    | "fetch-failed"
+    | "invalid-json"
+    | "body-failed"
+    | "foreign-responder"
+    | "aborted";
 };
+
+// Parent and child clocks share the host. Allow spawn/measurement skew while
+// rejecting a ready listener that was already alive before this child existed.
+const GATEWAY_READINESS_UPTIME_SKEW_MS = 1_000;
 
 export type GatewayReadinessDiagnostic = {
   probe: "GET /readyz";
@@ -422,6 +435,9 @@ async function waitForGatewayReady(
               if (typeof readiness.ready === "boolean") {
                 probe.ready = readiness.ready;
               }
+              if (typeof readiness.uptimeMs === "number" && Number.isFinite(readiness.uptimeMs)) {
+                probe.uptimeMs = readiness.uptimeMs;
+              }
               if (Array.isArray(readiness.failing)) {
                 // Channel IDs and arbitrary startup reasons are private; retain only core categories.
                 probe.failing = readiness.failing.slice(0, 8).map((reason) => {
@@ -438,7 +454,17 @@ async function waitForGatewayReady(
                 probe.omittedFailing = Math.max(0, readiness.failing.length - 8);
               }
             }
-            return response.ok && isRecord(readiness) && readiness.ready === true;
+            if (!response.ok || !isRecord(readiness) || readiness.ready !== true) {
+              return false;
+            }
+            if (
+              probe.uptimeMs !== undefined &&
+              probe.uptimeMs > Date.now() - startedAt + GATEWAY_READINESS_UPTIME_SKEW_MS
+            ) {
+              probe.error = "foreign-responder";
+              return false;
+            }
+            return true;
           })(),
           exitPromise,
           timeoutPromise,
