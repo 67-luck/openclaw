@@ -210,11 +210,16 @@ describe("AgentSession handoff adoption integration", () => {
     });
     const runFollowup = async (queued: typeof followupRun) => {
       await ownerReleased;
+      const mailboxClaim = queued.controllerInput?.claim;
+      if (!mailboxClaim) {
+        throw new Error("follow-up has no selected controller mailbox claim");
+      }
       const followupOperation = createReplyOperation({
         sessionKey: queueKey,
         sessionId,
         turnKind: "queued_followup",
         resetTriggered: false,
+        mailboxClaim,
       });
       followupOperation.setPhase("running");
       followupOperations.push(followupOperation.turnKind);
