@@ -127,14 +127,18 @@ export function deferAbortedPartialPersistence(
     | "agentRunSeq"
     | "getRuntimeConfig"
   >,
-): void {
+): (() => void) | undefined {
   if (!snapshot?.ok || snapshot.settlement.deferred || !snapshot.settlement.producer) {
-    return;
+    return undefined;
   }
+  let revoked = false;
   try {
     snapshot.settlement.deferred = snapshot.settlement.producer.handoff((producerCompleted) =>
       context.trackExecution(async () => {
         await producerCompleted;
+        if (revoked) {
+          return;
+        }
         let warning: string | undefined;
         try {
           const { persistAbortedPartial } = await import("./chat-transcript-persistence.js");
@@ -164,10 +168,16 @@ export function deferAbortedPartialPersistence(
         }
       }),
     );
+    if (snapshot.settlement.deferred) {
+      return () => {
+        revoked = true;
+      };
+    }
   } catch (error) {
     // No handoff was accepted; the caller keeps its synchronous persistence path.
     context.logGateway.warn(`chat.abort producer handoff failed: ${formatErrorMessage(error)}`);
   }
+  return undefined;
 }
 
 export const ABORTED_PARTIAL_PERSISTENCE_WARNING =

@@ -430,7 +430,7 @@ export function abortChatRunById(
     sessionKey: string;
     stopReason?: string;
     diagnosticReason?: ChatAbortDiagnosticReason;
-    onAbortPrepared?: () => void;
+    onAbortPrepared?: () => (() => void) | void;
     onAbortCommitted?: () => void;
     expectedEntry?: RpcSourceRef;
     /** Shutdown can cancel retained cleanup without replacing an already published terminal. */
@@ -471,8 +471,12 @@ export function abortChatRunById(
   }
   active.adapter.abortDiagnosticReason = params.diagnosticReason;
   // Reserve transcript settlement while this exact producer still has authority.
+  let revokeAbortPreparation: (() => void) | undefined;
   try {
-    params.onAbortPrepared?.();
+    const preparation = params.onAbortPrepared?.();
+    if (typeof preparation === "function") {
+      revokeAbortPreparation = preparation;
+    }
   } catch {
     // Transcript handoff failure cannot prevent an already accepted cancellation.
   }
@@ -500,6 +504,7 @@ export function abortChatRunById(
         active.input.retirementRequested === true &&
         active.input.abortSignal.aborted);
     if (!cancelled) {
+      revokeAbortPreparation?.();
       Object.assign(active.adapter, previous);
       setRpcSourceProjectSessionActive(active, previousProjectSessionActive);
       runProjection.abortMarker = previousMarker;
@@ -508,6 +513,7 @@ export function abortChatRunById(
     cancellationFailure = { error };
   }
   if (!cancelled) {
+    revokeAbortPreparation?.();
     Object.assign(active.adapter, previous);
     setRpcSourceProjectSessionActive(active, previousProjectSessionActive);
     runProjection.abortMarker = previousMarker;
