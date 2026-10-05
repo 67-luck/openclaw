@@ -56,7 +56,7 @@ export function registerRpcSourceForTest(
 /** Projection-only fixtures still acquire an actual selector claim and operation. */
 export async function createActiveRpcSourceForTest(
   metadata: Partial<RpcSourceAdapter> & { projectSessionActive?: boolean } = {},
-  identity: Partial<RpcSourceIdentity> = {},
+  identity: Partial<RpcSourceIdentity> & { runId?: string } = {},
 ) {
   const ref = createRpcSourceForTest(metadata, identity);
   const release = await claimRpcSourceForTest(ref);
@@ -69,7 +69,7 @@ export async function registerActiveRpcSourceForTest(
   metadata: Partial<RpcSourceAdapter> & { projectSessionActive?: boolean } = {},
   identity: Partial<RpcSourceIdentity> = {},
 ) {
-  const ref = await createActiveRpcSourceForTest(metadata, identity);
+  const ref = await createActiveRpcSourceForTest(metadata, { ...identity, runId });
   registerRpcSource(runId, ref);
   return ref;
 }

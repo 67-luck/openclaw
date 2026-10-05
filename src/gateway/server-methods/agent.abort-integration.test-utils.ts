@@ -1024,7 +1024,12 @@ describe("gateway agent handler chat.abort integration", () => {
     const runId = "idem-abort-collision";
     const preExisting = createRpcSourceForTest(
       { requester: { connectionId: "chat-send-conn" } },
-      { runId, sessionId: "chat-send-session", sessionKey: "agent:main:main" },
+      {
+        runId,
+        storeScope: "/tmp/sessions.json",
+        sessionId: "existing-session-id",
+        sessionKey: "agent:main:main",
+      },
     );
     rpcSourceTesting.set(runId, preExisting);
     context.dedupe.delete(`agent:${runId}`);

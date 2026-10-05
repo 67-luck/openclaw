@@ -174,9 +174,11 @@ export function registerChatAbortController(params: {
   // Sessionless RPCs retain prepared authority without a fabricated session owner.
   if (!params.sessionKey) {
     const controller = new AbortController();
+    const existingEntry = getRpcSource(params.runId);
     return {
       controller,
       registered: false,
+      ...(existingEntry ? { existingEntry } : {}),
       markExecutionStarted: () => false,
       bindAgentRunDelegatedAuthority: () => {
         throw new Error("Unregistered source cannot own a projected run authority");
