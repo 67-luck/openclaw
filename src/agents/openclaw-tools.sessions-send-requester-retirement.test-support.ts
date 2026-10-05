@@ -1,4 +1,5 @@
-import { expect, it, vi, type MockInstance } from "vitest";
+import { expect, it, vi } from "vitest";
+import type { MockInstance } from "vitest";
 import { withinTest } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -16,7 +17,7 @@ import {
   getAdmittedRunDelegatedAuthority,
   prepareSystemAgentRunAdmission,
 } from "./admitted-run-context.js";
-import { type EmbeddedAgentQueueHandle } from "./embedded-agent-runner/runs.js";
+import type { EmbeddedAgentQueueHandle } from "./embedded-agent-runner/runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
   createEmbeddedRunHandle,

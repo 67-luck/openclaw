@@ -15,9 +15,9 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createSessionConversationTestRegistry } from "../../test-utils/session-conversation-registry.js";
 import { createOperationalRunInstanceRef } from "../admitted-run-context.js";
-import {
-  type EmbeddedAgentQueueHandle,
-  type EmbeddedAgentQueueMessageOptions,
+import type {
+  EmbeddedAgentQueueHandle,
+  EmbeddedAgentQueueMessageOptions,
 } from "../embedded-agent-runner/runs.js";
 import {
   clearTestEmbeddedRun as clearActiveEmbeddedRun,
