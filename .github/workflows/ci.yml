@@ -5621,6 +5621,7 @@ jobs:
                 run_check "test:extensions:package-boundary:canary" pnpm run test:extensions:package-boundary:canary
                 ;;
               runtime-topology-architecture)
+                run_check "db:kysely:gen" pnpm db:kysely:gen
                 GOGC="${GOGC:-30}" GOMEMLIMIT="${GOMEMLIMIT:-3GiB}" \
                   run_check "check:architecture" pnpm check:architecture
                 ;;
