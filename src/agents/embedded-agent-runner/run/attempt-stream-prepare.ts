@@ -618,6 +618,9 @@ function prepareStream(
     attempt.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(attempt.runId),
   );
   const registration = getEmbeddedRunAttachment(queueHandle);
+  if (registration) {
+    registration.runCleanupSettlement = attempt.runCleanupSettlement;
+  }
   if (attempt.deferTerminalLifecycle && attempt.onDeferredLifecycleOwner) {
     deferredLifecycleOwner = createEmbeddedAttemptDeferredLifecycleOwner({
       runId: attempt.runId,

@@ -22,6 +22,7 @@ import { createAgentCleanupScope, runOwnedAgentCleanup } from "../run-cleanup-ti
 import { SessionManager } from "../sessions/session-manager.js";
 import { immediateEnqueue } from "../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import { runEmbeddedAgent } from "./run-orchestrator.js";
+import { captureEmbeddedRunCleanupOwners, type EmbeddedRunCleanupOwner } from "./run-state.js";
 import type { RunEmbeddedAgentInternalParams } from "./run/internal-params.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
 
@@ -73,6 +74,7 @@ it.each([
     let workSignal: AbortSignal | undefined;
     let logical: Promise<EmbeddedAgentRunResult> | undefined;
     let actualCleanup: Promise<void> | undefined;
+    let cleanupOwner: EmbeddedRunCleanupOwner | undefined;
     let admission: ReturnType<typeof prepareSystemAgentRunAdmission> | undefined;
     const cliResources = mode === "parent-cancel" ? new CliPluginInvocationResources() : undefined;
     let parentSignal: AbortSignal | undefined;
@@ -305,6 +307,11 @@ it.each([
         throw new Error("Candidate registry source was not selected");
       }
       admission.close();
+      cleanupOwner = captureEmbeddedRunCleanupOwners().find((owner) => owner.runId === runId);
+      expect(cleanupOwner).toMatchObject({ runId, sessionId: runId });
+      if (!cleanupOwner) {
+        throw new Error("Generation cleanup was not retained after logical completion");
+      }
       signalAbortedAtLogicalResult = workSignal?.aborted;
       expect.soft(selected.disposed).toBe(0);
       expect.soft(signalAbortedAtLogicalResult ?? false).toBe(false);
@@ -345,6 +352,8 @@ it.each([
       if (cliResources) {
         expect(parentClosed).toBe(true);
       }
+      await cleanupOwner.settlement;
+      expect(captureEmbeddedRunCleanupOwners().some((owner) => owner.runId === runId)).toBe(false);
       expect(selected.disposed).toBe(1);
       expect(cleanupScope.outcome).toBe("uncertain");
       if (mode === "late-failure") {

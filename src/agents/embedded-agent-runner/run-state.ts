@@ -35,7 +35,7 @@ import {
   getAttachedBackend,
 } from "../../sessions/session-controller.state.js";
 import type { SessionControllerWatchdogAttempt } from "../../sessions/session-controller.watchdog.js";
-import type { createDeferredCore } from "../../shared/deferred.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { OperationalRunInstanceRef } from "../admitted-run-context.js";
 import type { ReplyExpectation } from "../reply-completion.js";
@@ -166,6 +166,8 @@ export type EmbeddedRunRegistration = {
   lifecycleGeneration: string;
   /** Resolves only when this exact native producer clears, including after replacement. */
   settlement: ReturnType<typeof createDeferredCore<void>>;
+  /** Full generation cleanup retained after native terminal publication clears this attachment. */
+  runCleanupSettlement?: Promise<void>;
   settled?: true;
   watchdogAttempt?: SessionControllerWatchdogAttempt;
   closeWatchdogWait?: () => void;
@@ -208,7 +210,6 @@ export type EmbeddedRunCompletionClaim = {
   settleRegistration: (registration: EmbeddedRunCompletionRegistration | undefined) => void;
 };
 
-
 export type AbandonedEmbeddedRun = {
   sessionId: string;
   runId?: string;
@@ -225,6 +226,7 @@ const EMBEDDED_RUN_STATE_KEY = Symbol.for("openclaw.embeddedRunState");
 const embeddedRunState = resolveGlobalSingleton(EMBEDDED_RUN_STATE_KEY, () => ({
   detachedAttempts: new Set<DetachedEmbeddedRunAttachment>(),
   activeRunsByRunId: new Map<string, ActiveEmbeddedRunAttachment>(),
+  pendingCleanupOwners: new Set<EmbeddedRunCleanupOwner>(),
   // Talk prepares before registration; only the matching live run promotes this
   // one-shot final-delivery claim. Replacement or lifecycle rotation revokes it.
   completionClaims: new Map<string, EmbeddedRunCompletionClaim>(),
@@ -240,6 +242,38 @@ const embeddedRunState = resolveGlobalSingleton(EMBEDDED_RUN_STATE_KEY, () => ({
 // Detached/sessionless attempts retain native authority without creating a session
 // scheduling identity. Scoped attempts exist only on their exact controller turn.
 const detachedAttempts = embeddedRunState.detachedAttempts;
+const pendingCleanupOwners =
+  embeddedRunState.pendingCleanupOwners ??
+  (embeddedRunState.pendingCleanupOwners = new Set<EmbeddedRunCleanupOwner>());
+
+export type EmbeddedRunCleanupOwner = Readonly<{
+  runId: string;
+  sessionId: string;
+  settlement: Promise<void>;
+  /** Releases a failed cleanup receipt after its observer records the failure. */
+  acknowledge: () => void;
+}>;
+
+/** Retains generation cleanup after terminal publication clears its native attachment. */
+export function registerEmbeddedRunCleanupSettlement(
+  params: Pick<EmbeddedRunCleanupOwner, "runId" | "sessionId">,
+): ReturnType<typeof createDeferredCore<void>> {
+  const settlement = createDeferredCore();
+  const owner: EmbeddedRunCleanupOwner = Object.freeze({
+    ...params,
+    settlement: settlement.promise,
+    acknowledge: () => pendingCleanupOwners.delete(owner),
+  });
+  pendingCleanupOwners.add(owner);
+  void owner.settlement.then(owner.acknowledge, () => {});
+  return settlement;
+}
+
+/** Captures process-local generation cleanup before lifecycle rotation or module invalidation. */
+export function captureEmbeddedRunCleanupOwners(): readonly EmbeddedRunCleanupOwner[] {
+  return Object.freeze([...pendingCleanupOwners]);
+}
+
 export function getControllerEmbeddedAttachment(
   operation: ReplyOperation,
 ): EmbeddedRunAttachment | undefined {
@@ -313,13 +347,24 @@ export function detachNativeAttempt(attachment: ActiveEmbeddedRunAttachment): vo
     detachedAttempts.delete(attachment);
   }
 }
+
+/** Joins the exact native attachment, generation cleanup, and controller owner. */
+export async function waitForEmbeddedRunOwnerSettlement(
+  attachment: ActiveEmbeddedRunAttachment,
+): Promise<void> {
+  await Promise.all([
+    attachment.settlement.promise,
+    attachment.runCleanupSettlement,
+    attachment.operation?.ownerSettlement,
+  ]);
+}
+
 export const ACTIVE_EMBEDDED_RUNS_BY_RUN_ID =
   embeddedRunState.activeRunsByRunId ??
   (embeddedRunState.activeRunsByRunId = new Map<string, ActiveEmbeddedRunAttachment>());
 export const EMBEDDED_RUN_COMPLETION_CLAIMS =
   embeddedRunState.completionClaims ??
   (embeddedRunState.completionClaims = new Map<string, EmbeddedRunCompletionClaim>());
-
 
 /** Identity-only dispatch must resolve the same participant owner as in-process tools. */
 export function captureActiveEmbeddedRunPersonalToolParticipants(
@@ -485,7 +530,6 @@ export const EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS =
     EmbeddedAgentQueueHandle,
     () => Promise<void>
   >());
-
 
 function evictPriorLifecycleEmbeddedRuns(): void {
   const staleHandles = new Set<EmbeddedAgentQueueHandle>();

@@ -57,6 +57,7 @@ import {
   embeddedRunCleanupAttachment,
   getControllerEmbeddedAttachment,
   getEmbeddedRunAttachment,
+  waitForEmbeddedRunOwnerSettlement,
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
   ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE,
   ACTIVE_EMBEDDED_RUN_SNAPSHOTS,
@@ -1030,9 +1031,7 @@ function projectActiveEmbeddedRunOwner(
     sessionId: registration.sessionId,
     ...(registration.sessionKey ? { sessionKey: registration.sessionKey } : {}),
     ...(handle.startedAtMs === undefined ? {} : { startedAtMs: handle.startedAtMs }),
-    waitForSettlement: async () => {
-      await Promise.all([registration.settlement.promise, registration.operation?.ownerSettlement]);
-    },
+    waitForSettlement: () => waitForEmbeddedRunOwnerSettlement(registration),
     // A recovered run ID is correlation only. Recheck the captured owner before
     // Stop so a stale UI action cannot abort replacement work in the session.
     stop,
@@ -1179,12 +1178,12 @@ export function setActiveEmbeddedRun(
       diag.warn(`stale run registration abort failed: sessionId=${sessionId} err=${String(error)}`);
       throw error;
     }
-    return;
+    return undefined;
   }
   if (handle.diagnosticOwner && isDiagnosticEmbeddedRunOwnerClosed(handle.diagnosticOwner)) {
     revokeCompletionClaim(sessionId, handle.runId);
     handle.abort("restart");
-    return;
+    return undefined;
   }
   const caller = getGatewayToolCallerIdentity();
   let toolAuthority: EmbeddedRunRegistration["toolAuthority"];
@@ -1311,12 +1310,11 @@ export function setActiveEmbeddedRun(
   attachNativeAttempt(attachment);
   handle[embeddedRunCleanupAttachment] = attachment;
   if (watchdogAttempt && handle.ownsLiveness) {
-    const registration = attachment;
     const wait = watchdogAttempt.beginWait({
       kind: "runtime_owned",
       isCurrent: () => {
         if (
-          getEmbeddedRunAttachment(handle) !== registration ||
+          getEmbeddedRunAttachment(handle) !== attachment ||
           (operation && getSessionControllerEntryForOperation(operation).attachment !== attachment)
         ) {
           return false;
@@ -1325,7 +1323,7 @@ export function setActiveEmbeddedRun(
         return handle.ownsLiveness?.() === true && !handle.isAborted?.() && !handle.isStopped?.();
       },
     });
-    registration.closeWatchdogWait = () => wait.close();
+    attachment.closeWatchdogWait = () => wait.close();
   }
   if (operation) {
     if (toolAuthority?.sourceTurnId) {

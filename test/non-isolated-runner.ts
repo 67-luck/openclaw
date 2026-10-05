@@ -295,7 +295,7 @@ function runCleanupActions(actions: CleanupAction[]): unknown {
   return firstError;
 }
 
-function resetOpenClawGlobalRunState(): void {
+async function resetOpenClawGlobalRunState(): Promise<void> {
   const cleanupActions: CleanupAction[] = [];
   const globalStore = globalThis as Record<PropertyKey, unknown>;
   const resetActiveEmbeddedRuns = (
@@ -310,6 +310,13 @@ function resetOpenClawGlobalRunState(): void {
   )?.resetReplyRunRegistry;
   if (resetReplyRunRegistry) {
     cleanupActions.push(resetReplyRunRegistry);
+  }
+
+  if (cleanupActions.length > 0) {
+    const { drainNonIsolatedRunState } = await vi.importActual<
+      typeof import("./non-isolated-run-state.js")
+    >("./non-isolated-run-state.js");
+    await drainNonIsolatedRunState();
   }
 
   const cleanupError = runCleanupActions(cleanupActions);
@@ -539,7 +546,7 @@ export default class OpenClawNonIsolatedRunner extends TestRunner {
         markGatewayRestartDraining();
       }
     });
-    if (!clean("run state", resetOpenClawGlobalRunState)) {
+    if (!(await drain("run state", resetOpenClawGlobalRunState))) {
       // Failed cancellation retains the run's runtime, storage and module generation.
       retainSqliteTestCustody();
       await publishFailures();

@@ -68,6 +68,8 @@ export type RunEmbeddedAgentInternalParams = RunEmbeddedAgentParams & {
   /** Re-admit from the committed transcript without persisting the original prompt again. */
   pluginRuntimeRefreshContinuation?: true;
   pluginRuntimeRefreshMessages?: EmbeddedRunAttemptParams["pluginRuntimeRefreshMessages"];
+  /** Actual generation cleanup, including source callbacks after native terminal publication. */
+  runCleanupSettlement?: Promise<void>;
   /** Host-only transfer of attempt terminal resources to the logical turn. */
   onDeferredLifecycleOwner?: (owner: DeferredEmbeddedRunLifecycleOwner) => void;
   /** Aborts the logical turn when its retained embedded handle is cancelled. */
@@ -80,7 +82,10 @@ export type RunEmbeddedAgentInternalParams = RunEmbeddedAgentParams & {
 };
 
 export type EmbeddedRunAttemptInternalParams = EmbeddedRunAttemptParams &
-  Pick<RunEmbeddedAgentInternalParams, "onContextAccountingEvent" | "onCompactionRequestBudget"> & {
+  Pick<
+    RunEmbeddedAgentInternalParams,
+    "onContextAccountingEvent" | "onCompactionRequestBudget" | "runCleanupSettlement"
+  > & {
     bindWatchdogAttempt?: (attempt: SessionControllerWatchdogAttempt) => void;
     compactionCountOwner?: "subscription" | "caller";
     /** Current-run committed plan facts; retained across attempts, never loaded from history. */

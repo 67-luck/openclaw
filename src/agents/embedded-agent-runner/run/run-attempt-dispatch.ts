@@ -386,6 +386,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
       }
     },
     pluginRuntimeRefreshMessages: params.pluginRuntimeRefreshMessages,
+    runCleanupSettlement: params.runCleanupSettlement,
     permissionChange: input.permissionChange,
     admittedRunContext: params.admittedRunContext,
     startedAtMs: runInput.startedAtMs,

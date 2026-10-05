@@ -25,7 +25,10 @@ export async function waitForSessionNativeAttemptEnd(
   if (!registration) {
     return true;
   }
-  const settled = registration.settlement.promise.then(() => true);
+  const settled = Promise.all([
+    registration.settlement.promise,
+    registration.runCleanupSettlement,
+  ]).then(() => true);
   if (timeoutMs === null) {
     return await settled;
   }
