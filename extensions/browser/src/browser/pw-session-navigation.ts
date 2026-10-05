@@ -16,45 +16,9 @@ import {
   markTargetBlocked,
   pageTargetInfo,
 } from "./pw-session-connection.js";
+import { installNavigationAuthorityFence } from "./pw-session-navigation-fence.js";
+import { classifyBrowserDocumentNavigationRequest } from "./pw-session-navigation-request.js";
 import { isConnectionScopedPage } from "./pw-session-page-target.js";
-
-type BrowserDocumentNavigationRequestKind = "top-level" | "subframe";
-
-/** Classify requests that can navigate the selected page or one of its frames. */
-function classifyBrowserDocumentNavigationRequest(
-  page: Page,
-  request: Request,
-): BrowserDocumentNavigationRequestKind | null {
-  let kind: BrowserDocumentNavigationRequestKind;
-  let frameResolutionFailed = false;
-  try {
-    kind = request.frame() === page.mainFrame() ? "top-level" : "subframe";
-  } catch {
-    // Preserve the navigate-owner fail-closed contract during renderer churn:
-    // an unresolved document request may be the selected main frame.
-    kind = "top-level";
-    frameResolutionFailed = true;
-  }
-
-  try {
-    if (request.isNavigationRequest()) {
-      return kind;
-    }
-  } catch {
-    // Fall through to the resource-type check.
-  }
-
-  try {
-    if (request.resourceType() === "document") {
-      return kind;
-    }
-  } catch {
-    // Fall through to the unresolved-frame result below.
-  }
-  // Match the previous two-step classifier: known non-doc requests fall
-  // through, while an unresolved frame remains guarded as a subframe.
-  return frameResolutionFailed ? "subframe" : null;
-}
 
 /** Return true when an error is a browser navigation policy denial. */
 export function isPolicyDenyNavigationError(err: unknown): boolean {
@@ -193,7 +157,11 @@ export async function withPageNavigationRequestGuard<T>(
     browserProxyMode: opts.browserProxyMode,
     assertNavigationCurrent: opts.assertNavigationCurrent,
   });
-  if (!navigationPolicy.ssrfPolicy && !navigationPolicy.browserProxyMode) {
+  if (
+    !navigationPolicy.ssrfPolicy &&
+    !navigationPolicy.browserProxyMode &&
+    !navigationPolicy.assertNavigationCurrent
+  ) {
     return await opts.action(opts.page.url());
   }
 
@@ -346,10 +314,21 @@ export async function withPageNavigationRequestGuard<T>(
     throw err;
   }
 
+  let removeAuthorityFence: (() => Promise<unknown>) | undefined;
   let result: T | undefined;
   let actionFailed = false;
   let actionError: unknown;
   try {
+    removeAuthorityFence = await installNavigationAuthorityFence(
+      opts.page,
+      navigationPolicy,
+      (error) => {
+        recordGuardError(error);
+        notifyPolicyDeniedDetected();
+        unpreservedDocumentCount += 1;
+        updateImmediateSourcePreservation();
+      },
+    );
     let baselineUrl = opts.page.url();
     await assertBrowserNavigationResultAllowed({ url: baselineUrl, ...navigationPolicy });
     const latestUrl = opts.page.url();
@@ -374,12 +353,14 @@ export async function withPageNavigationRequestGuard<T>(
     }
   }
 
-  // Remove admission first so a busy page cannot add work indefinitely. Active
-  // RouteHandler callbacks retain their exact invocation and are drained below.
-  const cleanupError = await removePageNavigationRequestGuard(opts.page, handler);
+  // Stop admitting Page routes before draining them, while the independent
+  // redirect fence keeps every active document chain protected through cleanup.
+  const routeCleanupError = await removePageNavigationRequestGuard(opts.page, handler);
   while (inFlight.size > 0) {
     await Promise.allSettled(inFlight);
   }
+  const authorityCleanupError = await removeAuthorityFence?.();
+  const cleanupError = routeCleanupError ?? authorityCleanupError;
 
   // Request-policy denial wins over locator/action/cleanup errors. Only 204
   // responses prove that every denied document was intercepted and source-preserved.
@@ -455,10 +436,18 @@ export async function gotoPageWithNavigationGuard(
     await removePageNavigationRequestGuard(opts.page, handler);
     throw err;
   }
+  let removeAuthorityFence: (() => Promise<unknown>) | undefined;
   let response: Response | null = null;
   let navigationFailed = false;
   let navigationError: unknown;
   try {
+    removeAuthorityFence = await installNavigationAuthorityFence(
+      opts.page,
+      navigationPolicy,
+      (error) => {
+        blockedError ??= error;
+      },
+    );
     // Synchronous authority must not yield between its final fence and navigation.
     const assertion = opts.assertPageCurrent?.();
     if (assertion) {
@@ -471,7 +460,9 @@ export async function gotoPageWithNavigationGuard(
     navigationError = err;
   }
 
-  const cleanupError = await removePageNavigationRequestGuard(opts.page, handler);
+  const authorityCleanupError = await removeAuthorityFence?.();
+  const cleanupError =
+    (await removePageNavigationRequestGuard(opts.page, handler)) ?? authorityCleanupError;
   if (blockedError) {
     if (isPolicyDenyNavigationError(blockedError)) {
       await closeBlockedNavigationTarget({

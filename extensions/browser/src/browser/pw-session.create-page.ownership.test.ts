@@ -13,6 +13,9 @@ function installBrowserMocks() {
   const sessionSend = vi.fn(async (_method: string) => targetInfo);
   const pageMock = {
     on: vi.fn(),
+    off: vi.fn(),
+    once: vi.fn(),
+    isClosed: () => false,
     context: () => context,
     goto: vi.fn(async () => null),
     close: vi.fn(async () => {
@@ -36,7 +39,12 @@ function installBrowserMocks() {
     close: vi.fn(async () => {
       openPages.length = 0;
     }),
-    newCDPSession: async () => ({ send: sessionSend, detach: async () => {} }),
+    newCDPSession: async () => ({
+      send: sessionSend,
+      detach: async () => {},
+      on: vi.fn(),
+      off: vi.fn(),
+    }),
   };
   const context = contextMock as unknown as BrowserContext;
   const browserMock = {
