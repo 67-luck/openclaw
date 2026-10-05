@@ -1,5 +1,6 @@
 /** Real embedded subscriber/catalog executor shared by bridge lifecycle regressions. */
 import { createDiagnosticEmbeddedRunOwner } from "../logging/diagnostic-run-activity.js";
+import { createReplyOperation } from "../sessions/session-controller.js";
 import { createCodeModeTools } from "./code-mode.js";
 import {
   createAttemptNestedToolActivityState,
@@ -33,6 +34,12 @@ export function createSubscribedCodeModeHarness(params: {
   } as never;
   const catalogRef = createToolSearchCatalogRef();
   const runAbortController = new AbortController();
+  const replyOperation = createReplyOperation({
+    sessionKey,
+    sessionId,
+    agentId: "main",
+    resetTriggered: false,
+  });
   const { session, emit } = createStubSessionHarness();
   const sessionManager = params.sessionManager ?? SessionManager.inMemory();
   const nestedToolActivityState = createAttemptNestedToolActivityState();
@@ -50,6 +57,7 @@ export function createSubscribedCodeModeHarness(params: {
       runId,
       sessionId,
       sessionKey,
+      replyOperation,
       onToolResult: params.onToolResult,
       observeToolTerminal: params.observeToolTerminal,
       onToolStreamBoundary: params.onToolStreamBoundary,
@@ -111,6 +119,7 @@ export function createSubscribedCodeModeHarness(params: {
       clearToolSearchCatalog(context);
       stream.subscription.unsubscribe();
       clearActiveEmbeddedRun(sessionId, stream.queueHandle, sessionKey);
+      replyOperation.complete();
     },
   };
 }
