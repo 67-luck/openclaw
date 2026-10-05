@@ -20,8 +20,10 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { sessionTranscriptIndexNeedsReconcile } from "../config/sessions/session-transcript-index.js";
 import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
+import { onInternalDiagnosticEvent } from "../infra/diagnostic-events.js";
 import { sqliteWorkerPreloadEnv } from "../infra/sqlite-worker-preload.test-support.js";
 import * as workerCpu from "../infra/worker-cpu.js";
+import { setLoggerOverride } from "../logging.js";
 import { runExec } from "../process/exec.js";
 import * as spawnBroker from "../process/spawn-broker/context.js";
 import { getActiveSecretsRuntimeSnapshot } from "../secrets/runtime.js";
@@ -255,6 +257,46 @@ it.for([
     const releasePath = pause?.releasePath ?? path.join(root, "release-inspection");
     const enteredPath = pause?.enteredPaths[0] ?? path.join(root, "inspection-entered-0");
     Object.assign(env, pause?.env);
+    const backgroundOpenEntered = createDeferredCore();
+    const backgroundOpenRelease = createDeferredCore();
+    const degraded = createDeferredCore();
+    let stopObservingDegradation: (() => void) | undefined;
+    if (outcome === "corrupt") {
+      // Hold the deferred writer at its real admission boundary so the pending
+      // refusal cannot settle before this test observes it.
+      const agentWrite = await import("../state/openclaw-agent-write-admission.js");
+      const runWorkerWrite = agentWrite.runOpenClawAgentWorkerWrite;
+      vi.spyOn(agentWrite, "runOpenClawAgentWorkerWrite").mockImplementation(async (...args) => {
+        const [options] = args;
+        if (
+          !("target" in options) &&
+          options.agentId === agentId &&
+          resolveOpenClawAgentSqlitePath(options) === agentPath
+        ) {
+          backgroundOpenEntered.resolve();
+          await withinTest(backgroundOpenRelease.promise, signal);
+        }
+        return await runWorkerWrite(...args);
+      });
+      setLoggerOverride({
+        level: "warn",
+        consoleLevel: "silent",
+        file: path.join(root, "startup-degradation.log"),
+      });
+      // The degradation warning follows the authoritative failed-refusal write.
+      stopObservingDegradation = onInternalDiagnosticEvent(
+        (event) => {
+          if (
+            event.type === "log.record" &&
+            event.message === "agent database remains degraded" &&
+            event.attributes?.agentId === agentId
+          ) {
+            degraded.resolve();
+          }
+        },
+        { include: ["log.record"] },
+      );
+    }
     const preparationRelease = createDeferredCore();
     const preparationEntered = createDeferredCore();
     let sessionPrepared = false;
@@ -417,12 +459,16 @@ it.for([
       }
       expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(200);
       if (outcome === "corrupt") {
-        await vi.waitFor(() =>
-          expect(readAgentDatabaseAdmissionRefusal(agentId, { env })).toMatchObject({
-            code: "agent-database-inspection-failed",
-            repairHint: expect.stringContaining("doctor --fix"),
-          }),
-        );
+        await withinTest(backgroundOpenEntered.promise, signal);
+        expect(readAgentDatabaseAdmissionRefusal(agentId, { env })).toMatchObject({
+          code: "agent-database-inspection-pending",
+        });
+        backgroundOpenRelease.resolve();
+        await withinTest(degraded.promise, signal);
+        expect(readAgentDatabaseAdmissionRefusal(agentId, { env })).toMatchObject({
+          code: "agent-database-inspection-failed",
+          repairHint: expect.stringContaining("doctor --fix"),
+        });
         expect(() => openOpenClawAgentDatabase(scope)).toThrow(AgentDatabaseAdmissionError);
         expect((await fetch(`http://127.0.0.1:${port}/readyz`)).status).toBe(
           agentId === "main" ? 503 : 200,
@@ -590,6 +636,11 @@ it.for([
       }
     } finally {
       pendingFixtureCleanup = (async () => {
+        stopObservingDegradation?.();
+        if (outcome === "corrupt") {
+          setLoggerOverride({ level: "silent", consoleLevel: "silent" });
+        }
+        backgroundOpenRelease.resolve();
         restorationRelease.resolve();
         preparationRelease.resolve();
         fs.writeFileSync(releasePath, "resume");
