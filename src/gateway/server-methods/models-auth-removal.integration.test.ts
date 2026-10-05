@@ -293,7 +293,7 @@ describe("models.authLogout with a concurrent registered config set", () => {
                 apiKey: "synthetic-held-run-key",
                 agentId: "main",
               });
-              const agentDir = resolveAgentDir(cfg, "main");
+              const agentDir = resolveAgentDir({ agents: cfg.agents }, "main");
               for (const [profileId, credential] of [
                 [
                   "fixture:ref",

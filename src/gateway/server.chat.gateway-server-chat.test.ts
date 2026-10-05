@@ -525,7 +525,10 @@ describe("gateway server chat", () => {
     async (method) => {
       await withMainSessionStore(async () => {
         await updateSessionEntry(
-          { sessionKey: "main", storePath: expectDefined(testState.sessionStorePath) },
+          {
+            sessionKey: "main",
+            storePath: expectDefined(testState.sessionStorePath, "session store path"),
+          },
           () => ({ queueMode: "interrupt" }),
         );
         const oldRunId = `idem-${method}-interrupt-old`;

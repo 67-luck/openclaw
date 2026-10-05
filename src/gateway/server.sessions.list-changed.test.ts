@@ -297,10 +297,13 @@ test("sessions.list uses persisted usage and selected model fields", async () =>
   await prepareGatewayReplyRuntimeForTest();
   const held = new Map<
     string,
-    { entered: ReturnType<typeof createDeferred>; release: ReturnType<typeof createDeferred> }
+    {
+      entered: ReturnType<typeof createDeferred<void>>;
+      release: ReturnType<typeof createDeferred<void>>;
+    }
   >();
   for (const runId of ["list-live-z", "list-live-a"]) {
-    held.set(runId, { entered: createDeferred(), release: createDeferred() });
+    held.set(runId, { entered: createDeferred<void>(), release: createDeferred<void>() });
   }
   agentCommandMock.mockImplementation(async (options) => {
     const command = options as AgentCommandGatewayIngressOpts;
@@ -315,7 +318,7 @@ test("sessions.list uses persisted usage and selected model fields", async () =>
     for (const [runId, sessionKey] of [
       ["list-live-z", "agent:main:main"],
       ["list-live-a", "agent:main:dashboard:live"],
-    ]) {
+    ] as const) {
       const accepted = await rpcReq(ws, "agent", {
         sessionKey,
         message: "Hold this list-visible turn",
@@ -324,13 +327,17 @@ test("sessions.list uses persisted usage and selected model fields", async () =>
       expect(accepted.ok).toBe(true);
       await held.get(runId)!.entered.promise;
     }
-    const first = await rpcReq<{
+    type ActiveSessionPage = {
       count: number;
       totalCount: number;
       nextOffset: number | null;
       sessions: Array<{ key: string; hasActiveRun: boolean; activeRunIds: string[] }>;
-    }>(ws, "sessions.list", { activeOnly: true, limit: 1 });
-    const second = await rpcReq<typeof first.payload>(ws, "sessions.list", {
+    };
+    const first = await rpcReq<ActiveSessionPage>(ws, "sessions.list", {
+      activeOnly: true,
+      limit: 1,
+    });
+    const second = await rpcReq<ActiveSessionPage>(ws, "sessions.list", {
       activeOnly: true,
       limit: 1,
       offset: 1,
