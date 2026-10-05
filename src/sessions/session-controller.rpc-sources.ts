@@ -332,7 +332,11 @@ export function getRpcSourceProjectSessionActive(
     return ref?.input.retirementRequested === true ? false : undefined;
   }
   const attachment = getSessionControllerEntryForOperation(operation).attachment;
-  return attachment?.operation === operation ? attachment.projectSessionActive : undefined;
+  return attachment?.operation === operation
+    ? attachment.projectSessionActive
+    : ref?.input.retirementRequested === true
+      ? false
+      : undefined;
 }
 
 /** Updates presentation on the exact operation attachment without creating a second owner. */
