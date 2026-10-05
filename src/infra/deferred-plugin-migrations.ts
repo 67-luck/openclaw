@@ -23,14 +23,6 @@ import type { DB } from "../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import { isTruthyEnvValue } from "./env.js";
-import { clearNodeSqliteKyselyCacheForDatabase } from "./kysely-sync-cache-state.js";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
-import { setSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
-import { runWithSqliteCleanup, throwSqliteLifecycleErrors } from "./sqlite-lifecycle-errors.js";
-import { invalidateSuccessfulMigrationCheckpointsInTransaction } from "./startup-migration-checkpoint.js";
-import { withStateDatabaseSchemaMaintenance } from "./state-database-maintenance.js";
-import { recordLegacyMigrationRun } from "./state-migrations.receipts.js";
 import {
   DEFERRED_PLUGIN_MIGRATION_RUN_PREFIX as RUN_PREFIX,
   deferredPluginMigrationSchema,
@@ -39,6 +31,14 @@ import {
   readPendingMigrationRows,
   type DeferredPluginMigration,
 } from "./deferred-plugin-migrations.store.js";
+import { isTruthyEnvValue } from "./env.js";
+import { clearNodeSqliteKyselyCacheForDatabase } from "./kysely-sync-cache-state.js";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
+import { setSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
+import { runWithSqliteCleanup, throwSqliteLifecycleErrors } from "./sqlite-lifecycle-errors.js";
+import { invalidateSuccessfulMigrationCheckpointsInTransaction } from "./startup-migration-checkpoint.js";
+import { withStateDatabaseSchemaMaintenance } from "./state-database-maintenance.js";
+import { recordLegacyMigrationRun } from "./state-migrations.receipts.js";
 
 export type { DeferredPluginMigration } from "./deferred-plugin-migrations.store.js";
 
