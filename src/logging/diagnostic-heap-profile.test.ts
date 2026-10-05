@@ -472,13 +472,22 @@ for (const includeCollected of [false, true]) {
   const result = outcome.result;
   assert.ok(result.profile);
   const nodes = [result.profile.head];
+  const workloadIds = new Set();
   let selfBytes = 0;
   for (const node of nodes) {
-    if (node.callFrame.functionName === 'allocateDroppedHeapProfileWorkload') selfBytes += node.selfSize;
+    if (node.callFrame.functionName === 'allocateDroppedHeapProfileWorkload') {
+      workloadIds.add(node.id);
+      selfBytes += node.selfSize;
+    }
     nodes.push(...node.children);
   }
-  console.log(JSON.stringify({ includeCollected, allocatedBytes: 200 * 1024 * 1024, selfBytes, durationMs: result.durationMs }));
-  assert.ok(includeCollected ? selfBytes > 190 * 1024 * 1024 : selfBytes === 0, 'collected allocation attribution');
+  // V8 can retain smaller runtime allocations on the same frame after the rows die.
+  // Check the fixture's MiB-sized backing stores, preserving exact-zero collection proof.
+  const workloadBytes = result.profile.samples
+    .filter(sample => workloadIds.has(sample.nodeId) && sample.size >= 1024 * 1024)
+    .reduce((sum, sample) => sum + sample.size, 0);
+  console.log(JSON.stringify({ includeCollected, allocatedBytes: 200 * 1024 * 1024, selfBytes, workloadBytes, durationMs: result.durationMs }));
+  assert.ok(includeCollected ? workloadBytes > 190 * 1024 * 1024 : workloadBytes === 0, 'collected allocation attribution');
   if (includeCollected) {
     assert.equal(result.includeObjectsCollectedByMajorGC, true);
     assert.equal(result.includeObjectsCollectedByMinorGC, true);
