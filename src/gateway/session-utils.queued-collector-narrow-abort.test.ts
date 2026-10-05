@@ -11,7 +11,7 @@ import {
   clearActiveEmbeddedRun,
 } from "../agents/embedded-agent-runner/runs.js";
 import { createEmbeddedRunHandle } from "../agents/embedded-agent-runner/runs.test-support.js";
-
+import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { isSubagentRunQueued } from "../agents/subagents/registry/subagent-registry-read.js";
 import { getRuntimeConfig, setRuntimeConfigSnapshot } from "../config/config.js";
 import {
@@ -149,10 +149,10 @@ it.each(["active", "queued", "pending-chat", "agent"] as const)(
       { ok: true, status: "aborted", abortedRunId: entry.runId },
     ]);
     expect(isSubagentRunQueued(entry)).toBe(false);
-    expect(entry.collectorCompletion?.status).toBe("killed");
+    expect(subagentRuns.get(entry.runId)?.collectorCompletion?.status).toBe("killed");
     expect(old.input.abortSignal.aborted).toBe(false);
     if (descendant && descendantSource) {
-      expect(descendant.entry.collectorCompletion?.status).toBe("killed");
+      expect(subagentRuns.get(descendant.entry.runId)?.collectorCompletion?.status).toBe("killed");
       expect(descendantSource.input.abortSignal.aborted).toBe(false);
       expect(descendantOwnedSource?.input.abortSignal.aborted).toBe(true);
       await descendantOwnedSource?.input.settlement.promise;
@@ -270,7 +270,7 @@ it("narrow collector Stop joins owned raw effects without interrupting or waitin
     expect(foreign.isActive()).toBe(true);
     expect(foreignAbort).not.toHaveBeenCalled();
     expect(foreignOperation.abortSignal.aborted).toBe(false);
-    expect(entry.collectorCompletion?.status).toBe("killed");
+    expect(subagentRuns.get(entry.runId)?.collectorCompletion?.status).toBe("killed");
   } finally {
     rawFinish.resolve();
     validationFinish.resolve();

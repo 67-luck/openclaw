@@ -171,6 +171,7 @@ export async function mutateSubagentRunForKill(
     params.requiredSessionId !== undefined && params.beforeSessionKill !== undefined;
   const resolved = params.session;
   const sessionId = resolved.entry?.sessionId;
+  const captureSessionId = params.requiredSessionId ?? sessionId;
   const sessionLifecycleRevision = resolved.entry?.lifecycleRevision;
   const target = captureSessionTarget({
     storeScope: resolved.storePath,
@@ -381,12 +382,11 @@ export async function mutateSubagentRunForKill(
       }
       capturedStop = captureSessionControllerStop({
         inputs: selectedClaims(target).flatMap((claim) =>
-          claim.inputs.filter((input) => inputMatchesSessionId(input, params.requiredSessionId)),
+          claim.inputs.filter((input) => inputMatchesSessionId(input, captureSessionId)),
         ),
         operations: [...selectedOperations([target])].filter(
           (operation) =>
-            params.requiredSessionId === undefined ||
-            operation.hasOwnedSessionId(params.requiredSessionId),
+            captureSessionId === undefined || operation.hasOwnedSessionId(captureSessionId),
         ),
       });
       const capturedPreparation = captureSessionControllerStop({
@@ -400,7 +400,7 @@ export async function mutateSubagentRunForKill(
                   (input) =>
                     !input.claim &&
                     input.phase !== "consumed" &&
-                    inputMatchesSessionId(input, params.requiredSessionId),
+                    inputMatchesSessionId(input, captureSessionId),
                 )
                 .map((input) => ({
                   input,

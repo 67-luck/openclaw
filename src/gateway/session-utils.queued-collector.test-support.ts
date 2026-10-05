@@ -18,6 +18,12 @@ import { emitAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.j
 import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
 import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
 import {
+  releaseSessionControllerClaim,
+  tryClaimSessionControllerTask,
+} from "../sessions/session-controller.mailbox.js";
+import { createReplyOperation } from "../sessions/session-controller.operation.js";
+import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
+import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
@@ -64,6 +70,11 @@ export function useQueuedCollectorFixture() {
   let projection: SessionRowProjection;
   const launchedRunIds: string[] = [];
   const launchSignals = new Map<string, ReturnType<typeof createDeferred<void>>>();
+  const parentOperations: Array<{
+    cleanup: () => void;
+    operation: ReturnType<typeof createReplyOperation>;
+    release: () => void;
+  }> = [];
 
   function waitForLaunch(runId: string) {
     if (launchedRunIds.includes(runId)) {
@@ -148,6 +159,11 @@ export function useQueuedCollectorFixture() {
       clearAgentRunContext(runId);
     }
     launchSignals.clear();
+    for (const parent of parentOperations.splice(0)) {
+      parent.operation.complete();
+      parent.release();
+      parent.cleanup();
+    }
     await resetSubagentRegistryForTests({ persist: false });
     spawnTesting.setDepsForTest();
     resetAgentEventsForTest({ preserveListeners: true });
@@ -166,7 +182,7 @@ export function useQueuedCollectorFixture() {
       getSessionEventSubscriberConnIds: () => new Set(["observer"]),
       broadcastToConnIds: vi.fn(),
     }) as unknown as GatewayRequestContext;
-    registerChatAbortController({
+    const registration = registerChatAbortController({
       target: captureRpcTargetForTest({
         sessionKey: parentKey,
         sessionId: "parent-session",
@@ -178,6 +194,30 @@ export function useQueuedCollectorFixture() {
       agentId: "main",
       ownerConnId: "parent-requester",
       timeoutMs: 60_000,
+    });
+    const entry = expectDefined(registration.entry, "parent controller source");
+    const claim = expectDefined(
+      tryClaimSessionControllerTask(entry.input),
+      "parent controller turn",
+    );
+    const operation = createReplyOperation({
+      sessionKey: parentKey,
+      sessionId: "parent-session",
+      agentId: "main",
+      resetTriggered: false,
+      mailboxClaim: claim,
+      target: entry.input.target,
+    });
+    markReplyOperationExecutionStarted(operation);
+    operation.setPhase("running");
+    parentOperations.push({
+      cleanup: registration.cleanup,
+      operation,
+      release: () => {
+        if (!claim.released) {
+          releaseSessionControllerClaim(claim);
+        }
+      },
     });
     return context;
   }
