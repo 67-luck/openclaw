@@ -6,7 +6,8 @@ import { vi } from "vitest";
 
 const readPreparedModelCatalog = vi.hoisted(() => vi.fn());
 
-vi.mock("../agents/embedded-agent.js", () => ({
+vi.mock("../agents/embedded-agent.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agents/embedded-agent.js")>()),
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(false),
   runEmbeddedAgent: vi.fn(),
 }));

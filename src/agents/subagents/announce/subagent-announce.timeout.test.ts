@@ -84,6 +84,7 @@ vi.mock("../../../sessions/session-controller.native-runtime.js", async (importO
     waitForEmbeddedAgentRunEndMock(sessionId, timeoutMs),
 }));
 vi.mock("../spawn/subagent-depth.js", createSubagentDepthModuleMock);
+// mock-isolation: timeout tests replace the complete transport runtime with deterministic adapters.
 vi.mock("./subagent-announce-delivery.runtime.js", () =>
   createSubagentAnnounceDeliveryRuntimeMock({
     callGateway: async (request: unknown) => {
@@ -154,6 +155,7 @@ vi.mock("./subagent-announce-delivery.js", () => ({
   }),
   loadSessionEntryByKey: (sessionKey: string) => sessionStore[sessionKey],
 }));
+// mock-isolation: timeout tests supply the complete runtime adapter over synthetic Gateway state.
 vi.mock("./subagent-announce.runtime.js", () => ({
   callSubagentLifecycleGateway: createGatewayCallModuleMock().callGateway,
   dispatchGatewayMethodInProcess: async (

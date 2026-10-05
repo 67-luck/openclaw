@@ -8,6 +8,7 @@ import {
 } from "./subagent-announce-overrides.test-support.js";
 import type { callSubagentLifecycleGateway } from "./subagent-announce.runtime.js";
 
+// mock-isolation: override tests supply the complete announcement runtime boundary without Gateway state.
 vi.mock("./subagent-announce.runtime.js", () => ({
   callSubagentLifecycleGateway: async () => ({
     messages: [{ role: "assistant", content: "original runtime" }],

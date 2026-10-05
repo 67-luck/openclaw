@@ -123,7 +123,8 @@ vi.mock("../../infra/agent-run-registry.js", async () => {
   };
 });
 
-vi.mock("../../agents/embedded-agent.js", () => ({
+vi.mock("../../agents/embedded-agent.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/embedded-agent.js")>()),
   abortEmbeddedAgentRun: abortEmbeddedAgentRunMock,
   compactEmbeddedAgentSession: compactEmbeddedAgentSessionMock,
   isSessionRunActive: isEmbeddedAgentRunActiveMock,
@@ -181,6 +182,7 @@ vi.mock("./agent-runner-memory.js", () => ({
 vi.mock("./queue.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./queue.js")>();
   return {
+    ...actual,
     admitFollowupRunLifecycle: vi.fn(async () => {}),
     completeFollowupRunLifecycle: actual.completeFollowupRunLifecycle,
     enqueueFollowupRun: enqueueFollowupRunMock,

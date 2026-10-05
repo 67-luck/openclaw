@@ -197,6 +197,7 @@ describe("controlRealtimeVoiceAgentRun", () => {
     "answers read-only status without mutating commands (target=%s)",
     async (runTarget) => {
       if (runTarget === null) {
+        // mock-isolation: A throwing import proves read-only status never loads session projections.
         vi.doMock("../sessions/session-controller.queries.js", () => {
           throw new Error("session-key projections unavailable");
         });

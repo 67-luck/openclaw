@@ -54,7 +54,8 @@ export function getRunEmbeddedAgentMock(): AnyMock {
 }
 
 const installEmbeddedAgentMock = () =>
-  vi.doMock("../../../src/agents/embedded-agent.js", () => ({
+  vi.doMock("../../../src/agents/embedded-agent.js", async (importOriginal) => ({
+    ...(await importOriginal<typeof import("../../../src/agents/embedded-agent.js")>()),
     abortEmbeddedAgentRun: (...args: unknown[]) =>
       embeddedAgentMocks.abortEmbeddedAgentRun(...args),
     compactEmbeddedAgentSession: (...args: unknown[]) =>

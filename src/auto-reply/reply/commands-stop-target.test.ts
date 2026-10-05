@@ -33,7 +33,8 @@ vi.mock("../../globals.js", () => ({
   logVerbose: vi.fn(),
 }));
 
-vi.mock("../../hooks/internal-hooks.js", () => ({
+vi.mock("../../hooks/internal-hooks.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../hooks/internal-hooks.js")>()),
   createInternalHookEvent: vi.fn(() => ({})),
   triggerInternalHook: vi.fn(async () => undefined),
 }));
@@ -43,7 +44,8 @@ vi.mock("./abort-cutoff.js", () => ({
   shouldPersistAbortCutoff: vi.fn(() => false),
 }));
 
-vi.mock("./abort-operation.js", () => ({
+vi.mock("./abort-operation.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./abort-operation.js")>()),
   captureChannelSessionStop: vi.fn((params: { key?: string; sessionId?: string }) => params),
   abortSessionRunTargetWithOutcome: abortSessionRunTargetWithOutcomeMock,
   stopSubagentsForRequester: stopSubagentsForRequesterMock,

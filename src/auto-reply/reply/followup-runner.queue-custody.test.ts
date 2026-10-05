@@ -22,20 +22,25 @@ const state = vi.hoisted(() => ({
   execute: vi.fn(),
   config: vi.fn(async (config: unknown) => config),
 }));
-vi.mock("./reply-agent-turn-preparation.js", () => ({
+vi.mock("./reply-agent-turn-preparation.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./reply-agent-turn-preparation.js")>()),
   prepareReplyAgentTurn: (...args: unknown[]) => state.admit(...args),
 }));
-vi.mock("./followup-turn-execution.js", () => ({
+vi.mock("./followup-turn-execution.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./followup-turn-execution.js")>()),
   executeFollowupTurn: (...args: unknown[]) => state.execute(...args),
 }));
-vi.mock("./agent-runner-result-accounting.js", () => ({
+vi.mock("./agent-runner-result-accounting.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./agent-runner-result-accounting.js")>()),
   accountFollowupTurn: async () => undefined,
 }));
-vi.mock("./followup-delivery.js", () => ({
+vi.mock("./followup-delivery.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./followup-delivery.js")>()),
   resolveFollowupDeliveryDecision: () => ({ kind: "suppress", reason: "silent" }),
   deliverFollowupDecision: async () => ({ kind: "completed", payloads: [] }),
 }));
-vi.mock("./agent-runner-utils.js", () => ({
+vi.mock("./agent-runner-utils.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./agent-runner-utils.js")>()),
   resolveQueuedReplyExecutionConfig: (config: unknown) => state.config(config),
   resolveQueuedReplyRuntimeConfig: (config: unknown) => config,
 }));

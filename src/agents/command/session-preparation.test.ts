@@ -7,6 +7,7 @@ import {
 } from "../../infra/agent-run-registry.js";
 import { prepareEmbeddedSessionState } from "./session-preparation.js";
 
+// mock-isolation: session preparation projects run state without loading the embedded runner owner.
 vi.mock("../embedded-agent-runner/runs.js", () => ({
   resolveSessionRunProgressState: () => undefined,
 }));

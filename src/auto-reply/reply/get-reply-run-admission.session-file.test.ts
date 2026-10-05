@@ -20,7 +20,8 @@ vi.mock("../../agents/auth-profiles/session-override.js", () => ({
 vi.mock("./session-system-events.js", () => ({
   drainFormattedSystemEvents: vi.fn(async () => undefined),
 }));
-vi.mock("./queue/drain.js", () => ({
+vi.mock("./queue/drain.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./queue/drain.js")>()),
   scheduleFollowupDrain: () => {
     throw new Error("Admission fixture must not start a drain");
   },

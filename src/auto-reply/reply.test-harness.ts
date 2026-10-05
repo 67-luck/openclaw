@@ -24,7 +24,8 @@ const replyRuntimeMockState = vi.hoisted(() => ({
   } as ReplyRuntimeMocks,
 }));
 
-vi.mock("../agents/embedded-agent.js", () => ({
+vi.mock("../agents/embedded-agent.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agents/embedded-agent.js")>()),
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(false),
   runEmbeddedAgent: (...args: unknown[]) => replyRuntimeMockState.mocks.runEmbeddedAgent(...args),
   isSessionRunActive: vi.fn().mockReturnValue(false),
@@ -56,7 +57,8 @@ vi.mock("../plugins/runtime/runtime-web-channel-plugin.js", () => ({
   readWebSelfId: (...args: unknown[]) => replyRuntimeMockState.mocks.readWebSelfId(...args),
 }));
 
-vi.mock("../agents/embedded-agent.runtime.js", () => ({
+vi.mock("../agents/embedded-agent.runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agents/embedded-agent.runtime.js")>()),
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(false),
   isSessionRunActive: vi.fn().mockReturnValue(false),
   isSessionNativeAttemptStreaming: vi.fn().mockReturnValue(false),

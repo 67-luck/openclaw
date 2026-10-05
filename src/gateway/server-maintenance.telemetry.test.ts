@@ -75,7 +75,8 @@ vi.mock("../skills/workshop/workspace-skill-read.js", () => ({
   listWritableWorkshopSkillSummaries: () => forbiddenDefaultAdapter("skill status reader"),
 }));
 
-vi.mock("./chat-abort.js", () => ({
+vi.mock("./chat-abort.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./chat-abort.js")>()),
   abortChatRunById: () => forbiddenDefaultAdapter("chat abort"),
 }));
 

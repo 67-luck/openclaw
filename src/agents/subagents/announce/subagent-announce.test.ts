@@ -59,6 +59,7 @@ const { subagentRegistryRuntimeMock } = vi.hoisted(() => ({
   },
 }));
 
+// mock-isolation: announcement tests supply the complete runtime adapter over synthetic Gateway state.
 vi.mock("./subagent-announce.runtime.js", () => ({
   callSubagentLifecycleGateway: (request: unknown) => callGatewayMock(request),
   dispatchGatewayMethodInProcess: (
@@ -81,6 +82,7 @@ vi.mock("./subagent-announce.runtime.js", () => ({
     waitForEmbeddedAgentRunEndMock(sessionId, timeoutMs),
 }));
 
+// mock-isolation: delivery tests replace the complete transport runtime with observable adapters.
 vi.mock("./subagent-announce-delivery.runtime.js", () =>
   createSubagentAnnounceDeliveryRuntimeMock({
     callGateway: (request: unknown) => callGatewayMock(request),

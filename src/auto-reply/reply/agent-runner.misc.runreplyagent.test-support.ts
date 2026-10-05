@@ -79,8 +79,10 @@ vi.mock("../../agents/model-auth.js", () => ({
   resolveModelAuthMode: () => "api-key",
 }));
 
-vi.mock("../../agents/embedded-agent.js", () => {
+vi.mock("../../agents/embedded-agent.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../agents/embedded-agent.js")>();
   return {
+    ...actual,
     compactEmbeddedAgentSession: (
       ...args: Parameters<
         typeof import("../../agents/embedded-agent.js").compactEmbeddedAgentSession
@@ -138,12 +140,12 @@ vi.mock("../../runtime.js", () => {
   };
 });
 
-vi.mock("./queue.js", async () => {
-  const { completeFollowupRunLifecycle } =
-    await vi.importActual<typeof import("./queue/lifecycle.js")>("./queue/lifecycle.js");
+vi.mock("./queue.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./queue.js")>();
   return {
+    ...actual,
     admitFollowupRunLifecycle: vi.fn(async () => {}),
-    completeFollowupRunLifecycle,
+    completeFollowupRunLifecycle: actual.completeFollowupRunLifecycle,
     enqueueFollowupRun: vi.fn(),
     reserveSteerCandidate: vi.fn(() => ({
       admit: async () => "steer",

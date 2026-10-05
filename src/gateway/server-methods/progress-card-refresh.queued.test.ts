@@ -53,7 +53,10 @@ vi.mock("./chat-send-source-finalization.js", () => ({
 }));
 // Keep enqueue, drain, adoption, completion, and the followup runner real. Only
 // replace session/provider admission and the execution/accounting/delivery edges.
-vi.mock("../../auto-reply/reply/reply-agent-turn-preparation.js", () => ({
+vi.mock("../../auto-reply/reply/reply-agent-turn-preparation.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../auto-reply/reply/reply-agent-turn-preparation.js")
+  >()),
   prepareReplyAgentTurn: mocks.admit,
 }));
 vi.mock("../../auto-reply/reply/followup-turn-execution.js", () => ({

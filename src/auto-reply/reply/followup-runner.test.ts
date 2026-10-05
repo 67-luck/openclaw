@@ -35,7 +35,8 @@ vi.mock("./agent-runner-result-accounting.js", () => ({
   accountFollowupTurn: (...args: unknown[]) => state.account(...args),
 }));
 
-vi.mock("./reply-agent-turn-preparation.js", () => ({
+vi.mock("./reply-agent-turn-preparation.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./reply-agent-turn-preparation.js")>()),
   prepareReplyAgentTurn: (...args: unknown[]) => state.admit(...args),
 }));
 
@@ -48,7 +49,8 @@ vi.mock("./followup-delivery.js", () => ({
   resolveFollowupDeliveryDecision: (...args: unknown[]) => state.resolveDecision(...args),
 }));
 
-vi.mock("./queue.js", () => ({
+vi.mock("./queue.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./queue.js")>()),
   completeFollowupRunLifecycle: (...args: unknown[]) => state.completeLifecycle(...args),
 }));
 

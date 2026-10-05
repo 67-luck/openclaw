@@ -101,6 +101,7 @@ const runEmbeddedAgent = vi.hoisted(() =>
   vi.fn<typeof import("../../embedded-agent.js").runEmbeddedAgent>(),
 );
 
+// mock-isolation: the Gateway boundary fixture replaces the embedded producer while using real control owners.
 vi.mock("../../embedded-agent.js", async () => {
   const { abortEmbeddedAgentRun } = await import("../../embedded-agent-runner/runs.js");
   const { waitForSessionRunEnd } =

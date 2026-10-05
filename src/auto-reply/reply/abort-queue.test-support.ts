@@ -1,8 +1,21 @@
 import path from "node:path";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import { enqueueFollowupRun } from "./queue/enqueue.js";
 import type { FollowupRun } from "./queue/types.js";
+
+export async function writeAbortSessionStore(
+  storePath: string,
+  sessionIdsByKey: Record<string, string>,
+  nowMs = Date.now(),
+): Promise<void> {
+  await Promise.all(
+    Object.entries(sessionIdsByKey).map(([sessionKey, sessionId]) =>
+      replaceSessionEntry({ storePath, sessionKey }, { sessionId, updatedAt: nowMs }),
+    ),
+  );
+}
 
 export function enqueueAbortFollowupRun(params: {
   root: string;

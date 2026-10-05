@@ -9,20 +9,24 @@ const state = vi.hoisted(() => ({
   resolveConfig: vi.fn(async (config: unknown) => config),
 }));
 
-vi.mock("../../sessions/session-controller.mailbox.js", () => ({
+vi.mock("../../sessions/session-controller.mailbox.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../sessions/session-controller.mailbox.js")>()),
   attachSessionControllerInputOperation: vi.fn(),
   bindSessionControllerInputOperation: vi.fn(),
   claimSessionControllerInput: vi.fn(),
   releaseSessionControllerClaim: vi.fn(),
 }));
-vi.mock("./agent-runner-utils.js", () => ({
+vi.mock("./agent-runner-utils.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./agent-runner-utils.js")>()),
   resolveQueuedReplyExecutionConfig: (config: unknown) => state.resolveConfig(config),
   resolveQueuedReplyRuntimeConfig: (config: unknown) => config,
 }));
-vi.mock("./reply-turn-admission.js", () => ({
+vi.mock("./reply-turn-admission.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./reply-turn-admission.js")>()),
   admitReplyTurn: (...args: unknown[]) => state.admit(...args),
 }));
-vi.mock("./reply-turn-preflight.js", () => ({
+vi.mock("./reply-turn-preflight.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./reply-turn-preflight.js")>()),
   prepareReplyTurnContext: (...args: unknown[]) => state.preflight(...args),
 }));
 

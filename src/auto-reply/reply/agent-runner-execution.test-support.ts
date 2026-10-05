@@ -204,7 +204,8 @@ vi.mock("../../agents/embedded-agent-helpers.js", async () => {
   };
 });
 
-vi.mock("../../config/sessions.js", () => ({
+vi.mock("../../config/sessions.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/sessions.js")>()),
   resolveGroupSessionKey: vi.fn(() => null),
   resolveSessionStorePathCore: vi.fn(() => "/tmp/mock-sessions.json"),
   resolveSessionTranscriptPath: vi.fn(),

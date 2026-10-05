@@ -45,6 +45,7 @@ const executeAgentTurnMock = mocks.executeAgentTurn;
 const drainedRuns = mocks.drainedRuns;
 let executionStarted = createDeferred();
 
+// mock-isolation: Stalled-turn cases replace the complete compaction and memory-flush boundary.
 vi.mock("./agent-runner-memory.js", () => ({
   runSessionCompactionIfNeeded: (params: { abortSignal: AbortSignal }) => mocks.preflight(params),
   runMemoryFlushIfNeeded: async () => ({ sessionEntry: undefined, outcome: "skipped" }),
@@ -55,6 +56,7 @@ vi.mock("./agent-runner-execution.js", async () => ({
   executeAgentTurn: (...args: unknown[]) => mocks.executeAgentTurn(...args),
 }));
 
+// mock-isolation: Stalled-turn cases wrap the follow-up runner's sole exported entry point.
 vi.mock("./followup-runner.js", async (importOriginal) => {
   const { createFollowupRunner } = await importOriginal<typeof import("./followup-runner.js")>();
   return {

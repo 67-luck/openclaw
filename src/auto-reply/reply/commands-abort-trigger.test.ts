@@ -26,7 +26,8 @@ vi.mock("./abort-cutoff.js", () => ({
   shouldPersistAbortCutoff: vi.fn(() => false),
 }));
 
-vi.mock("./abort-operation.js", () => ({
+vi.mock("./abort-operation.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./abort-operation.js")>()),
   captureChannelSessionStop: vi.fn((params: { key?: string; sessionId?: string }) => params),
   abortSessionRunTargetWithOutcome: abortSessionRunTargetWithOutcomeMock,
   stopSubagentsForRequester: vi.fn(async () => ({ stopped: 0, failed: 0 })),
@@ -48,7 +49,6 @@ vi.mock("./commands-session-store.js", () => ({
   persistAbortTargetEntry: persistAbortTargetEntryMock,
   resolveCommandSessionEntryForKey: resolveCommandSessionEntryForKeyMock,
 }));
-
 
 function buildAbortParams(): HandleCommandsParams {
   return {

@@ -59,6 +59,7 @@ vi.mock("../../../config/sessions/session-accessor.js", () => ({
   loadSessionEntryReadOnly: ({ sessionKey }: { sessionKey: string }) => sessionStore[sessionKey],
 }));
 
+// mock-isolation: requester settlement supplies the full runtime adapter over its synthetic store.
 vi.mock("./subagent-announce.runtime.js", () => ({
   callSubagentLifecycleGateway: vi.fn(async () => ({})),
   dispatchGatewayMethodInProcess: vi.fn(async () => ({})),

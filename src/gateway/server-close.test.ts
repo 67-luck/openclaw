@@ -59,6 +59,7 @@ import {
   createGatewayCloseTestHandlerFactory,
   type GatewayCloseParams,
   createTestChatRunState,
+  firstMockCall,
 } from "./server-close.test-support.js";
 import { claimRpcSourceForTest, createRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
@@ -174,10 +175,6 @@ type DrainActiveSessionsForShutdown = NonNullable<
   GatewayCloseParams["drainActiveSessionsForShutdown"]
 >;
 const originalRestartTraceEnv = process.env.OPENCLAW_GATEWAY_RESTART_TRACE;
-
-function firstMockCall<T extends readonly unknown[]>(mock: { mock: { calls: readonly T[] } }) {
-  return mock.mock.calls[0];
-}
 
 const createGatewayCloseTestDeps = createGatewayCloseTestDepsFactory(mocks);
 const resolveTestGatewayContext = createGatewayCloseTestDeps().resolveGatewayContext;

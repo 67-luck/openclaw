@@ -15,7 +15,6 @@ import type { OpenClawConfig } from "../../config/config.js";
 import {
   loadSessionEntry,
   markSessionAbortTarget,
-  replaceSessionEntry,
   resolveSessionAbortTarget,
   type SessionAbortTargetResult,
 } from "../../config/sessions/session-accessor.js";
@@ -30,6 +29,7 @@ import { resetSessionControllerStateForTest } from "../../sessions/session-lifec
 import * as stateWorker from "../../state/openclaw-state-worker-store.js";
 import { stopSubagentsForRequester } from "./abort-operation.js";
 import { getAbortMemory, setAbortMemory } from "./abort-primitives.js";
+import { writeAbortSessionStore } from "./abort-queue.test-support.js";
 import {
   addSubagentFixture,
   type SubagentRunFixture,
@@ -44,7 +44,8 @@ type AbortEmbeddedAgentRunOptions = Parameters<
   typeof import("../../agents/embedded-agent-runner/runs.js").abortEmbeddedAgentRun
 >[1];
 
-vi.mock("../../agents/embedded-agent.js", () => ({
+vi.mock("../../agents/embedded-agent.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/embedded-agent.js")>()),
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(true),
 }));
 
@@ -68,7 +69,8 @@ const runtimeAbortMocks = vi.hoisted(() => ({
   isSessionRunActive: vi.fn(() => false),
 }));
 
-vi.mock("../../agents/embedded-agent-runner/runs.js", () => ({
+vi.mock("../../agents/embedded-agent-runner/runs.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/embedded-agent-runner/runs.js")>()),
   abortEmbeddedAgentRun: runtimeAbortMocks.abortEmbeddedAgentRun,
   isSessionRunActive: runtimeAbortMocks.isSessionRunActive,
 }));
@@ -83,7 +85,8 @@ vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../acp/control-plane/manager.reset-controls.js", () => ({
+vi.mock("../../acp/control-plane/manager.reset-controls.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../acp/control-plane/manager.reset-controls.js")>()),
   getAcpSessionResetControls: () => ({
     captureCancellation: () => ({
       cancel: async (params: unknown) => {
@@ -115,18 +118,6 @@ describe("abort detection", () => {
     setAbortMemory(key, value);
   }
 
-  async function writeSessionStore(
-    storePath: string,
-    sessionIdsByKey: Record<string, string>,
-    nowMs = Date.now(),
-  ) {
-    await Promise.all(
-      Object.entries(sessionIdsByKey).map(([sessionKey, sessionId]) =>
-        replaceSessionEntry({ storePath, sessionKey }, { sessionId, updatedAt: nowMs }),
-      ),
-    );
-  }
-
   function readAbortSessionEntry(storePath: string, sessionKey: string) {
     return loadSessionEntry({ storePath, sessionKey });
   }
@@ -148,7 +139,7 @@ describe("abort detection", () => {
       for (const sessionKey of Object.keys(params.sessionIdsByKey)) {
         trackedAbortMemoryKeys.add(sessionKey);
       }
-      await writeSessionStore(storePath, params.sessionIdsByKey, params.nowMs);
+      await writeAbortSessionStore(storePath, params.sessionIdsByKey, params.nowMs);
     }
     return { root, storePath, cfg };
   }

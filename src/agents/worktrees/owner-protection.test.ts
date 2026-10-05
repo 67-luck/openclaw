@@ -18,6 +18,7 @@ vi.mock("../../gateway/session-worker-placement-context.js", () => ({
     },
   }),
 }));
+// mock-isolation: owner policy tests replace controller activity with explicit placement facts.
 vi.mock("../../sessions/session-controller.lifecycle.js", () => ({
   isSessionControllerWorkActive: mocks.isSessionControllerWorkActive,
   isSessionMutationActive: mocks.isSessionMutationActive,

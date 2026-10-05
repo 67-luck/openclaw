@@ -13,9 +13,11 @@ type MockSessionMutationParams = {
   run: () => Promise<unknown>;
 };
 
-vi.mock("./commands-compact.runtime.js", () => {
+vi.mock("./commands-compact.runtime.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./commands-compact.runtime.js")>();
   class SessionMutationPreemptTimeoutError extends Error {}
   return {
+    ...actual,
     captureSessionTarget: vi.fn((target) => target),
     compactEmbeddedAgentSession: vi.fn(),
     enqueueSystemEvent: vi.fn(),

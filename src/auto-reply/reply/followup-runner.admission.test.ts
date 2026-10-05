@@ -15,20 +15,23 @@ const state = vi.hoisted(() => ({
   resolveDecision: vi.fn<typeof import("./followup-delivery.js").resolveFollowupDeliveryDecision>(),
 }));
 
-vi.mock("./agent-runner-memory.js", () => ({
+vi.mock("./agent-runner-memory.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./agent-runner-memory.js")>()),
   runMemoryFlushIfNeeded: vi.fn(),
   runSessionCompactionIfNeeded: (
     ...args: Parameters<typeof import("./agent-runner-memory.js").runSessionCompactionIfNeeded>
   ) => state.preflight(...args),
 }));
 
-vi.mock("./agent-runner-result-accounting.js", () => ({
+vi.mock("./agent-runner-result-accounting.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./agent-runner-result-accounting.js")>()),
   accountFollowupTurn: (
     ...args: Parameters<typeof import("./agent-runner-result-accounting.js").accountFollowupTurn>
   ) => state.account(...args),
 }));
 
-vi.mock("./followup-delivery.js", () => ({
+vi.mock("./followup-delivery.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./followup-delivery.js")>()),
   deliverFollowupDecision: (
     ...args: Parameters<typeof import("./followup-delivery.js").deliverFollowupDecision>
   ) => state.deliver(...args),
@@ -37,7 +40,8 @@ vi.mock("./followup-delivery.js", () => ({
   ) => state.resolveDecision(...args),
 }));
 
-vi.mock("./followup-turn-execution.js", () => ({
+vi.mock("./followup-turn-execution.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./followup-turn-execution.js")>()),
   executeFollowupTurn: (
     ...args: Parameters<typeof import("./followup-turn-execution.js").executeFollowupTurn>
   ) => state.execute(...args),

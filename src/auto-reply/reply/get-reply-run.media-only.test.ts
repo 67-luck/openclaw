@@ -33,8 +33,8 @@ import { MESSAGE_TOOL_ONLY_DELIVERY_HINT } from "../../plugin-sdk/message-tool-d
 import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   createReplyOperation,
+  listActiveReplyRunSessionKeys,
 } from "../../sessions/session-controller.js";
-import { listActiveReplyRunSessionKeys } from "../../sessions/session-controller.js";
 import {
   beginSessionEffect,
   captureSessionTarget,
@@ -63,6 +63,7 @@ import {
   createSessionBody,
   createSessionTurn,
   createProviderSurface,
+  createTelegramGroupSession,
   ownerParams,
 } from "./get-reply-run.test-support.js";
 import { registerPreparedReplyThinkingCases } from "./get-reply-run.thinking.cases.js";
@@ -95,7 +96,8 @@ vi.mock("../../agents/auth-profiles/session-override.js", () => ({
   resolveSessionAuthSelection: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../../agents/embedded-agent.runtime.js", () => ({
+vi.mock("../../agents/embedded-agent.runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/embedded-agent.runtime.js")>()),
   abortEmbeddedAgentRun: vi.fn().mockReturnValue(false),
   preemptAndDrainEmbeddedHeartbeatRun: vi.fn().mockResolvedValue("not-heartbeat"),
   resolveActiveEmbeddedRunSessionIdBySessionFile: vi.fn().mockReturnValue(undefined),
@@ -312,7 +314,8 @@ vi.mock("../../globals.js", () => ({
   logVerbose: vi.fn(),
 }));
 
-vi.mock("../../process/command-queue.js", () => ({
+vi.mock("../../process/command-queue.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../process/command-queue.js")>()),
   getQueueSize: vi.fn().mockReturnValue(0),
 }));
 
@@ -411,19 +414,6 @@ const ROOM_EVENT_MESSAGE_TOOL_DIRECTIVE =
   "Treat this message as observed room activity, not a request. You were not explicitly tagged or mentioned in this room event. Default: stay silent. Only respond if you have something useful, substantial, or important to add. A previous mention or reply is not an invitation to keep talking. To respond visibly, use message(action=send); your final text here stays private either way.";
 
 type ReplyRunParams = Parameters<typeof runPreparedReply>[0];
-
-function telegramGroupSession(): SessionEntry {
-  return {
-    sessionId: "session-telegram-group",
-    updatedAt: 1,
-    systemSent: true,
-    chatType: "group",
-    delivery: normalizeSessionDeliveryState({
-      context: { channel: "telegram", to: "-100123" },
-      origin: { provider: "telegram", surface: "telegram", chatType: "group", to: "-100123" },
-    }),
-  };
-}
 
 function turn(
   body: string,
@@ -2800,7 +2790,7 @@ describe("runPreparedReply media-only handling", () => {
           ? { messages: { visibleReplies: "message_tool" } }
           : {}),
       };
-      const sessionEntry = telegramGroupSession();
+      const sessionEntry = createTelegramGroupSession();
       const stableOptions: ReplyRunParams["opts"] = {
         sourceReplyDeliveryMode: stableMode,
         sessionPromptSourceReplyDeliveryMode: stableMode,
@@ -2906,7 +2896,7 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(buildGroupChatContext).mockImplementation(({ sourceReplyDeliveryMode }) =>
       ["group", sourceReplyDeliveryMode ?? "automatic"].join(":"),
     );
-    const sessionEntry = telegramGroupSession();
+    const sessionEntry = createTelegramGroupSession();
 
     // Tool-only delivery configured, but the message tool is denied: dispatch
     // downgrades its stable mode to automatic, so the synthetic fallback must
@@ -2938,7 +2928,7 @@ describe("runPreparedReply media-only handling", () => {
   it("keeps group intro in the session-stable CLI prompt after turn one", async () => {
     vi.mocked(buildGroupChatContext).mockReturnValue("group:telegram:group:automatic");
     vi.mocked(buildGroupIntro).mockReturnValue("intro:mention");
-    const sessionEntry = telegramGroupSession();
+    const sessionEntry = createTelegramGroupSession();
 
     await runPrepared({
       opts: {

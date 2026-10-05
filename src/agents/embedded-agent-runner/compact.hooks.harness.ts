@@ -752,6 +752,7 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     },
   }));
 
+  // mock-isolation: compaction hook fixtures replace the command-lane backend and its drain state.
   vi.doMock("../../process/command-queue.js", () => ({
     enqueueCommandInLane: enqueueCommandInLaneMock,
     GatewayDrainingError: class GatewayDrainingError extends Error {},
@@ -759,6 +760,7 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     isCommandLaneTaskTimeoutError: vi.fn(() => false),
   }));
 
+  // mock-isolation: compaction hook fixtures pin lane selection without loading lane runtime state.
   vi.doMock("./lanes.js", () => ({
     resolveGlobalLane: vi.fn(() => "test-global-lane"),
   }));

@@ -23,6 +23,13 @@ import * as rpcSources from "../../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { createRpcSourceForTest } from "../test-helpers.rpc-source.js";
+import {
+  createOpenAiCodexOauthHealthSummary,
+  createStaticApiKeyProvider,
+  expiredOAuthProfile,
+  healthProfile,
+  type HealthProfile,
+} from "./models-auth-status.health.test-support.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 type BuildAuthHealthSummary = typeof import("../../agents/auth-health.js").buildAuthHealthSummary;
@@ -78,7 +85,8 @@ vi.mock("../../config/config.js", () => ({
   getRuntimeConfig: mocks.getRuntimeConfig,
 }));
 
-vi.mock("../../agents/agent-scope.js", () => ({
+vi.mock("../../agents/agent-scope.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/agent-scope.js")>()),
   listAgentIds: mocks.listAgentIds,
   listAgentEntries: mocks.listAgentEntries,
   resolveAgentDir: mocks.resolveAgentDir,
@@ -203,29 +211,6 @@ function oauthCredential(
   };
 }
 
-type HealthProfile = AuthHealthSummary["profiles"][number];
-
-function healthProfile(
-  provider: string,
-  type: HealthProfile["type"],
-  status: HealthProfile["status"],
-  profileId = `${provider}:default`,
-  extra: Partial<HealthProfile> = {},
-): HealthProfile {
-  return { profileId, provider, type, status, source: "store", label: profileId, ...extra };
-}
-
-function createApiKeyProfile(provider: string) {
-  return healthProfile(provider, "api_key", "static");
-}
-
-function expiredOAuthProfile(profileId: string, provider = "claude-cli") {
-  return healthProfile(provider, "oauth", "expired", profileId, {
-    expiresAt: 1,
-    remainingMs: -1,
-  });
-}
-
 function setExternalCliProfile(profileId: string) {
   setPreparedAuthStore({
     version: 1,
@@ -247,14 +232,6 @@ function mockHealthProvider(provider: AuthHealthSummary["providers"][number], no
     profiles: provider.profiles,
     providers: [provider],
   });
-}
-
-function createStaticApiKeyProvider(provider: string) {
-  return {
-    provider,
-    status: "static",
-    profiles: [createApiKeyProfile(provider)],
-  } satisfies AuthHealthSummary["providers"][number];
 }
 
 function createLogoutOptions(
@@ -456,27 +433,6 @@ async function expectLogoutFailureDoesNotAbortRun(params: {
     run: activeRun,
     message: params.message,
   });
-}
-
-function createOpenAiCodexOauthHealthSummary(): AuthHealthSummary {
-  const profile = healthProfile("openai", "oauth", "ok", "openai:default", {
-    expiresAt: 1_000_000,
-    remainingMs: 60_000,
-  });
-  return {
-    now: 0,
-    warnAfterMs: 0,
-    profiles: [profile],
-    providers: [
-      {
-        provider: "openai",
-        status: "ok",
-        expiresAt: 1_000_000,
-        remainingMs: 60_000,
-        profiles: [profile],
-      },
-    ],
-  };
 }
 
 describe("models.authStatus", () => {

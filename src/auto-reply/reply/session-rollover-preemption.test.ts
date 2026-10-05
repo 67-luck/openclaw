@@ -21,11 +21,13 @@ import {
   writeSessionStore as writeSessionStoreFast,
 } from "./test/session.test-support.js";
 
-vi.mock("../../plugin-sdk/browser-maintenance.js", () => ({
+vi.mock("../../plugin-sdk/browser-maintenance.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../plugin-sdk/browser-maintenance.js")>()),
   closeTrackedBrowserTabsForSessions: vi.fn(async () => 0),
 }));
 
-vi.mock("../../plugins/hook-runner-global.js", () => ({
+vi.mock("../../plugins/hook-runner-global.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../plugins/hook-runner-global.js")>()),
   getGlobalHookRunner: () => null,
 }));
 

@@ -17,8 +17,8 @@ import {
 
 const runEmbeddedAgent = vi.hoisted(() => vi.fn<typeof runEmbeddedAgentType>());
 
-vi.mock("../agents/embedded-agent.js", async () => {
-  const actual = await import("../agents/embedded-agent-runner.js");
+vi.mock("../agents/embedded-agent.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../agents/embedded-agent.js")>();
   return { ...actual, runEmbeddedAgent };
 });
 
