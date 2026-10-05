@@ -152,7 +152,7 @@ export async function trySessionsSendActiveRunDelivery(
       params.mode === "steer" ||
       (params.mode !== "followup" &&
         params.allowActiveRunQueueDelivery &&
-        isRunScopedAgentSessionKey(params.sessionKey))
+        (ownChild || isRunScopedAgentSessionKey(params.sessionKey)))
         ? resolveActiveSessionRunId(params.sessionKey)
         : undefined;
     if (params.mode === "steer" && !activeRunSessionId) {
