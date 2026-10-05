@@ -439,8 +439,9 @@ export function createTalkClientAgentConsultRunner(params: {
                 return (
                   params.getVoiceSessionId() === voiceSessionId &&
                   (!params.ownerConnId ||
-                    (isRpcSourceRegistered(entry) &&
-                      entry?.input.abortSignal.aborted === false &&
+                    (entry !== undefined &&
+                      isRpcSourceRegistered(entry) &&
+                      entry.input.abortSignal.aborted === false &&
                       entry.adapter.requester?.connectionId === params.ownerConnId &&
                       identity?.sessionId === sessionId &&
                       identity.sessionKey === canonicalKey &&
