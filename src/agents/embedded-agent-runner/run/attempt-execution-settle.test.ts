@@ -136,6 +136,8 @@ describe("runEmbeddedAttemptSettledPhase", () => {
       fixture.queueHandle,
       "agent:main",
       "/tmp/session.jsonl",
+      undefined,
+      fixture.input.attachment,
     );
   });
 
