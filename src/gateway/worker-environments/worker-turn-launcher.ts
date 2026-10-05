@@ -114,17 +114,6 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
         );
       }
     },
-    async recoverTerminalTurn(session, assertCurrent) {
-      const active = activeWorkerTurns.get(session.sessionId);
-      return active && (!session.sessionKey || active.sessionKey === session.sessionKey)
-        ? await active.recoverTerminal?.(() => {
-            assertCurrent?.();
-            if (activeWorkerTurns.get(session.sessionId) !== active) {
-              throw new Error("Terminal worker recovery lost its active run owner");
-            }
-          })
-        : undefined;
-    },
     async resolveSandbox(params) {
       const placement = options.placements.get(params.sessionId);
       if (
@@ -747,23 +736,12 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
             throw error;
           }
           if (handedOff) {
-            const terminalOwner = activeWorkerTurn;
             await failHandedOffTurn({
               environments: options.environments,
               placements: options.placements,
               placement,
               turnClaim,
               error,
-              ...(terminalOwner && terminalAtMs !== undefined
-                ? {
-                    terminal: {
-                      observedAtMs: terminalAtMs,
-                      registerRecovery: (recover) => {
-                        terminalOwner.recoverTerminal = recover;
-                      },
-                    },
-                  }
-                : {}),
             });
           } else {
             await releaseClaimIfOwned(options.placements, turnClaim);

@@ -34,7 +34,6 @@ export type ActiveWorkerTurn = {
   claim: WorkerSessionTurnClaim;
   sessionKey: string;
   signal: AbortSignal;
-  recoverTerminal?: (assertCurrent?: () => void) => Promise<string | undefined>;
   /** Start the worker execution budget when transport dispatch acquires custody. */
   beginExecution: () => void;
   dispose: () => void;

@@ -56,10 +56,6 @@ export type SessionPlacementAdmissionProvider = {
     currentTarget: SessionTranscriptRuntimeTarget;
     successorSessionId: string;
   }) => void;
-  recoverTerminalTurn?: (
-    session: { sessionId: string; sessionKey?: string },
-    assertCurrent?: () => void,
-  ) => Promise<string | undefined>;
   executeLocalTurn: <T>(
     claim: LocalTurnPlacementClaim,
     runLocal: () => Promise<T>,
