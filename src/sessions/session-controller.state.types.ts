@@ -37,7 +37,7 @@ export type ReplyOperationAdmission = {
 
 /** The exact backend facts owned by one reply operation. Embedded attempts extend
  * this object in place and the runner's run-id index points back to that record. */
-export type SessionControllerRunAttachment = {
+type SessionControllerRunAttachment = {
   readonly operation: ReplyOperation;
   backend?: ReplyBackendHandle;
   projectSessionActive?: boolean;

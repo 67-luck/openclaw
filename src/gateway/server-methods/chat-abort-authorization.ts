@@ -1,6 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 // Authorization and pending-run state transitions for chat cancellation.
-import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import {
   getRpcSourceIdentity,
   listRpcSourceEntriesForSession,
@@ -169,64 +168,6 @@ export function resolveChatAbortTargetRejection(params: {
   return canRequesterAbortChatRun(target, params.requester) ? undefined : "unauthorized";
 }
 
-export function readPreRegisteredAgentDedupePayloadForSession(params: {
-  entry: DedupeEntry | undefined;
-  runId: string;
-  sessionKey: string;
-  agentId?: string;
-  defaultAgentId?: string;
-  requiredSessionId?: string;
-  includeHidden?: boolean;
-}): PreRegisteredAgentDedupePayload | undefined {
-  if (!params.entry?.ok) {
-    return undefined;
-  }
-  const payload = params.entry.payload as PreRegisteredAgentDedupePayload | undefined;
-  if (payload?.status !== "accepted") {
-    return undefined;
-  }
-  if (!params.includeHidden && payload.controlUiVisible === false) {
-    return undefined;
-  }
-  const payloadRunId = typeof payload.runId === "string" ? payload.runId : undefined;
-
-  if (payloadRunId && payloadRunId !== params.runId) {
-    return undefined;
-  }
-  const payloadSessionKeys = new Set([
-    normalizeOptionalString(payload.sessionKey),
-    ...(Array.isArray(payload.sessionKeyAliases)
-      ? payload.sessionKeyAliases.map(normalizeOptionalString)
-      : []),
-  ]);
-  const hasPayloadSessionKey = [...payloadSessionKeys].some(Boolean);
-  if (
-    params.requiredSessionId !== undefined &&
-    (!payloadSessionKeys.has(params.sessionKey) ||
-      normalizeOptionalString(payload.sessionId) !== params.requiredSessionId)
-  ) {
-    return undefined;
-  }
-  if (
-    (hasPayloadSessionKey && !payloadSessionKeys.has(params.sessionKey)) ||
-    (!hasPayloadSessionKey && payloadRunId !== params.runId)
-  ) {
-    return undefined;
-  }
-  const agentId = normalizeOptionalString(params.agentId)?.toLowerCase();
-  if (agentId) {
-    const sessionAgentId = resolveChatRunOwnerAgentId({
-      agentId: normalizeOptionalString(payload.agentId),
-      sessionKey: params.sessionKey,
-      defaultAgentId: params.defaultAgentId,
-    });
-    if (sessionAgentId !== agentId) {
-      return undefined;
-    }
-  }
-  return payload;
-}
-
 export function readPreRegisteredRun(params: {
   key: string;
   entry: DedupeEntry | undefined;
@@ -251,61 +192,6 @@ export function readPreRegisteredRun(params: {
     return undefined;
   }
   return { runId, sessionKey, payload };
-}
-
-function resolvePreRegisteredAgentDedupeKeys(
-  payload: PreRegisteredAgentDedupePayload,
-  runId: string,
-): string[] {
-  const keys = [`agent:${runId}`];
-  const payloadKeys = Array.isArray(payload.dedupeKeys) ? payload.dedupeKeys : [];
-  for (const key of payloadKeys) {
-    const normalized = normalizeOptionalString(key);
-    if (normalized?.startsWith("agent:")) {
-      keys.push(normalized);
-    }
-  }
-  return uniqueStrings(keys);
-}
-
-export function writePreRegisteredAgentAbort(params: {
-  context: GatewayRequestContext;
-  runId: string;
-  sessionKey?: string;
-  payload: PreRegisteredAgentDedupePayload;
-  stopReason: string;
-  endedAt?: number;
-  expectedPayload: PreRegisteredAgentDedupePayload;
-}) {
-  if (params.context.dedupe.get(`agent:${params.runId}`)?.payload !== params.expectedPayload) {
-    return false;
-  }
-  const endedAt = params.endedAt ?? Date.now();
-  const payloadAgentId = normalizeOptionalString(params.payload.agentId);
-  for (const key of resolvePreRegisteredAgentDedupeKeys(params.payload, params.runId)) {
-    if (params.context.dedupe.get(key)?.payload !== params.expectedPayload) {
-      continue;
-    }
-    setGatewayDedupeEntry({
-      dedupe: params.context.dedupe,
-      key,
-      entry: {
-        ts: endedAt,
-        ok: true,
-        payload: {
-          runId: params.runId,
-          ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
-          ...(payloadAgentId ? { agentId: payloadAgentId } : {}),
-          ...(params.payload.controlUiVisible === false ? { controlUiVisible: false } : {}),
-          status: "timeout" as const,
-          summary: "aborted",
-          stopReason: params.stopReason,
-          endedAt,
-        },
-      },
-    });
-  }
-  return true;
 }
 
 export function writePreRegisteredChatAbort(params: {

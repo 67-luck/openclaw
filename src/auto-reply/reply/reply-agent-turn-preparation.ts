@@ -43,7 +43,7 @@ export type FollowupRunnerParams = {
   defaultModel: string;
   toolProgressDetail?: "explain" | "raw";
 };
-export type ReplyTurnSessionOwner = {
+type ReplyTurnSessionOwner = {
   current: () => SessionEntry | undefined;
   publish(entry: SessionEntry | undefined): void;
 } & ({ kind: "detached" } | { kind: "session"; key: string; storePath?: string });
@@ -174,7 +174,7 @@ export async function prepareReplyAgentTurn<TConfigured = undefined>(params: {
       let activeEntry = [admission.sessionEntry, initialEntry].find(
         (entry) => entry?.sessionId === operation.sessionId,
       );
-      let run = { ...params.queued.run, config };
+      const run = { ...params.queued.run, config };
       if (operation.sessionId !== run.sessionId) {
         run.sessionId = operation.sessionId;
         run.sessionFile = resolveAdmittedRunSessionFile({ sessionKey }) ?? run.sessionFile;

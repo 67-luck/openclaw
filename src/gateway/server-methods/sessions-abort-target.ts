@@ -1,13 +1,10 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
-import { inputMatchesSessionId } from "../../sessions/session-controller.lifecycle-projections.js";
-import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import {
   getRpcSourceIdentity,
   listRpcSourceEntries,
 } from "../../sessions/session-controller.rpc-sources.js";
-import type { SessionControllerEntry } from "../../sessions/session-controller.state.js";
 import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
 import {
@@ -100,34 +97,4 @@ export function resolveScopedAbortKey(params: {
     agentId: scopedAgentId,
     sessionKey: key,
   });
-}
-
-/** Capture exact channel source identities before any earlier RPC cleanup can reenter. */
-export function captureAbortChannelSources(params: {
-  controllerOwners: readonly SessionControllerEntry[];
-  representedInputs: ReadonlySet<SessionControllerInput>;
-  requiredSessionId?: string;
-}) {
-  return new Map(
-    params.controllerOwners.flatMap((owner) =>
-      (owner.mailbox?.entries ?? [])
-        .filter(
-          (input) =>
-            !params.representedInputs.has(input) &&
-            inputMatchesSessionId(input, params.requiredSessionId),
-        )
-        .map(
-          (input) =>
-            [
-              input,
-              {
-                source: input.source,
-                target: input.target,
-                mailbox: input.mailbox,
-                sessionId: input.source?.run.sessionId,
-              },
-            ] as const,
-        ),
-    ),
-  );
 }

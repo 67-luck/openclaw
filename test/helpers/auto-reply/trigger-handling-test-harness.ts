@@ -41,10 +41,6 @@ const embeddedAgentMocks = getSharedMocks("openclaw.trigger-handling.embedded-ag
   isSessionNativeAttemptStreaming: vi.fn().mockReturnValue(false),
 }));
 
-export function getAbortEmbeddedAgentRunMock(): AnyMock {
-  return embeddedAgentMocks.abortEmbeddedAgentRun;
-}
-
 export function getCompactEmbeddedAgentSessionMock(): AnyMock {
   return embeddedAgentMocks.compactEmbeddedAgentSession;
 }

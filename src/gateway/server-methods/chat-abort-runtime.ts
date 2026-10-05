@@ -285,7 +285,7 @@ export function abortQueuedCollectorSession(
   })();
 }
 
-export function captureWorkerInferenceForSession(params: {
+function captureWorkerInferenceForSession(params: {
   context: GatewayRequestContext;
   sessionId?: string;
   runId?: string;
@@ -337,7 +337,7 @@ export type ChatSessionAbortResult = {
 };
 
 /** Resolve once at the cancellation boundary; persist captured partials only after Stop. */
-export function prepareChatSessionAbort(
+function prepareChatSessionAbort(
   params: ChatSessionAbortParams,
   workerCancellation: WorkerInferenceCancellation | undefined,
   selectedRunId?: string,

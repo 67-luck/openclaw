@@ -80,14 +80,6 @@ export async function waitForChatAbortTerminalPersistence(entry: RpcSourceRef): 
   }
 }
 
-export function isChatAbortTerminalPersistenceSettled(entry: RpcSourceRef): boolean {
-  return (
-    entry.adapter.projectSessionTerminalPending !== true &&
-    entry.adapter.projectSessionTerminalPersistence === undefined &&
-    !terminalPersistenceErrorByEntry.has(entry)
-  );
-}
-
 /** Waits for captured run registrations and their terminal persistence owner to leave. */
 export async function waitForChatAbortControllerRemoval(params: {
   targets: ReadonlyArray<{ runId: string; entry: RpcSourceRef }>;

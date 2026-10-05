@@ -217,7 +217,7 @@ export async function prepareSessionMutationCompetition(params: {
 }
 
 /** Bounds preemption settlement while leaving the mutation body outside the deadline. */
-export async function runWithMutationPreemptionTimeout<T>(params: {
+async function runWithMutationPreemptionTimeout<T>(params: {
   settleAndRun: (markSettled: () => void) => Promise<T>;
   timeoutMs: number;
   sessionKey: string;

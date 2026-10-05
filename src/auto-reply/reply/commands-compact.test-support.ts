@@ -41,7 +41,6 @@ vi.mock("./commands-compact.runtime.js", async (importOriginal) => {
 });
 
 export const {
-  captureSessionTarget,
   compactEmbeddedAgentSession,
   enqueueSystemEvent,
   formatContextUsageShort,

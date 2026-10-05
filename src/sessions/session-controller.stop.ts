@@ -242,15 +242,15 @@ export type SessionStopHookContext = Readonly<{
 }>;
 
 export type SessionStopChildrenResult = Readonly<{ stopped: number; failed: number }>;
-export type SessionStopTargetStatus = "aborted" | "finalizing" | "unchanged";
+type SessionStopTargetStatus = "aborted" | "finalizing" | "unchanged";
 
 /** An active parent owned outside the controller, stopped after its captured controller owners. */
-export type SessionStopExternalParent = Readonly<{
+type SessionStopExternalParent = Readonly<{
   stop: () => SessionStopTargetStatus | Promise<SessionStopTargetStatus>;
   settled?: Promise<unknown>;
 }>;
 
-export type SessionStopOutcome = Readonly<{
+type SessionStopOutcome = Readonly<{
   aborted: boolean;
   alreadyFinalizing: boolean;
   queuedCancelled: number;

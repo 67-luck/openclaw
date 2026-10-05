@@ -39,9 +39,7 @@ export {
   producerCompletionByOperation,
 } from "./session-controller.storage.js";
 export type {
-  ReplyRunWaiter,
   ReplyRunAdmissionSource,
-  ReplyRunAdmissionBarrier,
   SessionControllerEntry,
 } from "./session-controller.state.types.js";
 export { waitForReplyBarrierSettlement } from "./session-controller.settlement.js";

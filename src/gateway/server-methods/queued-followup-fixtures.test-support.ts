@@ -12,7 +12,7 @@ import { requestRpcSourceCancellation } from "../../sessions/session-controller.
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 
 /** Enqueues a follow-up through the real controller-owned source binding. */
-export function bindQueuedFollowupRunForTest(
+function bindQueuedFollowupRunForTest(
   lifecycle: GetReplyOptions["turnAdoptionLifecycle"],
   prompt: string,
   storePath: string,

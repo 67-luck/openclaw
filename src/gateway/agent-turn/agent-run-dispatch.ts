@@ -53,10 +53,6 @@ import {
 import { bindGatewayAgentTerminalProducer } from "./agent-run-terminal-producer.js";
 import type { AgentTurnContext, AgentTurnIo } from "./types.js";
 
-export function resolveAbortedAgentStopReason(entry?: RpcSourceRef): string {
-  return entry?.adapter.abortStopReason?.trim() || "rpc";
-}
-
 export function dispatchAgentRunFromGateway(params: {
   assertCurrent?: () => void;
   assertSettlementCurrent?: () => void;

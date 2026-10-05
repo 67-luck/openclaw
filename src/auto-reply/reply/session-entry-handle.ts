@@ -9,7 +9,7 @@ export type ReplySessionEntryHandle = {
   toCompatSessionStore(): Record<string, SessionEntry>;
 };
 
-export class ReplySessionGenerationInvalidatedError extends Error {}
+class ReplySessionGenerationInvalidatedError extends Error {}
 
 export function createReplySessionEntryHandle(params: {
   sessionEntry?: SessionEntry;

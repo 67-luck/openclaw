@@ -14,7 +14,7 @@ export function healthProfile(
 }
 
 /** Build a static credential profile for provider-health fixtures. */
-export function createApiKeyProfile(provider: string) {
+function createApiKeyProfile(provider: string) {
   return healthProfile(provider, "api_key", "static");
 }
 
