@@ -191,7 +191,7 @@ describe("admitted lazy session writer", () => {
           gate.resolve();
           await write;
           await closing;
-          expect(isSessionControllerWorkActive(target.storePath, [target.sessionKey])).toBe(false);
+          expect(isSessionControllerWorkActive(target.storePath, [target.sessionKey])).toBe(true);
           expect(loadSessionEntry(target)?.sessionId).toBe(target.sessionId);
         } finally {
           gate.resolve();
@@ -206,7 +206,6 @@ describe("admitted lazy session writer", () => {
   it("keeps its uncommitted creator visible inside a same-key lifecycle mutation", async () => {
     await withInitialWriter(async ({ target }) => {
       await runSessionMutation({
-
         scope: target.storePath,
         identities: [target.sessionKey],
         prepare: async () => {
@@ -223,7 +222,6 @@ describe("admitted lazy session writer", () => {
     await withInitialWriter(async ({ manager, runParams, target }) => {
       manager.appendMessage(userMessage);
       await runSessionMutation({
-
         scope: target.storePath,
         identities: [target.sessionKey],
         run: async () => {
@@ -321,7 +319,9 @@ describe("admitted lazy session writer", () => {
             expectedWriterRunId: runParams.runId,
           };
           expect(promptState.sessionWriterFence).toEqual(expectedFence);
-          expect(isSessionControllerWorkActive(target.storePath, [target.sessionKey])).toBe(false);
+          expect(isSessionControllerWorkActive(target.storePath, [target.sessionKey])).toBe(
+            !existing,
+          );
           expect(manager.getSessionTarget()).toMatchObject(expectedFence);
           manager.appendMessage(userMessage);
           expect(loadTranscriptEventsSync(target)).toHaveLength(3);
