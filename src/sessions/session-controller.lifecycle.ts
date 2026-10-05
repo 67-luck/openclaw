@@ -491,13 +491,13 @@ export async function beginSessionEffect(
       return token;
     },
     run: async <T>(run: () => Promise<T>): Promise<T> => {
-      if (effect.phase === "released" || releaseRequested) {
+      const caller = ownerContext.getStore();
+      if (effect.phase === "released" || (releaseRequested && !caller?.effects.has(effect))) {
         throw new Error("Session effect custody has closed");
       }
       if (effect.interrupted) {
         throw effect.interrupted;
       }
-      const caller = ownerContext.getStore();
       running++;
       try {
         return await ownerContext.run(
