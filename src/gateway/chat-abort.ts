@@ -226,7 +226,7 @@ export function registerChatAbortController(params: {
       ? "rpc"
       : typeof reason === "string"
         ? reason
-        : resolveAgentRunAbortLifecycleFields(input.abortSignal).stopReason;
+        : (resolveAgentRunAbortLifecycleFields(input.abortSignal).stopReason ?? "rpc");
     adapter.abortDiagnosticReason ??= resolveChatAbortDiagnosticReason(input.abortSignal, adapter);
     params.onCancel?.(adapter.abortStopReason);
   };
