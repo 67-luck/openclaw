@@ -144,10 +144,9 @@ describe("dispatch Stop before provider allocation", () => {
       },
     });
     const recovery = admission
-      .run(async () => {
-        await interrupted.promise;
-        await runtime.dispatchService.reconcileActive("local-result");
-      })
+      .run(() =>
+        interrupted.promise.then(() => runtime.dispatchService.reconcileActive("local-result")),
+      )
       .finally(() => admission.release());
     const dispatching = runtime.dispatchService.dispatch(REQUEST).catch((error: unknown) => error);
     try {

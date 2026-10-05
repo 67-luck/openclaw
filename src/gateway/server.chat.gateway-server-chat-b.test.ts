@@ -20,10 +20,6 @@ import { createSessionsHistoryTool } from "../agents/tools/sessions-history-tool
 import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
 import { HEARTBEAT_PROMPT } from "../auto-reply/heartbeat.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
-import { createQueueSettings, createQueueTestRun } from "../auto-reply/reply/queue.test-helpers.js";
-import { enqueueFollowupRun } from "../auto-reply/reply/queue/enqueue.js";
-import { completeFollowupRunLifecycle } from "../auto-reply/reply/queue/lifecycle.js";
-import { readReplySourceInput } from "../auto-reply/reply/reply-source-binding.js";
 import {
   getRuntimeConfig,
   resetConfigRuntimeState,
@@ -57,10 +53,8 @@ import { getMediaDir } from "../media/store.js";
 import { withPluginMetadataSnapshotScope } from "../plugins/current-plugin-metadata-snapshot.js";
 import {
   captureSessionControllerSettlement,
-  isSessionControllerWorkActive,
   runSessionMutation,
 } from "../sessions/session-controller.lifecycle.js";
-import { bindSessionControllerSource } from "../sessions/session-controller.mailbox.js";
 import {
   isRpcSourceQueued,
   requestRpcSourceCancellation,
@@ -85,6 +79,11 @@ import {
 } from "./server-chat.agent-events.test-helpers.js";
 import { getMaxChatHistoryMessagesBytes } from "./server-constants.js";
 import { createGatewayChatMetadataRuntime } from "./server-methods/chat-metadata-runtime.js";
+import {
+  createQueuedFollowupFixtureForTest,
+  requestQueuedFollowupCancellationForTest,
+  settleQueuedFollowupRunForTest,
+} from "./server-methods/queued-followup-fixtures.test-support.js";
 import { registerActiveRpcSourceForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
 import {
   disposeSessionReadContexts,
@@ -4155,45 +4154,15 @@ describe("gateway server chat", () => {
       let turnAdoptionLifecycle: GetReplyOptions["turnAdoptionLifecycle"];
       let onQueueDisposition: InternalGetReplyOptions["onFollowupQueueDisposition"];
       let onQueuedFollowupReplyBatch: InternalGetReplyOptions["onQueuedFollowupReplyBatch"];
-      const bindQueuedRun = (
-        lifecycle: GetReplyOptions["turnAdoptionLifecycle"],
-        prompt: string,
-      ) => {
-        const input = readReplySourceInput({ turnAdoptionLifecycle: lifecycle });
-        if (!input) {
-          throw new Error("Missing queued chat source");
-        }
-        const run = createQueueTestRun({ prompt });
-        run.run = {
-          ...run.run,
-          sessionKey: "agent:main:main",
-          sessionId: "sess-main",
-          agentId: "main",
-          config: { ...run.run.config, session: { store: storePath } },
-        };
-        run.abortSignal = input.abortSignal;
-        run.turnAdoptionLifecycle = lifecycle;
-        bindSessionControllerSource(input, run);
-        expect(
-          enqueueFollowupRun(
-            "agent:main:main",
-            run,
-            createQueueSettings({ mode: "followup" }),
-            "none",
-            undefined,
-            false,
-          ),
-        ).toBe(true);
-        return run;
-      };
-      let queuedRun: ReturnType<typeof createQueueTestRun> | undefined;
+      const queuedFixture = createQueuedFollowupFixtureForTest(storePath);
+      let queuedRun: ReturnType<typeof queuedFixture.bind> | undefined;
       const dispatchRelease = createDeferred();
       dispatchInboundMessageMock.mockImplementationOnce(async (args: unknown) => {
         const replyOptions = (args as { replyOptions?: InternalGetReplyOptions }).replyOptions;
         turnAdoptionLifecycle = replyOptions?.turnAdoptionLifecycle;
         onQueueDisposition = replyOptions?.onFollowupQueueDisposition;
         onQueuedFollowupReplyBatch = replyOptions?.onQueuedFollowupReplyBatch;
-        queuedRun = bindQueuedRun(turnAdoptionLifecycle, "queued prompt");
+        queuedRun = queuedFixture.bind(turnAdoptionLifecycle, "queued prompt");
         await dispatchRelease.promise;
         return {};
       });
@@ -4256,7 +4225,7 @@ describe("gateway server chat", () => {
         { sessionKeys: ["agent:main:main"] },
       );
       expect(rpcSourceTesting.has("idem-queued-followup")).toBe(true);
-      expect(isSessionControllerWorkActive(storePath, ["agent:main:main", "sess-main"])).toBe(true);
+      expect(queuedFixture.isWorkActive()).toBe(true);
       const { createAgentTurnService } = await import("./agent-turn/agent-turn-service.js");
       const service = createAgentTurnService({ context, isWebchatConnect: () => true });
       const { result: waitResult } = await service.waitForTurn({
@@ -4302,24 +4271,12 @@ describe("gateway server chat", () => {
       );
       expect(dispatchInboundMessageMock).toHaveBeenCalledTimes(1);
 
-      const queuedEntry = rpcSourceTesting.get("idem-queued-followup");
-      expect(queuedEntry).toBeDefined();
-      if (queuedEntry) {
-        requestRpcSourceCancellation(queuedEntry);
-      }
-      expect(rpcSourceTesting.has("idem-queued-followup")).toBe(true);
+      expect(requestQueuedFollowupCancellationForTest("idem-queued-followup")).toBe(true);
 
-      if (!queuedRun) {
-        throw new Error("Missing queued follow-up fixture");
-      }
-      const queuedInput = queuedRun.controllerInput;
-      completeFollowupRunLifecycle(queuedRun);
-      await queuedInput?.settlement.promise;
+      await settleQueuedFollowupRunForTest(queuedRun);
       expect(rpcSourceTesting.has("idem-queued-followup")).toBe(false);
       await getDirectChatSessionWorkRelease();
-      expect(isSessionControllerWorkActive(storePath, ["agent:main:main", "sess-main"])).toBe(
-        false,
-      );
+      expect(queuedFixture.isWorkActive()).toBe(false);
       await waitForFast(() => {
         expect(context.removeChatRun).toHaveBeenCalledTimes(2);
         expect(context.removeChatRun).toHaveBeenCalledWith(
@@ -4334,9 +4291,9 @@ describe("gateway server chat", () => {
         );
       }, FAST_WAIT_OPTS);
 
-      let failedQueuedRun: ReturnType<typeof createQueueTestRun> | undefined;
+      let failedQueuedRun: ReturnType<typeof queuedFixture.bind> | undefined;
       dispatchInboundMessageMock.mockImplementationOnce(async (args: unknown) => {
-        failedQueuedRun = bindQueuedRun(
+        failedQueuedRun = queuedFixture.bind(
           (args as { replyOptions?: GetReplyOptions }).replyOptions?.turnAdoptionLifecycle,
           "accepted before dispatch error",
         );
@@ -4374,12 +4331,7 @@ describe("gateway server chat", () => {
         payload: { status: "ok" },
       });
       expect(rpcSourceTesting.has("idem-queued-followup-post-error")).toBe(true);
-      if (!failedQueuedRun) {
-        throw new Error("Missing failed queued follow-up fixture");
-      }
-      const failedInput = failedQueuedRun.controllerInput;
-      completeFollowupRunLifecycle(failedQueuedRun);
-      await failedInput?.settlement.promise;
+      await settleQueuedFollowupRunForTest(failedQueuedRun);
       expect(rpcSourceTesting.has("idem-queued-followup-post-error")).toBe(false);
     });
   });

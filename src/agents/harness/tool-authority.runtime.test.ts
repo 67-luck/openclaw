@@ -48,6 +48,8 @@ import { withPreparedEmbeddedRunToolAuthority } from "./tool-authority.runtime.j
 
 const sessionId = "authority-session";
 const sessionKey = "agent:main:main";
+type EmbeddedRunHandle = ReturnType<typeof createEmbeddedRunHandle>;
+type QueueMessage = EmbeddedRunHandle["queueMessage"];
 const own: ReplyToolAuthorityOverlay = {
   senderIsOwner: true,
   disableTools: false,
@@ -99,11 +101,8 @@ async function admitted<T>(
 
 function publishPreparedHandle(
   toolAuthorityFingerprint: string | undefined,
-  queueMessage: ReturnType<typeof createEmbeddedRunHandle>["queueMessage"],
-  configure?: (
-    handle: ReturnType<typeof createEmbeddedRunHandle>,
-    queueMessage: ReturnType<typeof createEmbeddedRunHandle>["queueMessage"],
-  ) => void,
+  queueMessage: QueueMessage,
+  configure?: (handle: EmbeddedRunHandle, queueMessage: QueueMessage) => void,
 ) {
   const handle = createEmbeddedRunHandle({
     runId: attempt.runId,
@@ -129,10 +128,7 @@ async function published<T>(
       "toolsAllow" | "senderId" | "senderName" | "clientCaps" | "gatewayUiCommandTarget"
     > = {},
   operatorAuthority?: Parameters<typeof prepareAgentRunAdmission>[0]["operatorAuthority"],
-  configureHandle?: (
-    handle: ReturnType<typeof createEmbeddedRunHandle>,
-    queueMessage: ReturnType<typeof createEmbeddedRunHandle>["queueMessage"],
-  ) => void,
+  configureHandle?: (handle: EmbeddedRunHandle, queueMessage: QueueMessage) => void,
 ) {
   return admitted(
     async ({ admittedRunContext, close }) =>
@@ -193,7 +189,7 @@ describe("host-prepared embedded tool authority", () => {
     const releaseQueue = createDeferred();
     let queueReturned = false;
     const retained = await published(
-      async ({ handle }) => {
+      async () => {
         const incoming: ReplyToolAuthorityOverlay = {
           ...own,
           operatorAuthority: authority("bob"),

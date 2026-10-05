@@ -565,11 +565,13 @@ export async function admitChatSend(
     });
   }
   clearPendingChatSendReservation();
-  const activeRunAbort = admittedRunAbort;
-  if (reservationSuperseded) {
-    admittedRunAbort.cleanup();
+  const releaseAdmissionOwners = () => {
     gatewayWorkAdmission.release();
     capturedOperator.release();
+  };
+  if (reservationSuperseded) {
+    admittedRunAbort.cleanup();
+    releaseAdmissionOwners();
     const supersedingCached =
       supersedingResult ?? readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (supersedingCached) {
@@ -586,17 +588,16 @@ export async function admitChatSend(
     return { ok: false as const };
   }
   if (lifecycleGeneration !== getAgentEventLifecycleGeneration()) {
-    if (activeRunAbort) {
-      if (activeRunAbort.entry) {
-        activeRunAbort.entry.adapter.abortStopReason = "restart";
+    if (admittedRunAbort) {
+      if (admittedRunAbort.entry) {
+        admittedRunAbort.entry.adapter.abortStopReason = "restart";
       }
-      activeRunAbort.controller.abort();
-      activeRunAbort.cleanup();
+      admittedRunAbort.controller.abort();
+      admittedRunAbort.cleanup();
     }
-    gatewayWorkAdmission.release();
-    capturedOperator.release();
+    releaseAdmissionOwners();
     if (!readChatSendDedupeResponse(context.dedupe, clientRunId)) {
-      abortPendingChatSend(activeRunAbort?.entry?.adapter.abortStopReason ?? "restart");
+      abortPendingChatSend(admittedRunAbort?.entry?.adapter.abortStopReason ?? "restart");
     }
     const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
     respond(aborted?.ok ?? true, aborted?.payload, aborted?.error, {
@@ -605,9 +606,8 @@ export async function admitChatSend(
     });
     return { ok: false as const };
   }
-  if (!activeRunAbort) {
-    gatewayWorkAdmission.release();
-    capturedOperator.release();
+  if (!admittedRunAbort) {
+    releaseAdmissionOwners();
     const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (aborted) {
       respond(aborted.ok, aborted.payload, aborted.error, {
@@ -619,9 +619,8 @@ export async function admitChatSend(
     respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "chat run admission failed"));
     return { ok: false as const };
   }
-  if (!activeRunAbort.registered) {
-    gatewayWorkAdmission.release();
-    capturedOperator.release();
+  if (!admittedRunAbort.registered) {
+    releaseAdmissionOwners();
     respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
       cached: true,
       runId: clientRunId,
@@ -633,7 +632,7 @@ export async function admitChatSend(
   // Until dispatch takes custody, interruption and callback failures release every admission hold.
   const cleanupPreDispatchAdmission = () => {
     try {
-      activeRunAbort.cleanup();
+      admittedRunAbort.cleanup();
       gatewayWorkAdmission.release();
       releaseGatewayRootContinuation();
     } finally {
@@ -665,7 +664,7 @@ export async function admitChatSend(
       return { ok: false as const };
     }
     const pending = await consumeChatSendCurrent(params, () => {
-      activeRunAbort.controller.signal.throwIfAborted();
+      admittedRunAbort.controller.signal.throwIfAborted();
       // Reserve while the request root is live: detached dispatch retains it until terminal persistence.
       releaseGatewayRootContinuation = retainGatewayRootWorkAdmissionContinuation() ?? (() => {});
       return {
@@ -697,7 +696,7 @@ export async function admitChatSend(
   }
 
   const acquiredGatewayWorkAdmission = gatewayWorkAdmission;
-  const sourceRef = activeRunAbort.entry;
+  const sourceRef = admittedRunAbort.entry;
   let sessionPreparationActive = true;
   const onSessionPrepared = bindChatSendPreparedSession({
     clientRunId,
@@ -721,9 +720,9 @@ export async function admitChatSend(
   // handler disarms it once the media becomes referenced (durable admission
   // or ACK handing ownership to dispatch, which persists on all paths).
   let discardAbandonedPreparedMedia: (() => void) | undefined;
-  const cleanupAdmittedRun: typeof activeRunAbort.cleanup = () => {
+  const cleanupAdmittedRun: typeof admittedRunAbort.cleanup = () => {
     sessionPreparationActive = false;
-    activeRunAbort.cleanup();
+    admittedRunAbort.cleanup();
     retainedWork.release();
     discardAbandonedPreparedMedia?.();
     discardAbandonedPreparedMedia = undefined;
@@ -734,7 +733,7 @@ export async function admitChatSend(
     respondChatSessionRoutingChanged(respond);
   };
   const finishAbortedChatSend = () => {
-    const stopReason = activeRunAbort.entry?.adapter.abortStopReason ?? "rpc";
+    const stopReason = admittedRunAbort.entry?.adapter.abortStopReason ?? "rpc";
     const endedAt = Date.now();
     const payload = buildAbortedChatSendPayload({ runId: clientRunId, stopReason, endedAt });
     setGatewayDedupeEntry({
@@ -758,7 +757,7 @@ export async function admitChatSend(
   return {
     ok: true as const,
     value: {
-      activeRunAbort,
+      activeRunAbort: admittedRunAbort,
       operatorAuthority: capturedOperator.authority,
       armOperatorRunCancellation: capturedOperator.armCancellation,
       retireOperatorRunCancellation: capturedOperator.retireCancellation,
@@ -792,7 +791,7 @@ export async function admitChatSend(
           !retainedWork.isActive() ||
           !acquiredGatewayWorkAdmission.isActive() ||
           lifecycleGeneration !== getAgentEventLifecycleGeneration() ||
-          (activeRunAbort.controller.signal.aborted &&
+          (admittedRunAbort.controller.signal.aborted &&
             !(queued === sourceRef && queued.input.custody.cancellationRetired))
         ) {
           throw new Error("Chat admission ended or was cancelled; submit a new turn.");
