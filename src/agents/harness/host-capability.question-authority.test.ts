@@ -26,7 +26,7 @@ const attempt = {
 const caller = {
   senderIsOwner: true,
   disableTools: false,
-  traceAuthorized: false,
+  traceAuthorized: true,
   messageProvider: "webchat",
 };
 
