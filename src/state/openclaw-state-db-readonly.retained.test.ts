@@ -61,9 +61,9 @@ const tasks: Array<RetainedWorkerTask<OpenClawStateReadReply>> = [];
 const releaseFixtures: Array<() => void> = [];
 const reply: OpenClawStateReadReply = {
   ok: true,
-  type: "fleet.list",
+  type: "backup.runs",
   sourceAdmitted: true,
-  cells: [],
+  runs: [],
 };
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(async () => {
@@ -206,7 +206,7 @@ it.each(["ordinary", "native"] as const)(
         nativeCleanup.resolve(true);
       });
     }
-    const read = () => executeExistingOpenClawStateRead(options, { type: "fleet.list" });
+    const read = () => executeExistingOpenClawStateRead(options, { type: "backup.runs" });
     const first = owner.run("first", () =>
       kind === "native" ? withArtifactPreservingStateReads(read) : read(),
     );
@@ -282,7 +282,7 @@ it("finishes fresh snapshot preparation, query, and snapshot cleanup without Pro
   });
   const completion = owner.run("fresh", () =>
     withArtifactPreservingStateReads(() =>
-      executeExistingOpenClawStateRead(options, { type: "fleet.list" }),
+      executeExistingOpenClawStateRead(options, { type: "backup.runs" }),
     ),
   );
   ready = true;
@@ -314,7 +314,7 @@ it("retains an inherited snapshot until its outer owner closes after the query",
   });
   await withOpenClawStateDatabaseReadSnapshot(async () => {
     const completion = owner.run("inherited", () =>
-      executeExistingOpenClawStateRead(options, { type: "fleet.list" }),
+      executeExistingOpenClawStateRead(options, { type: "backup.runs" }),
     );
     ready = true;
     let microtaskRan = false;
@@ -363,7 +363,7 @@ it("retains failed preparation custody through a pending close and canonical ret
   try {
     completion = maintenance.run(() =>
       withArtifactPreservingStateReads(() =>
-        executeExistingOpenClawStateRead(options, { type: "fleet.list" }, { mapError }),
+        executeExistingOpenClawStateRead(options, { type: "backup.runs" }, { mapError }),
       ),
     );
     void completion.then(

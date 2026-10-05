@@ -1,38 +1,58 @@
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { listFleetCells, reserveFleetCell } from "../fleet/registry.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
 import { useStateDatabaseTempDirs } from "../test-utils/state-database-temp-dirs.js";
+import { recordBackupRunInDatabase } from "./backup-run-records.kernel.js";
 import { iterateOpenClawStateDatabaseReadOnly } from "./openclaw-state-db-read-connection.js";
 import {
+  executeExistingOpenClawStateRead,
   withArtifactPreservingStateReads,
   withExistingOpenClawStateDatabaseReadOnly,
 } from "./openclaw-state-db-readonly.js";
 import { withExistingOpenClawStateSchema } from "./openclaw-state-db-schema-policy.js";
-import { closeOpenClawStateDatabaseAsync, openOpenClawStateDatabase } from "./openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
+} from "./openclaw-state-db.js";
 
 const tempDirs = useStateDatabaseTempDirs();
 
 async function fixture() {
   const root = tempDirs.make("fixed-read-existing-schema-");
   const env = { OPENCLAW_STATE_DIR: root };
-  const record = await reserveFleetCell(env, {
-    tenantId: "alpha",
-    createdAtMs: 1,
-    image: "fixture:image",
-    runtime: "docker",
-    containerName: "fixture-alpha",
-    dataDir: path.join(root, "alpha"),
-  });
+  const record = {
+    id: "alpha",
+    createdAt: 1,
+    archivePath: path.join(root, "backup.tar.gz"),
+    status: "ok",
+    kind: "archive",
+  } as const;
   const database = openOpenClawStateDatabase({ env });
+  runOpenClawStateWriteTransaction(
+    ({ db }) =>
+      recordBackupRunInDatabase(db, {
+        id: record.id,
+        created_at: record.createdAt,
+        archive_path: record.archivePath,
+        status: record.status,
+        manifest_json: JSON.stringify({ kind: record.kind }),
+      }),
+    { database, env },
+  );
   database.db
     .prepare("UPDATE schema_meta SET app_version = ? WHERE meta_key = 'primary'")
     .run("synthetic-installed-runtime");
   const options = { path: database.path, env };
   await closeOpenClawStateDatabaseAsync();
-  return { env, options, record };
+  return {
+    env,
+    options,
+    record,
+    read: async () => executeExistingOpenClawStateRead({ env }, { type: "backup.runs" }),
+  };
 }
 
 async function withoutHostSql(run: () => Promise<void>) {
@@ -49,17 +69,20 @@ async function withoutHostSql(run: () => Promise<void>) {
 it.each(["fresh", "cached", "artifact"] as const)(
   "validates existing runtime shape on %s fixed reads without host SQL or schema repair",
   async (mode) => {
-    const { env, options, record } = await fixture();
+    const { options, record, read: readRows } = await fixture();
     const read = () =>
-      mode === "artifact"
-        ? withArtifactPreservingStateReads(() => listFleetCells(env))
-        : listFleetCells(env);
+      mode === "artifact" ? withArtifactPreservingStateReads(readRows) : readRows();
     await withExistingOpenClawStateSchema(options, async () => {
       if (mode === "cached") {
         openOpenClawStateDatabase(options);
       }
       await withoutHostSql(async () => {
-        expect(await read()).toEqual([record]);
+        expect(await read()).toEqual({
+          ok: true,
+          type: "backup.runs",
+          sourceAdmitted: true,
+          runs: [record],
+        });
       });
       const { DatabaseSync } = requireNodeSqlite();
       const external = new DatabaseSync(options.path);
@@ -91,25 +114,30 @@ it.each(["fresh", "cached", "artifact"] as const)(
 );
 
 it("refuses fixed-read custody of a restricted cached handle outside its scope", async () => {
-  const { env, options, record } = await fixture();
+  const { options, record, read } = await fixture();
   const database = withExistingOpenClawStateSchema(options, () =>
     openOpenClawStateDatabase(options),
   );
   await withoutHostSql(async () => {
-    await expect(listFleetCells(env)).rejects.toThrow(/without schema repair/i);
+    await expect(read()).rejects.toThrow(/without schema repair/i);
   });
   expect(database.db.isOpen).toBe(true);
   await closeOpenClawStateDatabaseAsync();
   await withoutHostSql(async () => {
-    expect(await listFleetCells(env)).toEqual([record]);
+    expect(await read()).toEqual({
+      ok: true,
+      type: "backup.runs",
+      sourceAdmitted: true,
+      runs: [record],
+    });
   });
 });
 
 it("rejects detached fixed reads after their existing-schema scope ends", async () => {
-  const { env, options } = await fixture();
+  const { options, read } = await fixture();
   const gate = createDeferred();
   const { pending } = await withExistingOpenClawStateSchema(options, async () => ({
-    pending: gate.promise.then(() => listFleetCells(env)),
+    pending: gate.promise.then(read),
   }));
   await withoutHostSql(async () => {
     const rejected = expect(pending).rejects.toThrow(/schema admission has ended/i);

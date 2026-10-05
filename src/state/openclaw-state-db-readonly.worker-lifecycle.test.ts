@@ -120,7 +120,7 @@ beforeEach(() => {
   mock.close.mockReset().mockResolvedValue();
   mock.cleanup.mockReset().mockResolvedValue(true);
   mock.read.mockReset().mockResolvedValue({
-    value: { ok: true, type: "fleet.list", sourceAdmitted: true, cells: [] },
+    value: { ok: true, type: "backup.runs", sourceAdmitted: true, runs: [] },
   });
 });
 
@@ -149,7 +149,7 @@ it("retains the borrowed source through pending preparation and failed published
   finishProducer = () =>
     prepared.resolve({ location: "/fixture/prepared.sqlite", cleanupAsync: mock.cleanup });
   const result = withArtifactPreservingStateReads(() =>
-    executeExistingOpenClawStateRead(options, { type: "fleet.list" }),
+    executeExistingOpenClawStateRead(options, { type: "backup.runs" }),
   ).catch((error: unknown) => error);
   await started.promise;
   const closing = closeOpenClawStateDatabaseByPathAsync(options.path).catch(
@@ -179,7 +179,7 @@ it("retains ordered cleanup for canonical retry after a read failure", async () 
 
   await expect(
     withArtifactPreservingStateReads(() =>
-      executeExistingOpenClawStateRead(options, { type: "fleet.list" }),
+      executeExistingOpenClawStateRead(options, { type: "backup.runs" }),
     ),
   ).rejects.toMatchObject({ cause: readFailure, errors: [readFailure, stopFailure] });
   expect(mock.cleanup).not.toHaveBeenCalled();
@@ -202,7 +202,7 @@ it("retains an outer snapshot until its child transport acknowledges cleanup", a
   mock.close.mockRejectedValueOnce(failure).mockRejectedValueOnce(failure).mockResolvedValue();
   await expect(
     withOpenClawStateDatabaseReadSnapshot(
-      () => executeExistingOpenClawStateRead(options, { type: "fleet.list" }),
+      () => executeExistingOpenClawStateRead(options, { type: "backup.runs" }),
       options,
     ),
   ).rejects.toMatchObject({ cause: failure });
@@ -217,11 +217,11 @@ it("keeps a composite snapshot alive when its callback closes the live writer", 
   await withOpenClawStateDatabaseReadSnapshot(async () => {
     await closeOpenClawStateDatabaseByPathAsync(options.path);
     expect(mock.cleanup).not.toHaveBeenCalled();
-    expect(await executeExistingOpenClawStateRead(options, { type: "fleet.list" })).toEqual({
+    expect(await executeExistingOpenClawStateRead(options, { type: "backup.runs" })).toEqual({
       ok: true,
-      type: "fleet.list",
+      type: "backup.runs",
       sourceAdmitted: true,
-      cells: [],
+      runs: [],
     });
   }, options);
   expect(mock.cleanup).toHaveBeenCalledTimes(1);
@@ -232,17 +232,17 @@ it("retries transport stop before waiting for a still-pending producer", async (
   const started = createDeferredCore();
   const reply = createDeferredCore<OpenClawStateReadOutcome>();
   finishProducer = () =>
-    reply.resolve({ value: { ok: true, type: "fleet.list", sourceAdmitted: true, cells: [] } });
+    reply.resolve({ value: { ok: true, type: "backup.runs", sourceAdmitted: true, runs: [] } });
   mock.read.mockImplementation(() => {
     started.resolve();
     return reply.promise;
   });
   const failure = new Error("first stop not acknowledged");
   mock.close.mockRejectedValueOnce(failure).mockImplementation(async () => {
-    reply.resolve({ value: { ok: true, type: "fleet.list", sourceAdmitted: true, cells: [] } });
+    reply.resolve({ value: { ok: true, type: "backup.runs", sourceAdmitted: true, runs: [] } });
   });
   const observed = withArtifactPreservingStateReads(() =>
-    executeExistingOpenClawStateRead(options, { type: "fleet.list" }),
+    executeExistingOpenClawStateRead(options, { type: "backup.runs" }),
   ).then(
     (value) => ({ value }),
     (error: unknown) => ({ error }),
@@ -284,13 +284,13 @@ it.each(["success", "unadmitted failure", "admitted failure", "retired failure"]
         };
       });
     }
-    const read = executeExistingOpenClawStateRead(options, { type: "fleet.list" });
+    const read = executeExistingOpenClawStateRead(options, { type: "backup.runs" });
     if (outcome === "success") {
       await expect(read).resolves.toEqual({
         ok: true,
-        type: "fleet.list",
+        type: "backup.runs",
         sourceAdmitted: true,
-        cells: [],
+        runs: [],
       });
     } else if (outcome === "retired failure") {
       await expect(read).rejects.toMatchObject({ cause: failure, errors: [failure, retired] });
@@ -316,7 +316,7 @@ it("joins maintenance reads and retries their transport before closing scoped ha
   const events: string[] = [];
   const failure = new Error("transport stop not acknowledged");
   finishProducer = () =>
-    reply.resolve({ value: { ok: true, type: "fleet.list", sourceAdmitted: true, cells: [] } });
+    reply.resolve({ value: { ok: true, type: "backup.runs", sourceAdmitted: true, runs: [] } });
   mock.read.mockImplementation(() => {
     started.resolve();
     return reply.promise;
@@ -331,7 +331,7 @@ it("joins maintenance reads and retries their transport before closing scoped ha
     events.push("handle closed");
   });
   const operation = scope.run(() =>
-    executeExistingOpenClawStateRead(options, { type: "fleet.list" }),
+    executeExistingOpenClawStateRead(options, { type: "backup.runs" }),
   );
   const assertion = expect(operation).rejects.toBe(failure);
   await started.promise;

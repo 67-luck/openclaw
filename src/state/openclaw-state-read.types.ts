@@ -43,7 +43,6 @@ import type {
   CronRunRecoveryObservation,
 } from "../cron/store/run-recovery-read.types.js";
 import type { CronQuarantinedJob } from "../cron/types-shared.js";
-import type { FleetCellRecord } from "../fleet/registry.types.js";
 import type {
   CronStandingGrantListing,
   CronStandingGrantLookupInput,
@@ -254,9 +253,7 @@ export type OpenClawStateReadCommand =
   | { type: "updateRuns.status" }
   | { type: "updateRuns.historyStatus" }
   | { type: "worktrees.cleanupState" }
-  | { type: "fleet.list" }
   | { type: "workerPlacements.changeSnapshot"; profileIds?: string[] }
-  | { type: "fleet.get"; tenantId: string }
   | { type: "nodeHost.config" }
   | { type: "tts.prefsPath" }
   | { type: "operator.channelPolicy" }
@@ -517,12 +514,10 @@ export type OpenClawStateReadResult =
       records: ManagedWorktreeRecord[];
       leases: ReturnType<typeof readWorktreeRunLeaseStateInDatabase>;
     }
-  | { type: "fleet.list"; cells: FleetCellRecord[] }
   | {
       type: "workerPlacements.changeSnapshot";
       placements: WorkerSessionPlacementChangeSnapshot[];
     }
-  | { type: "fleet.get"; cell: FleetCellRecord | undefined }
   | {
       type: "nodeHost.config" | "operator.channelPolicy" | "tts.prefsPath";
       row: ConfigMachineStateRow | undefined;
