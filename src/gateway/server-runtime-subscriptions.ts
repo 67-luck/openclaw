@@ -34,6 +34,7 @@ import {
   onSessionLifecycleEvent,
 } from "../sessions/session-lifecycle-events.js";
 import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
+import { runOutsideAsyncWorkScope } from "../shared/async-work-scope.js";
 import {
   createLazyPromise,
   createLazyPromiseLoader,
@@ -56,8 +57,8 @@ import type {
   ChatRunState,
   SessionEventSubscriberRegistry,
   SessionMessageSubscriberRegistry,
-  ToolEventRecipientRegistry,
 } from "./server-chat-state.js";
+import type { ToolEventRecipientRegistry } from "./server-chat-tool-recipients.js";
 import { resolveVisibleActiveSessionRunState } from "./server-methods/session-active-runs.js";
 import { createSessionActivitySummaries } from "./session-activity-summaries.js";
 import { broadcastSessionActivitySummary } from "./session-activity-summary-events.js";
@@ -146,7 +147,14 @@ export function startGatewayEventSubscriptions(params: {
     getConfig: getRuntimeConfig,
     getSessionRowProjection: params.getSessionRowProjection,
     onChanged: (target) => {
-      const publication = broadcastSessionActivitySummary(target, params).catch((error: unknown) =>
+      if (auditPolicyClosed || params.signal.aborted || params.scheduler.signal.aborted) {
+        return;
+      }
+      // Accepted notifications outlive their producer's scope. agentUnsub joins
+      // them before clients and the row projection close.
+      const publication = runWithRetainedGatewayRootWork(() =>
+        runOutsideAsyncWorkScope(() => broadcastSessionActivitySummary(target, params)),
+      ).catch((error: unknown) =>
         params.log.warn("Activity summary publication failed", { error }),
       );
       agentEventDispatches.add(publication);
@@ -299,7 +307,7 @@ export function startGatewayEventSubscriptions(params: {
     () => {
       // Lazy-load heavy chat modules only after the first agent event reaches the gateway.
       return Promise.all([import("./server-chat.js"), getSessionKeyModule()]).then(
-        ([{ createAgentEventHandler }, { resolveSessionKeyForRun }]) =>
+        ([{ createAgentEventHandler }, { resolveSessionForRun }]) =>
           createAgentEventHandler({
             broadcast: params.broadcast,
             broadcastToConnIds: params.broadcastToConnIds,
@@ -308,10 +316,10 @@ export function startGatewayEventSubscriptions(params: {
             agentRunSeq: params.agentRunSeq,
             chatRunState: params.chatRunState,
             resolveSessionKeyForRun: (runId, options) =>
-              resolveSessionKeyForRun(runId, {
+              resolveSessionForRun(runId, {
                 ...options,
                 projection: params.getSessionRowProjection?.(),
-              }),
+              })?.sessionKey,
             clearAgentRunContext,
             toolEventRecipients: params.toolEventRecipients,
             sessionEventSubscribers: params.sessionEventSubscribers,
@@ -500,10 +508,10 @@ export function startGatewayEventSubscriptions(params: {
           trackedOwnerIsCurrent &&
           claimIsComplete;
         const writeContext = captureAgentRunTerminalWriteContext(evt.runId);
-        const prepareTerminalPersistence = (sessionKey: string) => {
+        const prepareTerminalPersistence = (sessionKey: string, agentId = sessionAgentId) => {
           const persistence = sessionLifecyclePersistence.observe({
             sessionKey,
-            ...(sessionAgentId ? { agentId: sessionAgentId } : {}),
+            ...(agentId ? { agentId } : {}),
             event: evt,
             ...(terminalAuthority ? { authority: terminalAuthority } : {}),
             ...(writeContext ? { writeContext } : {}),
@@ -543,17 +551,15 @@ export function startGatewayEventSubscriptions(params: {
           } else {
             // Context cleanup can precede a terminal event. Resolve its persisted
             // run mapping before the lazy chat handler consumes the same event.
-            terminalPreparation = getSessionKeyModule().then(
-              async ({ resolveSessionKeyForRun }) => {
-                const sessionKey = resolveSessionKeyForRun(evt.runId, {
-                  agentId: sessionAgentId,
-                  projection: params.getSessionRowProjection?.(),
-                });
-                if (sessionKey) {
-                  await prepareTerminalPersistence(sessionKey);
-                }
-              },
-            );
+            terminalPreparation = getSessionKeyModule().then(async ({ resolveSessionForRun }) => {
+              const selected = resolveSessionForRun(evt.runId, {
+                agentId: sessionAgentId,
+                projection: params.getSessionRowProjection?.(),
+              });
+              if (selected) {
+                await prepareTerminalPersistence(selected.sessionKey, selected.agentId);
+              }
+            });
             writeContext?.track(terminalPreparation);
           }
         }

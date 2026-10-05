@@ -5,14 +5,17 @@ import type {
 } from "../commands/doctor-externally-managed-repair.js";
 import type { DoctorOptions } from "../commands/doctor-prompter.js";
 import { resolveConfigPath } from "../config/paths.js";
+import { retainUpdateDoctorProcesses } from "../infra/update-doctor-process-custody.js";
 import {
   captureUpdateDoctorConfigWrites,
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
   type DoctorConfigCapture,
   type UpdateDoctorWriteAuthority,
 } from "../infra/update-doctor-result.js";
+import { resolveUpdateRehearsalRoot } from "../infra/update-rehearsal-paths.js";
 import { withPluginLoadDiagnostics } from "../plugins/load-diagnostics.js";
 import type { PluginDiagnostic } from "../plugins/manifest-types.js";
+import { withCommandProcessScope } from "../process/exec-spawn.js";
 import { withDeferredDebugProxyCapture } from "../proxy-capture/runtime-deferral.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { UpdateSchemaRefusalError } from "../state/openclaw-update-schema-refusal.js";
@@ -29,6 +32,7 @@ type RunDoctorHealthFlow = (params: {
   writeAuthority?: UpdateDoctorWriteAuthority;
   resumeCapture: () => void;
   repairEvidence?: DoctorRepairEvidenceSink;
+  preCaptureRehearsalRoot?: string;
 }) => Promise<void>;
 
 export async function runDoctorHealthEntry<TOptions extends DoctorOptions>(params: {
@@ -39,27 +43,39 @@ export async function runDoctorHealthEntry<TOptions extends DoctorOptions>(param
   run: RunDoctorHealthFlow;
 }): Promise<DoctorHealthFlowResult<TOptions>> {
   const options: DoctorOptions = params.options ?? {};
+  using custody = await retainUpdateDoctorProcesses(
+    params.writeAuthority?.assertCurrent,
+    params.writeAuthority?.commandAuthority,
+  );
   const externallyManagedRepair = options.externallyManaged
     ? (
         await import("../commands/doctor-externally-managed-repair.js")
       ).createExternallyManagedDoctorRepairEvidence()
     : undefined;
-  try {
-    await withDeferredDebugProxyCapture(async (resumeCapture) => {
+  const runEntry = () =>
+    withDeferredDebugProxyCapture(async (resumeCapture) => {
       let databasePreflight = params.databasePreflight;
+      const preCaptureRehearsalRoot =
+        !params.writeAuthority?.postCoreSchemaRepair &&
+        (options.repair === true || options.yes === true)
+          ? resolveUpdateRehearsalRoot(process.env)
+          : undefined;
       if (
         process.env.OPENCLAW_UPDATE_IN_PROGRESS === "1" &&
         !params.writeAuthority?.postCoreSchemaRepair
       ) {
         const { guardUpdateDoctorSchemaUpgrade, rehearseDeferredUpdateDoctorSchema } =
           await import("../commands/doctor-update-schema-guard.js");
-        databasePreflight =
-          (await guardUpdateDoctorSchemaUpgrade({
-            schemas: databasePreflight,
-            runtime: params.runtime,
-            json: options.json,
-          })) ?? databasePreflight;
-        if (databasePreflight?.updateSchemaRehearsal) {
+        const guarded = await guardUpdateDoctorSchemaUpgrade({
+          schemas: databasePreflight,
+          runtime: params.runtime,
+          json: options.json,
+          statePublicationOnly: preCaptureRehearsalRoot !== undefined,
+        });
+        if (!preCaptureRehearsalRoot) {
+          databasePreflight = guarded ?? databasePreflight;
+        }
+        if (!preCaptureRehearsalRoot && databasePreflight?.updateSchemaRehearsal) {
           await rehearseDeferredUpdateDoctorSchema(databasePreflight, params.runtime);
           return;
         }
@@ -76,6 +92,7 @@ export async function runDoctorHealthEntry<TOptions extends DoctorOptions>(param
             writeAuthority: params.writeAuthority,
             resumeCapture,
             repairEvidence: externallyManagedRepair?.sink,
+            preCaptureRehearsalRoot,
           });
         return resultPath
           ? captureUpdateDoctorConfigWrites(
@@ -86,6 +103,8 @@ export async function runDoctorHealthEntry<TOptions extends DoctorOptions>(param
           : run();
       });
     });
+  try {
+    await (custody ? withCommandProcessScope(runEntry, undefined, custody) : runEntry());
   } catch (error) {
     if (!externallyManagedRepair) {
       throw error;

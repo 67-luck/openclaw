@@ -28,8 +28,9 @@ import {
   createPrometheusMetricStore,
   type PrometheusMetricStore,
 } from "./prometheus-metric-store.js";
-import { recordGatewayRpcEvent } from "./service-gateway-rpc.js";
+import { recordChildProcessSpawn } from "./service-child-process.js";
 import { recordMemorySample } from "./service-memory.js";
+import { recordOperationTimingEvent } from "./service-operation-timing.js";
 
 const TOKEN_BUCKETS = [1, 4, 16, 64, 256, 1024, 4096, 16384, 65536, 262144, 1048576];
 const BYTE_BUCKETS = [
@@ -190,7 +191,7 @@ function recordDiagnosticEvent(
   switch (evt.type) {
     case "diagnostic.phase.completed":
     case "gateway.rpc":
-      recordGatewayRpcEvent(store, evt, metadata);
+      recordOperationTimingEvent(store, evt, metadata);
       return;
     case "diagnostic.gc":
       store.histogram(
@@ -580,12 +581,7 @@ function recordDiagnosticEvent(
       });
       return;
     case "diagnostic.child_process.spawn":
-      store.counter(
-        "openclaw_child_process_spawn_total",
-        "Successful child launches through the shared spawn and exec owners.",
-        { family: normalizeDiagnosticValue(evt.family) },
-        numericValue(evt.count) ?? 0,
-      );
+      recordChildProcessSpawn(store, evt);
       return;
     case "diagnostic.memory.sample":
       recordMemorySample(store, evt.memory, BYTE_BUCKETS);

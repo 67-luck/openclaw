@@ -1,13 +1,12 @@
 import { isIncognitoSessionKey } from "../../../../src/shared/incognito-session-key.js";
+import { notifyListeners } from "../../../../src/shared/listeners.js";
+import { readOfflineStorageScope } from "../../app/boot-record.ts";
 import { getSafeSessionStorage } from "../../local-storage.ts";
 import { resolveUiConversationIdentity } from "../sessions/session-key.ts";
 import { compareChatQueueOrder } from "./chat-queue-order.ts";
 import type { ChatQueueItem } from "./chat-types.ts";
 import type { DurableChatDraftPresence } from "./composer-draft-store.runtime.ts";
-import {
-  observeOutboxRecoveryOwner,
-  outboxPayloadMatchesOwner,
-} from "./outbox-payload-store.runtime.ts";
+import { outboxPayloadMatchesOwner } from "./outbox-payload-store.runtime.ts";
 import type { StoredComposerSession } from "./outbox-store-codec.ts";
 import type { StoredChatOutboxScope } from "./outbox-store-scope.ts";
 import {
@@ -23,6 +22,14 @@ import {
 } from "./outbox-store.ts";
 
 export type StoredChatOutbox = StoredChatOutboxScope & { queue: ChatQueueItem[] };
+export type StoredSidebarSessionFacts = StoredChatOutboxScope & {
+  hasComposerDraft: boolean;
+  outboxAttentionCount: number;
+};
+export type SidebarOutboxSummary = Pick<
+  ReturnType<typeof summarizeStoredChatOutboxes>["summary"],
+  "total" | "attentionCountForSession" | "hasSessionDraft"
+>;
 
 type StoredOutboxReaderScope = ChatComposerScope &
   Required<Pick<ChatComposerScope, "client" | "connected">>;
@@ -49,13 +56,9 @@ export function createStoredChatOutboxReader() {
   };
   const notify = () => {
     invalidate();
-    for (const listener of listeners) {
-      try {
-        listener();
-      } catch (error) {
-        console.error("[openclaw] stored outbox reader listener failed", error);
-      }
-    }
+    notifyListeners(listeners, undefined, (error) =>
+      console.error("[openclaw] stored outbox reader listener failed", error),
+    );
   };
   const markStale = () => {
     generation += 1;
@@ -146,7 +149,7 @@ export function createStoredChatOutboxReader() {
     read(state: StoredOutboxReaderScope) {
       lastState = state;
       const gatewayOwner = storageTargetForComposer(state).gatewayOwner;
-      const recoveryScope = observeOutboxRecoveryOwner(state);
+      const recoveryScope = readOfflineStorageScope(state);
       if (owner?.gatewayOwner !== gatewayOwner || owner?.recoveryScope !== recoveryScope) {
         owner = recoveryScope ? { gatewayOwner, recoveryScope } : undefined;
         presence = undefined;
@@ -235,8 +238,10 @@ function summarizeStoredChatOutboxes(
 ) {
   const idsByScope = new Map<string, { all: Set<string>; attention: Set<string> }>();
   const drafts = new Map<string, DurableChatDraftPresence>();
+  const scopes = new Map<string, StoredChatOutboxScope>();
   for (const { scope, session } of listStoredComposerRows(state)) {
     const scopeKey = storedChatOutboxScopeKey(scope);
+    scopes.set(scopeKey, scope);
     if (!isIncognitoSessionKey(scope.sessionKey)) {
       drafts.set(scopeKey, {
         revision: session.draftRevision ?? 0,
@@ -271,6 +276,7 @@ function summarizeStoredChatOutboxes(
       durable.revision >= (drafts.get(scopeKey)?.revision ?? 0)
     ) {
       drafts.set(scopeKey, durable);
+      scopes.set(scopeKey, scope);
     }
   }
   const attentionCountsByScope = new Map<string, number>();
@@ -290,6 +296,16 @@ function summarizeStoredChatOutboxes(
     ),
     summary: {
       total,
+      sessions: [...scopes.entries()]
+        // Cleared drafts must not consume the native snapshot's bounded row budget.
+        .filter(([key]) => drafts.get(key)?.active || attentionCountsByScope.has(key))
+        .toSorted(([left], [right]) => left.localeCompare(right))
+        .map(([key, scope]): StoredSidebarSessionFacts => ({
+          sessionKey: scope.sessionKey,
+          agentId: scope.agentId,
+          hasComposerDraft: Boolean(drafts.get(key)?.active),
+          outboxAttentionCount: attentionCountsByScope.get(key) ?? 0,
+        })),
       attentionCountForSession: (sessionKey: string) =>
         attentionCountsByScope.get(sessionScopeKey(sessionKey)) ?? 0,
       hasSessionDraft: (sessionKey: string) =>
