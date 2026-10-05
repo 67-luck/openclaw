@@ -292,6 +292,7 @@ it.each(cases)(
     };
     const readyThreads = new Map<string, ReadyThread>();
     const lifecycleErrors = new Map<string, string[]>();
+    const cancelledRuns = new Set<string>();
     const gateway = await startGatewayWithClient({
       cfg,
       configPath: values.OPENCLAW_CONFIG_PATH,
@@ -304,6 +305,13 @@ it.each(cases)(
           !isRecord(payload.data)
         ) {
           return;
+        }
+        if (
+          payload.stream === "lifecycle" &&
+          payload.data.phase === "end" &&
+          payload.data.status === "cancelled"
+        ) {
+          cancelledRuns.add(payload.runId);
         }
         if (
           payload.stream === "lifecycle" &&
@@ -502,6 +510,7 @@ it.each(cases)(
     }
     const beforeRecoveryProcesses = nativeProcesses.size;
     const continued = await start("Continue with changed instructions.", "second");
+    let abortRequest: ReturnType<typeof gateway.client.request> | undefined;
     if (exitGate) {
       await withTestTimeout(exitGate.waiting, 10_000, "startup did not wait for physical exit");
       expect(exitGate.child.exitCode).toBeNull();
@@ -510,9 +519,9 @@ it.each(cases)(
       expect(primaryRequests).toHaveLength(1);
       await assertOriginalBinding();
       if (shutdown === "cancelled") {
-        expect(
-          await gateway.client.request("chat.abort", { sessionKey, runId: continued.runId }),
-        ).toMatchObject({ aborted: true });
+        abortRequest = gateway.client.request("chat.abort", { sessionKey, runId: continued.runId });
+        void abortRequest.catch(() => {});
+        await vi.waitFor(() => expect(cancelledRuns.has(continued.runId)).toBe(true));
         expect(exitGate.child.exitCode).toBeNull();
         expect(exitGate.child.signalCode).toBeNull();
         expect(nodeProcess.kill(exitGate.pid, 0)).toBe(true);
@@ -528,6 +537,9 @@ it.each(cases)(
       }
       exitGate.release();
       await withTestTimeout(exitGate.exited, 10_000, "old native process did not exit");
+      if (abortRequest) {
+        expect(await abortRequest).toMatchObject({ aborted: true });
+      }
       if (shutdown !== "delayed") {
         await wait(continued.runId);
         expect(nativeProcesses.size).toBe(beforeRecoveryProcesses);
