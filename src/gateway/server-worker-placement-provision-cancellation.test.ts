@@ -143,8 +143,13 @@ describe("dispatch Stop before provider allocation", () => {
         interrupted.resolve();
       },
     });
+    const recovery = admission
+      .run(async () => {
+        await interrupted.promise;
+        await runtime.dispatchService.reconcileActive("local-result");
+      })
+      .finally(() => admission.release());
     const dispatching = runtime.dispatchService.dispatch(REQUEST).catch((error: unknown) => error);
-    let recovery: Promise<void> | undefined;
     try {
       await Promise.race([
         interrupted.promise,
@@ -152,9 +157,6 @@ describe("dispatch Stop before provider allocation", () => {
           throw new Error("Dispatch ended before interrupting work");
         }),
       ]);
-      recovery = admission
-        .run(() => runtime.dispatchService.reconcileActive("local-result"))
-        .finally(() => admission.release());
       await targetedAdmission.promise;
       await runtime.dispatchService.reconcileActive("unrelated");
       expect(recover).toHaveBeenCalledOnce();
