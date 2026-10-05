@@ -203,24 +203,41 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
             agentId: identity.agentId,
             abortSignal: inputTurn.abortSignal,
           },
-          (operation) => {
+          async (operation) => {
             if (!operation) {
               throw new Error("Worker turn session id is required");
             }
-            return provider.executeTurn(
-              { ...claim, ...identity },
-              {
-                ...inputTurn,
-                replyOperation: operation,
-                abortSignal: AbortSignal.any([
-                  operation.abortSignal,
-                  ...(inputTurn.abortSignal ? [inputTurn.abortSignal] : []),
-                ]),
-              },
-              runLocal,
-              onAdmitted,
-              assertRunCurrent,
-            );
+            const hadAbortSignal = Object.hasOwn(inputTurn, "abortSignal");
+            const callerAbortSignal = inputTurn.abortSignal;
+            const hadReplyOperation = Object.hasOwn(inputTurn, "replyOperation");
+            const callerReplyOperation = inputTurn.replyOperation;
+            // Remote-exec temporarily projects attachment guidance onto this exact
+            // turn object while runLocal closes over it, then restores the prompt.
+            inputTurn.replyOperation = operation;
+            inputTurn.abortSignal = AbortSignal.any([
+              operation.abortSignal,
+              ...(callerAbortSignal ? [callerAbortSignal] : []),
+            ]);
+            try {
+              return await provider.executeTurn(
+                { ...claim, ...identity },
+                inputTurn,
+                runLocal,
+                onAdmitted,
+                assertRunCurrent,
+              );
+            } finally {
+              if (hadReplyOperation) {
+                inputTurn.replyOperation = callerReplyOperation;
+              } else {
+                delete inputTurn.replyOperation;
+              }
+              if (hadAbortSignal) {
+                inputTurn.abortSignal = callerAbortSignal;
+              } else {
+                delete inputTurn.abortSignal;
+              }
+            }
           },
         );
       }
