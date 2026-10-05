@@ -1,9 +1,10 @@
 import { Type } from "typebox";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ProgressCardPutResult } from "../../../../packages/gateway-protocol/src/index.js";
 import type { Context, Model } from "../../../llm/types.js";
 import { createHookRunner } from "../../../plugins/hooks.js";
 import { createMockPluginRegistry } from "../../../plugins/hooks.test-helpers.js";
+import { createReplyOperation, type ReplyOperation } from "../../../sessions/session-controller.js";
 import { createOpenClawCodingToolsInternal } from "../../agent-tools.js";
 import {
   createAssistant,
@@ -22,11 +23,20 @@ import { mergeAttemptToolMediaPayloads } from "./tool-media-payloads.js";
 
 registerAgentSessionLoopTestLifecycle();
 const streams: ReturnType<typeof prepareCatalogExecutor>[] = [];
+let replyOperation: ReplyOperation;
+beforeEach(() => {
+  replyOperation = createReplyOperation({
+    sessionId: "session-output-schema",
+    sessionKey: "agent:main:main",
+    resetTriggered: false,
+  });
+});
 afterEach(() => {
   for (const stream of streams.splice(0)) {
     stream.subscription.unsubscribe();
     clearActiveEmbeddedRun("session-output-schema", stream.queueHandle, "agent:main:main");
   }
+  replyOperation.complete();
 });
 
 it.each([
@@ -114,6 +124,7 @@ it.each([
     const events: Array<{ stream: string; data: Record<string, unknown> }> = [];
     const attempt = { completionCheck };
     const prepared = prepareCatalogExecutor({
+      replyOperation,
       activeSession: session,
       attempt,
       onAgentEvent: (event) => events.push(event),
@@ -268,6 +279,7 @@ it.each([
   });
   const { session } = await createTestSession({ customTools: [progress] });
   const prepared = prepareCatalogExecutor({
+    replyOperation,
     activeSession: session,
     attempt: {
       completionCheck,
@@ -355,6 +367,7 @@ it.each([
         )
       : undefined;
   const prepared = prepareCatalogExecutor({
+    replyOperation,
     activeSession: session,
     hookRunner,
     runAbortController: controller,
