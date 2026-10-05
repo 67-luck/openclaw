@@ -20,7 +20,7 @@ describe("sqlite WAL checkpoint tick", () => {
     vi.useRealTimers();
   });
 
-  it("delegates checkpoints while worker maintenance is registered and restores the inline fallback", async () => {
+  it("keeps scheduled writers off commit checkpoints through delegation and retirement", async () => {
     vi.useFakeTimers();
     const sqlite = requireNodeSqlite();
     const dir = tempDirs.make("openclaw-sqlite-wal-worker-writer-");
@@ -38,7 +38,8 @@ describe("sqlite WAL checkpoint tick", () => {
         databaseLabel: "wal-worker-writer",
         databasePath: dbPath,
       });
-      expect(autocheckpoint()).toBe(16 * 1024);
+      // Native worker handles use this policy before any host delegation is registered.
+      expect(autocheckpoint()).toBe(0);
 
       let cancelled = 0;
       const requests: number[] = [];
@@ -59,12 +60,30 @@ describe("sqlite WAL checkpoint tick", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       expect(requests).toEqual([512]);
 
-      // Without its worker the writer falls back to the bounded inline valve.
+      // Retirement owns the final checkpoint; cancelling delegation must not rearm COMMIT work.
       void cancelSqliteWalWriteAdmission(db);
       expect(cancelled).toBe(1);
-      expect(autocheckpoint()).toBe(16 * 1024);
+      expect(autocheckpoint()).toBe(0);
     } finally {
       maintenance?.close();
+      db.close();
+    }
+  });
+
+  it.each([
+    { checkpointIntervalMs: 0, expected: 16_384 },
+    { checkpointIntervalMs: 60_000, autoCheckpointPages: 7, expected: 7 },
+  ])("preserves explicitly selected checkpoint policy (%j)", (options) => {
+    const { DatabaseSync } = requireNodeSqlite();
+    const dbPath = path.join(tempDirs.make("openclaw-sqlite-wal-policy-"), "openclaw.sqlite");
+    const db = new DatabaseSync(dbPath);
+    const maintenance = configureSqliteWalMaintenance(db, options);
+    try {
+      expect(Number(db.prepare("PRAGMA wal_autocheckpoint").get()?.wal_autocheckpoint)).toBe(
+        options.expected,
+      );
+    } finally {
+      maintenance.close();
       db.close();
     }
   });
@@ -144,7 +163,7 @@ describe("sqlite WAL checkpoint tick", () => {
       db.exec("DELETE FROM payload;");
       const freeBefore = freelistCount();
       expect(freeBefore).toBeGreaterThan(0);
-      // Commits below the inline threshold leave every frame for the maintenance tick.
+      // Commits leave every frame for the maintenance tick.
       expect(maintenance.health).toBeUndefined();
 
       // Ticks checkpoint without vacuuming.

@@ -40,19 +40,14 @@ import {
 export type { SqliteWalHealth } from "./sqlite-wal-checkpoint.js";
 export type { SqliteWalReclamationResult } from "./sqlite-wal-reclamation.js";
 
-// WAL maintenance configures SQLite write-ahead logging and schedules bounded
-// checkpoints so state databases do not accumulate unbounded WAL files.
-// Inline automatic checkpoints run on the committing connection, and while a
-// reader keeps the log from resetting every later commit above this threshold
-// retries one and syncs the database file. Worker-maintained writers disable it
-// when they register their owner and skip checkpoint-only ticks; worker
-// connections tick inline, so this threshold only bounds an unmaintained writer.
+// Connections without scheduled maintenance retain SQLite's inline fallback.
+// Scheduled writers checkpoint between operations, never inside COMMIT.
 const DEFAULT_SQLITE_WAL_AUTOCHECKPOINT_PAGES = 16_384;
 const DEFAULT_SQLITE_WAL_CHECKPOINT_TICK_MS = 10 * 1000;
 const DEFAULT_SQLITE_WAL_CHECKPOINT_INTERVAL_MS = 30 * 60 * 1000;
 // SQLite applies this ceiling when a fully checkpointed WAL resets on the next
-// commit. It matches the inline autocheckpoint threshold so only pathological
-// high-water marks pay the truncation cost.
+// commit. Maintenance also attempts nonwaiting truncation above this size;
+// readers can pin older frames, so this is a recycling target, not a hard cap.
 const DEFAULT_SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
 const JOURNAL_MODE_RETRY_INTERVAL_MS = 10;
 const JOURNAL_MODE_RETRY_SLEEP = new Int32Array(new SharedArrayBuffer(4));
@@ -238,13 +233,14 @@ export function configureSqliteWalMaintenance(
   if (options.busyTimeoutMs !== undefined) {
     setSqliteBusyTimeout(db, options.busyTimeoutMs);
   }
-  const autoCheckpointPages = normalizeSqliteNonNegativeInteger(
-    options.autoCheckpointPages ?? DEFAULT_SQLITE_WAL_AUTOCHECKPOINT_PAGES,
-    "autoCheckpointPages",
-  );
   const checkpointIntervalMs = normalizeSqliteNonNegativeInteger(
     options.checkpointIntervalMs ?? DEFAULT_SQLITE_WAL_CHECKPOINT_INTERVAL_MS,
     "checkpointIntervalMs",
+  );
+  const autoCheckpointPages = normalizeSqliteNonNegativeInteger(
+    options.autoCheckpointPages ??
+      (checkpointIntervalMs > 0 ? 0 : DEFAULT_SQLITE_WAL_AUTOCHECKPOINT_PAGES),
+    "autoCheckpointPages",
   );
   const timerIntervalMs = Math.min(checkpointIntervalMs, MAX_TIMER_TIMEOUT_MS);
   // Checkpoint-only ticks keep commits off the checkpoint between periodic passes.
