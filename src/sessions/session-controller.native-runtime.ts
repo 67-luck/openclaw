@@ -10,11 +10,6 @@ import {
   waitForReplyRunEndBySessionId,
 } from "./session-controller.settlement.js";
 
-/** Reports whether the current native attempt is streaming output. */
-export function isSessionNativeAttemptStreaming(sessionId: string): boolean {
-  return getActiveNativeAttempt(sessionId)?.isStreaming() ?? false;
-}
-
 /** Joins one captured native attempt without observing a same-ID successor. */
 export async function waitForSessionNativeAttemptEnd(
   sessionId: string,

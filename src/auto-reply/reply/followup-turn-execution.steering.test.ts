@@ -7,10 +7,10 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import { createChatSendMessageInjectionStarter } from "../../gateway/server-methods/chat-send-message-injection.js";
 import { createRpcSourceForTest } from "../../gateway/test-helpers.rpc-source.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { getSessionControllerEntryForOperation } from "../../sessions/session-controller.identity.js";
 import {
   beginReplyMessageInjectionTarget,
   createReplyOperation,
-  getSessionControllerSourceTurnId,
   captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
@@ -171,7 +171,7 @@ describe("queued turn steering", () => {
           await expect(attempt!.outcome).resolves.toMatchObject({ status: "accepted" });
         }
         expect(queueMessage.mock.calls.map(([text]) => text)).toEqual(steeringMessages);
-        expect(getSessionControllerSourceTurnId(sessionKey)).toBe(sourceTurnId);
+        expect(getSessionControllerEntryForOperation(operation).sourceTurnId).toBe(sourceTurnId);
         return {
           runId: "followup-execution",
           outcome: { kind: "rejected", payload: { text: "done" } },

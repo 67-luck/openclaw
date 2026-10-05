@@ -22,7 +22,6 @@ export { createReplyOperation } from "./session-controller.operation.js";
 export {
   abortActiveReplyRuns,
   abortReplyRunBySessionId,
-  abortSessionRunByKey,
   clearReplyRunForResetBySessionId,
   captureCurrentSessionRunInterruptTarget,
   interruptReplyRunTarget,
@@ -45,17 +44,13 @@ export {
   getSessionControllerOperation,
   hasCommittedReplyOperationOutcome,
   hasReplyOperationExecutionStarted,
-  isReplyRunAbortableForSignal,
   isReplyRunSuccessorAdmissionBlocked,
   markReplyOperationExecutionStarted,
   registerReplyOperationSuccessorBarrier,
   runAfterReplyOperationClear,
   waitForReplyBarrierSettlement,
 } from "./session-controller.state.js";
-export {
-  bindSessionControllerSourceTurnId,
-  getSessionControllerSourceTurnId,
-} from "./session-controller.source-turn.js";
+export { bindSessionControllerSourceTurnId } from "./session-controller.source-turn.js";
 export { markReplyOperationGlobalLaneWaitProgress } from "./session-controller.lifecycle-runtime.js";
 export {
   waitForReplyRunFollowupAdmission,

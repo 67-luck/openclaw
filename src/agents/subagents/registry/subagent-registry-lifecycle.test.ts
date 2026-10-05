@@ -58,9 +58,9 @@ import { createStructuredOutputTool } from "../../tools/structured-output-tool.j
 import * as sessionEntryRuntime from "../announce/subagent-announce-delivery.runtime.js";
 import { readSubagentRunAnnounceResultUsing } from "../announce/subagent-announce-result.js";
 import {
+  captureRequesterContinuationCaller,
   consumeRequesterCronAuthorityAdmission,
   revokeRequesterCronAuthority,
-  withRequesterCronAuthority,
 } from "../requester-cron-authority.js";
 import { SUBAGENT_KILL_TASK_ERROR } from "./subagent-control.types.js";
 import { loadPendingFinalDeliveryPayload } from "./subagent-delivery-state.js";
@@ -5467,30 +5467,27 @@ describe("requester settle wake trigger", () => {
           );
         }
         // The immutable pre-settlement value cannot resurrect committed outbox custody.
-        await withRequesterCronAuthority(
-          {
-            requesterSessionKey,
-            requesterSessionId,
-            requesterAgentId: "main",
-            batch: [capturedEntry],
-            rearmGeneration: wake.rearmGeneration,
+        await captureRequesterContinuationCaller({
+          requesterSessionKey,
+          requesterSessionId,
+          requesterAgentId: "main",
+          batch: [capturedEntry],
+          rearmGeneration: wake.rearmGeneration,
+          runId: "cron-authority-continuation",
+          isCurrent: () => true,
+        }).run(async () => {
+          const admission = consumeRequesterCronAuthorityAdmission({
             runId: "cron-authority-continuation",
-            isCurrent: () => true,
-          },
-          async () => {
-            const admission = consumeRequesterCronAuthorityAdmission({
-              runId: "cron-authority-continuation",
-              sessionKey: requesterSessionKey,
-              sessionId: requesterSessionId,
-              inputProvenance: {
-                kind: "inter_session",
-                sourceTool: "subagent_settle",
-                sourceSessionKey: entry.childSessionKey,
-              },
-            });
-            expect(Boolean(admission)).toBe(mode !== "committed");
-          },
-        );
+            sessionKey: requesterSessionKey,
+            sessionId: requesterSessionId,
+            inputProvenance: {
+              kind: "inter_session",
+              sourceTool: "subagent_settle",
+              sourceSessionKey: entry.childSessionKey,
+            },
+          });
+          expect(Boolean(admission)).toBe(mode !== "committed");
+        });
       } finally {
         revokeRequesterCronAuthority(requesterSessionKey);
         subagentRuns.delete(entry.runId);

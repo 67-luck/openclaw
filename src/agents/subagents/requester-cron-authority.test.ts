@@ -46,7 +46,6 @@ import {
   replaceRequesterCronAuthorityEntry,
   revokeRequesterCronAuthority,
   revokeRequesterCronAuthorityBatch,
-  withRequesterCronAuthority,
 } from "./requester-cron-authority.js";
 
 const fixture = vi.hoisted(() => {
@@ -280,18 +279,15 @@ async function capture(runId = "original", count = 1) {
 }
 
 function dispatch<T>(batch: SubagentRunRecord[], run: () => Promise<T>, runId = "continuation") {
-  return withRequesterCronAuthority(
-    {
-      requesterSessionKey: SESSION,
-      requesterSessionId: "requester-session",
-      requesterAgentId: "main",
-      batch,
-      rearmGeneration: batch[0]?.requesterSettleWake?.rearmGeneration,
-      runId,
-      isCurrent: () => true,
-    },
-    run,
-  );
+  return captureRequesterContinuationCaller({
+    requesterSessionKey: SESSION,
+    requesterSessionId: "requester-session",
+    requesterAgentId: "main",
+    batch,
+    rearmGeneration: batch[0]?.requesterSettleWake?.rearmGeneration,
+    runId,
+    isCurrent: () => true,
+  }).run(run);
 }
 
 function consume(

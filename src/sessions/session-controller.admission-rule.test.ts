@@ -1,8 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  evaluateTurnAdmission,
-  type TurnAdmissionRefusalReason,
-} from "./session-controller.admission-rule.js";
+import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
 import type { ReplyOperation, ReplyTurnKind } from "./session-controller.contracts.js";
 import {
   getSessionControllerMailbox,
@@ -16,6 +13,10 @@ import {
 } from "./session-controller.state.js";
 
 const kinds = ["visible", "heartbeat", "queued_followup", "direct"] as const;
+type TurnAdmissionRefusalReason = Extract<
+  ReturnType<typeof evaluateTurnAdmission>,
+  { admitted: false }
+>["reason"];
 
 function createEntry(label: string): SessionControllerEntry {
   return getSessionControllerEntry(`agent:main:admission-rule:${label}`);

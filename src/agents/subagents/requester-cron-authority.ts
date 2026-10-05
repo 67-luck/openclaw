@@ -9,7 +9,6 @@ import {
   getAgentRunContext,
   getAgentRunLifecycleGeneration,
 } from "../../infra/agent-run-registry.js";
-import type { InputProvenance } from "../../sessions/input-provenance.js";
 import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
@@ -36,6 +35,10 @@ import {
   getSubagentRunRuntimeKey,
   isSameSubagentRunOwner,
 } from "./registry/subagent-run-generation.js";
+import {
+  matchesRequesterCronAuthorityAdmission,
+  type RequesterAdmissionTarget,
+} from "./requester-cron-authority-admission.js";
 
 type RequesterCronAuthority = {
   managementEntitlement?: NonNullable<CronCreatorAuthorityCapability["managementEntitlement"]>;
@@ -461,7 +464,7 @@ type RequesterCronAuthorityDispatch = {
 };
 const activeDispatch = new AsyncLocalStorage<RequesterCronAuthorityDispatch>();
 
-export async function withRequesterCronAuthority<T>(
+async function withRequesterCronAuthority<T>(
   params: {
     requesterSessionKey: string;
     requesterSessionId: string;
@@ -624,39 +627,12 @@ export function captureRequesterFollowupAuthority(params: {
   };
 }
 
-type RequesterAdmissionTarget = {
-  runId: string;
-  sessionKey: string | undefined;
-  sessionId: string | undefined;
-  inputProvenance: InputProvenance | undefined;
-};
-
-function matchesAdmissionTarget(
-  dispatch: RequesterCronAuthorityDispatch,
-  params: RequesterAdmissionTarget,
-): boolean {
-  const { authority } = dispatch;
-  return (
-    dispatch.runId === params.runId &&
-    authority.requesterSessionKey === params.sessionKey &&
-    authority.requesterSessionId === params.sessionId &&
-    params.inputProvenance?.kind === "inter_session" &&
-    (authority.kind === "yield"
-      ? params.inputProvenance.sourceTool === "subagent_settle" &&
-        authority.batch.some(
-          (entry) => entry.childSessionKey === params.inputProvenance?.sourceSessionKey,
-        )
-      : params.inputProvenance.sourceTool === "subagent_announce" &&
-        params.inputProvenance.sourceSessionKey === authority.sourceSessionKey)
-  );
-}
-
 export function captureRequesterCronAuthorityAdmissionAssertion(params: RequesterAdmissionTarget) {
   const dispatch = activeDispatch.getStore();
   if (!dispatch || dispatch.consumed || dispatch.authority.kind !== "yield") {
     return undefined;
   }
-  if (!matchesAdmissionTarget(dispatch, params)) {
+  if (!matchesRequesterCronAuthorityAdmission(dispatch, params)) {
     throw new Error("Requester authority does not own this continuation");
   }
   // Storage can invoke the pre-commit guard outside this dispatch's async context.
@@ -683,7 +659,7 @@ export function consumeRequesterCronAuthorityAdmission(params: RequesterAdmissio
     !dispatch ||
     dispatch.consumed ||
     dispatch.authority.admittedRunId !== undefined ||
-    !matchesAdmissionTarget(dispatch, params) ||
+    !matchesRequesterCronAuthorityAdmission(dispatch, params) ||
     !dispatch.isCurrent()
   ) {
     return undefined;

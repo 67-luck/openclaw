@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../../test/helpers/promise.js";
 import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
 import { resetDiagnosticRunActivityForTest } from "../../logging/diagnostic-run-activity.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
@@ -7,15 +6,13 @@ import type { ReplyBackendHandle } from "../../sessions/session-controller.contr
 import {
   abortActiveReplyRuns,
   clearReplyRunForResetBySessionId,
-  isReplyRunAbortableForSignal,
   isSessionRunActive,
   isSessionRunActiveForKey,
-  abortSessionRunByKey,
 } from "../../sessions/session-controller.js";
 import { isSessionRunCompactionBlocked as isReplyRunAbortableForCompaction } from "../../sessions/session-controller.queries.js";
-
 import { createTestReplyOperation } from "./reply-run-registry.test-helpers.js";
 import { testing } from "./reply-run-registry.test-support.js";
+import { requestCurrentSessionStop } from "./reply-run-stop.test-support.js";
 
 function createRunningOperation(
   upstreamAbortSignal?: AbortSignal,
@@ -71,7 +68,6 @@ describe("reply run registry cancellation", () => {
     expect(isSessionRunActiveForKey("agent:main:main")).toBe(false);
     expect(isSessionRunActive("session-waiting-abort")).toBe(false);
   });
-
 
   it("does not reset deferred-maintenance operations as backend-owned work", () => {
     const operation = createTestReplyOperation({
@@ -154,25 +150,25 @@ describe("reply run registry cancellation", () => {
     expect(isSessionRunActiveForKey("agent:main:already-cancelled")).toBe(false);
   });
 
-  it("rejects aborts while the attached backend is finalizing", () => {
+  it("rejects aborts while the attached backend is finalizing", async () => {
     let abortable = false;
     const { operation, cancel } = createRunningOperation(undefined, {
       isStreaming: () => false,
       isAbortable: () => abortable,
     });
 
-    expect(abortSessionRunByKey(operation.key)).toBe(false);
+    expect(await requestCurrentSessionStop(operation.key)).toBe(false);
     expect(abortActiveReplyRuns({ mode: "all" })).toBe(false);
     expect(operation.result).toBeNull();
     expect(cancel).not.toHaveBeenCalled();
 
     abortable = true;
-    expect(abortSessionRunByKey(operation.key)).toBe(true);
+    expect(await requestCurrentSessionStop(operation.key)).toBe(true);
     expect(operation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
     expect(cancel).toHaveBeenCalledWith("user_abort");
   });
 
-  it("keeps abort frozen after the backend detaches for reply delivery", () => {
+  it("keeps abort frozen after the backend detaches for reply delivery", async () => {
     const upstreamAbort = new AbortController();
     const { operation, cancel, backend } = createRunningOperation(upstreamAbort.signal, {
       isStreaming: () => false,
@@ -182,9 +178,7 @@ describe("reply run registry cancellation", () => {
     operation.detachBackend(backend);
 
     expect(operation.phase).toBe("running");
-    expect(isReplyRunAbortableForSignal(upstreamAbort.signal)).toBe(false);
-    expect(isReplyRunAbortableForSignal(new AbortController().signal)).toBe(true);
-    expect(abortSessionRunByKey(operation.key)).toBe(false);
+    expect(await requestCurrentSessionStop(operation.key)).toBe(false);
     expect(operation.result).toBeNull();
     expect(cancel).not.toHaveBeenCalled();
 
@@ -193,7 +187,6 @@ describe("reply run registry cancellation", () => {
 
     operation.complete();
     expect(isSessionRunActiveForKey(operation.key)).toBe(false);
-    expect(isReplyRunAbortableForSignal(upstreamAbort.signal)).toBe(false);
   });
 
   it("aborts compacting runs through the registry compatibility helper", () => {

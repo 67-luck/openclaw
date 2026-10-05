@@ -22,10 +22,7 @@ import {
   reserveSessionControllerSource,
   retireSessionControllerInput,
 } from "./session-controller.mailbox.js";
-import {
-  isSessionNativeAttemptStreaming,
-  waitForSessionRunEnd,
-} from "./session-controller.native-runtime.js";
+import { waitForSessionRunEnd } from "./session-controller.native-runtime.js";
 import { createReplyOperation } from "./session-controller.operation.js";
 import {
   getActiveSessionRunCount,
@@ -153,7 +150,7 @@ describe("controller/native admission boundary", () => {
       expect(ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get("reused-attempt")).toBe(firstAttachment);
       expect(getAttachedBackend(operation!)).toBe(first);
       expect(isSessionRunActive(sessionId)).toBe(true);
-      expect(isSessionNativeAttemptStreaming(sessionId)).toBe(true);
+      expect(Boolean(getActiveNativeAttempt(sessionId)?.isStreaming())).toBe(true);
       expect(resolveSessionRunProgressState(sessionId)).toBe("running");
       expect(resolveActiveEmbeddedRunOwnerByRunId("reused-attempt")?.runId).toBe("reused-attempt");
       let firstSettled = false;
@@ -187,14 +184,14 @@ describe("controller/native admission boundary", () => {
       expect(getActiveNativeAttempt(sessionId)).toBe(second);
       expect(getSessionControllerOperation(sessionKey)).toBe(operation);
       expect(getActiveSessionRunCount()).toBe(1);
-      expect(isSessionNativeAttemptStreaming(sessionId)).toBe(true);
+      expect(Boolean(getActiveNativeAttempt(sessionId)?.isStreaming())).toBe(true);
       expect(resolveSessionRunProgressState(sessionId)).toBe("running");
       clearActiveEmbeddedRun(sessionId, second, undefined, undefined, undefined, secondAttachment);
     });
     expect(getActiveSessionRunCount()).toBe(0);
     expect(isSessionRunActive(sessionId)).toBe(false);
     expect(getActiveNativeAttempt(sessionId)).toBeUndefined();
-    expect(isSessionNativeAttemptStreaming(sessionId)).toBe(false);
+    expect(Boolean(getActiveNativeAttempt(sessionId)?.isStreaming())).toBe(false);
     expect(resolveSessionRunProgressState(sessionId)).toBeUndefined();
     expect(resolveActiveEmbeddedRunOwnerByRunId("reused-attempt")).toBeUndefined();
   });

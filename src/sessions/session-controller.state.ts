@@ -430,11 +430,6 @@ export function resolveSessionControllerOperationForSignal(
     : undefined;
 }
 
-export function isReplyRunAbortableForSignal(signal: AbortSignal): boolean {
-  const operation = controllerStorage.operationsByUpstreamAbortSignal.get(signal);
-  return operation ? isReplyOperationAbortable(operation) : true;
-}
-
 /** Resolve only the live operation admitted with this exact upstream signal. */
 export function resolveActiveReplyRunOwnerForSignal(signal: AbortSignal):
   | {

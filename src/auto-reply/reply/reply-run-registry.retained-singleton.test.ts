@@ -21,16 +21,23 @@ describe("reply run registry retained singleton", () => {
     operation.setPhase("running");
     bindSessionControllerSourceTurnId(operation, "reload-source");
     let reloaded: typeof import("../../sessions/session-controller.js");
+    let reloadedEntry: { sourceTurnId?: string } | undefined;
     try {
       vi.resetModules();
       reloaded = await import("../../sessions/session-controller.js");
-      expect(reloaded.getSessionControllerOperation(key)).toBe(operation);
-      expect(reloaded.getSessionControllerSourceTurnId(key)).toBe("reload-source");
+      const reloadedOperation = reloaded.getSessionControllerOperation(key);
+      expect(reloadedOperation).toBe(operation);
+      if (!reloadedOperation) {
+        throw new Error("Expected retained operation");
+      }
+      const identity = await import("../../sessions/session-controller.identity.js");
+      reloadedEntry = identity.getSessionControllerEntryForOperation(reloadedOperation);
+      expect(reloadedEntry.sourceTurnId).toBe("reload-source");
     } finally {
       operation.complete();
     }
     expect(reloaded.isSessionRunActiveForKey(key)).toBe(false);
-    expect(reloaded.getSessionControllerSourceTurnId(key)).toBeUndefined();
+    expect(reloadedEntry?.sourceTurnId).toBeUndefined();
   });
 
   it("keeps frozen outcome and retention with the owner across module reload", async () => {

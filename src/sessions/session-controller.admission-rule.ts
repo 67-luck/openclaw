@@ -5,7 +5,7 @@ import type {
 } from "./session-controller.mailbox.types.js";
 import type { SessionControllerEntry } from "./session-controller.state.types.js";
 
-export type TurnAdmissionRefusalReason =
+type TurnAdmissionRefusalReason =
   | "active"
   | "successor-barrier"
   | "followup-barrier"

@@ -15,15 +15,14 @@ import {
   reserveSessionControllerSource,
 } from "../sessions/session-controller.mailbox.js";
 import { createReplyOperation } from "../sessions/session-controller.operation.js";
-import type { RpcSourceRef } from "../sessions/session-controller.rpc-sources.js";
 import {
   getRpcSourceIdentity,
   getRpcSourceProjectSessionActive,
-  getRpcSourceSignal,
   getRpcSourceStartedAt,
   isRpcSourceActive,
   requestRpcSourceCancellation,
   setRpcSourceProjectSessionActive,
+  type RpcSourceRef,
   type RpcSourceAdapter,
 } from "../sessions/session-controller.rpc-sources.js";
 import { markReplyOperationExecutionStarted } from "../sessions/session-controller.state.js";
@@ -265,10 +264,10 @@ describe("registerChatAbortController", () => {
     expect(isRpcSourceActive(registration.entry)).toBe(false);
     expect(getRpcSourceStartedAt(registration.entry)).toBeUndefined();
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(getRpcSourceSignal(registration.entry).aborted).toBe(false);
+    expect(registration.entry.input.abortSignal.aborted).toBe(false);
     expect(registration.markExecutionStarted()).toBe(false);
     registration.controller.abort();
-    expect(getRpcSourceSignal(registration.entry).aborted).toBe(true);
+    expect(registration.entry.input.abortSignal.aborted).toBe(true);
     registration.cleanup();
   });
 

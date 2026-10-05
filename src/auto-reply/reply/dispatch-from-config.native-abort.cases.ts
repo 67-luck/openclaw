@@ -4,6 +4,7 @@ import type { OpenClawConfig } from "../../config/config.js";
 import { captureSessionControllerSourceSettlement } from "../../sessions/session-controller.mailbox.js";
 import { createDispatcher, hookMocks } from "./dispatch-from-config.shared.test-harness.js";
 import { expectedNoQueuedReplyResult } from "./dispatch-result-expectations.test-support.js";
+import { requestCurrentSessionStop } from "./reply-run-stop.test-support.js";
 import { prepareReplySourceInput } from "./reply-source-binding.js";
 import { buildTestCtx } from "./test-ctx.js";
 
@@ -11,7 +12,6 @@ export function registerNativeDispatchAbortCases(
   getRuntime: () => {
     dispatchReplyFromConfig: typeof import("./dispatch-from-config.js").dispatchReplyFromConfig;
     getSessionControllerOperation: typeof import("../../sessions/session-controller.js").getSessionControllerOperation;
-    abortSessionRunByKey: typeof import("../../sessions/session-controller.js").abortSessionRunByKey;
     createReplyOperation: typeof import("../../sessions/session-controller.js").createReplyOperation;
     listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.js").listActiveReplyRunSessionKeys;
     createDispatchConfig: (diagnostics?: boolean) => OpenClawConfig;
@@ -22,7 +22,6 @@ export function registerNativeDispatchAbortCases(
     const {
       dispatchReplyFromConfig,
       getSessionControllerOperation,
-      abortSessionRunByKey,
       listActiveReplyRunSessionKeys,
       createDispatchConfig,
       expectNoReplies,
@@ -76,7 +75,7 @@ export function registerNativeDispatchAbortCases(
       await beforeDispatchStarted.promise;
       expect(prepared.input.claim).toBeUndefined();
       expect(getSessionControllerOperation(sourceSessionKey)).toBeUndefined();
-      expect(abortSessionRunByKey(targetSessionKey)).toBe(false);
+      expect(await requestCurrentSessionStop(targetSessionKey)).toBe(false);
       origin.abort();
 
       await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
@@ -171,12 +170,8 @@ export function registerNativeDispatchAbortCases(
   });
 
   it("does not let a current-session fast abort abort its own dispatch operation", async () => {
-    const {
-      dispatchReplyFromConfig,
-      abortSessionRunByKey,
-      listActiveReplyRunSessionKeys,
-      createDispatchConfig,
-    } = getRuntime();
+    const { dispatchReplyFromConfig, listActiveReplyRunSessionKeys, createDispatchConfig } =
+      getRuntime();
     const dispatcher = createDispatcher();
     const ctx = buildTestCtx({
       Provider: "discord",
@@ -194,7 +189,7 @@ export function registerNativeDispatchAbortCases(
         replyOptions: { sourceReplyDeliveryMode: "automatic" },
         replyResolver,
         fastAbortResolver: async () => {
-          expect(abortSessionRunByKey("agent:main:self-stop")).toBe(false);
+          expect(await requestCurrentSessionStop("agent:main:self-stop")).toBe(false);
           return { handled: true, aborted: true };
         },
         formatAbortReplyTextResolver: () => "stopped",

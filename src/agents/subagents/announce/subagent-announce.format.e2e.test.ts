@@ -130,7 +130,6 @@ const resolveMainSessionKeySpy = vi.spyOn(configSessions, "resolveMainSessionKey
 const callGatewaySpy = vi.spyOn(gatewayCall, "callGateway");
 const getGlobalHookRunnerSpy = vi.spyOn(hookRunnerGlobal, "getGlobalHookRunner");
 const isEmbeddedAgentRunActiveSpy = vi.spyOn(sessionQueries, "isSessionRunActive");
-const nativeStreamingSpy = vi.spyOn(sessionNativeRuntime, "isSessionNativeAttemptStreaming");
 const queueEmbeddedAgentMessageWithOutcomeSpy = vi.spyOn(
   embeddedRuns,
   "queueEmbeddedAgentMessageWithOutcome",
@@ -140,9 +139,6 @@ const readLatestAssistantReplyMock = vi.fn(
   async (_sessionKey?: string): Promise<string | undefined> => "raw subagent reply",
 );
 const embeddedAgentRunActiveMock = vi.fn<typeof sessionQueries.isSessionRunActive>(() => false);
-const nativeStreamingMock = vi.fn<typeof sessionNativeRuntime.isSessionNativeAttemptStreaming>(
-  (_sessionId: string) => false,
-);
 const queueEmbeddedAgentMessageWithOutcomeMock = vi.fn<
   typeof embeddedRuns.queueEmbeddedAgentMessageWithOutcome
 >((sessionId: string) => ({
@@ -156,7 +152,6 @@ const waitForEmbeddedAgentRunEndMock = vi.fn<typeof sessionNativeRuntime.waitFor
 );
 const embeddedRunMock = {
   isSessionRunActive: embeddedAgentRunActiveMock,
-  isSessionNativeAttemptStreaming: nativeStreamingMock,
   queueEmbeddedAgentMessageWithOutcome: queueEmbeddedAgentMessageWithOutcomeMock,
   waitForSessionRunEnd: waitForEmbeddedAgentRunEndMock,
 };
@@ -531,11 +526,6 @@ describe("subagent announce formatting", () => {
     isEmbeddedAgentRunActiveSpy
       .mockReset()
       .mockImplementation((sessionId) => embeddedRunMock.isSessionRunActive(sessionId));
-    nativeStreamingSpy
-      .mockReset()
-      .mockImplementation((sessionId) =>
-        embeddedRunMock.isSessionNativeAttemptStreaming(sessionId),
-      );
     queueEmbeddedAgentMessageWithOutcomeSpy
       .mockReset()
       .mockImplementation((sessionId, text, options) =>
@@ -548,7 +538,6 @@ describe("subagent announce formatting", () => {
           await embeddedRunMock.waitForSessionRunEnd(sessionId, timeoutMs),
       );
     embeddedRunMock.isSessionRunActive.mockClear().mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockClear().mockReturnValue(false);
     embeddedRunMock.queueEmbeddedAgentMessageWithOutcome
       .mockClear()
       .mockImplementation((sessionId) => ({
@@ -1905,7 +1894,6 @@ describe("subagent announce formatting", () => {
 
   it("keeps direct announce idempotency unique for same-ms distinct child runs", async () => {
     embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
     sessionStore = {
       "agent:main:main": {
         sessionId: "session-followup",
@@ -1960,7 +1948,6 @@ describe("subagent announce formatting", () => {
 
   it("falls back to internal requester-session injection when completion route is missing", async () => {
     embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
     sessionStore = {
       "agent:main:main": {
         sessionId: "requester-session-no-route",
@@ -2109,7 +2096,6 @@ describe("subagent announce formatting", () => {
 
   it("keeps announce delivery inside requester subagent session", async () => {
     embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
     sessionStore = {
       "agent:main:subagent:orchestrator": {
         sessionId: "session-orchestrator",
@@ -2181,7 +2167,6 @@ describe("subagent announce formatting", () => {
 
   it("preserves account routing for separate collect-mode announcements", async () => {
     embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
     sessionStore = {
       "agent:main:main": {
         sessionId: "session-acc-split",
@@ -2234,7 +2219,6 @@ describe("subagent announce formatting", () => {
     },
   ] as const)("direct announce: $testName", async (testCase) => {
     embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
 
     const didAnnounce = await runSubagentAnnounceFlow({
       ...defaultOutcomeAnnounce,
@@ -2254,7 +2238,6 @@ describe("subagent announce formatting", () => {
 
   it("keeps direct announce delivery enabled for extension channels", async () => {
     embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
 
     const didAnnounce = await runSubagentAnnounceFlow({
       ...defaultOutcomeAnnounce,
@@ -2278,7 +2261,6 @@ describe("subagent announce formatting", () => {
 
   it("injects direct announce into requester subagent session as a user-turn agent call", async () => {
     embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
 
     const didAnnounce = await runSubagentAnnounceFlow({
       ...defaultOutcomeAnnounce,
@@ -2300,7 +2282,6 @@ describe("subagent announce formatting", () => {
 
   it("keeps completion-mode announce internal for nested requester subagent sessions", async () => {
     embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
     const modelRouteChange = "Model route changed: requested/model → actual/model.";
 
     const didAnnounce = await runSubagentAnnounceFlow({
@@ -3096,7 +3077,6 @@ describe("subagent announce formatting", () => {
 
   it("prefers requesterOrigin channel over stale session lastChannel in direct announce", async () => {
     embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-    embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
     // Session store has stale whatsapp channel, but the requesterOrigin says imessage.
     sessionStore = {
       "agent:main:main": {
@@ -3192,7 +3172,6 @@ describe("subagent announce formatting", () => {
     for (const testCase of cases) {
       agentSpy.mockClear();
       embeddedRunMock.isSessionRunActive.mockReturnValue(false);
-      embeddedRunMock.isSessionNativeAttemptStreaming.mockReturnValue(false);
       subagentRegistryMock.isSubagentSessionRunActive.mockReturnValue(false);
       sessionStore = testCase.sessionStoreFixture as SessionStoreFixture;
       subagentRegistryMock.resolveRequesterForChildSession.mockReturnValue({

@@ -4,13 +4,11 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { clearAgentHarnesses } from "../../agents/harness/registry.js";
 import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-types.js";
 import type { PluginHookReplyDispatchResult } from "../../plugins/hooks.test-fixtures.js";
-import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
   submitSessionControllerTask,
   releaseSessionControllerClaim,
 } from "../../sessions/session-controller.mailbox.js";
-
 import { createInternalHookEventPayload } from "../../test-utils/internal-hook-event-payload.js";
 import { withReplyDispatcher } from "../dispatch-dispatcher.js";
 import { setReplyPayloadMetadata } from "../reply-payload.js";
@@ -35,6 +33,7 @@ import {
   ttsMocks,
 } from "./dispatch-from-config.shared.test-harness.js";
 import { createReplyDispatcher } from "./reply-dispatcher.js";
+import { requestCurrentSessionStop } from "./reply-run-stop.test-support.js";
 import { readReplySourceInput } from "./reply-source-binding.js";
 
 let dispatchReplyFromConfig: typeof import("./dispatch-from-config.js").dispatchReplyFromConfig;
@@ -42,7 +41,6 @@ let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
 let createReplyOperation: typeof import("../../sessions/session-controller.js").createReplyOperation;
 let listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.js").listActiveReplyRunSessionKeys;
 let getSessionControllerOperation: typeof import("../../sessions/session-controller.js").getSessionControllerOperation;
-let abortSessionRunByKey: typeof import("../../sessions/session-controller.js").abortSessionRunByKey;
 let runAfterReplyOperationClear: typeof import("../../sessions/session-controller.js").runAfterReplyOperationClear;
 let resetReplyRunRegistry: typeof import("./reply-run-registry.test-support.js").testing.resetReplyRunRegistry;
 
@@ -100,7 +98,6 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
     createReplyOperation = replyRunRegistryModule.createReplyOperation;
     listActiveReplyRunSessionKeys = replyRunRegistryModule.listActiveReplyRunSessionKeys;
     getSessionControllerOperation = replyRunRegistryModule.getSessionControllerOperation;
-    abortSessionRunByKey = replyRunRegistryModule.abortSessionRunByKey;
     runAfterReplyOperationClear = replyRunRegistryModule.runAfterReplyOperationClear;
     const { testing } = await import("./reply-run-registry.test-support.js");
     resetReplyRunRegistry = () => testing.resetReplyRunRegistry();
@@ -627,7 +624,7 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
       const active = getSessionControllerOperation("agent:test:session");
       expect(active).toBeDefined();
       expect(active?.result).toBeNull();
-      expect(abortSessionRunByKey("agent:test:session")).toBe(false);
+      expect(await requestCurrentSessionStop("agent:test:session")).toBe(false);
 
       releaseTts.resolve();
       await expect(dispatchPromise).resolves.toMatchObject({ queuedFinal: true });

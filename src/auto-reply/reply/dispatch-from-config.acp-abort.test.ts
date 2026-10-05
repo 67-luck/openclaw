@@ -1,19 +1,9 @@
 // Tests ACP dispatch abort behavior and emitted lifecycle hooks.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import type {
-  AcpSessionResolution,
-  SessionAcpMeta,
-} from "../../acp/control-plane/manager.types.js";
-import { resolveAcpSessionTarget } from "../../acp/control-plane/manager.utils.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
-import type {
-  AcpRuntime,
-  AcpRuntimeEnsureInput,
-  AcpRuntimeEvent,
-  AcpRuntimeTurnInput,
-} from "../../plugin-sdk/acp-runtime.js";
+import type { AcpRuntimeEvent } from "../../plugin-sdk/acp-runtime.js";
 import {
   captureSessionTarget,
   runSessionMutation,
@@ -26,6 +16,7 @@ import {
   releaseSessionControllerClaim,
 } from "../../sessions/session-controller.mailbox.js";
 import { createInternalHookEventPayload } from "../../test-utils/internal-hook-event-payload.js";
+import { createMockAcpSessionManager } from "./dispatch-from-config.acp-abort.test-support.js";
 import { registerNativeDispatchAbortCases } from "./dispatch-from-config.native-abort.cases.js";
 import {
   acpManagerRuntimeMocks,
@@ -49,6 +40,7 @@ import {
   resolveReplyOperationAgentTurn,
   type ReplyOperationRunState,
 } from "./reply-operation-run-state.js";
+import { requestCurrentSessionStop } from "./reply-run-stop.test-support.js";
 import { prepareReplySourceInput } from "./reply-source-binding.js";
 import { buildTestCtx } from "./test-ctx.js";
 
@@ -56,7 +48,6 @@ let dispatchReplyFromConfig: typeof import("./dispatch-from-config.js").dispatch
 let tryDispatchAcpReplyHook: typeof import("../../plugin-sdk/acpx.js").tryDispatchAcpReplyHook;
 let resetInboundDedupe: typeof import("./inbound-dedupe.js").resetInboundDedupe;
 let getSessionControllerOperation: typeof import("../../sessions/session-controller.js").getSessionControllerOperation;
-let abortSessionRunByKey: typeof import("../../sessions/session-controller.js").abortSessionRunByKey;
 let waitForSessionRunIdle: typeof import("../../sessions/session-controller.js").waitForSessionRunIdle;
 let listActiveReplyRunSessionKeys: typeof import("../../sessions/session-controller.js").listActiveReplyRunSessionKeys;
 let createReplyOperation: typeof import("../../sessions/session-controller.js").createReplyOperation;
@@ -100,86 +91,6 @@ function setNoAbort() {
   mocks.tryFastAbortFromMessage.mockResolvedValue(noAbortResult);
 }
 
-function createMockAcpSessionManager() {
-  return {
-    resolveSessionAsync: async (params: {
-      cfg: OpenClawConfig;
-      sessionKey: string;
-      agentId?: string;
-    }): Promise<AcpSessionResolution> => {
-      const target = resolveAcpSessionTarget(params);
-      const entry = acpMocks.readAcpSessionEntry({
-        cfg: params.cfg,
-        ...target,
-      }) as { acp?: SessionAcpMeta } | null;
-      if (entry?.acp) {
-        return {
-          kind: "ready",
-          ...target,
-          meta: entry.acp,
-        };
-      }
-      return { kind: "none", ...target };
-    },
-    getObservabilitySnapshot: () => ({
-      runtimeCache: { activeSessions: 0, idleTtlMs: 0, evictedTotal: 0 },
-      turns: {
-        active: 0,
-        queueDepth: 0,
-        completed: 0,
-        failed: 0,
-        averageLatencyMs: 0,
-        maxLatencyMs: 0,
-      },
-      errorsByCode: {},
-    }),
-    runTurn: vi.fn(
-      async (params: {
-        cfg: OpenClawConfig;
-        sessionKey: string;
-        agentId?: string;
-        text?: string;
-        attachments?: unknown[];
-        mode: string;
-        requestId: string;
-        signal?: AbortSignal;
-        onEvent: (event: Record<string, unknown>) => Promise<void>;
-      }) => {
-        const entry = acpMocks.readAcpSessionEntry({
-          cfg: params.cfg,
-          sessionKey: params.sessionKey,
-          agentId: params.agentId,
-        }) as {
-          acp?: { agent?: string; mode?: string };
-        } | null;
-        const runtimeBackend = acpMocks.requireAcpRuntimeBackend() as {
-          runtime?: AcpRuntime;
-        };
-        if (!runtimeBackend.runtime) {
-          throw new Error("ACP runtime backend not mocked");
-        }
-        const handle = await runtimeBackend.runtime.ensureSession({
-          sessionKey: params.sessionKey,
-          agentId: params.agentId,
-          mode: (entry?.acp?.mode || "persistent") as AcpRuntimeEnsureInput["mode"],
-          agent: entry?.acp?.agent || "codex",
-        });
-        const stream = runtimeBackend.runtime.runTurn({
-          handle,
-          text: params.text ?? "",
-          attachments: params.attachments as AcpRuntimeTurnInput["attachments"],
-          mode: params.mode as AcpRuntimeTurnInput["mode"],
-          requestId: params.requestId,
-          signal: params.signal,
-        });
-        for await (const event of stream) {
-          await params.onEvent(event);
-        }
-      },
-    ),
-  };
-}
-
 describe("dispatchReplyFromConfig ACP abort", () => {
   beforeAll(async () => {
     ({ dispatchReplyFromConfig } = await import("./dispatch-from-config.js"));
@@ -187,7 +98,6 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     ({ resetInboundDedupe } = await import("./inbound-dedupe.js"));
     ({
       getSessionControllerOperation,
-      abortSessionRunByKey,
       waitForSessionRunIdle,
       listActiveReplyRunSessionKeys,
       createReplyOperation,
@@ -447,7 +357,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       await hookStarted.promise;
       operation = getSessionControllerOperation("agent:main:reply-dispatch-abort");
       expect(operation?.ownerSettlement).toBeDefined();
-      expect(abortSessionRunByKey("agent:main:reply-dispatch-abort")).toBe(true);
+      expect(await requestCurrentSessionStop("agent:main:reply-dispatch-abort")).toBe(true);
 
       await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
       expect(getSessionControllerOperation("agent:main:reply-dispatch-abort")).toBe(operation);
@@ -576,8 +486,8 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       expect(operation?.ownerSettlement).toBeDefined();
       expect(tailSessionKey).toBe(boundAcpSessionKey);
       expect(tailAbortSignal).toBeDefined();
-      expect(abortSessionRunByKey(boundAcpSessionKey)).toBe(false);
-      expect(abortSessionRunByKey(sourceSessionKey)).toBe(true);
+      expect(await requestCurrentSessionStop(boundAcpSessionKey)).toBe(false);
+      expect(await requestCurrentSessionStop(sourceSessionKey)).toBe(true);
 
       await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
       expect(getSessionControllerOperation(sourceSessionKey)).toBe(operation);
@@ -626,7 +536,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       await beforeDispatchStarted.promise;
       operation = getSessionControllerOperation("agent:main:diagnostics-disabled-abort");
       expect(operation?.ownerSettlement).toBeDefined();
-      expect(abortSessionRunByKey("agent:main:diagnostics-disabled-abort")).toBe(true);
+      expect(await requestCurrentSessionStop("agent:main:diagnostics-disabled-abort")).toBe(true);
 
       await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
       expect(getSessionControllerOperation("agent:main:diagnostics-disabled-abort")).toBe(
@@ -762,7 +672,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       resetTriggered: false,
     });
     hookMocks.runner.runBeforeDispatch.mockImplementation(async () => {
-      expect(abortSessionRunByKey("agent:main:already-active-handled")).toBe(true);
+      expect(await requestCurrentSessionStop("agent:main:already-active-handled")).toBe(true);
       return {
         handled: true,
         text: "handled by hook",
@@ -857,7 +767,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     // The hook signal composes the operation signal with lifecycle/upstream
     // signals, so assert propagation instead of instance identity.
     expect(hookAbortSignal?.aborted).toBe(false);
-    expect(abortSessionRunByKey("agent:main:already-active-reply-dispatch")).toBe(true);
+    expect(await requestCurrentSessionStop("agent:main:already-active-reply-dispatch")).toBe(true);
     expect(existingOperation.abortSignal.aborted).toBe(true);
     expect(hookAbortSignal?.aborted).toBe(true);
 
@@ -897,7 +807,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
       replyResolver,
     });
 
-    expect(abortSessionRunByKey("agent:main:already-active-resolver")).toBe(true);
+    expect(await requestCurrentSessionStop("agent:main:already-active-resolver")).toBe(true);
 
     await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
     expect(existingOperation.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
@@ -1042,7 +952,7 @@ describe("dispatchReplyFromConfig ACP abort", () => {
     });
 
     await resolverStartedPromise;
-    expect(abortSessionRunByKey("agent:main:resolver-abort-error")).toBe(true);
+    expect(await requestCurrentSessionStop("agent:main:resolver-abort-error")).toBe(true);
 
     await expect(dispatchPromise).resolves.toMatchObject(expectedNoQueuedReplyResult());
     expect(diagnosticMocks.logMessageProcessed).toHaveBeenCalledWith(
@@ -1057,7 +967,6 @@ describe("dispatchReplyFromConfig ACP abort", () => {
   registerNativeDispatchAbortCases(() => ({
     dispatchReplyFromConfig,
     getSessionControllerOperation,
-    abortSessionRunByKey,
     createReplyOperation,
     listActiveReplyRunSessionKeys,
     createDispatchConfig,

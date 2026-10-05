@@ -254,10 +254,6 @@ export function retireRpcSource(runId: string, expected?: RpcSourceRef): boolean
   return true;
 }
 
-export function getRpcSourceSignal(ref: RpcSourceRef): AbortSignal {
-  return ref.input.abortSignal;
-}
-
 export function isRpcSourceQueued(ref: RpcSourceRef | undefined): boolean {
   return (
     ref !== undefined &&

@@ -4,10 +4,13 @@ import * as sessionAdmission from "../../../sessions/session-controller.admissio
 import type { SessionControllerInput } from "../../../sessions/session-controller.mailbox.js";
 import { assertSessionControllerOperation } from "../../../sessions/session-controller.state.js";
 import type { AcceptedSessionSpawn } from "../../accepted-session-spawn.js";
+import {
+  buildAnnounceIdFromChildRun,
+  buildAnnounceIdempotencyKey,
+} from "../../announce-idempotency.js";
 import type { EmbeddedAgentRunResult } from "../../embedded-agent-runner/types.js";
 import { settleRequesterRun } from "../../requester-run-settlement.js";
 import { createSessionsYieldTool } from "../../tools/sessions-yield-tool.js";
-import { subagentCompletionSourceId } from "../announce/subagent-announce-controller-source.js";
 import { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import * as registryPersistence from "./subagent-registry-persistence.js";
@@ -83,7 +86,11 @@ export function createRequesterTurnSettlement(params: {
       for (const child of children) {
         const entry = registry.getSubagentRunByRunId(child.runId);
         const input = turn.controllerInput;
-        if (entry && input?.sourceTurnId === subagentCompletionSourceId(entry)) {
+        if (
+          entry &&
+          input?.protocolRunId ===
+            buildAnnounceIdempotencyKey(buildAnnounceIdFromChildRun(entry.runId, entry.generation))
+        ) {
           expect(input.custody.rpcAdopted).toBe(true);
           expect(input.phase).toBe("waiting");
           expect(input.claim).toBeUndefined();

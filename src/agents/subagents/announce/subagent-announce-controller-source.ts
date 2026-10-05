@@ -10,7 +10,7 @@ import {
 } from "../registry/subagent-requester-settle-identity.js";
 import { loadRequesterSessionEntry } from "./subagent-announce-delivery.runtime.js";
 
-export const subagentCompletionSourceId = (entry: SubagentRunRecord) =>
+const subagentCompletionSourceId = (entry: SubagentRunRecord) =>
   `subagent-completion:${entry.runId}:${entry.generation ?? 0}`;
 
 /** Reserves one followup source against the durable registry row that owns it. */

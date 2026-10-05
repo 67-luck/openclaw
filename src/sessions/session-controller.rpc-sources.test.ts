@@ -23,7 +23,6 @@ import {
   getRpcSource,
   getRpcSourceIdentity,
   getRpcSourceProjectSessionActive,
-  getRpcSourceSignal,
   getRpcSourceStartedAt,
   hasRpcSource,
   isRpcSourceActive,
@@ -161,7 +160,7 @@ describe("RPC source owner boundary", () => {
     });
     expect(duplicate.registered).toBe(false);
     expect(requestRpcSourceCancellation(spaced.entry)).toBe(true);
-    expect(getRpcSourceSignal(plain.entry).aborted).toBe(false);
+    expect(plain.entry.input.abortSignal.aborted).toBe(false);
     spaced.cleanup();
     expect([...rpcSourceTesting].map(([runId]) => runId)).toEqual(["run"]);
     plain.cleanup();
@@ -171,8 +170,8 @@ describe("RPC source owner boundary", () => {
     const source = reserve("reason");
     const reason = restart ? createAgentRunRestartAbortError() : new Error("private reason");
     expect(requestRpcSourceCancellation(source.entry, reason)).toBe(true);
-    expect(getRpcSourceSignal(source.entry).reason).toBe(reason);
-    expect(isAgentRunRestartAbortReason(getRpcSourceSignal(source.entry).reason)).toBe(restart);
+    expect(source.entry.input.abortSignal.reason).toBe(reason);
+    expect(isAgentRunRestartAbortReason(source.entry.input.abortSignal.reason)).toBe(restart);
     expect(requestRpcSourceCancellation(source.entry, reason)).toBe(false);
     source.cleanup();
   });
@@ -190,7 +189,7 @@ describe("RPC source owner boundary", () => {
     await rejected;
     await captureSessionControllerSourceSettlement(source.entry.input);
     expect(execute).not.toHaveBeenCalled();
-    expect(getRpcSourceSignal(source.entry).aborted).toBe(true);
+    expect(source.entry.input.abortSignal.aborted).toBe(true);
     source.cleanup();
   });
 
@@ -204,7 +203,7 @@ describe("RPC source owner boundary", () => {
         throw new Error("commit refused");
       }, "rpc"),
     ).toThrow("commit refused");
-    expect(getRpcSourceSignal(source.entry).aborted).toBe(false);
+    expect(source.entry.input.abortSignal.aborted).toBe(false);
     expect(execute).not.toHaveBeenCalled();
     hold();
     hold();
@@ -220,7 +219,7 @@ describe("RPC source owner boundary", () => {
     first.controller.abort();
     first.cleanup();
     expect(rpcSourceTesting.get("reused")).toBe(successor.entry);
-    expect(getRpcSourceSignal(successor.entry).aborted).toBe(false);
+    expect(successor.entry.input.abortSignal.aborted).toBe(false);
     successor.cleanup();
   });
 
@@ -294,7 +293,7 @@ describe("RPC source owner boundary", () => {
     });
     for (const source of originals) {
       expect(requestRpcSourceCancellation(source.entry)).toBe(false);
-      expect(getRpcSourceSignal(source.entry).aborted).toBe(false);
+      expect(source.entry.input.abortSignal.aborted).toBe(false);
       expect(isRpcSourceQueued(source.entry)).toBe(false);
       expect(rpcSourceTesting.get(source.entry.input.protocolRunId!)).toBe(source.entry);
     }
@@ -347,7 +346,7 @@ describe("RPC source owner boundary", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(isRpcSourceActive(waiting.entry)).toBe(false);
     expect(getRpcSourceStartedAt(waiting.entry)).toBeUndefined();
-    expect(getRpcSourceSignal(waiting.entry).aborted).toBe(false);
+    expect(waiting.entry.input.abortSignal.aborted).toBe(false);
     predecessor.cleanup();
     await started.promise;
     expect(isRpcSourceActive(waiting.entry)).toBe(true);

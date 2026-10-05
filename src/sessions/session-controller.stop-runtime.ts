@@ -23,11 +23,6 @@ export function captureCurrentSessionRunInterruptTarget(
   return operation ? { [replyRunInterruptTargetOperation]: operation } : undefined;
 }
 
-/** Requests user cancellation of the currently selected operation. */
-export function abortSessionRunByKey(sessionKey: string): boolean {
-  return getSessionControllerOperation(sessionKey)?.abortByUser() ?? false;
-}
-
 /** Abort the captured operation; null skips settlement for source acknowledgements. */
 export async function interruptReplyRunTarget(
   target: ReplyRunInterruptTarget,
