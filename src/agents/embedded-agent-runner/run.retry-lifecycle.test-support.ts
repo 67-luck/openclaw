@@ -112,6 +112,7 @@ describe("direct embedded retry lifecycle", () => {
       const sleepStarted = createDeferred();
       const retryAdvanced = createDeferred();
       const retryAttempts: unknown[] = [];
+      const retryDelays: unknown[] = [];
       vi.useFakeTimers();
       try {
         mockedSleep.mockImplementation((delayMs, signal) => {
@@ -142,6 +143,7 @@ describe("direct embedded retry lifecycle", () => {
           onAgentEvent: (event) => {
             if (event.stream === "run_status" && event.data.phase === "retrying") {
               retryAttempts.push(event.data.retryAttempt);
+              retryDelays.push(event.data.delayMs);
               if (retryAttempts.length > 1) {
                 retryAdvanced.resolve();
               }
@@ -150,6 +152,7 @@ describe("direct embedded retry lifecycle", () => {
         });
         const outcome = pending.catch((error: unknown) => error);
         await Promise.race([sleepStarted.promise, pending]);
+        expect(retryDelays).toEqual([retryAfterSeconds * 1_000]);
         expect(waitSettled).toBe(false);
         await vi.advanceTimersByTimeAsync(60_001);
         expect(await Promise.race([outcome, retryAdvanced.promise])).toMatchObject({
