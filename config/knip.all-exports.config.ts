@@ -74,6 +74,8 @@ const ROOT_TEST_ENTRY_GLOBS = [
   // Vitest loads these by configuration or module alias rather than imports.
   "test/setup*.ts!",
   "test/non-isolated-runner.ts!",
+  // The configured runner loads this teardown owner through vi.importActual.
+  "test/non-isolated-run-state.ts!",
   "test/vitest/*-runtime.ts!",
   "test/vitest/vitest*.config.ts!",
   "test/vitest/vitest*.setup.ts!",
