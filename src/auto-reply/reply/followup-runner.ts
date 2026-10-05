@@ -218,6 +218,7 @@ export function createFollowupRunner(
         return;
       }
       const turn: AdmittedFollowupTurn = admission.turn;
+      operation = turn.operation;
       await admitFollowupRunLifecycle(turn.queued);
       if (turn.preflightError) {
         turn.operation.fail("run_failed", turn.preflightError);
@@ -237,7 +238,6 @@ export function createFollowupRunner(
       }
       admittedTurn = turn;
       admittedRunId = turn.runId;
-      operation = turn.operation;
       queuedFollowupAdmitted = true;
       executionEntered = true;
       const execution = await executeFollowupTurn({

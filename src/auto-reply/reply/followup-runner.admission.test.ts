@@ -1,0 +1,164 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
+import { getSessionControllerOperation } from "../../sessions/session-controller.js";
+import type { FollowupExecutionResult } from "./followup-turn-execution.js";
+import { enqueueFollowupRun, type FollowupRun } from "./queue.js";
+import type { TypingController } from "./typing.js";
+
+const state = vi.hoisted(() => ({
+  account: vi.fn<typeof import("./agent-runner-result-accounting.js").accountFollowupTurn>(),
+  deliver: vi.fn<typeof import("./followup-delivery.js").deliverFollowupDecision>(),
+  execute: vi.fn<typeof import("./followup-turn-execution.js").executeFollowupTurn>(),
+  preflight: vi.fn<typeof import("./agent-runner-memory.js").runSessionCompactionIfNeeded>(),
+  resolveDecision: vi.fn<typeof import("./followup-delivery.js").resolveFollowupDeliveryDecision>(),
+}));
+
+vi.mock("./agent-runner-memory.js", () => ({
+  runMemoryFlushIfNeeded: vi.fn(),
+  runSessionCompactionIfNeeded: (
+    ...args: Parameters<typeof import("./agent-runner-memory.js").runSessionCompactionIfNeeded>
+  ) => state.preflight(...args),
+}));
+
+vi.mock("./agent-runner-result-accounting.js", () => ({
+  accountFollowupTurn: (
+    ...args: Parameters<typeof import("./agent-runner-result-accounting.js").accountFollowupTurn>
+  ) => state.account(...args),
+}));
+
+vi.mock("./followup-delivery.js", () => ({
+  deliverFollowupDecision: (
+    ...args: Parameters<typeof import("./followup-delivery.js").deliverFollowupDecision>
+  ) => state.deliver(...args),
+  resolveFollowupDeliveryDecision: (
+    ...args: Parameters<typeof import("./followup-delivery.js").resolveFollowupDeliveryDecision>
+  ) => state.resolveDecision(...args),
+}));
+
+vi.mock("./followup-turn-execution.js", () => ({
+  executeFollowupTurn: (
+    ...args: Parameters<typeof import("./followup-turn-execution.js").executeFollowupTurn>
+  ) => state.execute(...args),
+}));
+
+const { createFollowupRunner } = await import("./followup-runner.js");
+
+function createQueuedRun(sessionKey: string): FollowupRun {
+  return {
+    prompt: "queued prompt",
+    enqueuedAt: 1,
+    run: {
+      agentId: "main",
+      agentDir: "/tmp/agent",
+      sessionId: `${sessionKey}-session`,
+      sessionKey,
+      sessionFile: "/tmp/session.jsonl",
+      workspaceDir: "/tmp",
+      config: {},
+      provider: "anthropic",
+      model: "claude",
+      timeoutMs: 1_000,
+      blockReplyBreak: "message_end",
+    },
+  };
+}
+
+function createTypingController(): TypingController {
+  return {
+    onReplyStart: vi.fn(async () => {}),
+    startTypingLoop: vi.fn(async () => {}),
+    startTypingOnText: vi.fn(async () => {}),
+    refreshTypingTtl: vi.fn(),
+    isActive: vi.fn(() => false),
+    markRunComplete: vi.fn(),
+    markDispatchIdle: vi.fn(),
+    cleanup: vi.fn(),
+  };
+}
+
+function createSettledExecution(): FollowupExecutionResult {
+  return {
+    commentaryPayloadsEnabled: false,
+    execution: {
+      runId: "followup-run",
+      outcome: {
+        kind: "settled",
+        status: "ok",
+        result: { payloads: [], meta: { durationMs: 0 } },
+        resolved: { provider: "anthropic", model: "claude" },
+        fallback: { exhausted: false, attempts: [] },
+        autoCompactionCount: 0,
+        didLogHeartbeatStrip: false,
+      },
+    },
+    runStartedAt: 1,
+    sessionCtx: {},
+    pendingToolTasks: new Set(),
+    progress: { drain: vi.fn(async () => {}) },
+  };
+}
+
+const activeKeys = new Set<string>();
+
+afterEach(async () => {
+  for (const key of activeKeys) {
+    const operation = getSessionControllerOperation(key);
+    operation?.complete();
+    await operation?.ownerSettlement;
+  }
+  activeKeys.clear();
+});
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  state.account.mockResolvedValue(undefined);
+  state.execute.mockResolvedValue(createSettledExecution());
+  state.preflight.mockImplementation(async (params) => params.sessionEntry);
+  state.resolveDecision.mockResolvedValue({ kind: "suppress", reason: "silent" });
+  state.deliver.mockResolvedValue({ kind: "completed", payloads: [] });
+});
+
+describe("createFollowupRunner admission ownership", () => {
+  it("releases the admitted operation when source adoption fails", async () => {
+    const sessionKey = "agent:main:followup-adoption-failure";
+    activeKeys.add(sessionKey);
+    const queued = createQueuedRun(sessionKey);
+    const failure = new Error("source adoption failed");
+    queued.turnAdoptionLifecycle = {
+      onAdopted: vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined),
+    };
+    const typing = createTypingController();
+    const runner = createFollowupRunner({
+      typing,
+      typingMode: "never",
+      defaultModel: "anthropic/claude",
+    });
+    const firstFailure = createDeferred<unknown>();
+    const completed = createDeferred();
+    const runFollowup = async (run: FollowupRun) => {
+      try {
+        await runner(run);
+        completed.resolve();
+      } catch (error) {
+        firstFailure.resolve(error);
+        throw error;
+      }
+    };
+    expect(
+      enqueueFollowupRun(
+        sessionKey,
+        queued,
+        { mode: "followup", debounceMs: 0 },
+        "none",
+        runFollowup,
+      ),
+    ).toBe(true);
+
+    await expect(firstFailure.promise).resolves.toBe(failure);
+    expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
+
+    await completed.promise;
+    expect(state.execute).toHaveBeenCalledOnce();
+    expect(getSessionControllerOperation(sessionKey)).toBeUndefined();
+  });
+});
