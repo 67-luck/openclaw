@@ -31,39 +31,6 @@ function evictPriorLifecycleReplyRuns(): void {
 
 registerAgentEventLifecycleRotationHandler("reply-runs", evictPriorLifecycleReplyRuns);
 
-const replyRunRegistryTestApi = {
-  resetReplyRunRegistry(): void {
-    for (const operation of activeSessionOperations()) {
-      markDiagnosticRunProgress({
-        sessionKey: operation.key,
-        sessionId: operation.sessionId,
-        reason: "reply_operation:registry_reset",
-      });
-    }
-    for (const entry of controllerStorage.sessionControllers.values()) {
-      entry.active?.watchdog.close();
-      for (const operation of entry.lifecycle?.operations ?? []) {
-        operation.watchdog.close();
-      }
-    }
-    for (const entry of controllerStorage.sessionControllers.values()) {
-      for (const waiter of entry.waiters) {
-        waiter.finish(false);
-      }
-    }
-    controllerStorage.sessionControllers.clear();
-    controllerStorage.sessionControllerEntriesByAlias.clear();
-    controllerStorage.sessionControllerEntriesByStore.clear();
-    controllerStorage.rpcSourcesByRunId.clear();
-  },
-};
-
-if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") {
-  Object.assign(globalThis, {
-    [Symbol.for("openclaw.replyRunRegistryTestApi")]: replyRunRegistryTestApi,
-  });
-}
-
 export function markReplyOperationGlobalLaneWaitProgress(operation: ReplyOperation): void {
   if (operation.result || operation.phase !== "waiting_for_global_lane") {
     return;
