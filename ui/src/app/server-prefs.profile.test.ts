@@ -414,21 +414,46 @@ describe("profile-bound appearance preferences", () => {
     expect(reset.theme).toBe("dash");
   });
 
-  it("restores profile appearance after reloading during a pending identity switch", async () => {
-    const config = configWithPrefs({});
+  it("restores structured profile appearance across identity switches and reloads", async () => {
+    const tabIcon = {
+      mode: "custom",
+      image: {
+        dataUrl:
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR1sAAAAASUVORK5CYII=",
+        fileName: "icon.png",
+      },
+    } as const;
+    const config = configWithPrefs({ tabIcon: { mode: "agent" } });
     let activeProfile = "profile-b";
     const request = vi.fn(async () => ({
       status: "ok",
       entries:
         activeProfile === "profile-b"
           ? { "ui.theme": "knot" }
-          : { "ui.theme": "rose", "ui.accent": "#123456", "ui.fontUi": "geist" },
+          : {
+              "ui.theme": "rose",
+              "ui.accent": "#123456",
+              "ui.fontUi": "geist",
+              "ui.tabIcon": tabIcon,
+            },
     }));
     const writer = createWriter(request);
     const options = (selectedProfileId: string) => readOptions(writer, config, selectedProfileId);
     await refreshProfileAppearancePrefs(options(activeProfile));
-    activeProfile = "profile-a";
-    await refreshProfileAppearancePrefs(options(activeProfile));
+    for (activeProfile of ["profile-a", "profile-b", "profile-a"]) {
+      await refreshProfileAppearancePrefs(options(activeProfile));
+      const expectedIcon = activeProfile === "profile-a" ? tabIcon : undefined;
+      expect(loadSettings().tabIcon).toEqual(expectedIcon);
+      expect(
+        resolveServerUiPrefState(config, "tabIcon", scope, loadSettings(), {
+          profileId: activeProfile,
+        }),
+      ).toMatchObject({
+        provenance: expectedIcon ? "profile" : "default",
+        value: expectedIcon,
+        resetValue: undefined,
+      });
+    }
     expect(loadSettings().theme).toBe("rose");
     activeProfile = "profile-b";
     applyServerUiPrefs(config, options(activeProfile));
@@ -437,6 +462,11 @@ describe("profile-bound appearance preferences", () => {
 
     await refreshProfileAppearancePrefs(options(activeProfile));
 
-    expect(loadSettings()).toMatchObject({ theme: "knot", accent: undefined, fontUi: undefined });
+    expect(loadSettings()).toMatchObject({
+      theme: "knot",
+      accent: undefined,
+      fontUi: undefined,
+      tabIcon: undefined,
+    });
   });
 });

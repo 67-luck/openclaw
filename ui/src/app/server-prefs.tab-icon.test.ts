@@ -43,19 +43,10 @@ afterEach(() => {
 });
 
 describe("tab icon preference ownership", () => {
-  it("round-trips the upload through all modes and leaves it intact on theme selection", () => {
-    for (const mode of ["custom", "agent", "default"] as const) {
-      patchSettings({ tabIcon: { mode, image } });
-      expect(loadSettings().tabIcon).toEqual({ mode, image });
-      expect(JSON.parse(localStorage.getItem(settingsKeyForGateway(scope))!).tabIcon).toEqual({
-        mode,
-        image,
-      });
-    }
+  it("preserves the upload on theme selection and removes the whole preference on reset", () => {
+    patchSettings({ tabIcon });
     selectThemeSettings("dash");
-    expect(loadSettings().tabIcon).toEqual({ mode: "default", image });
-    patchSettings({ tabIcon: { mode: "custom" } });
-    expect(loadSettings().tabIcon).toEqual({ mode: "custom" });
+    expect(loadSettings().tabIcon).toEqual(tabIcon);
     const previous = loadSettings();
     const next = resetServerUiPref("tabIcon");
     expect(next.tabIcon).toBeUndefined();
@@ -100,35 +91,6 @@ describe("tab icon preference ownership", () => {
     });
   });
 
-  it("reconciles profile changes and clears an icon absent from the next profile", async () => {
-    const config = configWithPrefs({ tabIcon: { mode: "agent" } });
-    const first = createServerPrefsWriter(
-      vi.fn(async () => ({
-        status: "ok",
-        entries: { "ui.tabIcon": tabIcon },
-      })),
-      scope,
-    );
-    const second = createServerPrefsWriter(
-      vi.fn(async () => ({ status: "ok", entries: {} })),
-      scope,
-    );
-    const options = { profileId, configObject: config, scope, onApplied: vi.fn() };
-    await refreshProfileAppearancePrefs({ ...options, client: first.state.client! });
-    expect(loadSettings().tabIcon).toEqual(tabIcon);
-    expect(
-      resolveServerUiPrefState(config, "tabIcon", scope, loadSettings(), { profileId }),
-    ).toMatchObject({ provenance: "profile", value: tabIcon, resetValue: undefined });
-    await refreshProfileAppearancePrefs({
-      ...options,
-      profileId: "profile-other",
-      client: second.state.client!,
-    });
-    expect(loadSettings().tabIcon).toBeUndefined();
-    await refreshProfileAppearancePrefs({ ...options, client: first.state.client! });
-    expect(loadSettings().tabIcon).toEqual(tabIcon);
-  });
-
   it.each([null, profileId])("keeps an unwritable icon browser-local (profile=%s)", (id) => {
     const request = vi.fn(async () => ({ status: "ok" }));
     const writer = createServerPrefsWriter(request, scope);
@@ -146,9 +108,9 @@ describe("tab icon preference ownership", () => {
   it.each([false, true])(
     "writes a mixed theme batch without falsely acknowledging its icon (reject=%s)",
     async (rejected) => {
-      const iconStarted = createDeferred<void>();
+      const iconStarted = createDeferred();
       const iconReply = createDeferred<{ status: "ok" | "no_durable_identity" }>();
-      const completed = createDeferred<void>();
+      const completed = createDeferred();
       const request = vi.fn(async (method: string) => {
         if (method === "users.prefs.get") {
           return { status: "ok", entries: {} };
@@ -178,7 +140,9 @@ describe("tab icon preference ownership", () => {
       });
       let commits = 0;
       const afterCommit = vi.fn(() => {
-        if (++commits === 2) completed.resolve();
+        if (++commits === 2) {
+          completed.resolve();
+        }
       });
       pushServerUiPrefs(
         writer,
@@ -222,7 +186,7 @@ describe("tab icon preference ownership", () => {
   );
 
   it("keeps the icon independent of rejected theme writes and sends a whole-value reset", async () => {
-    const completed = createDeferred<void>();
+    const completed = createDeferred();
     const request = vi.fn(async (method: string) => {
       if (method === "themes.set") {
         throw new GatewayRequestError({ code: "INVALID_REQUEST", message: "Theme unavailable" });
@@ -238,7 +202,9 @@ describe("tab icon preference ownership", () => {
         profileId,
         canWrite: true,
         afterCommit: () => {
-          if (++commits === 2) completed.resolve();
+          if (++commits === 2) {
+            completed.resolve();
+          }
         },
       },
     );

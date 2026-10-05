@@ -434,11 +434,43 @@
   }
 }
 
+.settings-tab-icon__option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.settings-tab-icon__preview,
+.settings-tab-icon__preview.identity-avatar--agent img,
+.settings-tab-icon__preview svg {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+@media (min-width: 769px) {
+  .settings-tab-icon .settings-group {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) max-content;
+  }
+
+  .settings-tab-icon .settings-row {
+    display: grid;
+    grid-column: 1 / -1;
+    grid-template-columns: subgrid;
+  }
+
+  .settings-tab-icon .settings-row__control {
+    max-width: none;
+  }
+}
+
 /* A file value and its remove action form one control, without an inner divider. */
 .settings-file {
   display: flex;
   align-items: stretch;
-  width: 310px;
+  width: 100%;
+  contain: inline-size;
   max-width: 100%;
   min-width: 0;
   min-height: var(--settings-control-height, 36px);
@@ -517,12 +549,6 @@
 .settings-file > .btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -3px;
-}
-
-@media (max-width: 768px) {
-  .settings-file {
-    width: 100%;
-  }
 }
 
 /* Trailing action rows hold only a button cluster: give it the full row

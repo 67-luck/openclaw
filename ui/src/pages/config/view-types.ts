@@ -5,7 +5,6 @@ import type {
   WebPushDevicePreferences,
   WebPushNotificationPreferences,
 } from "../../../../packages/gateway-protocol/src/schema/push.js";
-import type { TabIconPreference } from "../../../../packages/gateway-protocol/src/schema/tab-icon.ts";
 import type { ConfigUiHints, ModelCatalogEntry } from "../../api/types.ts";
 import type {
   NativeNotificationsPermission,
@@ -22,6 +21,7 @@ import type { ConfigSchemaAnalysis } from "../../components/config-form.ts";
 import type { Locale } from "../../i18n/index.ts";
 import type { RealtimeTalkInputDevice } from "../chat/talk/input.ts";
 import type { SessionObserverModelSelection } from "./session-observer-settings.ts";
+import type { TabIconViewProps } from "./view-tab-icon.ts";
 
 type SettingsMediaDeviceState = {
   devices: RealtimeTalkInputDevice[];
@@ -60,7 +60,7 @@ export type ConfigViewState = {
   lastFormModeForScroll: ConfigFormMode | null;
 };
 
-export type ConfigProps = {
+export type ConfigProps = TabIconViewProps & {
   raw: string;
   originalRaw: string;
   valid: boolean | null;
@@ -143,13 +143,6 @@ export type ConfigProps = {
   onImportCustomTheme: () => void;
   onClearCustomTheme: () => void;
   onOpenCustomThemeImport?: () => void;
-  tabIcon: TabIconPreference | undefined;
-  tabIconBusy: boolean;
-  tabIconError: string | null;
-  tabIconUploadsEnabled: boolean;
-  setTabIconMode: (mode: TabIconPreference["mode"]) => void;
-  onTabIconFileChange: (file: File) => void;
-  onRemoveTabIconImage: () => void;
   textScale: number;
   textScaleOverridden: boolean;
   setTextScale: (value: number) => void;

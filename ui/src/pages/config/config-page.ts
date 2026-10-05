@@ -405,6 +405,9 @@ export class ConfigPage extends OpenClawLightDomElement {
     .watchStore(() => this.context?.overlays)
     .watchStore(() => this.context?.config)
     .watchStore(() => this.context?.settingsAgentSelection)
+    .watchStore(() => (this.pageId === "appearance" ? this.context?.agentSelection : null))
+    .watchStore(() => (this.pageId === "appearance" ? this.context?.agents : null))
+    .watchStore(() => (this.pageId === "appearance" ? this.context?.agentIdentity : null))
     .watchStore(() => this.context?.nativeDeviceSettings ?? undefined)
     .watchStore(() => this.context?.nativeNotifications ?? undefined)
     .watchStore(() => this.context?.webPush)
@@ -745,10 +748,7 @@ export class ConfigPage extends OpenClawLightDomElement {
     }
   }
 
-  private resetSyncedAppearancePref(key: Exclude<ResettableServerUiPrefKey, "locale">) {
-    if (key === "tabIcon") {
-      this.tabIconSettings.cancelUpload();
-    }
+  private resetSyncedAppearancePref(key: Exclude<ResettableServerUiPrefKey, "locale" | "tabIcon">) {
     this.settings = resetServerUiPref(
       key,
       this.currentSyncedPref(key),

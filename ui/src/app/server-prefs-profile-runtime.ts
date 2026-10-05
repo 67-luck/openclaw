@@ -31,11 +31,12 @@ export function canSyncAppearancePreference(
 
 export async function writeProfileAppearancePrefs(
   client: GatewayBrowserClient | null,
-  batch: ServerUiPrefs,
+  preferences: ServerUiPrefs,
   canDispatch: boolean,
 ): Promise<
   Awaited<ReturnType<RuntimeConfigCapability["runExternalMutation"]>> & { batch: ServerUiPrefs }
 > {
+  let batch = preferences;
   const writesTheme = batch.theme !== undefined || batch.themeMode !== undefined;
   if (writesTheme) {
     // themes.set owns the atomic theme/accent/font mutation, not other profile

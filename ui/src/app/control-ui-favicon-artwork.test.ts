@@ -50,7 +50,9 @@ function setup(preference?: TabIconPreference) {
   });
   cleanups.push(disconnect);
   const publish = () => {
-    for (const listener of listeners) listener();
+    for (const listener of listeners) {
+      listener();
+    }
   };
   return { theme, selection, gateway, disconnect, publish, identity };
 }
@@ -79,7 +81,7 @@ describe("tab icon artwork lifecycle", () => {
     expect(applyControlUiFaviconImage).toHaveBeenLastCalledWith(null);
   });
 
-  it("discards pending protected-avatar results after selection changes or teardown", async () => {
+  it("discards superseded protected-avatar results and stops reacting after disconnect", async () => {
     const pending = createDeferred<string | null>();
     const released = vi.fn();
     vi.mocked(resolveAvatarImageUrl).mockReturnValue(pending.promise);
@@ -104,7 +106,7 @@ describe("tab icon artwork lifecycle", () => {
   });
 
   it("rasterizes the selected agent through the protected image owner without distorting it", async () => {
-    const decode = createDeferred<void>();
+    const decode = createDeferred();
     vi.mocked(resolveAvatarImageUrl).mockReturnValue("blob:protected-avatar");
     vi.stubGlobal(
       "Image",

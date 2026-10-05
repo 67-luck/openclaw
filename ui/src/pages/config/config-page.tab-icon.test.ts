@@ -38,6 +38,9 @@ function createPage() {
   state.context = {
     gateway,
     settingsAgentSelection: selection,
+    agentSelection: { state: { selectedId: "main" } },
+    agents: { state: { agentsList: null } },
+    agentIdentity: { ensure: async () => {} },
     config,
     theme: { refresh },
   } as unknown as ApplicationContext;
@@ -81,64 +84,60 @@ describe("ConfigPage tab icon upload intent", () => {
     expect(state.tabIconSettings.props.tabIconBusy).toBe(false);
   });
 
-  it.each([
-    "mode",
-    "remove",
-    "reset",
-    "profile",
-    "gateway",
-    "client",
-    "selection",
-    "policy",
-    "unmount",
-    "page",
-    "preference",
-  ])("does not apply a late upload after %s changes", async (change) => {
-    const pending = createDeferred<tabIconImage.TabIconImageResult>();
-    upload.mockReturnValue(pending.promise);
-    const { state, gateway, selection, config, refresh, connected } = createPage();
-    const work = state.tabIconSettings.upload(picked());
-    switch (change) {
-      case "mode":
-        state.tabIconSettings.props.setTabIconMode("default");
-        break;
-      case "reset":
-        state.resetConfigViewState();
-        break;
-      case "remove":
-        state.tabIconSettings.props.onRemoveTabIconImage();
-        break;
-      case "profile":
-        gateway.snapshot.selfUser.id = "bob";
-        break;
-      case "gateway":
-        gateway.connection.gatewayUrl = "ws://other.test";
-        break;
-      case "client":
-        gateway.snapshot.client = {};
-        break;
-      case "selection":
-        selection.intentRevision++;
-        break;
-      case "policy":
-        config.current.uploadsEnabled = false;
-        break;
-      case "unmount":
-        connected.mockReturnValue(false);
-        break;
-      case "page":
-        state.pageId = "advanced";
-        break;
-      case "preference":
-        patchSettings({ tabIcon: { mode: "agent" } });
-        break;
-    }
-    pending.resolve({ ok: true, image: IMAGE });
-    await work;
-    expect(loadSettings().tabIcon?.image).toBeUndefined();
-    expect(state.tabIconSettings.props.tabIconBusy).toBe(false);
-    expect(refresh).toHaveBeenCalledTimes(change === "mode" || change === "remove" ? 1 : 0);
-  });
+  const invalidations: Record<
+    string,
+    (fixture: ReturnType<typeof createPage>, signal: AbortSignal) => void
+  > = {
+    mode: ({ state }) => state.tabIconSettings.props.setTabIconMode("default"),
+    remove: ({ state }) => state.tabIconSettings.props.onRemoveTabIconImage(),
+    reset: ({ state }) => state.resetConfigViewState(),
+    profile: ({ gateway }) => {
+      gateway.snapshot.selfUser.id = "bob";
+    },
+    gateway: ({ gateway }) => {
+      gateway.connection.gatewayUrl = "ws://other.test";
+    },
+    client: ({ gateway }) => {
+      gateway.snapshot.client = {};
+    },
+    selection: ({ selection }) => {
+      selection.intentRevision++;
+    },
+    policy: ({ config }) => {
+      config.current.uploadsEnabled = false;
+    },
+    unmount: ({ connected }) => connected.mockReturnValue(false),
+    disconnect: ({ page, state }, signal) => {
+      page.disconnectedCallback();
+      expect(signal.aborted).toBe(true);
+      expect(state.tabIconSettings.props.tabIconBusy).toBe(false);
+    },
+    page: ({ state }) => {
+      state.pageId = "advanced";
+    },
+    preference: () => patchSettings({ tabIcon: { mode: "agent" } }),
+  };
+  it.each(Object.entries(invalidations))(
+    "does not apply a late upload after %s changes",
+    async (name, invalidate) => {
+      const pending = createDeferred<tabIconImage.TabIconImageResult>();
+      upload.mockReturnValue(pending.promise);
+      const fixture = createPage();
+      const { state, refresh } = fixture;
+      const work = state.tabIconSettings.upload(picked());
+      const signal = upload.mock.calls[0]?.[2];
+      if (!signal) {
+        throw new Error("Expected the upload cancellation signal");
+      }
+      expect(signal.aborted).toBe(false);
+      invalidate(fixture, signal);
+      pending.resolve({ ok: true, image: IMAGE });
+      await work;
+      expect(loadSettings().tabIcon?.image).toBeUndefined();
+      expect(state.tabIconSettings.props.tabIconBusy).toBe(false);
+      expect(refresh).toHaveBeenCalledTimes(name === "mode" || name === "remove" ? 1 : 0);
+    },
+  );
 
   it("keeps newer selection busy when a superseded upload completes", async () => {
     const first = createDeferred<tabIconImage.TabIconImageResult>();
@@ -155,26 +154,6 @@ describe("ConfigPage tab icon upload intent", () => {
     await newWork;
     expect(state.tabIconSettings.props.tabIconBusy).toBe(false);
     expect(loadSettings().tabIcon?.image?.fileName).toBe("latest.png");
-  });
-
-  it("aborts pending work through the registered host-disconnect hook", async () => {
-    const pending = createDeferred<tabIconImage.TabIconImageResult>();
-    upload.mockReturnValue(pending.promise);
-    const { page, state, refresh } = createPage();
-    const disconnected = vi.spyOn(state.tabIconSettings, "hostDisconnected");
-    const work = state.tabIconSettings.upload(picked());
-    const signal = upload.mock.calls[0]?.[2];
-    expect(signal?.aborted).toBe(false);
-
-    page.disconnectedCallback();
-    expect(disconnected).toHaveBeenCalledOnce();
-    expect(signal?.aborted).toBe(true);
-    expect(state.tabIconSettings.props.tabIconBusy).toBe(false);
-
-    pending.resolve({ ok: true, image: IMAGE });
-    await work;
-    expect(loadSettings().tabIcon?.image).toBeUndefined();
-    expect(refresh).not.toHaveBeenCalled();
   });
 
   it("shows a recoverable processing error without discarding the previous image", async () => {

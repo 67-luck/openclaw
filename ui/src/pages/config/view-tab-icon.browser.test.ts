@@ -1,3 +1,4 @@
+import "../../styles/settings.css";
 import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
@@ -30,28 +31,25 @@ function mount(overrides: Partial<TabIconViewProps> = {}) {
 }
 function button(container: HTMLElement, selector: string) {
   const result = container.querySelector<HTMLButtonElement>(selector);
-  if (!result) throw new Error("Missing button: " + selector);
+  if (!result) {
+    throw new Error("Missing button: " + selector);
+  }
   return result;
 }
 afterEach(() => {
-  for (const container of containers.splice(0)) container.remove();
+  for (const container of containers.splice(0)) {
+    container.remove();
+  }
   vi.restoreAllMocks();
 });
 
 describe("browser tab icon settings", () => {
-  it.each(["default", "agent"] as const)("keeps the %s source free of upload controls", (mode) => {
-    const { container } = mount({ tabIcon: { mode, image: IMAGE } });
-    expect(container.querySelector("h2")?.textContent?.trim()).toBe("Browser tab icon");
-    expect(container.querySelectorAll(".settings-row")).toHaveLength(1);
-    expect(container.querySelector("input[type=file]")).toBeNull();
-    expect(container.querySelectorAll("wa-radio")).toHaveLength(3);
-  });
-
   it("shows one Choose image affordance and never a fabricated image", () => {
     const { container, props } = mount({ tabIcon: { mode: "custom" } });
     expect(container.querySelector(".settings-row__desc")?.textContent).toBe("PNG, JPG or WebP");
     expect(button(container, ".settings-file__value").textContent).toContain("Choose image…");
-    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector(".settings-file img")).toBeNull();
+    expect(container.querySelector('wa-radio[value="custom"] .identity-avatar__image')).toBeNull();
     expect(container.querySelector(".settings-file__remove")).toBeNull();
     const input = container.querySelector<HTMLInputElement>("input[type=file]")!;
     const open = vi.spyOn(input, "click").mockImplementation(() => {});
@@ -66,8 +64,11 @@ describe("browser tab icon settings", () => {
     expect(input.value).toBe("");
   });
 
-  it("keeps the filename in its joined control with a separate remove action", () => {
-    const { container, props, update } = mount({ tabIcon: { mode: "custom", image: IMAGE } });
+  it("keeps the filename in its joined control with a separate remove action", async () => {
+    const { container, props, update } = mount({
+      tabIcon: { mode: "custom", image: IMAGE },
+      tabIconAgentAvatar: IMAGE.dataUrl,
+    });
     const input = container.querySelector<HTMLInputElement>("input[type=file]")!;
     const open = vi.spyOn(input, "click").mockImplementation(() => {});
     expect(container.querySelector(".settings-file__name")?.textContent?.trim()).toBe(
@@ -75,7 +76,25 @@ describe("browser tab icon settings", () => {
     );
     expect(container.querySelector(".settings-row__desc")?.textContent).toBe("PNG, JPG or WebP");
     expect(container.textContent).not.toContain("Change image");
-    expect(container.querySelector("img")?.getAttribute("src")).toBe(IMAGE.dataUrl);
+    expect(container.querySelector(".settings-file img")?.getAttribute("src")).toBe(IMAGE.dataUrl);
+    for (const source of ["agent", "custom"]) {
+      expect(
+        container
+          .querySelector(`wa-radio[value="${source}"] .identity-avatar__image`)
+          ?.getAttribute("src"),
+      ).toBe(IMAGE.dataUrl);
+    }
+    await container.querySelector("wa-radio-group")!.updateComplete;
+    await Promise.all(
+      [...container.querySelectorAll("wa-radio")].map((radio) => radio.updateComplete),
+    );
+    const agentImage = container.querySelector<HTMLImageElement>(
+      'wa-radio[value="agent"] .identity-avatar__image',
+    )!;
+    expect(getComputedStyle(agentImage).objectFit).toBe("contain");
+    expect(container.querySelector('wa-radio[value="default"] img')?.getAttribute("src")).toContain(
+      "favicon.svg",
+    );
     button(container, ".settings-file__value").click();
     expect(open).toHaveBeenCalledOnce();
     button(container, ".settings-file__remove").click();
@@ -83,9 +102,7 @@ describe("browser tab icon settings", () => {
     expect(open).toHaveBeenCalledOnce();
     props.tabIcon = { mode: "custom" };
     update();
-    expect(container.querySelector("wa-radio-group")?.getAttribute("class")).toContain(
-      "settings-segmented",
-    );
+    expect(container.querySelector('wa-radio[value="custom"] .identity-avatar__image')).toBeNull();
     expect(button(container, ".settings-file__value").textContent).toContain("Choose image…");
   });
 

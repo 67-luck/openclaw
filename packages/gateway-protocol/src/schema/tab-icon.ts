@@ -1,3 +1,5 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { containsAsciiControlCharacter } from "@openclaw/normalization-core/string-normalization";
 import { USER_PREFS_VALUE_BYTES } from "./user-profile-constants.js";
 
 export type TabIconPreference = {
@@ -9,10 +11,6 @@ export const TAB_ICON_FILE_NAME_MAX_LENGTH = 128;
 const RASTER_DATA_URL =
   /^data:image\/(png|webp);base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/;
 const encoder = new TextEncoder();
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
 
 function isRasterDataUrl(value: string): boolean {
   const match = RASTER_DATA_URL.exec(value);
@@ -52,10 +50,9 @@ export function normalizeTabIconPreference(value: unknown): TabIconPreference | 
       typeof image.dataUrl !== "string" ||
       image.dataUrl.length > USER_PREFS_VALUE_BYTES ||
       typeof image.fileName !== "string" ||
-      image.fileName.length === 0 ||
       image.fileName.length > TAB_ICON_FILE_NAME_MAX_LENGTH ||
       !image.fileName.trim() ||
-      /[\u0000-\u001f\u007f]/.test(image.fileName)
+      containsAsciiControlCharacter(image.fileName)
     ) {
       return undefined;
     }

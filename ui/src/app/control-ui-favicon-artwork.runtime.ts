@@ -5,17 +5,20 @@ import type { ApplicationContext } from "./context.ts";
 import { applyControlUiFaviconImage } from "./control-ui-environment-presentation.runtime.ts";
 import { gatewayPresentationScope } from "./gateway-presentation-scope.ts";
 
+// Artwork consumes invalidation only, not payloads that some stores also publish.
+type ChangeSource = { subscribe: (listener: () => void) => () => void };
+
 /** Artwork follows explicit agent selection; the status owner remains independent. */
 export function connectControlUiFaviconArtwork(context: {
   gateway: ApplicationContext["gateway"];
-  theme: Pick<ApplicationContext["theme"], "subscribe"> & {
+  theme: ChangeSource & {
     settings: Pick<ApplicationContext["theme"]["settings"], "tabIcon">;
   };
-  agents: Pick<ApplicationContext["agents"], "subscribe"> & {
+  agents: ChangeSource & {
     state: Pick<ApplicationContext["agents"]["state"], "agentsList">;
   };
   agentIdentity: Pick<ApplicationContext["agentIdentity"], "get" | "ensure" | "subscribe">;
-  agentSelection: Pick<ApplicationContext["agentSelection"], "state" | "subscribe">;
+  agentSelection: ChangeSource & Pick<ApplicationContext["agentSelection"], "state">;
 }): () => void {
   let disposed = false;
   let request = 0;
@@ -91,10 +94,8 @@ export function connectControlUiFaviconArtwork(context: {
         const width = image.naturalWidth * scale;
         const height = image.naturalHeight * scale;
         drawing.drawImage(image, (32 - width) / 2, (32 - height) / 2, width, height);
-        if (current()) {
-          // A self-contained raster favicon does not expose protected avatar routes or blob lifetimes.
-          applyControlUiFaviconImage(canvas.toDataURL("image/png"));
-        }
+        // A self-contained raster favicon does not expose protected avatar routes or blob lifetimes.
+        applyControlUiFaviconImage(canvas.toDataURL("image/png"));
       })
       .catch(() => {
         if (current()) {

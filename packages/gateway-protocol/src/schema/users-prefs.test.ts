@@ -78,7 +78,8 @@ describe("user preference protocol schemas", () => {
 
   it("bounds the entire serialized icon record to the existing UTF-8 preference quota", () => {
     const dataUrl =
-      "data:image/png;base64," + btoa(atob(tabIconPng.split(",")[1]) + "\0".repeat(2900));
+      "data:image/png;base64," +
+      btoa(atob(tabIconPng.slice(tabIconPng.indexOf(",") + 1)) + "\0".repeat(2900));
     const value = { mode: "custom", image: { dataUrl, fileName: "" } };
     const remaining =
       USER_PREFS_VALUE_BYTES - new TextEncoder().encode(JSON.stringify(value)).byteLength;

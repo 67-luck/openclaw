@@ -8,20 +8,6 @@ afterEach(async () => {
 });
 
 describe("findSettingsSearchBlocks", () => {
-  it.each(["favicon", "browser tab icon", "agent avatar"])(
-    "finds tab icon settings by %s",
-    (query) => {
-      expect(
-        findSettingsSearchBlocks({ query, schema: null, value: {}, uiHints: {} }),
-      ).toContainEqual(
-        expect.objectContaining({
-          routeId: "appearance",
-          label: "Browser tab icon",
-          hash: "#settings-appearance-tab-icon",
-        }),
-      );
-    },
-  );
   it("finds the meeting library separately from its Communications capture settings", () => {
     const search = (query: string) =>
       findSettingsSearchBlocks({ query, schema: null, value: {}, uiHints: {} });
@@ -496,6 +482,9 @@ describe("findSettingsSearchBlocks", () => {
 
   it.each([
     ["language", "Language", "#settings-language"],
+    ["favicon", "Browser tab icon", "#settings-appearance-tab-icon"],
+    ["browser tab icon", "Browser tab icon", "#settings-appearance-tab-icon"],
+    ["agent avatar", "Browser tab icon", "#settings-appearance-tab-icon"],
     ["typography", "Typography", "#settings-appearance-typography"],
     ["font", "Typography", "#settings-appearance-typography"],
     ["typeface", "Typography", "#settings-appearance-typography"],

@@ -361,6 +361,8 @@ describe("ConfigPage synced preference provenance", () => {
         },
       },
       runtimeConfig,
+      agentSelection: { state: { selectedId: null } },
+      agents: { state: { agentsList: null } },
       theme: { refresh: vi.fn() },
       webPush: { snapshot: {} },
     } as unknown as ApplicationContext;

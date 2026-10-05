@@ -1,3 +1,4 @@
+import { containsAsciiControlCharacter } from "@openclaw/normalization-core/string-normalization";
 import {
   normalizeTabIconPreference,
   TAB_ICON_FILE_NAME_MAX_LENGTH,
@@ -31,8 +32,9 @@ export async function fileToTabIconImage(
     return { ok: false, reason: "too-large" };
   }
   const fileName =
-    file.name
-      .replace(/[\u0000-\u001f\u007f]/g, "")
+    Array.from(file.name)
+      .filter((character) => !containsAsciiControlCharacter(character))
+      .join("")
       .trim()
       .slice(0, TAB_ICON_FILE_NAME_MAX_LENGTH) || "tab-icon.png";
   try {
@@ -60,13 +62,12 @@ export async function fileToTabIconImage(
         context.drawImage(bitmap, (edge - width) / 2, (edge - height) / 2, width, height);
         for (const type of ["image/webp", "image/png"]) {
           const dataUrl = canvas.toDataURL(type, 0.8);
+          // Reserve the longest mode name so every source change keeps the image within quota.
           const preference = normalizeTabIconPreference({
-            mode: "custom",
+            mode: "default",
             image: { dataUrl, fileName },
           });
-          // "default" is one byte longer than "custom". Leave enough room
-          // for mode changes to retain this same image at the profile limit.
-          if (preference?.image && normalizeTabIconPreference({ ...preference, mode: "default" })) {
+          if (preference?.image) {
             return { ok: true, image: preference.image };
           }
         }
