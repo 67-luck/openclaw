@@ -1,5 +1,5 @@
 import { once } from "node:events";
-import { createServer, type ServerResponse } from "node:http";
+import { createServer } from "node:http";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ModelsListResult } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
@@ -112,22 +112,16 @@ it.for([1, 2])(
       );
     let body = encode(first);
     let exitWorkerOnce = false;
-    let providerThread = 0;
-    const replyProvider = (response: ServerResponse) => {
-      response.writeHead(200, { "content-type": "application/json" });
-      const payload = exitWorkerOnce ? { exitWorker: true } : ["known-provider-model"];
-      exitWorkerOnce = false;
-      response.end(JSON.stringify(payload));
-    };
+    let providerModels = ["known-provider-model"];
     const endpoint = createServer((request, response) => {
       if (request.url === "/catalog.json") {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(body);
       } else {
-        providerThread = Number(
-          new URL(request.url ?? "/", "http://fixture.invalid").searchParams.get("thread"),
-        );
-        replyProvider(response);
+        response.writeHead(200, { "content-type": "application/json" });
+        const payload = exitWorkerOnce ? { exitWorker: true } : providerModels;
+        exitWorkerOnce = false;
+        response.end(JSON.stringify(payload));
       }
     });
     try {
@@ -156,7 +150,7 @@ it.for([1, 2])(
             clearLiveCatalogCacheForTests();
             return { provider: await buildLiveModelProviderConfig({
               providerId: ${JSON.stringify(provider)}, discoveryMode: "strict", discoveryApiKey: auth.discoveryApiKey,
-              endpoint: ${JSON.stringify(baseUrl + "/provider?thread=")} + require("node:worker_threads").threadId, ttlMs: 86_400_000,
+              endpoint: ${JSON.stringify(baseUrl + "/provider")}, ttlMs: 86_400_000,
               providerConfig: { baseUrl: ${JSON.stringify(baseUrl)}, api: "openai-completions" }, models: [],
               fetchGuard: async ({ url, init }) => ({ response: await fetch(url, init), finalUrl: url, release: async () => {} }),
               readRows: body => {
@@ -238,11 +232,13 @@ it.for([1, 2])(
           client.request<ModelsListResult>("models.list", { view: "all", refresh: refreshCatalog });
         const kimiIds = (catalog: ModelsListResult) =>
           catalog.models.filter((row) => row.provider === "kimi").map((row) => row.id);
-        const waitForRows = async (model: string) => {
+        const waitForRows = async (model: string, catalogProvider = "kimi") => {
           const ready = createDeferred<ModelsListResult>();
           const read = () => {
             void list().then((catalog) => {
-              if (kimiIds(catalog).includes(model)) {
+              if (
+                catalog.models.some((row) => row.provider === catalogProvider && row.id === model)
+              ) {
                 ready.resolve(catalog);
               }
             }, ready.reject);
@@ -276,6 +272,26 @@ it.for([1, 2])(
           );
           if ("error" in outcome) {
             expect(outcome.error).toMatchObject({ code: "UNAVAILABLE" });
+          }
+        };
+        const recoverProviderWorker = async (model: string) => {
+          const recovered = createDeferred();
+          const stop = registerPreparedModelRuntimePublicationListener((event) => {
+            if (event.phase === "published") {
+              recovered.resolve();
+            }
+          });
+          try {
+            providerModels = [...providerModels, model];
+            exitWorkerOnce = true;
+            await settleInterrupted(list(true));
+            // Refresh can return saved rows before the provider's worker failure settles.
+            await withinTest(recovered.promise, signal);
+            await loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" });
+            await list(true);
+            return await waitForRows(model, provider);
+          } finally {
+            stop();
           }
         };
         expect(kimiIds(await list(true))).toContain("remote-first");
@@ -414,12 +430,9 @@ it.for([1, 2])(
           })?.input,
         ).toBe(7);
 
-        const committedThread = providerThread;
-        exitWorkerOnce = true;
-        await settleInterrupted(list(true));
-        await loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" });
-        expect(kimiIds(await list(true))).toContain("remote-next");
-        expect(providerThread).not.toBe(committedThread);
+        expect(kimiIds(await recoverProviderWorker("recovered-with-remote"))).toContain(
+          "remote-next",
+        );
         expect(currentPrice()).toBe(7);
 
         const finalCatalog = {
@@ -524,13 +537,10 @@ it.for([1, 2])(
         expect(kimiIds(withoutRemote)).not.toContain("remote-next");
         expect(kimiIds(withoutRemote)).not.toContain("remote-last");
         expect(currentPrice("remote-last")).toBeUndefined();
-        const disabledThread = providerThread;
-        exitWorkerOnce = true;
-        await settleInterrupted(list(true));
-        await loadPublishedGatewayReplyDispatchRuntime({ agentId: "main" });
-        expect(kimiIds(await list(true))).not.toContain("remote-last");
+        expect(kimiIds(await recoverProviderWorker("recovered-without-remote"))).not.toContain(
+          "remote-last",
+        );
         expect(currentPrice("remote-last")).toBeUndefined();
-        expect(providerThread).not.toBe(disabledThread);
         expect([oldModel.cost.input, newModel.cost.input]).toEqual([1, 7]);
         expect(unexpectedRestart).not.toHaveBeenCalled();
       } finally {
