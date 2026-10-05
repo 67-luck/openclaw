@@ -18,7 +18,6 @@ import {
   type GetReplyOptions,
   type ReplyPayload,
 } from "openclaw/plugin-sdk/reply-runtime";
-import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildSlackCompleteBlocksFallbackText } from "../../blocks-fallback.js";
 import { slackSetupPlugin } from "../../channel.setup.js";
@@ -28,6 +27,12 @@ import {
   emitCompactProgressScenario,
   type SlackReplyOptionEvent,
 } from "./dispatch.compact-progress.test-support.js";
+import {
+  expectMockCallArgFields,
+  expectRecordFields,
+  requireMockCall,
+  requireRecord,
+} from "./dispatch.mock-calls.test-support.js";
 import type { PreparedSlackMessage } from "./types.js";
 
 const FINAL_REPLY_TEXT = "final answer";
@@ -88,6 +93,7 @@ let mockedBlockStreamingEnabled: boolean | undefined = false;
 let mockedSlackStreamingMode: "off" | "partial" | "block" | "progress" = "partial";
 let mockedPinnedMainDmOwner: string | undefined;
 let capturedReplyOptions: GetReplyOptions | undefined;
+let capturedDispatchReplyFromConfig: PreparedSlackMessage["ctx"]["dispatchReplyFromConfig"];
 let capturedStatusReactionOptions: { enabled?: boolean; initialEmoji?: string } | undefined;
 const statusReactionControllerMock = {
   setQueued: vi.fn(async () => {}),
@@ -162,26 +168,6 @@ function requireCapturedItemEventHandler() {
     throw new Error("expected Slack reply item event handler");
   }
   return handler;
-}
-
-const requireRecord = createRequireRecord("object", "label-not-object");
-
-function expectRecordFields(record: Record<string, unknown>, fields: Record<string, unknown>) {
-  for (const [key, value] of Object.entries(fields)) {
-    expect(record[key]).toEqual(value);
-  }
-}
-
-function requireMockCall(mock: unknown, index: number, label: string): unknown[] {
-  const call = (mock as { mock?: { calls?: unknown[][] } }).mock?.calls?.[index];
-  if (!call) {
-    throw new Error(`missing ${label} call ${index + 1}`);
-  }
-  return call;
-}
-
-function expectMockCallArgFields(mock: unknown, index: number, fields: Record<string, unknown>) {
-  expectRecordFields(requireRecord(requireMockCall(mock, index, "call")[0], "params"), fields);
 }
 
 function expectNativeProgressStart(chunks: unknown[]) {
@@ -664,6 +650,7 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => {
         return actual.dispatchChannelInboundTurn(params);
       }
       capturedReplyOptions = params.replyOptions as typeof capturedReplyOptions;
+      capturedDispatchReplyFromConfig = params.dispatchReplyFromConfig;
       if (mockedReplyOptionEvents.length > 0) {
         for (const [index, entry] of mockedReplyOptionEvents.entries()) {
           if (entry.kind === "item") {
@@ -838,6 +825,7 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
     mockedSlackStreamingMode = "partial";
     mockedPinnedMainDmOwner = undefined;
     capturedReplyOptions = undefined;
+    capturedDispatchReplyFromConfig = undefined;
     capturedStatusReactionOptions = undefined;
     capturedTyping = undefined;
     mockedReplyThreadTs = THREAD_TS;
