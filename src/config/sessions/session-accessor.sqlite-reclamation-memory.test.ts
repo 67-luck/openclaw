@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createFixtureLifetime } from "../../../test/helpers/fixture-lifetime.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { runSqliteImmediateTransactionSync } from "../../infra/sqlite-transaction.js";
 import { encodeMemoryEmbedding } from "../../plugin-sdk/memory-core-host-engine-storage.js";
@@ -17,12 +17,16 @@ import {
   getActiveMemorySearchManagerCore,
 } from "../../plugins/memory-runtime.js";
 import { resetStandaloneMemoryRegistrySlot } from "../../plugins/memory-runtime.test-support.js";
+import { waitForPluginCacheRetirement } from "../../plugins/plugin-cache.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../../state/openclaw-state-db.js";
 import {
   deleteSessionEntryLifecycle,
   loadSessionEntry,
@@ -85,7 +89,7 @@ vi.mock("./session-accessor.sqlite-reclamation-worker.js", async (importOriginal
   };
 });
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const fixture = createFixtureLifetime();
 
 describe("reclamation with the public memory runtime", () => {
   let workspace: string;
@@ -93,20 +97,7 @@ describe("reclamation with the public memory runtime", () => {
 
   afterAll(cleanupPluginLoaderFixturesForTest);
 
-  beforeEach(async () => {
-    clearPluginLoaderCache();
-    resetStandaloneMemoryRegistrySlot();
-    const root = await fs.realpath(tempDirs.make("openclaw-reclamation-memory-"));
-    workspace = path.join(root, "workspace");
-    await fs.mkdir(workspace);
-    await fs.writeFile(
-      path.join(workspace, "MEMORY.md"),
-      "A retained memory independent of the deleted session.",
-    );
-    vi.stubEnv("OPENCLAW_STATE_DIR", path.join(root, "state"));
-  });
-
-  afterEach(async () => {
+  async function closeFixtureResources() {
     checkpoint.startForeground = undefined;
     await Promise.allSettled(checkpoint.authorizations.splice(0));
     await closeManager?.();
@@ -114,94 +105,121 @@ describe("reclamation with the public memory runtime", () => {
     await closeActiveMemorySearchManagersCore();
     resetStandaloneMemoryRegistrySlot();
     clearPluginLoaderCache();
+    expect((await waitForPluginCacheRetirement(true)).failures).toEqual([]);
     await closeOpenClawAgentDatabasesAsync();
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawAgentDatabasesForTest();
     resetPluginStateStoreForTests();
     closeOpenClawStateDatabaseForTest();
-    vi.unstubAllEnvs();
+  }
+
+  beforeEach(() =>
+    fixture.run(async () => {
+      // Cleanup joins timed-out setup/body work before retiring its resource owners.
+      await fixture.acquire(async () => ({ cleanup: closeFixtureResources }));
+      clearPluginLoaderCache();
+      resetStandaloneMemoryRegistrySlot();
+      const root = await fs.realpath(fixture.createTempDir("openclaw-reclamation-memory-"));
+      workspace = path.join(root, "workspace");
+      await fs.mkdir(workspace);
+      await fs.writeFile(
+        path.join(workspace, "MEMORY.md"),
+        "A retained memory independent of the deleted session.",
+      );
+      vi.stubEnv("OPENCLAW_STATE_DIR", path.join(root, "state"));
+    }),
+  );
+
+  afterEach(async () => {
+    try {
+      await fixture.cleanup();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
-  it("settles borrowed cache cleanup and guarded deletion without blocking the authorizer", async () => {
-    const cfg: OpenClawConfig = {
-      plugins: {
-        enabled: true,
-        allow: ["memory-core"],
-        slots: { memory: "memory-core" },
-      },
-      memory: {
-        search: {
-          provider: "none",
-          cache: { enabled: true },
-          store: { vector: { enabled: false } },
+  it("settles borrowed cache cleanup and guarded deletion without blocking the authorizer", () =>
+    fixture.run(async () => {
+      const cfg: OpenClawConfig = {
+        plugins: {
+          enabled: true,
+          allow: ["memory-core"],
+          slots: { memory: "memory-core" },
         },
-      },
-      agents: { defaults: { workspace }, list: [{ id: "main", default: true }] },
-    };
-    const acquired = await getActiveMemorySearchManagerCore({
-      cfg,
-      agentId: "main",
-      purpose: "cli",
-    });
-    const manager = acquired.manager;
-    if (!manager?.sync) {
-      throw new Error(acquired.error ?? "expected the builtin memory manager");
-    }
-    closeManager = manager.close?.bind(manager);
-    const sync = manager.sync.bind(manager);
-    await sync({ reason: "prepare-published-index", force: true });
-    const initial = manager.status();
-    const storePath = initial.dbPath;
-    const maxEntries = initial.cache?.maxEntries;
-    if (!storePath || !maxEntries) {
-      throw new Error("expected a borrowed database with the runtime cache bound");
-    }
-    const { db } = openOpenClawAgentDatabase({ agentId: "main", path: storePath });
-    const sessionKey = "agent:main:memory-reclamation";
-    const sessionId = "memory-reclamation";
-    await replaceSessionEntry(
-      { agentId: "main", storePath, sessionKey },
-      { sessionId, updatedAt: 1 },
-    );
-    await replaceTranscriptEvents({ agentId: "main", storePath, sessionKey, sessionId }, [
-      { type: "session", id: sessionId, content: "retire this unrelated session" },
-    ]);
-    const insert = db.prepare(`INSERT INTO memory_embedding_cache
+        memory: {
+          search: {
+            provider: "none",
+            cache: { enabled: true },
+            store: { vector: { enabled: false } },
+          },
+        },
+        agents: { defaults: { workspace }, list: [{ id: "main", default: true }] },
+      };
+      const acquired = await getActiveMemorySearchManagerCore({
+        cfg,
+        agentId: "main",
+        purpose: "cli",
+      });
+      const manager = acquired.manager;
+      if (!manager?.sync) {
+        throw new Error(acquired.error ?? "expected the builtin memory manager");
+      }
+      closeManager = manager.close?.bind(manager);
+      const sync = manager.sync.bind(manager);
+      await sync({ reason: "prepare-published-index", force: true });
+      const initial = manager.status();
+      const storePath = initial.dbPath;
+      const maxEntries = initial.cache?.maxEntries;
+      if (!storePath || !maxEntries) {
+        throw new Error("expected a borrowed database with the runtime cache bound");
+      }
+      const { db } = openOpenClawAgentDatabase({ agentId: "main", path: storePath });
+      const sessionKey = "agent:main:memory-reclamation";
+      const sessionId = "memory-reclamation";
+      await replaceSessionEntry(
+        { agentId: "main", storePath, sessionKey },
+        { sessionId, updatedAt: 1 },
+      );
+      await replaceTranscriptEvents({ agentId: "main", storePath, sessionKey, sessionId }, [
+        { type: "session", id: sessionId, content: "retire this unrelated session" },
+      ]);
+      const insert = db.prepare(`INSERT INTO memory_embedding_cache
       (provider, model, provider_key, hash, embedding, dims, updated_at)
       VALUES ('fixture', 'fixture-model', 'fixture-owner', ?, ?, 1, ?)`);
-    const embedding = encodeMemoryEmbedding([1]);
-    runSqliteImmediateTransactionSync(db, () => {
-      for (let index = 0; index <= maxEntries; index += 1) {
-        insert.run(`entry-${index}`, embedding, index);
-      }
-    });
-    expect(manager.status().cache?.entries).toBe(maxEntries + 1);
-    let write: Promise<void> | undefined;
-    checkpoint.startForeground = vi.fn(() => {
-      write = sync({ reason: "reclamation-overlap" });
-      void write.catch(() => {});
-    });
-    const deletion = await deleteSessionEntryLifecycle({
-      archiveTranscript: true,
-      commitGuard: () => {},
-      storePath,
-      target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
-    }).then(
-      (result) => ({ result }),
-      (error: unknown) => ({ error }),
-    );
-    const outcomes = await Promise.allSettled(write ? [write] : []);
-    const authorizations = await Promise.allSettled(checkpoint.authorizations);
-    expect(outcomes).toEqual([{ status: "fulfilled", value: undefined }]);
-    expect(deletion).toMatchObject({ result: { deleted: true } });
-    expect(checkpoint.startForeground).toHaveBeenCalledOnce();
-    expect(authorizations).toEqual([{ status: "fulfilled", value: undefined }]);
-    expect(loadSessionEntry({ agentId: "main", sessionKey, storePath })).toBeUndefined();
-    expect(manager.status().cache?.entries).toBe(maxEntries);
-    expect(
-      db
-        .prepare("SELECT hash FROM memory_embedding_cache WHERE hash IN (?, ?)")
-        .all("entry-0", `entry-${maxEntries}`),
-    ).toEqual([{ hash: `entry-${maxEntries}` }]);
-    expect(manager.status().chunks).toBeGreaterThan(0);
-  });
+      const embedding = encodeMemoryEmbedding([1]);
+      runSqliteImmediateTransactionSync(db, () => {
+        for (let index = 0; index <= maxEntries; index += 1) {
+          insert.run(`entry-${index}`, embedding, index);
+        }
+      });
+      expect(manager.status().cache?.entries).toBe(maxEntries + 1);
+      let write: Promise<void> | undefined;
+      checkpoint.startForeground = vi.fn(() => {
+        write = sync({ reason: "reclamation-overlap" });
+        void write.catch(() => {});
+      });
+      const deletion = await deleteSessionEntryLifecycle({
+        archiveTranscript: true,
+        commitGuard: () => {},
+        storePath,
+        target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
+      }).then(
+        (result) => ({ result }),
+        (error: unknown) => ({ error }),
+      );
+      const outcomes = await Promise.allSettled(write ? [write] : []);
+      const authorizations = await Promise.allSettled(checkpoint.authorizations);
+      expect(outcomes).toEqual([{ status: "fulfilled", value: undefined }]);
+      expect(deletion).toMatchObject({ result: { deleted: true } });
+      expect(checkpoint.startForeground).toHaveBeenCalledOnce();
+      expect(authorizations).toEqual([{ status: "fulfilled", value: undefined }]);
+      expect(loadSessionEntry({ agentId: "main", sessionKey, storePath })).toBeUndefined();
+      expect(manager.status().cache?.entries).toBe(maxEntries);
+      expect(
+        db
+          .prepare("SELECT hash FROM memory_embedding_cache WHERE hash IN (?, ?)")
+          .all("entry-0", `entry-${maxEntries}`),
+      ).toEqual([{ hash: `entry-${maxEntries}` }]);
+      expect(manager.status().chunks).toBeGreaterThan(0);
+    }));
 });
