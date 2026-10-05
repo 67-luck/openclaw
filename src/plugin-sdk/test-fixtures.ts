@@ -30,6 +30,7 @@ export { countLines, hasBalancedFences } from "../test-utils/chunk-test-helpers.
 export { expectGeneratedTokenPersistedToGatewayAuth } from "../test-utils/auth-token-assertions.js";
 export { typedCases } from "../test-utils/typed-cases.js";
 export { resolveTestNodeExecPath } from "../test-utils/node-process.js";
+export { withinTest } from "../../test/helpers/promise.js";
 export { createRequireRecord } from "../../test/helpers/record.js";
 export type { RecordRequirementKind, RecordRequirementMessage } from "../../test/helpers/record.js";
 export {
