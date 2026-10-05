@@ -41,6 +41,7 @@ import {
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
 import type { RunExit } from "../process/supervisor/types.js";
+import { withSessionTurn } from "../sessions/session-controller.admission.js";
 import { writeConfigMachineState } from "../state/config-machine-state-write.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import {
@@ -1534,13 +1535,29 @@ describe("buildGatewayCronService", () => {
       });
     }
 
-    function registerRun(runId: string) {
-      const handle = createEmbeddedRunHandle({
-        runId,
-        abort: vi.fn(() => clearActiveEmbeddedRun(sessionId, handle, sessionKey)),
+    async function registerRun(runId: string) {
+      const registered = createDeferred<ReturnType<typeof createEmbeddedRunHandle>>();
+      const release = createDeferred();
+      const turn = withSessionTurn({ sessionKey, sessionId }, async (operation) => {
+        const handle = createEmbeddedRunHandle({
+          runId,
+          abort: vi.fn(() => {
+            clearActiveEmbeddedRun(sessionId, handle, sessionKey);
+            release.resolve();
+          }),
+        });
+        setActiveEmbeddedRun(sessionId, handle, sessionKey, undefined, undefined, operation);
+        registered.resolve(handle);
+        await release.promise;
       });
-      setActiveEmbeddedRun(sessionId, handle, sessionKey);
-      return handle;
+      void turn.catch(registered.reject);
+      return {
+        handle: await registered.promise,
+        async release() {
+          release.resolve();
+          await turn;
+        },
+      };
     }
 
     afterEach(() => {
@@ -1550,27 +1567,34 @@ describe("buildGatewayCronService", () => {
 
     it("leaves a replacement run and its MCP runtime intact after the cron run ended", async () => {
       await withCronService(createCronConfig("server-cron-timeout-replacement"), async (state) => {
-        const replacement = registerRun("replacement-run");
+        const replacement = await registerRun("replacement-run");
+        try {
+          await cleanupTimedOutCronRun(state);
 
-        await cleanupTimedOutCronRun(state);
-
-        expect(replacement.abort).not.toHaveBeenCalled();
-        expect(isEmbeddedAgentRunHandleActive(sessionId)).toBe(true);
-        expect(retireSessionMcpRuntimeMock).not.toHaveBeenCalled();
+          expect(replacement.handle.abort).not.toHaveBeenCalled();
+          expect(isEmbeddedAgentRunHandleActive(sessionId)).toBe(true);
+          expect(retireSessionMcpRuntimeMock).not.toHaveBeenCalled();
+        } finally {
+          clearActiveEmbeddedRun(sessionId, replacement.handle, sessionKey);
+          await replacement.release();
+        }
       });
     });
 
     it("aborts the cron run and retires its MCP runtime while it still owns the session", async () => {
       await withCronService(createCronConfig("server-cron-timeout-owner"), async (state) => {
-        const original = registerRun("cron-run");
+        const original = await registerRun("cron-run");
+        try {
+          await cleanupTimedOutCronRun(state);
 
-        await cleanupTimedOutCronRun(state);
-
-        expect(original.abort).toHaveBeenCalledOnce();
-        expect(isEmbeddedAgentRunHandleActive(sessionId)).toBe(false);
-        expect(retireSessionMcpRuntimeMock).toHaveBeenCalledExactlyOnceWith(
-          expect.objectContaining({ sessionId, reason: "cron-timeout-cleanup" }),
-        );
+          expect(original.handle.abort).toHaveBeenCalledOnce();
+          expect(isEmbeddedAgentRunHandleActive(sessionId)).toBe(false);
+          expect(retireSessionMcpRuntimeMock).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({ sessionId, reason: "cron-timeout-cleanup" }),
+          );
+        } finally {
+          await original.release();
+        }
       });
     });
   });
