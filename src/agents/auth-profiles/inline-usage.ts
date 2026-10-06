@@ -5,7 +5,7 @@ import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentitySync,
 } from "../../infra/sqlite-worker-identity.js";
-import { withOpenClawAgentDatabaseAsync } from "../../state/openclaw-agent-db.js";
+import { withOpenClawAgentDatabaseRuntime } from "../../state/openclaw-agent-db.js";
 import { openOpenClawAgentSqliteWorkerStore } from "../../state/openclaw-agent-worker-store.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
@@ -146,7 +146,7 @@ async function persistPreparedInlineAuthFailure(
       return await runOpenClawAgentWriteAdmission(
         databaseTarget,
         () =>
-          withOpenClawAgentDatabaseAsync(
+          withOpenClawAgentDatabaseRuntime(
             databaseTarget,
             async (database) => {
               const client = await openOpenClawAgentSqliteWorkerStore<InlineAuthFailureOperations>(
