@@ -321,6 +321,86 @@ final class IngressTestHarness {
     }
 }
 
+extension GatewayIngressControllerTests {
+    @Test(arguments: [false, true], ["signed-out", "manual", "discovered"]) @MainActor
+    func `Settings Access sign out follows the selected profile rather than the saved manual host`(
+        manualHasSession: Bool, selectedState: String) async throws
+    {
+        let selectedHasSession = selectedState != "signed-out"
+        let selectedIsDiscovered = selectedState == "discovered"
+        let fixture = try IngressTestHarness()
+        let storage = IngressOriginStorage()
+        let manualOrigin = try CloudflareAccessOrigin(#require(URL(string: "https://manual.example.test")))
+        let manualApplication = CloudflareAccessApplication(
+            origin: manualOrigin, issuer: fixture.application.issuer, audience: fixture.application.audience)
+        let manual = GatewaySettingsStore.GatewayRegistryEntry(
+            stableID: "saved-manual", kind: .manual, name: "Manual A",
+            host: "manual.example.test", port: 443, useTLS: true,
+            accessOrigin: manualOrigin, lastConnectedAtMs: nil)
+        var selected = fixture.profileRows[0]
+        selected.kind = selectedIsDiscovered ? .discovered : .manual
+        selected.accessOrigin = fixture.application.origin
+        if selectedIsDiscovered {
+            selected.host = nil
+            selected.port = nil
+        }
+        fixture.profileRows = [manual, selected]
+        if manualHasSession {
+            try storage.save(fixture.session(for: manualApplication, subject: "manual-user"))
+        }
+        if selectedHasSession { try storage.save(fixture.nextSession) }
+        let manualBytes = storage.values[manualOrigin]
+        let ingress = fixture.controller(persistence: storage.persistence)
+        var registry = GatewaySettingsStore.GatewayRegistry(
+            activeStableID: selected.stableID,
+            connectedStableIDs: [manual.stableID, selected.stableID],
+            entries: fixture.profileRows)
+        let target = SettingsProTab.gatewayAccessSessionTarget(in: registry, ingress: ingress)
+        #expect((target != nil) == selectedHasSession)
+        registry.activeStableID = nil
+        #expect(SettingsProTab.gatewayAccessSessionTarget(in: registry, ingress: ingress) == nil)
+        registry.activeStableID = "removed-profile"
+        #expect(SettingsProTab.gatewayAccessSessionTarget(in: registry, ingress: ingress) == nil)
+        guard selectedHasSession else { return }
+        let displayed = try #require(target)
+        #expect(displayed.stableID == selected.stableID)
+        #expect(displayed.origin == fixture.application.origin)
+        // The button captures the displayed profile; a later selection cannot retarget it.
+        registry.activeStableID = manual.stableID
+        await ingress.signOut(stableID: displayed.stableID, expectedOrigin: displayed.origin)
+        #expect(!ingress.hasSession(stableID: selected.stableID))
+        #expect(storage.values[fixture.application.origin] == nil)
+        #expect(storage.values[manualOrigin] == manualBytes)
+        #expect(ingress.hasSession(stableID: manual.stableID) == manualHasSession)
+        #expect(ingress.attention?.stableID == selected.stableID)
+        #expect(fixture.browser.presented.isEmpty)
+    }
+
+    @Test @MainActor
+    func `a stale displayed Access origin cannot sign out its profile replacement`() async throws {
+        let fixture = try IngressTestHarness()
+        let storage = IngressOriginStorage()
+        try storage.save(fixture.nextSession)
+        fixture.profileRows[0].accessOrigin = fixture.application.origin
+        let ingress = fixture.controller(persistence: storage.persistence)
+        let registry = GatewaySettingsStore.GatewayRegistry(
+            activeStableID: fixture.stableID, entries: fixture.profileRows)
+        let displayed = try #require(SettingsProTab.gatewayAccessSessionTarget(in: registry, ingress: ingress))
+        let replacementOrigin = try CloudflareAccessOrigin(#require(URL(string: "https://replacement.example.test")))
+        let replacementApplication = CloudflareAccessApplication(
+            origin: replacementOrigin, issuer: fixture.application.issuer, audience: fixture.application.audience)
+        try storage.save(fixture.session(for: replacementApplication, subject: "replacement-user"))
+        fixture.profileRows[0].accessOrigin = replacementOrigin
+        let saved = storage.values
+        await ingress.signOut(stableID: displayed.stableID, expectedOrigin: displayed.origin)
+        #expect(storage.values == saved)
+        #expect(storage.deleted.isEmpty)
+        #expect(fixture.retirements == 0)
+        #expect(ingress.attention == nil)
+        #expect(ingress.sessionOrigin(stableID: fixture.stableID) == replacementOrigin)
+    }
+}
+
 @MainActor
 private final class IngressNativeTraffic {
     let gate = IngressTestGate()

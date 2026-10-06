@@ -27,6 +27,7 @@ struct OpenClawTypographyTests {
         for label in ["Cancel sign-in", "Sign in to Cloudflare Access", "Sign out of Cloudflare Access"] {
             #expect(settings.contains("Text(\"\(label)\").font(OpenClawType.body)"))
         }
+        #expect(settings.contains("SettingsDetailRow(\"Access Host\""))
         let dashboard = try String(contentsOf: Self.sourceURL("Settings/DashboardPageScreen.swift"), encoding: .utf8)
         #expect(dashboard.contains("Text(\"Open Gateway settings\")"))
         #expect(dashboard.contains(".font(OpenClawType.body)"))

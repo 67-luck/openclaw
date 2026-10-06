@@ -279,12 +279,20 @@ final class GatewayIngressController {
     }
 
     func hasSession(stableID: String) -> Bool {
-        guard let origin = origin(stableID: stableID) else { return false }
-        return self.sessions.snapshot(for: origin) != nil
+        self.sessionOrigin(stableID: stableID) != nil
     }
 
-    func signOut(stableID: String) async {
-        guard let origin = origin(stableID: stableID) else { return }
+    func sessionOrigin(stableID: String) -> CloudflareAccessOrigin? {
+        guard let origin = origin(stableID: stableID),
+              self.sessions.snapshot(for: origin) != nil
+        else { return nil }
+        return origin
+    }
+
+    func signOut(stableID: String, expectedOrigin: CloudflareAccessOrigin? = nil) async {
+        guard let origin = origin(stableID: stableID),
+              expectedOrigin == nil || expectedOrigin == origin
+        else { return }
         _ = self.retireManagedAdmissions(origin: origin, revision: self.sessions.currentRevision(for: origin))
         if self.foregroundIntent?.application.origin == origin {
             self.cancelSignIn()

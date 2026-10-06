@@ -2733,6 +2733,7 @@
     {"path":"apps/ios/Sources/Design/SettingsProTabSections.swift","kind":"conditional-branch","surface":"apple","id":"native.apple.0b0163d2952470fa","source":"Limited"},
     {"path":"apps/ios/Sources/Design/SettingsProTabSections.swift","kind":"conditional-branch","surface":"apple","id":"native.apple.66369fe20d0cc577","source":"Scan QR to Pair"},
     {"path":"apps/ios/Sources/Design/SettingsProTabSections.swift","kind":"ui-call","surface":"apple","id":"native.apple.d1338af4efb9d9fe","source":"Access"},
+    {"path":"apps/ios/Sources/Design/SettingsProTabSections.swift","kind":"ui-call","surface":"apple","id":"native.apple.e6e9bedb6e3aacd4","source":"Access Host"},
     {"path":"apps/ios/Sources/Design/SettingsProTabSections.swift","kind":"ui-call","surface":"apple","id":"native.apple.96f8cae1b4487dcc","source":"Add Gateway"},
     {"path":"apps/ios/Sources/Design/SettingsProTabSections.swift","kind":"ui-call","surface":"apple","id":"native.apple.9c2e3e664c0940fc","source":"Address"},
     {"path":"apps/ios/Sources/Design/SettingsProTabSections.swift","kind":"ui-call","surface":"apple","id":"native.apple.984f3c89300610d1","source":"Agents"},

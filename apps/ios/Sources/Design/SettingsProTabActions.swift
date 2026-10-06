@@ -607,6 +607,18 @@ extension SettingsProTab {
         return nil
     }
 
+    static func gatewayAccessSessionTarget(
+        in registry: GatewaySettingsStore.GatewayRegistry,
+        ingress: GatewayIngressController) -> (stableID: String, origin: CloudflareAccessOrigin)?
+    {
+        // Access belongs to the selected saved profile, not the editable manual
+        // credential fields. Resolve its durable grant origin through the ingress owner.
+        guard let selected = registry.activeEntry,
+              let origin = ingress.sessionOrigin(stableID: selected.stableID)
+        else { return nil }
+        return (selected.stableID, origin)
+    }
+
     var manualGatewayEnabledBinding: Binding<Bool> {
         Binding(
             get: { self.manualGatewayEnabled },

@@ -955,11 +955,16 @@ extension SettingsProTab {
                     .disabled(self.isReconnectingGateway)
                 }
             }
-            if let stableID = self.gatewayCustomHeadersTargetStableID,
-               self.gatewayController.ingress.hasSession(stableID: stableID)
+            if !self.appModel.isLocalGatewayFixtureEnabled,
+               let target = Self.gatewayAccessSessionTarget(
+                   in: self.gatewayRegistry, ingress: self.gatewayController.ingress)
             {
+                SettingsDetailRow("Access Host", value: .verbatim(target.origin.url.absoluteString))
                 Button {
-                    Task { await self.gatewayController.ingress.signOut(stableID: stableID) }
+                    Task {
+                        await self.gatewayController.ingress.signOut(
+                            stableID: target.stableID, expectedOrigin: target.origin)
+                    }
                 } label: {
                     Text("Sign out of Cloudflare Access").font(OpenClawType.body)
                 }
