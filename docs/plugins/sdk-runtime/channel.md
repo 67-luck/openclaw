@@ -214,8 +214,8 @@ An adapter exposing both variants keeps them under the same state owner.
 During the staged migration, async dispatch falls back to an adapter's existing
 synchronous method when its async counterpart is absent. This preserves external
 plugin compatibility; that fallback does not make a legacy adapter nonblocking.
-Generic and account-scoped bind/unbind operations, list operations, and separate
-lifecycle setters still require their own persistence migrations. Other bundled
-stores also retain their existing behavior until their respective cutovers.
-Worker-backed route reads and activity updates do not imply a fully migrated
-binding service or stronger durability for those remaining operations.
+Generic and account-scoped bind/unbind operations and bundled session listings
+use the shared-state worker. Their released synchronous selectors remain available
+through the compatibility boundary. Separate lifecycle setters and other bundled
+stores retain their existing behavior until their respective cutovers; this
+execution change does not strengthen their durability contracts.

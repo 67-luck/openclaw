@@ -1,6 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { ok } from "@openclaw/normalization-core/result";
-import { readBoardSessionKeys } from "../../boards/sqlite-board-store.kernel.js";
 import {
   executeSqliteQuerySync,
   getNodeSqliteKysely,
@@ -37,10 +36,6 @@ import { participantRecordsBySessionKey } from "./session-accessor.sqlite-partic
 import { readSessionEntryReplacementState } from "./session-accessor.sqlite-replacement-read.js";
 import { resolveSqliteSessionKey } from "./session-accessor.sqlite-scope-helpers.js";
 import { resolveSqliteScope } from "./session-accessor.sqlite-scope.js";
-import {
-  hasSessionEntriesByStatus,
-  readSessionEntriesByStatus,
-} from "./session-accessor.sqlite-status.js";
 import {
   readLatestAssistantTextFromDatabase,
   readTranscriptHeaderFromDatabase,
@@ -386,26 +381,6 @@ export function readExactSessionEntriesWithLifecycle(
       lifecycleTimestamps: {},
     };
   }
-  if (request.statusSelection) {
-    const { statuses, presenceOnly } = request.statusSelection;
-    const read = withOpenClawAgentDatabaseReadOnly(
-      (database) => ({
-        entries: presenceOnly ? [] : readSessionEntriesByStatus(database, statuses),
-        statusFound: presenceOnly ? hasSessionEntriesByStatus(database, statuses) : false,
-      }),
-      { ...request.database, env: request.env },
-    );
-    if (!read.found && !presenceOnly && read.reason !== "database-missing") {
-      throw new SessionMetadataUnavailableError(read.reason);
-    }
-    return {
-      kind: "session-exact-entries",
-      lifecycleTimestamps: {},
-      ...(read.found
-        ? read.value
-        : { entries: [], statusFound: read.reason !== "database-missing" }),
-    };
-  }
   const result = withOpenClawAgentDatabaseReadOnly(
     (database) =>
       request.projection === "list"
@@ -653,19 +628,21 @@ export function readSessionRowDatabaseFacts(
             request.sessionKeys,
             "list",
             "canonical",
+            { includeBoardPresence: true },
           );
-          const boardKeys = readBoardSessionKeys(database, request.sessionKeys);
           return {
             kind: "session-row-facts" as const,
             rows: request.sessionKeys.flatMap((sessionKey) => {
-              const entry = readRow(sessionKey)?.entry;
-              if (!entry) {
+              const selected = readRow(sessionKey);
+              if (!selected) {
                 return [];
               }
+              const { entry } = selected;
               const facts: SessionRowDatabaseFacts = {
                 sessionKey,
                 entry,
-                hasBoard: boardKeys.has(sessionKey),
+                hasBoard:
+                  selected.row.session_key === sessionKey && selected.row.board_present === 1,
               };
               if (readSessionActivitySummary(entry)) {
                 facts.activitySummaryWatermark = readSessionTranscriptWatermarkInDatabase(

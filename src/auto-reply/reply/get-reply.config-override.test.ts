@@ -350,10 +350,6 @@ describe("getReplyFromConfig auto-fallback primary probes", () => {
   beforeEach(async () => {
     delete process.env.OPENCLAW_TEST_FAST;
     const catalog = await import("../../agents/model-catalog.runtime.js");
-    vi.spyOn(
-      await import("../../agents/model-catalog.js"),
-      "loadManifestModelCatalog",
-    ).mockReturnValue([]);
     vi.spyOn(catalog, "loadProviderScopedThinkingCatalog").mockResolvedValue([]);
     vi.spyOn(catalog, "loadPreparedModelCatalogSnapshot").mockResolvedValue({
       entries: [],
