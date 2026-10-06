@@ -14,6 +14,10 @@ import {
   isForceAbandonedWorkerPlacement,
 } from "./placement-record.js";
 import type { PlacementRecoveryDeps } from "./placement-recovery-contract.js";
+import {
+  matchesWorkerPlacementTarget,
+  type WorkerPlacementCancellationTarget,
+} from "./placement-target.js";
 import type {
   WorkerPlacementAuthorization,
   WorkerPlacementMoveRequest,
@@ -98,21 +102,31 @@ export function createWorkerPlacementMoveAbandonment(
     request: WorkerPlacementReclaimRequest,
     intent: WorkerPlacementMoveIntent,
     authorize?: WorkerPlacementAuthorization,
+    expectedSource?: WorkerPlacementCancellationTarget,
   ): Promise<Extract<WorkerDispatchPlacement, { state: "local" }>> => {
-    const current = await placements.getAsync(request.sessionId);
-    authorize?.();
-    if (
-      !current ||
-      (current.state !== "active" &&
-        current.state !== "draining" &&
-        current.state !== "reconciling" &&
-        current.state !== "failed") ||
-      current.environmentId !== intent.source.environmentId ||
-      current.activeOwnerEpoch !== intent.source.ownerEpoch
-    ) {
-      throw new Error(`Session ${request.sessionKey} abandonment source changed before teardown`);
-    }
     await options.workspaceOperations.run(intent.source.environmentId, async () => {
+      const { placement: current, move } = await placements.getWithMoveAsync(request.sessionId);
+      authorize?.();
+      if (
+        !current ||
+        (expectedSource !== undefined && !matchesWorkerPlacementTarget(current, expectedSource)) ||
+        (current.state !== "active" &&
+          current.state !== "draining" &&
+          current.state !== "reconciling" &&
+          current.state !== "failed") ||
+        current.sessionKey !== request.sessionKey ||
+        current.agentId !== request.agentId ||
+        current.environmentId !== intent.source.environmentId ||
+        current.activeOwnerEpoch !== intent.source.ownerEpoch ||
+        move?.operationId !== intent.operationId ||
+        !move.abandonSource ||
+        move.target.kind !== "gateway" ||
+        move.source.generation !== intent.source.generation ||
+        move.source.environmentId !== intent.source.environmentId ||
+        move.source.ownerEpoch !== intent.source.ownerEpoch
+      ) {
+        throw new Error(`Session ${request.sessionKey} abandonment source changed before teardown`);
+      }
       await forceAbandonWorkerEnvironment({
         placements,
         environmentId: intent.source.environmentId,
