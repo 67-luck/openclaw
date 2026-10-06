@@ -402,6 +402,12 @@ suite.define(() => {
                 .getByText(new RegExp(`^${marker}:`, "u"))
                 .first()
                 .waitFor();
+              await expect
+                .poll(
+                  () => page.getByRole("button", { name: "Stop generating", exact: true }).count(),
+                  { timeout: 60_000 },
+                )
+                .toBe(0);
               if (captureUiProof) {
                 await page.screenshot({ path: path.join(proofDir, `${marker}-result.png`) });
               }

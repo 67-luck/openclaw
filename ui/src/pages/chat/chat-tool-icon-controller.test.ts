@@ -389,10 +389,11 @@ describe("chat tool icon ownership", () => {
     controller.hostUpdate();
     await vi.waitFor(() => expect(controller.icons.get("meeting_status")).toBeDefined());
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect(revoke).toHaveBeenCalledOnce();
+    expect(revoke).toHaveBeenCalledWith("blob:plugin-icon");
+    revoke.mockClear();
     oldIcon?.onError();
     expect(controller.icons.get("meeting_status")).toBeDefined();
-    expect(revoke).toHaveBeenCalledOnce();
+    expect(revoke).not.toHaveBeenCalled();
     controller.hostDisconnected();
   });
 });
