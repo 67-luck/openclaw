@@ -318,13 +318,78 @@ it("maintenance cleanup preserves foreground custody with an older sequence", as
     maintenanceLane,
   );
   expect(historyLane.nativeSequence).toBeLessThan(maintenanceLane.nativeSequence);
-  expect(observed.unregister).toHaveBeenCalledTimes(1);
+  expect(observed.unregister).toHaveBeenCalledOnce();
   const retained = observed.resources.find((resource) => resource.agentId === "main");
   assert(retained);
   await retained.close();
   expect(observed.rotate).not.toHaveBeenCalled();
-  expect(observed.closeResources).toHaveBeenCalledTimes(2);
+  expect(observed.closeResources).toHaveBeenCalledTimes(3);
   expect(observed.unregister).toHaveBeenCalledTimes(2);
+});
+
+it("joins full retirement if retained reader custody is revoked during discovery cleanup", async () => {
+  const request = input();
+  observed.run.mockResolvedValue({ ok: true, value: false });
+  await withSessionHistoryWorkerDatabase(request.database, (owner) =>
+    owner.readEntryPresence(request.scope),
+  );
+  const resource = observed.resources.find((entry) => entry.agentId === "main");
+  assert(resource);
+  const closing = createDeferredCore();
+  const started = createDeferredCore();
+  const retiring = createDeferredCore();
+  const retired = createDeferredCore();
+  observed.closeResources.mockImplementationOnce(async () => {
+    started.resolve();
+    await closing.promise;
+  });
+  observed.run.mockResolvedValueOnce({
+    ok: true,
+    value: {
+      kind: "session-store-target",
+      logicalAgentId: "main",
+      sourcePath: request.database.path,
+      database: request.database,
+    },
+  });
+  const discovery = withSessionHistoryWorkerReadCandidates(
+    [{ path: request.database.path, physicalPath: request.database.path }],
+    (owner) =>
+      owner.readStoreTarget({
+        agentId: "main",
+        storePath: request.database.path,
+        env: {},
+        registeredDatabases: [],
+      }),
+  );
+  const rejected = expect(discovery).rejects.toThrow("custody was revoked");
+  try {
+    await started.promise;
+    observed.rotate.mockImplementationOnce(() => {
+      retiring.resolve();
+      return retired.promise;
+    });
+    resource.revoke();
+    closing.resolve();
+    let settled = false;
+    void discovery.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await retiring.promise;
+    expect(settled).toBe(false);
+    retired.resolve();
+    await rejected;
+    expect(observed.rotate).toHaveBeenCalled();
+  } finally {
+    closing.resolve();
+    retired.resolve();
+    await discovery.catch(() => {});
+  }
 });
 
 it.each([
