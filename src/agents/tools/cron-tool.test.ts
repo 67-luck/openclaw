@@ -1297,10 +1297,11 @@ describe("cron tool", () => {
     });
     await tool.execute("call-isolated-channel-only", {
       action: "add",
-      job: buildReminderAgentTurnJob({
+      job: {
+        ...buildReminderAgentTurnJob(),
         sessionTarget: "isolated",
         delivery: { mode: "announce", channel: "discord" },
-      }),
+      },
     });
     expect(readGatewayCall().params?.delivery).toEqual({ mode: "announce", channel: "discord" });
   });
