@@ -163,7 +163,20 @@ describe("session creation display titles", () => {
           error: { code: "INVALID_REQUEST", message: "label already in use: Shared label" },
         });
         for (const [index, key] of keys.entries()) {
-          const stored = loadSessionEntry({ sessionKey: key, storePath });
+          const stored = incognito
+            ? loadSessionEntry({ sessionKey: key, storePath })
+            : (() => {
+                const agentId = storage === "shared" && index === 1 ? "other" : "main";
+                const database = openOpenClawAgentDatabase(
+                  toDatabaseOptions(resolveSqliteScope({ sessionKey: key, agentId, storePath })),
+                );
+                const row = database.db
+                  .prepare("SELECT entry_json FROM session_nodes WHERE session_key = ?")
+                  .get(key) as { entry_json?: string } | undefined;
+                return row?.entry_json
+                  ? (JSON.parse(row.entry_json) as { label?: string })
+                  : undefined;
+              })();
           if (outcomes[index]?.ok) {
             expect(stored?.label).toBe("Shared label");
           } else {
