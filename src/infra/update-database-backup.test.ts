@@ -10,6 +10,8 @@ import { createOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-
 import { admitOpenClawMaintenanceLiveAuthorityReads } from "../state/openclaw-state-maintenance-context.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import * as diskSpace from "./disk-space.js";
+import * as fileDescriptor from "./file-descriptor.js";
+import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import * as sqliteSnapshot from "./sqlite-snapshot.js";
 import * as inspection from "./update-candidate-state.inspection.js";
 import { discoverUpdateStateSchemaInspectionInProcess } from "./update-candidate-state.js";
@@ -110,7 +112,9 @@ it.each(["legacy", "current"] as const)(
       sizeBytes: published.length,
     });
     {
-      using snapshot = new DatabaseSync(backup.databases[0]!.snapshotPath, { readOnly: true });
+      using snapshot = openNodeSqliteDatabase(backup.databases[0]!.snapshotPath, {
+        readOnly: true,
+      });
       expect(snapshot.prepare("SELECT rowid,value FROM payload").all()).toEqual([
         { rowid: 42, value: "retained" },
       ]);
@@ -288,6 +292,7 @@ async function originalCaptureFixture(externalAgents = false) {
     configPath,
     authoredConfig,
     include,
+    applicationFile,
     skillLink,
     pluginDatabase,
     missingFile,
@@ -427,72 +432,64 @@ it("seals equivalent original bytes under isolated steps and one maintenance-own
   }
 });
 
-it("keeps large maintenance-owned shared copies in the isolated discovery child", async () => {
-  const f = await originalCaptureFixture();
-  await fs.truncate(f.shared, 65 * 1024 * 1024);
-  const worker = vi.spyOn(inspection, "runUpdateStateInspectionWorker");
-  const isolatedGenerations = vi.spyOn(candidateState, "readUpdateDatabaseGenerationsIsolated");
-  const scope = createOpenClawDatabaseMaintenanceScope({
-    schemaMaintenance: true,
-    assertOwnerCurrent: () => {},
-    assertDatabaseAccess: () => {},
-  });
-  try {
-    const captured = await scope.run(() =>
-      f.captureOriginal("large-maintenance-owned", { mode: "maintenance-owner" }),
-    );
-    const manifest = parseUpdateRecoveryBackupManifest(
-      await fs.readFile(captured.ref.manifestPath, "utf8"),
-    );
-    expect(worker.mock.calls.map(([request]) => request.input.mode)).toEqual([
-      "discover",
-      "database-backup",
-    ]);
-    expect(isolatedGenerations).not.toHaveBeenCalled();
-    expect(manifest.entries).toContainEqual(
-      expect.objectContaining({ sourcePath: f.shared, kind: "file", sqlite: true }),
-    );
-  } finally {
-    await scope.close();
-  }
-});
+it.each(["large", "live-reads-admitted"] as const)(
+  "keeps maintenance capture isolated for %s sources",
+  async (mode) => {
+    const f = await originalCaptureFixture();
+    let originalManifest: ReturnType<typeof parseUpdateRecoveryBackupManifest> | undefined;
+    if (mode === "large") {
+      await fs.truncate(f.shared, 65 * 1024 * 1024);
+    } else {
+      const original = await f.captureOriginal("isolated-steps");
+      originalManifest = parseUpdateRecoveryBackupManifest(
+        await fs.readFile(original.ref.manifestPath, "utf8"),
+      );
+    }
+    const worker = vi.spyOn(inspection, "runUpdateStateInspectionWorker");
+    const isolatedGenerations = vi.spyOn(candidateState, "readUpdateDatabaseGenerationsIsolated");
+    const isolatedSizes = vi.spyOn(databaseSizes, "readUpdateStateDatabaseSizes");
+    const scope = createOpenClawDatabaseMaintenanceScope({
+      schemaMaintenance: true,
+      assertOwnerCurrent: () => {},
+      assertDatabaseAccess: () => {},
+    });
+    try {
+      const captured = await scope.run(() => {
+        if (mode === "live-reads-admitted") {
+          admitOpenClawMaintenanceLiveAuthorityReads(f.shared);
+        }
+        return f.captureOriginal(mode, { mode: "maintenance-owner" });
+      });
+      const manifest = parseUpdateRecoveryBackupManifest(
+        await fs.readFile(captured.ref.manifestPath, "utf8"),
+      );
+      if (mode === "large") {
+        expect(worker.mock.calls.map(([request]) => request.input.mode)).toEqual([
+          "discover",
+          "database-backup",
+        ]);
+        expect(isolatedGenerations).not.toHaveBeenCalled();
+        expect(manifest.entries).toContainEqual(
+          expect.objectContaining({ sourcePath: f.shared, kind: "file", sqlite: true }),
+        );
+      } else {
+        assert(originalManifest);
+        expect(manifest.entries).toEqual(originalManifest.entries);
+        expect(isolatedGenerations).toHaveBeenCalledOnce();
+        expect(isolatedSizes).toHaveBeenCalled();
+        expect(worker).toHaveBeenCalledTimes(3);
+      }
+    } finally {
+      await scope.close();
+    }
+  },
+);
 
 it("rejects an already-aborted in-process size inventory", async () => {
   const signal = AbortSignal.abort(new Error("inventory aborted"));
   await expect(
     databaseSizes.readUpdateStateDatabaseSizesInProcess(["never-read.sqlite"], signal),
   ).rejects.toBe(signal.reason);
-});
-
-it("falls back to the isolated generation seal when live source reads were admitted", async () => {
-  const f = await originalCaptureFixture();
-  const original = await f.captureOriginal("isolated-steps");
-  const originalManifest = parseUpdateRecoveryBackupManifest(
-    await fs.readFile(original.ref.manifestPath, "utf8"),
-  );
-  const worker = vi.spyOn(inspection, "runUpdateStateInspectionWorker");
-  const isolatedGenerations = vi.spyOn(candidateState, "readUpdateDatabaseGenerationsIsolated");
-  const isolatedSizes = vi.spyOn(databaseSizes, "readUpdateStateDatabaseSizes");
-  const scope = createOpenClawDatabaseMaintenanceScope({
-    schemaMaintenance: true,
-    assertOwnerCurrent: () => {},
-    assertDatabaseAccess: () => {},
-  });
-  try {
-    const maintained = await scope.run(() => {
-      admitOpenClawMaintenanceLiveAuthorityReads(f.shared);
-      return f.captureOriginal("live-reads-admitted", { mode: "maintenance-owner" });
-    });
-    const maintainedManifest = parseUpdateRecoveryBackupManifest(
-      await fs.readFile(maintained.ref.manifestPath, "utf8"),
-    );
-    expect(maintainedManifest.entries).toEqual(originalManifest.entries);
-    expect(isolatedGenerations).toHaveBeenCalledOnce();
-    expect(isolatedSizes).toHaveBeenCalled();
-    expect(worker).toHaveBeenCalledTimes(3);
-  } finally {
-    await scope.close();
-  }
 });
 
 it("retires only expired sealed standalone Doctor captures and preserves incomplete or linked copies", async () => {
@@ -555,6 +552,78 @@ it("retires only expired sealed standalone Doctor captures and preserves incompl
     expect((await fs.lstat(linked)).isSymbolicLink()).toBe(true);
     expect(await fs.readlink(linked)).toBe(linkedTarget);
   });
+});
+
+it.each([
+  { change: "link", phase: "during" },
+  { change: "unlink", phase: "after" },
+  { change: "content", phase: "during" },
+  { change: "content", phase: "after" },
+] as const)("validates $change changes $phase original file capture", async ({ change, phase }) => {
+  const f = await originalCaptureFixture();
+  const source = f.applicationFile;
+  const timestamp = new Date("2000-01-01T00:00:00.000Z");
+  await fs.utimes(source, timestamp, timestamp);
+  const before = await fs.stat(source, { bigint: true });
+  const alias = path.join(f.root, "outside-native-capture");
+  if (change === "unlink") {
+    await fs.link(source, alias);
+  }
+  let changed = false;
+  const mutate = async () => {
+    changed = true;
+    if (change === "link") {
+      await fs.link(source, alias);
+    } else if (change === "unlink") {
+      await fs.unlink(alias);
+    } else {
+      await fs.writeFile(source, Buffer.alloc(Number(before.size), 7));
+      await fs.utimes(source, timestamp, timestamp);
+    }
+  };
+  if (phase === "during") {
+    const copy = fileDescriptor.copyFileHandle;
+    vi.spyOn(fileDescriptor, "copyFileHandle").mockImplementation(async (...args) => {
+      const stat = await args[0].stat({ bigint: true });
+      if (stat.dev === before.dev && stat.ino === before.ino) {
+        await mutate();
+      }
+      return copy(...args);
+    });
+  } else {
+    const readGenerations = candidateState.readUpdateDatabaseGenerationsIsolated;
+    vi.spyOn(candidateState, "readUpdateDatabaseGenerationsIsolated").mockImplementationOnce(
+      async (...args) => {
+        await mutate();
+        return readGenerations(...args);
+      },
+    );
+  }
+  const capture = f.captureOriginal(`${change}-${phase}`);
+  if (change === "content") {
+    await expect(capture).rejects.toMatchObject({
+      cause: expect.objectContaining({
+        message: expect.stringMatching(/Original update (file|resource) changed/),
+      }),
+    });
+  } else {
+    const { ref } = await capture;
+    const manifest = parseUpdateRecoveryBackupManifest(await fs.readFile(ref.manifestPath, "utf8"));
+    const entry = manifest.entries.find((candidate) => candidate.sourcePath === source);
+    assert(entry?.kind === "file");
+    expect(await fs.readFile(path.join(ref.directory, entry.archivePath))).toEqual(
+      f.bytes.get(source),
+    );
+  }
+  expect(changed).toBe(true);
+  const after = await fs.stat(source, { bigint: true });
+  expect(after).toMatchObject({
+    dev: before.dev,
+    ino: before.ino,
+    size: before.size,
+    mtimeNs: before.mtimeNs,
+  });
+  expect(after.ctimeNs).not.toBe(before.ctimeNs);
 });
 
 it("retains an unsealed capture when the database changes after its snapshot", async () => {
@@ -643,7 +712,7 @@ it.each(["insufficient", "unknown"] as const)(
         expect.stringMatching(/[\\/]external-b[\\/]agent\.sqlite$/u),
       ]);
       for (const entry of backup.databases) {
-        using db = new DatabaseSync(entry.snapshotPath, { readOnly: true });
+        using db = openNodeSqliteDatabase(entry.snapshotPath, { readOnly: true });
         expect(db.prepare("SELECT rowid,value FROM payload").all()).toEqual([
           {
             rowid: 42,

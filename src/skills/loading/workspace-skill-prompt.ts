@@ -2,12 +2,12 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolveEffectiveAgentSkillsLimits } from "../discovery/agent-filter.js";
 import { isSkillPromptVisible } from "../discovery/skill-index.js";
+import { resolveSkillFileHost } from "../skill-file-host.js";
 import type { SkillEligibilityContext, SkillEntry, SkillSnapshot } from "../types.js";
 import { WORKSPACE_SKILLS_PROMPT_FORMAT_VERSION } from "../types.js";
 import { hasUnavailableSkillSecretOwners, isSkillSecretOwnerUnavailable } from "./config.js";
 import { resolveSkillKey } from "./frontmatter.js";
 import { compactSkillsPromptForContext, escapeSkillXml } from "./skill-contract.js";
-import { resolveSkillFileHost } from "./skill-file-host.js";
 import { compactPromptSkills } from "./skill-paths.js";
 import { prepareSkillsForPrompt } from "./skill-prompt-limits.js";
 import { resolveWorkspaceSkillPromptEntries } from "./workspace-skill-loader.js";
@@ -45,6 +45,7 @@ export async function buildSkillSnapshot(
     prompt: prepared.prompt,
     skills: eligible.map((entry) => ({
       name: entry.skill.name,
+      source: { filePath: entry.skill.filePath, fileHost: resolveSkillFileHost(entry.skill) },
       gatewayFilePath:
         resolveSkillFileHost(entry.skill) === "gateway" ? entry.skill.filePath : undefined,
       skillKey: resolveSkillKey(entry.skill, entry),

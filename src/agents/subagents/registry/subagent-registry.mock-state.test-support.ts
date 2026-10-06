@@ -129,10 +129,6 @@ export function createSubagentRegistryMockState() {
       (runs: Map<string, import("./subagent-registry.types.js").SubagentRunRecord>) =>
         new Map(runs),
     ),
-    getSubagentRunsSnapshotForController: vi.fn(
-      (runs: Map<string, import("./subagent-registry.types.js").SubagentRunRecord>) =>
-        new Map(runs),
-    ),
     captureSubagentCompletionReply: vi.fn(async () => "final completion reply"),
     cleanupBrowserSessionsForLifecycleEnd: vi.fn(async () => {}),
     runSubagentAnnounceFlow: vi.fn(async (): Promise<"delivered" | "retryable"> => "delivered"),
@@ -188,6 +184,7 @@ export function createSubagentRegistryMockState() {
       assertCurrent();
       return Promise.resolve({
         assertCurrent,
+        prepareRead: () => undefined,
         release: () => {
           active = false;
         },

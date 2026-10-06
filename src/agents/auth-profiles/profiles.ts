@@ -4,9 +4,10 @@ import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
+import { isSqliteLockError } from "../../infra/sqlite-error-diagnostics.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
-import { removePersistedPluginModelCatalogCredentials } from "../plugin-model-catalog.js";
+import { removePersistedPluginModelCatalogCredentials } from "../plugin-model-catalog-credentials.js";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
 import {
   listCandidateAuthProfileStores,
@@ -20,10 +21,12 @@ import {
   type OAuthRefreshGenerationPeer,
 } from "./oauth-refresh-peers.js";
 import { resolveSharedAuthStorePath } from "./path-resolve.js";
+import { loadPersistedAuthProfileStore } from "./persisted.js";
+import { preparePersonalAuthProfileUsage } from "./personal-usage.js";
 import { dedupeProfileIds, listProfilesForProvider } from "./profile-list.js";
 import { removeRuntimeExternalProfileReferences } from "./runtime-external-profile-references.js";
 import { resolveSharedMainAuthAgentDir } from "./shared-main-dir.js";
-import { resolveAuthProfileDatabasePath } from "./sqlite.js";
+import { resolveAuthProfileDatabasePath, runAuthProfileWriteTransaction } from "./sqlite.js";
 import {
   ensureAuthProfileStoreForLocalUpdate,
   loadAuthProfileStoreWithoutExternalProfiles,
@@ -37,9 +40,12 @@ import {
   resolvePersistedAuthProfileOwnerAgentDir,
   resolveRuntimeAuthProfileAgentDir,
   restoreAuthProfileStorePersistenceSnapshot,
+  applyScopedAuthReadThrough,
+  getScopedAuthProfileEnv,
 } from "./store.js";
 import type { AuthProfileCredential, AuthProfileStore } from "./types.js";
-import { resetAuthProfileFailureState } from "./usage-state.js";
+import { runAuthProfileUsage } from "./usage-lifecycle.js";
+import { withAuthProfileUsage } from "./usage-write.js";
 export {
   dedupeProfileIds,
   listProfilesForProvider,
@@ -432,58 +438,70 @@ async function removeAuthProfileTargetsWithLocks(
         return { kind: "retry" };
       }
     }
-    // Scrub first so a failed catalog write leaves the saved profile available
-    // for a retry. Only captured secret values are removed, never other accounts.
-    for (const candidate of catalogStores) {
-      await removePersistedPluginModelCatalogCredentials({ ...candidate, credentials });
-    }
-
-    removeOAuthRefreshGenerationPeers(await prepareAuthProfileRemovalPeers(targets, cfg));
-
-    const stores: AuthProfileStore[] = [];
     const restoreRemovedStores: Array<() => void> = [];
-    for (const target of targets) {
-      let stale = false;
-      let publishRemoval: (() => boolean) | undefined;
-      const updated = await updateAuthProfileStoreWithLock({
-        agentDir: target.agentDir,
-        updater: (store) => {
-          if (!authProfileRemovalTargetMatches(target, store)) {
-            stale = true;
-            return false;
-          }
-          const before = captureAuthProfileStorePersistenceSnapshot(target.agentDir);
-          if (!removeProfileReferences(store, target.profileIds, target.provider)) {
-            return false;
-          }
-          const saved = saveAuthProfileStoreIfPersistenceSnapshotMatches({
-            store,
-            snapshot: before,
-            agentDir: target.agentDir,
-          });
-          restoreRemovedStores.push(() =>
-            restoreAuthProfileStorePersistenceSnapshot(before, saved.owned, target.agentDir),
-          );
-          publishRemoval = saved.publishRuntimeSnapshots;
-          // The guarded save supplies the exact compensation receipt.
-          return false;
-        },
-      });
-      if (updated === null) {
-        return { kind: "contention" };
-      }
-      if (stale) {
-        return { kind: "retry" };
-      }
-      publishRemoval?.();
-      stores.push(updated);
-    }
+    const stores: AuthProfileStore[] = [];
+    let result: AuthProfileRemovalResult = { kind: "updated", stores };
+    let removalFailure: { error: unknown } | undefined;
     try {
-      for (const candidate of catalogStores) {
-        await removePersistedPluginModelCatalogCredentials({ ...candidate, credentials });
+      removeOAuthRefreshGenerationPeers(await prepareAuthProfileRemovalPeers(targets, cfg));
+
+      for (const target of targets) {
+        let stale = false;
+        let publishRemoval: (() => boolean) | undefined;
+        // The compensation owner captures and saves exact rows in its own transaction.
+        const updated = runAuthProfileWriteTransaction(
+          target.agentDir,
+          (database) => {
+            const store = applyScopedAuthReadThrough(
+              loadPersistedAuthProfileStore(target.agentDir, { database }) ?? {
+                version: 1,
+                profiles: {},
+              },
+            );
+            if (!authProfileRemovalTargetMatches(target, store)) {
+              stale = true;
+              return store;
+            }
+            const before = captureAuthProfileStorePersistenceSnapshot(target.agentDir);
+            if (!removeProfileReferences(store, target.profileIds, target.provider)) {
+              return store;
+            }
+            const saved = saveAuthProfileStoreIfPersistenceSnapshotMatches({
+              store,
+              snapshot: before,
+              agentDir: target.agentDir,
+            });
+            restoreRemovedStores.push(() =>
+              restoreAuthProfileStorePersistenceSnapshot(before, saved.owned, target.agentDir),
+            );
+            publishRemoval = saved.publishRuntimeSnapshots;
+            return store;
+          },
+          { env: getScopedAuthProfileEnv() },
+        );
+        if (stale) {
+          result = { kind: "retry" };
+          break;
+        }
+        publishRemoval?.();
+        stores.push(updated);
       }
     } catch (error) {
-      const failures: unknown[] = [error];
+      if (isSqliteLockError(error)) {
+        result = { kind: "contention" };
+      } else {
+        removalFailure = { error };
+      }
+    }
+    try {
+      // Publication rechecks captured auth, so one scrub after deletion also
+      // covers refreshes that were planned before logout. Failure restores auth.
+      await removePersistedPluginModelCatalogCredentials({
+        candidates: catalogStores,
+        credentials,
+      });
+    } catch (error) {
+      const failures: unknown[] = removalFailure ? [removalFailure.error, error] : [error];
       for (let index = restoreRemovedStores.length - 1; index >= 0; index -= 1) {
         try {
           restoreRemovedStores[index]?.();
@@ -508,7 +526,10 @@ async function removeAuthProfileTargetsWithLocks(
         { cause: error },
       );
     }
-    return { kind: "updated", stores };
+    if (removalFailure) {
+      throw removalFailure.error;
+    }
+    return result;
   });
 }
 
@@ -636,7 +657,7 @@ export async function markAuthProfileSuccess(params: {
 }): Promise<void> {
   const { store, provider, profileId, agentDir } = params;
   const providerKey = resolveProviderIdForAuth(provider);
-  const profile = store.profiles[profileId];
+  const profile = structuredClone(store.profiles[profileId]);
   if (
     !profile ||
     profile.setup?.replacement ||
@@ -644,49 +665,15 @@ export async function markAuthProfileSuccess(params: {
   ) {
     return;
   }
-  const ownerAgentDir = resolvePersistedAuthProfileOwnerAgentDir({ agentDir, profileId });
-  const personal = isUserModelAuthProfileId(profileId);
-  const inherited =
-    !personal && ownerAgentDir === undefined && !isSharedMainAuthProfileAgentDir(agentDir);
-  const updatesSelection = !inherited && !personal;
-  const lastUsed = Date.now();
-  let applied = false;
-  const updated = await updateAuthProfileStoreWithLock({
-    agentDir: ownerAgentDir,
-    profileId,
-    updater: (freshStore) => {
-      const freshProfile = freshStore.profiles[profileId];
-      if (
-        !freshProfile ||
-        freshProfile.setup?.replacement ||
-        resolveProviderIdForAuth(freshProfile.provider) !== providerKey
-      ) {
-        return false;
-      }
-      // Inherited selection ownership is not defined. Clear shared health in
-      // the credential owner without changing its last-good or rotation state.
-      if (updatesSelection) {
-        freshStore.lastGood = replaceProviderAuthState(freshStore.lastGood, providerKey, profileId);
-      }
-      freshStore.usageStats ??= {};
-      freshStore.usageStats[profileId] = resetAuthProfileFailureState(
-        freshStore.usageStats[profileId] ?? {},
-        { lastProbeAt: Date.now(), ...(inherited ? {} : { lastUsed }) },
-      );
-      applied = true;
-      return true;
-    },
+  const updated = await runAuthProfileUsage(async () => {
+    const reduction = { kind: "success" as const, expectedProfile: profile, lastUsed: Date.now() };
+    if (isUserModelAuthProfileId(profileId)) {
+      return preparePersonalAuthProfileUsage(store, profileId).record(reduction);
+    }
+    return withAuthProfileUsage(store, profileId, agentDir, (usage) =>
+      usage.record(reduction, providerKey),
+    );
   });
-  if (updated && applied) {
-    const usage = updated.usageStats?.[profileId];
-    if (usage) {
-      store.usageStats = { ...store.usageStats, [profileId]: usage };
-    }
-    if (updatesSelection) {
-      store.lastGood = replaceProviderAuthState(store.lastGood, providerKey, profileId);
-    }
-    return;
-  }
   if (updated === null) {
     authProfileProfilesLog.warn(
       "dropped auth profile bookkeeping after locked store update failed",

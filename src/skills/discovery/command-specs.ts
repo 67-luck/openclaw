@@ -8,10 +8,10 @@ import { createDedupeCache } from "../../infra/dedupe.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { loadEnabledClaudeBundleCommands } from "../../plugins/bundle-commands.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
-import { resolveSkillFileHost } from "../loading/skill-file-host.js";
 import { resolveSkillTelemetrySource } from "../loading/source.js";
 import { filterSkillEntries } from "../loading/workspace-skill-filter.js";
 import { loadVisibleSkills, prepareWorkspaceSkills } from "../loading/workspace-skill-loader.js";
+import { resolveSkillFileHost } from "../skill-file-host.js";
 import type {
   SkillEligibilityContext,
   SkillCommandSpec,
@@ -40,21 +40,17 @@ function logSkillCommandOnce(
 }
 
 function resolveUniqueSkillCommandName(base: string, used: Set<string>): string {
-  const normalizedBase = normalizeLowercaseStringOrEmpty(base);
-  if (!used.has(normalizedBase)) {
+  if (!used.has(base)) {
     return base;
   }
   for (let index = 2; index < 1000; index += 1) {
     const suffix = `_${index}`;
-    const maxBaseLength = Math.max(1, SKILL_COMMAND_MAX_LENGTH - suffix.length);
-    const trimmedBase = base.slice(0, maxBaseLength);
-    const candidate = `${trimmedBase}${suffix}`;
-    const candidateKey = normalizeLowercaseStringOrEmpty(candidate);
-    if (!used.has(candidateKey)) {
+    const candidate = `${base.slice(0, SKILL_COMMAND_MAX_LENGTH - suffix.length)}${suffix}`;
+    if (!used.has(candidate)) {
       return candidate;
     }
   }
-  return `${base.slice(0, Math.max(1, SKILL_COMMAND_MAX_LENGTH - 2))}_x`;
+  return `${base.slice(0, SKILL_COMMAND_MAX_LENGTH - 2)}_x`;
 }
 
 type WorkspaceSkillCommandOptions = {
@@ -153,7 +149,7 @@ function assembleWorkspaceSkillCommandSpecs(
         level,
       );
     }
-    used.add(normalizeLowercaseStringOrEmpty(unique));
+    used.add(unique);
     return unique;
   };
   for (const entry of userInvocable) {

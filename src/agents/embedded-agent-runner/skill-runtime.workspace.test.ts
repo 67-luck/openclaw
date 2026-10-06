@@ -3,10 +3,10 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { recordSkillFileHost, resolveSkillFileHost } from "../../skills/loading/skill-file-host.js";
 import { loadWorkspaceSkills } from "../../skills/loading/workspace-skill-loader.js";
 import { buildSkillSnapshot } from "../../skills/loading/workspace-skill-prompt.js";
 import { readSkillResourceFiles } from "../../skills/runtime/resources.js";
+import { recordSkillFileHost, resolveSkillFileHost } from "../../skills/skill-file-host.js";
 import { writeSkill } from "../../skills/test-support/e2e-test-helpers.js";
 import type { SkillEntry } from "../../skills/types.js";
 import { resolveWorkshopSkillsDir } from "../../skills/workshop/skills-root.js";
@@ -187,6 +187,58 @@ it("preserves local Code Mode instruction reads after a document-only adapter st
   const skill = prepared.codeModeSkills.find((entry) => entry.name === "guide")!;
   expect(await readCodeModeSkill(skill)).toContain("Local instructions");
   expect(readFile).not.toHaveBeenCalled();
+});
+
+it("keeps allowlist-excluded Workshop skills unreadable and says they are unavailable", async () => {
+  const root = temps.make("skills-read-allowlist-");
+  const bundled = path.join(root, "bundled");
+  await fs.mkdir(bundled);
+  vi.stubEnv("OPENCLAW_BUNDLED_SKILLS_DIR", bundled);
+  vi.stubEnv("HOME", root);
+  vi.stubEnv("OPENCLAW_HOME", root);
+  const workspace = path.join(root, "workspace");
+  const agentDir = path.join(root, "agent");
+  await writeSkill({
+    dir: path.join(workspace, "skills", "listed"),
+    name: "listed",
+    description: "Allowlisted guide",
+    body: "Listed instructions",
+  });
+  await writeSkill({
+    dir: path.join(
+      resolveWorkshopSkillsDir({ agents: { entries: { main: { agentDir } } } }, "main"),
+      "learned",
+    ),
+    name: "learned",
+    description: "Workshop guide",
+    body: "Learned instructions",
+  });
+  const prepare = async (skills: string[]) => {
+    const config = {
+      plugins: { enabled: false },
+      agents: { entries: { main: { agentDir, skills } } },
+    };
+    const snapshot = await buildSkillSnapshot(workspace, { config, agentId: "main" });
+    return await prepareEmbeddedSkills({
+      attempt: { config, skillsSnapshot: snapshot },
+      effectiveWorkspace: workspace,
+      sandbox: undefined,
+      sessionAgentId: "main",
+      includeCodeModeSkills: false,
+      applySkillEnvironment: false,
+    });
+  };
+
+  const allowlisted = await prepare(["listed"]);
+  expect(allowlisted.installedSkills.map((skill) => skill.name)).toEqual(["listed"]);
+  const read = expectDefined(createInstalledSkillTools(allowlisted.installedSkills)[1], "read");
+  expect(getTextContent(await read.execute("listed", { name: "listed" }))).toContain(
+    "Listed instructions",
+  );
+  await expect(read.execute("learned", { name: "learned" })).rejects.toThrow(
+    'Skill "learned" is not available to this agent.',
+  );
+  expect((await prepare([])).installedSkills).toEqual([]);
 });
 
 it.each([

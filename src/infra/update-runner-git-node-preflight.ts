@@ -12,16 +12,6 @@ import type { UpdateStepResult } from "./update-step-result.js";
 
 const MAX_PACKAGE_JSON_BYTES = 1024 * 1024;
 
-async function readCandidateNodeEngine(root: string): Promise<string | null> {
-  const manifest = asNullableRecord(
-    await tryReadJson<unknown>(path.join(root, "package.json"), {
-      maxBytes: MAX_PACKAGE_JSON_BYTES,
-    }),
-  );
-  const engines = asNullableRecord(manifest?.engines);
-  return normalizeNullableString(engines?.node);
-}
-
 async function resolveCandidateNode(env: NodeJS.ProcessEnv, engine: string | null) {
   let firstAvailable: Awaited<ReturnType<typeof resolveSystemNodeInfo>> = null;
   const directories = (resolveEnvironmentValue(env, "PATH") ?? "")
@@ -58,7 +48,12 @@ export async function prepareGitCandidateNodeRuntime(
   mode: "package-tooling" | "current-runtime" = "package-tooling",
 ): Promise<{ env: NodeJS.ProcessEnv; step?: never } | { step: UpdateStepResult; env?: never }> {
   const startedAt = Date.now();
-  const engine = await readCandidateNodeEngine(root);
+  const manifest = asNullableRecord(
+    await tryReadJson<unknown>(path.join(root, "package.json"), {
+      maxBytes: MAX_PACKAGE_JSON_BYTES,
+    }),
+  );
+  const engine = normalizeNullableString(asNullableRecord(manifest?.engines)?.node);
   let currentVersion = process.versions.node;
   let currentPath = process.execPath;
   let capabilityError = process.versions.bun
@@ -99,19 +94,23 @@ export async function prepareGitCandidateNodeRuntime(
         .find((key) =>
           process.platform === "win32" ? key.toUpperCase() === "PATH" : key === "PATH",
         ) ?? "PATH";
-    const directories = (resolveEnvironmentValue(env, "PATH") ?? "").split(path.delimiter);
+    const runtimeDirectory = path.dirname(currentPath);
+    const directories = (resolveEnvironmentValue(env, "PATH") ?? "")
+      .split(path.delimiter)
+      .filter((directory) => directory !== runtimeDirectory);
     const firstNode = directories.findIndex((directory) =>
       resolveExecutableFromPathEnv("node", [directory], env, { cwd: root, useCache: false }),
     );
     // Keep scoped package-manager launchers ahead of the runtime directory, which
-    // can contain a competing pnpm. Only overtake entries that already provide Node.
+    // can contain a competing pnpm. Reinsert the selected runtime before other
+    // Node providers so its old PATH position cannot hide a scoped launcher.
     const prefixLength = firstNode < 0 ? directories.length : firstNode;
     return {
       env: {
         ...env,
         [pathKey]: mergePathPrepend(directories.slice(prefixLength).join(path.delimiter), [
           ...directories.slice(0, prefixLength),
-          path.dirname(currentPath),
+          runtimeDirectory,
         ]),
       },
     };
@@ -123,7 +122,7 @@ export async function prepareGitCandidateNodeRuntime(
   });
   let systemDiagnostic: string;
   if (systemNode?.status === "probe-failed") {
-    systemDiagnostic = `System Node compatibility remains unknown because its probe failed: ${systemNode.error.message}`;
+    systemDiagnostic = `System Node compatibility remains unknown because its check failed: ${systemNode.error.message}`;
   } else if (
     systemNode?.status === "supported" &&
     nodeVersionSatisfiesEngine(systemNode.version, engine) !== false

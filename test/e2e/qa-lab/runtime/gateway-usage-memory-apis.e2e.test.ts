@@ -99,7 +99,6 @@ async function seedCompletedUsageSession(state: OpenClawTestState): Promise<{
     sessionFile,
     startedAt: FIXTURE_STARTED_AT,
     updatedAt: FIXTURE_STARTED_AT,
-    status: "running",
   });
   const turn = await persistSessionTranscriptTurn(scope, {
     expectedSessionId: FIXTURE_SESSION_ID,
@@ -174,7 +173,7 @@ describe("gateway usage and memory APIs", () => {
       const config = {
         agents: {
           defaults: { workspace: state.workspaceDir },
-          list: [{ id: "main", default: true, workspace: state.workspaceDir }],
+          entries: { main: { workspace: state.workspaceDir } },
         },
         gateway: {
           mode: "local",
