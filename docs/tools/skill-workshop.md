@@ -103,8 +103,10 @@ reusable workflow from the current conversation. With a request, it gathers the
 named paths, URLs, notes, or conversation references with its normal tools and
 honors any focus, scope, or naming you give. It views related skills first,
 patches the one that covers the task, and creates a new skill only when none
-does. Then it tells you which skill changed. If there is nothing durable to
-learn, it changes nothing.
+does. Related skills that cover the same class of task get merged into one
+umbrella skill: it patches the survivor and archives the rest with
+`absorbed_into`. Then it tells you which skill changed. If there is nothing
+durable to learn, it changes nothing.
 
 `/learn` works in both learning modes. It replies with an explanation instead
 when `skill_workshop` is unavailable, for example in a sandboxed session or
@@ -144,6 +146,14 @@ Writes are validated before they land:
 The background review must `view` an existing skill before it can `patch`,
 `write_file`, `remove_file`, or `archive` it, and its archives need
 `absorbed_into` or `reason`. A foreground `view` counts as using the skill.
+
+A successful `create`, `patch`, or `write_file` of `SKILL.md` may end with up to
+three `Advisory (not blocking)` lines: authoring issues the write introduced (a
+description over 160 bytes or opening with "This skill", a body over 250 lines
+or 12 KB, emphasis words, three or more Never/Don't steps, update notes or
+dates), and, when the description changed, another live skill whose name and
+description strongly overlap, with a suggestion to merge them. The write has
+already landed.
 
 ## Configuration
 

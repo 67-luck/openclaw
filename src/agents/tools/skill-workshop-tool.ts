@@ -19,6 +19,7 @@ import {
   type WorkshopMutationContext,
 } from "../../skills/workshop/library.js";
 import { SKILL_AUTHORING_STANDARDS_PROMPT } from "../../skills/workshop/skill-authoring-standards.js";
+import { skillWriteAdvisories } from "../../skills/workshop/skill-lint.js";
 import { resolveWorkshopSkillsDir } from "../../skills/workshop/skills-root.js";
 import { captureAgentToolSourceExecutionGuard } from "../agent-tool-source-execution-guard.js";
 import { recordSkillUsed } from "../agent-tools.before-tool-call.diagnostics.js";
@@ -173,13 +174,30 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
       );
     }
 
+    // SKILL.md writes get advisory feedback; the list and prior text are read before the write.
+    const skillFileWrite =
+      action === "create" ||
+      ((action === "patch" || action === "write_file") &&
+        (!filePath?.trim() || filePath.trim() === "SKILL.md"));
+    const readLiveSkillFile = async () =>
+      (await viewWorkshopSkill(options.config, options.agentId, name).catch(() => undefined))
+        ?.content;
+    const [skillsBefore, before] = skillFileWrite
+      ? await Promise.all([
+          listWorkshopSkills(options.config, options.agentId),
+          action === "create" ? "" : readLiveSkillFile(),
+        ])
+      : [];
+    let written: string | undefined;
+
     let change: WorkshopChange;
     let verb: string;
     switch (action) {
       case "create":
+        written = readToolStringParam(params, "content", { required: true, trim: false });
         change = await createWorkshopSkill(ctx, {
           name,
-          content: readToolStringParam(params, "content", { required: true, trim: false }),
+          content: written,
           ...(reason ? { summary: reason } : {}),
         });
         viewed.add(name);
@@ -196,10 +214,11 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         verb = "Patched";
         break;
       case "write_file":
+        written = readToolStringParam(params, "content", { required: true, trim: false });
         change = await writeWorkshopSkillFile(ctx, {
           name,
           filePath: readToolStringParam(params, "file_path", { required: true }),
-          content: readToolStringParam(params, "content", { required: true, trim: false }),
+          content: written,
           ...(reason ? { summary: reason } : {}),
         });
         verb = "Updated";
@@ -240,7 +259,12 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
           `Unknown action "${action}". Use list, view, create, patch, write_file, remove_file, archive, or restore.`,
         );
     }
-    return textResult(formatChange(verb, change), { change });
+    const after = skillFileWrite ? (written ?? (await readLiveSkillFile())) : undefined;
+    const advisories =
+      skillsBefore && before !== undefined && after !== undefined
+        ? skillWriteAdvisories({ name, before, after, others: skillsBefore })
+        : [];
+    return textResult([formatChange(verb, change), ...advisories].join("\n"), { change });
   };
 
   return {

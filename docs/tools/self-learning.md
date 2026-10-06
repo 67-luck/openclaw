@@ -79,10 +79,13 @@ The reviewer looks for:
   error.
 - a learned skill that was wrong, missing a step, or outdated.
 
-It prefers patching a skill that was used or already covers the task, then
-adding a `references/`, `templates/`, or `scripts/` file to one, and creates a
-new skill only when none covers the task. When the turn was interrupted, it
-keeps only steps that visibly worked before the stop.
+It lists learned skills first, then prefers patching a skill that was used or
+already covers the task, then adding a `references/`, `templates/`, or
+`scripts/` file to one, and creates a new skill only when none covers the task.
+Listed skills that cover the same class of task get merged into one umbrella
+skill: the review patches the survivor and archives the rest with
+`absorbed_into`. When the turn was interrupted, it keeps only steps that visibly
+worked before the stop.
 
 It does not capture environment-specific or transient failures, negative claims
 about tools, unresolved failures or guesses, one-off tasks, personal facts,

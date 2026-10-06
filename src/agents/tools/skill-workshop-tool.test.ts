@@ -178,3 +178,31 @@ describe("skill_workshop remove_file", () => {
     ]);
   });
 });
+
+describe("skill_workshop advisories", () => {
+  it("flags a created skill that overlaps a live one and leaves a distinct one clean", async () => {
+    const tool = createSkillWorkshopTool({ config: {}, agentId: "main" });
+    const overlapping = text(
+      await tool.execute("1", {
+        action: "create",
+        name: "staging-deploy",
+        content: "---\nname: staging-deploy\ndescription: Deploy to staging\n---\n\n1. Run it.\n",
+      }),
+    );
+    expect(overlapping).toContain('Created "staging-deploy"');
+    expect(overlapping).toContain(
+      'Advisory (not blocking): overlaps "deploy". If both cover the same class of task, merge them',
+    );
+
+    const distinct = text(
+      await tool.execute("2", {
+        action: "create",
+        name: "weekly-report",
+        content:
+          "---\nname: weekly-report\ndescription: Writing the weekly status report from Linear tickets\n---\n\n1. Export tickets.\n",
+      }),
+    );
+    expect(distinct).toContain('Created "weekly-report"');
+    expect(distinct).not.toContain("Advisory");
+  });
+});
