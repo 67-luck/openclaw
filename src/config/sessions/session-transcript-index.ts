@@ -158,19 +158,7 @@ function readSessionTranscriptProjectionState(
   };
 }
 
-function readLatestTranscriptSequence(db: DatabaseSync, sessionId: string): number | undefined {
-  return executeSqliteQueryTakeFirstSync(
-    db,
-    getIndexKysely(db)
-      .selectFrom("transcript_events")
-      .select("seq")
-      .where("session_id", "=", sessionId)
-      .orderBy("seq", "desc")
-      .limit(1),
-  )?.seq;
-}
-
-export function sessionTranscriptIndexNeedsReconcile(db: DatabaseSync, sessionId: string): boolean {
+function readSessionTranscriptIndexStatus(db: DatabaseSync, sessionId: string) {
   const kysely = getIndexKysely(db);
   const row = executeSqliteQueryTakeFirstSync(
     db,
@@ -194,21 +182,18 @@ export function sessionTranscriptIndexNeedsReconcile(db: DatabaseSync, sessionId
         "state.has_unclassified",
       ]),
   );
-  return (
-    row !== undefined &&
-    (row.needs_rebuild !== 0 || row.indexed_seq !== row.latest_seq || Boolean(row.has_unclassified))
-  );
+  return row
+    ? {
+        needsReconcile:
+          row.needs_rebuild !== 0 ||
+          row.indexed_seq !== row.latest_seq ||
+          Boolean(row.has_unclassified),
+      }
+    : undefined;
 }
 
-function sessionTranscriptProjectionNeedsReconcile(
-  db: DatabaseSync,
-  sessionId: string,
-  latestSeq: number,
-): boolean {
-  const state = readSessionTranscriptProjectionState(db, sessionId);
-  return (
-    !state || state.needsRebuild || state.indexedSeq !== latestSeq || state.hasUnclassifiedEvents
-  );
+export function sessionTranscriptIndexNeedsReconcile(db: DatabaseSync, sessionId: string): boolean {
+  return readSessionTranscriptIndexStatus(db, sessionId)?.needsReconcile ?? false;
 }
 
 function createWatermarkWriter(db: DatabaseSync, sessionId: string, updateExisting = false) {
@@ -505,12 +490,12 @@ export function reconcileSessionTranscriptIndexInTransaction(
   db: DatabaseSync,
   sessionId: string,
 ): boolean {
-  const latestSeq = readLatestTranscriptSequence(db, sessionId);
-  if (latestSeq === undefined) {
+  const indexStatus = readSessionTranscriptIndexStatus(db, sessionId);
+  if (!indexStatus) {
     deleteSessionTranscriptIndexInTransaction(db, sessionId);
     return false;
   }
-  if (!sessionTranscriptProjectionNeedsReconcile(db, sessionId, latestSeq)) {
+  if (!indexStatus.needsReconcile) {
     return false;
   }
   rebuildSessionTranscriptIndexInTransaction(db, sessionId);
