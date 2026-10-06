@@ -1,5 +1,9 @@
 import type { ProviderModelRef as ModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import type { ReplyTurnParticipants } from "../../auto-reply/reply/reply-run-registry.contracts.js";
+import {
+  captureExternalSessionCommitGuard,
+  composeSessionSourceAssertion,
+} from "../../config/sessions/session-source-authority.js";
 import { registerAgentEventLifecycleRotationHandler } from "../../infra/agent-events.js";
 import { getAgentRunLifecycleGeneration } from "../../infra/agent-run-registry.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
@@ -10,7 +14,28 @@ import {
   type AdmittedRunContext,
   type AdmittedRunOperatorAuthority,
 } from "../admitted-run-context.js";
+import { captureGatewayToolReceiptAssertion } from "../tools/gateway-caller-context.js";
 import type { AgentHarnessHostCapabilities } from "./host-capability-types.js";
+
+/** Keep the issuing host and its prepared receipt live through every source check. */
+export function bindHarnessSourceAssertion(
+  assertLocalActive: () => void,
+  receipt: Parameters<typeof captureGatewayToolReceiptAssertion>[0] | undefined,
+) {
+  const assertReceipt =
+    receipt &&
+    captureGatewayToolReceiptAssertion(
+      receipt,
+      "agent harness host capability lost its source execution claim",
+    );
+  return composeSessionSourceAssertion(
+    [captureExternalSessionCommitGuard(assertReceipt)],
+    (assertSource) => {
+      assertLocalActive();
+      assertSource();
+    },
+  );
+}
 
 /** Native delegation cannot select a person, so its live turn must remain unambiguous. */
 export function bindHarnessNativeSpawnAuthority(

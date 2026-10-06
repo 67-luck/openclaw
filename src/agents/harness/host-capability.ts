@@ -69,6 +69,7 @@ import { cloneHostSnapshot as cloneSnapshot } from "./host-snapshot.js";
 import {
   bindHarnessModelExecution,
   bindHarnessNativeSpawnAuthority,
+  bindHarnessSourceAssertion,
   retainHarnessSource,
 } from "./host-source-authority.js";
 import { bindHarnessTrajectory } from "./host-trajectory.js";
@@ -130,6 +131,10 @@ export function createAgentHarnessHostCapabilities(params: {
     inheritedCaller?.operationalRunInstance === operationalRunInstance
       ? inheritedCaller
       : undefined;
+  const assertActive = bindHarnessSourceAssertion(
+    assertLocalActive,
+    sourceCaller?.receiptAuthority,
+  );
   let personalToolParticipants = sourceCaller?.personalToolParticipants;
   const callerIdentity = createAdmittedGatewayToolCallerIdentity({
     admittedRunContext: attempt.admittedRunContext,
@@ -154,7 +159,7 @@ export function createAgentHarnessHostCapabilities(params: {
   // A supplied resolver that currently returns no context is a retired binding;
   // only a genuinely absent resolver is exempt from the Gateway liveness fence.
   const boundGatewayContext = getGatewayContextResolver(attempt.admittedRunContext);
-  function assertActive() {
+  function assertLocalActive() {
     if (
       !active ||
       attempt.admittedRunContext.operationalRunInstance !== operationalRunInstance ||
@@ -172,8 +177,7 @@ export function createAgentHarnessHostCapabilities(params: {
       (sourceCaller?.workerTurnClaim &&
         (sourceCaller.workerTurnClaim.sessionId !== attempt.sessionId ||
           sourceCaller.workerTurnClaim.runId !== attempt.runId)) ||
-      (sourceCaller?.workerTurnClaim && !sourceCaller.receiptAuthority) ||
-      sourceCaller?.receiptAuthority?.() === false
+      (sourceCaller?.workerTurnClaim && !sourceCaller.receiptAuthority)
     ) {
       throw new Error("agent harness host capability lost its source execution claim");
     }
