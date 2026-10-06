@@ -1,7 +1,7 @@
 // Covers the SQLite WAL-reset corruption safety floor.
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
@@ -22,16 +22,18 @@ async function loadNodeSqliteWithVersion(version: string, extensionLoadingOmitte
     this: DatabaseSync,
     sql,
   ) {
-    if (sql === "SELECT sqlite_version() AS version") {
-      return {
-        get: () => ({ version }),
-      } as unknown as StatementSync;
-    }
     if (
-      extensionLoadingOmitted !== undefined &&
-      sql === "SELECT sqlite_compileoption_used('OMIT_LOAD_EXTENSION') AS omitted"
+      sql ===
+      "SELECT sqlite_version() AS version, sqlite_compileoption_used('OMIT_LOAD_EXTENSION') AS omitted"
     ) {
-      return { get: () => ({ omitted: extensionLoadingOmitted }) } as unknown as StatementSync;
+      const statement = originalPrepare.call(this, sql);
+      const capabilities = statement.get();
+      vi.spyOn(statement, "get").mockReturnValue({
+        ...capabilities,
+        version,
+        ...(extensionLoadingOmitted === undefined ? {} : { omitted: extensionLoadingOmitted }),
+      });
+      return statement;
     }
     return originalPrepare.call(this, sql);
   });
@@ -114,8 +116,9 @@ describe("node SQLite locations", () => {
   });
 
   it("opens special locations through the shared connection boundary", () => {
-    const database = openNodeSqliteDatabase(":memory:");
+    const database = openNodeSqliteDatabase(":memory:", { timeout: 5000 });
     try {
+      expect(database.prepare("PRAGMA busy_timeout").get()).toEqual({ timeout: 5000 });
       const identity = " a\0🦞 ";
       expect(database.prepare("SELECT CAST(? AS TEXT) AS identity").get(identity)).toEqual({
         identity,

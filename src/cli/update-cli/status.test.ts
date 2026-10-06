@@ -304,8 +304,8 @@ describe("update status Node runtime findings", () => {
       ) {
         return realPrepare.call(
           this,
-          sql === "SELECT sqlite_version() AS version"
-            ? `SELECT '${sqliteVersion}' AS version`
+          sql.startsWith("SELECT sqlite_version() AS version")
+            ? sql.replace("sqlite_version()", `'${sqliteVersion}'`)
             : sql,
         );
       });

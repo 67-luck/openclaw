@@ -38,6 +38,41 @@ const deletionFacts = z.object({
   ),
   held: z.array(z.object({ agentId: z.string(), path: z.string() })),
 });
+const schemaContract = z.object({
+  schemaSql: z.string(),
+  tables: z.map(
+    z.string(),
+    z.object({
+      definition: z
+        .object({ columns: z.map(z.string(), z.string()), constraints: z.array(z.string()) })
+        .nullable(),
+      indexes: z.array(
+        z.object({
+          name: z.string().nullable(),
+          origin: z.string(),
+          partial: z.number(),
+          sql: z.string().nullable(),
+          terms: z.array(
+            // Canonical index fingerprints serialize the assembly owner's field order.
+            z.object({
+              coll: z.string(),
+              desc: z.number(),
+              key: z.number(),
+              kind: z.enum(["column", "expression", "rowid"]),
+              name: z.string().nullable(),
+              seqno: z.number(),
+            }),
+          ),
+          unique: z.number(),
+        }),
+      ),
+      strict: z.number(),
+      triggers: z.array(z.object({ name: z.string(), sql: z.string().nullable() })),
+      virtualTableSql: z.string().nullable(),
+      withoutRowid: z.number(),
+    }),
+  ),
+});
 const stateInspectionSchema = z.object({
   schemas: z.object({
     incompatible: z.array(stateSchemaRow),
@@ -85,6 +120,7 @@ const inspectionResponse = z.discriminatedUnion("ok", [
     requestId: z.number().int().safe(),
     ok: z.literal(true),
     stateInspection: stateInspectionSchema.optional(),
+    schemaContracts: z.array(schemaContract).optional(),
     inspection: z
       .object({
         version: z.number().int().safe(),
@@ -233,6 +269,7 @@ export function createAgentSchemaInspectionWorker() {
               }
               response.resolve({
                 ...stateInspection,
+                schemaContracts: parsed.data.schemaContracts,
                 inspectionErrors: stateInspection.inspectionErrors.map(
                   restoreAgentSchemaInspectionError,
                 ),

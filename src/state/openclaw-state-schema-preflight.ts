@@ -1,6 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import { formatErrorMessage } from "../infra/errors.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
+import {
+  captureSqliteSchemaContracts,
+  type PreparedSqliteSchemaContract,
+} from "../infra/sqlite-schema-contract.js";
 import { readSqliteWriterAppVersion } from "../infra/sqlite-schema-header.js";
 import { SqliteSchemaMismatchError } from "../infra/sqlite-schema-issues.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
@@ -22,9 +26,11 @@ import { assertCanonicalStateSchemaShape } from "./openclaw-state-db-schema-repa
 import {
   readStateSchemaContentVersion,
   readStateSchemaMigrationVersion,
+  STATE_SCHEMA_MIGRATION_CONTRACT_SQLS,
 } from "./openclaw-state-db-schema-version.js";
 import { inspectCurrentStateStartupSchema } from "./openclaw-state-schema-inspection.js";
 import { readStateSchemaPublicationBlocker } from "./openclaw-state-schema-publication.js";
+import { OPENCLAW_STATE_SCHEMA_SQL } from "./openclaw-state-schema.js";
 
 export type StateSchemaInspectionInput = {
   pathname: string;
@@ -33,14 +39,26 @@ export type StateSchemaInspectionInput = {
   verifyCurrentSchemaShape?: boolean;
   scope?: "state";
   purpose: AgentDeletionJournalPurpose;
+  schemaContracts?: PreparedSqliteSchemaContract[];
 };
 
 export type StateSchemaInspection = {
   schemas: OpenClawDatabaseSchemaPreflight;
+  schemaContracts?: PreparedSqliteSchemaContract[];
   registeredDatabases?: { agentId: string; path: string }[];
   deletionJournal?: AgentDeletionJournalDisposition;
   inspectionErrors: unknown[];
 };
+
+const canonicalStateInspectionSchemas = [
+  OPENCLAW_STATE_SCHEMA_SQL,
+  ...STATE_SCHEMA_MIGRATION_CONTRACT_SQLS,
+];
+
+/** Only trusted canonical definitions enter the expected-contract cache, never observed schemas. */
+export function captureStateSchemaInspectionContracts(): PreparedSqliteSchemaContract[] {
+  return captureSqliteSchemaContracts(canonicalStateInspectionSchemas);
+}
 
 /** Boot/Doctor and restart readers inspect the same captured bytes under their existing owner. */
 export function inspectStateDatabaseSchema(
@@ -53,11 +71,13 @@ export function inspectStateDatabaseSchema(
   try {
     const stateVersion = readSqliteUserVersion(database);
     const contentVersion =
-      stateVersion > supportedVersion ? stateVersion : readStateSchemaContentVersion(database);
+      stateVersion > supportedVersion
+        ? stateVersion
+        : readStateSchemaContentVersion(database, stateVersion);
     const migrationVersion =
       contentVersion > supportedVersion
         ? contentVersion
-        : readStateSchemaMigrationVersion(database);
+        : readStateSchemaMigrationVersion(database, contentVersion);
     if (migrationVersion < supportedVersion) {
       schemas.pendingMigrations = [
         { kind: "state", path: pathname, foundVersion: stateVersion, supportedVersion },
@@ -105,7 +125,10 @@ export function inspectStateDatabaseSchema(
       migrationVersion === OPENCLAW_STATE_SCHEMA_VERSION
     ) {
       try {
-        assertOpenClawStateDatabaseForMaintenance(database, { pathname });
+        assertOpenClawStateDatabaseForMaintenance(database, {
+          pathname,
+          schemaVersions: { userVersion: stateVersion, contentVersion },
+        });
       } catch (error) {
         inspection.inspectionErrors.push(error);
         schemas.indeterminate.push({

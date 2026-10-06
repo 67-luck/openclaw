@@ -11,7 +11,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { openNodeSqliteDatabase, resolveImmutableSqliteFileUri } from "../infra/node-sqlite.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
-import type { SqliteSchemaIssue } from "../infra/sqlite-schema-contract.js";
+import {
+  adoptSqliteSchemaContracts,
+  type SqliteSchemaIssue,
+} from "../infra/sqlite-schema-contract.js";
 import { prepareSqliteReadOnlyLocation } from "../infra/sqlite-snapshot-source.js";
 import { readSqliteUserVersion } from "../infra/sqlite-user-version.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -68,6 +71,7 @@ import {
 } from "./openclaw-state-ownership.js";
 import { inspectCurrentStateStartupSchema } from "./openclaw-state-schema-inspection.js";
 import {
+  captureStateSchemaInspectionContracts,
   inspectStateDatabaseSchema,
   type StateSchemaInspection,
   type StateSchemaInspectionInput,
@@ -364,7 +368,12 @@ export async function preflightOpenClawDatabaseSchemas(
         !options.openStateSchemaReadAdmission
       ) {
         await using reader = createAgentSchemaInspectionWorker();
-        inspection = await reader.inspectState(input, options.signal, stateLocation);
+        inspection = await reader.inspectState(
+          { ...input, schemaContracts: captureStateSchemaInspectionContracts() },
+          options.signal,
+          stateLocation,
+        );
+        adoptSqliteSchemaContracts(inspection.schemaContracts ?? []);
       } else {
         // Boot admission exposes this native handle to its enclosing migration owner.
         stateDatabase = openNodeSqliteDatabase(stateLocation, { readOnly: true });

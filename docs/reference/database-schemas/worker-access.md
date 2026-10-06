@@ -30,7 +30,9 @@ Gateway restart readiness inspects shared-state schema, registry, and retained
 agent-deletion facts in the existing schema inspection worker. Boot and Doctor
 retain their native admission callbacks. The preflight owner keeps the captured
 snapshot until inspection and child cleanup settle; snapshot staging locks retain
-their native owner. Schemas, stored bytes, and update behavior are unchanged.
+their native owner. Canonical comparison contracts return through the existing
+schema-contract cache; version facts stay within their unchanged snapshot. Each
+request rereads stored facts. Schemas, stored bytes, and update behavior are unchanged.
 
 Reusable SQLite inspection children launch in the detached lifecycle context,
 after the caller captures the runtime generation, transport, environment, and
