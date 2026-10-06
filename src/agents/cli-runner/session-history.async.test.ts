@@ -30,6 +30,7 @@ import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import { persistApprovedCliUserTurnTranscript } from "./cli-run-transcript.js";
 import {
+  hasCliSessionTranscript,
   loadCliSessionContextEngineMessages,
   loadCliSessionPromptContext,
 } from "./session-history.js";
@@ -55,6 +56,13 @@ it("leaves cold CLI history absent until the approved user-turn writer creates i
   await withOpenClawTestState({ label: "cli-cold-history" }, async ({ stateDir }) => {
     const target = targetIn(stateDir);
     const params = { sessionTarget: target };
+    const absentSql = observeHostDataSql();
+    try {
+      await expect(hasCliSessionTranscript(params)).resolves.toBe(false);
+      expect(absentSql.queries).toEqual([]);
+    } finally {
+      absentSql.restore();
+    }
     expect(await loadCliSessionContextEngineMessages(params)).toEqual([]);
     expect(
       await loadCliSessionPromptContext({
@@ -79,6 +87,13 @@ it("leaves cold CLI history absent until the approved user-turn writer creates i
         userTurnTranscriptRecorder: recorder,
       }),
     ).toBe(true);
+    const presentSql = observeHostDataSql();
+    try {
+      await expect(hasCliSessionTranscript(params)).resolves.toBe(true);
+      expect(presentSql.queries).toEqual([]);
+    } finally {
+      presentSql.restore();
+    }
     expect(await loadCliSessionContextEngineMessages(params)).toMatchObject([
       { role: "user", content: text },
     ]);

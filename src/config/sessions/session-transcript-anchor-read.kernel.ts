@@ -65,6 +65,22 @@ export function readSessionTranscriptAnchorFactsInDatabase(
   resolved: ResolvedTranscriptScope,
   selection: SessionTranscriptAnchorSelection,
 ): SessionTranscriptAnchorFacts {
+  const validation = selection.contextValidation;
+  if (
+    validation &&
+    !validation.admission &&
+    !validation.through &&
+    selection.entryIds.length === 0 &&
+    selection.afterSeq === undefined &&
+    !selection.includeSession &&
+    !selection.includeHeader &&
+    !selection.contextAuthority &&
+    !selection.replayValidation
+  ) {
+    // Hot/cold sequence, generation and update time share this single statement's snapshot.
+    validateSessionTranscriptContextInDatabase(database, resolved, validation);
+    return { anchors: [], contextValidated: true };
+  }
   return runSqliteDeferredTransactionSync(
     database.db,
     () => {

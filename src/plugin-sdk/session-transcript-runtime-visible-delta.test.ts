@@ -1,8 +1,11 @@
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import {
   appendTranscriptEvent,
   upsertSessionEntryCore,
+  resolveSessionTranscriptDatabasePath,
 } from "../config/sessions/session-accessor.js";
 import {
   resolveSqliteTranscriptReadScope,
@@ -10,9 +13,12 @@ import {
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { runWithSessionTranscriptReadFence } from "../config/sessions/session-transcript-read-fence.js";
 import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
+import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import { runOpenClawAgentWriteAdmission } from "../state/openclaw-agent-write-admission.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import {
   appendSessionTranscriptMessageByIdentity,
+  readSessionTranscriptRawDelta,
   readSessionTranscriptVisibleMessageDelta,
 } from "./session-transcript-runtime.js";
 
@@ -25,6 +31,128 @@ describe("session transcript visible cursor SDK", () => {
   beforeEach(() => {
     tempDir = sessionDirs.make();
     storePath = path.join(tempDir, "sessions.json");
+  });
+
+  it.each([readSessionTranscriptRawDelta, readSessionTranscriptVisibleMessageDelta])(
+    "rejects invalid bounds even when the transcript database is absent",
+    async (read) => {
+      await expect(
+        read({
+          agentId: "main",
+          sessionId: "missing",
+          sessionKey: "agent:main:missing",
+          storePath,
+          maxBytes: 0,
+        }),
+      ).rejects.toThrow(RangeError);
+    },
+  );
+
+  it.each(["raw", "visible"] as const)(
+    "reads %s deltas off the caller thread and observes foreign rewrite generations",
+    async (kind) => {
+      const scope = {
+        agentId: "main",
+        sessionId: `worker-delta-${kind}`,
+        sessionKey: `agent:main:worker-delta-${kind}`,
+        storePath,
+      };
+      await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 10 });
+      await appendSessionTranscriptMessageByIdentity({
+        ...scope,
+        message: { role: "user", content: "persisted delta" },
+      });
+      const read = (cursor?: string) =>
+        kind === "raw"
+          ? readSessionTranscriptRawDelta({ ...scope, cursor, maxEvents: 10 })
+          : readSessionTranscriptVisibleMessageDelta({ ...scope, cursor, maxMessages: 10 });
+      const firstSql = observeHostDataSql();
+      let first: Awaited<ReturnType<typeof read>>;
+      try {
+        first = await read();
+        expect(firstSql.queries).toEqual([]);
+      } finally {
+        firstSql.restore();
+      }
+      if (first.kind !== "page") {
+        throw new Error("expected a populated delta");
+      }
+      // Serialize fixture setup with background writers; the peer still bypasses publication.
+      await runOpenClawAgentWriteAdmission(
+        toDatabaseOptions(resolveSqliteTranscriptReadScope(scope)),
+        () => {
+          const foreign = new DatabaseSync(resolveSessionTranscriptDatabasePath(scope));
+          try {
+            expect(
+              foreign
+                .prepare(
+                  "UPDATE transcript_rewrite_watermarks SET generation = generation || '-foreign' WHERE session_id = ?",
+                )
+                .run(scope.sessionId).changes,
+            ).toBe(1);
+          } finally {
+            foreign.close();
+          }
+        },
+      );
+      const nextSql = observeHostDataSql();
+      try {
+        await expect(read(first.cursor)).resolves.toMatchObject({
+          kind: "reset",
+          reason: "generation_mismatch",
+        });
+        expect(nextSql.queries).toEqual([]);
+      } finally {
+        nextSql.restore();
+      }
+    },
+  );
+
+  it("repairs a shared-store projection through its physical owner and retains logical cursors", async () => {
+    const database = openOpenClawAgentDatabase({
+      agentId: "main",
+      path: path.join(tempDir, "shared-history.sqlite"),
+    });
+    const scope = {
+      agentId: "other",
+      sessionId: "shared-visible-repair",
+      sessionKey: "agent:other:shared-visible-repair",
+      storePath: database.path,
+    };
+    await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 10 });
+    await appendSessionTranscriptMessageByIdentity({
+      ...scope,
+      message: { role: "user", content: "Shared history survives projection repair" },
+    });
+    const databaseOptions = toDatabaseOptions(resolveSqliteTranscriptReadScope(scope));
+    await waitForSessionTranscriptIndexReconcile(databaseOptions);
+    database.db
+      .prepare("UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?")
+      .run(scope.sessionId);
+
+    await expect(readSessionTranscriptVisibleMessageDelta(scope)).resolves.toEqual({
+      kind: "unavailable",
+      reason: "projection_rebuilding",
+    });
+    await waitForSessionTranscriptIndexReconcile(databaseOptions);
+    const repaired = await readSessionTranscriptVisibleMessageDelta(scope);
+    expect(repaired).toMatchObject({
+      kind: "page",
+      entries: [
+        { message: { role: "user", content: "Shared history survives projection repair" } },
+      ],
+      hasMore: false,
+    });
+    if (repaired.kind !== "page") {
+      throw new Error("expected repaired shared-store transcript page");
+    }
+    await expect(
+      readSessionTranscriptVisibleMessageDelta({ ...scope, cursor: repaired.cursor }),
+    ).resolves.toMatchObject({
+      kind: "page",
+      entries: [],
+      hasMore: false,
+    });
   });
 
   it("pages appends and resets when the active branch changes", async () => {

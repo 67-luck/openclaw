@@ -516,6 +516,31 @@ function matchesSqliteSchemaFacts(database: DatabaseSync, facts: SqliteSchemaFac
   });
 }
 
+function readSqliteVersionObservation(database: DatabaseSync, previousDataVersion: number) {
+  const parameters = [previousDataVersion, previousDataVersion];
+  // One statement pins both markers; unchanged reads never evaluate their CASE branches.
+  // Function syntax refuses a table that shadows a pragma's name.
+  const row = executeWithCachedStatement(
+    database,
+    `SELECT data_version,
+      CASE WHEN data_version <> ? THEN
+        (SELECT schema_version FROM main.pragma_schema_version()) END AS schema_version,
+      CASE WHEN data_version <> ? THEN
+        (SELECT user_version FROM main.pragma_user_version()) END AS user_version
+      FROM main.pragma_data_version()`,
+    parameters,
+    (statement) => statement.get(...parameters),
+  );
+  if (typeof row?.data_version !== "number") {
+    throw new Error("SQLite did not return a numeric PRAGMA data_version");
+  }
+  return {
+    dataVersion: row.data_version,
+    schemaVersion: row.schema_version,
+    userVersion: row.user_version,
+  };
+}
+
 /** Admission observes foreign commits; explicit fresh reads never reuse an operation's probe. */
 export function readSqliteCacheDataVersion(
   database: DatabaseSync,
@@ -534,12 +559,22 @@ export function readSqliteCacheDataVersion(
   ) {
     return owner.readDataVersion;
   }
-  const dataVersion = readSqliteDataVersion(database);
+  const observation =
+    owner?.facts && owner.dataVersion !== undefined && !owner.authorizerActive
+      ? readSqliteVersionObservation(database, owner.dataVersion)
+      : undefined;
+  const dataVersion = observation?.dataVersion ?? readSqliteDataVersion(database);
   if (owner) {
+    owner.observedDataVersion = dataVersion;
     if (owner.dataVersion !== dataVersion) {
       const facts = owner.facts;
       // Data commits preserve schema-derived caches; compare both markers in one snapshot.
-      const unchanged = facts && matchesSqliteSchemaFacts(database, facts);
+      const unchanged =
+        facts &&
+        (observation
+          ? facts.schemaVersion === observation.schemaVersion &&
+            facts.userVersion === observation.userVersion
+          : matchesSqliteSchemaFacts(database, facts));
       if (!unchanged) {
         invalidate(owner);
       }

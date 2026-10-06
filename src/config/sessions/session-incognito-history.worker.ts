@@ -13,8 +13,10 @@ import { readSessionTranscriptBoundedMessageTailPageFromProjection } from "./ses
 import {
   readLatestSessionTranscriptMessageEvent,
   readRecentSessionTranscriptActiveEvents,
+  readSessionTranscriptVisibleMessageDeltaCore,
 } from "./session-accessor.sqlite-active-events.js";
 import { readSessionTranscriptCurrentTurnEntry } from "./session-accessor.sqlite-current-turn.js";
+import { readTranscriptRawDeltaInDatabase } from "./session-accessor.sqlite-delta.js";
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import { listTranscriptInstancesFromDatabase } from "./session-accessor.sqlite-history.js";
 import { readCurrentProjectionSnapshot } from "./session-accessor.sqlite-projection-read.js";
@@ -149,6 +151,23 @@ export function createIncognitoHistoryWorker(
     }
     let request: SessionHistoryReadOperationRequest;
     switch (command.type) {
+      case "session.history.raw-delta":
+        prepared = prepareHistoryRead(command.type, () =>
+          runWithSessionTranscriptReadFence(admission, () =>
+            readTranscriptRawDeltaInDatabase(database, resolvedScope, command.input.limits),
+          ),
+        );
+        return;
+      case "session.history.visible-delta":
+        prepared = prepareHistoryRead(command.type, () =>
+          runWithSessionTranscriptReadFence(admission, () =>
+            readSessionTranscriptVisibleMessageDeltaCore(target, command.input.limits, {
+              readOnly: true,
+              resolvedScope,
+            }),
+          ),
+        );
+        return;
       case "session.history.anchors":
         prepared = prepareHistoryRead(command.type, () =>
           readSessionTranscriptAnchorFactsInDatabase(database, resolvedScope, command.input),

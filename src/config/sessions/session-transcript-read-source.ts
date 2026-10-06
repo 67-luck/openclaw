@@ -31,17 +31,23 @@ import {
 } from "./session-transcript-worker-runtime.js";
 import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 
+export type SessionTranscriptWorkerReadSource = {
+  scope: SessionTranscriptReadScope & {
+    agentId: string;
+    storePath: string;
+    env: NodeJS.ProcessEnv;
+  };
+  resolved: ResolvedTranscriptReadScope;
+  owner: SessionHistoryWorkerDatabase;
+  expectedIdentity?: DatabaseFileIdentity;
+  assertCurrent: () => void;
+};
+
 /** Retain the original physical transcript through preparation, reading and consumption. */
 export async function withSessionTranscriptReadSource<T>(
   scope: SessionTranscriptReadScope,
   readInProcess: (scope: SessionTranscriptReadScope) => T | Promise<T>,
-  readInWorker: (source: {
-    scope: SessionTranscriptReadScope & { agentId: string; storePath: string };
-    resolved: ResolvedTranscriptReadScope;
-    owner: SessionHistoryWorkerDatabase;
-    expectedIdentity?: DatabaseFileIdentity;
-    assertCurrent: () => void;
-  }) => Promise<T>,
+  readInWorker: (source: SessionTranscriptWorkerReadSource) => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
   const captured = {

@@ -4,6 +4,10 @@ import type { SessionTranscriptEventMatch } from "../../sessions/transcript-visi
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { VoiceSessionLookup } from "../../talk/client-voice-session-store.js";
 import type {
+  SessionTranscriptRawDeltaLimits,
+  SessionTranscriptVisibleMessageDeltaLimits,
+} from "./session-accessor.sqlite-contract.js";
+import type {
   ResolvedTranscriptReadScope,
   ResolvedTranscriptScope,
 } from "./session-accessor.sqlite-scope-helpers.js";
@@ -83,6 +87,27 @@ export type SessionTranscriptMessagePresenceWorkerInput = Omit<
   "kind"
 > & {
   kind: "transcript-message-presence";
+};
+
+export type SessionTranscriptDeltaWorkerInput = Omit<
+  SessionTranscriptWatermarkWorkerInput,
+  "kind"
+> & {
+  resolved: ResolvedTranscriptReadScope;
+  admission?: UserTurnTranscriptAdmissionReceipt;
+} & (
+    | { kind: "transcript-raw-delta"; limits: SessionTranscriptRawDeltaLimits }
+    | { kind: "transcript-visible-delta"; limits: SessionTranscriptVisibleMessageDeltaLimits }
+  );
+
+export type SessionMemoryCaptureWorkerInput = Omit<
+  SessionTranscriptWatermarkWorkerInput,
+  "kind"
+> & {
+  kind: "session-memory-capture";
+  resolved: ResolvedTranscriptReadScope;
+  messageCount: number;
+  admission?: UserTurnTranscriptAdmissionReceipt;
 };
 
 export type VoiceSessionsWorkerInput = {

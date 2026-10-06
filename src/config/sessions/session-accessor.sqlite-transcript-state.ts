@@ -17,10 +17,7 @@ import {
   canonicalSessionKeyMigrationRequiredError,
 } from "./session-canonical-key.js";
 import { certifyCanonicalSessionValidationRow } from "./session-canonical-validation.js";
-import {
-  assertSessionTranscriptHot,
-  readSessionColdTranscript,
-} from "./session-cold-storage-state.js";
+import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import {
   foldedSessionKeyAliasCandidates,
   normalizeStoreSessionKey,
@@ -35,7 +32,19 @@ const transcriptContextVersionQuery = createSqliteQueryCache((database) => {
       db
         .selectFrom("transcript_events")
         .select((eb) => [
-          eb.fn.max<number | null>("seq").as("rawSeq"),
+          eb.fn
+            .coalesce(
+              eb
+                .selectFrom("session_transcript_cold_archives")
+                .select("last_seq")
+                .where(
+                  "session_id",
+                  "=",
+                  parameter((sessionId) => sessionId),
+                ),
+              eb.fn.max<number | null>("seq"),
+            )
+            .as("rawSeq"),
           eb
             .selectFrom("transcript_rewrite_watermarks")
             .select("generation")
@@ -67,9 +76,7 @@ export function readTranscriptContextVersionInTransaction(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionId: string,
 ) {
-  const cold = readSessionColdTranscript(database.db, sessionId);
-  const version = transcriptContextVersionQuery(database.db)(sessionId)!;
-  return cold ? { ...version, rawSeq: cold.last_seq } : version;
+  return transcriptContextVersionQuery(database.db)(sessionId)!;
 }
 
 function createTranscriptGeneration(): string {

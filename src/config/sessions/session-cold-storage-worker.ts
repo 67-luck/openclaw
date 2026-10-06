@@ -20,7 +20,6 @@ import {
   type OpenClawAgentDatabaseOptions,
 } from "../../state/openclaw-agent-db.js";
 import { readSessionGoalOperationInDatabase } from "./goals-operations.js";
-import type { SessionGoalOperation } from "./goals-operations.types.js";
 import { publishEncodedSessionTranscriptArchive } from "./session-accessor.sqlite-archive-artifact.js";
 import {
   readSessionStateDeleteSnapshot,
@@ -44,6 +43,10 @@ import {
   readSessionColdTranscript,
   type SessionColdArchive,
 } from "./session-cold-storage-state.js";
+import type {
+  SessionColdMutationResult,
+  SessionColdTurnGuard,
+} from "./session-cold-storage.types.js";
 import {
   createSessionTranscriptFtsInserter,
   deleteSessionTranscriptFtsRowsInTransaction,
@@ -53,10 +56,6 @@ import {
   createSessionTranscriptTurnKernel,
   sqliteSessionTranscriptTurnRebound,
 } from "./session-turn.kernel.js";
-import type {
-  SqliteExpectedSessionTranscriptTurnResult,
-  SqliteSessionTurnOptions,
-} from "./session-turn.types.js";
 import { prepareTranscriptPayload, transcriptEventJsonSql } from "./transcript-payload.js";
 
 const MAX_COLD_ARCHIVE_BYTES = 64 * 1024 * 1024;
@@ -87,29 +86,6 @@ export type SessionColdBatchPrepared = {
   externalizations: SessionColdExternalization[];
   oversizedSessionIds: string[];
   envelopeBytes: number;
-};
-export type SessionColdMutationResult = {
-  archivedTranscripts: number;
-  externalizedTranscripts: number;
-  restored: boolean;
-  sessionKey?: string;
-  turnRebound?: SqliteExpectedSessionTranscriptTurnResult;
-};
-export type SessionColdTurnGuard = {
-  agentId: string;
-  sessionKey: string;
-  options: Pick<
-    SqliteSessionTurnOptions,
-    | "keyFormat"
-    | "expectedSessionId"
-    | "selectedSessionId"
-    | "selectedLifecycleRevision"
-    | "expectedLifecycleRevision"
-    | "expectedWriterRunId"
-    | "expectedSessionState"
-    | "initialSessionEntry"
-  >;
-  goalOperation?: SessionGoalOperation;
 };
 export type SessionColdMutationPlan = { databaseOptions: SessionColdPlan["databaseOptions"] } & (
   | { kind: "cold-maintain" }
