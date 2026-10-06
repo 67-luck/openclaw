@@ -35,6 +35,21 @@ retention policies are unchanged.
 Session row-facts reads reuse a canonical continuation's existing transaction
 instead of nesting a savepoint. Reads without an active transaction still open
 one so entry metadata, board presence, and transcript watermarks share a snapshot.
+Board presence travels in the exact-entry query, including its single-key error
+fallback, instead of a separate Board read.
+
+Placement projections read placement, move, pending-result, journal, and environment
+facts in one statement per bounded batch. Batches share the existing read
+transaction; journal and result-claim checks consume those same snapshot facts.
+Optional columns come from admitted schema facts and refresh with that owner.
+
+Shared-state read operations retain their admission revision through their
+synchronous domain read. ACP metadata reuses at most 128 rows per connection
+under that revision; foreign commits, local writes, schema changes, and close
+invalidate reuse. Transactions and pinned or authorizer-controlled reads still
+query SQLite. Supplied shared-state writers reuse their selected handle and check
+schema and ownership after `BEGIN`, without a duplicate pre-transaction row read.
+Stored bytes, schemas, permissions, and update behavior are unchanged.
 
 Exact entry and participant readers retain their last result at the admitted
 connection revision. Repeated reads reuse those facts until a local write,
