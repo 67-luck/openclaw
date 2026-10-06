@@ -25,7 +25,7 @@ type PrivateCompletionFixture = {
   transcript: () => unknown;
   recorder: (input: unknown) => UserTurnTranscriptRecorder;
   agentCommandMock: typeof gatewayAgentCommandMock;
-  verifyChatSuccessor(signal: AbortSignal): Promise<void>;
+  verifyChatSuccessor: (signal: AbortSignal) => Promise<void>;
 };
 
 export function registerSessionsSendPrivateCompletionTests(

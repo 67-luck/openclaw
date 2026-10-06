@@ -210,7 +210,9 @@ async function startModelServer() {
     requests,
     close: async () => {
       server.closeAllConnections();
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      });
     },
   };
 }

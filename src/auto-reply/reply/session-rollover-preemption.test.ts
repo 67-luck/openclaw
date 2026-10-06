@@ -77,12 +77,12 @@ it("preempts a running turn and cancels two queued follow-ups before /new resets
     { sessionKey, sessionId, target },
     async (_operation, signal) => {
       runStarted.resolve();
-      await new Promise<void>((resolve) =>
+      await new Promise<void>((resolve) => {
         signal.addEventListener("abort", () => {
           runInterrupted = true;
           resolve();
-        }),
-      );
+        });
+      });
     },
   );
   await runStarted.promise;

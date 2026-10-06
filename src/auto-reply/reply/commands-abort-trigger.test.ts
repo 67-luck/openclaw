@@ -126,7 +126,7 @@ describe("handleAbortTrigger", () => {
     const params = buildAbortParams();
     params.command.isAuthorizedSender = true;
     params.command.senderIsOwner = true;
-    abortSessionRunTargetWithOutcomeMock.mockImplementation((params) => {
+    abortSessionRunTargetWithOutcomeMock.mockImplementation((abortParams) => {
       const outcome = {
         aborted: false,
         alreadyFinalizing: true,
@@ -140,7 +140,7 @@ describe("handleAbortTrigger", () => {
       return {
         ...outcome,
         completed: (async () => {
-          await params.stopChildren?.(async () => true);
+          await abortParams.stopChildren?.(async () => true);
           return outcome;
         })(),
       };

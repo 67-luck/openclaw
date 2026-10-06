@@ -214,9 +214,9 @@ describe("handleStopCommand target fallback", () => {
 
   it("reports a finalizing target without persisting abort state", async () => {
     const params = buildStopParams();
-    abortSessionRunTargetWithOutcomeMock.mockImplementation((params) => ({
+    abortSessionRunTargetWithOutcomeMock.mockImplementation((abortParams) => ({
       completed: (async () => {
-        const children = await params.stopChildren?.(async () => true);
+        const children = await abortParams.stopChildren?.(async () => true);
         return {
           aborted: false,
           alreadyFinalizing: true,

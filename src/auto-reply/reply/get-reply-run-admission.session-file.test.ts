@@ -11,7 +11,6 @@ import { createQueueTestRun } from "./queue.test-helpers.js";
 import { enqueueFollowupRun } from "./queue/enqueue.js";
 import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
 import { resolveFollowupRunToolAuthorityFingerprint } from "./reply-tool-authority.js";
-import { drainFormattedSystemEvents } from "./session-system-events.js";
 import { createTypingController } from "./typing.js";
 
 vi.mock("../../agents/auth-profiles/session-override.js", () => ({

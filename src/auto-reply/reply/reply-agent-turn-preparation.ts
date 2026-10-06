@@ -191,7 +191,7 @@ export async function prepareReplyAgentTurn<TConfigured = undefined>(params: {
         ...(sessionKey
           ? { kind: "session" as const, key: sessionKey, storePath: params.defaults.storePath }
           : { kind: "detached" as const }),
-        current: entryHandle.getCurrent,
+        current: () => entryHandle.getCurrent(),
         publish: (entry) => entry && entryHandle.replaceCurrent(entry),
       };
       const sessionStore = sessionKey
@@ -228,7 +228,7 @@ export async function prepareReplyAgentTurn<TConfigured = undefined>(params: {
           storePath: params.defaults.storePath,
           isHeartbeat: params.defaults.opts?.isHeartbeat === true,
           replyOperation: operation,
-          publishCheckpoint: session.publish,
+          publishCheckpoint: (entry) => session.publish(entry),
           onCompactionNotice:
             params.queued.currentInboundEventKind !== "room_event" &&
             shouldNotifyUserAboutCompaction(config)

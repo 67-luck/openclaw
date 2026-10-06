@@ -19,10 +19,6 @@ import {
   getMemoryProviderRuntimeMock,
   resolveMemorySearchConfigMock,
 } from "./compact.hooks.memory.test-support.js";
-export {
-  getMemorySearchManagerMock,
-  resolveMemorySearchConfigMock,
-} from "./compact.hooks.memory.test-support.js";
 import {
   acquireCompactHooksPreparedModelRuntime,
   createCompactHooksResolvedModel,
@@ -40,6 +36,11 @@ import {
 import { createCompactionSessionManagerMock } from "./compact.session-manager.test-support.js";
 import type { resolveModelAsync } from "./model.js";
 import type { attemptServerEndpointCompaction } from "./server-endpoint-compaction.js";
+
+export {
+  getMemorySearchManagerMock,
+  resolveMemorySearchConfigMock,
+} from "./compact.hooks.memory.test-support.js";
 
 type MockEmbeddedAgentStreamFn = Mock<
   (model?: unknown, context?: unknown, options?: unknown) => unknown

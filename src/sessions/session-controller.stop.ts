@@ -671,7 +671,7 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
       }
       return resolveStopOutcome(currentParentResult, externalStatus, childResult);
     },
-    async (error) => {
+    async (error: unknown) => {
       await runPostParent?.();
       throw error;
     },

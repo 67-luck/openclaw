@@ -192,7 +192,8 @@ describe("controller mailbox scheduling", () => {
     expect(findSessionControllerEntry(key)).toBeUndefined();
   });
   it("does not let pre-dispatch bypass an older preparing input or retain a failed claim request", async () => {
-    using _enabled = vi.spyOn(diagnosticLogger, "isEnabled").mockReturnValue(true);
+    using enabled = vi.spyOn(diagnosticLogger, "isEnabled");
+    enabled.mockReturnValue(true);
     using phases = vi.spyOn(diagnosticLogger, "info").mockImplementation(() => undefined);
     const first = reserveSessionControllerSource(key, { policy: { mode: "followup" } });
     const second = reserveSessionControllerSource(key, { policy: { mode: "followup" } });
