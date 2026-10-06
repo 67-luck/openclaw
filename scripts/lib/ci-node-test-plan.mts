@@ -3480,8 +3480,22 @@ function splitHostedReleaseShard(shard: NodeTestShard): NodeTestShard[] {
       stripes,
     });
   const original = generation([files]);
+  let historicalWholeSeconds = 0;
   const singletonCosts = new Map<string, number>();
   for (const [key, cost] of Object.entries(timings)) {
+    const parsed = parseCompactSplitTimingKey(key);
+    const historicalFileCount = Number(parsed?.selectorKey.match(/#selector-(\d+)-/u)?.[1]);
+    if (
+      parsed?.parentShardName === parentShardName &&
+      parsed.expectedParts === 1 &&
+      Number.isSafeInteger(historicalFileCount) &&
+      historicalFileCount > 0
+    ) {
+      historicalWholeSeconds = Math.max(
+        historicalWholeSeconds,
+        Math.ceil(cost * Math.max(1, files.length / historicalFileCount)),
+      );
+    }
     const singleton = key.match(/#include-1-[a-f0-9]{12}$/u)?.[0];
     if (singleton && key.startsWith(`${original.selectorKey}#generation-`)) {
       singletonCosts.set(singleton, Math.max(singletonCosts.get(singleton) ?? 0, cost));
@@ -3496,6 +3510,7 @@ function splitHostedReleaseShard(shard: NodeTestShard): NodeTestShard[] {
     timings[parentShardName] ?? 0,
     timings[original.timingKeys[0]!] ?? 0,
     readCompleteSplitGenerationSeconds(timings, original.selectorKey) ?? 0,
+    historicalWholeSeconds,
   );
   if (seconds <= budget) {
     return [
