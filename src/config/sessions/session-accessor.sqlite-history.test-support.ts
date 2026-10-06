@@ -72,14 +72,14 @@ export function insertSyntheticHistory(
     "INSERT INTO transcript_events (session_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)",
   );
   const insertIdentity = database.db.prepare(
-    `INSERT INTO transcript_event_identities
+    `INSERT INTO transcript_event_identity_rows
        (session_id, event_id, seq, event_type, parent_id, message_idempotency_key, created_at)
-     VALUES (?, ?, ?, ?, NULL, NULL, ?)`,
+     VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), ?, ?, ?, NULL, NULL, ?)`,
   );
   const insertActive = database.db.prepare(
-    `INSERT INTO session_transcript_active_events
+    `INSERT INTO session_transcript_active_rows
        (session_id, active_position, event_seq, message_position, context_eligible)
-     VALUES (?, ?, ?, ?, 1)`,
+     VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), ?, ?, ?, 1)`,
   );
   runSqliteImmediateTransactionSync(database.db, () => {
     for (let seq = 2; seq <= lastSeq; seq += 1) {

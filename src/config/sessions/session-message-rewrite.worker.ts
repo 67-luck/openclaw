@@ -2,7 +2,10 @@ import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
-import { assertTransactionUsable } from "../../infra/sqlite-transaction.js";
+import {
+  assertTransactionUsable,
+  runSqliteDeferredTransactionSync,
+} from "../../infra/sqlite-transaction.js";
 import type { SqliteWorkerBackend } from "../../infra/sqlite-worker-contract.js";
 import { getSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
 import {
@@ -136,7 +139,9 @@ export function bindSqliteWorkerBackend(
         case "session.transcript.correct":
           return commitSessionTranscriptCorrection(command.input, context);
         case "session.messageRewrite.prepare":
-          return prepareSessionMessageRewrite(command.input, context);
+          return runSqliteDeferredTransactionSync(bound.database, () =>
+            prepareSessionMessageRewrite(command.input, context),
+          );
         case "session.messageRewrite.commit":
           return commitSessionMessageRewrite(command.input, context);
       }

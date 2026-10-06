@@ -261,6 +261,26 @@ it("defers a real reader-held initial WAL checkpoint after closing the compactor
   });
 });
 
+it("lets updates continue when agent metadata conversion defers full reclamation", async () => {
+  await withOpenClawTestState({ scenario: "external-service" }, async (state) => {
+    const { shared, agents } = await seed(state, true);
+    const [agentTarget] = agents;
+    assert.isDefined(agentTarget);
+    {
+      using database = openNodeSqliteDatabase(agentTarget.path);
+      database.exec("UPDATE transcript_storage_migration SET phase = 'identities'");
+    }
+    const before = fs.readFileSync(agentTarget.path);
+    const result = await convert(state, { agents });
+    expect(result.warnings).toEqual([
+      expect.stringMatching(/Transcript metadata migration is pending.*The update can continue/),
+    ]);
+    expect(inspect(shared).mode).toBe(2);
+    expect(inspect(agentTarget.path).mode).toBe(0);
+    expect(fs.readFileSync(agentTarget.path)).toEqual(before);
+  });
+});
+
 it("preserves real integrity failure as unsafe when cancellation arrives with it", async () => {
   await withOpenClawTestState({ scenario: "external-service" }, async (state) => {
     const { shared } = await seed(state);

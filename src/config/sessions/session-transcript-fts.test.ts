@@ -205,8 +205,10 @@ describe("exact session transcript FTS ownership", () => {
           json_object('type','message','id','bulk-'||n,
             'parentId',CASE WHEN n=0 THEN 'target-3' ELSE 'bulk-'||(n-1) END,
             'message',json_object('role','user','content','needle bulk-'||n)), n+4 FROM rows;
-        INSERT INTO session_transcript_active_events
-          SELECT session_id,seq,seq,seq,1 FROM transcript_events WHERE session_id='target' AND seq>=4;
+        INSERT INTO session_transcript_active_rows
+          SELECT storage.sid,event.seq,event.seq,event.seq,1 FROM transcript_events AS event
+          JOIN transcript_storage_sessions AS storage ON storage.session_id=event.session_id
+          WHERE event.session_id='target' AND event.seq>=4;
         INSERT INTO session_transcript_fts(text,session_id,message_id,role,timestamp)
           SELECT 'needle bulk-'||(seq-4),session_id,'bulk-'||(seq-4),'user',seq
           FROM transcript_events WHERE session_id='target' AND seq>=4;

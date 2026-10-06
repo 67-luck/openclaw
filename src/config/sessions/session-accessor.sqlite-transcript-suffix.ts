@@ -3,6 +3,7 @@ import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
+import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import {
@@ -36,6 +37,7 @@ import {
   projectTranscriptRetainedDataSql,
   stageRetainedTranscriptData,
 } from "./session-transcript-retained-data.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 import {
   prepareFullTranscriptSuffixMutation,
   prepareTranscriptIndexProjection,
@@ -164,6 +166,7 @@ function prepareIncrementalTranscriptSuffixMutation(
     );
   }
   const db = getSessionKysely(database.db);
+  const storage = readSessionTranscriptStorage(database.db, resolved.sessionId);
   const storedTail = readTranscriptSuffixStorageRows(
     database,
     resolved.sessionId,
@@ -201,6 +204,7 @@ function prepareIncrementalTranscriptSuffixMutation(
   });
   const idempotencyMutation = prepareIncrementalSuffixIdempotencyMutation({
     database,
+    storage,
     expectedRows,
     next,
     resolved,
@@ -209,6 +213,7 @@ function prepareIncrementalTranscriptSuffixMutation(
   const projectionWasHealthy = !sessionTranscriptIndexNeedsReconcile(
     database.db,
     resolved.sessionId,
+    storage,
   );
   const suffix = { expectedRows, next, nextCreatedAt, prefixLength: 0, startSeq };
   const prepareReconciledMutation = (): SqliteTranscriptSuffixMutationPlan => {
@@ -241,8 +246,8 @@ function prepareIncrementalTranscriptSuffixMutation(
     ? executeSqliteQueryTakeFirstSync(
         database.db,
         db
-          .selectFrom("transcript_event_identities as identity")
-          .innerJoin("session_transcript_active_events as active", (join) =>
+          .selectFrom(storage.identities().as("identity"))
+          .innerJoin(storage.activeEvents().as("active"), (join) =>
             join
               .onRef("active.session_id", "=", "identity.session_id")
               .onRef("active.event_seq", "=", "identity.seq"),
@@ -270,7 +275,7 @@ function prepareIncrementalTranscriptSuffixMutation(
   const changedEventWasActive = executeSqliteQueryTakeFirstSync(
     database.db,
     db
-      .selectFrom("session_transcript_active_events")
+      .selectFrom(storage.activeEvents().as("session_transcript_active_events"))
       .select("event_seq")
       .where("session_id", "=", resolved.sessionId)
       .where("event_seq", "=", startSeq),
@@ -285,8 +290,8 @@ function prepareIncrementalTranscriptSuffixMutation(
   const activeSuffixRows = executeSqliteQuerySync(
     database.db,
     db
-      .selectFrom("transcript_event_identities as identity")
-      .innerJoin("session_transcript_active_events as active", (join) =>
+      .selectFrom(storage.identities().as("identity"))
+      .innerJoin(storage.activeEvents().as("active"), (join) =>
         join
           .onRef("active.session_id", "=", "identity.session_id")
           .onRef("active.event_seq", "=", "identity.seq"),
@@ -307,7 +312,7 @@ function prepareIncrementalTranscriptSuffixMutation(
   const retainedMessagePosition = executeSqliteQueryTakeFirstSync(
     database.db,
     db
-      .selectFrom("session_transcript_active_events")
+      .selectFrom(storage.activeEvents().as("session_transcript_active_events"))
       .select("message_position")
       .where("session_id", "=", resolved.sessionId)
       .where("active_position", "<", retainedActiveCount)
@@ -371,20 +376,26 @@ export function prepareSqliteTranscriptSuffixMutation(
   eventsStartAtPersistedPrefix = false,
   retainedCustomDataIds: readonly string[] = [],
 ): SqliteTranscriptSuffixMutationPlan {
-  if (persistedPrefixLength > 0 || eventsStartAtPersistedPrefix) {
-    const plan = prepareIncrementalTranscriptSuffixMutation(
-      database,
-      resolved,
-      expectedEvents,
-      nextEvents,
-      persistedPrefixLength,
-      expectedMutationAt,
-      eventsStartAtPersistedPrefix,
-      retainedCustomDataIds,
-    );
-    return { ...plan, retainedCustomDataIds };
-  }
-  return prepareFullTranscriptSuffixMutation(database, resolved, expectedEvents, nextEvents);
+  return runSqliteDeferredTransactionSync(
+    database.db,
+    () => {
+      if (persistedPrefixLength > 0 || eventsStartAtPersistedPrefix) {
+        const plan = prepareIncrementalTranscriptSuffixMutation(
+          database,
+          resolved,
+          expectedEvents,
+          nextEvents,
+          persistedPrefixLength,
+          expectedMutationAt,
+          eventsStartAtPersistedPrefix,
+          retainedCustomDataIds,
+        );
+        return { ...plan, retainedCustomDataIds };
+      }
+      return prepareFullTranscriptSuffixMutation(database, resolved, expectedEvents, nextEvents);
+    },
+    { operationLabel: "session.transcript.prepare-suffix" },
+  );
 }
 
 /** Mutates an exact transcript suffix while retaining a healthy materialized projection. */
@@ -437,15 +448,16 @@ export function replaceSqliteTranscriptSuffixInTransaction(
     return;
   }
 
+  const storage = readSessionTranscriptStorage(database.db, resolved.sessionId);
   const projectionIsHealthy =
     plan.incremental?.projectionWasHealthy !== false &&
-    !sessionTranscriptIndexNeedsReconcile(database.db, resolved.sessionId);
+    !sessionTranscriptIndexNeedsReconcile(database.db, resolved.sessionId, storage);
   const suffixIdentityKeys = new Map(
     plan.incremental?.suffixIdentityKeys ??
       executeSqliteQuerySync(
         database.db,
         db
-          .selectFrom("transcript_event_identities")
+          .selectFrom(storage.identities().as("transcript_event_identities"))
           .select(["event_id", "message_idempotency_key"])
           .where("session_id", "=", resolved.sessionId)
           .where("seq", ">=", plan.startSeq),
@@ -474,8 +486,8 @@ export function replaceSqliteTranscriptSuffixInTransaction(
   executeSqliteQuerySync(
     database.db,
     db
-      .deleteFrom("transcript_event_identities")
-      .where("session_id", "=", resolved.sessionId)
+      .deleteFrom(storage.identityTable)
+      .where("session_id", "=", storage.key)
       .where("seq", ">=", plan.startSeq),
   );
   executeSqliteQuerySync(
@@ -536,7 +548,7 @@ export function replaceSqliteTranscriptSuffixInTransaction(
     const unownedPrefixRows = executeSqliteQuerySync(
       database.db,
       db
-        .selectFrom("transcript_event_identities as identity")
+        .selectFrom(storage.identities().as("identity"))
         .innerJoin("transcript_events as event", (join) =>
           join
             .onRef("event.session_id", "=", "identity.session_id")
@@ -561,7 +573,7 @@ export function replaceSqliteTranscriptSuffixInTransaction(
     const currentOwner = executeSqliteQueryTakeFirstSync(
       database.db,
       db
-        .selectFrom("transcript_event_identities")
+        .selectFrom(storage.identities().as("transcript_event_identities"))
         .select("event_id")
         .where("session_id", "=", resolved.sessionId)
         .where("message_idempotency_key", "=", key)
@@ -572,9 +584,9 @@ export function replaceSqliteTranscriptSuffixInTransaction(
       executeSqliteQuerySync(
         database.db,
         db
-          .updateTable("transcript_event_identities")
+          .updateTable(storage.identityTable)
           .set({ message_idempotency_key: key })
-          .where("session_id", "=", resolved.sessionId)
+          .where("session_id", "=", storage.key)
           .where("event_id", "=", replacementEventId),
       );
     }
@@ -584,17 +596,22 @@ export function replaceSqliteTranscriptSuffixInTransaction(
   // cursor generation in the same transaction so a resumed reader cannot silently skip replacements.
   rotateTranscriptGenerationInTransaction(database, resolved.sessionId);
   if (projectionIsHealthy) {
-    replaceSessionTranscriptIndexSuffixInTransaction(database.db, resolved.sessionId, {
-      unchangedBeforeSeq: plan.startSeq,
-      ...(plan.previousProjection ? { previous: plan.previousProjection } : {}),
-      next: plan.nextProjection,
-      ...(plan.incremental
-        ? {
-            removedMessageIds: plan.incremental.removedMessageIds,
-            retainedActiveCount: plan.incremental.retainedActiveCount,
-          }
-        : {}),
-    });
+    replaceSessionTranscriptIndexSuffixInTransaction(
+      database.db,
+      resolved.sessionId,
+      {
+        unchangedBeforeSeq: plan.startSeq,
+        ...(plan.previousProjection ? { previous: plan.previousProjection } : {}),
+        next: plan.nextProjection,
+        ...(plan.incremental
+          ? {
+              removedMessageIds: plan.incremental.removedMessageIds,
+              retainedActiveCount: plan.incremental.retainedActiveCount,
+            }
+          : {}),
+      },
+      storage,
+    );
   } else {
     markSessionTranscriptIndexDirtyInTransaction(database.db, resolved.sessionId);
     projection.onProjectionReconcileNeeded?.();

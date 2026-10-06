@@ -28,7 +28,7 @@ export function withRecentSessionTranscriptActiveEventsInSnapshot<T>(
   const limit = resolveIntegerOption(maxEvents, 0, { min: 0 });
   const db = getActiveTranscriptKysely(projection.database);
   const query = db
-    .selectFrom("session_transcript_active_events as active")
+    .selectFrom(projection.storage.activeEvents().as("active"))
     .innerJoin("transcript_events as event", (join) =>
       join
         .onRef("event.session_id", "=", "active.session_id")

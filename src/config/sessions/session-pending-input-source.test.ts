@@ -87,7 +87,7 @@ describe("submitted input source evidence", () => {
         } else {
           const payload = prepareTranscriptPayload(db, `{"message":${messageJson}}`);
           db.prepare(
-            "UPDATE transcript_events SET event_json = ?, event_zstd = ?, event_utf8_bytes = ?, navigation_json = ? WHERE session_id = ? AND seq = (SELECT seq FROM transcript_event_identities WHERE session_id = ? AND event_id = ?)",
+            "UPDATE transcript_events SET event_json = ?, event_zstd = ?, event_utf8_bytes = ?, navigation_json = ? WHERE session_id = ? AND seq = (SELECT seq FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = ?)",
           ).run(
             payload.event_json,
             payload.event_zstd,

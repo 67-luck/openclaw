@@ -176,7 +176,7 @@ it.each([false, true])("keeps history marker reads selective (analyzed=%s)", asy
   expect(branch.page.events.map(({ seq }) => seq)).toEqual(
     Array.from({ length: 20 }, (_, index) => index + 3),
   );
-  expect(branch.drivingSearch).toMatch(/^SEARCH active .*\(session_id=\?/u);
+  expect(branch.drivingSearch).toMatch(/^SEARCH session_transcript_active_rows .*\(session_id=\?/u);
   expect(readSessionTranscriptHistoryEventCount(denseScope)).toBe(22);
 
   // Discarded ordinary messages do not justify scanning a branch with few markers.

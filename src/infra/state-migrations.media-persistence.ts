@@ -13,6 +13,7 @@ import { reconcileSessionTranscriptIndexInTransaction } from "../config/sessions
 import {
   AGENT_MEDIA_SCHEMA_VERSION,
   AGENT_STORAGE_SCHEMA_VERSION,
+  TRANSCRIPT_STORAGE_SCHEMA_VERSION,
 } from "../state/openclaw-agent-db-contract.js";
 import {
   assertAgentDatabaseMaintenanceAuthority,
@@ -29,6 +30,7 @@ import {
 import {
   assertOpenClawAgentSchemaContains,
   assertSupportedAgentSchemaVersion,
+  getOpenClawAgentMigrationSchema,
 } from "../state/openclaw-agent-db-schema-helpers.js";
 import {
   ensureOpenClawAgentDatabaseSchemaSteps,
@@ -40,9 +42,6 @@ import {
   OPENCLAW_AGENT_SCHEMA_VERSION,
   clearOpenClawAgentDatabaseOpenFailure,
 } from "../state/openclaw-agent-db.js";
-import { withLegacySessionParticipantsSchema } from "../state/openclaw-agent-participants-migration.js";
-import { OPENCLAW_AGENT_SCHEMA_SQL } from "../state/openclaw-agent-schema.js";
-import { withLegacyAgentStorageSchema } from "../state/openclaw-agent-storage-schema.js";
 import { readOpenClawDatabaseQuarantineFailure } from "../state/openclaw-quarantine-store.js";
 import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db.js";
@@ -62,7 +61,7 @@ import { assertSqliteIntegrity, isTerminalSqliteIntegrityError } from "./sqlite-
 import { configureSqliteMaintenanceCache } from "./sqlite-maintenance-cache.js";
 import { refreshSqlitePlannerStatistics } from "./sqlite-planner-statistics.js";
 import { resolveSqliteInspectionSignal } from "./sqlite-readonly-worker.js";
-import { readSqliteDataVersion } from "./sqlite-schema-facts.js";
+import { admitSqliteSchema, readSqliteDataVersion } from "./sqlite-schema-facts.js";
 import {
   runSqliteDeferredTransactionSync,
   runSqliteImmediateTransactionSync,
@@ -230,12 +229,7 @@ async function migrateAgentDatabase(params: {
     };
     assertMediaSchemaMigration();
     const schemaMode = userVersion < OPENCLAW_AGENT_SCHEMA_VERSION ? "legacy" : "current";
-    const schemaSql =
-      schemaMode === "legacy"
-        ? withLegacySessionParticipantsSchema(
-            withLegacyAgentStorageSchema(OPENCLAW_AGENT_SCHEMA_SQL),
-          )
-        : OPENCLAW_AGENT_SCHEMA_SQL;
+    const schemaSql = getOpenClawAgentMigrationSchema(userVersion);
     // Remove after 2026-10-12: drop the v15-to-v16 media cutover once schema 16 is the support floor.
     if (userVersion === PREVIOUS_MEDIA_SCHEMA_VERSION) {
       repairCanonicalSqliteIndexes(database, params.pathname, schemaSql, {
@@ -244,6 +238,7 @@ async function migrateAgentDatabase(params: {
       });
     }
     assertOpenClawAgentSchemaContains(database, params.pathname, schemaSql, schemaMode);
+    admitSqliteSchema(database);
     const legacyTextStorage = userVersion < AGENT_STORAGE_SCHEMA_VERSION;
     const needsRepair =
       mediaSchemaUpgrade ||
@@ -280,6 +275,7 @@ async function migrateAgentDatabase(params: {
             pathname: params.pathname,
             writer: owner,
             legacyTextStorage,
+            legacyMetadataStorage: userVersion < TRANSCRIPT_STORAGE_SCHEMA_VERSION,
             onChangedSession: legacyTextStorage
               ? (sessionId) => {
                   changedLegacySessions.add(sessionId);

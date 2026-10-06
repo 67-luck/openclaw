@@ -158,8 +158,8 @@ export function readPreviousIndexedTranscriptEventSync(
       const row = executeSqliteQueryTakeFirstSync(
         projection.database.db,
         db
-          .selectFrom("transcript_event_identities as identity")
-          .innerJoin("session_transcript_active_events as active", (join) =>
+          .selectFrom(projection.storage.identities("sequence").as("identity"))
+          .innerJoin(projection.storage.activeEvents().as("active"), (join) =>
             join
               .onRef("active.session_id", "=", "identity.session_id")
               .onRef("active.event_seq", "=", "identity.seq"),

@@ -107,6 +107,8 @@ export async function assertDoctorMaintenanceReady(
 ): Promise<{ schemaPublicationDeferred: boolean }> {
   let schemaPublicationDeferred = false;
   let refusedDatabasePaths: string[] = [];
+  let transcriptStorageTargets: readonly { agentId: string; path: string; realPath?: string }[] =
+    [];
   const { assertSessionStoreMigrationComplete } =
     await import("../config/sessions/startup-migration.js");
   assertSessionStoreMigrationComplete({ cfg, env, operation: "doctor" });
@@ -123,8 +125,21 @@ export async function assertDoctorMaintenanceReady(
     onVerified: (schemas) => {
       refusedDatabasePaths = schemas.agentRefusals?.flatMap((refusal) => refusal.paths) ?? [];
     },
+    onAgentDatabaseDiscovery: (prepared) => {
+      transcriptStorageTargets = prepared.discovery.targets;
+    },
     configuredAgentDatabaseTargets: resolveConfiguredAgentDatabaseTargets(cfg, { env }),
   });
+  const { assertDoctorTranscriptStorageComplete } =
+    await import("./doctor-transcript-storage-maintenance.js");
+  assertDoctorTranscriptStorageComplete(
+    transcriptStorageTargets.filter(
+      (target) =>
+        !refusedDatabasePaths.some(
+          (refused) => refused === target.path || refused === target.realPath,
+        ),
+    ),
+  );
   const { assertConfiguredWorkspaceStateReady } = await import("../agents/workspace-state-dirs.js");
   await assertConfiguredWorkspaceStateReady({ cfg, operation: "doctor" });
   const { assertNoPendingLegacyExecApprovals } =

@@ -13,6 +13,7 @@ import type {
 import { sessionTranscriptIndexNeedsReconcile } from "./session-transcript-index.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 
 /** Read comparison evidence only; recovered custody is claimed by the current host owner. */
 export function readPendingInputSourceInDatabase(
@@ -58,13 +59,14 @@ export function readPendingInputSourceInDatabase(
       }
       snapshot.pending = executeSqliteQueryTakeFirstSync(database.db, pendingQuery.selectAll());
     } else if (!input.pendingOnly) {
-      if (sessionTranscriptIndexNeedsReconcile(database.db, input.sessionId)) {
+      const storage = readSessionTranscriptStorage(database.db, input.sessionId);
+      if (sessionTranscriptIndexNeedsReconcile(database.db, input.sessionId, storage)) {
         throw new SessionTranscriptProjectionUnavailableError(input.sessionId);
       }
       const transcript = executeSqliteQueryTakeFirstSync(
         database.db,
         db
-          .selectFrom("transcript_event_identities as identity")
+          .selectFrom(storage.identities().as("identity"))
           .innerJoin("transcript_events as event", (join) =>
             join
               .onRef("event.session_id", "=", "identity.session_id")

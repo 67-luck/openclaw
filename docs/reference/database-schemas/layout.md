@@ -92,6 +92,20 @@ Payload version 1 records the recap text, generation time, session ID and lifecy
 
 The latest recap survives restart and archival. Deleting the session removes it; reset or replacement makes the prior lifecycle's recap unusable. Incognito sessions do not persist or generate this cache. A shared, bounded Gateway queue deduplicates generation across viewers, retains the previous recap on failure, and uses only the configured utility route. Disabling that route stops new generation. Removing or ignoring the optional field is a rollback path that leaves session and transcript data intact; removing the feature does not require reversing a database migration.
 
+### Transcript metadata storage
+
+Agent schema 25 stores compact transcript identities in
+`transcript_event_identity_rows` and active positions in
+`session_transcript_active_rows`, using integer keys from
+`transcript_storage_sessions`. The transcript accessor preserves external string
+IDs. During bounded Doctor conversion, each session's mapping selects one
+authoritative layout; the previous tables are migration input rather than a
+second transcript owner. `transcript_storage_migration` records resumable
+progress, including across interrupted maintenance runs. Doctor keeps writers
+stopped until conversion completes; the Gateway neither starts nor schedules it.
+Payload records remain unchanged in `transcript_events`, with exactly
+one plain TEXT or ordinary-zstd representation. See [compact transcript metadata](/reference/database-schemas/agent-schema-history#compact-transcript-metadata).
+
 ### Transcript search row ownership
 
 In agent schema 23, `session_transcript_fts_rows` maps each FTS `rowid` to its

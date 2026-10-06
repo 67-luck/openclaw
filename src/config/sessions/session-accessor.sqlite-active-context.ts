@@ -67,8 +67,8 @@ function readBoundedRetentionRanges(
     const anchors = executeSqliteQuerySync(
       projection.database.db,
       db
-        .selectFrom("transcript_event_identities as identity")
-        .innerJoin("session_transcript_active_events as active", (join) =>
+        .selectFrom(projection.storage.identities().as("identity"))
+        .innerJoin(projection.storage.activeEvents().as("active"), (join) =>
           join
             .onRef("active.session_id", "=", "identity.session_id")
             .onRef("active.event_seq", "=", "identity.seq"),
@@ -140,8 +140,8 @@ function readUnindexedLogicalParents(
   const rows = executeSqliteQuerySync(
     projection.database.db,
     getActiveTranscriptKysely(projection.database)
-      .selectFrom("session_transcript_active_events as active")
-      .leftJoin("session_transcript_active_events as previous", (join) =>
+      .selectFrom(projection.storage.activeEvents().as("active"))
+      .leftJoin(projection.storage.activeEvents().as("previous"), (join) =>
         join
           .onRef("previous.session_id", "=", "active.session_id")
           .on((eb) => eb("previous.active_position", "=", eb("active.active_position", "-", 1))),
@@ -202,6 +202,7 @@ export function readSessionTranscriptBoundedActiveContextCore(
       ? undefined
       : resolveSqliteSessionTranscriptReadFence({
           database: projection.database,
+          storage: projection.storage,
           ...projection.resolved,
         });
     const transcript = db
@@ -241,7 +242,7 @@ export function readSessionTranscriptBoundedActiveContextCore(
     const metadata = iterateSqliteQuerySync(
       projection.database.db,
       db
-        .selectFrom("session_transcript_active_events as active")
+        .selectFrom(projection.storage.activeEvents().as("active"))
         .innerJoin("transcript_events as event", (join) =>
           join
             .onRef("event.session_id", "=", "active.session_id")
@@ -285,8 +286,8 @@ export function readSessionTranscriptBoundedActiveContextCore(
       db
         .selectFrom(
           db
-            .selectFrom("transcript_event_identities as identity")
-            .innerJoin("session_transcript_active_events as active", (join) =>
+            .selectFrom(projection.storage.identities().as("identity"))
+            .innerJoin(projection.storage.activeEvents().as("active"), (join) =>
               join
                 .onRef("active.session_id", "=", "identity.session_id")
                 .onRef("active.event_seq", "=", "identity.seq"),
@@ -372,20 +373,20 @@ export function readSessionTranscriptBoundedActiveContextCore(
             : executeSqliteQuerySync(
                 projection.database.db,
                 db
-                  .selectFrom("session_transcript_active_events as active")
-                  .innerJoin("transcript_event_identities as entry", (join) =>
+                  .selectFrom(projection.storage.activeEvents().as("active"))
+                  .innerJoin(projection.storage.identities().as("entry"), (join) =>
                     join
                       .onRef("entry.session_id", "=", "active.session_id")
                       .onRef("entry.seq", "=", "active.event_seq"),
                   )
-                  .leftJoin("session_transcript_active_events as previous", (join) =>
+                  .leftJoin(projection.storage.activeEvents().as("previous"), (join) =>
                     join
                       .onRef("previous.session_id", "=", "active.session_id")
                       .on((eb) =>
                         eb("previous.active_position", "=", eb("active.active_position", "-", 1)),
                       ),
                   )
-                  .leftJoin("transcript_event_identities as parent", (join) =>
+                  .leftJoin(projection.storage.identities().as("parent"), (join) =>
                     join
                       .onRef("parent.session_id", "=", "previous.session_id")
                       .onRef("parent.seq", "=", "previous.event_seq"),

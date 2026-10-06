@@ -10,6 +10,7 @@ import {
 } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import { getSessionEntryWriteQueries } from "../config/sessions/session-accessor.sqlite-entry-write-queries.js";
 import { bindSessionNode } from "../config/sessions/session-accessor.sqlite-session-row.js";
+import { prepareTranscriptPayload } from "../config/sessions/transcript-payload.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { assertCanonicalSessionValidationSchema } from "./openclaw-agent-canonical-validation-schema.js";
@@ -22,6 +23,7 @@ import {
 } from "./openclaw-agent-db.js";
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import { withoutSessionEntrySnapshotsSchema } from "./openclaw-agent-session-snapshots-schema.js";
+import { withoutTranscriptStorageSchema } from "./openclaw-agent-transcript-storage-schema.js";
 
 function largeEntry(index: number): SessionEntry {
   const sessionId = `session-${index}`;
@@ -53,8 +55,25 @@ function largeEntry(index: number): SessionEntry {
   };
 }
 
+function restoreLegacyValidityTriggers(database: DatabaseSync) {
+  database.exec(`DROP TRIGGER IF EXISTS session_nodes_entry_valid_after_update;
+    CREATE TRIGGER session_nodes_entry_valid_after_entry_update
+    AFTER UPDATE OF entry_json ON session_nodes
+    BEGIN
+      UPDATE session_nodes SET entry_valid = 0 WHERE session_key = NEW.session_key;
+    END;
+    CREATE TRIGGER session_nodes_entry_valid_after_identity_update
+    AFTER UPDATE OF current_session_id, updated_at ON session_nodes
+    BEGIN
+      UPDATE session_nodes SET entry_valid = 0 WHERE session_key = NEW.session_key;
+    END;`);
+}
+
 function seedV23(database: DatabaseSync, count: number) {
-  database.exec(withoutSessionEntrySnapshotsSchema(OPENCLAW_AGENT_SCHEMA_SQL));
+  database.exec(
+    withoutSessionEntrySnapshotsSchema(withoutTranscriptStorageSchema(OPENCLAW_AGENT_SCHEMA_SQL)),
+  );
+  restoreLegacyValidityTriggers(database);
   database.exec(`PRAGMA user_version = 23;
     INSERT INTO schema_meta(meta_key, role, schema_version, agent_id, app_version, created_at, updated_at)
     VALUES ('primary', 'agent', 23, 'main', '2026.9.4', 1, 1)`);
@@ -85,7 +104,21 @@ function seedV23(database: DatabaseSync, count: number) {
 }
 
 function transcriptRows(database: DatabaseSync) {
-  return database.prepare("SELECT rowid, * FROM transcript_events ORDER BY rowid").all();
+  return database
+    .prepare(`SELECT rowid, session_id, seq, event_json, created_at,
+    event_zstd, event_utf8_bytes, navigation_json FROM transcript_events ORDER BY rowid`)
+    .all();
+}
+
+function transcriptMetadataRows(database: DatabaseSync) {
+  return {
+    identities: database
+      .prepare("SELECT rowid, * FROM transcript_event_identities ORDER BY rowid")
+      .all(),
+    active: database
+      .prepare("SELECT rowid, * FROM session_transcript_active_events ORDER BY rowid")
+      .all(),
+  };
 }
 
 function snapshotRows(database: DatabaseSync) {
@@ -309,19 +342,9 @@ function observeUpdates(database: DatabaseSync) {
 }
 
 function seedV24(database: DatabaseSync) {
-  database.exec(OPENCLAW_AGENT_SCHEMA_SQL);
+  database.exec(withoutTranscriptStorageSchema(OPENCLAW_AGENT_SCHEMA_SQL));
+  restoreLegacyValidityTriggers(database);
   database.exec(`
-    DROP TRIGGER IF EXISTS session_nodes_entry_valid_after_update;
-    CREATE TRIGGER IF NOT EXISTS session_nodes_entry_valid_after_entry_update
-    AFTER UPDATE OF entry_json ON session_nodes
-    BEGIN
-      UPDATE session_nodes SET entry_valid = 0 WHERE session_key = NEW.session_key;
-    END;
-    CREATE TRIGGER IF NOT EXISTS session_nodes_entry_valid_after_identity_update
-    AFTER UPDATE OF current_session_id, updated_at ON session_nodes
-    BEGIN
-      UPDATE session_nodes SET entry_valid = 0 WHERE session_key = NEW.session_key;
-    END;
     PRAGMA user_version = 24;
     INSERT INTO schema_meta (meta_key, role, schema_version, agent_id, created_at, updated_at)
     VALUES ('primary', 'agent', 24, 'main', 1, 1);
@@ -339,10 +362,74 @@ function seedV24(database: DatabaseSync) {
     .prepare(`INSERT INTO session_windows(session_id, session_key, created_at, updated_at)
     VALUES (?, ?, 1, 1)`)
     .run(entry.sessionId, key);
+  const insert = database.prepare(`INSERT INTO transcript_events
+    (session_id, seq, created_at, event_json, event_zstd, event_utf8_bytes, navigation_json)
+    VALUES (?, ?, 1, ?, ?, ?, ?)`);
+  for (const [seq, text] of [
+    "small 雪",
+    "Synthetic transcript content 雪🦞 ".repeat(256),
+  ].entries()) {
+    const event = ` ${JSON.stringify({
+      type: "message",
+      id: `event-${seq}`,
+      parentId: seq === 0 ? null : "event-0",
+      message: { role: seq === 0 ? "user" : "assistant", content: [{ type: "text", text }] },
+    })}\n`;
+    const payload = prepareTranscriptPayload(database, event);
+    insert.run(
+      entry.sessionId,
+      seq,
+      payload.event_json,
+      payload.event_zstd,
+      payload.event_utf8_bytes,
+      payload.navigation_json,
+    );
+  }
+  database.exec(`INSERT INTO transcript_event_identities
+    (rowid, session_id, event_id, seq, event_type, parent_id, message_idempotency_key, created_at)
+    VALUES (11, 'validity-session', 'event-0', 0, 'message', NULL, NULL, 1),
+      (23, 'validity-session', 'event-1', 1, 'message', 'event-0', 'original-request', 1);
+    INSERT INTO session_transcript_active_events
+      (rowid, session_id, active_position, event_seq, message_position, context_eligible)
+    VALUES (31, 'validity-session', 0, 0, 0, 1), (47, 'validity-session', 1, 1, 1, 1);`);
   return { queries, node };
 }
 
-it("replaces v24 triggers atomically and preserves raw invalidation and canonical settlement", async () => {
+it.each(["transcript_event_identities", "session_transcript_active_events"] as const)(
+  "preserves unknown additive metadata on %s instead of admitting lossy conversion",
+  async (table) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const options = { agentId: "main", path: state.path("additive-v24.sqlite"), env: state.env };
+      using database = new DatabaseSync(options.path);
+      seedV24(database);
+      database.exec(`ALTER TABLE ${table} ADD COLUMN future_metadata BLOB`);
+      database
+        .prepare(`UPDATE ${table} SET future_metadata = ?`)
+        .run(Buffer.from([0, 255, 128, 1]));
+      const before = {
+        schema: database.prepare("SELECT name, sql FROM sqlite_schema ORDER BY name").all(),
+        metadata: transcriptMetadataRows(database),
+        transcript: transcriptRows(database),
+      };
+      await withAgentDatabaseMaintenanceLease({ env: state.env }, async () => {
+        expect(() => ensureOpenClawAgentDatabaseSchema(database, options)).toThrow(
+          `Transcript metadata migration cannot discard unknown columns from ${table}`,
+        );
+      });
+      expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 24 });
+      expect(database.prepare("SELECT schema_version FROM schema_meta").get()).toEqual({
+        schema_version: 24,
+      });
+      expect(database.prepare("SELECT name, sql FROM sqlite_schema ORDER BY name").all()).toEqual(
+        before.schema,
+      );
+      expect(transcriptMetadataRows(database)).toEqual(before.metadata);
+      expect(transcriptRows(database)).toEqual(before.transcript);
+    });
+  },
+);
+
+it("combines v24 trigger and metadata migration atomically while preserving canonical settlement", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const options = { agentId: "main", path: state.path("v24.sqlite"), env: state.env };
     let database = new DatabaseSync(options.path);
@@ -355,16 +442,50 @@ it("replaces v24 triggers atomically and preserves raw invalidation and canonica
       expect(updates()).toEqual({ updates: 4, clears: 2 });
       database.exec("ROLLBACK");
       const before = database.prepare("SELECT * FROM session_nodes").all();
+      const beforeTranscript = transcriptRows(database);
+      const beforeMetadata = transcriptMetadataRows(database);
+      expect(beforeTranscript[0]?.event_json).toBeTypeOf("string");
+      expect(beforeTranscript[1]?.event_zstd).toBeInstanceOf(Uint8Array);
+      expect(
+        database
+          .prepare("SELECT name FROM sqlite_schema WHERE name = 'transcript_storage_sessions'")
+          .get(),
+      ).toBeUndefined();
       const beforeSchema = database
         .prepare("SELECT name, sql FROM sqlite_schema ORDER BY name")
         .all();
       database.close();
       database = new DatabaseSync(options.path);
       await withAgentDatabaseMaintenanceLease({ env: state.env }, async () => {
-        let publicationReached = false;
+        const changes = {
+          mergedTrigger: false,
+          migrationLedger: false,
+          pendingCopy: false,
+        };
+        let atPublication: typeof changes | undefined;
         database.setAuthorizer((action, name, value) => {
-          if (action === constants.SQLITE_PRAGMA && name === "user_version" && value === "25") {
-            publicationReached = true;
+          if (
+            action === constants.SQLITE_CREATE_TRIGGER &&
+            name === "session_nodes_entry_valid_after_update"
+          ) {
+            changes.mergedTrigger = true;
+          }
+          if (action === constants.SQLITE_CREATE_TABLE && name === "transcript_storage_migration") {
+            changes.migrationLedger = true;
+          }
+          if (
+            action === constants.SQLITE_UPDATE &&
+            name === "transcript_storage_migration" &&
+            value === "phase"
+          ) {
+            changes.pendingCopy = true;
+          }
+          if (
+            action === constants.SQLITE_PRAGMA &&
+            name === "user_version" &&
+            value === String(OPENCLAW_AGENT_SCHEMA_VERSION)
+          ) {
+            atPublication = { ...changes };
             return constants.SQLITE_DENY;
           }
           return constants.SQLITE_OK;
@@ -374,7 +495,11 @@ it("replaces v24 triggers atomically and preserves raw invalidation and canonica
         } finally {
           database.setAuthorizer(null);
         }
-        expect(publicationReached).toBe(true);
+        expect(atPublication).toEqual({
+          mergedTrigger: true,
+          migrationLedger: true,
+          pendingCopy: true,
+        });
         expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 24 });
         expect(database.prepare("SELECT schema_version FROM schema_meta").get()).toEqual({
           schema_version: 24,
@@ -383,13 +508,35 @@ it("replaces v24 triggers atomically and preserves raw invalidation and canonica
           beforeSchema,
         );
         expect(database.prepare("SELECT * FROM session_nodes").all()).toEqual(before);
+        expect(transcriptRows(database)).toEqual(beforeTranscript);
+        expect(transcriptMetadataRows(database)).toEqual(beforeMetadata);
         ensureOpenClawAgentDatabaseSchema(database, options);
       });
-      expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 25 });
+      expect(database.prepare("PRAGMA user_version").get()).toEqual({
+        user_version: OPENCLAW_AGENT_SCHEMA_VERSION,
+      });
       expect(database.prepare("SELECT schema_version FROM schema_meta").get()).toEqual({
-        schema_version: 25,
+        schema_version: OPENCLAW_AGENT_SCHEMA_VERSION,
       });
       expect(database.prepare("SELECT * FROM session_nodes").all()).toEqual(before);
+      expect(transcriptRows(database)).toEqual(beforeTranscript);
+      expect(transcriptMetadataRows(database)).toEqual(beforeMetadata);
+      expect(
+        database.prepare("SELECT session_id, phase FROM transcript_storage_sessions").all(),
+      ).toEqual([{ session_id: entry.sessionId, phase: "legacy" }]);
+      expect(database.prepare("SELECT * FROM transcript_storage_migration").get()).toEqual({
+        id: 1,
+        phase: "identities",
+        cursor: null,
+        identity_high_water: 23,
+        active_high_water: 47,
+      });
+      expect(
+        database.prepare("SELECT count(*) AS rows FROM transcript_event_identity_rows").get(),
+      ).toEqual({ rows: 0 });
+      expect(
+        database.prepare("SELECT count(*) AS rows FROM session_transcript_active_rows").get(),
+      ).toEqual({ rows: 0 });
       expect(
         database
           .prepare(

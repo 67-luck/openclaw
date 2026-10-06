@@ -19,15 +19,19 @@ import type { resolveSqliteTranscriptReadScope } from "./session-accessor.sqlite
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
 import type { SessionTranscriptProjectionState } from "./session-transcript-index.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
+import {
+  readSessionTranscriptStorage,
+  type SessionTranscriptStorage,
+} from "./session-transcript-storage.js";
 import { transcriptEventJsonSql } from "./transcript-payload.js";
 
 type ActiveTranscriptDatabase = Pick<
   OpenClawAgentKyselyDatabase,
-  | "session_transcript_active_events"
   | "session_transcript_cold_archives"
+  | "session_transcript_active_events"
+  | "session_transcript_active_rows"
   | "transcript_rewrite_watermarks"
   | "session_transcript_index_state"
-  | "transcript_event_identities"
   | "transcript_events"
 >;
 
@@ -43,6 +47,7 @@ export type CurrentTranscriptProjection = {
   };
   resolved: ReturnType<typeof resolveSqliteTranscriptReadScope>;
   state: SessionTranscriptProjectionState;
+  storage: SessionTranscriptStorage;
 };
 
 export type SessionTranscriptMessageEvent = {
@@ -150,23 +155,28 @@ export type MessageRangeSelection =
   | { positions: number[] }
   | { start: number; endExclusive: number };
 
-type MessageRangeParameters = { sessionId: string; start: number; endExclusive: number };
+type MessageRangeParameters = {
+  sessionId: string;
+  storageKey: string | number;
+  start: number;
+  endExclusive: number;
+};
 
 export function selectMessageRows(
   database: Pick<TranscriptReadDatabase, "db">,
-  sessionId: string | RawBuilder<string>,
+  storage: SessionTranscriptStorage,
   selection:
     | { positions: number[] }
     | { start: number | RawBuilder<number>; endExclusive: number | RawBuilder<number> },
+  bindings?: Parameters<SessionTranscriptStorage["activeEvents"]>[0],
 ) {
   const query = getActiveTranscriptKysely(database)
-    .selectFrom("session_transcript_active_events as active")
+    .selectFrom(storage.activeEvents(bindings).as("active"))
     .innerJoin("transcript_events as event", (join) =>
       join
         .onRef("event.session_id", "=", "active.session_id")
         .onRef("event.seq", "=", "active.event_seq"),
     )
-    .where("active.session_id", "=", sessionId)
     .where("active.message_position", "is not", null)
     .orderBy("active.message_position", "asc");
   return "positions" in selection
@@ -210,8 +220,10 @@ export function selectMessageMetadata(query: ReturnType<typeof selectMessageRows
     .$narrowType<{ message_position: number }>();
 }
 
-const messageRangeReaders = createSqliteQueryCache((db) => {
-  const database = { db };
+function createMessageRangeReaders(
+  database: Pick<TranscriptReadDatabase, "db">,
+  storage: SessionTranscriptStorage,
+) {
   const metadata = (direction: "asc" | "desc") =>
     prepareSqliteQueryIterator<
       MessageRangeParameters,
@@ -220,10 +232,14 @@ const messageRangeReaders = createSqliteQueryCache((db) => {
       selectMessageMetadata(
         selectMessageRows(
           database,
-          parameter((params) => params.sessionId),
+          storage,
           {
             start: parameter((params) => params.start),
             endExclusive: parameter((params) => params.endExclusive),
+          },
+          {
+            sessionId: parameter((params) => params.sessionId),
+            key: parameter((params) => params.storageKey),
           },
         )
           .clearOrderBy()
@@ -239,10 +255,14 @@ const messageRangeReaders = createSqliteQueryCache((db) => {
         database,
         selectMessageRows(
           database,
-          parameter((params) => params.sessionId),
+          storage,
           {
             start: parameter((params) => params.start),
             endExclusive: parameter((params) => params.endExclusive),
+          },
+          {
+            sessionId: parameter((params) => params.sessionId),
+            key: parameter((params) => params.storageKey),
           },
         ),
       )
@@ -258,10 +278,14 @@ const messageRangeReaders = createSqliteQueryCache((db) => {
         database,
         selectMessageRows(
           database,
-          parameter((params) => params.sessionId),
+          storage,
           {
             start: parameter((params) => params.start),
             endExclusive: parameter((params) => params.endExclusive),
+          },
+          {
+            sessionId: parameter((params) => params.sessionId),
+            key: parameter((params) => params.storageKey),
           },
         ),
       ),
@@ -269,15 +293,39 @@ const messageRangeReaders = createSqliteQueryCache((db) => {
     metadata: metadata("asc"),
     metadataDescending: metadata("desc"),
   };
-});
+}
 
-export function getMessageRangeReaders(database: CurrentTranscriptProjection["database"]) {
-  return messageRangeReaders(database.db);
+const messageRangeReaders = createSqliteQueryCache(
+  () => new Map<boolean, ReturnType<typeof createMessageRangeReaders>>(),
+);
+
+export function getMessageRangeReaders(projection: CurrentTranscriptProjection) {
+  const cache = messageRangeReaders(projection.database.db);
+  let readers = cache.get(projection.storage.compact);
+  if (!readers) {
+    readers = createMessageRangeReaders({ db: projection.database.db }, projection.storage);
+    cache.set(projection.storage.compact, readers);
+  }
+  const bind = (params: Omit<MessageRangeParameters, "storageKey">): MessageRangeParameters => ({
+    ...params,
+    storageKey: projection.storage.key,
+  });
+  return {
+    latest: (params: Omit<MessageRangeParameters, "storageKey">) => readers.latest(bind(params)),
+    messages: (params: Omit<MessageRangeParameters, "storageKey">) =>
+      readers.messages(bind(params)),
+    metadata: (params: Omit<MessageRangeParameters, "storageKey">) =>
+      readers.metadata(bind(params)),
+    metadataDescending: (params: Omit<MessageRangeParameters, "storageKey">) =>
+      readers.metadataDescending(bind(params)),
+  };
 }
 
 function buildProjectionSnapshotQuery(
   database: Pick<TranscriptReadDatabase, "db">,
+  storage: SessionTranscriptStorage,
   sessionId: RawBuilder<string>,
+  storageKey: RawBuilder<string | number>,
 ) {
   const db = getActiveTranscriptKysely(database);
   // The target survives empty and archived transcripts, which have no hot event rows.
@@ -315,9 +363,9 @@ function buildProjectionSnapshotQuery(
       eb
         .exists(
           eb
-            .selectFrom("session_transcript_active_events")
+            .selectFrom(storage.activeTable)
             .select("session_id")
-            .whereRef("session_transcript_active_events.session_id", "=", "target.session_id")
+            .where("session_id", "=", storageKey)
             .where("context_eligible", "is", null),
         )
         .as("has_unclassified"),
@@ -325,7 +373,9 @@ function buildProjectionSnapshotQuery(
         .not(
           eb.exists(
             eb
-              .selectFrom("transcript_event_identities as identity")
+              .selectFrom(
+                storage.identities("sequence", { sessionId, key: storageKey }).as("identity"),
+              )
               .select("identity.seq")
               .whereRef("identity.session_id", "=", "target.session_id")
               .where(
@@ -345,20 +395,38 @@ function buildProjectionSnapshotQuery(
 }
 
 // Cache compilation only; bindings and rows belong to each read snapshot.
-const projectionSnapshotReader = createSqliteQueryCache((db) =>
-  prepareSqliteQuerySync<
-    string,
+function createProjectionSnapshotReader(
+  database: Pick<TranscriptReadDatabase, "db">,
+  storage: SessionTranscriptStorage,
+) {
+  return prepareSqliteQuerySync<
+    { sessionId: string; storageKey: string | number },
     InferResult<ReturnType<typeof buildProjectionSnapshotQuery>>[number]
-  >(db, (parameter) =>
+  >(database.db, (parameter) =>
     buildProjectionSnapshotQuery(
-      { db },
-      parameter((id) => id),
+      database,
+      storage,
+      parameter((params) => params.sessionId),
+      parameter((params) => params.storageKey),
     ),
-  ),
+  );
+}
+
+const projectionSnapshotReaders = createSqliteQueryCache(
+  () => new Map<boolean, ReturnType<typeof createProjectionSnapshotReader>>(),
 );
 
-function readProjectionSnapshot(database: TranscriptReadDatabase, sessionId: string) {
-  const row = projectionSnapshotReader(database.db)(sessionId).rows[0]!;
+function readProjectionSnapshot(
+  database: TranscriptReadDatabase,
+  storage: SessionTranscriptStorage,
+) {
+  const cache = projectionSnapshotReaders(database.db);
+  let read = cache.get(storage.compact);
+  if (!read) {
+    read = createProjectionSnapshotReader(database, storage);
+    cache.set(storage.compact, read);
+  }
+  const row = read({ sessionId: storage.sessionId, storageKey: storage.key }).rows[0]!;
   return {
     cold: Boolean(row.is_cold),
     generation: row.generation ?? undefined,
@@ -393,7 +461,8 @@ export function readCurrentProjectionSnapshot<T>(
   return runSqliteDeferredTransactionSync(
     database.db,
     () => {
-      const snapshot = readProjectionSnapshot(database, resolved.sessionId);
+      const storage = readSessionTranscriptStorage(database.db, resolved.sessionId);
+      const snapshot = readProjectionSnapshot(database, storage);
       if (snapshot.state) {
         diagnostics.activeEvents = snapshot.state.activeEventCount;
         diagnostics.activeMessages = snapshot.state.activeMessageCount;
@@ -419,6 +488,7 @@ export function readCurrentProjectionSnapshot<T>(
           hasUnindexedPrefix: !empty && snapshot.hasUnindexedPrefix,
           resolved,
           state,
+          storage,
         }),
       };
     },

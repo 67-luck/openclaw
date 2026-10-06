@@ -173,7 +173,7 @@ it.each(cases)(
             .get(scope.sessionId),
           active: database.db
             .prepare(
-              "SELECT * FROM session_transcript_active_events WHERE session_id = ? ORDER BY active_position",
+              "SELECT * FROM session_transcript_active_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) ORDER BY active_position",
             )
             .all(scope.sessionId),
           fts: database.db

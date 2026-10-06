@@ -70,6 +70,66 @@ function compressedRecord(bytes: Uint8Array, rawBytes = bytes.byteLength): Trans
   };
 }
 
+const producerClasses = [
+  "assistant",
+  "user",
+  "toolResult",
+  "openclaw.nested-tool.v1",
+  "session",
+  "reset",
+  "compaction",
+  "custom",
+  "custom_message",
+  "openclaw.cache-ttl",
+  "leaf",
+] as const;
+
+function producerEvent(producer: (typeof producerClasses)[number], text: string) {
+  const content = [{ type: "text", text }];
+  const event =
+    producer === "openclaw.nested-tool.v1"
+      ? {
+          type: "message",
+          message: {
+            role: "custom",
+            customType: producer,
+            display: true,
+            excludeFromContext: true,
+            content: "",
+            details: {
+              runId: "run-example",
+              scopeId: "scope-example",
+              afterEntryId: null,
+              startOrder: 0,
+              toolCallId: "call-example",
+              toolName: "read",
+              input: { path: "src/example.ts" },
+              result: { content },
+              isError: false,
+              startedAt: 1,
+              timestamp: 2,
+            },
+            timestamp: 1,
+          },
+        }
+      : producer === "session"
+        ? { type: "session", version: 3, cwd: text }
+        : producer === "reset"
+          ? { type: "reset", reason: "new", firstKeptEntryId: "kept", details: { text } }
+          : producer === "compaction"
+            ? { type: "compaction", firstKeptEntryId: "kept", summary: text, tokensBefore: 100 }
+            : producer === "custom"
+              ? { type: "custom", customType: "fixture", data: { text } }
+              : producer === "custom_message"
+                ? { type: "custom_message", customType: "fixture", content, display: true }
+                : producer === "openclaw.cache-ttl"
+                  ? { type: "custom", customType: producer, data: { text } }
+                  : producer === "leaf"
+                    ? { type: "leaf", targetId: "kept", appendParentId: "kept", details: { text } }
+                    : { type: "message", message: { role: producer, content } };
+  return ` {"id":"first","id":"last","number":1.00,${JSON.stringify(event).slice(1)}\n`;
+}
+
 function inspectNavigation(database: DatabaseSync, event: RawBuilder<string>, seq: number) {
   const paths = [
     "$.type",
@@ -102,6 +162,71 @@ function inspectNavigation(database: DatabaseSync, event: RawBuilder<string>, se
 }
 
 describe("transcript payload storage boundary", () => {
+  it("round-trips generated producer payloads byte-exactly across mixed storage formats", () => {
+    using database = openNodeSqliteDatabase(":memory:");
+    createTable(database);
+    let seed = 0x6d2b79f5;
+    const entropy = Array.from({ length: 4096 }, () => {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      return String.fromCharCode(33 + ((seed >>> 0) % 94));
+    }).join("");
+    const selectedTiers = new Set<string>();
+    let seq = 0;
+    for (const producer of producerClasses) {
+      const cases = [
+        { name: "short", text: "small" },
+        {
+          name: "long",
+          text: Array.from(
+            { length: 128 },
+            (_, index) => `record ${index}: ${entropy.slice(index * 16, index * 16 + 32)}`,
+          ).join("\n"),
+        },
+        { name: "repeated", text: "repeated-content ".repeat(192) },
+        { name: "high-entropy", text: entropy },
+        { name: "unicode", text: "雪🦞 café e\u0301 Ελληνικά\tline\n".repeat(96) },
+      ];
+      for (const fixture of cases) {
+        const compact = producerEvent(producer, fixture.text).trim();
+        const variants = [
+          { name: "compact", original: compact },
+          { name: "outer-whitespace", original: `\r\n\t${compact}\r\n` },
+          { name: "indented", original: JSON.stringify(JSON.parse(compact), null, 2) },
+        ];
+        for (const { name, original } of variants) {
+          const label = `${producer}/${fixture.name}/${name}`;
+          const prepared = prepareTranscriptPayload(database, original);
+          selectedTiers.add(prepared.event_zstd === null ? "plain" : "zstd");
+          if (fixture.name === "short" && name === "compact") {
+            expect(Buffer.byteLength(original), label).toBeLessThan(1024);
+            expect(prepared.event_json, label).toBe(original);
+          }
+          const representations = [
+            {
+              name: "plain",
+              payload: {
+                event_json: original,
+                event_zstd: null,
+                event_utf8_bytes: null,
+                navigation_json: null,
+              },
+            },
+            { name: "ordinary-zstd", payload: compressedRecord(Buffer.from(original)) },
+            { name: "codec-selected", payload: prepared },
+          ];
+          for (const representation of representations) {
+            insert(database, seq, representation.payload);
+            expect(readBody(database, seq), `${label}/${representation.name}`).toBe(original);
+            seq += 1;
+          }
+        }
+      }
+    }
+    expect([...selectedTiers].toSorted()).toEqual(["plain", "zstd"]);
+  });
+
   it.each([
     ["UTF-8", "UTF-16le"],
     ["UTF-8", "UTF-16be"],
@@ -285,43 +410,49 @@ describe("transcript payload storage boundary", () => {
     },
   );
 
-  it("retains native UTF-16 navigation and native projected byte accounting", () => {
-    const database = openNodeSqliteDatabase(":memory:");
-    try {
-      database.exec("PRAGMA encoding = 'UTF-16le'");
-      createTable(database);
-      const original = `{"type":"custom_message","id":"雪🦞\\ud800","display":true,"data":"${"雪".repeat(1024)}"}`;
-      const prepared = prepareTranscriptPayload(database, original);
-      expect(prepared.navigation_json).toBeNull();
-      expect(prepared.event_zstd).toBeNull();
-      expect(prepared.event_utf8_bytes).toBeNull();
-      insert(database, 1, prepared);
-      expect(inspectNavigation(database, transcriptEventNavigationSql(), 1)).toEqual(
-        inspectNavigation(database, nativeFixtureEvent, 1),
-      );
-      expect(readBody(database, 1)).toBe(original);
-      const lengths = database
-        .prepare(
-          "SELECT octet_length(event_json) stored, event_utf8_bytes utf8 FROM transcript_events",
-        )
-        .get();
-      expect(lengths?.utf8).toBeNull();
-      expect(lengths?.stored).not.toBe(Buffer.byteLength(original));
-      const projected = projectModelContextEventSql(nativeFixtureEvent, sql.lit(0));
-      const modelSizes = executeSqliteQueryTakeFirstSync(
-        database,
-        getNodeSqliteKysely<PayloadDatabase>(database)
-          .selectFrom("transcript_events")
-          .select((eb) => [
-            transcriptEventModelBytesSql(sql.lit(0)).as("stored"),
-            eb.fn<number>("octet_length", [projected]).as("native"),
-          ]),
-      );
-      expect(modelSizes?.stored).toBe(modelSizes?.native);
-    } finally {
-      database.close();
-    }
-  });
+  it.each(["UTF-16le", "UTF-16be"])(
+    "retains native %s writes and decodes ordinary zstd frames",
+    (encoding) => {
+      const database = openNodeSqliteDatabase(":memory:");
+      try {
+        database.exec(`PRAGMA encoding = '${encoding}'`);
+        createTable(database);
+        const original = `{"type":"custom_message","id":"雪🦞\\ud800","display":true,"data":"${"雪".repeat(1024)}"}`;
+        const prepared = prepareTranscriptPayload(database, original);
+        expect(prepared.navigation_json).toBeNull();
+        expect(prepared.event_zstd).toBeNull();
+        expect(prepared.event_utf8_bytes).toBeNull();
+        insert(database, 1, prepared);
+        expect(inspectNavigation(database, transcriptEventNavigationSql(), 1)).toEqual(
+          inspectNavigation(database, nativeFixtureEvent, 1),
+        );
+        expect(readBody(database, 1)).toBe(original);
+        const lengths = database
+          .prepare(
+            "SELECT octet_length(event_json) stored, event_utf8_bytes utf8 FROM transcript_events",
+          )
+          .get();
+        expect(lengths?.utf8).toBeNull();
+        expect(lengths?.stored).not.toBe(Buffer.byteLength(original));
+        const projected = projectModelContextEventSql(nativeFixtureEvent, sql.lit(0));
+        const modelSizes = executeSqliteQueryTakeFirstSync(
+          database,
+          getNodeSqliteKysely<PayloadDatabase>(database)
+            .selectFrom("transcript_events")
+            .select((eb) => [
+              transcriptEventModelBytesSql(sql.lit(0)).as("stored"),
+              eb.fn<number>("octet_length", [projected]).as("native"),
+            ]),
+        );
+        expect(modelSizes?.stored).toBe(modelSizes?.native);
+        const framed = producerEvent("assistant", "Preserve café 🦞 ".repeat(256));
+        insert(database, 2, compressedRecord(Buffer.from(framed)));
+        expect(readBody(database, 2)).toBe(framed);
+      } finally {
+        database.close();
+      }
+    },
+  );
 
   it.each(["native", "text fallback", "large"])(
     "preserves owner projections with %s JSON",

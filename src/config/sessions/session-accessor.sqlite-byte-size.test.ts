@@ -172,7 +172,7 @@ it.each(readers)("sizes %s without reading transcript overflow payloads", async 
     for (const query of readinessQueries) {
       const plan = prepare(`EXPLAIN QUERY PLAN ${query}`).all();
       expect(plan.map((row) => row.detail).join("\n")).toContain(
-        "idx_agent_transcript_context_pending",
+        "idx_agent_transcript_active_rows_pending",
       );
       const instructions = prepare(`EXPLAIN ${query}`).all() as SqliteInstruction[];
       expect(instructions.some((op) => op.opcode === "OpenRead" && op.p2 === table?.rootpage)).toBe(
@@ -414,7 +414,7 @@ it.each([
     read(scope, options);
     const { db } = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
     const counter = trackSqliteStatementExecutions(db, ["metadata"], (sql) =>
-      sql.includes("session_transcript_active_events") &&
+      sql.includes("session_transcript_active_rows") &&
       sql.includes("message_position") &&
       sql.includes("serialized_bytes")
         ? "metadata"
@@ -422,7 +422,8 @@ it.each([
     );
     try {
       for (let attempt = 0; attempt < 3; attempt++) {
-        const page = read(scope, options);
+        // Different limits require sizing instead of reusing the recent-history page cache.
+        const page = read(scope, { ...options, maxBytes: options.maxBytes + attempt + 1 });
         expect(page.totalMessages).toBe(1_002);
         expect(page.events).toEqual([
           expect.objectContaining({ event: expect.objectContaining({ id: "new" }) }),
@@ -431,6 +432,7 @@ it.each([
       // Each read sizes the newest event and its rejecting predecessor, then releases
       // its SQLite iterator so the same connection can commit the next transcript write.
       expect(counter.rowCounts.metadata).toBeLessThanOrEqual(6);
+      expect(counter.rowCounts.metadata).toBeGreaterThan(0);
       await persistSessionTranscriptTurn(scope, {
         messages: [transcriptMessage("next", "new", { role: "user", content: "next" })],
         touchSessionEntry: false,

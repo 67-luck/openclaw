@@ -11,6 +11,10 @@ import {
 } from "../../infra/sqlite-jsonl-budget.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
+import {
+  readSessionTranscriptStorage,
+  type SessionTranscriptStorage,
+} from "./session-transcript-storage.js";
 import type { TranscriptEntryAnchor, TranscriptTurnBoundary } from "./transcript-entry-anchor.js";
 import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
 
@@ -58,6 +62,7 @@ function validateAnchorRow(
 function validateTerminalAncestry(params: {
   database: Parameters<typeof getSessionKysely>[0];
   sessionId: string;
+  storage: SessionTranscriptStorage;
   admissionEntryId: string;
   terminalEntryId: string;
   terminalParentId: string | null;
@@ -85,14 +90,14 @@ function validateTerminalAncestry(params: {
     db
       .withRecursive("turn_ancestors", (query) =>
         query
-          .selectFrom("transcript_event_identities")
+          .selectFrom(params.storage.identities().as("transcript_event_identities"))
           .select(["event_id", "parent_id"])
           .where("session_id", "=", params.sessionId)
           .where("event_id", "=", params.terminalParentId)
           // UNION deduplicates identities so cycles terminate within the existing depth budget.
           .union(
             query
-              .selectFrom("transcript_event_identities as identity")
+              .selectFrom(params.storage.identities().as("identity"))
               .innerJoin("turn_ancestors as previous", "identity.event_id", "previous.parent_id")
               .select(["identity.event_id", "identity.parent_id"])
               .where("identity.session_id", "=", params.sessionId)
@@ -185,12 +190,13 @@ export function readClosedTranscriptTurnInDatabase(
       ) {
         return { kind: "projection-unavailable" } as const;
       }
+      const storage = readSessionTranscriptStorage(connection, target.sessionId);
       const readAnchor = (anchor: TranscriptEntryAnchor) =>
         executeSqliteQueryTakeFirstSync(
           connection,
           db
-            .selectFrom("transcript_event_identities as identity")
-            .innerJoin("session_transcript_active_events as active", (join) =>
+            .selectFrom(storage.identities().as("identity"))
+            .innerJoin(storage.activeEvents().as("active"), (join) =>
               join
                 .onRef("active.session_id", "=", "identity.session_id")
                 .onRef("active.event_seq", "=", "identity.seq"),
@@ -232,6 +238,7 @@ export function readClosedTranscriptTurnInDatabase(
       const ancestry = validateTerminalAncestry({
         database: connection,
         sessionId: target.sessionId,
+        storage,
         admissionEntryId: params.boundary.admission.entryId,
         terminalEntryId: params.boundary.terminal.entryId,
         terminalParentId: terminalRow!.parent_id,
@@ -241,7 +248,7 @@ export function readClosedTranscriptTurnInDatabase(
         return { kind: ancestry } as const;
       }
       const selected = db
-        .selectFrom("session_transcript_active_events as active")
+        .selectFrom(storage.activeEvents().as("active"))
         .innerJoin("transcript_events as event", (join) =>
           join
             .onRef("event.session_id", "=", "active.session_id")

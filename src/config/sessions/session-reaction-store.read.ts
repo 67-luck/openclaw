@@ -7,9 +7,7 @@ import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { StoredMessageReactionSummary } from "./session-reaction-store.types.js";
 
 export function reactionDb(database: Pick<OpenClawAgentDatabase, "db">) {
-  return getNodeSqliteKysely<
-    Pick<OpenClawAgentKyselyDatabase, "session_reactions" | "transcript_event_identities">
-  >(database.db);
+  return getNodeSqliteKysely<Pick<OpenClawAgentKyselyDatabase, "session_reactions">>(database.db);
 }
 
 export function summarizeReactions(rows: SessionReactions[]): StoredMessageReactionSummary[] {

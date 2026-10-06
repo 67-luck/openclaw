@@ -73,6 +73,7 @@ export function scanTranscriptRows(params: {
   pathname: string;
   writer?: OpenClawAgentDatabase;
   legacyTextStorage: boolean;
+  legacyMetadataStorage?: boolean;
   onChangedSession?: (sessionId: string) => void;
 }): number {
   const { database, pathname, writer } = params;
@@ -139,7 +140,10 @@ export function scanTranscriptRows(params: {
             writer,
             { agentId: writer.agentId, path: pathname, sessionId, sessionKey },
             rewrites,
-            { legacyTextStorage: params.legacyTextStorage },
+            {
+              legacyTextStorage: params.legacyTextStorage,
+              legacyMetadataStorage: params.legacyMetadataStorage,
+            },
           );
         }
       }

@@ -153,9 +153,11 @@ function readProjectedTranscript(
 ) {
   return database.db
     .prepare(`SELECT active.active_position, events.event_json
-    FROM session_transcript_active_events active JOIN transcript_events events
-      ON events.session_id = active.session_id AND events.seq = active.event_seq
-    WHERE active.session_id = ? ORDER BY active.active_position`)
+    FROM session_transcript_active_rows active
+    JOIN transcript_storage_sessions storage ON storage.sid = active.session_id
+    JOIN transcript_events events
+      ON events.session_id = storage.session_id AND events.seq = active.event_seq
+    WHERE storage.session_id = ? ORDER BY active.active_position`)
     .all(sessionId);
 }
 

@@ -120,7 +120,7 @@ it("publishes a cold compressed multi-chunk branch without host data SQL", async
       .get(sibling.sessionId),
     active: db
       .prepare(
-        "SELECT * FROM session_transcript_active_events WHERE session_id = ? ORDER BY active_position",
+        "SELECT * FROM session_transcript_active_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) ORDER BY active_position",
       )
       .all(sibling.sessionId),
     fts: db
@@ -163,10 +163,10 @@ it("publishes a cold compressed multi-chunk branch without host data SQL", async
   ).toEqual({ needs_rebuild: 0, active_message_count: 520, leaf_event_id: "message-519" });
   expect(
     db
-      .prepare(`SELECT identity.event_id FROM session_transcript_active_events active
-        JOIN transcript_event_identities identity
+      .prepare(`SELECT identity.event_id FROM session_transcript_active_rows active
+        JOIN transcript_event_identity_rows identity
           ON identity.session_id = active.session_id AND identity.seq = active.event_seq
-        WHERE active.session_id = ? ORDER BY active.active_position`)
+        WHERE active.session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) ORDER BY active.active_position`)
       .all(scope.sessionId),
   ).toEqual(activeMessages.map((event) => ({ event_id: event.id })));
   expect(

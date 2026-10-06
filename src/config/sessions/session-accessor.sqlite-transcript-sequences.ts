@@ -16,6 +16,7 @@ import {
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { readHotSessionTranscriptSnapshot } from "./session-cold-storage-read.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 
 // Append results are public SDK contracts. Keep commit-only cursor metadata
 // attached to their object lifetime without changing the returned message shape.
@@ -66,6 +67,7 @@ export function rememberCommittedTranscriptMessageSequencesInTransaction(
   if (projection?.needs_rebuild !== 0) {
     return;
   }
+  const storage = readSessionTranscriptStorage(database.db, sessionId);
   for (let offset = 0; offset < appendedMessages.length; offset += TRANSCRIPT_CURSOR_BATCH_SIZE) {
     const batch = appendedMessages.slice(offset, offset + TRANSCRIPT_CURSOR_BATCH_SIZE);
     const rows = readHotSessionTranscriptSnapshot(
@@ -76,8 +78,8 @@ export function rememberCommittedTranscriptMessageSequencesInTransaction(
         executeSqliteQuerySync(
           database.db,
           db
-            .selectFrom("transcript_event_identities as identity")
-            .innerJoin("session_transcript_active_events as active", (join) =>
+            .selectFrom(storage.identities().as("identity"))
+            .innerJoin(storage.activeEvents().as("active"), (join) =>
               join
                 .onRef("active.session_id", "=", "identity.session_id")
                 .onRef("active.event_seq", "=", "identity.seq"),

@@ -921,6 +921,221 @@ CREATE INDEX IF NOT EXISTS idx_agent_transcript_context_pending
   ON session_transcript_active_events(session_id)
   WHERE context_eligible IS NULL;
 
+CREATE TABLE IF NOT EXISTS transcript_storage_sessions (
+  sid INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL UNIQUE,
+  -- A session changes readers only after both metadata copies are complete.
+  phase TEXT NOT NULL CHECK (phase IN ('legacy', 'compact')),
+  FOREIGN KEY (session_id) REFERENCES session_windows(session_id) ON DELETE CASCADE ON UPDATE CASCADE
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_agent_transcript_storage_pending
+  ON transcript_storage_sessions(sid) WHERE phase = 'legacy';
+
+CREATE TABLE IF NOT EXISTS transcript_storage_migration (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  phase TEXT NOT NULL CHECK (phase IN ('identities', 'active', 'publish', 'cleanup', 'complete')),
+  cursor INTEGER,
+  identity_high_water INTEGER,
+  active_high_water INTEGER
+) STRICT;
+
+INSERT OR IGNORE INTO transcript_storage_migration(id, phase) VALUES (1, 'complete');
+
+CREATE TABLE IF NOT EXISTS transcript_event_identity_rows (
+  session_id INTEGER NOT NULL,
+  event_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  event_type TEXT,
+  parent_id TEXT,
+  message_idempotency_key TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, event_id),
+  FOREIGN KEY (session_id) REFERENCES transcript_storage_sessions(sid) ON DELETE CASCADE
+) STRICT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_transcript_identity_rows_idempotency
+  ON transcript_event_identity_rows(session_id, message_idempotency_key)
+  WHERE message_idempotency_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_agent_transcript_identity_rows_sequence
+  ON transcript_event_identity_rows(session_id, seq);
+
+CREATE INDEX IF NOT EXISTS idx_agent_transcript_identity_rows_type_sequence
+  ON transcript_event_identity_rows(session_id, event_type, seq DESC);
+
+CREATE TABLE IF NOT EXISTS session_transcript_active_rows (
+  session_id INTEGER NOT NULL,
+  active_position INTEGER NOT NULL CHECK (active_position >= 0),
+  event_seq INTEGER NOT NULL,
+  message_position INTEGER CHECK (message_position IS NULL OR message_position >= 0),
+  context_eligible INTEGER,
+  PRIMARY KEY (session_id, event_seq),
+  FOREIGN KEY (session_id) REFERENCES transcript_storage_sessions(sid) ON DELETE CASCADE
+) STRICT, WITHOUT ROWID;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_transcript_active_rows_position
+  ON session_transcript_active_rows(session_id, active_position);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_transcript_active_rows_messages
+  ON session_transcript_active_rows(session_id, message_position)
+  WHERE message_position IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_agent_transcript_active_rows_pending
+  ON session_transcript_active_rows(session_id, context_eligible) WHERE context_eligible IS NULL;
+
+CREATE TRIGGER IF NOT EXISTS transcript_storage_session_created
+AFTER INSERT ON session_windows
+BEGIN
+  INSERT INTO transcript_storage_sessions(session_id, phase) VALUES (NEW.session_id, 'compact');
+END;
+
+-- The integer children retain the original composite event-FK contract through the mapping.
+CREATE TRIGGER IF NOT EXISTS transcript_identity_row_insert_parent
+BEFORE INSERT ON transcript_event_identity_rows
+WHEN NOT EXISTS (
+  SELECT 1 FROM transcript_storage_sessions AS storage
+  JOIN transcript_events AS event ON event.session_id = storage.session_id AND event.seq = NEW.seq
+  WHERE storage.sid = NEW.session_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'transcript identity event does not exist');
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_identity_row_update_parent
+BEFORE UPDATE OF session_id, seq ON transcript_event_identity_rows
+WHEN NOT EXISTS (
+  SELECT 1 FROM transcript_storage_sessions AS storage
+  JOIN transcript_events AS event ON event.session_id = storage.session_id AND event.seq = NEW.seq
+  WHERE storage.sid = NEW.session_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'transcript identity event does not exist');
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_active_row_insert_parent
+BEFORE INSERT ON session_transcript_active_rows
+WHEN NOT EXISTS (
+  SELECT 1 FROM transcript_storage_sessions AS storage
+  JOIN transcript_events AS event ON event.session_id = storage.session_id AND event.seq = NEW.event_seq
+  WHERE storage.sid = NEW.session_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'active transcript event does not exist');
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_active_row_update_parent
+BEFORE UPDATE OF session_id, event_seq ON session_transcript_active_rows
+WHEN NOT EXISTS (
+  SELECT 1 FROM transcript_storage_sessions AS storage
+  JOIN transcript_events AS event ON event.session_id = storage.session_id AND event.seq = NEW.event_seq
+  WHERE storage.sid = NEW.session_id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'active transcript event does not exist');
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_storage_event_deleted
+AFTER DELETE ON transcript_events
+BEGIN
+  DELETE FROM transcript_event_identity_rows
+  WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = OLD.session_id)
+    AND seq = OLD.seq;
+  DELETE FROM session_transcript_active_rows
+  WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = OLD.session_id)
+    AND event_seq = OLD.seq;
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_storage_event_key_update
+BEFORE UPDATE OF session_id, seq ON transcript_events
+WHEN (OLD.session_id != NEW.session_id OR OLD.seq != NEW.seq) AND (
+  EXISTS (SELECT 1 FROM transcript_event_identity_rows
+    WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = OLD.session_id)
+      AND seq = OLD.seq)
+  OR EXISTS (SELECT 1 FROM session_transcript_active_rows
+    WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = OLD.session_id)
+      AND event_seq = OLD.seq)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'transcript event key is referenced');
+END;
+
+-- Legacy rows own metadata until the session's copy completes. Capture every concurrent mutation.
+CREATE TRIGGER IF NOT EXISTS transcript_identity_copy_insert
+AFTER INSERT ON transcript_event_identities
+WHEN EXISTS (SELECT 1 FROM transcript_storage_sessions
+  WHERE session_id = NEW.session_id AND phase = 'legacy')
+BEGIN
+  INSERT INTO transcript_event_identity_rows
+    (session_id, event_id, seq, event_type, parent_id, message_idempotency_key, created_at)
+  SELECT sid, NEW.event_id, NEW.seq, NEW.event_type, NEW.parent_id, NEW.message_idempotency_key, NEW.created_at
+  FROM transcript_storage_sessions WHERE session_id = NEW.session_id
+  ON CONFLICT(session_id, event_id) DO UPDATE SET
+    seq = excluded.seq, event_type = excluded.event_type, parent_id = excluded.parent_id,
+    message_idempotency_key = excluded.message_idempotency_key, created_at = excluded.created_at;
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_identity_copy_delete
+AFTER DELETE ON transcript_event_identities
+WHEN EXISTS (SELECT 1 FROM transcript_storage_sessions
+  WHERE session_id = OLD.session_id AND phase = 'legacy')
+BEGIN
+  DELETE FROM transcript_event_identity_rows
+  WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = OLD.session_id)
+    AND event_id = OLD.event_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_identity_copy_update
+AFTER UPDATE ON transcript_event_identities
+WHEN EXISTS (SELECT 1 FROM transcript_storage_sessions
+  WHERE session_id = OLD.session_id AND phase = 'legacy')
+BEGIN
+  DELETE FROM transcript_event_identity_rows
+  WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = OLD.session_id)
+    AND event_id = OLD.event_id;
+  INSERT INTO transcript_event_identity_rows
+    (session_id, event_id, seq, event_type, parent_id, message_idempotency_key, created_at)
+  SELECT sid, NEW.event_id, NEW.seq, NEW.event_type, NEW.parent_id, NEW.message_idempotency_key, NEW.created_at
+  FROM transcript_storage_sessions WHERE session_id = NEW.session_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_active_copy_insert
+AFTER INSERT ON session_transcript_active_events
+WHEN EXISTS (SELECT 1 FROM transcript_storage_sessions
+  WHERE session_id = NEW.session_id AND phase = 'legacy')
+BEGIN
+  INSERT INTO session_transcript_active_rows
+    (session_id, active_position, event_seq, message_position, context_eligible)
+  SELECT sid, NEW.active_position, NEW.event_seq, NEW.message_position, NEW.context_eligible
+  FROM transcript_storage_sessions WHERE session_id = NEW.session_id
+  ON CONFLICT(session_id, event_seq) DO UPDATE SET active_position = excluded.active_position,
+    message_position = excluded.message_position, context_eligible = excluded.context_eligible;
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_active_copy_delete
+AFTER DELETE ON session_transcript_active_events
+WHEN EXISTS (SELECT 1 FROM transcript_storage_sessions
+  WHERE session_id = OLD.session_id AND phase = 'legacy')
+BEGIN
+  DELETE FROM session_transcript_active_rows
+  WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = OLD.session_id)
+    AND event_seq = OLD.event_seq;
+END;
+
+CREATE TRIGGER IF NOT EXISTS transcript_active_copy_update
+AFTER UPDATE ON session_transcript_active_events
+WHEN EXISTS (SELECT 1 FROM transcript_storage_sessions
+  WHERE session_id = OLD.session_id AND phase = 'legacy')
+BEGIN
+  DELETE FROM session_transcript_active_rows
+  WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = OLD.session_id)
+    AND event_seq = OLD.event_seq;
+  INSERT INTO session_transcript_active_rows
+    (session_id, active_position, event_seq, message_position, context_eligible)
+  SELECT sid, NEW.active_position, NEW.event_seq, NEW.message_position, NEW.context_eligible
+  FROM transcript_storage_sessions WHERE session_id = NEW.session_id;
+END;
+
 CREATE VIRTUAL TABLE IF NOT EXISTS session_transcript_fts USING fts5(
   text,
   session_id UNINDEXED,

@@ -15,7 +15,7 @@ const definitionsSql = `SELECT name, sql FROM main.sqlite_schema
   WHERE name = 'session_canonical_validation_pending'
     OR (type = 'trigger' AND tbl_name IN (
       'session_nodes', 'session_windows', 'session_key_contract', 'session_canonical_validation_pending'
-    ))`;
+    ) AND name != 'transcript_storage_session_created')`;
 const validatedSchemas = resolveGlobalSingleton(
   Symbol.for("openclaw.agentCanonicalValidationSchemas"),
   () =>

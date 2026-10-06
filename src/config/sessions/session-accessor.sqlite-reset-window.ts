@@ -149,13 +149,13 @@ export function readUnindexedHistoryControls(
                 "requested",
               ),
             )
-            .crossJoin("session_transcript_active_events as active")
-            .leftJoin("transcript_event_identities as identity", (join) =>
+            .crossJoin(projection.storage.activeEvents().as("active"))
+            .leftJoin(projection.storage.identities().as("identity"), (join) =>
               join
                 .onRef("identity.session_id", "=", "active.session_id")
                 .onRef("identity.seq", "=", "active.event_seq"),
             )
-            .leftJoin("session_transcript_active_events as following", (join) =>
+            .leftJoin(projection.storage.activeEvents().as("following"), (join) =>
               join
                 .onRef("following.session_id", "=", "active.session_id")
                 .on((eb) =>
@@ -186,8 +186,8 @@ function readLatestActiveBoundaryMetadataByType(
   const indexed = executeSqliteQueryTakeFirstSync(
     projection.database.db,
     db
-      .selectFrom("session_transcript_active_events as active")
-      .innerJoin("transcript_event_identities as identity", (join) =>
+      .selectFrom(projection.storage.activeEvents().as("active"))
+      .innerJoin(projection.storage.identities().as("identity"), (join) =>
         join
           .onRef("identity.session_id", "=", "active.session_id")
           .onRef("identity.seq", "=", "active.event_seq"),
@@ -274,7 +274,7 @@ function findLatestResetMessageWindow(
     executeSqliteQueryTakeFirstSync(
       projection.database.db,
       db
-        .selectFrom("session_transcript_active_events")
+        .selectFrom(projection.storage.activeEvents().as("session_transcript_active_events"))
         .select("message_position")
         .where("session_id", "=", projection.resolved.sessionId)
         .where("active_position", ">", latestBoundary.active_position)
@@ -290,8 +290,8 @@ function findLatestResetMessageWindow(
     const indexedFirstKept = executeSqliteQueryTakeFirstSync(
       projection.database.db,
       db
-        .selectFrom("transcript_event_identities as identity")
-        .innerJoin("session_transcript_active_events as active", (join) =>
+        .selectFrom(projection.storage.identities().as("identity"))
+        .innerJoin(projection.storage.activeEvents().as("active"), (join) =>
           join
             .onRef("active.session_id", "=", "identity.session_id")
             .onRef("active.event_seq", "=", "identity.seq"),
@@ -317,7 +317,7 @@ function findLatestResetMessageWindow(
       const candidateRows = iterateSqliteQuerySync(
         projection.database.db,
         db
-          .selectFrom("session_transcript_active_events as active")
+          .selectFrom(projection.storage.activeEvents().as("active"))
           .innerJoin("transcript_events as event", (join) =>
             join
               .onRef("event.session_id", "=", "active.session_id")
@@ -425,8 +425,8 @@ export type ClosedResetInterval = {
 
 function selectActiveResetRows(projection: CurrentTranscriptProjection) {
   return getActiveTranscriptKysely(projection.database)
-    .selectFrom("session_transcript_active_events as active")
-    .innerJoin("transcript_event_identities as identity", (join) =>
+    .selectFrom(projection.storage.activeEvents().as("active"))
+    .innerJoin(projection.storage.identities().as("identity"), (join) =>
       join
         .onRef("identity.session_id", "=", "active.session_id")
         .onRef("identity.seq", "=", "active.event_seq"),
@@ -561,10 +561,10 @@ export function* iterateVisibleMessageRange(
             projection.database.db,
             selectMessagePayload(
               projection.database,
-              selectMessageRows(projection.database, projection.resolved.sessionId, range),
+              selectMessageRows(projection.database, projection.storage, range),
             ),
           )
-        : getMessageRangeReaders(projection.database).messages({
+        : getMessageRangeReaders(projection).messages({
             sessionId: projection.resolved.sessionId,
             start: range.start,
             endExclusive: range.endExclusive,
@@ -584,8 +584,8 @@ export function hasUnindexedVisibleMessages(
     (range) =>
       executeSqliteQueryTakeFirstSync(
         projection.database.db,
-        selectMessageRows(projection.database, projection.resolved.sessionId, range)
-          .leftJoin("transcript_event_identities as identity", (join) =>
+        selectMessageRows(projection.database, projection.storage, range)
+          .leftJoin(projection.storage.identities().as("identity"), (join) =>
             join
               .onRef("identity.session_id", "=", "active.session_id")
               .onRef("identity.seq", "=", "active.event_seq"),
@@ -609,7 +609,7 @@ export function hasOversizedVisibleMessages(
     (range) =>
       executeSqliteQueryTakeFirstSync(
         projection.database.db,
-        selectMessageRows(projection.database, projection.resolved.sessionId, range)
+        selectMessageRows(projection.database, projection.storage, range)
           .select("active.event_seq")
           .where((eb) => eb(transcriptEventReadBytesSql("event"), ">=", maxBytes))
           .where((eb) =>
@@ -646,12 +646,12 @@ export function* iterateVisibleMessageMetadata(
         ? iterateSqliteQuerySync(
             projection.database.db,
             selectMessageMetadata(
-              selectMessageRows(projection.database, projection.resolved.sessionId, range)
+              selectMessageRows(projection.database, projection.storage, range)
                 .clearOrderBy()
                 .orderBy("active.message_position", direction),
             ),
           )
-        : getMessageRangeReaders(projection.database)[
+        : getMessageRangeReaders(projection)[
             direction === "desc" ? "metadataDescending" : "metadata"
           ]({
             sessionId: projection.resolved.sessionId,
@@ -678,7 +678,7 @@ export function readVisibleTranscriptStats(projection: CurrentTranscriptProjecti
   const window = resolveTranscriptBoundaryWindow(projection, "context");
   const db = getActiveTranscriptKysely(projection.database);
   const base = db
-    .selectFrom("session_transcript_active_events as active")
+    .selectFrom(projection.storage.activeEvents().as("active"))
     .innerJoin("transcript_events as event", (join) =>
       join
         .onRef("event.session_id", "=", "active.session_id")

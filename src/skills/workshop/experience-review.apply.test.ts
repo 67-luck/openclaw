@@ -382,7 +382,7 @@ describe("experience review maintenance", () => {
     const hostSql = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
     const contextQueries = () =>
       hostSql.queries.filter((query) =>
-        /\b(?:session_nodes|session_windows|transcript_events|transcript_event_identities|session_transcript_active_events|transcript_rewrite_watermarks)\b/i.test(
+        /\b(?:session_nodes|session_windows|transcript_events|transcript_event_identities|transcript_event_identity_rows|session_transcript_active_events|session_transcript_active_rows|transcript_storage_sessions|transcript_storage_migration|transcript_rewrite_watermarks)\b/i.test(
           query,
         ),
       );

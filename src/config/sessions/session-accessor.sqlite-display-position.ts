@@ -48,6 +48,7 @@ export function positionTranscriptDisplayEvents<
   const sequences = new Map<string, number>();
   const beforeRawSeq = resolveSqliteSessionTranscriptReadFence({
     database: projection.database,
+    storage: projection.storage,
     ...projection.resolved,
   })?.beforeRawSeq;
   const maxSeq = Math.min(indexedSeq, beforeRawSeq === undefined ? Infinity : beforeRawSeq - 1);
@@ -55,7 +56,7 @@ export function positionTranscriptDisplayEvents<
     const rows = executeSqliteQuerySync(
       projection.database.db,
       getActiveTranscriptKysely(projection.database)
-        .selectFrom("transcript_event_identities")
+        .selectFrom(projection.storage.identities().as("transcript_event_identities"))
         .select(["event_id", "seq"])
         .where("session_id", "=", projection.resolved.sessionId)
         .where("event_id", "in", sqliteStringSet(anchors))

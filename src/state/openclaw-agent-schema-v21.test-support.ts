@@ -39,6 +39,8 @@ export function materializeV21WorkerAgentDatabase(stateDir: string): string {
 /** Preserve session/board setup while replacing unused compact storage with its frozen old shape. */
 export function restoreEmptyV21StorageForHistoricalFixture(database: DatabaseSync): void {
   const tables = [
+    "transcript_event_identity_rows",
+    "session_transcript_active_rows",
     "transcript_events",
     "memory_index_chunks",
     "memory_embedding_cache",
@@ -53,9 +55,24 @@ export function restoreEmptyV21StorageForHistoricalFixture(database: DatabaseSyn
   const foreignKeys = database.prepare("PRAGMA foreign_keys").get()?.foreign_keys;
   database.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE");
   try {
+    // Capture triggers on retained tables outlive the compact tables they reference.
+    database.exec(`
+      DROP TRIGGER transcript_storage_session_created;
+      DROP TRIGGER transcript_storage_event_deleted;
+      DROP TRIGGER transcript_storage_event_key_update;
+      DROP TRIGGER transcript_identity_copy_insert;
+      DROP TRIGGER transcript_identity_copy_delete;
+      DROP TRIGGER transcript_identity_copy_update;
+      DROP TRIGGER transcript_active_copy_insert;
+      DROP TRIGGER transcript_active_copy_delete;
+      DROP TRIGGER transcript_active_copy_update;
+    `);
     for (const table of tables) {
       database.exec(`DROP TABLE ${table}`);
     }
+    database.exec(
+      "DROP TABLE transcript_storage_migration; DROP TABLE transcript_storage_sessions",
+    );
     // Dropping the snapshot table also removes its revision triggers.
     database.exec("ALTER TABLE session_nodes DROP COLUMN snapshot_revision");
     database.exec(OPENCLAW_AGENT_SCHEMA_V21_SQL);

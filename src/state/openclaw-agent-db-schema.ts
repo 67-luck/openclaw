@@ -37,6 +37,7 @@ import {
 import {
   AGENT_MEDIA_SCHEMA_VERSION,
   AGENT_STORAGE_SCHEMA_VERSION,
+  TRANSCRIPT_STORAGE_SCHEMA_VERSION,
   CANONICAL_SESSION_VALIDATION_SCHEMA_VERSION,
   OPENCLAW_AGENT_SCHEMA_VERSION,
   TRANSCRIPT_FTS_ROW_SCHEMA_VERSION,
@@ -88,6 +89,10 @@ import {
 import { withLegacyAgentStorageSchema } from "./openclaw-agent-storage-schema.js";
 import { migrateDeployedTranscriptFtsRowsInTransaction } from "./openclaw-agent-transcript-fts-schema.js";
 import { migrateTranscriptPayloadStorageInTransaction } from "./openclaw-agent-transcript-payload-migration.js";
+import {
+  initializeTranscriptStorageMigration,
+  withoutTranscriptStorageSchema,
+} from "./openclaw-agent-transcript-storage-schema.js";
 import {
   canReuseOpenClawAgentIntegrityVerification,
   type OpenClawAgentIntegrityVerification,
@@ -349,9 +354,16 @@ function ensureAgentSchema(
         !isEmptyDatabase &&
         previousVersion < SESSION_ENTRY_SNAPSHOTS_SCHEMA_VERSION &&
         targetVersion >= SESSION_ENTRY_SNAPSHOTS_SCHEMA_VERSION;
-      const storageSchemaSql = requiresSnapshotMigration
-        ? withoutSessionEntrySnapshotsSchema(schemaSql)
+      const requiresTranscriptStorageMigration =
+        !isEmptyDatabase &&
+        previousVersion < TRANSCRIPT_STORAGE_SCHEMA_VERSION &&
+        targetVersion >= TRANSCRIPT_STORAGE_SCHEMA_VERSION;
+      const transcriptSchemaSql = requiresTranscriptStorageMigration
+        ? withoutTranscriptStorageSchema(schemaSql)
         : schemaSql;
+      const storageSchemaSql = requiresSnapshotMigration
+        ? withoutSessionEntrySnapshotsSchema(transcriptSchemaSql)
+        : transcriptSchemaSql;
       const migrationSchemaSql = requiresStorageMigration
         ? withLegacyAgentStorageSchema(storageSchemaSql, previousVersion)
         : storageSchemaSql;
@@ -396,6 +408,9 @@ function ensureAgentSchema(
         if (requiresSnapshotMigration) {
           migrateSessionEntrySnapshotsInTransaction(db);
         }
+        if (requiresTranscriptStorageMigration) {
+          initializeTranscriptStorageMigration(db, schemaSql);
+        }
         finishAgentSchemaMigration(
           db,
           agentId,
@@ -409,6 +424,7 @@ function ensureAgentSchema(
       }
       if (previousVersion === AGENT_MEDIA_SCHEMA_VERSION) {
         ensureSessionAdditiveColumns(db);
+        ensureSessionEntryValidityTriggers(db);
         assertSqliteIntegrity(db, pathname);
         migrateMemoryChunkMetadataSchema(db);
         // Validate before CREATE IF NOT EXISTS can conceal missing required storage.
@@ -486,6 +502,9 @@ function ensureAgentSchema(
       }
       if (requiresSnapshotMigration) {
         migrateSessionEntrySnapshotsInTransaction(db);
+      }
+      if (requiresTranscriptStorageMigration) {
+        initializeTranscriptStorageMigration(db, schemaSql);
       }
       finishAgentSchemaMigration(
         db,

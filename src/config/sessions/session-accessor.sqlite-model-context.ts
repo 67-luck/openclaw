@@ -113,7 +113,10 @@ export function validateSessionTranscriptContextAnchor(
 ): void {
   const resolved = resolveSqliteTranscriptReadScope(scope);
   const result = withOpenClawAgentDatabaseReadOnly(
-    (database) => assertContextAnchor(database, resolved, through),
+    (database) =>
+      runSqliteDeferredTransactionSync(database.db, () =>
+        assertContextAnchor(database, resolved, through),
+      ),
     toDatabaseOptions(resolved),
   );
   if (!result.found) {
@@ -152,7 +155,10 @@ export function validateSessionTranscriptContextAdmission(
   const resolved = resolveSqliteTranscriptReadScope(scope);
   const result = runWithSessionTranscriptReadFence(admission, () =>
     withOpenClawAgentDatabaseReadOnly(
-      (database) => resolveSqliteSessionTranscriptReadFence({ database, ...resolved }),
+      (database) =>
+        runSqliteDeferredTransactionSync(database.db, () =>
+          resolveSqliteSessionTranscriptReadFence({ database, ...resolved }),
+        ),
       toDatabaseOptions(resolved),
     ),
   );

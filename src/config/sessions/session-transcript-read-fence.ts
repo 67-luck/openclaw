@@ -14,6 +14,10 @@ import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { isSameOpenClawAgentDatabasePath } from "../../state/openclaw-agent-db.paths.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
 import { SessionTranscriptReadFenceError } from "./session-transcript-read-fence-error.js";
+import {
+  readSessionTranscriptStorage,
+  type SessionTranscriptStorage,
+} from "./session-transcript-storage.js";
 import { transcriptEventNavigationSql } from "./transcript-payload.js";
 
 export { SessionTranscriptReadFenceError };
@@ -137,6 +141,7 @@ export function resolveSqliteSessionTranscriptReadFence(params: {
   agentId: string;
   sessionId: string;
   sessionKey?: string;
+  storage?: SessionTranscriptStorage;
 }): SessionTranscriptReadFence | undefined {
   const receipt = resolveSessionTranscriptReadFence(params);
   if (!receipt) {
@@ -157,20 +162,16 @@ export function resolveSqliteSessionTranscriptReadFence(params: {
       "Current-turn transcript admission belongs to a different session key",
     );
   }
-  const db = getNodeSqliteKysely<
-    Pick<
-      DB,
-      | "transcript_event_identities"
-      | "session_transcript_active_events"
-      | "transcript_events"
-      | "transcript_rewrite_watermarks"
-    >
-  >(params.database.db);
+  const db = getNodeSqliteKysely<Pick<DB, "transcript_events" | "transcript_rewrite_watermarks">>(
+    params.database.db,
+  );
+  const storage =
+    params.storage ?? readSessionTranscriptStorage(params.database.db, params.sessionId);
   const boundary = executeSqliteQueryTakeFirstSync(
     params.database.db,
     db
-      .selectFrom("transcript_event_identities as identity")
-      .innerJoin("session_transcript_active_events as active", (join) =>
+      .selectFrom(storage.identities().as("identity"))
+      .innerJoin(storage.activeEvents().as("active"), (join) =>
         join
           .onRef("active.session_id", "=", "identity.session_id")
           .onRef("active.event_seq", "=", "identity.seq"),

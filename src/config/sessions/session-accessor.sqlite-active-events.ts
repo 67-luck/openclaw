@@ -77,9 +77,10 @@ export function readLatestSessionTranscriptMessageEvent(
     (projection) => {
       const fence = resolveSqliteSessionTranscriptReadFence({
         database: projection.database,
+        storage: projection.storage,
         ...projection.resolved,
       });
-      const row = getMessageRangeReaders(projection.database).latest({
+      const row = getMessageRangeReaders(projection).latest({
         sessionId: projection.resolved.sessionId,
         start: 0,
         endExclusive: fence?.beforeActiveMessagePosition ?? projection.state.activeMessageCount,
@@ -101,14 +102,15 @@ export function everySessionTranscriptUserInputFrom(
     const db = getActiveTranscriptKysely(projection.database);
     const fence = resolveSqliteSessionTranscriptReadFence({
       database: projection.database,
+      storage: projection.storage,
       ...projection.resolved,
     });
     const end = fence?.beforeActiveMessagePosition ?? projection.state.activeMessageCount;
     const anchor = executeSqliteQueryTakeFirstSync(
       projection.database.db,
       db
-        .selectFrom("transcript_event_identities as identity")
-        .innerJoin("session_transcript_active_events as active", (join) =>
+        .selectFrom(projection.storage.identities().as("identity"))
+        .innerJoin(projection.storage.activeEvents().as("active"), (join) =>
           join
             .onRef("active.session_id", "=", "identity.session_id")
             .onRef("active.event_seq", "=", "identity.seq"),
@@ -130,7 +132,7 @@ export function everySessionTranscriptUserInputFrom(
     if (anchor.message_position < postStart) {
       return false;
     }
-    const query = selectMessageRows(projection.database, projection.resolved.sessionId, {
+    const query = selectMessageRows(projection.database, projection.storage, {
       start: anchor.message_position,
       endExclusive: end,
     })
@@ -170,8 +172,8 @@ export function readActiveTranscriptEntryIdentityInSnapshot(
   return executeSqliteQueryTakeFirstSync(
     projection.database.db,
     db
-      .selectFrom("transcript_event_identities as identity")
-      .innerJoin("session_transcript_active_events as active", (join) =>
+      .selectFrom(projection.storage.identities().as("identity"))
+      .innerJoin(projection.storage.activeEvents().as("active"), (join) =>
         join
           .onRef("active.session_id", "=", "identity.session_id")
           .onRef("active.event_seq", "=", "identity.seq"),
@@ -242,6 +244,7 @@ export function readSessionTranscriptVisibleMessageDeltaCore(
     const db = getActiveTranscriptKysely(projection.database);
     const transcriptFence = resolveSqliteSessionTranscriptReadFence({
       database: projection.database,
+      storage: projection.storage,
       ...projection.resolved,
     });
     const generation = projection.generation;
@@ -289,7 +292,7 @@ export function readSessionTranscriptVisibleMessageDeltaCore(
       const anchor = executeSqliteQueryTakeFirstSync(
         projection.database.db,
         db
-          .selectFrom("session_transcript_active_events")
+          .selectFrom(projection.storage.activeEvents().as("session_transcript_active_events"))
           .select("message_position")
           .where("session_id", "=", projection.resolved.sessionId)
           .where("event_seq", "=", cursor.lastEventSeq)
@@ -307,7 +310,7 @@ export function readSessionTranscriptVisibleMessageDeltaCore(
     const metadata = executeSqliteQuerySync(
       projection.database.db,
       selectMessageMetadata(
-        selectMessageRows(projection.database, projection.resolved.sessionId, {
+        selectMessageRows(projection.database, projection.storage, {
           start: startPosition,
           endExclusive:
             transcriptFence?.beforeActiveMessagePosition ?? projection.state.activeMessageCount,
@@ -336,19 +339,19 @@ export function readSessionTranscriptVisibleMessageDeltaCore(
             projection.database.db,
             selectMessagePayload(
               projection.database,
-              selectMessageRows(projection.database, projection.resolved.sessionId, {
+              selectMessageRows(projection.database, projection.storage, {
                 start: startPosition,
                 endExclusive: lastMessagePosition + 1,
               }),
             )
-              .leftJoin("session_transcript_active_events as parent_active", (join) =>
+              .leftJoin(projection.storage.activeEvents().as("parent_active"), (join) =>
                 join
                   .onRef("parent_active.session_id", "=", "active.session_id")
                   .on((eb) =>
                     eb("parent_active.active_position", "=", eb("active.active_position", "-", 1)),
                   ),
               )
-              .leftJoin("transcript_event_identities as parent_identity", (join) =>
+              .leftJoin(projection.storage.identities().as("parent_identity"), (join) =>
                 join
                   .onRef("parent_identity.session_id", "=", "parent_active.session_id")
                   .onRef("parent_identity.seq", "=", "parent_active.event_seq"),

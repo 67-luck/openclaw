@@ -91,7 +91,7 @@ export function readSessionTranscriptSourcePageFromProjection(
     const keptPositions =
       kind === "kept" ? kept.slice(cursor.position, cursor.position + remaining) : [];
     const active = db
-      .selectFrom("session_transcript_active_events as active")
+      .selectFrom(projection.storage.activeEvents().as("active"))
       .crossJoin("transcript_events as event")
       .whereRef("event.session_id", "=", "active.session_id")
       .whereRef("event.seq", "=", "active.event_seq")
@@ -119,7 +119,7 @@ export function readSessionTranscriptSourcePageFromProjection(
               eb.not(
                 eb.exists(
                   eb
-                    .selectFrom("session_transcript_active_events as active")
+                    .selectFrom(projection.storage.activeEvents().as("active"))
                     .select("active.event_seq")
                     .whereRef("active.session_id", "=", "event.session_id")
                     .whereRef("active.event_seq", "=", "event.seq")

@@ -17,6 +17,7 @@ import * as sessionAccessor from "../../config/sessions/session-accessor.js";
 import { readActiveTranscriptEntryAnchor } from "../../config/sessions/session-accessor.sqlite-transcript-anchor.js";
 import { projectPublicSessionEntry } from "../../config/sessions/session-entry-projection.js";
 import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
+import { readSessionTranscriptStorage } from "../../config/sessions/session-transcript-storage.js";
 import {
   getOwnedSessionTranscriptWriterFence,
   runWithoutOwnedSessionTranscriptWrites,
@@ -194,13 +195,14 @@ describe("CLI transcript account boundary", () => {
             const planned = await update(...args);
             const foreign = new DatabaseSync(f.target.storePath);
             try {
+              const storage = readSessionTranscriptStorage(foreign, f.target.sessionId);
               // A foreign identity edit leaves the session row and transcript watermark unchanged.
               expect(
                 foreign
                   .prepare(
-                    "UPDATE transcript_event_identities SET parent_id = ? WHERE session_id = ? AND event_id = ?",
+                    `UPDATE ${storage.identityTable} SET parent_id = ? WHERE session_id = ? AND event_id = ?`,
                   )
-                  .run("foreign-parent", f.target.sessionId, anchor.entryId).changes,
+                  .run("foreign-parent", storage.key, anchor.entryId).changes,
               ).toBe(1);
               changed = true;
             } finally {

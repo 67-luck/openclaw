@@ -45,13 +45,13 @@ export function readCacheTtlProjectionPrefix(
   const rows = iterateSqliteQuerySync(
     projection.database.db,
     getActiveTranscriptKysely(projection.database)
-      .selectFrom("session_transcript_active_events as active")
+      .selectFrom(projection.storage.activeEvents().as("active"))
       .innerJoin("transcript_events as event", (join) =>
         join
           .onRef("event.session_id", "=", "active.session_id")
           .onRef("event.seq", "=", "active.event_seq"),
       )
-      .leftJoin("transcript_event_identities as identity", (join) =>
+      .leftJoin(projection.storage.identities().as("identity"), (join) =>
         join
           .onRef("identity.session_id", "=", "active.session_id")
           .onRef("identity.seq", "=", "active.event_seq"),

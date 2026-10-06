@@ -263,7 +263,7 @@ export function readTranscriptDisplayDeltaFromProjection(
     executeSqliteQuerySync(
       projection.database.db,
       db
-        .selectFrom("session_transcript_active_events")
+        .selectFrom(projection.storage.activeEvents().as("session_transcript_active_events"))
         .select(["event_seq", "message_position"])
         .where("session_id", "=", projection.resolved.sessionId)
         .where("event_seq", ">=", firstSeq)

@@ -19,13 +19,12 @@ import { initializeDebugProxyCaptureAsync } from "../proxy-capture/runtime.js";
 import { withAgentDatabaseMaintenanceLease } from "../state/openclaw-agent-db-maintenance-lease.js";
 import { migrateOpenClawAgentDatabaseForMaintenance } from "../state/openclaw-agent-db-maintenance.js";
 import { registerOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
+import { getOpenClawAgentMigrationSchema } from "../state/openclaw-agent-db-schema-helpers.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   openOpenClawAgentDatabase,
   OPENCLAW_AGENT_SCHEMA_VERSION,
 } from "../state/openclaw-agent-db.js";
-import { OPENCLAW_AGENT_SCHEMA_SQL } from "../state/openclaw-agent-schema.js";
-import { withoutSessionEntrySnapshotsSchema } from "../state/openclaw-agent-session-snapshots-schema.js";
 import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import { tableExists } from "../state/openclaw-state-db-schema-helpers.js";
@@ -288,11 +287,11 @@ describe("Doctor schema bumps under an updating parent", () => {
         }
         await closeOpenClawAgentDatabasesAsync();
         await closeOpenClawStateDatabaseAsync();
-        // Real v23 storage, not a v24 image with only its metadata downgraded.
+        // Historical storage omits both the v24 snapshots and v25 metadata layout.
         fs.unlinkSync(agent);
         const seed = new DatabaseSync(agent);
         try {
-          seed.exec(withoutSessionEntrySnapshotsSchema(OPENCLAW_AGENT_SCHEMA_SQL));
+          seed.exec(getOpenClawAgentMigrationSchema(23));
           seed.exec(`PRAGMA user_version = 23;
             INSERT INTO schema_meta(meta_key, role, schema_version, agent_id, app_version, created_at, updated_at)
             VALUES ('primary', 'agent', 23, 'main', '2026.9.4', 1, 1)`);

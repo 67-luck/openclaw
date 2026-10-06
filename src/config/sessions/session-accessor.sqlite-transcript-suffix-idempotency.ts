@@ -8,6 +8,7 @@ import {
   type SqliteTranscriptStorageRow,
 } from "./session-accessor.sqlite-read.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
+import type { SessionTranscriptStorage } from "./session-transcript-storage.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 import { transcriptEventNavigationSql } from "./transcript-payload.js";
 
@@ -19,6 +20,7 @@ export type IncrementalSuffixIdempotencyMutation = {
 /** Prepares idempotency-owner changes before the bounded suffix write transaction. */
 export function prepareIncrementalSuffixIdempotencyMutation(params: {
   database: OpenClawAgentDatabase;
+  storage: SessionTranscriptStorage;
   expectedRows: readonly SqliteTranscriptStorageRow[];
   next: readonly TranscriptEvent[];
   resolved: ResolvedTranscriptScope;
@@ -28,7 +30,7 @@ export function prepareIncrementalSuffixIdempotencyMutation(params: {
   const suffixIdentityKeys = executeSqliteQuerySync(
     params.database.db,
     db
-      .selectFrom("transcript_event_identities")
+      .selectFrom(params.storage.identities().as("transcript_event_identities"))
       .select(["event_id", "message_idempotency_key"])
       .where("session_id", "=", params.resolved.sessionId)
       .where("seq", ">=", params.startSeq)
@@ -72,7 +74,7 @@ export function prepareIncrementalSuffixIdempotencyMutation(params: {
     db
       .with("candidates", (query) =>
         query
-          .selectFrom("transcript_event_identities as identity")
+          .selectFrom(params.storage.identities().as("identity"))
           .innerJoin("transcript_events as event", (join) =>
             join
               .onRef("event.session_id", "=", "identity.session_id")

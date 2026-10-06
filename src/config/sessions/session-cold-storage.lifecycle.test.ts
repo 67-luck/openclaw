@@ -176,9 +176,12 @@ async function createColdCurrentSession(
       "session_windows",
       "transcript_events",
       "transcript_event_identities",
+      "transcript_event_identity_rows",
+      "transcript_storage_sessions",
       "transcript_rewrite_watermarks",
       "session_transcript_cold_archives",
       "session_transcript_active_events",
+      "session_transcript_active_rows",
       "session_transcript_index_state",
     ].map((table) =>
       database()

@@ -1,10 +1,11 @@
 import { parseDateFirstTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
+  createSqliteQueryCache,
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   iterateSqliteQuerySync,
-  prepareSqliteQuerySync,
+  prepareSqliteQueryTakeFirstSync,
 } from "../../infra/kysely-sync.js";
 import { assertSqliteJsonlReadBudget } from "../../infra/sqlite-jsonl-budget.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
@@ -51,6 +52,10 @@ import type { SessionTranscriptReadSnapshot } from "./session-history-read.types
 import { SessionTranscriptStorageUnavailableError } from "./session-transcript-projection-error.js";
 import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 import {
+  readSessionTranscriptStorage,
+  type SessionTranscriptStorage,
+} from "./session-transcript-storage.js";
+import {
   transcriptEventJsonSql,
   transcriptEventNavigationSql,
   transcriptEventResetNavigationSql,
@@ -65,27 +70,54 @@ export type SqliteTranscriptStorageRow = SqliteTranscriptSnapshotRow & {
   createdAt: number;
 };
 
-export function createTranscriptIdentityReader(
+type IdentityReadParameters = { sessionId: string; storageKey: string | number; eventId: string };
+
+function prepareTranscriptIdentityReader(
   database: Pick<OpenClawAgentDatabase, "db">,
-  sessionId: string,
+  storage: SessionTranscriptStorage,
 ) {
-  const read = prepareSqliteQuerySync<
-    string,
+  return prepareSqliteQueryTakeFirstSync<
+    IdentityReadParameters,
     { event_id: string; parent_id: string | null; seq: number }
   >(database.db, (parameter) =>
     getSessionKysely(database.db)
-      .selectFrom("transcript_event_identities")
+      .selectFrom(
+        storage
+          .identities(undefined, {
+            sessionId: parameter((params) => params.sessionId),
+            key: parameter((params) => params.storageKey),
+          })
+          .as("identity"),
+      )
       .select(["event_id", "parent_id", "seq"])
-      .where("session_id", "=", sessionId)
       .where(
         "event_id",
         "=",
-        parameter((eventId) => eventId),
+        parameter((params) => params.eventId),
       ),
   );
+}
+
+const transcriptIdentityReaders = createSqliteQueryCache(
+  () => new Map<boolean, ReturnType<typeof prepareTranscriptIdentityReader>>(),
+);
+
+/** A supplied route belongs to the caller's synchronous transaction; other readers refresh per call. */
+export function createTranscriptIdentityReader(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  sessionId: string,
+  preparedStorage?: SessionTranscriptStorage,
+) {
   return (eventId: string) =>
     readHotSessionTranscriptSnapshot(database, sessionId, "identity", () => {
-      const row = read(eventId).rows[0];
+      const storage = preparedStorage ?? readSessionTranscriptStorage(database.db, sessionId);
+      const readers = transcriptIdentityReaders(database.db);
+      let read = readers.get(storage.compact);
+      if (!read) {
+        read = prepareTranscriptIdentityReader(database, storage);
+        readers.set(storage.compact, read);
+      }
+      const row = read({ sessionId, storageKey: storage.key, eventId });
       return row ? { eventId: row.event_id, parentId: row.parent_id, seq: row.seq } : undefined;
     });
 }
@@ -494,10 +526,11 @@ export function hasSessionTranscriptMessageInDatabase(
     database.db,
     () => {
       assertSessionTranscriptHot(database.db, sessionId);
+      const storage = readSessionTranscriptStorage(database.db, sessionId);
       const message = executeSqliteQueryTakeFirstSync(
         database.db,
         db
-          .selectFrom("transcript_event_identities")
+          .selectFrom(storage.identities("type").as("transcript_event_identities"))
           .select("seq")
           .where("session_id", "=", sessionId)
           .where("event_type", "=", "message")
@@ -510,7 +543,7 @@ export function hasSessionTranscriptMessageInDatabase(
       // Build the classified sequence set once; a type-selecting join can rescan
       // the covering type index for every event in a metadata-only transcript.
       const classified = db
-        .selectFrom("transcript_event_identities")
+        .selectFrom(storage.identities().as("transcript_event_identities"))
         .select("seq")
         .where("session_id", "=", sessionId)
         .where("event_type", "is not", null);

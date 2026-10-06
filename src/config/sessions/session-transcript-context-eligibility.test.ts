@@ -64,7 +64,7 @@ const entries = [
 function projectionRows(db: DatabaseSync) {
   return db
     .prepare(
-      "SELECT active_position, event_seq, message_position, context_eligible FROM session_transcript_active_events WHERE session_id = ? ORDER BY active_position",
+      "SELECT active_position, event_seq, message_position, context_eligible FROM session_transcript_active_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) ORDER BY active_position",
     )
     .all(sessionId);
 }
@@ -100,7 +100,7 @@ it("converges an older current-watermark rebuild and a following append without 
 
     // Older projection writers omit the new column even when they publish a current watermark.
     db.prepare(
-      "UPDATE session_transcript_active_events SET context_eligible = NULL WHERE session_id = ?",
+      "UPDATE session_transcript_active_rows SET context_eligible = NULL WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?)",
     ).run(sessionId);
     expect(
       db
@@ -206,7 +206,7 @@ it("rejects a prepared projection after a same-sequence rewrite before its claim
         },
       ]);
       db.prepare(
-        "UPDATE session_transcript_active_events SET context_eligible = NULL WHERE session_id = ?",
+        "UPDATE session_transcript_active_rows SET context_eligible = NULL WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?)",
       ).run(sessionId);
       expect(claimPreparedSessionTranscriptProjectionInTransaction(db, plan, -1)).toBe(false);
     }, scope);
@@ -231,7 +231,7 @@ it.each(["interrupted", "unclassified", "append", "rewrite", "delete"])(
       await replaceTranscriptEvents(scope, [...entries]);
       const { db } = openOpenClawAgentDatabase(scope);
       db.prepare(
-        "UPDATE session_transcript_active_events SET context_eligible = NULL WHERE session_id = ?",
+        "UPDATE session_transcript_active_rows SET context_eligible = NULL WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?)",
       ).run(sessionId);
       const plan = prepareSessionTranscriptProjection(db, sessionId);
       if (!plan) {
@@ -273,7 +273,7 @@ it.each(["interrupted", "unclassified", "append", "rewrite", "delete"])(
               }),
             ).toBe(true);
             db.prepare(
-              "UPDATE session_transcript_active_events SET context_eligible = NULL WHERE session_id = ?",
+              "UPDATE session_transcript_active_rows SET context_eligible = NULL WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?)",
             ).run(sessionId);
           } else if (change === "append") {
             appendTranscriptEventsInTransaction(database, scope, [

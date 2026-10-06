@@ -10,6 +10,7 @@ import type {
   SessionReactionWrite,
   SetSessionReactionParams,
 } from "./session-reaction-store.types.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 
 export class SessionReactionLimitError extends Error {
   constructor() {
@@ -83,10 +84,11 @@ export function setSessionReactionInDatabase(
     // The caller looked the message up asynchronously; a transcript rewrite can
     // have deleted it (and pruned its reactions) since, so re-check inside the
     // transaction rather than insert a reaction for a message that is gone.
+    const storage = readSessionTranscriptStorage(database.db, params.expectedSessionId);
     const identity = executeSqliteQueryTakeFirstSync(
       database.db,
       db
-        .selectFrom("transcript_event_identities")
+        .selectFrom(storage.identities().as("transcript_event_identities"))
         .select("event_id")
         .where("session_id", "=", params.expectedSessionId)
         .where("event_id", "=", params.messageId),

@@ -84,10 +84,12 @@ function createAgentDatabase() {
       (session_id, session_key, created_at, updated_at) VALUES (?, ?, ?, ?)`);
     const event = database.prepare(`INSERT INTO transcript_events
       (session_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)`);
-    const active = database.prepare(`INSERT INTO session_transcript_active_events
-      (session_id, active_position, event_seq, message_position) VALUES (?, ?, ?, ?)`);
-    const identity = database.prepare(`INSERT INTO transcript_event_identities
-      (session_id, event_id, seq, event_type, created_at) VALUES (?, ?, ?, 'message', ?)`);
+    const active = database.prepare(`INSERT INTO session_transcript_active_rows
+      (session_id, active_position, event_seq, message_position)
+      VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), ?, ?, ?)`);
+    const identity = database.prepare(`INSERT INTO transcript_event_identity_rows
+      (session_id, event_id, seq, event_type, created_at)
+      VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), ?, ?, 'message', ?)`);
     const addMessage = (
       sessionId: string,
       seq: number,
@@ -139,13 +141,29 @@ function createAgentDatabase() {
     const cutoff = now - 48 * 60 * 60 * 1000;
     node.run("at-cutoff", "at-cutoff", "{}", cutoff);
     window.run("at-cutoff", "at-cutoff", cutoff, cutoff);
-    addMessage("at-cutoff", 1, cutoffMessage, 0);
+    event.run("at-cutoff", 1, cutoffMessage, now);
+    // This historical session awaits copying; no compact shadow may hide a wrong route.
+    database.exec(`
+      INSERT INTO transcript_event_identities
+        (session_id, event_id, seq, event_type, created_at)
+        VALUES ('at-cutoff', 'event-1', 1, 'message', ${now});
+      INSERT INTO session_transcript_active_events
+        (session_id, active_position, event_seq, message_position)
+        VALUES ('at-cutoff', 0, 1, 0);
+      UPDATE transcript_storage_sessions SET phase = 'legacy' WHERE session_id = 'at-cutoff';
+    `);
     node.run("outside-cutoff", "outside-cutoff", "{}", cutoff - 1);
     window.run("outside-cutoff", "outside-cutoff", cutoff - 1, cutoff - 1);
     for (let position = 0; position < 64; position++) {
       addMessage("outside-cutoff", position, small, position);
     }
-    database.exec("COMMIT;");
+    database.exec(`
+      UPDATE transcript_storage_migration SET phase = 'identities', cursor = NULL,
+        identity_high_water = (SELECT max(rowid) FROM transcript_event_identities),
+        active_high_water = (SELECT max(rowid) FROM session_transcript_active_events)
+        WHERE id = 1;
+      COMMIT;
+    `);
   } finally {
     database.close();
   }
@@ -168,7 +186,7 @@ function finish(pathname: string, initial: PageCacheProgress): PageCacheProgress
 }
 
 describe.skipIf(process.platform !== "linux")("SQLite page-cache worker", () => {
-  it("warms recent projections and the latest bounded active payloads without retaining WAL snapshots", () => {
+  it("warms mixed metadata routes and bounded active payloads without retaining WAL snapshots", () => {
     const { pathname, messageBytes, compressedBytes, payloadBytes } = createAgentDatabase();
     const context = { path: pathname, env: {} };
     const input = { kind: "agent" as const, maxBytes: 3 * MiB, now };
@@ -205,6 +223,12 @@ describe.skipIf(process.platform !== "linux")("SQLite page-cache worker", () => 
     finish(pathname, restarted);
     expect(initial.complete).toBe(false);
     expect(first.complete).toBe(false);
+    expect(result).toMatchObject({
+      complete: true,
+      limited: false,
+      payloadMessages: 32,
+      payloadBytes,
+    });
     expect(payloadProgress.complete).toBe(false);
     expect(payloadProgress.payloadMessages).toBeGreaterThan(0);
     expect(payloadProgress.payloadBytes).toBe(
@@ -214,12 +238,6 @@ describe.skipIf(process.platform !== "linux")("SQLite page-cache worker", () => 
     expect(readerOpenDuringWarm).toBe(true);
     expect(checkpointBusy).toBe(0);
     expect(replacedReaderClosed).toBe(true);
-    expect(result).toMatchObject({
-      complete: true,
-      limited: false,
-      payloadMessages: 32,
-      payloadBytes,
-    });
     expect(result.readBytes).toBeGreaterThan(MiB);
     expect(result.readBytes).toBeLessThan(3 * MiB);
     expect(result.queryBeforeMs).toBeGreaterThanOrEqual(0);

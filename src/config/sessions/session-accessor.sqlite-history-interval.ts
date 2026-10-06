@@ -64,17 +64,10 @@ function selectHistoricalDisplayEvents(
   interval: ClosedResetInterval,
 ) {
   const active = getActiveTranscriptKysely(projection.database).selectFrom(
-    "session_transcript_active_events as active",
+    projection.storage.activeEvents().as("active"),
   );
-  const identity =
-    // Without statistics, the covering event-type index can scan the session for every row.
-    getActiveTranscriptKysely(projection.database)
-      .selectFrom("transcript_event_identities")
-      .select(["session_id", "seq", "event_type"])
-      .modifyEnd(
-        /* kysely-allow-raw: pin the canonical sequence lookup to avoid quadratic cold-history joins. */ sql`INDEXED BY idx_agent_transcript_event_identity_sequence`,
-      )
-      .as("identity");
+  // Without statistics, the covering event-type index can scan the session for every row.
+  const identity = projection.storage.identities("sequence").as("identity");
   const withIdentity = projection.hasUnindexedPrefix
     ? active.leftJoin(identity, (join) =>
         join
@@ -132,8 +125,8 @@ function selectDisplayableActiveEventById(
 ) {
   const db = getActiveTranscriptKysely(projection.database);
   return db
-    .selectFrom("transcript_event_identities as identity")
-    .innerJoin("session_transcript_active_events as active", (join) =>
+    .selectFrom(projection.storage.identities().as("identity"))
+    .innerJoin(projection.storage.activeEvents().as("active"), (join) =>
       join
         .onRef("active.session_id", "=", "identity.session_id")
         .onRef("active.event_seq", "=", "identity.seq"),

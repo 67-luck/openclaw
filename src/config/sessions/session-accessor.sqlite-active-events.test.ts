@@ -142,7 +142,7 @@ describe("SQLite active transcript event projection", () => {
     expect(
       database.db
         .prepare(
-          "SELECT active_position, event_seq, message_position FROM session_transcript_active_events WHERE session_id = ? ORDER BY active_position",
+          "SELECT active_position, event_seq, message_position FROM session_transcript_active_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) ORDER BY active_position",
         )
         .all(scope.sessionId),
     ).toEqual([
@@ -153,10 +153,11 @@ describe("SQLite active transcript event projection", () => {
     const activeRows = database.db
       .prepare(
         `SELECT event.event_json
-         FROM session_transcript_active_events AS active
+         FROM session_transcript_active_rows AS active
+         JOIN transcript_storage_sessions AS storage ON storage.sid = active.session_id
          JOIN transcript_events AS event
-           ON event.session_id = active.session_id AND event.seq = active.event_seq
-         WHERE active.session_id = ?
+           ON event.session_id = storage.session_id AND event.seq = active.event_seq
+         WHERE storage.session_id = ?
          ORDER BY active.active_position`,
       )
       .all(scope.sessionId) as Array<{ event_json: string }>;
@@ -694,19 +695,19 @@ describe("SQLite active transcript event projection", () => {
               writer
                 .prepare(
                   `
-                  INSERT INTO transcript_event_identities
+                  INSERT INTO transcript_event_identity_rows
                     (session_id, event_id, seq, event_type, parent_id,
                      message_idempotency_key, created_at)
-                  VALUES (?, 'concurrent', ?, 'message', 'seed', NULL, ?)
+                  VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), 'concurrent', ?, 'message', 'seed', NULL, ?)
                 `,
                 )
                 .run(scope.sessionId, nextSeq, Date.now());
               writer
                 .prepare(
                   `
-                  INSERT INTO session_transcript_active_events
+                  INSERT INTO session_transcript_active_rows
                     (session_id, active_position, event_seq, message_position, context_eligible)
-                  VALUES (?, ?, ?, ?, ?)
+                  VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), ?, ?, ?, ?)
                 `,
                 )
                 .run(
@@ -871,14 +872,14 @@ describe("SQLite active transcript event projection", () => {
       VALUES (?, ?, ?, ?)
     `);
     const insertIdentity = database.db.prepare(`
-      INSERT INTO transcript_event_identities
+      INSERT INTO transcript_event_identity_rows
         (session_id, event_id, seq, event_type, parent_id, message_idempotency_key, created_at)
-      VALUES (?, ?, ?, 'message', ?, NULL, ?)
+      VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), ?, ?, 'message', ?, NULL, ?)
     `);
     const insertActive = database.db.prepare(`
-      INSERT INTO session_transcript_active_events
+      INSERT INTO session_transcript_active_rows
         (session_id, active_position, event_seq, message_position, context_eligible)
-      VALUES (?, ?, ?, ?, 1)
+      VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), ?, ?, ?, 1)
     `);
     database.db.exec("BEGIN IMMEDIATE;");
     try {
@@ -889,7 +890,9 @@ describe("SQLite active transcript event projection", () => {
         .prepare("DELETE FROM session_transcript_index_state WHERE session_id = ?")
         .run(scope.sessionId);
       database.db
-        .prepare("DELETE FROM transcript_event_identities WHERE session_id = ?")
+        .prepare(
+          "DELETE FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?)",
+        )
         .run(scope.sessionId);
       database.db
         .prepare("DELETE FROM transcript_events WHERE session_id = ?")

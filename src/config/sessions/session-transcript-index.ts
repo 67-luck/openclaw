@@ -29,13 +29,19 @@ import {
   type PreparedSessionTranscriptProjection,
 } from "./session-transcript-projection-rebuild.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
+import {
+  readSessionTranscriptStorage,
+  type SessionTranscriptStorage,
+} from "./session-transcript-storage.js";
 type TranscriptIndexDatabase = Pick<
   OpenClawAgentKyselyDatabase,
   | "session_windows"
   | "session_transcript_active_events"
+  | "session_transcript_active_rows"
   | "session_transcript_fts_rows"
   | "session_transcript_index_state"
   | "transcript_events"
+  | "transcript_storage_sessions"
 >;
 
 export type SessionTranscriptProjectionState = SessionTranscriptProjectionCursor & {
@@ -153,10 +159,15 @@ function readLatestTranscriptSequence(db: DatabaseSync, sessionId: string): numb
   )?.seq;
 }
 
-export function sessionTranscriptIndexNeedsReconcile(db: DatabaseSync, sessionId: string): boolean {
+export function sessionTranscriptIndexNeedsReconcile(
+  db: DatabaseSync,
+  sessionId: string,
+  storage?: SessionTranscriptStorage,
+): boolean {
   const latestSeq = readLatestTranscriptSequence(db, sessionId);
   return (
-    latestSeq !== undefined && sessionTranscriptProjectionNeedsReconcile(db, sessionId, latestSeq)
+    latestSeq !== undefined &&
+    sessionTranscriptProjectionNeedsReconcile(db, sessionId, latestSeq, storage)
   );
 }
 
@@ -164,13 +175,14 @@ function sessionTranscriptProjectionNeedsReconcile(
   db: DatabaseSync,
   sessionId: string,
   latestSeq: number,
+  storage?: SessionTranscriptStorage,
 ): boolean {
   const state = readSessionTranscriptProjectionState(db, sessionId);
   return (
     !state ||
     state.needsRebuild ||
     state.indexedSeq !== latestSeq ||
-    hasUnclassifiedSessionTranscriptEvents(db, sessionId)
+    hasUnclassifiedSessionTranscriptEvents(db, sessionId, storage)
   );
 }
 
@@ -200,14 +212,14 @@ function createWatermarkWriter(db: DatabaseSync, sessionId: string, updateExisti
   );
 }
 
-function createActiveEventInserter(db: DatabaseSync, sessionId: string) {
+function createActiveEventInserter(db: DatabaseSync, storage: SessionTranscriptStorage) {
   return prepareSqliteQuerySync<PreparedSessionTranscriptProjection["activeRows"][number]>(
     db,
     (parameter) =>
       getIndexKysely(db)
-        .insertInto("session_transcript_active_events")
+        .insertInto(storage.activeTable)
         .values({
-          session_id: sessionId,
+          session_id: storage.key,
           active_position: parameter((row) => row.activePosition),
           context_eligible: parameter((row) => row.contextEligible),
           event_seq: parameter((row) => row.eventSeq),
@@ -216,12 +228,10 @@ function createActiveEventInserter(db: DatabaseSync, sessionId: string) {
   );
 }
 
-function deleteActiveEventRows(db: DatabaseSync, sessionId: string): void {
+function deleteActiveEventRows(db: DatabaseSync, storage: SessionTranscriptStorage): void {
   executeSqliteQuerySync(
     db,
-    getIndexKysely(db)
-      .deleteFrom("session_transcript_active_events")
-      .where("session_id", "=", sessionId),
+    getIndexKysely(db).deleteFrom(storage.activeTable).where("session_id", "=", storage.key),
   );
 }
 
@@ -235,6 +245,7 @@ function deleteActiveEventRows(db: DatabaseSync, sessionId: string): void {
 export function createTranscriptIndexAppenderInTransaction(
   db: DatabaseSync,
   sessionId: string,
+  storage: SessionTranscriptStorage = readSessionTranscriptStorage(db, sessionId),
 ): (params: TranscriptIndexAppend) => boolean {
   let watermark = readSessionTranscriptProjectionState(db, sessionId);
   let hasUnclassifiedEvents: boolean | undefined;
@@ -248,7 +259,7 @@ export function createTranscriptIndexAppenderInTransaction(
     }
     if (
       watermark &&
-      (hasUnclassifiedEvents ??= hasUnclassifiedSessionTranscriptEvents(db, sessionId))
+      (hasUnclassifiedEvents ??= hasUnclassifiedSessionTranscriptEvents(db, sessionId, storage))
     ) {
       // Out-of-band or older writers left incomplete projection facts. Once checked,
       // this batch's own forward rows all carry an explicit context classification.
@@ -277,7 +288,7 @@ export function createTranscriptIndexAppenderInTransaction(
       insertFts(append.ftsRow);
     }
     if (append.activeRow) {
-      insertActiveEvent ??= createActiveEventInserter(db, sessionId);
+      insertActiveEvent ??= createActiveEventInserter(db, storage);
       insertActiveEvent(append.activeRow);
     }
     const nextWatermark = {
@@ -317,9 +328,10 @@ export function markSessionTranscriptIndexDirtyInTransaction(
 export function deleteSessionTranscriptIndexInTransaction(
   db: DatabaseSync,
   sessionId: string,
+  storage: SessionTranscriptStorage = readSessionTranscriptStorage(db, sessionId),
 ): void {
   deleteSessionTranscriptFtsRowsInTransaction(db, sessionId);
-  deleteActiveEventRows(db, sessionId);
+  deleteActiveEventRows(db, storage);
   executeSqliteQuerySync(
     db,
     getIndexKysely(db)
@@ -339,6 +351,7 @@ export function replaceSessionTranscriptIndexSuffixInTransaction(
     removedMessageIds?: readonly string[];
     retainedActiveCount?: number;
   },
+  storage: SessionTranscriptStorage = readSessionTranscriptStorage(db, sessionId),
 ): void {
   const kysely = getIndexKysely(db);
   const incremental = params.retainedActiveCount !== undefined;
@@ -353,7 +366,7 @@ export function replaceSessionTranscriptIndexSuffixInTransaction(
     const currentRows = executeSqliteQuerySync(
       db,
       kysely
-        .selectFrom("session_transcript_active_events")
+        .selectFrom(storage.activeEvents().as("session_transcript_active_events"))
         .select(["active_position", "context_eligible", "event_seq", "message_position"])
         .where("session_id", "=", sessionId)
         .where("event_seq", "<", params.unchangedBeforeSeq)
@@ -407,12 +420,12 @@ export function replaceSessionTranscriptIndexSuffixInTransaction(
   executeSqliteQuerySync(
     db,
     kysely
-      .deleteFrom("session_transcript_active_events")
-      .where("session_id", "=", sessionId)
+      .deleteFrom(storage.activeTable)
+      .where("session_id", "=", storage.key)
       .where("active_position", ">=", retainedCount),
   );
 
-  const insertActive = createActiveEventInserter(db, sessionId);
+  const insertActive = createActiveEventInserter(db, storage);
   const insertFts = createSessionTranscriptFtsInserter(db, sessionId);
   const rowsToInsert = incremental
     ? params.next.activeRows
@@ -441,11 +454,15 @@ export function replaceSessionTranscriptIndexSuffixInTransaction(
  * rows, indexes the resolved active branch, and resets the watermark to the
  * same append parent the accessor's next append will resolve.
  */
-function rebuildSessionTranscriptIndexInTransaction(db: DatabaseSync, sessionId: string): void {
+function rebuildSessionTranscriptIndexInTransaction(
+  db: DatabaseSync,
+  sessionId: string,
+  storage: SessionTranscriptStorage,
+): void {
   deleteSessionTranscriptFtsRowsInTransaction(db, sessionId);
-  deleteActiveEventRows(db, sessionId);
+  deleteActiveEventRows(db, storage);
   const projection = visitSessionTranscriptProjection(db, sessionId, {
-    activeRow: createActiveEventInserter(db, sessionId),
+    activeRow: createActiveEventInserter(db, storage),
     ftsRow: createSessionTranscriptFtsInserter(db, sessionId),
   });
   if (!projection) {
@@ -466,21 +483,37 @@ function rebuildSessionTranscriptIndexInTransaction(db: DatabaseSync, sessionId:
 export function reconcileSessionTranscriptIndexInTransaction(
   db: DatabaseSync,
   sessionId: string,
+  storage: SessionTranscriptStorage = readSessionTranscriptStorage(db, sessionId),
 ): boolean {
   const latestSeq = readLatestTranscriptSequence(db, sessionId);
   if (latestSeq === undefined) {
-    deleteSessionTranscriptIndexInTransaction(db, sessionId);
+    deleteSessionTranscriptIndexInTransaction(db, sessionId, storage);
     return false;
   }
-  if (!sessionTranscriptProjectionNeedsReconcile(db, sessionId, latestSeq)) {
+  if (!sessionTranscriptProjectionNeedsReconcile(db, sessionId, latestSeq, storage)) {
     return false;
   }
-  rebuildSessionTranscriptIndexInTransaction(db, sessionId);
+  rebuildSessionTranscriptIndexInTransaction(db, sessionId, storage);
   return true;
+}
+
+function selectAuthoritativeActiveEventOwners(db: DatabaseSync, compact: boolean) {
+  const table = compact ? "session_transcript_active_rows" : "session_transcript_active_events";
+  const kysely = getIndexKysely(db);
+  return kysely
+    .selectFrom(kysely.selectFrom(table).selectAll().as("active"))
+    .innerJoin("transcript_storage_sessions as storage", (join) =>
+      join.onRef(compact ? "storage.sid" : "storage.session_id", "=", "active.session_id"),
+    )
+    .select("storage.session_id")
+    .where("storage.phase", "=", compact ? "compact" : "legacy");
 }
 
 function selectSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync) {
   const kysely = getIndexKysely(db);
+  const pendingOwners = [false, true].map((compact) =>
+    selectAuthoritativeActiveEventOwners(db, compact).where("active.context_eligible", "is", null),
+  );
   return (
     kysely
       .selectFrom("session_windows")
@@ -510,23 +543,15 @@ function selectSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync) {
         eb.or([
           eb(eb.fn.coalesce("st.needs_rebuild", eb.val(1)), "!=", 0),
           eb("latest.seq", ">", eb.fn.coalesce("st.indexed_seq", eb.val(-1))),
-          eb.and([
-            // A clean store has no pending rows; check once before per-session probes.
-            eb.exists(
-              eb
-                .selectFrom("session_transcript_active_events as any_pending")
-                .select("any_pending.session_id")
-                .where("any_pending.context_eligible", "is", null)
-                .limit(1),
-            ),
-            eb.exists(
-              eb
-                .selectFrom("session_transcript_active_events as pending")
-                .select("pending.session_id")
-                .whereRef("pending.session_id", "=", "session_windows.session_id")
-                .where("pending.context_eligible", "is", null),
-            ),
-          ]),
+          ...pendingOwners.map((pending) =>
+            eb.and([
+              // Probe each authoritative layout once before correlated session checks.
+              eb.exists(pending.limit(1)),
+              eb.exists(
+                pending.where("storage.session_id", "=", eb.ref("session_windows.session_id")),
+              ),
+            ]),
+          ),
         ]),
       )
       // Ordering keeps the session-window scan and one latest-row index seek per session.
@@ -557,6 +582,7 @@ export function listSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): s
 
 const transcriptIndexTables = [
   "session_transcript_active_events",
+  "session_transcript_active_rows",
   "session_transcript_fts_rows",
   "session_transcript_index_state",
 ] as const;
@@ -566,12 +592,39 @@ function selectOrphanedTranscriptOwners(
   table: (typeof transcriptIndexTables)[number],
 ) {
   const kysely = getIndexKysely(db);
+  const transcriptOwners = kysely.selectFrom("transcript_events").select("session_id").distinct();
+  if (table === "session_transcript_active_rows") {
+    return selectAuthoritativeActiveEventOwners(db, true)
+      .distinct()
+      .except(transcriptOwners)
+      .orderBy("session_id");
+  }
+  if (table === "session_transcript_active_events") {
+    return (
+      kysely
+        .selectFrom("session_transcript_active_events as active")
+        .leftJoin(
+          "transcript_storage_sessions as storage",
+          "storage.session_id",
+          "active.session_id",
+        )
+        .leftJoin("session_windows as session", "session.session_id", "active.session_id")
+        .select("active.session_id")
+        // Preserve cleanup of legacy orphans without treating migration shadows as current state.
+        .where((eb) =>
+          eb.or([eb("storage.phase", "=", "legacy"), eb("session.session_id", "is", null)]),
+        )
+        .distinct()
+        .except(transcriptOwners)
+        .orderBy("session_id")
+    );
+  }
   return (
     kysely
       .selectFrom(table)
       .select("session_id")
       .distinct()
-      .except(kysely.selectFrom("transcript_events").select("session_id").distinct())
+      .except(transcriptOwners)
       // Older SQLite needs ordering to merge owner sets and skip duplicate keys.
       .orderBy("session_id")
   );
@@ -579,20 +632,29 @@ function selectOrphanedTranscriptOwners(
 
 /** Orphan-only cleanup is independent of live sessions' projection watermarks. */
 export function hasOrphanedTranscriptIndexRows(db: DatabaseSync): boolean {
-  return transcriptIndexTables.some(
-    (table) =>
-      executeSqliteQueryTakeFirstSync(db, selectOrphanedTranscriptOwners(db, table).limit(1)) !==
-      undefined,
-  );
+  return transcriptIndexTables.some((table) => {
+    const owners = selectOrphanedTranscriptOwners(db, table).as("orphan");
+    return (
+      executeSqliteQueryTakeFirstSync(
+        db,
+        getIndexKysely(db).selectFrom(owners).select("session_id").limit(1),
+      ) !== undefined
+    );
+  });
 }
 
 /** Drops index rows for sessions whose transcript rows are gone. */
 export function deleteOrphanedTranscriptIndexRowsInTransaction(db: DatabaseSync): void {
   const kysely = getIndexKysely(db);
   for (const table of transcriptIndexTables) {
-    executeSqliteQuerySync(
-      db,
-      kysely.deleteFrom(table).where("session_id", "in", selectOrphanedTranscriptOwners(db, table)),
-    );
+    const owners = selectOrphanedTranscriptOwners(db, table);
+    const keys =
+      table === "session_transcript_active_rows"
+        ? kysely
+            .selectFrom("transcript_storage_sessions")
+            .select("sid")
+            .where("session_id", "in", owners)
+        : owners;
+    executeSqliteQuerySync(db, kysely.deleteFrom(table).where("session_id", "in", keys));
   }
 }

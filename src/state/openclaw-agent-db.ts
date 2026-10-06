@@ -570,11 +570,8 @@ function* openOpenClawAgentDatabaseSteps(
       }
     }
     if (openedDb?.isOpen) {
-      if (
-        pending &&
-        cache.databases.has(pathname) &&
-        cache.databases.get(pathname)?.db !== openedDb
-      ) {
+      const replacement = cache.databases.get(pathname);
+      if (pending && replacement && replacement.db !== openedDb) {
         // A synchronous opener may supersede pending work. Retain failed cleanup
         // with its original native owner; never overwrite the replacement cache/lease.
         const retainedDb = openedDb;

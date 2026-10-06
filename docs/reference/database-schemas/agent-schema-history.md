@@ -32,7 +32,7 @@ title: "Agent schema history"
 | 22      | Exact transcript FTS row ownership for session-local deletion and reconciliation ([#153834](https://github.com/openclaw/openclaw/pull/153834))                                                                                                         | Unreleased                                        |
 | 23      | Selective transcript compression, binary memory embeddings, and stable memory full-text index identities                                                                                                                                               | Unreleased                                        |
 | 24      | Canonical session hot facts separated from keyed diff, skills, and system-prompt snapshots                                                                                                                                                             | Unreleased                                        |
-| 25      | One session-node validity UPDATE trigger covering payload, identity, and timestamp writes                                                                                                                                                              | Unreleased                                        |
+| 25      | Integer transcript metadata keys and one session-node validity UPDATE trigger                                                                                                                                                                          | Unreleased                                        |
 
 Version 3 was an unshipped development step folded into version 4.
 
@@ -49,14 +49,21 @@ be verified, follow the explicit agent-restoration instructions it reports, then
 rerun Doctor before upgrading the copy. Schema-8 and later session migrations
 remain supported.
 
-### Session-node validity trigger consolidation
+<a id="session-node-validity-trigger-consolidation" />
+<a id="compact-transcript-metadata" />
+
+### Compact transcript storage and session-node validity
+
+The schema-25 Doctor transaction installs all three changes below and publishes both
+version markers once. Background metadata conversion resumes after that shared
+schema step; an installation crosses this combined boundary once.
 
 Agent schema **25** replaces the two validity UPDATE triggers on `session_nodes`
 with `session_nodes_entry_valid_after_update`, covering `entry_json`,
 `current_session_id`, and `updated_at` together. The existing schema migration
 owner drops both old triggers and installs the merged trigger in its immediate
-transaction, publishing both version markers atomically. Session payloads and
-snapshots retain their representation. The insert trigger, canonical writer's
+transaction, publishing both version markers atomically. This trigger step preserves
+session payloads and snapshots. The insert trigger, canonical writer's
 explicit validity settlement, and canonical-validation pending triggers remain.
 
 An ordinary session-node UPSERT followed by validity settlement now performs
@@ -70,9 +77,62 @@ schema inspectors reject. Older builds refuse schema 25 with the newer-schema
 error; Gateway startup exits 78, and `openclaw update` refuses older targets.
 Take and verify a WAL-aware backup before migration. Rollback restores that
 pre-migration backup and its matching build; lowering version markers or
-reinstalling old triggers alone is not a supported downgrade. Maintainer acceptance
-of this bump is pending in the implementing PR under the
+reinstalling old triggers alone is not a supported downgrade. The implementing PR records the accepted combined scope under the
 [storage review checkpoint](/reference/database-schemas/storage-changes#review-checkpoint-for-material-changes).
+
+Agent schema **25** gives each transcript session an explicit integer storage
+identity in `transcript_storage_sessions`. The transcript owner uses that key in
+`transcript_event_identity_rows` and `session_transcript_active_rows`. External
+session and event IDs, unresolved parent IDs, idempotency ownership, sequence
+numbers, active positions, and canonical event bytes remain unchanged. Active
+rows use `(session_id, event_seq)` as their integer primary key; their message
+position index covers the event lookup. The unused reverse-parent index is not
+copied into the compact layout.
+
+Doctor installs the schema, records the original metadata high-water marks, and
+publishes both schema-version markers through its verified backup and maintenance
+flow. The schema transaction does not rewrite retained transcript payloads or
+copy all historical metadata. Doctor then copies at most 256 rows and 2 MiB of
+logical metadata per admitted transaction, allowing one larger existing row to
+progress alone, then atomically switches bounded sets of session routes and
+retires old metadata in bounded batches. It yields between batches and rechecks
+maintenance authority before each transaction and commit. Mutation-capture
+triggers keep both layouts coherent until each session switches. A reader
+resolves its layout within its existing snapshot and queries one physical table.
+
+`transcript_storage_migration` owns the durable phase and cursor. Restart resumes
+committed work; rollback also rolls back progress. The deployment or Doctor
+maintenance owner keeps writers stopped through conversion and verification.
+Cancellation and failures preserve committed progress; rerun Doctor with the
+compatible build, even when the schema markers already say 25. Doctor refuses
+startup readiness until the ledger is complete. Gateway database opens and idle
+tasks do not run the conversion. Fresh databases and newly created sessions use the compact
+layout immediately. The legacy tables remain as migration input, and are empty
+after conversion; older binaries are refused even while legacy rows remain.
+
+The explicit session mapping has cascading foreign keys. Compact row insertion
+and key-update triggers enforce the original transcript-event reference, and
+event deletion removes both physical metadata representations. Missing identities
+and nullable classifications are copied as recorded, never inferred from JSON.
+
+Plain TEXT and ordinary-zstd payload records remain unchanged throughout the
+conversion. New writes retain the existing codec, projection, byte bounds,
+Unicode exceptions, and savings threshold. The metadata migration does not add a
+second payload representation or rewrite retained events.
+
+The copy changes metadata tables and indexes, not the full transcript file.
+Budget the maintenance window from measured backup, integrity verification, and
+metadata-copy time. Incremental vacuum can reclaim pages freed by this migration
+through the existing reclamation owners. Repacking occupied pages remains an explicit offline
+Doctor compaction operation. Doctor defers full `VACUUM` until metadata migration
+finishes because rewriting the file can renumber its in-progress rowid cursor.
+Incremental reclamation does not renumber those rows and remains available.
+Keep the verified pre-migration backup and matching
+build for rollback; changing version markers or reverting only the binary is not
+a rollback. Controllers that allowlist schema transitions must admit this edge
+before invoking their normal candidate Doctor and cutover flow. Keep optional
+full compaction separate from the required cutover unless it was explicitly
+scheduled and its temporary-space preflight passes.
 
 ### Session hot facts and snapshots
 

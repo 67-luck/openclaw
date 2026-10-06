@@ -1,4 +1,5 @@
 import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
+import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import {
   openOpenClawAgentDatabase,
   type OpenClawAgentDatabase,
@@ -10,6 +11,7 @@ import {
   type ResolvedTranscriptScope,
 } from "./session-accessor.sqlite-scope.js";
 import { sessionTranscriptIndexNeedsReconcile } from "./session-transcript-index.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 
@@ -20,17 +22,20 @@ export function readActiveTranscriptEntryAnchorInTransaction(params: {
   entryId: string;
   message?: unknown;
 }): TranscriptEntryAnchor | undefined {
+  const storage = readSessionTranscriptStorage(params.database.db, params.resolved.sessionId);
   // Branch changes retain old projection rows until deferred reconciliation.
   // An anchor must never certify those rows as the current active path.
-  if (sessionTranscriptIndexNeedsReconcile(params.database.db, params.resolved.sessionId)) {
+  if (
+    sessionTranscriptIndexNeedsReconcile(params.database.db, params.resolved.sessionId, storage)
+  ) {
     return undefined;
   }
   const db = getSessionKysely(params.database.db);
   const row = executeSqliteQueryTakeFirstSync(
     params.database.db,
     db
-      .selectFrom("transcript_event_identities as identity")
-      .innerJoin("session_transcript_active_events as active", (join) =>
+      .selectFrom(storage.identities().as("identity"))
+      .innerJoin(storage.activeEvents().as("active"), (join) =>
         join
           .onRef("active.session_id", "=", "identity.session_id")
           .onRef("active.event_seq", "=", "identity.seq"),
@@ -101,9 +106,11 @@ export function readActiveTranscriptEntryAnchor(params: {
 }): TranscriptEntryAnchor | undefined {
   const resolved = resolveSqliteTranscriptScope(params);
   const database = openOpenClawAgentDatabase(toDatabaseOptions(resolved));
-  return readActiveTranscriptEntryAnchorInTransaction({
-    database,
-    resolved,
-    entryId: params.entryId,
-  });
+  return runSqliteDeferredTransactionSync(database.db, () =>
+    readActiveTranscriptEntryAnchorInTransaction({
+      database,
+      resolved,
+      entryId: params.entryId,
+    }),
+  );
 }

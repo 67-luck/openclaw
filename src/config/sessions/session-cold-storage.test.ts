@@ -59,6 +59,7 @@ import {
 } from "./session-cold-storage.test-support.js";
 import { loadTranscriptEvents } from "./session-transcript-events.js";
 import { waitForSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 import { transcriptEventJsonSql } from "./transcript-payload.js";
 
 const tempDirs = createTempDirTracker();
@@ -121,13 +122,14 @@ async function archiveFixture(fixture: Fixture) {
   if (!descriptor) {
     throw new Error("Successful archival did not retain its descriptor");
   }
-  for (const table of [
-    "transcript_events",
-    "transcript_event_identities",
-    "session_transcript_active_events",
-  ]) {
+  const storage = readSessionTranscriptStorage(fixture.database(), historicalId);
+  for (const [table, key] of [
+    ["transcript_events", historicalId],
+    [storage.identityTable, storage.key],
+    [storage.activeTable, storage.key],
+  ] as const) {
     expect(
-      fixture.database().prepare(`SELECT * FROM ${table} WHERE session_id = ?`).all(historicalId),
+      fixture.database().prepare(`SELECT * FROM ${table} WHERE session_id = ?`).all(key),
       table,
     ).toEqual([]);
   }

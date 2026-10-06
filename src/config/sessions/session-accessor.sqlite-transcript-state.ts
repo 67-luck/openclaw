@@ -22,6 +22,10 @@ import {
   readSessionColdTranscript,
 } from "./session-cold-storage-state.js";
 import {
+  readSessionTranscriptStorage,
+  type SessionTranscriptStorage,
+} from "./session-transcript-storage.js";
+import {
   foldedSessionKeyAliasCandidates,
   normalizeStoreSessionKey,
   resolveDeliveryProvenCanonicalSessionKey,
@@ -345,10 +349,6 @@ export function deleteTranscriptEventsInTransaction(
 ): boolean {
   assertSessionTranscriptHot(database.db, sessionId);
   const db = getSessionKysely(database.db);
-  executeSqliteQuerySync(
-    database.db,
-    db.deleteFrom("transcript_event_identities").where("session_id", "=", sessionId),
-  );
   const result = executeSqliteQuerySync(
     database.db,
     db.deleteFrom("transcript_events").where("session_id", "=", sessionId),
@@ -360,6 +360,7 @@ export function pruneTranscriptReactionsInTransaction(
   database: OpenClawAgentDatabase,
   scope: ResolvedTranscriptScope,
   removedEventIds?: readonly string[],
+  storage: SessionTranscriptStorage = readSessionTranscriptStorage(database.db, scope.sessionId),
 ): void {
   const db = getSessionKysely(database.db);
   const query = db
@@ -370,7 +371,7 @@ export function pruneTranscriptReactionsInTransaction(
       eb.not(
         eb.exists(
           eb
-            .selectFrom("transcript_event_identities")
+            .selectFrom(storage.identities().as("transcript_event_identities"))
             .select("event_id")
             .whereRef("session_id", "=", "session_reactions.session_id")
             .whereRef("event_id", "=", "session_reactions.message_id"),

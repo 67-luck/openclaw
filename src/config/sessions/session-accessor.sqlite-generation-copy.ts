@@ -2,11 +2,13 @@ import { createHash } from "node:crypto";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
   iterateSqliteQuerySync,
   prepareSqliteQuerySync,
   sqliteStringSet,
 } from "../../infra/kysely-sync.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
+import type { DB } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { publishSessionEntryCacheInvalidation } from "./session-accessor.sqlite-entry-cache.js";
 import type {
@@ -24,8 +26,16 @@ import {
   markSessionTranscriptIndexDirtyInTransaction,
   reconcileSessionTranscriptIndexInTransaction,
 } from "./session-transcript-index.js";
+import {
+  readSessionTranscriptStorage,
+  type SessionTranscriptStorage,
+} from "./session-transcript-storage.js";
 import { normalizeStoreSessionKey } from "./store-entry.js";
-import { transcriptEventJsonSql, type TranscriptPayloadRecord } from "./transcript-payload.js";
+import {
+  readTranscriptStorageEncoding,
+  transcriptEventJsonSql,
+  type TranscriptPayloadRecord,
+} from "./transcript-payload.js";
 
 export function readSqliteSessionGenerationWindows(
   database: Pick<OpenClawAgentDatabase, "db">,
@@ -50,13 +60,14 @@ export function readSqliteSessionGenerationWindows(
 function readSqliteSessionGenerationRows(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionId: string,
+  storage: SessionTranscriptStorage = readSessionTranscriptStorage(database.db, sessionId),
 ) {
   const db = getSessionKysely(database.db);
   return {
     identities: iterateSqliteQuerySync(
       database.db,
       db
-        .selectFrom("transcript_event_identities")
+        .selectFrom(storage.identities().as("transcript_event_identities"))
         .selectAll()
         .where("session_id", "=", sessionId)
         .orderBy("event_id"),
@@ -213,8 +224,8 @@ export function copySqliteSessionGenerationRows(params: {
   assertSessionTranscriptHot(params.source.db, params.sessionId);
   assertSessionTranscriptHot(params.destination.db, params.sessionId);
   const sourceDb = getSessionKysely(params.source.db);
+  const sourceStorage = readSessionTranscriptStorage(params.source.db, params.sessionId);
   const tables = [
-    "transcript_event_identities",
     "transcript_events",
     "transcript_rewrite_watermarks",
     "trajectory_runtime_events",
@@ -222,6 +233,10 @@ export function copySqliteSessionGenerationRows(params: {
   ] as const;
   if (
     !params.sourceWindowPresent &&
+    !executeSqliteQueryTakeFirstSync(
+      params.source.db,
+      sourceDb.selectFrom(sourceStorage.identities().as("identity")).select("event_id").limit(1),
+    ) &&
     !tables.some((table) =>
       executeSqliteQueryTakeFirstSync(
         params.source.db,
@@ -236,8 +251,15 @@ export function copySqliteSessionGenerationRows(params: {
     return;
   }
   const { identities, rewriteWatermarks, trajectoryEvents, parentStreamEvents } =
-    readSqliteSessionGenerationRows(params.source, params.sessionId);
-  const destinationDb = getSessionKysely(params.destination.db);
+    readSqliteSessionGenerationRows(params.source, params.sessionId, sourceStorage);
+  const destinationDb = getNodeSqliteKysely<DB>(params.destination.db);
+  const destinationStorage = readSessionTranscriptStorage(params.destination.db, params.sessionId);
+  executeSqliteQuerySync(
+    params.destination.db,
+    destinationDb
+      .deleteFrom(destinationStorage.identityTable)
+      .where("session_id", "=", destinationStorage.key),
+  );
   for (const table of tables) {
     executeSqliteQuerySync(
       params.destination.db,
@@ -263,7 +285,7 @@ export function copySqliteSessionGenerationRows(params: {
   );
   // UTF-16 destinations retain native TEXT byte accounting and JSON semantics.
   // UTF-8 stores can preserve encoded payloads without another codec round trip.
-  const destinationEncoding = params.destination.db.prepare("PRAGMA encoding").get()?.encoding;
+  const destinationEncoding = readTranscriptStorageEncoding(params.destination.db);
   if (destinationEncoding !== "UTF-8") {
     for (const row of iterateSqliteQuerySync(
       params.source.db,
@@ -288,6 +310,7 @@ export function copySqliteSessionGenerationRows(params: {
     params.destination,
     params.sessionId,
     false,
+    destinationStorage,
   );
   for (const row of identities) {
     insertIdentity({
@@ -319,7 +342,11 @@ export function copySqliteSessionGenerationRows(params: {
   }
   // Cross-store repair must atomically finish copied projections before publishing the new owner.
   markSessionTranscriptIndexDirtyInTransaction(params.destination.db, params.sessionId);
-  reconcileSessionTranscriptIndexInTransaction(params.destination.db, params.sessionId);
+  reconcileSessionTranscriptIndexInTransaction(
+    params.destination.db,
+    params.sessionId,
+    destinationStorage,
+  );
   const owner = executeSqliteQueryTakeFirstSync(
     params.destination.db,
     destinationDb

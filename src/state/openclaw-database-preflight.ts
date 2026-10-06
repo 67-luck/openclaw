@@ -101,6 +101,7 @@ export async function assertOpenClawDatabasesReady(
         configuredAgentDatabaseTargets: readonly { agentId: string; path: string }[];
         config?: OpenClawConfig;
         onDeferredSchemaPublication?: (publication: DeferredStateSchemaPublication) => void;
+        onAgentDatabaseDiscovery?: OpenClawDatabasePreflightOptions["onAgentDatabaseDiscovery"];
         onVerified?: (schemas: OpenClawDatabaseSchemaPreflight) => void;
       }
     | { operation: "gateway-restart"; config?: OpenClawConfig }
@@ -128,7 +129,10 @@ export async function assertOpenClawDatabasesReady(
         ? { requireStartupMigrationReadiness: true }
         : {}),
       ...(options.operation === "doctor"
-        ? { configuredAgentDatabaseTargets: options.configuredAgentDatabaseTargets }
+        ? {
+            configuredAgentDatabaseTargets: options.configuredAgentDatabaseTargets,
+            onAgentDatabaseDiscovery: options.onAgentDatabaseDiscovery,
+          }
         : {}),
     },
     options.operation === "doctor" ? "maintenance" : "runtime",

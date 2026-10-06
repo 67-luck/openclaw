@@ -14,7 +14,7 @@ Each database records its published schema in two places:
 - `PRAGMA user_version` is the SQLite schema version.
 - The primary `schema_meta` row records `role`, `agent_id`, `schema_version`, and `app_version`. `app_version` is the OpenClaw build that last wrote the schema metadata.
 
-OpenClaw applies forward-only migrations when it opens an older supported database. It refuses a database whose `user_version` is newer than the running build and reports a `newer schema version` error. The Gateway checks all registered databases before startup. [`openclaw update`](/cli/update) also refuses a package or source target whose declared schema support is older than an on-disk database. Known stable releases published before schema metadata was added are checked against their shipped schema-1 contract. Updates driven by the 2026.9.2 release line can temporarily defer publication of a shared-state schema version while the old updater finishes; see [Schema bumps and older updaters](#schema-bumps-and-older-updaters).
+OpenClaw schema owners apply forward-only migrations to older supported databases. Existing agent schema upgrades require Doctor maintenance rather than an ordinary Gateway database open. It refuses a database whose `user_version` is newer than the running build and reports a `newer schema version` error. The Gateway checks all registered databases before startup. [`openclaw update`](/cli/update) also refuses a package or source target whose declared schema support is older than an on-disk database. Known stable releases published before schema metadata was added are checked against their shipped schema-1 contract. Updates driven by the 2026.9.2 release line can temporarily defer publication of a shared-state schema version while the old updater finishes; see [Schema bumps and older updaters](#schema-bumps-and-older-updaters).
 
 When Gateway startup encounters a newer database schema, it exits with status 78 so the generated systemd service does not restart it repeatedly. On macOS, it also parks its managed LaunchAgent to stop `KeepAlive` retries. This applies to failures during CLI bootstrap as well as server startup and does not depend on the database-backed crash counter. Start the Gateway with a build that supports the existing schemas. The older install cannot repair them with `openclaw doctor --fix`; run `openclaw doctor --fix` from the compatible install if further migration is required, then restart through the service or deployment owner.
 
@@ -160,14 +160,18 @@ migrations, with target-schema validation in the same transaction. A refusal rol
 back the migration and leaves the database unavailable to runtime until repaired.
 See the [storage design](/reference/database-schemas/storage-changes#trajectory-retention-covering-index).
 
-Agent schema 25 merges the session-node validity UPDATE triggers. This requires
-a bump because older schema inspectors reject the changed trigger shape on the
-canonical `session_nodes` table, as with schema 21. The migration replaces both
-old triggers and publishes both version markers in one immediate transaction;
-no same-version upgrade is used. Older builds refuse the upgraded database with
-the newer-schema error (Gateway startup exits 78), and `openclaw update` refuses
-older targets. Rollback requires the verified pre-migration backup and matching
-build. See [validity trigger consolidation](/reference/database-schemas/agent-schema-history#session-node-validity-trigger-consolidation).
+Agent schema 25 merges the session-node validity UPDATE triggers and introduces
+integer keys for transcript metadata. Older schema inspectors reject the changed
+trigger shape on the canonical `session_nodes` table, and older readers cannot
+interpret the new metadata keys. One immediate Doctor transaction replaces both
+old triggers, installs metadata migration state, and publishes both version markers.
+Doctor then drains the resumable metadata ledger before returning startup
+readiness, including on a retry with already-published schema 25. The Gateway
+does not perform historical copying; no same-version schema upgrade is used.
+Older builds refuse the upgraded database with the newer-schema error
+(Gateway startup exits 78), and `openclaw update` refuses older targets. Rollback
+requires the verified pre-migration backup group, agent registry state, and
+matching build. See [the combined schema transition](/reference/database-schemas/agent-schema-history#compact-transcript-metadata).
 
 Removing the Tasks and TaskFlow runtime does not change the shared-state or agent
 schema. The existing tables, indexes, and optional execution-owner columns

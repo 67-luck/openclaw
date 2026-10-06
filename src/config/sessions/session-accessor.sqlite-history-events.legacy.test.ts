@@ -99,7 +99,7 @@ describe("SQLite imported transcript history", () => {
       })),
     );
     expect(db.prepare("SELECT * FROM transcript_events ORDER BY seq").all()).toEqual(rawBefore);
-    expect(db.prepare("SELECT * FROM transcript_event_identities").all()).toEqual([]);
+    expect(db.prepare("SELECT * FROM transcript_event_identity_rows").all()).toEqual([]);
   });
 
   it.each(["boundary", "paired-result"])(
@@ -200,7 +200,7 @@ describe("SQLite imported transcript history", () => {
       expect(database.db.prepare("SELECT * FROM transcript_events ORDER BY seq").all()).toEqual(
         rawBefore,
       );
-      expect(database.db.prepare("SELECT * FROM transcript_event_identities").all()).toEqual([]);
+      expect(database.db.prepare("SELECT * FROM transcript_event_identity_rows").all()).toEqual([]);
     },
   );
 
@@ -261,7 +261,7 @@ describe("SQLite imported transcript history", () => {
       }
       const database = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
       const identities = database.db.prepare(
-        "SELECT * FROM transcript_event_identities WHERE session_id = ? ORDER BY seq",
+        "SELECT * FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) ORDER BY seq",
       );
       const raw = database.db.prepare(
         "SELECT * FROM transcript_events WHERE session_id = ? ORDER BY seq",
@@ -388,7 +388,9 @@ describe("SQLite imported transcript history", () => {
       ).toEqual(rows.map((event_json) => ({ event_json })));
       expect(
         database.db
-          .prepare("SELECT * FROM transcript_event_identities WHERE session_id = ?")
+          .prepare(
+            "SELECT * FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?)",
+          )
           .all(scope.sessionId),
       ).toEqual([]);
     },
@@ -416,7 +418,7 @@ describe("SQLite imported transcript history", () => {
     expect(
       database.db
         .prepare(
-          "SELECT event_id FROM transcript_event_identities WHERE session_id = ? ORDER BY seq",
+          "SELECT event_id FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) ORDER BY seq",
         )
         .all(scope.sessionId),
     ).toEqual([{ event_id: "next-question" }]);

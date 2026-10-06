@@ -14,6 +14,7 @@ import { getSessionKysely, type ResolvedTranscriptScope } from "./session-access
 import { createTranscriptEntryAnchor } from "./session-accessor.sqlite-transcript-anchor.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import { sessionTranscriptIndexNeedsReconcile } from "./session-transcript-index.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 import { transcriptEventJsonSql } from "./transcript-payload.js";
@@ -78,6 +79,7 @@ export function readTranscriptMirrorFacts(
       }
 
       const db = getSessionKysely(database.db);
+      const storage = readSessionTranscriptStorage(database.db, resolved.sessionId);
       const facts: TranscriptMirrorFacts = {
         anchorsByIdempotencyKey: new Map(),
         existingIdempotencyKeys: new Set(),
@@ -88,13 +90,13 @@ export function readTranscriptMirrorFacts(
         const rows = executeSqliteQuerySync(
           database.db,
           db
-            .selectFrom("transcript_event_identities as identity")
+            .selectFrom(storage.identities().as("identity"))
             .innerJoin("transcript_events as event", (join) =>
               join
                 .onRef("event.session_id", "=", "identity.session_id")
                 .onRef("event.seq", "=", "identity.seq"),
             )
-            .leftJoin("session_transcript_active_events as active", (join) =>
+            .leftJoin(storage.activeEvents().as("active"), (join) =>
               join
                 .onRef("active.session_id", "=", "identity.session_id")
                 .onRef("active.event_seq", "=", "identity.seq"),
@@ -121,7 +123,11 @@ export function readTranscriptMirrorFacts(
             continue;
           }
           facts.existingIdempotencyKeys.add(idempotencyKey);
-          anchorsReady ??= !sessionTranscriptIndexNeedsReconcile(database.db, resolved.sessionId);
+          anchorsReady ??= !sessionTranscriptIndexNeedsReconcile(
+            database.db,
+            resolved.sessionId,
+            storage,
+          );
           const anchor = anchorsReady
             ? createTranscriptEntryAnchor({
                 database,

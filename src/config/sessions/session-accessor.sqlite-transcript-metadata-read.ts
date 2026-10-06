@@ -15,6 +15,7 @@ import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scop
 import { readHotSessionTranscriptSnapshot } from "./session-cold-storage-read.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 import { projectAssistantTranscriptText } from "./transcript-assistant-delivery-read.js";
 import { transcriptEventJsonSql } from "./transcript-payload.js";
 
@@ -47,15 +48,17 @@ export function readLatestAssistantTextFromDatabase(
     () => {
       assertSessionTranscriptHot(database.db, scope.sessionId);
       const db = getNodeSqliteKysely<DB>(database.db);
+      const storage = readSessionTranscriptStorage(database.db, scope.sessionId);
       const beforeEventSeq = resolveSqliteSessionTranscriptReadFence({
         database,
         ...scope,
+        storage,
       })?.beforeRawSeq;
       const rows = iterateSqliteQuerySync(
         database.db,
         db
           .selectFrom("transcript_events as te")
-          .innerJoin("transcript_event_identities as ti", (join) =>
+          .innerJoin(storage.identities("type").as("ti"), (join) =>
             join.onRef("ti.session_id", "=", "te.session_id").onRef("ti.seq", "=", "te.seq"),
           )
           .select(transcriptEventJsonSql(database.db, "te").as("event_json"))

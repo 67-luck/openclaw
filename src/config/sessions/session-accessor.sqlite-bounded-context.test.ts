@@ -276,7 +276,9 @@ it("selects imported headers and retention anchors before later indexed duplicat
     const database = openOpenClawAgentDatabase({ agentId: scope.agentId });
     expect(
       database.db
-        .prepare("SELECT COUNT(*) AS count FROM transcript_event_identities WHERE session_id = ?")
+        .prepare(
+          "SELECT COUNT(*) AS count FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?)",
+        )
         .get(scope.sessionId),
     ).toEqual({ count: 0 });
     await appendTranscriptMessage(scope, {
@@ -671,7 +673,7 @@ it.each(["append", "rebuild"])(
       if (mode === "rebuild") {
         openOpenClawAgentDatabase(scope)
           .db.prepare(
-            "UPDATE session_transcript_active_events SET context_eligible = NULL WHERE session_id = ?",
+            "UPDATE session_transcript_active_rows SET context_eligible = NULL WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?)",
           )
           .run(scope.sessionId);
         expect(await reconcileSessionTranscriptIndexes(scope)).toEqual({ reconciledSessions: 1 });
@@ -763,8 +765,9 @@ it.each(["json", "sql", "consumer"] as const)(
             ELSE event.event_json
           END AS event_json
         FROM main.transcript_events AS event
-        JOIN transcript_event_identities AS identity
-          ON identity.session_id = event.session_id AND identity.seq = event.seq`);
+        JOIN transcript_storage_sessions AS storage ON storage.session_id = event.session_id
+        JOIN transcript_event_identity_rows AS identity
+          ON identity.session_id = storage.sid AND identity.seq = event.seq`);
       }
       try {
         if (failureKind === "consumer") {

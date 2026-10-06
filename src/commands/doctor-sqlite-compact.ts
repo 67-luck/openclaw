@@ -1,10 +1,12 @@
 /** Shared doctor-only SQLite compaction mechanics. */
 import fs from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
 import { openNodeSqliteDatabase, resolveExistingSqliteFileUri } from "../infra/node-sqlite.js";
 import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
 import { readFiniteSqliteNumber } from "../infra/sqlite-number.js";
 import { SqliteWalCheckpointBusyError, truncateSqliteWal } from "../infra/sqlite-wal-checkpoint.js";
+import { DoctorMaintenanceRefusalError } from "../infra/update-doctor-result.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db.js";
 
 export type DoctorSqliteCompactSnapshot = {
@@ -31,8 +33,60 @@ type DoctorSqliteCompactOptions = {
   validateBeforeMutation?: (database: DatabaseSync) => void;
 };
 
-/** The initial checkpoint was busy, before conversion, and the connection has closed. */
+/** A known pre-mutation condition deferred compaction and the connection has closed. */
 export class DoctorSqliteCompactionDeferredError extends Error {}
+
+function assertTranscriptMigrationAllowsVacuum(database: DatabaseSync, pathname: string): void {
+  let phase: unknown;
+  try {
+    const kysely = getNodeSqliteKysely<{
+      sqlite_schema: { name: string; type: string };
+      transcript_storage_migration: { id: number; phase: unknown };
+    }>(database);
+    // The caller already admitted canonical schema; this reads only the durable conversion state.
+    const storage = executeSqliteQuerySync(
+      database,
+      kysely
+        .selectFrom("sqlite_schema")
+        .select("name")
+        .where("type", "=", "table")
+        .where("name", "in", [
+          "transcript_storage_sessions",
+          "transcript_storage_migration",
+          "transcript_event_identity_rows",
+          "session_transcript_active_rows",
+        ])
+        .limit(1),
+    ).rows;
+    if (storage.length === 0) {
+      return;
+    }
+    const rows = executeSqliteQuerySync(
+      database,
+      kysely.selectFrom("transcript_storage_migration").select(["id", "phase"]).limit(2),
+    ).rows;
+    phase = rows[0]?.phase;
+    if (
+      rows.length !== 1 ||
+      rows[0]?.id !== 1 ||
+      typeof phase !== "string" ||
+      !["identities", "active", "publish", "cleanup", "complete"].includes(phase)
+    ) {
+      throw new Error("Missing or invalid transcript metadata migration progress");
+    }
+  } catch (cause) {
+    throw new DoctorMaintenanceRefusalError(
+      `Cannot verify transcript metadata migration state for ${pathname}. Preserve this database and run openclaw doctor --fix before retrying compaction.`,
+      { kind: "data-at-risk", reason: "incomplete-migration" },
+      { cause },
+    );
+  }
+  if (phase !== "complete") {
+    throw new DoctorSqliteCompactionDeferredError(
+      `Transcript metadata migration is pending (${phase}) for ${pathname}. Keep writers stopped, run openclaw doctor --fix with this build to finish migration, then retry compaction; full VACUUM would invalidate its rowid cursor.`,
+    );
+  }
+}
 
 /**
  * Compact one SQLite file during an explicit offline doctor operation.
@@ -57,6 +111,10 @@ export function compactDoctorSqliteFile(
     database.exec("PRAGMA trusted_schema = OFF;");
     options.validateBeforeMutation?.(database);
     const before = readCompactSnapshot(database, options.sqlitePath);
+    const fullRewrite = options.operation !== "import-finalize" || before.autoVacuum === 0;
+    if (fullRewrite) {
+      assertTranscriptMigrationAllowsVacuum(database, options.sqlitePath);
+    }
     let { integrityCheck } = assertSqliteIntegrity(database, options.sqlitePath);
     const alreadyCompact =
       options.operation === "import-finalize" &&
@@ -75,11 +133,7 @@ export function compactDoctorSqliteFile(
       database.exec("PRAGMA auto_vacuum = INCREMENTAL;");
       // NONE databases need a full rewrite to add pointer maps. Existing auto-vacuum
       // stores can release free pages without repacking; explicit compact still repacks.
-      database.exec(
-        options.operation === "import-finalize" && before.autoVacuum !== 0
-          ? "PRAGMA incremental_vacuum;"
-          : "VACUUM;",
-      );
+      database.exec(fullRewrite ? "VACUUM;" : "PRAGMA incremental_vacuum;");
       truncateSqliteWal(database, options.sqlitePath);
       ({ integrityCheck } = assertSqliteIntegrity(database, options.sqlitePath));
     }

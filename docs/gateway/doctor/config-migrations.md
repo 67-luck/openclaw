@@ -14,6 +14,24 @@ Doctor keeps the config from before that hook, reports the failure, and continue
 with the remaining repairs. Warning-only results stay visible without changing
 config. Repair the affected plugin, then run `openclaw doctor --fix` again.
 
+## Transcript metadata format
+
+The schema-25 migration combines compact transcript metadata and the merged
+session-node validity UPDATE trigger through the
+normal Doctor database backup and maintenance flow, including update-time Doctor.
+One schema transaction installs both changes and records resumable work. Doctor
+then copies metadata in bounded transactions while the deployment or maintenance
+owner keeps writers stopped. It yields between batches and revalidates authority
+before each transaction and commit. Payload records and encoding remain unchanged;
+readers reconstruct canonical JSON byte-for-byte from plain TEXT and ordinary zstd.
+Interrupted conversion resumes from the database ledger on the next Doctor run,
+including when schema 25 was already published. Doctor does not grant startup
+readiness until the ledger is complete. The Gateway does not run this migration
+during database open or after startup. Allow a maintenance window for backup,
+verification, and metadata conversion; full-file compaction remains a separate
+operation. See [compact transcript metadata](/reference/database-schemas/agent-schema-history#compact-transcript-metadata)
+for phases, reader switching, reclamation, and backup-based rollback.
+
 ## Runtime config migration
 
 Runtime config reads require per-model context budgets and current GitHub Copilot

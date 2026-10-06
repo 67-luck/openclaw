@@ -49,6 +49,7 @@ import {
   deleteSessionTranscriptFtsRowsInTransaction,
   selectSessionTranscriptFtsRows,
 } from "./session-transcript-fts.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 import {
   createSessionTranscriptTurnKernel,
   sqliteSessionTranscriptTurnRebound,
@@ -180,6 +181,7 @@ async function prepareSessionColdArchiveInWorker(
                 throw new Error("Transcript changed before cold archive preparation");
               }
               const db = getNodeSqliteKysely<DB>(database.db);
+              const storage = readSessionTranscriptStorage(database.db, plan.sessionId);
               write({
                 kind: "header",
                 version: 1,
@@ -203,7 +205,7 @@ async function prepareSessionColdArchiveInWorker(
               for (const row of iterateSqliteQuerySync(
                 database.db,
                 db
-                  .selectFrom("transcript_event_identities")
+                  .selectFrom(storage.identities("sequence").as("transcript_event_identities"))
                   .select([
                     "event_id",
                     "seq",
@@ -221,7 +223,7 @@ async function prepareSessionColdArchiveInWorker(
               for (const row of iterateSqliteQuerySync(
                 database.db,
                 db
-                  .selectFrom("session_transcript_active_events")
+                  .selectFrom(storage.activeEvents().as("session_transcript_active_events"))
                   .select(["active_position", "event_seq", "message_position", "context_eligible"])
                   .where("session_id", "=", plan.sessionId)
                   .orderBy("active_position"),
@@ -623,6 +625,7 @@ export function mutateSessionColdTranscriptInWorker(
           throw new Error("Cold transcript changed during restoration");
         }
         const session_id = plan.sessionId;
+        const storage = readSessionTranscriptStorage(database.db, session_id);
         const insertFts = createSessionTranscriptFtsInserter(database.db, session_id);
         for (const record of records) {
           switch (record.kind) {
@@ -642,15 +645,17 @@ export function mutateSessionColdTranscriptInWorker(
             case "identity":
               executeSqliteQuerySync(
                 database.db,
-                db.insertInto("transcript_event_identities").values({ session_id, ...record.row }),
+                db
+                  .insertInto(storage.identityTable)
+                  .values({ session_id: storage.key, ...record.row }),
               );
               break;
             case "active":
               executeSqliteQuerySync(
                 database.db,
                 db
-                  .insertInto("session_transcript_active_events")
-                  .values({ session_id, ...record.row }),
+                  .insertInto(storage.activeTable)
+                  .values({ session_id: storage.key, ...record.row }),
               );
               break;
             case "index":

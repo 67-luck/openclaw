@@ -96,6 +96,13 @@ it("refuses synchronous writes to cold current history without mutating or resto
     identities: database
       .prepare("SELECT * FROM transcript_event_identities ORDER BY seq, event_id")
       .all(),
+    compactIdentities: database
+      .prepare("SELECT * FROM transcript_event_identity_rows ORDER BY seq, event_id")
+      .all(),
+    storage: database.prepare("SELECT * FROM transcript_storage_sessions ORDER BY sid").all(),
+    compactActive: database
+      .prepare("SELECT * FROM session_transcript_active_rows ORDER BY active_position")
+      .all(),
     active: database
       .prepare("SELECT * FROM session_transcript_active_events ORDER BY active_position")
       .all(),

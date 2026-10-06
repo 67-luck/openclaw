@@ -175,9 +175,9 @@ describe("SQLite session handle lifecycle", () => {
     ["behind projection", "UPDATE session_transcript_index_state SET indexed_seq = -1"],
     [
       "unclassified projection",
-      "UPDATE session_transcript_active_events SET context_eligible = NULL",
+      "UPDATE session_transcript_active_rows SET context_eligible = NULL",
     ],
-    ["historical message", "DELETE FROM session_transcript_active_events"],
+    ["historical message", "DELETE FROM session_transcript_active_rows"],
     ["missing generation", "DELETE FROM transcript_rewrite_watermarks"],
   ])("retains mirror messages without certifying anchors for %s", async (_name, mutation) => {
     const message = { role: "user", content: "retained", idempotencyKey: "mirror-state" };

@@ -15,6 +15,10 @@ import { projectTranscriptNavigationSql } from "./session-model-context-projecti
 import { sessionTranscriptIndexNeedsReconcile } from "./session-transcript-index.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
 import { resolveSessionTranscriptQuestionAnswer } from "./session-transcript-read-fence.js";
+import {
+  readSessionTranscriptStorage,
+  type SessionTranscriptStorage,
+} from "./session-transcript-storage.js";
 import { transcriptEventNavigationSql } from "./transcript-payload.js";
 import {
   isSessionTranscriptLeafControl,
@@ -42,11 +46,12 @@ export function canRebasePreparedAssistantInTransaction(
   preparedParentId: string | null,
   admittedUserId?: string,
 ): boolean {
-  const tailId = readActiveTranscriptAppendParentId(database, sessionId);
+  const storage = readSessionTranscriptStorage(database.db, sessionId);
+  const tailId = readActiveTranscriptAppendParentId(database, sessionId, storage);
   if (tailId !== preparedParentId) {
     if (
       tailId === null ||
-      !transcriptEntryIsAncestor(database, sessionId, tailId, preparedParentId)
+      !transcriptEntryIsAncestor(database, sessionId, tailId, preparedParentId, storage)
     ) {
       return false;
     }
@@ -54,7 +59,8 @@ export function canRebasePreparedAssistantInTransaction(
   if (
     admittedUserId &&
     tailId !== admittedUserId &&
-    (tailId === null || !transcriptEntryIsAncestor(database, sessionId, tailId, admittedUserId))
+    (tailId === null ||
+      !transcriptEntryIsAncestor(database, sessionId, tailId, admittedUserId, storage))
   ) {
     return false;
   }
@@ -62,14 +68,14 @@ export function canRebasePreparedAssistantInTransaction(
   const preparedParent =
     preparedParentId === null
       ? undefined
-      : readTranscriptIdentityInTransaction(database, sessionId, preparedParentId);
+      : readTranscriptIdentityInTransaction(database, sessionId, preparedParentId, storage);
   if (preparedParentId !== null && !preparedParent) {
     return false;
   }
   const admitted = admittedUserId
     ? admittedUserId === preparedParentId
       ? preparedParent
-      : readTranscriptIdentityInTransaction(database, sessionId, admittedUserId)
+      : readTranscriptIdentityInTransaction(database, sessionId, admittedUserId, storage)
     : undefined;
   if (admittedUserId && !admitted) {
     return false;
@@ -78,7 +84,7 @@ export function canRebasePreparedAssistantInTransaction(
     iterateSqliteQuerySync(
       database.db,
       db
-        .selectFrom("transcript_event_identities as identity")
+        .selectFrom(storage.identities("type").as("identity"))
         .innerJoin("transcript_events as event", (join) =>
           join
             .onRef("event.session_id", "=", "identity.session_id")
@@ -115,13 +121,13 @@ export function canRebasePreparedAssistantInTransaction(
     iterateSqliteQuerySync(
       database.db,
       db
-        .selectFrom("transcript_event_identities as identity")
+        .selectFrom(storage.identities("type").as("identity"))
         .innerJoin("transcript_events as event", (join) =>
           join
             .onRef("event.session_id", "=", "identity.session_id")
             .onRef("event.seq", "=", "identity.seq"),
         )
-        .leftJoin("session_transcript_active_events as active", (join) =>
+        .leftJoin(storage.activeEvents().as("active"), (join) =>
           join
             .onRef("active.session_id", "=", "identity.session_id")
             .onRef("active.event_seq", "=", "identity.seq"),
@@ -224,7 +230,8 @@ export function resolveTranscriptMessageAppendParent<TMessage>(
   sessionId: string,
   options: Pick<TranscriptMessageAppendOptions<TMessage>, "appendIntent" | "parentId">,
 ): string | null {
-  const tailId = readActiveTranscriptAppendParentId(database, sessionId);
+  const storage = readSessionTranscriptStorage(database.db, sessionId);
+  const tailId = readActiveTranscriptAppendParentId(database, sessionId, storage);
   if (options.parentId === undefined) {
     return tailId;
   }
@@ -233,7 +240,7 @@ export function resolveTranscriptMessageAppendParent<TMessage>(
   }
 
   // Active appends rebase only along known ancestry; deliberate branches keep their parent.
-  return transcriptEntryIsAncestor(database, sessionId, tailId, options.parentId)
+  return transcriptEntryIsAncestor(database, sessionId, tailId, options.parentId, storage)
     ? tailId
     : options.parentId;
 }
@@ -255,6 +262,7 @@ function transcriptEntryIsAncestor(
   sessionId: string,
   leafId: string,
   candidateId: string | null,
+  storage: SessionTranscriptStorage,
 ): boolean {
   const db = getSessionKysely(database.db);
   // Bound ancestry work even for malformed cycles or very deep metadata chains.
@@ -264,7 +272,7 @@ function transcriptEntryIsAncestor(
     db
       .withRecursive("transcript_ancestors", (query) =>
         query
-          .selectFrom("transcript_event_identities")
+          .selectFrom(storage.identities().as("transcript_event_identities"))
           .select([
             "parent_id",
             /* kysely-allow-raw: seed the bounded recursive ancestry depth. */
@@ -274,7 +282,7 @@ function transcriptEntryIsAncestor(
           .where("event_id", "=", leafId)
           .unionAll(
             query
-              .selectFrom("transcript_event_identities as ti")
+              .selectFrom(storage.identities().as("ti"))
               .innerJoin("transcript_ancestors as ancestor", "ti.event_id", "ancestor.parent_id")
               .select([
                 "ti.parent_id",
@@ -300,15 +308,16 @@ export function readTranscriptVisibleTailEntryIdInTransaction(
   messageId: string,
 ): string | null {
   const db = getSessionKysely(database.db);
+  const storage = readSessionTranscriptStorage(database.db, sessionId);
   const resolveFromNavigation = () => {
     const tree = scanSessionTranscriptTree(readTranscriptNavigationEvents(database, sessionId));
     return selectSessionTranscriptTreePathNodes(tree, tree.leafId).at(-1)?.id ?? null;
   };
-  if (!sessionTranscriptIndexNeedsReconcile(database.db, sessionId)) {
+  if (!sessionTranscriptIndexNeedsReconcile(database.db, sessionId, storage)) {
     const tail = executeSqliteQueryTakeFirstSync(
       database.db,
       db
-        .selectFrom("session_transcript_active_events as active")
+        .selectFrom(storage.activeEvents().as("active"))
         .innerJoin("transcript_events as event", (join) =>
           join
             .onRef("event.session_id", "=", "active.session_id")
@@ -326,7 +335,7 @@ export function readTranscriptVisibleTailEntryIdInTransaction(
       : null;
   }
 
-  const message = readTranscriptIdentityInTransaction(database, sessionId, messageId);
+  const message = readTranscriptIdentityInTransaction(database, sessionId, messageId, storage);
   if (!message) {
     return resolveFromNavigation();
   }
@@ -366,12 +375,13 @@ export function readTranscriptVisibleTailEntryIdInTransaction(
 function readActiveTranscriptAppendParentId(
   database: Pick<OpenClawAgentDatabase, "db" | "path">,
   sessionId: string,
+  storage: SessionTranscriptStorage,
 ): string | null {
   const db = getSessionKysely(database.db);
   const latest = executeSqliteQueryTakeFirstSync(
     database.db,
     db
-      .selectFrom("transcript_event_identities as ti")
+      .selectFrom(storage.identities("sequence").as("ti"))
       .innerJoin("transcript_events as te", (join) =>
         join.onRef("te.session_id", "=", "ti.session_id").onRef("te.seq", "=", "ti.seq"),
       )
@@ -414,7 +424,7 @@ function readActiveTranscriptAppendParentId(
           eb.not(
             eb.exists(
               eb
-                .selectFrom("session_transcript_active_events")
+                .selectFrom(storage.activeEvents().as("session_transcript_active_events"))
                 .select("session_id")
                 .where("session_id", "=", sessionId)
                 .where("context_eligible", "is", null),
@@ -435,8 +445,8 @@ function readActiveTranscriptAppendParentId(
     }
     const leafReferencesKnown =
       treeEntry.leafId !== undefined &&
-      transcriptTreeReferenceExists(database, sessionId, treeEntry.leafId) &&
-      transcriptTreeReferenceExists(database, sessionId, treeEntry.appendParentId);
+      transcriptTreeReferenceExists(database, sessionId, treeEntry.leafId, storage) &&
+      transcriptTreeReferenceExists(database, sessionId, treeEntry.appendParentId, storage);
     if (isSessionTranscriptLeafControl(event) && leafReferencesKnown) {
       return treeEntry.appendParentId;
     }
@@ -468,12 +478,13 @@ function readTranscriptIdentityInTransaction(
   database: Pick<OpenClawAgentDatabase, "db" | "path">,
   sessionId: string,
   eventId: string,
+  storage: SessionTranscriptStorage,
 ): { eventId: string; parentId: string | null; seq: number } | undefined {
   const db = getSessionKysely(database.db);
   const row = executeSqliteQueryTakeFirstSync(
     database.db,
     db
-      .selectFrom("transcript_event_identities")
+      .selectFrom(storage.identities().as("transcript_event_identities"))
       .select(["event_id", "parent_id", "seq"])
       .where("session_id", "=", sessionId)
       .where("event_id", "=", eventId)
@@ -486,9 +497,10 @@ function transcriptTreeReferenceExists(
   database: Pick<OpenClawAgentDatabase, "db" | "path">,
   sessionId: string,
   eventId: string | null,
+  storage: SessionTranscriptStorage,
 ): boolean {
   return (
     eventId === null ||
-    readTranscriptIdentityInTransaction(database, sessionId, eventId) !== undefined
+    readTranscriptIdentityInTransaction(database, sessionId, eventId, storage) !== undefined
   );
 }

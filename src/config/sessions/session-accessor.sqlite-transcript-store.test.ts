@@ -193,11 +193,13 @@ async function withRewriteFixture(
         .prepare("SELECT * FROM transcript_events WHERE session_id = ? ORDER BY seq")
         .all(scope.sessionId),
       identities: db
-        .prepare("SELECT * FROM transcript_event_identities WHERE session_id = ? ORDER BY seq")
+        .prepare(
+          "SELECT * FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) ORDER BY seq",
+        )
         .all(scope.sessionId),
       active: db
         .prepare(
-          "SELECT * FROM session_transcript_active_events WHERE session_id = ? ORDER BY active_position",
+          "SELECT * FROM session_transcript_active_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) ORDER BY active_position",
         )
         .all(scope.sessionId),
       search: db
@@ -385,7 +387,7 @@ describe("SQLite exact transcript rewrite", () => {
       const plan = prepareSessionTranscriptProjection(db, scope.sessionId)!;
       db.prepare("UPDATE session_transcript_index_state SET needs_rebuild = 1").run();
       expect(claimPreparedSessionTranscriptProjectionInTransaction(db, plan, -1)).toBe(true);
-      db.prepare("DELETE FROM session_transcript_active_events").run();
+      db.prepare("DELETE FROM session_transcript_active_rows").run();
       db.prepare("DELETE FROM session_transcript_fts_rows").run();
       expect(sessionTranscriptIndexNeedsReconcile(db, scope.sessionId)).toBe(true);
       rewrite({ ...rewriteEvents[1], message: { ...rewriteEvents[1].message, provenance: "new" } });
@@ -502,8 +504,8 @@ describe("SQLite exact transcript rewrite", () => {
 function readIdempotencyOwners(db: DatabaseSync, sessionId: string, ...ids: string[]) {
   return db
     .prepare(
-      `SELECT event_id, message_idempotency_key FROM transcript_event_identities
-     WHERE session_id = ? AND event_id IN (${ids.map(() => "?").join(",")}) ORDER BY event_id`,
+      `SELECT event_id, message_idempotency_key FROM transcript_event_identity_rows
+     WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id IN (${ids.map(() => "?").join(",")}) ORDER BY event_id`,
     )
     .all(sessionId, ...ids);
 }
@@ -549,7 +551,7 @@ describe("SQLite exact transcript suffix replacement", () => {
       const prepareSpy = vi.spyOn(db, "prepare").mockImplementation((sqlText: string) => {
         if (
           !changedFence &&
-          sqlText.toLowerCase().includes("session_transcript_active_events") &&
+          sqlText.toLowerCase().includes("session_transcript_active_rows") &&
           sqlText.toLowerCase().includes("event_seq")
         ) {
           originalPrepare(
@@ -817,10 +819,10 @@ describe("SQLite exact transcript suffix replacement", () => {
     await withRewriteFixture(({ db, scope }) => {
       if (reassign) {
         db.prepare(
-          "UPDATE transcript_event_identities SET message_idempotency_key = NULL WHERE session_id = ? AND event_id = ?",
+          "UPDATE transcript_event_identity_rows SET message_idempotency_key = NULL WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = ?",
         ).run(scope.sessionId, "duplicate");
         db.prepare(
-          "UPDATE transcript_event_identities SET message_idempotency_key = ? WHERE session_id = ? AND event_id = ?",
+          "UPDATE transcript_event_identity_rows SET message_idempotency_key = ? WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = ?",
         ).run("old-key", scope.sessionId, "owner");
       }
       replaceTranscriptSuffixForTest(scope, events, next);
@@ -842,10 +844,10 @@ describe("SQLite exact transcript suffix replacement", () => {
         "UPDATE transcript_events SET created_at = CASE seq WHEN 1 THEN 101 WHEN 3 THEN 303 ELSE created_at END WHERE session_id = ?",
       ).run(scope.sessionId);
       db.prepare(
-        "UPDATE transcript_event_identities SET message_idempotency_key = NULL, created_at = 101 WHERE session_id = ? AND event_id = ?",
+        "UPDATE transcript_event_identity_rows SET message_idempotency_key = NULL, created_at = 101 WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = ?",
       ).run(scope.sessionId, "first");
       db.prepare(
-        "UPDATE transcript_event_identities SET message_idempotency_key = ?, created_at = 303 WHERE session_id = ? AND event_id = ?",
+        "UPDATE transcript_event_identity_rows SET message_idempotency_key = ?, created_at = 303 WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = ?",
       ).run("retry", scope.sessionId, "owner");
 
       replaceTranscriptSuffixForTest(scope, duplicateKeyEvents, [
@@ -857,7 +859,7 @@ describe("SQLite exact transcript suffix replacement", () => {
       expect(
         db
           .prepare(
-            "SELECT event_id, message_idempotency_key, created_at FROM transcript_event_identities WHERE session_id = ? AND event_id IN ('first', 'owner') ORDER BY event_id",
+            "SELECT event_id, message_idempotency_key, created_at FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id IN ('first', 'owner') ORDER BY event_id",
           )
           .all(scope.sessionId),
       ).toEqual([
@@ -909,10 +911,10 @@ describe("SQLite exact transcript suffix replacement", () => {
     await withRewriteFixture(({ db, scope }) => {
       if (prefixKey) {
         db.prepare(
-          "UPDATE transcript_event_identities SET message_idempotency_key = NULL WHERE session_id = ? AND event_id = ?",
+          "UPDATE transcript_event_identity_rows SET message_idempotency_key = NULL WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = ?",
         ).run(scope.sessionId, duplicateId);
         db.prepare(
-          "UPDATE transcript_event_identities SET message_idempotency_key = ? WHERE session_id = ? AND event_id = ?",
+          "UPDATE transcript_event_identity_rows SET message_idempotency_key = ? WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = ?",
         ).run("retry", scope.sessionId, owner.id);
       }
       if (corrupt) {
@@ -929,7 +931,7 @@ describe("SQLite exact transcript suffix replacement", () => {
         expect(
           db
             .prepare(
-              "SELECT event_id FROM transcript_event_identities WHERE session_id = ? AND event_id = ?",
+              "SELECT event_id FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = ?",
             )
             .get(scope.sessionId, owner.id),
         ).toBeUndefined();
@@ -943,7 +945,7 @@ describe("SQLite exact transcript suffix replacement", () => {
         "UPDATE transcript_events SET created_at = 303 WHERE session_id = ? AND seq = 2",
       ).run(scope.sessionId);
       db.prepare(
-        "UPDATE transcript_event_identities SET created_at = 303 WHERE session_id = ? AND event_id = ?",
+        "UPDATE transcript_event_identity_rows SET created_at = 303 WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = ?",
       ).run(scope.sessionId, "answer");
       db.prepare(
         "UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?",

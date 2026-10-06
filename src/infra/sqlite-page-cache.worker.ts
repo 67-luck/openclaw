@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { performance } from "node:perf_hooks";
 import type { DatabaseSync } from "node:sqlite";
+import { readSessionTranscriptStorage } from "../config/sessions/session-transcript-storage.js";
 import type { DB } from "../state/openclaw-agent-db.generated.js";
 import {
   executeSqliteQuerySync,
@@ -11,6 +12,7 @@ import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { setSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
 import { readSqlitePageCacheResidency } from "./sqlite-page-cache-residency.js";
 import type { SqliteReadOnlyOperationContext } from "./sqlite-readonly-operation-types.js";
+import { runSqliteDeferredTransactionSync } from "./sqlite-transaction.js";
 
 const CHUNK_BYTES = 1024 * 1024;
 const RECENT_MS = 7 * 24 * 60 * 60 * 1000;
@@ -83,82 +85,88 @@ function* agentHotPages(
 ): Generator<PayloadWarmStats | undefined, void> {
   const query = getNodeSqliteKysely<DB>(db);
   for (const row of recentSessions(db, now - RECENT_MS)) {
-    executeSqliteQuerySync(
-      db,
-      query
-        .selectFrom("session_nodes")
-        .select((eb) =>
-          eb
-            .case()
-            .when(eb.fn<number>("octet_length", ["entry_json"]), "<=", MAX_PROJECTION_BYTES)
-            .then(eb.ref("entry_json"))
-            .else(null)
-            .end()
-            .as("entry"),
-        )
-        .where("session_key", "=", row.session_key),
-    );
-    executeSqliteQuerySync(
-      db,
-      query
-        .selectFrom("session_transcript_active_events")
-        .select("active_position")
-        .where("session_id", "=", row.current_session_id)
-        .orderBy("active_position", "desc")
-        .limit(256),
-    );
-    executeSqliteQuerySync(
-      db,
-      query
-        .selectFrom("session_transcript_active_events")
-        .select("event_seq")
-        .where("session_id", "=", row.current_session_id)
-        .orderBy("event_seq", "desc")
-        .limit(256),
-    );
-    executeSqliteQuerySync(
-      db,
-      query
-        .selectFrom("session_transcript_active_events")
-        .select("message_position")
-        .where("session_id", "=", row.current_session_id)
-        .where("message_position", "is not", null)
-        .orderBy("message_position", "desc")
-        .limit(256),
-    );
-    executeSqliteQuerySync(
-      db,
-      query
-        .selectFrom("transcript_event_identities")
-        .select("seq")
-        .where("session_id", "=", row.current_session_id)
-        .orderBy("seq", "desc")
-        .limit(256),
-    );
-    executeSqliteQuerySync(
-      db,
-      query
-        .selectFrom("transcript_event_identities")
-        .select("seq")
-        .where("session_id", "=", row.current_session_id)
-        .where("event_type", "=", "message")
-        .orderBy("seq", "desc")
-        .limit(256),
-    );
+    runSqliteDeferredTransactionSync(db, () => {
+      const storage = readSessionTranscriptStorage(db, row.current_session_id);
+      executeSqliteQuerySync(
+        db,
+        query
+          .selectFrom("session_nodes")
+          .select((eb) =>
+            eb
+              .case()
+              .when(eb.fn<number>("octet_length", ["entry_json"]), "<=", MAX_PROJECTION_BYTES)
+              .then(eb.ref("entry_json"))
+              .else(null)
+              .end()
+              .as("entry"),
+          )
+          .where("session_key", "=", row.session_key),
+      );
+      executeSqliteQuerySync(
+        db,
+        query
+          .selectFrom(storage.activeTable)
+          .select("active_position")
+          .where("session_id", "=", storage.key)
+          .orderBy("active_position", "desc")
+          .limit(256),
+      );
+      executeSqliteQuerySync(
+        db,
+        query
+          .selectFrom(storage.activeTable)
+          .select("event_seq")
+          .where("session_id", "=", storage.key)
+          .orderBy("event_seq", "desc")
+          .limit(256),
+      );
+      executeSqliteQuerySync(
+        db,
+        query
+          .selectFrom(storage.activeTable)
+          .select("message_position")
+          .where("session_id", "=", storage.key)
+          .where("message_position", "is not", null)
+          .orderBy("message_position", "desc")
+          .limit(256),
+      );
+      executeSqliteQuerySync(
+        db,
+        query
+          .selectFrom(storage.identityTable)
+          .select("seq")
+          .where("session_id", "=", storage.key)
+          .orderBy("seq", "desc")
+          .limit(256),
+      );
+      executeSqliteQuerySync(
+        db,
+        query
+          .selectFrom(storage.identityTable)
+          .select("seq")
+          .where("session_id", "=", storage.key)
+          .where("event_type", "=", "message")
+          .orderBy("seq", "desc")
+          .limit(256),
+      );
+    });
     yield;
   }
   // Finish the metadata pass before spending its remaining budget on recent payload pages.
   for (const row of recentSessions(db, now - PAYLOAD_RECENT_MS)) {
-    const { rows: tail } = executeSqliteQuerySync(
-      db,
-      query
-        .selectFrom("session_transcript_active_events")
-        .select("event_seq")
-        .where("session_id", "=", row.current_session_id)
-        .where("message_position", "is not", null)
-        .orderBy("message_position", "desc")
-        .limit(MAX_PAYLOAD_MESSAGES),
-    );
+    const { rows: tail } = runSqliteDeferredTransactionSync(db, () => {
+      const storage = readSessionTranscriptStorage(db, row.current_session_id);
+      return executeSqliteQuerySync(
+        db,
+        query
+          .selectFrom(storage.activeTable)
+          .select("event_seq")
+          .where("session_id", "=", storage.key)
+          .where("message_position", "is not", null)
+          .orderBy("message_position", "desc")
+          .limit(MAX_PAYLOAD_MESSAGES),
+      );
+    });
     // Empty selections also consume I/O; admit payload reads only after pacing this lookup.
     yield;
     for (let offset = 0; offset < tail.length; offset += PAYLOAD_BATCH_MESSAGES) {

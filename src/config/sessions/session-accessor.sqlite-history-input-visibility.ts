@@ -50,6 +50,7 @@ export function readSessionTranscriptRunInputVisibilityFromProjection(
   // Validate custody without applying execution-only bounds to requested display history.
   resolveSqliteSessionTranscriptReadFence({
     database: projection.database,
+    storage: projection.storage,
     ...projection.resolved,
   });
   const visible = resolveVisibleMessagePositions(projection);
@@ -72,7 +73,7 @@ export function readSessionTranscriptRunInputVisibilityFromProjection(
     /* kysely-allow-raw: Bind the exact retained display positions without SQLite's variable limit. */
     sql<number>`(SELECT value FROM json_each(${JSON.stringify(visible.kept)}))`;
   const userInputs = db
-    .selectFrom("session_transcript_active_events as active")
+    .selectFrom(projection.storage.activeEvents().as("active"))
     .innerJoin("transcript_events as event", (join) =>
       join
         .onRef("event.session_id", "=", "active.session_id")
@@ -101,7 +102,7 @@ export function readSessionTranscriptRunInputVisibilityFromProjection(
     const anchor = executeSqliteQueryTakeFirstSync(
       projection.database.db,
       userInputs
-        .innerJoin("transcript_event_identities as identity", (join) =>
+        .innerJoin(projection.storage.identities().as("identity"), (join) =>
           join
             .onRef("identity.session_id", "=", "active.session_id")
             .onRef("identity.seq", "=", "active.event_seq"),

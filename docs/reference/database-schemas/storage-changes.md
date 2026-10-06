@@ -2349,6 +2349,22 @@ consults after call closure, independently of the open-state check.
 
 ## Review checkpoint for material changes
 
+The maintainer-requested schema-25 transcript metadata change preserves canonical
+payloads, public identifiers, retention, and idempotency ownership while replacing
+repeated session strings with integer metadata keys. Payload encoding and retained
+payload records stay unchanged; the same schema step merges the session-node
+validity UPDATE triggers.
+Doctor owns backed-up schema admission, bounded copying, session publication,
+and retirement of legacy rows while its maintenance owner keeps writers stopped.
+The durable ledger resumes interrupted same-version work before Doctor grants
+startup readiness; Gateway opens and idle tasks do not migrate this format.
+Mutation capture and snapshot-owned route selection
+prevent lost concurrent changes and mixed-reader joins. New event-reference
+constraints remain with the canonical schema. See
+[compact transcript metadata](/reference/database-schemas/agent-schema-history#compact-transcript-metadata)
+for the storage, concurrency, and rollback contract. Its measurement and validation
+record belongs in the implementing pull request.
+
 An explicit maintainer repair-and-land request covers internal scheduling,
 database admission, and lifecycle implementation decisions. The implementer
 owns design selection, risk assessment, and verification. Describe the design

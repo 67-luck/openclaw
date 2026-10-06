@@ -63,9 +63,9 @@ describe("SQLite transcript history events", () => {
       messageEvent("newer", "older", "assistant", "selected"),
     ]);
     const { db } = openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env });
-    db.prepare("DELETE FROM transcript_event_identities WHERE session_id = ? AND seq = 0").run(
-      scope.sessionId,
-    );
+    db.prepare(
+      "DELETE FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND seq = 0",
+    ).run(scope.sessionId);
     const native = new DatabaseSync(":memory:");
     const validate = native.prepare("SELECT json_valid(?) AS valid");
     let inspectedIndexedPayloads = 0;
@@ -216,7 +216,9 @@ describe("SQLite transcript history events", () => {
       });
       if (legacy) {
         openOpenClawAgentDatabase({ agentId: scope.agentId, env: scope.env })
-          .db.prepare("DELETE FROM transcript_event_identities WHERE session_id = ?")
+          .db.prepare(
+            "DELETE FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?)",
+          )
           .run(scope.sessionId);
       }
       const raw = readTranscriptRawDelta(scope);
@@ -334,8 +336,8 @@ describe("SQLite transcript history events", () => {
           `UPDATE transcript_events
          SET event_json = '{'
          WHERE session_id = ? AND seq IN (
-           SELECT seq FROM transcript_event_identities
-           WHERE session_id = ? AND event_id IN ('older', 'excluded-boundary')
+           SELECT seq FROM transcript_event_identity_rows
+           WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id IN ('older', 'excluded-boundary')
          )`,
         )
         .run(scope.sessionId, scope.sessionId);
@@ -533,14 +535,14 @@ describe("SQLite transcript history events", () => {
         "INSERT INTO transcript_events (session_id, seq, event_json, created_at) VALUES (?, ?, ?, ?)",
       );
       const insertIdentity = database.db.prepare(
-        `INSERT INTO transcript_event_identities
+        `INSERT INTO transcript_event_identity_rows
          (session_id, event_id, seq, event_type, parent_id, message_idempotency_key, created_at)
-       VALUES (?, ?, ?, ?, NULL, NULL, ?)`,
+       VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), ?, ?, ?, NULL, NULL, ?)`,
       );
       const insertActive = database.db.prepare(
-        `INSERT INTO session_transcript_active_events
+        `INSERT INTO session_transcript_active_rows
          (session_id, active_position, event_seq, message_position, context_eligible)
-       VALUES (?, ?, ?, NULL, 1)`,
+       VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), ?, ?, NULL, 1)`,
       );
       for (const event of boundaryEvents) {
         insertEvent.run(scope.sessionId, event.seq, event.eventJson, event.seq);
@@ -900,8 +902,8 @@ describe("SQLite transcript history events", () => {
         `UPDATE transcript_events
          SET event_json = '{', event_zstd = NULL, event_utf8_bytes = 16384
          WHERE session_id = ? AND seq = (
-           SELECT seq FROM transcript_event_identities
-           WHERE session_id = ? AND event_id = 'oversized-older'
+           SELECT seq FROM transcript_event_identity_rows
+           WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = 'oversized-older'
          )`,
       )
       .run(scope.sessionId, scope.sessionId);
@@ -922,8 +924,8 @@ describe("SQLite transcript history events", () => {
         `UPDATE transcript_events
          SET event_json = NULL, event_zstd = X'00', event_utf8_bytes = 16384
          WHERE session_id = ? AND seq = (
-           SELECT seq FROM transcript_event_identities
-           WHERE session_id = ? AND event_id = 'closing-reset'
+           SELECT seq FROM transcript_event_identity_rows
+           WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = 'closing-reset'
          )`,
       )
       .run(scope.sessionId, scope.sessionId);

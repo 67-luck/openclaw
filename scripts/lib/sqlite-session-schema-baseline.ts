@@ -36,8 +36,12 @@ const TARGET_TABLES = new Set([
   "transcript_events",
   "transcript_rewrite_watermarks",
   "transcript_event_identities",
+  "transcript_storage_sessions",
+  "transcript_storage_migration",
+  "transcript_event_identity_rows",
   "session_transcript_index_state",
   "session_transcript_active_events",
+  "session_transcript_active_rows",
   "session_transcript_fts_rows",
   "session_transcript_archives",
 ]);

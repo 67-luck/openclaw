@@ -8,6 +8,7 @@ import {
   projectSessionBranchEntry,
   type SessionBranchTranscriptEntry,
 } from "./session-message-cut-content.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
 import {
   scanSessionTranscriptTree,
@@ -28,12 +29,13 @@ export function readSessionBranchSummaries(
 ): SessionBranchSummaries {
   return readHotSessionTranscriptSnapshot(database, sessionId, "events", () => {
     const db = getSessionKysely(database.db);
+    const storage = readSessionTranscriptStorage(database.db, sessionId);
     const navigationQuery = db
       .selectFrom("transcript_events")
       .select(["seq", transcriptEventNavigationSql().as("event_json")])
       .select((eb) =>
         eb
-          .selectFrom("transcript_event_identities")
+          .selectFrom(storage.identities("sequence").as("transcript_event_identities"))
           .select("event_id")
           .where("session_id", "=", sessionId)
           .whereRef("seq", "=", "transcript_events.seq")

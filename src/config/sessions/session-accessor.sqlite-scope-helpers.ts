@@ -30,11 +30,14 @@ type SessionSqliteDatabase = Pick<
   | "session_transcript_archives"
   | "session_transcript_cold_archives"
   | "session_transcript_active_events"
+  | "session_transcript_active_rows"
   | "session_transcript_index_state"
   | "session_windows"
   | "transcript_rewrite_watermarks"
   | "trajectory_runtime_events"
   | "transcript_event_identities"
+  | "transcript_event_identity_rows"
+  | "transcript_storage_sessions"
   | "transcript_events"
 > & {
   sqlite_schema: { name: string | null; type: string };

@@ -10,6 +10,7 @@ import { replaceSessionEntrySync } from "./session-accessor.js";
 import { replaceTranscriptEvents } from "./session-accessor.sqlite-transcript-write.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
 import { waitForSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 import { prepareTranscriptPayload, transcriptEventJsonSql } from "./transcript-payload.js";
 
 export const historicalId = "cold-history-window";
@@ -65,6 +66,7 @@ export async function createSessionColdStorageFixture(
         .set({ updated_at: 1, transcript_updated_at: 1 })
         .where("session_id", "=", historicalId),
     );
+    const storage = readSessionTranscriptStorage(database, historicalId);
     // Importers preserve raw JSON spacing and identity metadata independently of event payloads.
     executeSqliteQuerySync(
       database,
@@ -83,9 +85,9 @@ export async function createSessionColdStorageFixture(
     executeSqliteQuerySync(
       database,
       db
-        .updateTable("transcript_event_identities")
+        .updateTable(storage.identityTable)
         .set({ message_idempotency_key: "original-idempotency-key", created_at: 8 })
-        .where("session_id", "=", historicalId)
+        .where("session_id", "=", storage.key)
         .where("event_id", "=", "history-user"),
     );
   }, options);
@@ -109,11 +111,21 @@ export async function createSessionColdStorageFixture(
           .orderBy("seq"),
       ).rows,
       identities: db
-        .prepare("SELECT * FROM transcript_event_identities ORDER BY session_id, seq, event_id")
+        .prepare(
+          `SELECT storage.session_id, identity.event_id, identity.seq, identity.event_type,
+             identity.parent_id, identity.message_idempotency_key, identity.created_at
+           FROM transcript_event_identity_rows AS identity
+           JOIN transcript_storage_sessions AS storage ON storage.sid = identity.session_id
+           ORDER BY storage.session_id, identity.seq, identity.event_id`,
+        )
         .all(),
       active: db
         .prepare(
-          "SELECT * FROM session_transcript_active_events ORDER BY session_id, active_position",
+          `SELECT storage.session_id, active.active_position, active.event_seq,
+             active.message_position, active.context_eligible
+           FROM session_transcript_active_rows AS active
+           JOIN transcript_storage_sessions AS storage ON storage.sid = active.session_id
+           ORDER BY storage.session_id, active.active_position`,
         )
         .all(),
       index: db.prepare("SELECT * FROM session_transcript_index_state ORDER BY session_id").all(),

@@ -267,7 +267,7 @@ it("deduplicates existing and incoming bytes and identities, preserves aliases, 
       })),
     );
     expect(
-      db.prepare("SELECT event_id FROM transcript_event_identities ORDER BY seq").all(),
+      db.prepare("SELECT event_id FROM transcript_event_identity_rows ORDER BY seq").all(),
     ).toEqual([{ event_id: "one" }, { event_id: "two" }]);
     expect(db.prepare("SELECT created_at, updated_at FROM session_windows").get()).toEqual({
       created_at: 7,
@@ -376,6 +376,11 @@ it("reads legacy handoff bytes, duplicate IDs, timestamps and owner without norm
         .all(),
     ).toEqual(rows);
     expect(db.prepare("SELECT count(*) AS count FROM transcript_event_identities").get()).toEqual({
+      count: 0,
+    });
+    expect(
+      db.prepare("SELECT count(*) AS count FROM transcript_event_identity_rows").get(),
+    ).toEqual({
       count: 0,
     });
     expect(loadExactSessionEntry(params)?.entry.owner).toEqual(owner);
@@ -617,7 +622,7 @@ it("repairs an identical repeated event and reruns idempotently", async () => {
     expect(
       database.db
         .prepare(
-          "SELECT event_id, COUNT(*) AS count FROM transcript_event_identities GROUP BY event_id ORDER BY event_id",
+          "SELECT event_id, COUNT(*) AS count FROM transcript_event_identity_rows GROUP BY event_id ORDER BY event_id",
         )
         .all(),
     ).toEqual([

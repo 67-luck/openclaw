@@ -432,14 +432,14 @@ function seedTranscriptHistory(db: DatabaseSync): void {
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertIdentity = db.prepare(
-    `INSERT INTO transcript_event_identities
+    `INSERT INTO transcript_event_identity_rows
        (session_id, event_id, seq, event_type, parent_id, message_idempotency_key, created_at)
-     VALUES (?, ?, ?, 'message', NULL, NULL, ?)`,
+     VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), ?, ?, 'message', NULL, NULL, ?)`,
   );
   const insertActive = db.prepare(
-    `INSERT INTO session_transcript_active_events
+    `INSERT INTO session_transcript_active_rows
        (session_id, active_position, event_seq, message_position)
-     VALUES (?, ?, ?, ?)`,
+     VALUES ((SELECT sid FROM transcript_storage_sessions WHERE session_id = ?), ?, ?, ?)`,
   );
   const messageContent = "x".repeat(SQLITE_PERF_TRANSCRIPT_MESSAGE_BYTES);
   for (let seq = 1; seq <= SQLITE_PERF_TRANSCRIPT_EVENTS; seq += 1) {
@@ -676,10 +676,11 @@ function runHotQueries(params: {
       queryParams: [SQLITE_PERF_TRANSCRIPT_SESSION_ID, ...transcriptPositions],
       sql: `SELECT active.message_position,
                    ${transcriptBytes} + 1 AS serialized_bytes
-              FROM session_transcript_active_events AS active
+              FROM session_transcript_active_rows AS active
+              JOIN transcript_storage_sessions AS storage ON storage.sid = active.session_id
               JOIN transcript_events AS event
-                ON event.session_id = active.session_id AND event.seq = active.event_seq
-             WHERE active.session_id = ?
+                ON event.session_id = storage.session_id AND event.seq = active.event_seq
+             WHERE storage.session_id = ?
                AND active.message_position IN (${transcriptPlaceholders})
              ORDER BY active.message_position DESC`,
     },
@@ -688,10 +689,11 @@ function runHotQueries(params: {
       id: "transcript.tail.payload",
       queryParams: [SQLITE_PERF_TRANSCRIPT_SESSION_ID, ...transcriptPositions],
       sql: `SELECT active.message_position, ${transcriptPayload} AS event_json
-              FROM session_transcript_active_events AS active
+              FROM session_transcript_active_rows AS active
+              JOIN transcript_storage_sessions AS storage ON storage.sid = active.session_id
               JOIN transcript_events AS event
-                ON event.session_id = active.session_id AND event.seq = active.event_seq
-             WHERE active.session_id = ?
+                ON event.session_id = storage.session_id AND event.seq = active.event_seq
+             WHERE storage.session_id = ?
                AND active.message_position IN (${transcriptPlaceholders})
              ORDER BY active.message_position ASC`,
     },

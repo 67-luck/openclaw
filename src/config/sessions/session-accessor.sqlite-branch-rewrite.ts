@@ -28,6 +28,7 @@ import {
   redactTranscriptMessageForStorage,
 } from "./session-accessor.sqlite-transcript-store.js";
 import { resolveTranscriptAppendRefusal } from "./session-accessor.sqlite-transcript-write-guard.js";
+import { readSessionTranscriptStorage } from "./session-transcript-storage.js";
 import { transcriptEventJsonSql } from "./transcript-payload.js";
 import {
   assertOwnedTranscriptWriteCommit,
@@ -114,13 +115,14 @@ export function prepareTranscriptRewriteSync(
         ) {
           throw conflict();
         }
+        const storage = readSessionTranscriptStorage(current.db, resolved.sessionId);
         // A loaded manager may predate an in-place repair even when its entry ids match.
         // Compare only the copied suffix, never hydrate the complete archive under the lock.
         for (const source of sources.values()) {
           const row = executeSqliteQueryTakeFirstSync(
             current.db,
             getSessionKysely(current.db)
-              .selectFrom("transcript_event_identities as identity")
+              .selectFrom(storage.identities().as("identity"))
               .innerJoin("transcript_events as event", (join) =>
                 join
                   .onRef("event.session_id", "=", "identity.session_id")

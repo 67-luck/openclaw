@@ -1,6 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import type { Generated, InferResult } from "kysely";
+import type { InferResult } from "kysely";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -25,6 +25,10 @@ import {
   type TranscriptIndexEntry,
 } from "./session-transcript-projection-append.js";
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
+import {
+  readSessionTranscriptStorage,
+  type SessionTranscriptStorage,
+} from "./session-transcript-storage.js";
 import { projectTranscriptNavigationFields } from "./transcript-navigation-fields.js";
 import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
 import {
@@ -39,11 +43,9 @@ type TranscriptProjectionDatabase = Pick<
   | "session_transcript_index_state"
   | "transcript_events"
   | "transcript_rewrite_watermarks"
-> & {
-  session_transcript_active_events: OpenClawAgentKyselyDatabase["session_transcript_active_events"] & {
-    rowid: Generated<number>;
-  };
-};
+  | "session_transcript_active_events"
+  | "session_transcript_active_rows"
+>;
 
 export type PreparedSessionTranscriptProjectionMetadata = {
   activeEventCount: number;
@@ -97,14 +99,15 @@ function getProjectionKysely(db: DatabaseSync) {
 export function hasUnclassifiedSessionTranscriptEvents(
   db: DatabaseSync,
   sessionId: string,
+  storage: SessionTranscriptStorage = readSessionTranscriptStorage(db, sessionId),
 ): boolean {
   return (
     executeSqliteQueryTakeFirstSync(
       db,
       getProjectionKysely(db)
-        .selectFrom("session_transcript_active_events")
+        .selectFrom(storage.activeTable)
         .select("session_id")
-        .where("session_id", "=", sessionId)
+        .where("session_id", "=", storage.key)
         .where("context_eligible", "is", null)
         .limit(1),
     ) !== undefined
@@ -420,7 +423,7 @@ export function claimPreparedSessionTranscriptProjectionInTransaction(
   return true;
 }
 
-/** Deletes old rows in bounded rowid batches while the prepared claim is current. */
+/** Deletes old rows in bounded sequence batches while the prepared claim is current. */
 export function deletePreparedSessionTranscriptProjectionChunkInTransaction(
   db: DatabaseSync,
   params: { claimId: number; maxRowsPerTable: number; sessionId: string },
@@ -430,18 +433,20 @@ export function deletePreparedSessionTranscriptProjectionChunkInTransaction(
   }
   // Active rows use their session index; FTS deletion uses its indexed identity owner.
   const kysely = getProjectionKysely(db);
+  const storage = readSessionTranscriptStorage(db, params.sessionId);
   const active = Number(
     executeSqliteQuerySync(
       db,
       kysely
-        .deleteFrom("session_transcript_active_events")
+        .deleteFrom(storage.activeTable)
+        .where("session_id", "=", storage.key)
         .where(
-          "rowid",
+          "event_seq",
           "in",
           kysely
-            .selectFrom("session_transcript_active_events")
-            .select("rowid")
-            .where("session_id", "=", params.sessionId)
+            .selectFrom(storage.activeTable)
+            .select("event_seq")
+            .where("session_id", "=", storage.key)
             .limit(params.maxRowsPerTable),
         ),
     ).numAffectedRows ?? 0n,
@@ -479,18 +484,19 @@ function insertPreparedSessionTranscriptProjectionRows(
     ftsRows?: PreparedSessionTranscriptProjection["ftsRows"];
     sessionId: string;
   },
+  storage: SessionTranscriptStorage = readSessionTranscriptStorage(db, params.sessionId),
 ): void {
   const kysely = getProjectionKysely(db);
   if (params.activeRows && params.activeRows.length > 0) {
     executeSqliteQuerySync(
       db,
-      kysely.insertInto("session_transcript_active_events").values(
+      kysely.insertInto(storage.activeTable).values(
         params.activeRows.map((row) => ({
           active_position: row.activePosition,
           context_eligible: row.contextEligible,
           event_seq: row.eventSeq,
           message_position: row.messagePosition,
-          session_id: params.sessionId,
+          session_id: storage.key,
         })),
       ),
     );
@@ -578,16 +584,17 @@ export function finalizePreparedSessionTranscriptProjectionInTransaction(
   if (!projectionClaimIsOwned(db, plan.sessionId, claimId)) {
     return false;
   }
+  const storage = readSessionTranscriptStorage(db, plan.sessionId);
   const baseActiveRows = executeSqliteQueryTakeFirstSync(
     db,
     getProjectionKysely(db)
-      .selectFrom("session_transcript_active_events")
+      .selectFrom(storage.activeEvents().as("session_transcript_active_events"))
       .select((eb) => eb.fn.countAll<number>().as("count"))
       .where("session_id", "=", plan.sessionId),
   );
   if (
     baseActiveRows?.count !== plan.activeEventCount ||
-    hasUnclassifiedSessionTranscriptEvents(db, plan.sessionId)
+    hasUnclassifiedSessionTranscriptEvents(db, plan.sessionId, storage)
   ) {
     return false;
   }
@@ -599,11 +606,15 @@ export function finalizePreparedSessionTranscriptProjectionInTransaction(
   }
   const finalPlan = catchUpPlan ?? plan;
   if (catchUpPlan) {
-    insertPreparedSessionTranscriptProjectionRows(db, {
-      activeRows: catchUpPlan.activeRows,
-      ftsRows: catchUpPlan.ftsRows,
-      sessionId: catchUpPlan.sessionId,
-    });
+    insertPreparedSessionTranscriptProjectionRows(
+      db,
+      {
+        activeRows: catchUpPlan.activeRows,
+        ftsRows: catchUpPlan.ftsRows,
+        sessionId: catchUpPlan.sessionId,
+      },
+      storage,
+    );
   }
   executeSqliteQuerySync(
     db,

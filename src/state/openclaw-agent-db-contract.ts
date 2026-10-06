@@ -3,7 +3,8 @@ import type { SqliteWalMaintenance } from "../infra/sqlite-wal.js";
 import type { DatabaseFileIdentity } from "../infra/sqlite-worker-identity.js";
 import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db-contract.js";
 
-// v25 merges session-node validity UPDATE triggers; older schema inspectors reject the new shape.
+// v25 combines compact metadata and merged session-node validity triggers.
+// Older readers refuse the new schema; Doctor drains metadata after schema admission.
 // v24 separates keyed cold session snapshots from hot entry facts without rewriting transcripts.
 // v23 compacts payloads and replaces deployed v22 lazy FTS ownership without rewriting FTS content.
 // v22 introduced exact FTS row ownership with nullable completeness and lazy repair.
@@ -26,6 +27,7 @@ import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db-contract.
 // v6 added session/transcript hot-path indexes.
 // v5 added transcript mutation watermarks.
 export const OPENCLAW_AGENT_SCHEMA_VERSION = 25;
+export const TRANSCRIPT_STORAGE_SCHEMA_VERSION = 25;
 export const AGENT_STORAGE_SCHEMA_VERSION = 23;
 export const TRANSCRIPT_FTS_ROW_SCHEMA_VERSION = 22;
 export const AGENT_MEDIA_SCHEMA_VERSION = 17;

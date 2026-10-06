@@ -244,7 +244,9 @@ describe("legacy main session history handoff", () => {
           { allowStoredAlias: true, idempotencyKeyMode: "relocate-owner" },
         );
         return database.db
-          .prepare("SELECT * FROM transcript_event_identities WHERE session_id = ? ORDER BY seq")
+          .prepare(
+            "SELECT storage.session_id, identity.event_id, identity.seq, identity.event_type, identity.parent_id, identity.message_idempotency_key, identity.created_at FROM transcript_event_identity_rows AS identity JOIN transcript_storage_sessions AS storage ON storage.sid = identity.session_id WHERE storage.session_id = ? ORDER BY identity.seq",
+          )
           .all(sessionId);
       },
       { agentId: "main", path: sourcePath },
@@ -283,7 +285,9 @@ describe("legacy main session history handoff", () => {
       runOpenClawAgentWriteTransaction(
         (database) =>
           database.db
-            .prepare("SELECT * FROM transcript_event_identities WHERE session_id = ? ORDER BY seq")
+            .prepare(
+              "SELECT storage.session_id, identity.event_id, identity.seq, identity.event_type, identity.parent_id, identity.message_idempotency_key, identity.created_at FROM transcript_event_identity_rows AS identity JOIN transcript_storage_sessions AS storage ON storage.sid = identity.session_id WHERE storage.session_id = ? ORDER BY identity.seq",
+            )
             .all(sessionId),
         { agentId: "ops", path: destinationPath },
       ),
@@ -355,7 +359,7 @@ describe("legacy main session history handoff", () => {
             }
             database.db
               .prepare(
-                "UPDATE transcript_event_identities SET message_idempotency_key = NULL WHERE session_id = ? AND event_id = 'answer'",
+                "UPDATE transcript_event_identity_rows SET message_idempotency_key = NULL WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = 'answer'",
               )
               .run(entry.sessionId);
           },
@@ -433,7 +437,9 @@ describe("legacy main session history handoff", () => {
             windows: db.prepare("SELECT * FROM session_windows ORDER BY session_id").all(),
             events: db.prepare("SELECT * FROM transcript_events ORDER BY session_id, seq").all(),
             identities: db
-              .prepare("SELECT * FROM transcript_event_identities ORDER BY session_id, event_id")
+              .prepare(
+                "SELECT storage.session_id, identity.event_id, identity.seq, identity.event_type, identity.parent_id, identity.message_idempotency_key, identity.created_at FROM transcript_event_identity_rows AS identity JOIN transcript_storage_sessions AS storage ON storage.sid = identity.session_id ORDER BY storage.session_id, identity.event_id",
+              )
               .all(),
           }),
           { agentId, path: pathname, env: fixture.env },

@@ -134,7 +134,7 @@ describe("SQLite lifecycle generation cleanup races", () => {
                 : Number(
                     database.db
                       .prepare(
-                        "UPDATE transcript_event_identities SET message_idempotency_key = NULL WHERE session_id = ? AND event_id = 'answer'",
+                        "UPDATE transcript_event_identity_rows SET message_idempotency_key = NULL WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = 'answer'",
                       )
                       .run(sessionId).changes,
                   );
@@ -175,7 +175,7 @@ describe("SQLite lifecycle generation cleanup races", () => {
             ),
             identity: database.db
               .prepare(
-                "SELECT message_idempotency_key FROM transcript_event_identities WHERE session_id = ? AND event_id = 'answer'",
+                "SELECT message_idempotency_key FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = 'answer'",
               )
               .get(mutation!.sessionId),
           }),

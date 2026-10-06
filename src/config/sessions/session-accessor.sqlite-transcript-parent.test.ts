@@ -108,26 +108,38 @@ it.each(["missing-prepared", "missing-admitted", "overflow-prepared"] as const)(
       .run(scope.sessionId);
     if (scenario === "overflow-prepared") {
       runSqliteImmediateTransactionSync(database.db, () => {
-        database.db.exec("PRAGMA defer_foreign_keys = ON");
+        database.db.exec(`
+          CREATE TEMP TABLE overflow_identities AS SELECT * FROM transcript_event_identity_rows;
+          CREATE TEMP TABLE overflow_active AS SELECT * FROM session_transcript_active_rows;
+          DELETE FROM transcript_event_identity_rows;
+          DELETE FROM session_transcript_active_rows;
+        `);
         const offset = 9007199254740993n;
         database.db
           .prepare("UPDATE transcript_events SET seq = seq + ? WHERE session_id = ?")
           .run(offset, scope.sessionId);
         database.db
-          .prepare("UPDATE transcript_event_identities SET seq = seq + ? WHERE session_id = ?")
-          .run(offset, scope.sessionId);
+          .prepare(`INSERT INTO transcript_event_identity_rows
+            SELECT session_id, event_id, seq + ?, event_type, parent_id,
+              message_idempotency_key, created_at FROM overflow_identities`)
+          .run(offset);
         database.db
           .prepare(
-            "UPDATE session_transcript_active_events SET event_seq = event_seq + ? WHERE session_id = ?",
+            `INSERT INTO session_transcript_active_rows
+             SELECT session_id, active_position, event_seq + ?, message_position,
+               context_eligible FROM overflow_active`,
           )
-          .run(offset, scope.sessionId);
+          .run(offset);
+        database.db.exec("DROP TABLE overflow_identities; DROP TABLE overflow_active;");
       });
       expect(() => validatePreparedAssistantAppendSync(scope, "prepared", "prepared")).toThrow(
         expect.objectContaining({ code: "ERR_OUT_OF_RANGE" }),
       );
     } else {
       database.db
-        .prepare("DELETE FROM transcript_event_identities WHERE session_id = ? AND event_id = ?")
+        .prepare(
+          "DELETE FROM transcript_event_identity_rows WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?) AND event_id = ?",
+        )
         .run(scope.sessionId, scenario === "missing-prepared" ? "prepared" : "admitted");
       expect(
         validatePreparedAssistantAppendSync(

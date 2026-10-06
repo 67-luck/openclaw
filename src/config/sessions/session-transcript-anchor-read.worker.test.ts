@@ -125,7 +125,7 @@ it("reads active anchors and raw tail facts without caller SQL, including cold d
 it.each([
   "UPDATE session_transcript_index_state SET needs_rebuild = 1 WHERE session_id = ?",
   "UPDATE session_transcript_index_state SET indexed_seq = indexed_seq - 1 WHERE session_id = ?",
-  "UPDATE session_transcript_active_events SET context_eligible = NULL WHERE session_id = ?",
+  "UPDATE session_transcript_active_rows SET context_eligible = NULL WHERE session_id = (SELECT sid FROM transcript_storage_sessions WHERE session_id = ?)",
 ])("refuses stale projection anchors without rebuilding: %s", async (invalidate) => {
   await withOpenClawTestState({ label: "transcript-anchors-stale" }, async (state) => {
     const scope = transcriptScope(state);

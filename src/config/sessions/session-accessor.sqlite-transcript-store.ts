@@ -63,6 +63,11 @@ import {
 } from "./session-transcript-projection-append.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
 import { copyRetainedTranscriptPayload } from "./session-transcript-retained-data.js";
+import {
+  legacySessionTranscriptStorageForMigration,
+  readSessionTranscriptStorage,
+  type SessionTranscriptStorage,
+} from "./session-transcript-storage.js";
 import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 import {
   createTranscriptEventInserter,
@@ -86,6 +91,7 @@ type TranscriptAppendOptions = {
 
 type TranscriptAppendCursor = {
   initialized?: boolean;
+  storage?: SessionTranscriptStorage;
   readIdentity?: ReturnType<typeof createTranscriptIdentityReader>;
   nextSeq?: number;
   appendToIndex?: ReturnType<typeof createTranscriptIndexAppenderInTransaction>;
@@ -98,14 +104,15 @@ export function createTranscriptIdentityInserter(
   database: OpenClawAgentDatabase,
   sessionId: string,
   ignoreConflicts: boolean,
+  storage: SessionTranscriptStorage = readSessionTranscriptStorage(database.db, sessionId),
 ) {
   return prepareSqliteQuerySync<
     NonNullable<ReturnType<typeof readTranscriptEventIdentity>> & { seq: number; createdAt: number }
   >(database.db, (parameter) =>
     getSessionKysely(database.db)
-      .insertInto("transcript_event_identities")
+      .insertInto(storage.identityTable)
       .values({
-        session_id: sessionId,
+        session_id: storage.key,
         event_id: parameter((row) => row.eventId),
         seq: parameter((row) => row.seq),
         event_type: parameter((row) => row.eventType),
@@ -133,8 +140,9 @@ export function insertTranscriptRowsWithoutProjectionInTransaction(
   }[],
   reservedMessageIdempotencyKeys: ReadonlySet<string> = new Set(),
 ): void {
+  const storage = readSessionTranscriptStorage(database.db, sessionId);
   const insertEvent = createTranscriptEventInserter(database.db, sessionId);
-  const insertIdentity = createTranscriptIdentityInserter(database, sessionId, false);
+  const insertIdentity = createTranscriptIdentityInserter(database, sessionId, false, storage);
   for (const row of rows) {
     const event = canonicalizeTranscriptEventMedia(row.event);
     if (row.storedEventSeq === undefined) {
@@ -151,7 +159,7 @@ export function insertTranscriptRowsWithoutProjectionInTransaction(
     } else if (
       identity.messageIdempotencyKey &&
       (reservedMessageIdempotencyKeys.has(identity.messageIdempotencyKey) ||
-        readIdempotencyKeyOwner(database, sessionId, identity.messageIdempotencyKey))
+        readIdempotencyKeyOwner(database, sessionId, identity.messageIdempotencyKey, storage))
     ) {
       identity.messageIdempotencyKey = null;
     }
@@ -189,16 +197,17 @@ export function appendTranscriptEventInTransaction(
     ensureTranscriptGenerationInTransaction(database, scope.sessionId);
     cursor.initialized = true;
   }
+  const storage = (cursor.storage ??= readSessionTranscriptStorage(database.db, scope.sessionId));
   const identity = readTranscriptEventIdentity(persistedEvent);
   if (identity) {
     // Reuse compilation within this batch, but read fresh rows after every append.
-    cursor.readIdentity ??= createTranscriptIdentityReader(database, scope.sessionId);
+    cursor.readIdentity ??= createTranscriptIdentityReader(database, scope.sessionId, storage);
     if (cursor.readIdentity(identity.eventId)) {
       return false;
     }
   }
   const idempotencyKeyOwner = identity?.messageIdempotencyKey
-    ? readIdempotencyKeyOwner(database, scope.sessionId, identity.messageIdempotencyKey)
+    ? readIdempotencyKeyOwner(database, scope.sessionId, identity.messageIdempotencyKey, storage)
     : undefined;
   if (idempotencyKeyOwner && options.idempotencyKeyMode === "dedupe") {
     return false;
@@ -217,7 +226,11 @@ export function appendTranscriptEventInTransaction(
   if (options.touchMutation !== false) {
     touchTranscriptMutationInTransaction(database, scope.sessionId);
   }
-  cursor.appendToIndex ??= createTranscriptIndexAppenderInTransaction(database.db, scope.sessionId);
+  cursor.appendToIndex ??= createTranscriptIndexAppenderInTransaction(
+    database.db,
+    scope.sessionId,
+    storage,
+  );
   const projectionNeedsRebuild = cursor.appendToIndex({
     seq,
     event: persistedEvent,
@@ -234,9 +247,9 @@ export function appendTranscriptEventInTransaction(
       executeSqliteQuerySync(
         database.db,
         db
-          .updateTable("transcript_event_identities")
+          .updateTable(storage.identityTable)
           .set({ message_idempotency_key: null })
-          .where("session_id", "=", scope.sessionId)
+          .where("session_id", "=", storage.key)
           .where("event_id", "=", idempotencyKeyOwner.eventId),
       );
     }
@@ -244,7 +257,12 @@ export function appendTranscriptEventInTransaction(
       idempotencyKeyOwner && options.idempotencyKeyMode !== "relocate-owner"
         ? null
         : identity.messageIdempotencyKey;
-    cursor.insertIdentity ??= createTranscriptIdentityInserter(database, scope.sessionId, true);
+    cursor.insertIdentity ??= createTranscriptIdentityInserter(
+      database,
+      scope.sessionId,
+      true,
+      storage,
+    );
     cursor.insertIdentity({ ...identity, seq, createdAt });
   }
   advanceCliHistoryBoundaryInTransaction(database, scope, seq);
@@ -371,8 +389,9 @@ export function replaceSqliteTranscriptEventsInTransaction(
   } else {
     ensureTranscriptGenerationInTransaction(database, resolved.sessionId);
   }
+  const storage = readSessionTranscriptStorage(database.db, resolved.sessionId);
   if (rebuildSynchronously) {
-    deleteSessionTranscriptIndexInTransaction(database.db, resolved.sessionId);
+    deleteSessionTranscriptIndexInTransaction(database.db, resolved.sessionId, storage);
   } else {
     // Preserve large old FTS rows; the dirty watermark hides them until worker reconciliation.
     markSessionTranscriptIndexDirtyInTransaction(database.db, resolved.sessionId);
@@ -381,9 +400,18 @@ export function replaceSqliteTranscriptEventsInTransaction(
   const seenEventIds = new Set<string>();
   const seenMessageIdempotencyKeys = new Set<string>();
   const insertEvent = createTranscriptEventInserter(database.db, resolved.sessionId);
-  const insertIdentity = createTranscriptIdentityInserter(database, resolved.sessionId, false);
+  const insertIdentity = createTranscriptIdentityInserter(
+    database,
+    resolved.sessionId,
+    false,
+    storage,
+  );
   // The reset/dirty transition above owns the initial projection state for this whole batch.
-  const appendToIndex = createTranscriptIndexAppenderInTransaction(database.db, resolved.sessionId);
+  const appendToIndex = createTranscriptIndexAppenderInTransaction(
+    database.db,
+    resolved.sessionId,
+    storage,
+  );
   for (const [eventIndex, event] of events.entries()) {
     const persistedEvent = canonicalizeTranscriptEventMedia(event);
     const createdAt =
@@ -407,11 +435,11 @@ export function replaceSqliteTranscriptEventsInTransaction(
     }
     seq += 1;
   }
-  pruneTranscriptReactionsInTransaction(database, resolved);
+  pruneTranscriptReactionsInTransaction(database, resolved, undefined, storage);
   if (deleted || seq > 0) {
     recordTranscriptReplacementMutation(database, resolved.sessionId, preservedTranscriptUpdatedAt);
     if (rebuildSynchronously) {
-      reconcileSessionTranscriptIndexInTransaction(database.db, resolved.sessionId);
+      reconcileSessionTranscriptIndexInTransaction(database.db, resolved.sessionId, storage);
     } else {
       options.onProjectionReconcileNeeded?.();
       scheduleTranscriptProjectionReconcile(database, resolved.sessionId, true, options);
@@ -444,7 +472,7 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
     expectedEventJson: string;
     seq: number;
   }[],
-  options: { legacyTextStorage?: boolean } = {},
+  options: { legacyTextStorage?: boolean; legacyMetadataStorage?: boolean } = {},
 ): void {
   if (rows.length === 0) {
     return;
@@ -459,8 +487,12 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
         : prepareTranscriptPayload(database.db, eventJson),
     };
   });
+  const storage =
+    options.legacyTextStorage || options.legacyMetadataStorage
+      ? legacySessionTranscriptStorageForMigration(database.db, resolved.sessionId)
+      : readSessionTranscriptStorage(database.db, resolved.sessionId);
   const projectionUnchanged =
-    !sessionTranscriptIndexNeedsReconcile(database.db, resolved.sessionId) &&
+    !sessionTranscriptIndexNeedsReconcile(database.db, resolved.sessionId, storage) &&
     rewrites.every((row) =>
       transcriptRewritePreservesProjection(row.expectedEventJson, row.eventJson),
     );
@@ -510,7 +542,12 @@ export function rewriteSqliteTranscriptEventRowsInTransaction(
       // cannot inspect an older TEXT-only transcript table during this repair.
       markSessionTranscriptIndexDirtyInTransaction(database.db, resolved.sessionId);
     } else {
-      reconcileRewrittenTranscriptIndex(database, resolved.sessionId, rebuildSynchronously);
+      reconcileRewrittenTranscriptIndex(
+        database,
+        resolved.sessionId,
+        rebuildSynchronously,
+        storage,
+      );
     }
   }
 }
@@ -537,11 +574,12 @@ function reconcileRewrittenTranscriptIndex(
   database: OpenClawAgentDatabase,
   sessionId: string,
   rebuildSynchronously: boolean,
+  storage: SessionTranscriptStorage = readSessionTranscriptStorage(database.db, sessionId),
 ): void {
   // Dirty state revokes prepared claims and hides old rows; reconcile alone owns their deletion.
   markSessionTranscriptIndexDirtyInTransaction(database.db, sessionId);
   if (rebuildSynchronously) {
-    reconcileSessionTranscriptIndexInTransaction(database.db, sessionId);
+    reconcileSessionTranscriptIndexInTransaction(database.db, sessionId, storage);
   } else {
     scheduleTranscriptProjectionReconcile(database, sessionId, true, {});
   }
@@ -579,12 +617,13 @@ function readIdempotencyKeyOwner(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionId: string,
   idempotencyKey: string,
+  storage: SessionTranscriptStorage = readSessionTranscriptStorage(database.db, sessionId),
 ): { eventId: string; seq: number } | undefined {
   const db = getSessionKysely(database.db);
   const row = executeSqliteQueryTakeFirstSync(
     database.db,
     db
-      .selectFrom("transcript_event_identities")
+      .selectFrom(storage.identities().as("transcript_event_identities"))
       .select(["event_id", "seq"])
       .where("session_id", "=", sessionId)
       .where("message_idempotency_key", "=", idempotencyKey)

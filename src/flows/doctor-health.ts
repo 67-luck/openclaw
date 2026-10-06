@@ -427,6 +427,26 @@ async function runDoctorHealthFlowWithResult(
           exitCode = 1;
           return undefined;
         }
+        const { migrateDoctorTranscriptStorageDatabases } =
+          await import("../commands/doctor-transcript-storage-maintenance.js");
+        await measureGatewayBootstrapStep("doctor.transcript-storage", () =>
+          migrateDoctorTranscriptStorageDatabases({
+            env: process.env,
+            targets: (
+              admissionSchemas.agentDatabaseMigrationDiscovery?.discovery.targets ?? []
+            ).filter(
+              (target) =>
+                !recoveredPaths.has(target.path) &&
+                !recoveredPaths.has(target.realPath) &&
+                !agentDatabaseRefusals.some((refusal) =>
+                  refusal.paths.some(
+                    (pathname) => pathname === target.path || pathname === target.realPath,
+                  ),
+                ),
+            ),
+            log: effectiveRuntime.log,
+          }),
+        );
         const { assertDoctorMaintenanceReady } =
           await import("../commands/doctor-maintenance-inspection.js");
         const readiness = await measureGatewayBootstrapStep("doctor.maintenance-ready", () =>
