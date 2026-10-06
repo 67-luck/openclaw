@@ -78,7 +78,7 @@ export async function persistInlineAuthFailure(
       const prepared = await prepareAuthProfileWriteTransactionAsync(
         effectiveAgentDir,
         { env },
-        execution.assertCurrent,
+        () => execution.assertCurrent(),
       );
       transferred = true;
       return await persistPreparedInlineAuthFailure(
