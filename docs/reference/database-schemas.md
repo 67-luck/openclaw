@@ -13,7 +13,7 @@ OpenClaw stores control-plane state in the shared state database and agent data 
 
 Schema-version, integrity, canonical-index, and table-existence checks belong to open/admission and the migration owner after migrations; runtime paths must carry admitted schema facts with the handle, never re-query them, and use fresh `PRAGMA data_version` checks to observe foreign commits on the next unpinned read while preserving active SQLite snapshots. Existing per-call checks are legacy and must be migrated when touched.
 
-Shared-state and agent read-only connections reuse bounded prepared statements under their native connection lifecycle. Queries still execute on every read. Read admission shares one freshness check within its synchronous operation; schema-fact lookups reuse the admitted handle without checking again. Write transactions refresh after acquiring `BEGIN`, before consuming those facts. Explicit fresh checks always execute, even inside another read operation. A foreign commit compares the schema and user versions before retaining or replacing schema facts, preserving active SQLite snapshots. Closing or replacing the connection clears retained statements and facts.
+Shared-state and agent read-only connections reuse bounded prepared statements under their native connection lifecycle. Prepared-statement reuse alone does not retain query results. Read admission shares one freshness check within its synchronous operation; schema-fact lookups reuse the admitted handle without checking again. Write transactions refresh after acquiring `BEGIN`, before consuming those facts. Explicit fresh checks always execute, even inside another read operation. A foreign commit compares the schema and user versions before retaining or replacing schema facts, preserving active SQLite snapshots. Closing or replacing the connection clears retained statements and facts.
 
 Progress-card writes reuse the transaction's admitted table facts. The schema owner creates the lazy table only when it is absent, so warm writes preserve schema facts for that handle and its local siblings. First use after rollback or a foreign schema change still creates missing storage through normal write admission. Stored cards, revision tombstones, schema versions, and upgrade or downgrade behavior are unchanged.
 
@@ -36,7 +36,18 @@ Session row-facts reads reuse a canonical continuation's existing transaction
 instead of nesting a savepoint. Reads without an active transaction still open
 one so entry metadata, board presence, and transcript watermarks share a snapshot.
 
-Canonical main-key policy reads reuse the existing reader admission's value only within a current read operation. The connection owner tracks local SQL mutations, including raw and trigger-driven writes; its mutation revision, admitted schema facts, and observed foreign-commit version invalidate that value. Transactions, pinned snapshots, native mutation callbacks, and authorizer-controlled reads continue querying the policy. Continuation authority remains with canonical session admission.
+Exact entry and participant readers retain their last result at the admitted
+connection revision. Repeated reads reuse those facts until a local write,
+rollback, schema change, or observed foreign commit invalidates them. A new
+transaction probes freshness before reusing unchanged facts; nested savepoints
+share the transaction's probe. Unexpected transaction loss expires both facts
+and freshness.
+Returned entries and participant identities remain caller-owned. Transcript
+watermark reads select the hot generation and the retained cold or hot sequence
+in one statement; hot-only readers keep their existing meaning. These query
+changes preserve schemas, stored bytes, live authority, and update behavior.
+
+Canonical main-key policy reads reuse a connection-owned value at the current read revision, including within transactions and pinned snapshots. The connection owner tracks local SQL mutations, including raw and trigger-driven writes; its mutation revision, admitted schema facts, observed foreign-commit version, and pinned snapshot identity invalidate that value. Native mutation and transaction-control callbacks and authorizer-controlled reads continue querying the policy. Policy facts do not grant canonical admission or continuation authority.
 
 The Gateway does not schedule daily full-database scans. Admission-requested
 background checks stay limited to the requested agent database: `quick_check`

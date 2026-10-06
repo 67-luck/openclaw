@@ -24,6 +24,7 @@ import {
 import { readTranscriptRawDelta } from "./session-accessor.sqlite-delta.js";
 import { rotateTranscriptGenerationInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { readSessionTranscriptHotWatermark } from "./session-accessor.sqlite-transcript-watermark-read.js";
+import { readSessionTranscriptWatermarkInDatabase } from "./session-accessor.sqlite-transcript-watermark.js";
 
 function transcriptMessages(count: number): TranscriptEvent[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -82,6 +83,50 @@ describe("SQLite transcript watermark queries", () => {
     });
     expect(readSessionTranscriptWatermark(scope("second"))).toEqual(second);
     expect(readSessionTranscriptWatermark(scope("first"))).toEqual(rewritten);
+  });
+
+  it("reads hot, archived, and missing frontiers with one statement each", () => {
+    const database = openOpenClawAgentDatabase(scope("first"));
+    const first = readSessionTranscriptWatermark(scope("first"));
+    const second = readSessionTranscriptWatermark(scope("second"));
+    const db = getNodeSqliteKysely<DB>(database.db);
+    executeSqliteQuerySync(
+      database.db,
+      db.insertInto("session_transcript_cold_archives").values({
+        session_id: "second",
+        generation: "archive-generation",
+        archive_name: "synthetic-archive",
+        archive_sha256: "0".repeat(64),
+        archive_blob: null,
+        event_count: 42,
+        raw_bytes: 0,
+        archive_bytes: 0,
+        last_seq: 41,
+        archived_at: 1,
+        storage: "file",
+      }),
+    );
+    const queries = trackSqliteStatementExecutions(database.db, ["watermarks"], (sql) =>
+      isHotWatermarkQuery(sql) || sql.includes('from "session_transcript_cold_archives"')
+        ? "watermarks"
+        : null,
+    );
+    try {
+      for (const [sessionId, expected] of [
+        ["first", first],
+        ["second", { ...second, maxSeq: 41 }],
+        ["missing", { generation: null, maxSeq: null }],
+      ] as const) {
+        expect(
+          runSqliteDeferredTransactionSync(database.db, () =>
+            readSessionTranscriptWatermarkInDatabase(database, sessionId),
+          ),
+        ).toEqual(expected);
+      }
+      expect(queries.counts.watermarks).toBe(3);
+    } finally {
+      queries.restore();
+    }
   });
 
   it("reads raw page watermarks once without recompiling tiny or empty reads", () => {
