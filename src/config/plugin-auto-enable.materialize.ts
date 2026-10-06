@@ -19,6 +19,7 @@ import type {
   PluginAutoEnableResult,
 } from "./plugin-auto-enable.types.js";
 import { ensurePluginAllowlisted } from "./plugins-allowlist.js";
+import { copyConfigResolutionFactsThroughRewrite } from "./resolution-facts.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
 
 export function resolvePluginAutoEnableCandidateReason(
@@ -361,6 +362,14 @@ export function materializePluginAutoEnableCandidatesInternal(params: {
     changes,
     manifestRegistry: params.manifestRegistry,
   });
+
+  if (next !== params.config) {
+    // Auto-enable rebuilds the touched config sections, so the result reaches callers
+    // without the loader's unresolved-reference facts. Credential consumers (for example
+    // A2A peer tokens on the message CLI path) read those facts to tell an unset `${VAR}`
+    // from literal text, so carry them over for every path the rewrite left untouched.
+    copyConfigResolutionFactsThroughRewrite(params.config, next);
+  }
 
   const autoEnabledReasonRecord: Record<string, string[]> = Object.create(null);
   for (const [pluginId, reasons] of autoEnabledReasons) {
