@@ -5,6 +5,7 @@
 import type { AssistantMessage } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
 import { scanFenceSpans } from "../../packages/markdown-core/src/fences.js";
+import { EmbeddedBlockChunker } from "./embedded-agent-block-chunker.js";
 import { protectBreakIndex, scanUnbreakableSpans } from "./embedded-agent-link-spans.js";
 import {
   createAssistantVisibleStreamText,
@@ -602,6 +603,52 @@ describe("empty input handling", () => {
 });
 
 describe("embedded agent link spans", () => {
+  it("keeps a streamed link intact above the preferred size with contiguous source ranges", () => {
+    const target =
+      `https://outlook.office365.com/owa/?itemid=${"A".repeat(120)}` +
+      "%3D%3D&exvsurl=1&path=/calendar/item";
+    const link = `[invite](${target})`;
+    const text = `Purpose: customer context. ${link}\n\nWhat matters`;
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 20,
+      maxChars: 48,
+      hardMaxChars: 400,
+      breakPreference: "paragraph",
+    });
+    const delivered: Array<{
+      chunk: string;
+      sourceText: string;
+      sourceStart: number;
+      sourceEnd: number;
+    }> = [];
+    const emit = (
+      chunk: string,
+      options?: { sourceText: string; sourceStart: number; sourceEnd: number },
+    ) => {
+      if (!options) {
+        throw new Error("missing source metadata");
+      }
+      delivered.push({ chunk, ...options });
+    };
+
+    for (const character of text) {
+      chunker.append(character);
+      chunker.drain({ force: false, emit });
+    }
+    chunker.drain({ force: true, emit });
+
+    expect(delivered.some(({ chunk }) => chunk.includes(link))).toBe(true);
+    expect(delivered.map(({ sourceText }) => sourceText).join("")).toBe(text);
+    expect(delivered.map(({ sourceStart, sourceEnd }) => [sourceStart, sourceEnd])).toEqual(
+      delivered.map(({ sourceText }, index) => {
+        const sourceStart = delivered
+          .slice(0, index)
+          .reduce((length, item) => length + item.sourceText.length, 0);
+        return [sourceStart, sourceStart + sourceText.length];
+      }),
+    );
+  });
+
   it("protects a streamed Markdown destination before its first character arrives", () => {
     const text = `[${"a".repeat(30)}](`;
 
@@ -657,6 +704,35 @@ b](https://example.com/x) tail`;
     expect(scanUnbreakableSpans(text, [], 30)).toEqual([
       { start: text.indexOf("["), end: text.length, complete: true },
     ]);
+  });
+
+  it("recognizes a link after an unmatched backtick", () => {
+    const text = `Unmatched \` then [invite](https://example.com/${"a".repeat(40)})`;
+
+    expect(scanUnbreakableSpans(text, [], 160)).toEqual([
+      { start: text.indexOf("["), end: text.length, complete: true },
+    ]);
+  });
+
+  it("keeps a streamed long link intact after an unmatched backtick", () => {
+    const link = `[invite](https://example.com/${"a".repeat(80)})`;
+    const text = `Unmatched \` before ${link} after`;
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 10,
+      maxChars: 30,
+      hardMaxChars: 160,
+      breakPreference: "paragraph",
+    });
+    const chunks: string[] = [];
+    const emit = (chunk: string) => chunks.push(chunk);
+
+    for (const character of text) {
+      chunker.append(character);
+      chunker.drain({ force: false, emit });
+    }
+    chunker.drain({ force: true, emit });
+
+    expect(chunks.some((chunk) => chunk.includes(link))).toBe(true);
   });
 
   it("does not treat a label spanning a blank line as a link", () => {

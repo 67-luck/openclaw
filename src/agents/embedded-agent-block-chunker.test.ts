@@ -351,52 +351,6 @@ describe("EmbeddedBlockChunker", () => {
     },
   );
 
-  it("keeps a streamed link intact above the preferred size with contiguous source ranges", () => {
-    const target =
-      `https://outlook.office365.com/owa/?itemid=${"A".repeat(120)}` +
-      "%3D%3D&exvsurl=1&path=/calendar/item";
-    const link = `[invite](${target})`;
-    const text = `Purpose: customer context. ${link}\n\nWhat matters`;
-    const chunker = new EmbeddedBlockChunker({
-      minChars: 20,
-      maxChars: 48,
-      hardMaxChars: 400,
-      breakPreference: "paragraph",
-    });
-    const delivered: Array<{
-      chunk: string;
-      sourceText: string;
-      sourceStart: number;
-      sourceEnd: number;
-    }> = [];
-    const emit = (
-      chunk: string,
-      options?: { sourceText: string; sourceStart: number; sourceEnd: number },
-    ) => {
-      if (!options) {
-        throw new Error("missing source metadata");
-      }
-      delivered.push({ chunk, ...options });
-    };
-
-    for (const character of text) {
-      chunker.append(character);
-      chunker.drain({ force: false, emit });
-    }
-    chunker.drain({ force: true, emit });
-
-    expect(delivered.some(({ chunk }) => chunk.includes(link))).toBe(true);
-    expect(delivered.map(({ sourceText }) => sourceText).join("")).toBe(text);
-    expect(delivered.map(({ sourceStart, sourceEnd }) => [sourceStart, sourceEnd])).toEqual(
-      delivered.map(({ sourceText }, index) => {
-        const sourceStart = delivered
-          .slice(0, index)
-          .reduce((length, item) => length + item.sourceText.length, 0);
-        return [sourceStart, sourceStart + sourceText.length];
-      }),
-    );
-  });
-
   it("does not split a label while a streamed destination is still empty", () => {
     const link = `[${"a".repeat(30)}](https://example.com/x)`;
     const chunker = new EmbeddedBlockChunker({

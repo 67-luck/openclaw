@@ -108,10 +108,6 @@ function buildInlineCodeIndex(text: string, fenceSpans: FenceSpan[]) {
       openStart = -1;
     }
   }
-  if (openTicks > 0) {
-    spans.push({ start: openStart, end: text.length });
-  }
-
   return (index: number) => {
     if (!isSafeFenceBreak(fenceSpans, index)) {
       return true;

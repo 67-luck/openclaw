@@ -126,10 +126,12 @@ Block chunking is implemented by `EmbeddedBlockChunker`:
   render tables see the header and rows together. Larger tables split at row
   boundaries.
 
-Channel delivery sets `hardMaxChars` to the channel `textChunkLimit`.
-Configured `minChars` and `maxChars` are clamped within that ceiling. SDK
-callers that omit `hardMaxChars` retain the legacy behavior where `maxChars` is
-both the preferred size and the absolute ceiling.
+Default channel delivery sets `hardMaxChars` to the channel `textChunkLimit`.
+An explicitly configured `blockStreamingChunk.maxChars` remains an absolute
+ceiling, as does a caller override such as ACP's chunk maximum. Configured
+`minChars` and `maxChars` are clamped within the applicable ceiling. SDK callers
+that omit `hardMaxChars` retain the legacy behavior where `maxChars` is both the
+preferred size and the absolute ceiling.
 
 ## Coalescing (merge streamed blocks)
 
