@@ -30,6 +30,7 @@ import {
   composeReleaseAttemptJobs,
   releaseExecutionPlanSha256,
 } from "../../scripts/full-release-validation-policy.mjs";
+import { validateOpenClawCorePostpublishEvidence } from "../../scripts/openclaw-core-postpublish.mjs";
 import {
   readyArtifactName,
   validateReadyRelease,
@@ -133,6 +134,32 @@ function publicationRequest(ready = readyRelease(), resumeRunId = "") {
 }
 
 describe("release readiness contract", () => {
+  it("binds core postpublish evidence to the exact failed publisher", () => {
+    const expected = {
+      releaseTag: "v2026.9.2-beta.1",
+      npmDistTag: "beta",
+      parentRunId: 700,
+    };
+    const evidence = {
+      version: 1,
+      releaseVersion: "2026.9.2-beta.1",
+      releaseTag: expected.releaseTag,
+      npmDistTag: expected.npmDistTag,
+      releasePublishRunId: String(expected.parentRunId),
+      npmRegistrySignaturesVerified: true,
+      npmProvenanceAttestationMatched: true,
+      openclawNpmIntegrity: "sha512-synthetic",
+      openclawNpmTarball: "https://registry.npmjs.org/openclaw/-/openclaw-2026.9.2-beta.1.tgz",
+    };
+    expect(validateOpenClawCorePostpublishEvidence(evidence, expected)).toBe(evidence);
+    expect(() =>
+      validateOpenClawCorePostpublishEvidence(
+        { ...evidence, releasePublishRunId: "701" },
+        expected,
+      ),
+    ).toThrow("differs from the failed publisher");
+  });
+
   it.each([["v2026.9.2-beta.1", "beta"]])(
     "seals full-release inputs for %s on %s",
     (tag, channel) => {
@@ -328,6 +355,11 @@ function bridgeFixture(releaseRunAttempt = 1, conclusion = "success") {
     export function runReleaseToolingGh(args) {
       trace('gh', { args });
       if (args[1]?.startsWith('repos/${REPOSITORY}/commits/')) return JSON.stringify({ sha: '${SOURCE_SHA}' });
+      if (args[1]?.startsWith('repos/${REPOSITORY}/actions/runs/700/artifacts?')) return JSON.stringify({ total_count: 1, artifacts: [{
+        id: 710, name: 'openclaw-release-postpublish-evidence-' + (process.env.FIXTURE_RELEASE_TAG ?? 'v2026.9.2-beta.1'),
+        digest: 'sha256:${"c".repeat(64)}', size_in_bytes: 100, expired: false,
+        workflow_run: { id: 700, head_sha: '${TOOLING_SHA}' }
+      }] });
       if (args.length !== 2 || args[0] !== 'api' || args[1] !== 'repos/${REPOSITORY}/actions/runs/700') {
         throw new Error('unexpected GitHub operation: ' + JSON.stringify(args));
       }
@@ -345,6 +377,19 @@ function bridgeFixture(releaseRunAttempt = 1, conclusion = "success") {
     import { trace } from './fixture-trace.mjs';
     export async function verifyClawHubPostpublish({ event, parentStatePolicy }) {
       trace('public-verified', { runId: event.workflow_run.id, runAttempt: event.workflow_run.run_attempt, parentStatePolicy });
+    }
+  `,
+  );
+  writeFixtureFile(
+    scripts,
+    "openclaw-core-postpublish.mjs",
+    `
+    import { trace } from './fixture-trace.mjs';
+    export async function verifyOpenClawCorePostpublish({ parent }) {
+      trace('core-publication-verified', { runId: parent.id, runAttempt: parent.run_attempt });
+      if (process.env.FIXTURE_CORE_POSTPUBLISH_EVIDENCE !== 'true') {
+        throw new Error('fixture core npm postpublish evidence missing');
+      }
     }
   `,
   );
@@ -367,6 +412,7 @@ function bridgeFixture(releaseRunAttempt = 1, conclusion = "success") {
     RUNNER_TEMP: temporary,
     FIXTURE_TRACE: join(root, "trace.jsonl"),
     FIXTURE_FAILED_PACKAGE: "",
+    FIXTURE_CORE_POSTPUBLISH_EVIDENCE: "true",
   };
   return {
     root,
@@ -610,6 +656,9 @@ describe("release readiness executable handoff", () => {
       if (attempt === 1 && ["success", "failure"].includes(conclusion)) {
         expect(result.status, result.stderr).toBe(0);
         expect(fixture.trace().filter((entry) => entry.event !== "gh")).toEqual([
+          ...(conclusion === "failure"
+            ? [{ event: "core-publication-verified", runId: 700, runAttempt: 1 }]
+            : []),
           {
             event: "public-verified",
             runId: 700,
@@ -772,6 +821,12 @@ function finalizationFixture(overrides: Record<string, unknown> = {}) {
       state.writes += 1;
       writeFileSync(process.env.FIXTURE_GITHUB_STATE, JSON.stringify(state));
       console.log(JSON.stringify(release()));
+    } else if (args[0] === 'api' && args[1].startsWith('repos/${REPOSITORY}/actions/runs/700/artifacts?')) {
+      console.log(JSON.stringify({ total_count: 1, artifacts: [{
+        id: 710, name: 'openclaw-release-postpublish-evidence-' + process.env.FIXTURE_RELEASE_TAG,
+        digest: 'sha256:${"c".repeat(64)}', size_in_bytes: 100, expired: false,
+        workflow_run: { id: 700, head_sha: '${TOOLING_SHA}' }
+      }] }));
     } else if (args[0] === 'api' && args[1] === 'repos/${REPOSITORY}/actions/runs/700') {
       if (state.publicationReadbackUnavailable) process.exit(1);
       console.log(JSON.stringify({ id: 700, run_attempt: state.parentRunAttempt,
@@ -2152,6 +2207,18 @@ process.exitCode = 1;
         parentStatePolicy: "sealed-producer",
       },
     ]);
+    expect(fixture.trace().filter((entry) => entry.event === "core-publication-verified")).toEqual([
+      { event: "core-publication-verified", runId: 700, runAttempt: 1 },
+    ]);
+  });
+
+  it("refuses a failed parent without exact core npm postpublish evidence", () => {
+    const fixture = finalizationFixture({ parentConclusion: "failure" });
+    fixture.env.FIXTURE_CORE_POSTPUBLISH_EVIDENCE = "false";
+    const result = fixture.run("button", "v2026.9.2", "beta");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("fixture core npm postpublish evidence missing");
+    expect(fixture.state()).toMatchObject({ writes: 0, isDraft: true });
   });
 });
 
