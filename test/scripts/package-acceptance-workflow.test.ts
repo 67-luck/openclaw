@@ -2796,6 +2796,7 @@ type Workflow = {
     schedule?: Array<{ cron?: string }>;
     workflow_call?: {
       inputs?: Record<string, unknown>;
+      secrets?: Record<string, unknown>;
     };
     workflow_dispatch?: {
       inputs?: Record<string, unknown>;
@@ -10469,6 +10470,22 @@ describe("package artifact reuse", () => {
         names.indexOf("Hydrate live auth/profile inputs"),
       );
     }
+    const mediaLiveJob = workflowJob(LIVE_E2E_WORKFLOW, "validate_live_media_provider_suites");
+    const chromiumInstall = workflowStep(
+      mediaLiveJob,
+      "Install Chromium for A-K live browser tests",
+    );
+    expect(chromiumInstall).toMatchObject({
+      if: expect.stringContaining("matrix.suite_id == 'native-live-extensions-a-k'"),
+      run: "pnpm --dir ui exec playwright install --with-deps chromium",
+    });
+    const mediaStepNames = mediaLiveJob.steps?.map((step) => step.name) ?? [];
+    expect(mediaStepNames.indexOf(chromiumInstall.name)).toBeGreaterThan(
+      mediaStepNames.indexOf("Setup trusted release harness"),
+    );
+    expect(mediaStepNames.indexOf(chromiumInstall.name)).toBeLessThan(
+      mediaStepNames.indexOf("Hydrate live auth/profile inputs"),
+    );
     expect(
       workflowMatrixEntry(
         LIVE_E2E_WORKFLOW,
@@ -10716,7 +10733,7 @@ describe("package artifact reuse", () => {
     ).toHaveLength(2);
   });
 
-  it("pins DeepSeek live profiles to both current V4 model refs", () => {
+  it("pins DeepSeek live profiles to routes reachable from their release workspaces", () => {
     const deepSeek = workflowMatrixEntry(
       LIVE_E2E_WORKFLOW,
       "validate_live_provider_suites",
@@ -10734,8 +10751,38 @@ describe("package artifact reuse", () => {
       profiles: "full",
     });
     expect(openCodeGo.command).toContain(
-      "OPENCLAW_LIVE_GATEWAY_MODELS=opencode-go/deepseek-v4-flash,opencode-go/deepseek-v4-pro",
+      "OPENCLAW_LIVE_GATEWAY_MODELS=opencode-go/deepseek-v4-flash-vision-exp,opencode-go/glm-5.2,opencode-go/glm-5.3",
     );
+    expect(openCodeGo.command).not.toContain("opencode-go/deepseek-v4-flash,");
+    expect(openCodeGo.command).not.toContain("opencode-go/deepseek-v4-pro");
+  });
+
+  it("pins live provider lanes to current Kimi and OpenRouter capabilities", () => {
+    const plan = createReleaseWorkflowMatrixPlan({
+      releaseProfile: "full",
+      includeLiveSuites: true,
+    });
+    const openCodeModels = plan.liveModels.matrix.include.find(
+      (row: { providers: string }) => row.providers === "opencode-go",
+    );
+    const kimi = workflowMatrixEntry(
+      LIVE_E2E_WORKFLOW,
+      "validate_live_provider_suites",
+      "native-live-src-gateway-profiles-opencode-go-kimi",
+    );
+    const openRouter = workflowMatrixEntry(
+      LIVE_E2E_WORKFLOW,
+      "validate_live_provider_suites",
+      "native-live-src-gateway-profiles-openrouter",
+    );
+
+    expect(openCodeModels).toMatchObject({
+      models: "opencode-go/deepseek-v4-flash-vision-exp,opencode-go/glm-5.2,opencode-go/glm-5.3",
+      max_models: "3",
+    });
+    expect(kimi.command).toContain("OPENCLAW_LIVE_GATEWAY_MODELS=opencode-go/kimi-k2.7-code");
+    expect(kimi.command).not.toContain("kimi-k2.6");
+    expect(openRouter.command).toContain("OPENCLAW_LIVE_GATEWAY_THINKING=off");
   });
 
   it("pins OpenCode Go MiMo live profiles to both current V2.5 model refs", () => {
@@ -11182,6 +11229,21 @@ describe("package artifact reuse", () => {
     expect(
       workflowJob(SCHEDULED_LIVE_CHECKS_WORKFLOW, "weekly_upgrade_survivors").secrets,
     ).toBeUndefined();
+    for (const key of ["KIE_API_KEY", "NOVITA_API_KEY", "PIXVERSE_API_KEY"]) {
+      expect(readWorkflow(LIVE_E2E_WORKFLOW).on?.workflow_call?.secrets?.[key]).toEqual({
+        required: false,
+      });
+      for (const job of [
+        workflowJob(RELEASE_CHECKS_WORKFLOW, "live_repo_e2e_release_checks"),
+        workflowJob(SCHEDULED_LIVE_CHECKS_WORKFLOW, "live_and_openwebui_checks"),
+      ]) {
+        expect(job.secrets, key).toMatchObject({ [key]: "${{ secrets." + key + " }}" });
+      }
+      expect(
+        workflowJob(LIVE_E2E_WORKFLOW, "validate_live_media_provider_suites").env?.[key],
+        key,
+      ).toBe("${{ secrets." + key + " }}");
+    }
     const hydrationHome = tempDirs.make("live-auth-hydration-");
     const hydrated = spawnSync(
       "bash",
@@ -11190,9 +11252,9 @@ describe("package artifact reuse", () => {
         "--norc",
         "-euc",
         `bash "$1" "$2"
-unset DEEPSEEK_API_KEY DEEPINFRA_API_KEY
+unset DEEPSEEK_API_KEY DEEPINFRA_API_KEY KIE_API_KEY NOVITA_API_KEY PIXVERSE_API_KEY
 source "$2"
-printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
+printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY" "$KIE_API_KEY" "$NOVITA_API_KEY" "$PIXVERSE_API_KEY"`,
         "hydrate-live-auth",
         CI_HYDRATE_LIVE_AUTH_SCRIPT,
         resolve(hydrationHome, "live.profile"),
@@ -11205,11 +11267,16 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
           HOME: hydrationHome,
           DEEPSEEK_API_KEY: "deepseek-sentinel",
           DEEPINFRA_API_KEY: "deepinfra-sentinel",
+          KIE_API_KEY: "kie-sentinel",
+          NOVITA_API_KEY: "novita-sentinel",
+          PIXVERSE_API_KEY: "pixverse-sentinel",
         },
       },
     );
     expect(hydrated.status, hydrated.stderr).toBe(0);
-    expect(hydrated.stdout).toBe("deepseek-sentinel\ndeepinfra-sentinel\n");
+    expect(hydrated.stdout).toBe(
+      "deepseek-sentinel\ndeepinfra-sentinel\nkie-sentinel\nnovita-sentinel\npixverse-sentinel\n",
+    );
     expect(reusableWorkflow).toContain("FACTORY_API_KEY:\n        required: false");
     expect(packageAcceptanceWorkflow).toContain("FACTORY_API_KEY:\n        required: false");
     expectTextToIncludeAll(reusableWorkflow, [
