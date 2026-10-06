@@ -388,6 +388,26 @@ export function createChatSendDispatchErrorLifecycle(params: {
           ? context.chatRunState.runs.get(clientRunId)?.abortMarker
           : undefined);
       if (abortMarker) {
+        if (restartSafeAdmission && !params.isAgentRunStarted()) {
+          const terminalized = await terminalizeRestartSafeAdmission({
+            retryable: activeRunAbort.entry?.adapter.abortStopReason === "restart",
+            status: "killed",
+          }).catch((terminalizeError: unknown) => {
+            context.logGateway.warn(
+              `failed to release restart-safe chat admission after abort: ${formatForLog(
+                terminalizeError,
+              )}`,
+            );
+            return false;
+          });
+          if (terminalized) {
+            emitSessionsChanged(context, {
+              sessionKey,
+              ...(agentId ? { agentId } : {}),
+              reason: "chat.abort",
+            });
+          }
+        }
         const endedAt = chatAbortMarkerTimestampMs(abortMarker);
         setGatewayDedupeEntry({
           dedupe: context.dedupe,

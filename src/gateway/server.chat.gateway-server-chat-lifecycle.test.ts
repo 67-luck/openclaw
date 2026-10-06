@@ -5,6 +5,10 @@ import { describe, expect, test, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as acpSessionMetadata from "../acp/runtime/session-meta-readonly.js";
+import * as embeddedAgent from "../agents/embedded-agent.js";
+import { getReplyFromConfig } from "../auto-reply/reply/get-reply.js";
+import { loadSessionEntry } from "../config/sessions/session-accessor.js";
+import * as entryReads from "../config/sessions/session-entry-read-runtime.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import {
   claimAgentRunContext,
@@ -18,6 +22,7 @@ import { removeChatTestDirectory as removeTempDir } from "./session-test-directo
 import {
   connectOk,
   dispatchInboundMessageMock,
+  gatewayReplyMock,
   mockGetReplyFromConfigOnce,
   onceMessage,
   rpcReq,
@@ -43,6 +48,152 @@ const {
 } = gatewaySuite;
 
 describe("gateway server chat lifecycle", () => {
+  test("sessions.abort terminalizes a restart-safe chat before agent adoption", async () => {
+    await withMainSessionStore(async (dir) => {
+      const browser = new WebSocket(`ws://127.0.0.1:${port}`, {
+        headers: { origin: `http://127.0.0.1:${port}` },
+      });
+      trackConnectChallengeNonce(browser);
+      await new Promise<void>((resolve) => {
+        browser.once("open", resolve);
+      });
+      await connectOk(browser, {
+        client: {
+          id: GATEWAY_CLIENT_NAMES.CONTROL_UI,
+          version: "test",
+          platform: "web",
+          mode: GATEWAY_CLIENT_MODES.WEBCHAT,
+        },
+      });
+      expect(await rpcReq(browser, "sessions.subscribe", {})).toMatchObject({
+        ok: true,
+        payload: { subscribed: true },
+      });
+
+      const stoppedRunId = "restart-safe-pre-adoption-stop";
+      const successorRunId = "restart-safe-after-pre-adoption-stop";
+      const preparationEntered = createDeferred();
+      const releasePreparation = createDeferred();
+      const abortObserved = createDeferred();
+      const embeddedEntered = createDeferred();
+      const actualRead = entryReads.readSessionEntryInWorker;
+      let heldPreparation = false;
+      using readSpy = vi
+        .spyOn(entryReads, "readSessionEntryInWorker")
+        .mockImplementation(async (...args) => {
+          const entry = await actualRead(...args);
+          if (
+            !heldPreparation &&
+            entry?.restartRecoveryDeliveryRunId === stoppedRunId &&
+            entry.restartRecoveryDeliverySourceRunId === stoppedRunId
+          ) {
+            heldPreparation = true;
+            preparationEntered.resolve();
+            await releasePreparation.promise;
+          }
+          return entry;
+        });
+      void readSpy;
+      using execution = vi.spyOn(embeddedAgent, "runEmbeddedAgent").mockImplementation(async () => {
+        embeddedEntered.resolve();
+        return { payloads: [{ text: "Synthetic successor answer" }], meta: { durationMs: 0 } };
+      });
+      gatewayReplyMock.mockImplementation(async (...args) => {
+        const signal = args[1]?.abortSignal;
+        if (signal?.aborted) {
+          abortObserved.resolve();
+        } else {
+          signal?.addEventListener("abort", () => abortObserved.resolve(), { once: true });
+        }
+        return await getReplyFromConfig(...args);
+      });
+
+      const stoppedTerminal = onceMessage(
+        browser,
+        (frame) =>
+          frame.type === "event" &&
+          frame.event === "chat" &&
+          frame.payload?.runId === stoppedRunId &&
+          ["aborted", "error", "final"].includes(String(frame.payload?.state)),
+      );
+      void stoppedTerminal.catch(() => undefined);
+      try {
+        const accepted = await rpcReq(browser, "chat.send", {
+          sessionKey: "main",
+          message: "hold this restart-safe turn before adoption",
+          idempotencyKey: stoppedRunId,
+        });
+        expect(accepted).toMatchObject({
+          ok: true,
+          payload: { runId: stoppedRunId, status: "started" },
+        });
+        await preparationEntered.promise;
+
+        const stopping = rpcReq(browser, "sessions.abort", {
+          key: "main",
+          clearQueued: true,
+        });
+        await abortObserved.promise;
+        releasePreparation.resolve();
+        const aborted = await stopping;
+        expect(aborted).toMatchObject({
+          ok: true,
+          payload: { abortedRunId: stoppedRunId, status: "aborted" },
+        });
+        await stoppedTerminal;
+        await gatewaySuite.requestExecution.waitForCompletion(stoppedRunId);
+        expect(
+          await rpcReq(browser, "agent.wait", { runId: stoppedRunId, timeoutMs: 0 }),
+        ).toMatchObject({ ok: true, payload: { runId: stoppedRunId, status: "error" } });
+        const stoppedEntry = loadSessionEntry({
+          agentId: "main",
+          sessionKey: "main",
+          storePath: path.join(dir, "sessions.json"),
+          readConsistency: "latest",
+        });
+
+        const successorTerminal = onceMessage(
+          browser,
+          (frame) =>
+            frame.type === "event" &&
+            frame.event === "chat" &&
+            frame.payload?.runId === successorRunId &&
+            ["aborted", "error", "final"].includes(String(frame.payload?.state)),
+        );
+        void successorTerminal.catch(() => undefined);
+        const successor = await rpcReq(browser, "chat.send", {
+          sessionKey: "main",
+          message: "run after the stopped pre-adoption turn",
+          idempotencyKey: successorRunId,
+        });
+        expect(successor).toMatchObject({
+          ok: true,
+          payload: { runId: successorRunId, status: "started" },
+        });
+        const terminal = await successorTerminal;
+        expect(terminal.payload).toMatchObject({ runId: successorRunId, state: "final" });
+        await embeddedEntered.promise;
+        expect(execution).toHaveBeenCalledOnce();
+        expect(stoppedEntry).toMatchObject({
+          status: "killed",
+          abortedLastRun: true,
+          lastRunId: stoppedRunId,
+          restartRecoveryTerminalRunIds: expect.arrayContaining([stoppedRunId]),
+        });
+        expect(stoppedEntry?.restartRecoveryDeliveryRunId).toBeUndefined();
+      } finally {
+        releasePreparation.resolve();
+        gatewayReplyMock.mockReset();
+        await Promise.allSettled([
+          stoppedTerminal,
+          gatewaySuite.requestExecution.waitForCompletion(stoppedRunId),
+          gatewaySuite.requestExecution.waitForCompletion(successorRunId),
+        ]);
+        browser.close();
+      }
+    });
+  });
+
   test("chat.send replays cancellation when admission fails after its source is stopped", async () => {
     await withMainSessionStore(async () => {
       const browser = new WebSocket(`ws://127.0.0.1:${port}`, {

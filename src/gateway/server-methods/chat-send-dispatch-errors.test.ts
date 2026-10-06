@@ -97,7 +97,6 @@ describe("handleChatSendSetupError", () => {
       activeRunAbort.cleanup();
     }
   });
-
 });
 
 describe("createChatSendDispatchErrorLifecycle", () => {
@@ -483,7 +482,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
       const broadcast = vi.fn();
       const dedupe = new Map();
       const warn = vi.fn();
-      const terminalizeRestartSafeAdmission = vi.fn();
+      const terminalizeRestartSafeAdmission = vi.fn().mockResolvedValue(false);
       const unsubscribe = onAgentRuntimeEvent((event) => {
         if (event.runId !== runId || event.stream !== "lifecycle" || event.data.phase !== "end") {
           return;
@@ -557,7 +556,10 @@ describe("createChatSendDispatchErrorLifecycle", () => {
           expect.anything(),
         );
         expect(rpcSourceTesting.has(runId)).toBe(false);
-        expect(terminalizeRestartSafeAdmission).not.toHaveBeenCalled();
+        expect(terminalizeRestartSafeAdmission).toHaveBeenCalledExactlyOnceWith({
+          retryable: false,
+          status: "killed",
+        });
       } finally {
         unsubscribe();
         registration.cleanup();
