@@ -10,7 +10,6 @@ import {
   EMBEDDED_RUN_COMPLETION_CLAIMS,
   EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS,
   activeNativeAttempts,
-  captureEmbeddedRunCleanupOwners,
   getEmbeddedRunAttachment,
   type EmbeddedAgentQueueHandle,
   waitForEmbeddedRunOwnerSettlement,
@@ -25,7 +24,6 @@ async function drainActiveEmbeddedRuns(): Promise<void> {
     }
     return { handle, attachment };
   });
-  const cleanupOwners = captureEmbeddedRunCleanupOwners();
   const failures: unknown[] = [];
 
   // Controller Stop owns attached attempts; only detached attempts need a direct abort.
@@ -46,16 +44,6 @@ async function drainActiveEmbeddedRuns(): Promise<void> {
       failures.push(error);
     }),
   );
-  for (const owner of cleanupOwners) {
-    settlements.push(
-      owner.settlement.catch((error: unknown) => {
-        failures.push(error);
-        // Fulfilled receipts retire themselves. Failed receipts stay visible until
-        // this teardown observer records the failure; pending receipts remain owned.
-        owner.acknowledge();
-      }),
-    );
-  }
   if (
     !(await waitForSessionControllerSettlement(
       Promise.all(settlements).then(() => undefined),

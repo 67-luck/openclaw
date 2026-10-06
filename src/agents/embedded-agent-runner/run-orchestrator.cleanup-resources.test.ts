@@ -22,7 +22,6 @@ import { createAgentCleanupScope, runOwnedAgentCleanup } from "../run-cleanup-ti
 import { SessionManager } from "../sessions/session-manager.js";
 import { immediateEnqueue } from "../test-helpers/embedded-agent-runner-e2e-fixtures.js";
 import { runEmbeddedAgent } from "./run-orchestrator.js";
-import { captureEmbeddedRunCleanupOwners, type EmbeddedRunCleanupOwner } from "./run-state.js";
 import type { RunEmbeddedAgentInternalParams } from "./run/internal-params.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
 
@@ -44,6 +43,7 @@ it.each([
   "required-timeout",
   "ordinary-error",
   "parent-cancel",
+  "dispose-failure",
 ] as const)(
   "keeps candidate registration and cleanup within execution authority for %s",
   async (mode) => {
@@ -55,7 +55,12 @@ it.each([
     const records = new Map<string, Registration>();
     Object.defineProperty(globalThis, fixtureKey, {
       configurable: true,
-      value: { records, next: 0, deferred: createDeferred },
+      value: {
+        records,
+        next: 0,
+        deferred: createDeferred,
+        failDispose: mode === "dispose-failure",
+      },
     });
     const cleanupStarted = createDeferred();
     const finishCleanup = createDeferred();
@@ -74,7 +79,7 @@ it.each([
     let workSignal: AbortSignal | undefined;
     let logical: Promise<EmbeddedAgentRunResult> | undefined;
     let actualCleanup: Promise<void> | undefined;
-    let cleanupOwner: EmbeddedRunCleanupOwner | undefined;
+    let cleanupSettlement: Promise<void> | undefined;
     let admission: ReturnType<typeof prepareSystemAgentRunAdmission> | undefined;
     const cliResources = mode === "parent-cancel" ? new CliPluginInvocationResources() : undefined;
     let parentSignal: AbortSignal | undefined;
@@ -105,6 +110,7 @@ it.each([
           record.disposed++;
           db.close();
           record.close.resolve();
+          if (state.failDispose) throw new Error("candidate dispose failure");
         } });
       } };`,
       );
@@ -150,6 +156,7 @@ it.each([
         },
       };
       loop.mockImplementation(async (_refresh, input) => {
+        cleanupSettlement = input.runParams.runCleanupSettlement;
         const prepared = input.preparedModelRuntime;
         if (!prepared) {
           throw new Error("Runner did not supply its prepared candidate runtime");
@@ -291,7 +298,7 @@ it.each([
           throw new Error("Run completed before cleanup started");
         }),
       ]);
-      if (mode === "ordinary-error") {
+      if (mode === "ordinary-error" || mode === "dispose-failure") {
         finishCleanup.resolve();
       }
       if (mode === "required-timeout" || mode === "ordinary-error") {
@@ -307,16 +314,16 @@ it.each([
         throw new Error("Candidate registry source was not selected");
       }
       admission.close();
-      cleanupOwner = captureEmbeddedRunCleanupOwners().find((owner) => owner.runId === runId);
-      expect(cleanupOwner).toMatchObject({ runId, sessionId: runId });
-      if (!cleanupOwner) {
-        throw new Error("Generation cleanup was not retained after logical completion");
+      const generationCleanup = cleanupSettlement;
+      expect(generationCleanup).toBeInstanceOf(Promise);
+      if (!generationCleanup) {
+        throw new Error("Attempt did not receive its generation cleanup settlement");
       }
       signalAbortedAtLogicalResult = workSignal?.aborted;
       expect.soft(selected.disposed).toBe(0);
       expect.soft(signalAbortedAtLogicalResult ?? false).toBe(false);
-      expect(cleanupScope.outcome).toBe("uncertain");
-      if (mode !== "ordinary-error") {
+      expect(cleanupScope.outcome).toBe(mode === "dispose-failure" ? "closed" : "uncertain");
+      if (mode !== "ordinary-error" && mode !== "dispose-failure") {
         expect(
           warnings.some((warning) => warning.includes("step=candidate-fixture timeoutMs=25")),
         ).toBe(true);
@@ -352,10 +359,20 @@ it.each([
       if (cliResources) {
         expect(parentClosed).toBe(true);
       }
-      await cleanupOwner.settlement;
-      expect(captureEmbeddedRunCleanupOwners().some((owner) => owner.runId === runId)).toBe(false);
+      if (mode === "dispose-failure") {
+        await expect(generationCleanup).rejects.toThrow(
+          "Prepared plugin generation cleanup failed",
+        );
+        const embeddedRunState = Reflect.get(
+          globalThis,
+          Symbol.for("openclaw.embeddedRunState"),
+        ) as { pendingCleanupOwners?: Set<{ runId: string }> } | undefined;
+        expect(embeddedRunState?.pendingCleanupOwners).toBeUndefined();
+      } else {
+        await generationCleanup;
+      }
       expect(selected.disposed).toBe(1);
-      expect(cleanupScope.outcome).toBe("uncertain");
+      expect(cleanupScope.outcome).toBe(mode === "dispose-failure" ? "closed" : "uncertain");
       if (mode === "late-failure") {
         expect(
           warnings.some(

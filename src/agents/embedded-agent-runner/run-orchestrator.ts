@@ -78,7 +78,6 @@ import { resolveGlobalLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { createEmbeddedAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
 import { runPreparedEmbeddedLoop } from "./run-loop.js";
-import { registerEmbeddedRunCleanupSettlement } from "./run-state.js";
 import { createEmbeddedRunStageSummaryEmitter } from "./run/attempt-stage-timing.js";
 import { withExecutionPhaseDiagnostics } from "./run/execution-phase-diagnostics.js";
 import { buildEmbeddedFailureSuspension } from "./run/failure-suspension.js";
@@ -346,10 +345,10 @@ async function runEmbeddedAgentInternal(
         };
         startupStages.mark("harness-selection");
         const callerResult = createDeferredCore<EmbeddedAgentRunResult>();
-        const generationCleanupSettlement = registerEmbeddedRunCleanupSettlement({
-          runId: params.runId,
-          sessionId: params.sessionId,
-        });
+        const generationCleanupSettlement = createDeferredCore<void>();
+        // Cleanup can outlive every attachment consumer; observe a late failure without
+        // retaining the generation solely so a process-global test owner can acknowledge it.
+        void generationCleanupSettlement.promise.catch(() => {});
         const trackOwner = captureAsyncWorkTracker();
         const parentSignal = getAsyncWorkSignal();
         const work = new AsyncWorkScope();

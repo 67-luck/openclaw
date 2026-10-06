@@ -10,7 +10,7 @@ export function responsesProducerFixtureFiles(repoRoot: string): Record<string, 
 import { expect, it } from "vitest";
 import { prepareSystemAgentRunAdmission } from ${source("agents/admitted-run-context.ts")};
 import { runEmbeddedAgent } from ${source("agents/embedded-agent-runner/run.ts")};
-import { captureEmbeddedRunCleanupOwners } from ${source("agents/embedded-agent-runner/run-state.ts")};
+import { getActiveNativeAttempt, getEmbeddedRunAttachment } from ${source("agents/embedded-agent-runner/run-state.ts")};
 import { SessionManager } from ${source("agents/sessions/session-manager.ts")};
 
 const probeKey = Symbol.for(${JSON.stringify(NON_ISOLATED_RESPONSES_PROBE_KEY)});
@@ -156,16 +156,18 @@ it("leaves a real Responses producer for file teardown", async () => {
       }
     }),
   ]);
-  const cleanupOwner = captureEmbeddedRunCleanupOwners().find(owner => owner.runId === runId);
-  if (!cleanupOwner) {
-    throw new Error("Responses teardown fixture did not retain generation cleanup");
+  // The held response keeps the native attempt attached until teardown cancels it.
+  expect(probe.runSettled).toBe(false);
+  const handle = getActiveNativeAttempt(sessionId);
+  const cleanupSettlement = handle && getEmbeddedRunAttachment(handle)?.runCleanupSettlement;
+  if (!cleanupSettlement) {
+    throw new Error("Responses teardown fixture did not attach generation cleanup");
   }
-  const cleanupSettled = cleanupOwner.settlement.then(
+  const cleanupSettled = cleanupSettlement.then(
     () => { probe.generationCleanupSettled = true; },
     (error) => { probe.generationCleanupFailure = String(error); },
   );
   Object.assign(probe, { cleanupSettled });
-  expect(probe.runSettled).toBe(false);
   expect(probe.connectionClosed).toBe(false);
 });
 `,
