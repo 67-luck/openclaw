@@ -210,7 +210,6 @@ export const skillsHandlers: GatewayRequestHandlers = {
         {
           config: cfg,
           agentId,
-          agentSkillFilter: "ignore",
         },
       );
       for (const bin of collectSkillBins(entries)) {

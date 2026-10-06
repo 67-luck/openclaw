@@ -71,7 +71,6 @@ export const AgentDefaultsBaseSchema = z.strictObject({
   modelPolicy: AgentModelPolicySchema.optional(),
   workspace: z.string().optional(),
   cwd: z.string().optional(),
-  skills: z.array(z.string()).optional(),
   silentReply: SilentReplyPolicyConfigSchema.optional(),
   repoRoot: z.string().optional(),
   skipBootstrap: z.boolean().optional(),

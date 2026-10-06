@@ -179,7 +179,7 @@ export async function startXAccount(ctx: ChannelGatewayContext<ResolvedXAccount>
           accountId: account.accountId,
           peer: { kind: "group", id: post.conversation_id },
         });
-        const blocked = resolveXGuestContainmentError(currentCfg, guestRoute.agentId);
+        const blocked = resolveXGuestContainmentError(currentCfg, guestRoute.agentId, core);
         const assertGuestCurrent = () => {
           assertCurrent();
           lifecycle.abortSignal.throwIfAborted();
@@ -326,6 +326,7 @@ export async function startXAccount(ctx: ChannelGatewayContext<ResolvedXAccount>
         ctxPayload,
         ...bindIngressLifecycleToReplyOptions(lifecycle),
         replyOptions: {
+          ...(guest ? { skillFilter: [] } : {}),
           onVisibleWorkSessions: (visible) => {
             if (!guest) {
               sessions.push(...visible);
