@@ -4,6 +4,7 @@ import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { prepareUpdateCandidateRehearsal } from "../infra/update-candidate-rehearsal.js";
+import { materializeUpdateCandidateStateWorker } from "../infra/update-candidate-state.test-support.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
@@ -21,6 +22,7 @@ it("admits real producer plugin host, dependency and basename links without trav
     const locator = path.join(root, "example");
     const modules = path.join(root, "modules");
     await fs.mkdir(candidate);
+    await materializeUpdateCandidateStateWorker(candidate);
     await fs.mkdir(plugin);
     await fs.symlink(plugin, locator, "dir");
     await fs.mkdir(path.join(modules, "dependency"), { recursive: true });

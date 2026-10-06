@@ -12,6 +12,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { DashboardMessageReadAdmission } from "../../gateway/message-action-turn-capability.js";
 import type { ExtractedFileImage } from "../../media-understanding/extracted-file-images.js";
 import type { PluginCommandReplyOptions } from "../../plugins/plugin-command-dispatch-contract.js";
+import type { PreparedTtsPreferences } from "../../tts/tts-preferences.js";
 import { getCommandOwnerAuthority } from "../command-owner-authority.js";
 import type { GetReplyOptions } from "../get-reply-options.types.js";
 import type { ReplyPayload } from "../reply-payload.js";
@@ -51,6 +52,7 @@ type InternalReplySessionOptions = {
   getProviderLoginConfig?: () => OpenClawConfig;
   /** Invocation-owned conversation facts; never execution or sender authority. */
   replyConversation?: PreparedReplyConversation;
+  preparedTtsPreferences?: PreparedTtsPreferences;
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
   /** Internal delivery owner that stages reply media using current Gateway session policy. */
   mediaNormalizationOwner?: "gateway";
@@ -73,6 +75,8 @@ type InternalReplySessionOptions = {
   /** Defers the child-completion wake until the visible waiting status is delivered. */
   onPendingContinuation?: (settlement?: PendingContinuationSettlement) => void;
   onSessionPrepared?: (binding: ReplySessionBinding) => void;
+  /** Observes one transcript-start reader preparation; completion cannot control the run. */
+  onTranscriptStartPreparation?: () => (() => void) | undefined;
   onSessionMetadataChanges?: (changes: CommandSessionMetadataChange[]) => void;
   /** Publishes each executing turn's preferences without persisting them to its session. */
   onRunVerbosityResolved?: (settings: ReplyRunVerbosity) => void;

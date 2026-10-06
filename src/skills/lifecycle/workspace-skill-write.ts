@@ -16,11 +16,6 @@ type WorkspaceSkillSupportFileRestoration = {
   proposedContentHash: string;
 };
 
-type SkillsRootWriteTargetParams = {
-  skillsRoot: string;
-  filePath: string;
-};
-
 type PreparedWorkspaceSkillFileMutation = {
   filePath: string;
   rootDir: string;
@@ -32,8 +27,6 @@ type PreparedWorkspaceSkillFileMutation = {
 
 export type PreparedWorkspaceSkillMutation = {
   mode: "create" | "update";
-  skillsRoot: string;
-  skillDir: string;
   skillFile: PreparedWorkspaceSkillFileMutation;
   supportFiles: Array<PreparedWorkspaceSkillFileMutation & { path: string }>;
 };
@@ -115,17 +108,11 @@ export async function prepareWorkspaceSkillRestoration(params: {
     proposedContentHash: file.proposedContentHash,
   }));
   assertWorkspaceSkillSupportPathSetIsFileOnly(supportFiles.map((file) => file.path));
-  const skillTarget = await resolveSkillsRootWriteTarget({
-    skillsRoot: params.skillsRoot,
-    filePath: params.skillFile,
-  });
+  const skillTarget = resolveSkillsRootWriteTarget(params.skillsRoot, params.skillFile);
   const preparedSupportFiles: PreparedWorkspaceSkillMutation["supportFiles"] = [];
   for (const file of supportFiles) {
     const filePath = path.join(params.skillDir, ...file.path.split("/"));
-    const target = await resolveSkillsRootWriteTarget({
-      skillsRoot: params.skillsRoot,
-      filePath,
-    });
+    const target = resolveSkillsRootWriteTarget(params.skillsRoot, filePath);
     preparedSupportFiles.push({
       path: file.path,
       filePath,
@@ -137,8 +124,6 @@ export async function prepareWorkspaceSkillRestoration(params: {
   }
   return {
     mode: params.mode,
-    skillsRoot: params.skillsRoot,
-    skillDir: params.skillDir,
     skillFile: {
       filePath: params.skillFile,
       ...skillTarget,
@@ -214,13 +199,10 @@ async function readPreparedWorkspaceFile(
   return read.buffer.toString("utf8");
 }
 
-async function resolveSkillsRootWriteTarget(
-  params: SkillsRootWriteTargetParams,
-): Promise<{ rootDir: string; relativePath: string }> {
-  assertInsideSkillsRoot(params.skillsRoot, params.filePath, "skill file");
-  const skillsRoot = path.resolve(params.skillsRoot);
-  const filePath = path.resolve(params.filePath);
-  return { rootDir: skillsRoot, relativePath: path.relative(skillsRoot, filePath) };
+function resolveSkillsRootWriteTarget(skillsRoot: string, filePath: string) {
+  assertInsideSkillsRoot(skillsRoot, filePath, "skill file");
+  const rootDir = path.resolve(skillsRoot);
+  return { rootDir, relativePath: path.relative(rootDir, path.resolve(filePath)) };
 }
 
 export function assertInsideSkillsRoot(

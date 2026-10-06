@@ -446,7 +446,7 @@ describe("doctor lint state isolation", () => {
         { prefix: "openclaw-doctor-personal-skills-", layout },
         async (state) => {
           await state.writeConfig({
-            agents: { entries: { main: { default: true, workspace: state.workspaceDir } } },
+            agents: { entries: { main: { workspace: state.workspaceDir } } },
             memory: { search: { enabled: false } },
           });
           const personal = path.join(state.home, ".agents", "skills", "personal-probe");

@@ -8,6 +8,7 @@ import ai.openclaw.app.SessionCatalog
 import ai.openclaw.app.SessionCatalogEntry
 import ai.openclaw.app.SessionCatalogState
 import ai.openclaw.app.chat.ChatSessionEntry
+import ai.openclaw.app.chat.SessionSnooze
 import ai.openclaw.app.defaultSidebarPageOrder
 import ai.openclaw.app.defaultSidebarVisiblePages
 import ai.openclaw.app.i18n.nativeString
@@ -196,10 +197,11 @@ internal data class SidebarSessionPresentation(
 internal fun sidebarRecentSessions(
   sessions: List<ChatSessionEntry>,
   currentSessionKey: String = "",
+  nowMs: Long = System.currentTimeMillis(),
 ): List<ChatSessionEntry> =
   sessions
     .asSequence()
-    .filter { isSessionVisibleInNavigation(it, currentSessionKey) }
+    .filter { isSessionVisibleInNavigation(it, currentSessionKey, nowMs) }
     .sortedWith(
       compareByDescending<ChatSessionEntry> { it.pinned == true }
         .thenByDescending { it.lastActivityAt ?: it.updatedAtMs ?: 0L }
@@ -212,8 +214,9 @@ internal fun sidebarSessionPresentation(
   expanded: Boolean,
   excludedSessionKeys: Set<String> = emptySet(),
   currentSessionKey: String = "",
+  nowMs: Long = System.currentTimeMillis(),
 ): SidebarSessionPresentation {
-  val activeSessions = sidebarRecentSessions(sessions, currentSessionKey)
+  val activeSessions = sidebarRecentSessions(sessions, currentSessionKey, nowMs)
   val pinned = activeSessions.filter { it.pinned == true }
   val recent =
     activeSessions.filter { session ->
@@ -425,6 +428,7 @@ internal fun OpenClawSidebar(
   rowHostBand: IntRect? = null,
 ) {
   val palette = sidebarPalette(ClawTheme.colors)
+  var sessionNowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
   val scope = rememberCoroutineScope()
   val lifecycle = LocalLifecycleOwner.current.lifecycle
   val scrollState = rememberScrollState()
@@ -485,6 +489,7 @@ internal fun OpenClawSidebar(
       expanded = sessionsExpanded,
       excludedSessionKeys = catalogSessionKeys,
       currentSessionKey = activeSessionKey,
+      nowMs = sessionNowMs,
     )
   val pinnedSessions = recentPresentation.pinned
   val recentSections = recentPresentation.recentSections
@@ -579,12 +584,21 @@ internal fun OpenClawSidebar(
       query = query,
       archived = false,
     )
+  val nextWakeMs =
+    listOfNotNull(
+      SessionSnooze.nextWakeMs(sessions, sessionNowMs),
+      SessionSnooze.nextWakeMs(searchState.entries, sessionNowMs),
+    ).minOrNull()
+  LaunchedEffect(nextWakeMs) {
+    nextWakeMs?.let { sessionNowMs = awaitSessionStatusExpiry(it) }
+  }
   val searchResults =
     resolveSessionBrowserEntries(
       entries = searchState.entries,
       currentSessionKey = activeSessionKey,
       filter = SessionFilter.Recent,
       recentFirst = true,
+      nowMs = sessionNowMs,
     )
 
   Column(
@@ -866,7 +880,7 @@ internal fun OpenClawSidebar(
 
           SidebarCollapsibleHeader(
             label = nativeString("Recent"),
-            attention = if (recentExpanded) null else attentionFor(sidebarRecentSessions(sessions, activeSessionKey).filter { it.pinned != true && it.key !in catalogSessionKeys }.map { it.key }),
+            attention = if (recentExpanded) null else attentionFor(sidebarRecentSessions(sessions, activeSessionKey, sessionNowMs).filter { it.pinned != true && it.key !in catalogSessionKeys }.map { it.key }),
             expanded = recentExpanded,
             palette = palette,
             onClick = { recentExpanded = !recentExpanded },

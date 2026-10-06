@@ -22,20 +22,6 @@ function formatTimestampWithAge(valueMs?: number) {
   return `${timestamp} (${formatTimeAgo(Date.now() - valueMs, { fallback: "n/a" })})`;
 }
 
-function loadSubagentSessionEntry(params: SubagentsCommandContext["params"], childKey: string) {
-  const parsed = parseAgentSessionKey(childKey);
-  const storePath = resolveSessionStorePathCore(params.cfg.session?.store, {
-    agentId: parsed?.agentId,
-  });
-  return {
-    entry: loadSessionEntryReadOnly({
-      storePath,
-      sessionKey: childKey,
-      clone: false,
-    }),
-  };
-}
-
 export function handleSubagentsInfoAction(ctx: SubagentsCommandContext): CommandHandlerResult {
   const { params, readContext, restTokens } = ctx;
   const target = restTokens[0];
@@ -49,7 +35,13 @@ export function handleSubagentsInfoAction(ctx: SubagentsCommandContext): Command
   }
 
   const run = targetResolution.entry;
-  const { entry: sessionEntry } = loadSubagentSessionEntry(params, run.childSessionKey);
+  const sessionEntry = loadSessionEntryReadOnly({
+    storePath: resolveSessionStorePathCore(params.cfg.session?.store, {
+      agentId: parseAgentSessionKey(run.childSessionKey)?.agentId,
+    }),
+    sessionKey: run.childSessionKey,
+    clone: false,
+  });
   const runtime =
     run.execution.startedAt && Number.isFinite(run.execution.startedAt)
       ? (formatDurationCompact((run.execution.endedAt ?? Date.now()) - run.execution.startedAt) ??
@@ -64,7 +56,6 @@ export function handleSubagentsInfoAction(ctx: SubagentsCommandContext): Command
   const taskSummaryText = sanitizeRunStatusText(run.delivery?.lastError, {
     errorContext: true,
   });
-  const taskErrorText = sanitizeRunStatusText(run.execution.outcome?.error, { errorContext: true });
 
   const lines = [
     "ℹ️ Subagent info",
@@ -84,7 +75,7 @@ export function handleSubagentsInfoAction(ctx: SubagentsCommandContext): Command
     `Outcome: ${outcome}`,
     progressText ? `Progress: ${progressText}` : undefined,
     taskSummaryText ? `Task summary: ${taskSummaryText}` : undefined,
-    taskErrorText ? `Task error: ${taskErrorText}` : undefined,
+    outcomeError ? `Task error: ${outcomeError}` : undefined,
     run.delivery ? `Delivery: ${run.delivery.status}` : undefined,
     run.delivery?.discardReason ? `Delivery disposition: ${run.delivery.discardReason}` : undefined,
     run.delivery?.discardedAt

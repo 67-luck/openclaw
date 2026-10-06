@@ -1590,7 +1590,8 @@
                       "channels/telegram/troubleshooting"
                     ]
                   },
-                  "channels/whatsapp"
+                  "channels/whatsapp",
+                  "channels/x"
                 ]
               },
               {
@@ -1674,6 +1675,7 @@
                 "pages": [
                   "concepts/agent-workspace",
                   "concepts/managed-worktrees",
+                  "concepts/storage-locations",
                   "concepts/oauth",
                   "start/bootstrapping",
                   "concepts/experimental-features"
@@ -1767,6 +1769,7 @@
               {
                 "group": "Plugin guides",
                 "pages": [
+                  "plugins/agentsapi",
                   {
                     "group": "Codex",
                     "pages": [
@@ -1848,6 +1851,7 @@
                     "pages": [
                       "plugins/admin-http-rpc",
                       "plugins/beam",
+                      "plugins/cloudflare",
                       "plugins/geolocation",
                       "plugins/logbook",
                       "plugins/oc-path",
@@ -2532,6 +2536,7 @@
                           "gateway/cloud-workers/session-lifecycle",
                           "gateway/cloud-workers/desktop",
                           "gateway/cloud-workers/security-model",
+                          "gateway/cloud-workers/native-inference",
                           "gateway/cloud-workers/troubleshooting"
                         ]
                       },
@@ -2772,6 +2777,7 @@
                       "cli/openclaw",
                       "cli/reset",
                       "cli/setup",
+                      "cli/storage",
                       "cli/uninstall",
                       "cli/update",
                       {
@@ -3139,7 +3145,8 @@
                       "reference/session-management-compaction/maintenance",
                       "reference/session-management-compaction/schema",
                       "reference/session-management-compaction/compaction",
-                      "reference/session-management-compaction/housekeeping"
+                      "reference/session-management-compaction/housekeeping",
+                      "reference/session-management-compaction/resident-history"
                     ]
                   },
                   "reference/transcript-hygiene",
@@ -3187,6 +3194,8 @@
                 "group": "Release notes",
                 "pages": [
                   "releases/index",
+                  "releases/2026.9.8",
+                  "releases/2026.9.7",
                   "releases/2026.9.6",
                   "releases/2026.9.5",
                   "releases/2026.9.4",

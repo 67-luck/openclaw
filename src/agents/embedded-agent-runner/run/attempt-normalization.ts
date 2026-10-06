@@ -1,3 +1,4 @@
+import { isSqliteTranscriptMutationConflict } from "../../../config/sessions/session-mutation-conflict-error.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
 import { formatAssistantErrorText } from "../../embedded-agent-helpers.js";
 import { normalizeUsage, type UsageLike } from "../../usage.js";
@@ -23,7 +24,7 @@ import {
 import {
   MAX_CONSECUTIVE_IDLE_TIMEOUTS_BEFORE_OUTPUT,
   stepIdleTimeoutBreaker,
-  type createIdleTimeoutBreakerState,
+  type IdleTimeoutBreakerState,
 } from "./idle-timeout-breaker.js";
 import { resolveReplayInvalidFlag } from "./incomplete-turn-resolution.js";
 import { resolveRunRetryKind } from "./retry-budget.js";
@@ -59,7 +60,7 @@ export async function normalizeEmbeddedRunAttempt(input: {
   bootstrapPromptWarningSignaturesSeen: string[];
   usageAccumulator: ReturnType<typeof createUsageAccumulator>;
   lastRunPromptUsage: ReturnType<typeof normalizeUsage> | undefined;
-  idleTimeoutBreakerState: ReturnType<typeof createIdleTimeoutBreakerState>;
+  idleTimeoutBreakerState: IdleTimeoutBreakerState;
   contextRecoveryState: ReturnType<typeof createEmbeddedRunContextRecoveryState>;
   recordedCompactionCount?: number;
   replayState: ReplayState;
@@ -105,7 +106,7 @@ export async function normalizeEmbeddedRunAttempt(input: {
     currentAttemptAssistant,
     currentAttemptCompletedAssistant,
   } = attempt;
-  const { idleTimedOut } = projectAgentRunAttemptTerminal(terminal);
+  const { idleTimedOut, promptError } = projectAgentRunAttemptTerminal(terminal);
   const attemptAssistant = resolveCurrentAttemptAssistant(attempt);
   const terminalState = resolveEmbeddedRunAttemptTerminalState({
     attempt,
@@ -127,8 +128,14 @@ export async function normalizeEmbeddedRunAttempt(input: {
   };
   // Detached runs may fork a foreground transcript whose id they must never adopt.
   if (params.sessionPersistence !== "detached") {
-    applyEmbeddedAttemptSessionIdentity({ sessionPromptState, sessionFileUsed, sessionIdUsed });
+    await applyEmbeddedAttemptSessionIdentity({
+      sessionPromptState,
+      sessionFileUsed,
+      sessionIdUsed,
+      assertCurrent: () => runInput.laneController.throwIfAborted(),
+    });
   }
+  runInput.laneController.throwIfAborted();
   const bootstrapPromptWarningSignaturesSeen =
     attempt.bootstrapPromptWarningSignaturesSeen ??
     (attempt.bootstrapPromptWarningSignature
@@ -156,6 +163,9 @@ export async function normalizeEmbeddedRunAttempt(input: {
   const attemptUsage = attempt.attemptUsage ?? callUsage.currentAttempt;
   mergeUsageIntoAccumulator(input.usageAccumulator, attemptUsage);
   mergeAttemptRunStatsIntoAccumulator(input.usageAccumulator, attempt);
+  if (isSqliteTranscriptMutationConflict(promptError)) {
+    throw promptError;
+  }
   // A real mid-turn truncation rewrites the context after earlier usage observations.
   // Keep billing accumulated, but do not carry that pre-mutation context into the retry.
   const contextMutatedByMidTurnTruncation =
@@ -168,7 +178,6 @@ export async function normalizeEmbeddedRunAttempt(input: {
   const breakerStep = stepIdleTimeoutBreaker(input.idleTimeoutBreakerState, {
     idleTimedOut: terminalTimedOut && idleTimedOut,
     completedModelProgress: hasCompletedModelProgressForIdleBreaker(attempt),
-    outputTokens: attemptUsage?.output,
   });
   if (breakerStep.tripped) {
     const message =

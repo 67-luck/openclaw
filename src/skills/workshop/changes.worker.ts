@@ -1,36 +1,31 @@
-import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
-import { getSqliteWorkerStateContext } from "../../infra/sqlite-worker-state-context.js";
-import type { OpenClawStateDatabase } from "../../state/openclaw-state-db-contract.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
+import type { WorkerOperationHandlers } from "../../state/worker-operation-registry.js";
 import {
   listWorkshopChangesInDatabase,
   recordWorkshopChangeInDatabase,
   type WorkshopChange,
+  type WorkshopChangesQuery,
 } from "./changes.kernel.js";
-import type { WorkshopChangesWorkerOperations } from "./changes.worker-contract.js";
+import {
+  readSkillUsageInDatabase,
+  recordSkillUsageInDatabase,
+  type PreparedSkillUsage,
+} from "./skill-usage.kernel.js";
 
-export function isWorkshopChangesCommand(command: {
-  type: string;
-  input: unknown;
-}): command is SqliteWorkerCommand<WorkshopChangesWorkerOperations> {
-  return (
-    command.type === "skills.workshop.changes.record" ||
-    command.type === "skills.workshop.changes.list"
-  );
-}
-
-export function executeWorkshopChangesCommand(
-  command: SqliteWorkerCommand<WorkshopChangesWorkerOperations>,
-  database: OpenClawStateDatabase,
-  databasePath: string,
-): WorkshopChange[] | void {
-  if (command.type === "skills.workshop.changes.list") {
-    return listWorkshopChangesInDatabase(database.db, command.input);
-  }
-  const change = command.input;
-  runOpenClawStateWriteTransaction(
-    (current) => recordWorkshopChangeInDatabase(current, change),
-    { database, path: databasePath, env: getSqliteWorkerStateContext().environment },
-    { operationLabel: "skill-workshop.changes.record" },
-  );
-}
+export const skillWorkshopOperations = {
+  "skills.workshop.changes.list": (input: WorkshopChangesQuery, { open }) =>
+    listWorkshopChangesInDatabase(open().db, input),
+  "skills.workshop.changes.record": (input: WorkshopChange, { open, stateOptions }) =>
+    runOpenClawStateWriteTransaction(
+      (current) => recordWorkshopChangeInDatabase(current, input),
+      { database: open(), ...stateOptions() },
+      { operationLabel: "skill-workshop.changes.record" },
+    ),
+  "skills.usage.read": (input: { skillFiles: readonly string[] }, { open }) =>
+    readSkillUsageInDatabase(open(), input.skillFiles),
+  "skills.usage.record": (input: PreparedSkillUsage, { open, stateOptions }) =>
+    runOpenClawStateWriteTransaction((current) => recordSkillUsageInDatabase(current, input), {
+      database: open(),
+      ...stateOptions(),
+    }),
+} satisfies WorkerOperationHandlers;

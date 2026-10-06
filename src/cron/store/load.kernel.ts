@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { RETIRED_SKILL_COLLECTION_REVIEW_DECLARATION_PREFIX } from "../system-owned-declaration.js";
 import {
@@ -12,7 +13,6 @@ import {
   loadCronRuntimeAuthorities,
   repairCronRuntimeAuthorityRows,
 } from "./runtime-authority-store.js";
-import { tryParseJsonObject } from "./scalar-codec.js";
 import type { CronJobReadRow } from "./schema.js";
 import type { LoadedCronStore } from "./types.js";
 
@@ -23,7 +23,7 @@ type CronLoadWriter = {
 
 /** The weekly Workshop curator and its older `skillCollectionReview` payload are retired. */
 function isRetiredCollectionReview(row: CronJobReadRow): boolean {
-  const job = tryParseJsonObject(row.job_json);
+  const job = safeParseJsonRecord(row.job_json);
   const declarationKey = row.declaration_key ?? job?.declarationKey;
   return (
     row.payload_kind === "skillCollectionReview" ||

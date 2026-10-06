@@ -13,7 +13,12 @@ import { getRuntimeConfig } from "../../config/config.js";
 import { resolveInternalSessionEffectsIdentity } from "../../config/sessions/internal-session-key.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { validateSessionTranscriptContextAnchor } from "../../config/sessions/session-accessor.sqlite-model-context.js";
+import { readSessionTranscriptAnchorsAsync } from "../../config/sessions/session-transcript-anchor-read.js";
+import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence.js";
+import { withSessionTranscriptReadSource } from "../../config/sessions/session-transcript-read-source.js";
+import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   getGatewayRestartDrainSignal,
@@ -111,22 +116,69 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
 
   // Fork the foreground model context through the completed turn; the review's tool
   // schemas and prefix match the foreground so the provider prompt cache is reused.
-  const sessionManager = await SessionManager.openModelContextAsync(candidate.source, {
-    cwd: workspaceDir,
-    through: candidate.source,
-    signal: abortSignal,
-  });
-  abortSignal.throwIfAborted();
-  // Deleting, replacing, or resetting the source session must not revive its captured evidence.
-  const sourceEntry = loadSessionEntryReadOnly({
-    ...candidate.source,
-    hydrateSkillPromptRefs: false,
-    readConsistency: "latest",
-  });
-  if (sourceEntry?.sessionId !== candidate.source.sessionId) {
-    throw new Error("Skill experience review source session was deleted or replaced.");
-  }
-  validateSessionTranscriptContextAnchor(candidate.source, candidate.source);
+  const prepare = async (
+    source: typeof candidate.source,
+    assertPhysicalCurrent: () => void,
+    assertPreparationCurrent: () => void,
+  ) => {
+    const sessionManager = await SessionManager.openModelContextAsync(source, {
+      cwd: workspaceDir,
+      through: candidate.source,
+      signal: abortSignal,
+    });
+    assertPreparationCurrent();
+    // Deleting, replacing, or resetting the source session must not revive its captured evidence.
+    let sourceEntry:
+      | Pick<InternalSessionEntry, "sessionId" | "lifecycleRevision" | "permissionMode">
+      | undefined;
+    await readSessionTranscriptAnchorsAsync(
+      source,
+      {
+        entryIds: [],
+        contextAuthority: true,
+        contextValidation: { through: candidate.source },
+      },
+      abortSignal,
+      (facts) => {
+        assertPreparationCurrent();
+        const current = facts.contextAuthority?.entry;
+        if (current?.sessionId !== candidate.source.sessionId) {
+          throw new Error("Skill experience review source session was deleted or replaced.");
+        }
+        if (facts.contextValidated) {
+          sourceEntry = current;
+        }
+      },
+    );
+    if (!sourceEntry) {
+      throw new SessionTranscriptReadFenceError("Session transcript changed during context read");
+    }
+    return { source, sourceEntry, sessionManager, assertPhysicalCurrent };
+  };
+  const { source, sourceEntry, sessionManager, assertPhysicalCurrent } =
+    await withSessionTranscriptReadSource(
+      candidate.source,
+      (scope) =>
+        prepare(
+          { ...candidate.source, ...scope },
+          () => abortSignal.throwIfAborted(),
+          () => abortSignal.throwIfAborted(),
+        ),
+      ({ scope, expectedIdentity, assertCurrent }) => {
+        const assertSourceIdentity = () => {
+          abortSignal.throwIfAborted();
+          if (expectedIdentity) {
+            assertExistingDatabaseIdentity(
+              scope.storePath,
+              expectedIdentity.key,
+              expectedIdentity.birthtime,
+            );
+          }
+        };
+        return prepare({ ...candidate.source, ...scope }, assertSourceIdentity, assertCurrent);
+      },
+      abortSignal,
+    );
   // A Gateway reset keeps the sessionId and rotates the lifecycle revision.
   const generation = {
     agentId: candidate.source.agentId,
@@ -136,12 +188,14 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
     lifecycleRevision: sourceEntry.lifecycleRevision ?? null,
   };
   const assertSourceCurrent = () => {
-    abortSignal.throwIfAborted();
+    assertPhysicalCurrent();
     if (resolveSkillWorkshopConfig(getRuntimeConfig()).autonomous.mode !== "auto") {
       throw new Error("Skill Workshop was turned off during review.");
     }
+    // fs-safe's beforeWrite is synchronous after awaited file preparation.
+    // Its final effect guard still needs native reads to observe foreign commits.
     const current = loadSessionEntryReadOnly({
-      ...candidate.source,
+      ...source,
       hydrateSkillPromptRefs: false,
       readConsistency: "latest",
     });
@@ -154,7 +208,7 @@ async function runSkillExperienceReviewInner(candidate: ExperienceReviewCandidat
         "Skill experience review source session was deleted, reset, or changed permissions.",
       );
     }
-    validateSessionTranscriptContextAnchor(candidate.source, candidate.source);
+    validateSessionTranscriptContextAnchor(source, candidate.source);
   };
   const preparedRunAdmission = prepareAgentRunAdmission({
     cfg: config,

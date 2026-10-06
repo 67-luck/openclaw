@@ -1,6 +1,4 @@
-import type { WorkshopChange, WorkshopChangesQuery } from "./changes.kernel.js";
+import type { WorkerOperations } from "../../state/worker-operation-registry.js";
+import type { skillWorkshopOperations } from "./changes.worker.js";
 
-export type WorkshopChangesWorkerOperations = {
-  "skills.workshop.changes.record": { input: WorkshopChange; output: void };
-  "skills.workshop.changes.list": { input: WorkshopChangesQuery; output: WorkshopChange[] };
-};
+export type SkillWorkshopWorkerOperations = WorkerOperations<typeof skillWorkshopOperations>;

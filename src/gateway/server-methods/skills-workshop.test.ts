@@ -22,7 +22,7 @@ vi.mock("../../skills/workshop/library.js", () => library);
 vi.mock("../../skills/workshop/skill-usage.js", () => ({ readSkillUsage }));
 
 const config: OpenClawConfig = {
-  agents: { list: [{ id: "ops", default: true }] },
+  agents: { entries: { ops: {} } },
   skills: { workshop: { autonomous: { mode: "off" } } },
 };
 const context = { getRuntimeConfig: () => config };

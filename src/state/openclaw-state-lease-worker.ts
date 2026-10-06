@@ -32,8 +32,8 @@ import {
   reclaimDeadOpenClawStateLeaseInTransaction,
   releaseOpenClawStateLeaseInTransaction,
   renewOpenClawStateLeaseInTransaction,
-  type OpenClawStateLeaseIdentity,
 } from "./openclaw-state-lease-store.js";
+import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease.types.js";
 
 function takeLeaseExpiryObservation(identity: OpenClawStateLeaseIdentity): BigInt64Array {
   const attachment = takeSqliteWorkerOperationAdmissionAttachment();
@@ -119,6 +119,29 @@ export function assertOpenClawStateLeaseWorkerOwnedInTransaction(
   return assertOpenClawStateLeaseWorkerOwned(database, identity, purpose, stage);
 }
 
+/** One grant covers the complete lease set held by this transaction. */
+export function assertOpenClawStateLeasesWorkerOwnedInTransaction(
+  database: DatabaseSync,
+  identities: readonly OpenClawStateLeaseIdentity[],
+  stage: "transaction" | "commit" = "transaction",
+): void {
+  if (!database.isTransaction) {
+    throw new Error("State lease worker ownership requires an active transaction");
+  }
+  const keys = new Set(identities.map(({ scope, key }) => JSON.stringify([scope, key])));
+  if (identities.length === 0 || keys.size !== identities.length) {
+    throw new Error("State lease worker transaction requires distinct live leases");
+  }
+  const leases = identities.map((identity) => ({
+    identity,
+    expiresAt: readOwnedLeaseExpiry(database, identity),
+  }));
+  requestSqliteWorkerOperationAdmission({ stage, facts: { kind: "state-leases", leases } });
+  for (const identity of identities) {
+    readOwnedLeaseExpiry(database, identity);
+  }
+}
+
 export function acquireOpenClawStateLeaseInWorker(
   input: OpenClawStateLeaseLifecycleOperations["stateLease.acquire"]["input"],
   databasePath: string,
@@ -150,7 +173,7 @@ export function acquireOpenClawStateLeaseInWorker(
           env: getSqliteWorkerStateContext().environment,
         },
       },
-      operationLabel,
+      operationLabel === "state.lease" ? "state.lease.acquire" : operationLabel,
       (db) => {
         const facts = { kind: "state-lease-acquire", identity };
         requestSqliteWorkerOperationAdmission({ stage: "transaction", facts });
@@ -224,7 +247,15 @@ export function executeOpenClawStateLeaseCommand(
         return undefined;
       },
       { database, path: database.path, env: getSqliteWorkerStateContext().environment },
-      { busyTimeoutMs: 0, operationLabel: command.input.operationLabel },
+      {
+        busyTimeoutMs: 0,
+        operationLabel:
+          command.input.operationLabel !== "state.lease"
+            ? command.input.operationLabel
+            : command.type === "stateLease.renew"
+              ? "state.lease.renew"
+              : "state.lease.release",
+      },
     ),
   );
 }

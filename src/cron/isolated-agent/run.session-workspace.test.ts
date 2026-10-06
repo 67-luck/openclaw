@@ -248,7 +248,7 @@ describe("session-bound cron workspace", () => {
       identities: [sessionKey, entry.sessionId],
     };
     let bindingRemoved = false;
-    const mutation = runExclusiveSessionLifecycleMutation({
+    const mutation = runExclusiveSessionLifecycleMutation("patch", {
       ...target,
       prepare: async () => {
         const drained = interruptSessionWorkAdmissions(target);

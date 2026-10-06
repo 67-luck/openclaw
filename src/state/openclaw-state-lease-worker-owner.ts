@@ -3,6 +3,7 @@ import {
   collectNestedErrorCandidates,
   extractErrorCode,
 } from "@openclaw/normalization-core/error-coercion";
+import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-lifecycle-errors.js";
 import { SqliteWorkerError } from "../infra/sqlite-worker-contract.js";
@@ -15,7 +16,8 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { OpenClawStateWorkerLeaseContext } from "./openclaw-state-lease-context.js";
 import { OpenClawStateLeaseError } from "./openclaw-state-lease-error.js";
-import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease-store.js";
+import type { OpenClawStateLeaseIdentity } from "./openclaw-state-lease.types.js";
+import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 
 export type OpenClawStateLeaseWorkerPurpose = "write" | "acquire" | "verify" | "renew" | "release";
 
@@ -28,6 +30,9 @@ export type WorkerLeaseScope = {
   identity: OpenClawStateLeaseIdentity;
   assertCurrent(this: void): void;
   createAdmission: SqliteWorkerAdmissionFactory;
+};
+type WorkerLeasesScope = Omit<WorkerLeaseScope, "identity"> & {
+  identities: readonly OpenClawStateLeaseIdentity[];
 };
 type RetainedLeaseScope = {
   identity: OpenClawStateLeaseIdentity;
@@ -43,6 +48,8 @@ type RetainedLeaseScope = {
 };
 type WorkerLeaseOwner = {
   identity: OpenClawStateLeaseIdentity;
+  sourceContext?: OpenClawStateWorkerContext;
+  assertSourceCurrent(): void;
   retain(
     databasePath: string,
     purpose: OpenClawStateLeaseWorkerPurpose,
@@ -66,12 +73,47 @@ function ownershipRefused(): never {
   });
 }
 
+function assertSynchronousAuthority(assertion: (() => void) | undefined): void {
+  const result: unknown = assertion?.();
+  if (isPromiseLike(result)) {
+    void Promise.resolve(result).catch(() => {});
+    throw new Error("State lease worker authority must complete synchronously");
+  }
+}
+
+function captureLeaseWorkerSource(context: OpenClawStateWorkerContext, databasePath: string) {
+  const { admission, maintenanceScope, runInCapturedSchemaScope, existingSchemaPath, environment } =
+    context;
+  const sourceEnvironment = { ...environment };
+  const assertAdmission = admission.assertCurrent;
+  const assertMaintenance = maintenanceScope?.assertAdmission;
+  const assertMaintenanceOwner = maintenanceScope?.assertOwnerCurrent;
+  return () => {
+    if (
+      context.admission !== admission ||
+      admission.databasePath !== databasePath ||
+      admission.assertCurrent !== assertAdmission ||
+      context.maintenanceScope !== maintenanceScope ||
+      maintenanceScope?.assertAdmission !== assertMaintenance ||
+      maintenanceScope?.assertOwnerCurrent !== assertMaintenanceOwner ||
+      context.runInCapturedSchemaScope !== runInCapturedSchemaScope ||
+      context.existingSchemaPath !== existingSchemaPath ||
+      context.environment !== environment ||
+      !isDeepStrictEqual(environment, sourceEnvironment)
+    ) {
+      throw new Error("State lease worker source binding was replaced");
+    }
+    assertMaintenance?.();
+    assertAdmission();
+  };
+}
+
 function createLeaseAdmissionFactory(
   scopes: readonly RetainedLeaseScope[],
   purpose: OpenClawStateLeaseWorkerPurpose,
   assertCurrent: () => void,
   beforeCommit?: () => void,
-  options: { expiryObservation?: SharedArrayBuffer } = {},
+  options: { plural?: boolean; expiryObservation?: SharedArrayBuffer } = {},
 ): SqliteWorkerAdmissionFactory {
   const firstScope = scopes[0];
   if (!firstScope) {
@@ -99,10 +141,15 @@ function createLeaseAdmissionFactory(
         (request, grant) => {
           assertCurrent();
           const facts = request.facts;
-          const kind = purpose === "write" ? "state-lease" : `state-lease-${purpose}`;
+          const kind = options.plural
+            ? "state-leases"
+            : purpose === "write"
+              ? "state-lease"
+              : `state-lease-${purpose}`;
           if (
             (purpose === "write"
               ? writeStage === "commit" ||
+                (options.plural && request.stage === "transaction" && writeStage !== "waiting") ||
                 (request.stage !== "transaction" &&
                   !(request.stage === "commit" && writeStage === "transaction"))
               : lifecycleWrite
@@ -113,15 +160,21 @@ function createLeaseAdmissionFactory(
           ) {
             ownershipRefused();
           }
+          const members: unknown = options.plural ? facts.leases : [facts];
+          if (!Array.isArray(members) || members.length !== scopes.length) {
+            ownershipRefused();
+          }
           const assertFacts = () => {
             const now = Date.now();
-            for (const scope of scopes) {
+            for (const [index, scope] of scopes.entries()) {
+              const member: unknown = members[index];
               if (
-                !isDeepStrictEqual(facts.identity, scope.identity) ||
+                !isRecord(member) ||
+                !isDeepStrictEqual(member.identity, scope.identity) ||
                 (expiryRequired &&
-                  (typeof facts.expiresAt !== "number" ||
-                    !Number.isFinite(facts.expiresAt) ||
-                    facts.expiresAt <= now))
+                  (typeof member.expiresAt !== "number" ||
+                    !Number.isFinite(member.expiresAt) ||
+                    member.expiresAt <= now))
               ) {
                 ownershipRefused();
               }
@@ -188,9 +241,13 @@ export function createOpenClawStateLeaseWorkerOwner(params: {
   lease?: OpenClawStateWorkerLeaseContext;
   identity: OpenClawStateLeaseIdentity;
   databasePath: string;
+  sourceContext?: OpenClawStateWorkerContext;
   expiryObservation?: SharedArrayBuffer;
   assertCurrent(purpose: OpenClawStateLeaseWorkerPurpose): void;
 }) {
+  const assertSourceCurrent = params.sourceContext
+    ? captureLeaseWorkerSource(params.sourceContext, params.databasePath)
+    : undefined;
   const pending = new Set<Promise<unknown>>();
   const settlements = new Set<Promise<unknown>>();
   let accepting = true;
@@ -241,6 +298,13 @@ export function createOpenClawStateLeaseWorkerOwner(params: {
   };
   const owner: WorkerLeaseOwner = {
     identity: params.identity,
+    sourceContext: params.sourceContext,
+    assertSourceCurrent() {
+      if (!assertSourceCurrent) {
+        throw new Error("State leases require their original shared source context");
+      }
+      assertSourceCurrent();
+    },
     retain(databasePath, purpose, authority) {
       const assertCaller = authority?.assertCurrent;
       assertCurrent(purpose);
@@ -355,4 +419,65 @@ export function withOpenClawStateLeaseWorkerAdmission<T>(
     throw new Error("State lease worker operation requires its original live lease context");
   }
   return owner.run(databasePath, operation, "write", authority);
+}
+
+/** Multiple leases authorize one worker operation only from their shared captured source. */
+export function withOpenClawStateLeasesWorkerAdmission<T>(
+  leases: readonly OpenClawStateWorkerLeaseContext[],
+  context: OpenClawStateWorkerContext,
+  operation: (scope: WorkerLeasesScope) => Promise<T>,
+  authority?: OpenClawStateLeaseWorkerAuthority,
+): Promise<T> {
+  if (leases.length === 0) {
+    throw new Error("State lease worker operation requires at least one live lease");
+  }
+  const assertCaller = authority?.assertCurrent;
+  const beforeCommit = authority?.beforeCommit;
+  const selected = leases.map((lease) => {
+    const owner = owners.get(lease);
+    if (!owner || owner.sourceContext !== context) {
+      throw new Error("State leases require their original shared source context");
+    }
+    return owner;
+  });
+  const keys = new Set(
+    selected.map(({ identity }) => JSON.stringify([identity.scope, identity.key])),
+  );
+  if (new Set(selected).size !== selected.length || keys.size !== selected.length) {
+    throw new Error("State lease worker operation contains duplicate leases");
+  }
+  const scopes: RetainedLeaseScope[] = [];
+  const assertCurrent = () => {
+    assertSynchronousAuthority(assertCaller);
+    for (const scope of scopes) {
+      scope.assertCurrent();
+    }
+    for (const owner of selected) {
+      owner.assertSourceCurrent();
+    }
+  };
+  try {
+    for (const owner of selected) {
+      scopes.push(owner.retain(context.admission.databasePath, "write"));
+    }
+    assertCurrent();
+  } catch (error) {
+    for (const scope of scopes) {
+      scope.finish();
+    }
+    throw error;
+  }
+  return runRetainedLeaseScopes(scopes, () =>
+    operation({
+      identities: scopes.map(({ identity }) => ({ ...identity })),
+      assertCurrent,
+      createAdmission: createLeaseAdmissionFactory(
+        scopes,
+        "write",
+        assertCurrent,
+        () => assertSynchronousAuthority(beforeCommit),
+        { plural: true },
+      ),
+    }),
+  );
 }

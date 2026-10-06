@@ -10,21 +10,32 @@ import type { DelegationCapability } from "../agents/delegation-capability.js";
 import type { ExecPolicyOverrides, ExecSessionDefaults } from "../agents/exec-defaults.js";
 import type { PreparedQuestionAnswerAuthority } from "../agents/harness/host-private-capabilities.js";
 import type { ScheduledToolPolicyContext } from "../agents/scheduled-tool-policy.js";
+import type { TrustedSubagentCompletionHandoff } from "../agents/subagents/announce/subagent-announce-handoff.js";
+import type { PreparedSessionPermissionPolicy } from "../agents/tool-fs-policy.types.js";
 import type {
   SourceReplyDeliveryMode,
   TaskSuggestionDeliveryMode,
 } from "../auto-reply/get-reply-options.types.js";
 import type { ReplyTurnParticipants } from "../auto-reply/reply/reply-run-registry.contracts.js";
 import type { InboundEventKind } from "../channels/inbound-event/kind.js";
+import type { GroupToolPolicyConfig } from "../config/types.tools.js";
 import type { CronScheduledToolCallerOrigin } from "../cron/scheduled-tool-policy.js";
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
 import type { PluginHookChannelContext } from "../plugins/hook-types.js";
+import type { InputProvenance } from "../sessions/input-provenance.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
 import type { CronCreatorAuthorityGrant } from "./cron-creator-authority-grant.types.js";
 
 export type McpLoopbackRequestContext = {
+  /** Recorded requester boundary captured by the host; never read from request headers. */
+  sessionPermissionPolicy?: PreparedSessionPermissionPolicy;
+  /** Host-prepared channel policy; never sourced from MCP request headers. */
+  conversationToolPolicy?: GroupToolPolicyConfig;
+  /** Host-verified completion context; never read from MCP request headers. */
+  trustedInternalHandoff?: Omit<TrustedSubagentCompletionHandoff, "settleBatch">;
+  inputProvenance?: InputProvenance;
   sessionKey: string;
   runtimePolicySessionKey?: string;
   /** Agent whose execution policy applies when it differs from the durable session owner. */
@@ -87,6 +98,7 @@ export type McpLoopbackRequestContext = {
   execOverrides?: ExecPolicyOverrides & { mode?: ExecMode };
   bashElevated?: ExecElevatedDefaults;
   trigger?: string;
+  continuesConversation?: boolean;
   approvalReviewerDeviceId?: string;
   channelContext?: PluginHookChannelContext;
   senderName?: string;

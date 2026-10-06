@@ -363,7 +363,7 @@ function migrateRetiredSkillCuratorTablesV11(db: DatabaseSync, previousVersion: 
   return true;
 }
 
-// Same-version retirement in state schema 19. Doctor drops these only after
+// Same-version retirement in state schema 20. Doctor drops these only after
 // exporting pending proposal drafts, so the ordinary open path never runs this.
 const RETIRED_SKILL_WORKSHOP_PROPOSAL_TABLES = [
   "skill_workshop_proposal_events",

@@ -1,13 +1,12 @@
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { html, nothing } from "lit";
-import type { MessageReactionSummary } from "../../../../../packages/gateway-protocol/src/index.js";
 import { CHAT_PENDING_INPUT_MESSAGE_PREFIX } from "../../../../../packages/gateway-protocol/src/schema/chat-history-constants.js";
 import { renderCopyAsMarkdownButton } from "../../../components/copy-button.ts";
 import { icons } from "../../../components/icons.ts";
 import { t } from "../../../i18n/index.ts";
 import { registerChatMessageMetadataEnglish } from "../../../i18n/locales/en-chat-message-metadata.ts";
-import type { ChatReplyTarget } from "../../../lib/chat/chat-types.ts";
+import type { ChatReplyTarget, NormalizedMessage } from "../../../lib/chat/chat-types.ts";
 import { readHumanMentions } from "../../../lib/chat/human-mentions.ts";
 import { resolveMessageDisplayMarkdown } from "../../../lib/chat/message-display.ts";
 import {
@@ -25,7 +24,7 @@ import { extractMessageMediaText } from "./chat-message-media.ts";
 import {
   ownReactionEmoji,
   type MessageReactionAction,
-  type MessageReactionPlacement,
+  type MessageReactionOptions,
 } from "./chat-message-reactions.ts";
 
 registerChatMessageMetadataEnglish();
@@ -73,11 +72,10 @@ export function prepareChatMessageRender(message: unknown) {
 
 export type ChatMessageRenderPreparation = ReturnType<typeof prepareChatMessageRender>;
 
-// An explicit Markdown value is the displayed expansion, even when it is empty.
 export function resolveMessageReplyText(
   message: unknown,
-  normalizedMessage = normalizeMessage(message),
-  markdown = resolveMessageDisplayMarkdown(message, normalizedMessage),
+  normalizedMessage: NormalizedMessage,
+  markdown: string,
 ): string {
   return markdown || extractMessageMediaText(message, normalizedMessage.content);
 }
@@ -134,7 +132,6 @@ export function resolveMessageActionDetails(
   };
 }
 
-/** Whether `renderMessageActionButtons` renders at least one control for these options. */
 export function hasMessageActionButtons(
   details: MessageActionDetails | null | undefined,
   opts: { onReply?: (target: MessageReplyTarget) => void; onReact?: MessageReactionAction },
@@ -149,12 +146,8 @@ export function hasMessageActionButtons(
 
 export function renderMessageActionButtons(
   details: MessageActionDetails | null | undefined,
-  opts: {
+  opts: MessageReactionOptions & {
     onReply?: (target: MessageReplyTarget) => void;
-    onReact?: MessageReactionAction;
-    messageReactions?: ReadonlyMap<string, MessageReactionSummary[]>;
-    userId?: string | null;
-    reactionPlacement?: MessageReactionPlacement;
   },
 ) {
   if (!details) {

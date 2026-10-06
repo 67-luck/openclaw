@@ -63,7 +63,7 @@ it("exports pending drafts from retired tables and legacy files, then drops the 
   const mainDir = path.join(root, "main-agent");
   const opsDir = path.join(root, "ops-agent");
   const config: OpenClawConfig = {
-    agents: { entries: { main: { default: true, agentDir: mainDir }, ops: { agentDir: opsDir } } },
+    agents: { entries: { main: { agentDir: mainDir }, ops: { agentDir: opsDir } } },
   };
   const proposalsDir = path.join(stateDir, "skill-workshop", "proposals");
   const mainExports = path.join(mainDir, "workshop-skills", ".archive", ".retired-proposals");
@@ -130,7 +130,7 @@ it("keeps legacy bundles without a provable owner, record, or draft until every 
   const config: OpenClawConfig = {
     agents: {
       entries: {
-        main: { default: true, agentDir: path.join(root, "main-agent") },
+        main: { agentDir: path.join(root, "main-agent") },
         ops: { agentDir: opsDir, workspace: opsWorkspace },
       },
     },
@@ -205,7 +205,7 @@ it.each([
   const config: OpenClawConfig = {
     agents: {
       entries: {
-        main: { default: true, agentDir: mainDir },
+        main: { agentDir: mainDir },
         ops: { agentDir: path.join(root, "ops-agent") },
       },
     },
