@@ -1,5 +1,6 @@
 import { mkdir, realpath } from "node:fs/promises";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { Value } from "typebox/value";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { WorkerConnectRequestFrameSchema } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
@@ -424,7 +425,10 @@ describe("worker turn launcher remote handoff", () => {
             timestamp: 21,
           }),
         );
-        return acknowledgeCompletedWorkerTurn(request.turnClaim, leafId);
+        return acknowledgeCompletedWorkerTurn(
+          request.turnClaim,
+          expectDefined(leafId, "persisted worker reply"),
+        );
       }),
       reconcileWorkspace: vi.fn(reconcileUnchangedLocalWorkspace),
     });
