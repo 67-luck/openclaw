@@ -43,22 +43,13 @@ describe("lintSkillMarkdown", () => {
 describe("skillWriteAdvisories", () => {
   it("reports only rules the write introduced, capped at three", () => {
     const sprawling = skill(CLEAN_DESCRIPTION, "step\n".repeat(300));
-    expect(
-      skillWriteAdvisories({
-        name: "demo",
-        before: sprawling,
-        after: sprawling.replace("step", "IMPORTANT step"),
-        others: [],
-      }),
-    ).toEqual([
+    expect(skillWriteAdvisories(sprawling, sprawling.replace("step", "IMPORTANT step"))).toEqual([
       expect.stringMatching(/^Advisory \(not blocking\): cut no-op emphasis \(IMPORTANT\)/),
     ]);
     const noisy = skill(
       `This skill is a powerful ${"x".repeat(160)}`,
       "- Never a.\n- Never b.\n- Never c.\nUPDATE: changed.",
     );
-    expect(
-      skillWriteAdvisories({ name: "demo", before: "", after: noisy, others: [] }),
-    ).toHaveLength(3);
+    expect(skillWriteAdvisories("", noisy)).toHaveLength(3);
   });
 });

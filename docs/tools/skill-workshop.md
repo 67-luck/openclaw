@@ -151,9 +151,9 @@ A successful `create`, `patch`, or `write_file` of `SKILL.md` may end with up to
 three `Advisory (not blocking)` lines: authoring issues the write introduced (a
 description over 160 bytes or opening with "This skill", a body over 250 lines
 or 12 KB, emphasis words, three or more Never/Don't steps, update notes or
-dates), and, when the description changed, another live skill whose name and
-description strongly overlap, with a suggestion to merge them. The write has
-already landed.
+dates). The write has already landed. A `create` also lists the agent's other
+learned skills, so the agent itself decides whether the new skill duplicates
+one and should be merged.
 
 ## Configuration
 

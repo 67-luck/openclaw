@@ -174,7 +174,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
       );
     }
 
-    // SKILL.md writes get advisory feedback; the list and prior text are read before the write.
+    // SKILL.md writes get advisory feedback, so the prior text is read before the write.
     const skillFileWrite =
       action === "create" ||
       ((action === "patch" || action === "write_file") &&
@@ -182,12 +182,11 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
     const readLiveSkillFile = async () =>
       (await viewWorkshopSkill(options.config, options.agentId, name).catch(() => undefined))
         ?.content;
-    const [skillsBefore, before] = skillFileWrite
-      ? await Promise.all([
-          listWorkshopSkills(options.config, options.agentId),
-          action === "create" ? "" : readLiveSkillFile(),
-        ])
-      : [];
+    const before = !skillFileWrite
+      ? undefined
+      : action === "create"
+        ? ""
+        : await readLiveSkillFile();
     let written: string | undefined;
 
     let change: WorkshopChange;
@@ -260,11 +259,23 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         );
     }
     const after = skillFileWrite ? (written ?? (await readLiveSkillFile())) : undefined;
-    const advisories =
-      skillsBefore && before !== undefined && after !== undefined
-        ? skillWriteAdvisories({ name, before, after, others: skillsBefore })
-        : [];
-    return textResult([formatChange(verb, change), ...advisories].join("\n"), { change });
+    const lines = [formatChange(verb, change)];
+    if (before !== undefined && after !== undefined) {
+      lines.push(...skillWriteAdvisories(before, after));
+    }
+    if (action === "create") {
+      // The agent, not a string heuristic, judges whether a new skill duplicates an old one.
+      const others = (await listWorkshopSkills(options.config, options.agentId)).filter(
+        (skill) => skill.name !== name,
+      );
+      if (others.length > 0) {
+        lines.push(
+          "Other learned skills; if one covers the same class of task, merge (patch the broader one, archive the other with absorbed_into):",
+          ...others.map((skill) => `- ${skill.name}: ${skill.description}`),
+        );
+      }
+    }
+    return textResult(lines.join("\n"), { change });
   };
 
   return {

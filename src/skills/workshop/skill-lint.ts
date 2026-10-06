@@ -9,21 +9,14 @@ const MAX_BODY_LINES = 250;
 const MAX_BODY_BYTES = 12_000;
 const MIN_NEGATION_LINES = 3;
 const MAX_ADVISORIES = 3;
-// Jaccard over name+description content words. Restated duplicates score ~0.8; siblings
-// that share a tool, domain, or sentence shape score ~0.1-0.5.
-const OVERLAP_THRESHOLD = 0.55;
 
 const NO_OP_WORDS =
   /\b(?:powerful|comprehensive|robust|seamless(?:ly)?|cutting-edge|state-of-the-art|be thorough|make sure to)\b/gi;
 const SHOUTING = /\bIMPORTANT\b/g;
 const NEGATION_LINE = /^(?:[-*+]|\d+[.)])?\s*(?:\*\*)?(?:never|don['’]t|do not)\b/i;
 const NARRATIVE_LINE = /^(?:[-*+]\s*)?(?:\*\*)?(?:UPDATE|NOTE|EDIT)\b|\b20\d\d-\d\d-\d\d\b/;
-const STOPWORD =
-  /^(?:an|and|any|are|as|at|be|by|for|from|in|into|is|it|its|of|on|or|that|the|this|to|use|used|using|when|where|which|while|with|without|you|your|user|asks?|asked|skills?|tasks?)$/;
 
 type SkillLintFinding = { rule: string; message: string };
-
-type SkillSummary = { name: string; description: string };
 
 function readDescription(content: string): string {
   return (parseFrontmatterBlock(content).description ?? "").trim();
@@ -82,53 +75,11 @@ export function lintSkillMarkdown(content: string): SkillLintFinding[] {
   return checks.flatMap(([rule, message]) => (message ? [{ rule, message }] : []));
 }
 
-function overlapTokens(skill: SkillSummary): Set<string> {
-  const words = `${skill.name} ${skill.description}`.toLowerCase().split(/[^a-z0-9]+/);
-  return new Set(
-    words
-      .filter((word) => word.length > 1 && !STOPWORD.test(word))
-      .map((word) => (word.length > 3 && /[^s]s$/.test(word) ? word.slice(0, -1) : word)),
-  );
-}
-
-/** Jaccard similarity of name+description content words. */
-export function skillOverlapScore(a: SkillSummary, b: SkillSummary): number {
-  const left = overlapTokens(a);
-  const right = overlapTokens(b);
-  const shared = [...left].filter((token) => right.has(token)).length;
-  const union = left.size + right.size - shared;
-  return union === 0 ? 0 : shared / union;
-}
-
-/**
- * Advisory lines for a successful SKILL.md write: the closest other live skill when the
- * description changed, then lint rules this write introduced (standing ones stay quiet).
- */
-export function skillWriteAdvisories(params: {
-  name: string;
-  before: string;
-  after: string;
-  others: readonly SkillSummary[];
-}): string[] {
-  const advisories: string[] = [];
-  const description = readDescription(params.after);
-  if (description !== readDescription(params.before)) {
-    const self = { name: params.name, description };
-    const closest = params.others
-      .filter((other) => other.name !== params.name)
-      .map((other) => ({ name: other.name, score: skillOverlapScore(self, other) }))
-      .toSorted((a, b) => b.score - a.score)[0];
-    if (closest && closest.score >= OVERLAP_THRESHOLD) {
-      advisories.push(
-        `Advisory (not blocking): overlaps "${closest.name}". If both cover the same class of task, merge them: patch the broader skill, then archive the other with absorbed_into=<broader>.`,
-      );
-    }
-  }
-  const standing = new Set(lintSkillMarkdown(params.before).map((finding) => finding.rule));
-  for (const finding of lintSkillMarkdown(params.after)) {
-    if (!standing.has(finding.rule)) {
-      advisories.push(`Advisory (not blocking): ${finding.message} Fix with action=patch.`);
-    }
-  }
-  return advisories.slice(0, MAX_ADVISORIES);
+/** Advisory lines for a successful SKILL.md write: lint rules this write introduced. */
+export function skillWriteAdvisories(before: string, after: string): string[] {
+  const standing = new Set(lintSkillMarkdown(before).map((finding) => finding.rule));
+  return lintSkillMarkdown(after)
+    .filter((finding) => !standing.has(finding.rule))
+    .slice(0, MAX_ADVISORIES)
+    .map((finding) => `Advisory (not blocking): ${finding.message} Fix with action=patch.`);
 }
